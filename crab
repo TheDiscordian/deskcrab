@@ -28,7 +28,8 @@ case "${1:-}" in
         WSPID="$(cat "$PIDFILE")"
         rm -f "$PIDFILE"
 
-        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Thinking..."
+        # Dismiss listening notification immediately
+        notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" ""
 
         WHISPER_OUT="/tmp/deskcrab-whisper.txt"
 
