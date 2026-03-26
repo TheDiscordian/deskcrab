@@ -44,12 +44,9 @@ git clone https://github.com/TheDiscordian/deskcrab.git
 cd deskcrab
 
 # Copy scripts
-cp deskcrab deskcrab-debug ~/.local/bin/
+cp crab crab-debug ~/.local/bin/
 cp -r lib ~/.local/lib/deskcrab/
-chmod +x ~/.local/bin/deskcrab ~/.local/bin/deskcrab-debug
-
-# Optional: create a "crab" alias for text mode
-ln -s ~/.local/bin/deskcrab ~/.local/bin/crab
+chmod +x ~/.local/bin/crab ~/.local/bin/crab-debug
 
 # Create config
 mkdir -p ~/.config/deskcrab
@@ -65,44 +62,42 @@ Bind these to a key in your compositor:
 
 | Action | Command |
 |--------|---------|
-| Start recording (hold) | `deskcrab start` |
-| Stop and process (release) | `deskcrab stop` |
-| Stop TTS playback | `deskcrab shutup` |
-| Open debug viewer | `deskcrab-debug` |
+| Start recording (hold) | `crab start` |
+| Stop and process (release) | `crab stop` |
+| Stop TTS playback | `crab shutup` |
+| Open debug viewer | `crab-debug` |
 
 **Hyprland** example (SUPER+A as push-to-talk):
 
 ```ini
-bind = $mainMod, A, exec, ~/.local/bin/deskcrab start
-bindr = $mainMod, A, exec, ~/.local/bin/deskcrab stop
-bind = $mainMod SHIFT, A, exec, ~/.local/bin/deskcrab shutup
+bind = $mainMod, A, exec, ~/.local/bin/crab start
+bindr = $mainMod, A, exec, ~/.local/bin/crab stop
+bind = $mainMod SHIFT, A, exec, ~/.local/bin/crab shutup
 ```
 
 **Sway** example:
 
 ```ini
-bindsym --no-repeat $mod+a exec ~/.local/bin/deskcrab start
-bindsym --release $mod+a exec ~/.local/bin/deskcrab stop
-bindsym $mod+Shift+a exec ~/.local/bin/deskcrab shutup
+bindsym --no-repeat $mod+a exec ~/.local/bin/crab start
+bindsym --release $mod+a exec ~/.local/bin/crab stop
+bindsym $mod+Shift+a exec ~/.local/bin/crab shutup
 ```
 
 ### Text mode
 
 ```bash
-# If you created the "crab" symlink:
 crab what time is it in Tokyo?
 crab summarize this file: ~/notes.md
-
-# Or use the ask subcommand directly:
-deskcrab ask what's the weather like?
 ```
+
+Any argument that isn't a subcommand (`start`, `stop`, `shutup`) is treated as a text query.
 
 ### Debug viewer
 
 Watch Crab's tool calls, reasoning, and responses in real-time:
 
 ```bash
-deskcrab-debug
+crab-debug
 ```
 
 Best opened in a terminal before triggering a voice command. Shows tool names, inputs, outputs, response text, duration, and cost.
@@ -164,15 +159,15 @@ windowrule {
 ## Architecture
 
 ```
-deskcrab start  →  whisper-stream (recording)
-deskcrab stop   →  whisper transcription → claude CLI → TTS streaming
-                                                     → display channel (optional)
-crab <text>     →  claude CLI → TTS streaming → display channel (optional)
+crab start   →  whisper-stream (recording)
+crab stop    →  whisper transcription → claude CLI → TTS streaming
+                                                  → display channel (optional)
+crab <text>  →  claude CLI → TTS streaming → display channel (optional)
 ```
 
-- `deskcrab` — main entry point (voice + text)
+- `crab` — main entry point (voice + text)
 - `lib/common.sh` — shared functions (TTS, conversation, prompt building, Claude invocation)
-- `deskcrab-debug` — real-time debug viewer
+- `crab-debug` — real-time debug viewer
 
 ## License
 

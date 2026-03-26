@@ -4,8 +4,8 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 
 ## Project structure
 
-- `deskcrab` — main entry point script (start/stop/shutup/ask)
-- `deskcrab-debug` — Python real-time debug viewer for stream-json output
+- `crab` — main entry point script (start/stop/shutup or any text as a query)
+- `crab-debug` — Python real-time debug viewer for stream-json output
 - `lib/common.sh` — shared functions: TTS, conversation management, prompt building, Claude invocation
 - `deskcrab.conf.example` — example configuration
 - `custom-prompt.md.example` — example custom prompt file
@@ -25,7 +25,7 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 
 - Config loaded from `~/.config/deskcrab/deskcrab.conf` (override with `DESKCRAB_CONF` env var)
 - All temp files use `/tmp/deskcrab-*` prefix
-- The `crab` symlink triggers `ask` mode automatically (text input, no voice)
+- Any argument that isn't a subcommand (start/stop/shutup) is treated as a text query
 - TTS streams in parallel with Claude's generation — speech starts before the full response is ready
 - The display channel delimiter is `---DISPLAY---` on its own line
 - `claude` must be on PATH or in `~/.local/bin/`

@@ -1,17 +1,12 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: deskcrab start | stop | shutup | ask <text>
+# Usage: crab start | stop | shutup | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 PIDFILE="/tmp/deskcrab.pid"
-
-# If called as "crab", treat all args as an ask command
-if [ "$(basename "$0")" = "crab" ]; then
-    set -- ask "$@"
-fi
 
 case "${1:-}" in
     start)
@@ -74,20 +69,15 @@ case "${1:-}" in
         stop_tts
         ;;
 
-    ask)
-        shift
+    *)
+        # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: deskcrab ask <message>"
+            echo "Usage: crab start|stop|shutup|<message>"
             exit 1
         fi
         stop_tts
         rotate_convo
         run_claude_and_respond "$TEXT"
-        ;;
-
-    *)
-        echo "Usage: deskcrab start|stop|shutup|ask <message>"
-        exit 1
         ;;
 esac
