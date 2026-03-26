@@ -211,8 +211,9 @@ run_claude_and_respond() {
             local DISPLAYFILE="/tmp/deskcrab-display.md"
             echo "$DISPLAY_PART" > "$DISPLAYFILE"
             hyprctl dispatch closewindow class:deskcrab-display 2>/dev/null
-            if command -v render-md &>/dev/null; then
-                setsid render-md "$DISPLAYFILE" &
+            RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
+            if [ -x "$RENDER_MD" ]; then
+                setsid "$RENDER_MD" "$DISPLAYFILE" &
             fi
         fi
 
