@@ -160,6 +160,12 @@ windowrule {
 }
 ```
 
+## Integrations
+
+### weather-cache
+
+If [weather-cache](https://github.com/TheDiscordian/weather-cache) is installed and `~/.cache/weather/` exists, Crab automatically detects it and tells Claude how to read the cached weather data. No configuration needed — just install weather-cache and Crab picks it up.
+
 ## Conversation history
 
 Crab maintains a running conversation at `/tmp/deskcrab-convo.txt`. After a period of inactivity (default: 5 minutes), the conversation is archived to `~/.local/share/deskcrab/archive/` with a timestamp filename. This lets Crab remember context within a session while keeping old conversations for reference.

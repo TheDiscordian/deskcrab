@@ -72,6 +72,13 @@ $(cat "$f")"
         done
     fi
 
+    # Auto-detect weather-cache
+    local WEATHER_CONTEXT=""
+    if [ -d "$HOME/.cache/weather" ]; then
+        WEATHER_CONTEXT="
+Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/alerts.txt — read these files only if the user asks about weather. When asked about weather, always check alerts.txt and mention any active alerts."
+    fi
+
     cat <<PROMPT
 You are Crab, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
 SPEED IS CRITICAL. The user is waiting for a spoken response. Avoid slow tools: use ToolSearch at most ONCE, and never use Agent. Prefer Bash (curl, etc.) and WebFetch which are fast. Do not retry failed fetches more than once — give the best answer you can with what you have.
@@ -88,7 +95,7 @@ FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they a
 - ALWAYS verify downloads: after curl, run 'file /tmp/image.jpg' and confirm it says JPEG/PNG image data, NOT HTML. If it's HTML, the download failed — do NOT display it.
 - Pexels CDN: if you know a photo ID, use https://images.pexels.com/photos/PHOTO_ID/pexels-photo-PHOTO_ID.jpeg?auto=compress&cs=tinysrgb&w=800 (no API key needed). Find photo IDs via WebSearch for 'site:pexels.com QUERY'.
 - These sources are fast, reliable, and free. Always try them first.
-$CUSTOM_CONTEXT
+$CUSTOM_CONTEXT$WEATHER_CONTEXT
 $CONTEXT_CONTENT$CONVO_CONTEXT
 PROMPT
 }
