@@ -2,7 +2,7 @@
 
 A push-to-talk desktop assistant for Linux powered by [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Hold a key to talk, release to get a spoken response. Crab can execute commands, fetch information, display rich content, and maintain conversation context across interactions.
 
-> **Warning:** Crab runs Claude Code with `--dangerously-skip-permissions`, meaning it can execute any command on your system without asking for confirmation. This is necessary for a voice assistant (you can't approve each tool call mid-conversation), but it means Crab has full access to your shell, files, and network. Only run it on machines you trust, and review your custom prompt carefully — it shapes what Crab will do autonomously.
+> **⚠️ Warning:** Crab runs Claude Code with `--dangerously-skip-permissions`, meaning it can execute any command on your system without asking for confirmation. This is necessary for a voice assistant (you can't approve each tool call mid-conversation), but it means Crab has full access to your shell, files, and network. Only run it on machines you trust, and review your custom prompt carefully — it shapes what Crab will do autonomously.
 
 ## Features
 
