@@ -188,7 +188,8 @@ run_claude_and_respond() {
 
     start_tts_streamer
 
-    cd "$PROJECT_DIR" && claude -p --dangerously-skip-permissions \
+    CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
         --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT" \
         --verbose --output-format stream-json \
         --append-system-prompt "$SYSTEM_PROMPT" \
