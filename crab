@@ -36,7 +36,7 @@ case "${1:-}" in
         # Wait for whisper to finish its current step
         PREV_SIZE=-1
         for i in 1 2 3 4 5 6; do
-            sleep 1
+            sleep 1.5
             CUR_SIZE=$(stat -c %s "$WHISPER_OUT" 2>/dev/null || echo 0)
             if [ "$CUR_SIZE" -gt 0 ] && [ "$CUR_SIZE" = "$PREV_SIZE" ]; then
                 break
