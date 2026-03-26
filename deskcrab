@@ -1,0 +1,93 @@
+#!/bin/bash
+# DeskCrab: push-to-talk desktop assistant powered by Claude
+# Usage: deskcrab start | stop | shutup | ask <text>
+# Maintains conversation history; archives and starts fresh after inactivity.
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+PIDFILE="/tmp/deskcrab.pid"
+
+# If called as "crab", treat all args as an ask command
+if [ "$(basename "$0")" = "crab" ]; then
+    set -- ask "$@"
+fi
+
+case "${1:-}" in
+    start)
+        stop_tts
+
+        # Kill any leftover whisper-stream
+        [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+
+        WHISPER_OUT="/tmp/deskcrab-whisper.txt"
+        rm -f "$WHISPER_OUT"
+
+        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Listening..."
+        whisper-stream -m "$WHISPER_MODEL" --step 3000 --length 10000 -f "$WHISPER_OUT" &
+        echo $! > "$PIDFILE"
+        ;;
+
+    stop)
+        [ ! -f "$PIDFILE" ] && exit 1
+        WSPID="$(cat "$PIDFILE")"
+        rm -f "$PIDFILE"
+
+        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Thinking..."
+
+        WHISPER_OUT="/tmp/deskcrab-whisper.txt"
+
+        # Wait for whisper to finish its current step
+        PREV_SIZE=-1
+        for i in 1 2 3 4 5 6; do
+            sleep 1
+            CUR_SIZE=$(stat -c %s "$WHISPER_OUT" 2>/dev/null || echo 0)
+            if [ "$CUR_SIZE" -gt 0 ] && [ "$CUR_SIZE" = "$PREV_SIZE" ]; then
+                break
+            fi
+            PREV_SIZE=$CUR_SIZE
+        done
+        kill "$WSPID" 2>/dev/null
+        wait "$WSPID" 2>/dev/null
+
+        # Read transcription output
+        TEXT=""
+        [ -f "$WHISPER_OUT" ] && TEXT=$(sed '/^$/d; s/^\[.*\] //g' "$WHISPER_OUT" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//')
+        rm -f "$WHISPER_OUT"
+
+        # Apply custom whisper fixes
+        if [ -n "$WHISPER_FIXES" ]; then
+            TEXT=$(echo "$TEXT" | sed -E "$WHISPER_FIXES")
+        fi
+
+        if [ -z "$TEXT" ]; then
+            notify-send -t 3000 "$NOTIFY_NAME" "No speech detected"
+            exit 1
+        fi
+
+        rotate_convo
+
+        run_claude_and_respond "$TEXT"
+        ;;
+
+    shutup)
+        stop_tts
+        ;;
+
+    ask)
+        shift
+        TEXT="$*"
+        if [ -z "$TEXT" ]; then
+            echo "Usage: deskcrab ask <message>"
+            exit 1
+        fi
+        stop_tts
+        rotate_convo
+        run_claude_and_respond "$TEXT"
+        ;;
+
+    *)
+        echo "Usage: deskcrab start|stop|shutup|ask <message>"
+        exit 1
+        ;;
+esac

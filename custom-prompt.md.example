@@ -1,0 +1,16 @@
+# Custom DeskCrab Prompt
+# This file is appended to Crab's system prompt. Use it for project-specific
+# context, personal preferences, or special instructions.
+#
+# Copy to the path set in CUSTOM_PROMPT in your deskcrab.conf.
+# Example: ~/.config/deskcrab/custom-prompt.md
+
+## Project Context
+
+<!-- Add information about your projects, tools, or workflows here. -->
+
+## Preferences
+
+<!-- Add personal preferences, e.g.: -->
+<!-- - Always use Celsius -->
+<!-- - When I say "deploy", I mean push to the staging branch -->

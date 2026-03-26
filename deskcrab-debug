@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Live viewer for DeskCrab stream-json debug log."""
+
+import json
+import sys
+import time
+import os
+import textwrap
+
+LOG = "/tmp/deskcrab-debug.log"
+CONVO = "/tmp/deskcrab-convo.txt"
+
+# ANSI colors
+DIM = "\033[2m"
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+MAGENTA = "\033[35m"
+RESET = "\033[0m"
+WHITE = "\033[97m"
+
+INDENT = "      "
+
+
+def indent_text(s):
+    """Indent all lines of a string."""
+    return "\n".join(INDENT + line for line in s.splitlines())
+
+
+def format_tool_input(name, inp):
+    """Show the most relevant parts of a tool call's input."""
+    if name == "Bash":
+        return inp.get("command", "")
+    elif name == "WebFetch":
+        url = inp.get("url", "")
+        prompt = inp.get("prompt", "")
+        return f"{url}\n{prompt}" if prompt else url
+    elif name == "Read":
+        return inp.get("file_path", "")
+    elif name == "Write":
+        return inp.get("file_path", "")
+    elif name == "Edit":
+        return inp.get("file_path", "")
+    elif name in ("Grep", "Glob"):
+        return inp.get("pattern", "")
+    elif name == "Agent":
+        desc = inp.get("description", "")
+        prompt = inp.get("prompt", "")
+        return f"{desc}\n{prompt}" if prompt else desc
+    elif name == "WebSearch":
+        return inp.get("query", "")
+    else:
+        return json.dumps(inp, ensure_ascii=False, indent=2)
+
+
+def format_event(line):
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+    t = d.get("type", "")
+
+    if t == "assistant" and "message" in d:
+        msg = d["message"]
+        parts = []
+        for block in msg.get("content", []):
+            if block.get("type") == "tool_use":
+                name = block["name"]
+                inp = block.get("input", {})
+                detail = format_tool_input(name, inp).strip()
+                indented = indent_text(detail)
+                parts.append(f"  {CYAN}▶ {name}{RESET}\n{DIM}{indented}{RESET}")
+            elif block.get("type") == "text":
+                text = block["text"].strip()
+                if text:
+                    wrapped = textwrap.fill(text, width=78, initial_indent="  ", subsequent_indent="  ")
+                    parts.append(f"  {WHITE}{wrapped}{RESET}")
+        if parts:
+            return "\n".join(parts)
+
+    elif t == "tool" and "content" in d:
+        content = d["content"]
+        if isinstance(content, list):
+            text = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+        else:
+            text = str(content)
+        text = text.strip()
+        if text:
+            indented = indent_text(text)
+            return f"  {DIM}← {RESET}\n{DIM}{indented}{RESET}"
+
+    elif t == "result":
+        result = d.get("result", "")
+        duration = d.get("duration_ms", 0)
+        secs = duration / 1000 if duration else 0
+        cost = d.get("total_cost_usd", 0)
+        return f"\n{GREEN}{BOLD}✓ Done{RESET} {DIM}({secs:.1f}s · ${cost:.4f}){RESET}\n{WHITE}{result}{RESET}"
+
+    return None
+
+
+def main():
+    if not os.path.exists(LOG):
+        print(f"{DIM}Waiting for Crab...{RESET}")
+        while not os.path.exists(LOG):
+            time.sleep(0.5)
+
+    print(f"{BOLD}Crab Activity{RESET}")
+    print(f"{DIM}{'─' * 40}{RESET}\n")
+
+    # Show the last thing Crab heard
+    if os.path.exists(CONVO):
+        last_heard = ""
+        with open(CONVO) as cf:
+            for line in cf:
+                if line.startswith("User: "):
+                    last_heard = line[6:].strip()
+        if last_heard:
+            wrapped = textwrap.fill(last_heard, width=78, initial_indent="  ", subsequent_indent="  ")
+            print(f"{YELLOW}{BOLD}Last heard:{RESET}\n{WHITE}{wrapped}{RESET}\n")
+
+    with open(LOG) as f:
+        while True:
+            line = f.readline()
+            if line:
+                out = format_event(line.strip())
+                if out:
+                    print(out)
+                    sys.stdout.flush()
+            else:
+                time.sleep(0.1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,37 @@
+# DeskCrab configuration
+# Copy to ~/.config/deskcrab/deskcrab.conf and edit.
+
+# Required: path to piper-tts voice model (.onnx)
+PIPER_VOICE="$HOME/.local/share/piper/en_US-lessac-medium.onnx"
+
+# Required: path to whisper.cpp model
+WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
+
+# Optional: Claude model and effort level
+# CLAUDE_MODEL="opus"
+# CLAUDE_EFFORT="low"
+
+# Optional: project directory (Claude runs from here, gets project memory)
+# PROJECT_DIR="$HOME"
+
+# Optional: conversation archive directory
+# ARCHIVE_DIR="$HOME/.local/share/deskcrab/archive"
+
+# Optional: conversation timeout in seconds before archiving (default: 300 = 5 min)
+# CONVO_TIMEOUT=300
+
+# Optional: custom system prompt file — appended to the core prompt
+# Use this for project-specific context, custom instructions, etc.
+# CUSTOM_PROMPT="$HOME/.config/deskcrab/custom-prompt.md"
+
+# Optional: whisper transcription fixes (sed expressions applied to transcribed text)
+# Useful for proper nouns that whisper consistently gets wrong.
+# Example: WHISPER_FIXES='s/Jef Bezos/Jeff Bezos/gi; s/Ilan Musk/Elon Musk/gi'
+# WHISPER_FIXES=''
+
+# Optional: additional files to include in system prompt context
+# Space-separated list of file paths. Their contents are appended to the prompt.
+# CONTEXT_FILES="$HOME/project/CLAUDE.md $HOME/project/notes.md"
+
+# Optional: notification app name shown in notifications (default: DeskCrab)
+# NOTIFY_NAME="DeskCrab"
