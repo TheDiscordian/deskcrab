@@ -26,7 +26,7 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 
 # Optional: whisper transcription fixes (sed expressions applied to transcribed text)
 # Useful for proper nouns that whisper consistently gets wrong.
-# Example: WHISPER_FIXES='s/Jef Bezos/Jeff Bezos/gi; s/Ilan Musk/Elon Musk/gi'
+# Example: WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 # WHISPER_FIXES=''
 
 # Optional: additional files to include in system prompt context

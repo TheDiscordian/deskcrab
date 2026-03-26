@@ -73,6 +73,7 @@ Bind these to a key in your compositor:
 bind = $mainMod, A, exec, ~/.local/bin/crab start
 bindr = $mainMod, A, exec, ~/.local/bin/crab stop
 bind = $mainMod SHIFT, A, exec, ~/.local/bin/crab shutup
+bind = $mainMod CTRL SHIFT, A, exec, kitty --class deskcrab-debug -T "Crab Debug" ~/.local/bin/crab-debug
 ```
 
 **Sway** example:
@@ -81,13 +82,14 @@ bind = $mainMod SHIFT, A, exec, ~/.local/bin/crab shutup
 bindsym --no-repeat $mod+a exec ~/.local/bin/crab start
 bindsym --release $mod+a exec ~/.local/bin/crab stop
 bindsym $mod+Shift+a exec ~/.local/bin/crab shutup
+bindsym $mod+Ctrl+Shift+a exec kitty --class deskcrab-debug -T "Crab Debug" ~/.local/bin/crab-debug
 ```
 
 ### Text mode
 
 ```bash
-crab what time is it in Tokyo?
-crab summarize this file: ~/notes.md
+crab "what time is it in Tokyo?"
+crab "summarize this file: ~/notes.md"
 ```
 
 Any argument that isn't a subcommand (`start`, `stop`, `shutup`) is treated as a text query.
@@ -115,14 +117,14 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `PROJECT_DIR` | No | Working directory for Claude (default: `$HOME`) |
 | `ARCHIVE_DIR` | No | Where to store conversation archives |
 | `CONVO_TIMEOUT` | No | Seconds of inactivity before archiving conversation (default: 300) |
-| `CUSTOM_PROMPT` | No | Path to a markdown file appended to the system prompt |
+| `CUSTOM_PROMPT` | No | Path to a markdown file appended to Crab's core system prompt |
 | `WHISPER_FIXES` | No | `sed` expressions to fix common whisper mistranscriptions |
 | `CONTEXT_FILES` | No | Space-separated list of files to include in the prompt |
 | `NOTIFY_NAME` | No | Name shown in notifications (default: `DeskCrab`) |
 
 ### Custom prompt
 
-Create a markdown file with project-specific context or personal preferences:
+Crab has a built-in system prompt that handles core behavior (TTS formatting, display channel, speed optimization). Your custom prompt is **appended** to this, so use it for project-specific context or personal preferences — not for overriding Crab's core instructions.
 
 ```bash
 cp custom-prompt.md.example ~/.config/deskcrab/custom-prompt.md
@@ -135,7 +137,7 @@ Then set `CUSTOM_PROMPT="$HOME/.config/deskcrab/custom-prompt.md"` in your confi
 Whisper often mistranscribes proper nouns. Fix them with sed expressions:
 
 ```bash
-WHISPER_FIXES='s/Jef Bezos/Jeff Bezos/gi; s/mycool app/MyCoolApp/gi'
+WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 ```
 
 ## Display channel
