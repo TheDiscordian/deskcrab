@@ -1,6 +1,8 @@
 #!/bin/bash
 # Shared config and functions for DeskCrab
 
+LIB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SCRIPT_DIR="${SCRIPT_DIR:-$(dirname "$LIB_DIR")}"
 CONF_FILE="${DESKCRAB_CONF:-$HOME/.config/deskcrab/deskcrab.conf}"
 
 if [ ! -f "$CONF_FILE" ]; then
@@ -103,86 +105,14 @@ PROMPT
 # Start background TTS streamer that reads from DEBUGLOG
 start_tts_streamer() {
     : > "$DEBUGLOG"
-    python3 -c "
-import json, subprocess, time, os, re, signal
-
-signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
-
-LOG = '$DEBUGLOG'
-PIPER = '$PIPER_VOICE'
-
-def speak(text):
-    try:
-        piper = subprocess.Popen(
-            ['piper-tts', '--model', PIPER, '--output-raw'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        aplay = subprocess.Popen(
-            ['aplay', '-r', '22050', '-c', '1', '-f', 'S16_LE', '-t', 'raw'],
-            stdin=piper.stdout, stderr=subprocess.DEVNULL)
-        piper.stdin.write(text.encode())
-        piper.stdin.close()
-        aplay.wait()
-        piper.wait()
-    except Exception:
-        pass
-
-while not os.path.exists(LOG):
-    time.sleep(0.1)
-
-with open(LOG) as f:
-    while True:
-        line = f.readline()
-        if not line:
-            time.sleep(0.05)
-            continue
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if d.get('type') == 'result':
-            break
-        if d.get('type') == 'assistant' and 'message' in d:
-            for block in d['message'].get('content', []):
-                if block.get('type') == 'text':
-                    text = block['text'].strip()
-                    if not text:
-                        continue
-                    text = text.split('---DISPLAY---')[0].strip()
-                    text = re.sub(r'\*+', '', text)
-                    text = re.sub(r'\x60[^\x60]*\x60', '', text)
-                    text = text.strip()
-                    if not text:
-                        continue
-                    speak(text)
-" &
+    DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
+        "$LIB_DIR/tts-streamer" &
     _TTS_STREAMER_PID=$!
 }
 
 # Extract final response text from DEBUGLOG
 extract_response() {
-    python3 -c "
-import json, sys
-result_text = ''
-last_assistant_text = ''
-for line in open('$DEBUGLOG'):
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        d = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    if d.get('type') == 'result' and d.get('result'):
-        result_text = d['result']
-    elif d.get('type') == 'assistant':
-        for block in d.get('message', {}).get('content', []):
-            if block.get('type') == 'text' and block.get('text', '').strip():
-                last_assistant_text = block['text'].strip()
-print(result_text or last_assistant_text)
-" 2>/dev/null
+    DESKCRAB_DEBUGLOG="$DEBUGLOG" "$LIB_DIR/extract-response" 2>/dev/null
 }
 
 # Run claude, save response, handle display channel
