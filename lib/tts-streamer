@@ -14,12 +14,19 @@ signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
+LENGTH_SCALE = os.environ.get("DESKCRAB_PIPER_LENGTH_SCALE", "").strip()
+SPEAKER = os.environ.get("DESKCRAB_PIPER_SPEAKER", "").strip()
 
 
 def speak(text):
     try:
+        cmd = ["piper-tts", "--model", PIPER, "--output-raw"]
+        if LENGTH_SCALE:
+            cmd += ["--length-scale", LENGTH_SCALE]
+        if SPEAKER:
+            cmd += ["--speaker", SPEAKER]
         piper = subprocess.Popen(
-            ["piper-tts", "--model", PIPER, "--output-raw"],
+            cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         aplay = subprocess.Popen(
             ["aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", "-t", "raw"],

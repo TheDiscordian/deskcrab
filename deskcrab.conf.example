@@ -4,6 +4,14 @@
 # Required: path to piper-tts voice model (.onnx)
 PIPER_VOICE="$HOME/.local/share/piper/en_US-lessac-medium.onnx"
 
+# Optional: piper length scale — controls speech speed.
+# 1.0 = default. Lower = faster (e.g. 0.9 ≈ 10% faster). Higher = slower.
+# PIPER_LENGTH_SCALE="0.9"
+
+# Optional: piper speaker index — only used for multi-speaker models like libritts.
+# Integer index (0-based) into the model's speaker map. Single-speaker models ignore this.
+# PIPER_SPEAKER="79"
+
 # Required: path to whisper.cpp model
 WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 
@@ -33,5 +41,7 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Space-separated list of file paths. Their contents are appended to the prompt.
 # CONTEXT_FILES="$HOME/project/CLAUDE.md $HOME/project/notes.md"
 
-# Optional: notification app name shown in notifications (default: DeskCrab)
+# Optional: assistant display name (default: DeskCrab)
+# Used as the notification title AND the title bar of the markdown display window.
+# Set this to your assistant's persona name (e.g. "Beatrice", "Jarvis", etc).
 # NOTIFY_NAME="DeskCrab"
