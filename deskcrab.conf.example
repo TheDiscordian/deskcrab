@@ -28,6 +28,14 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Optional: conversation timeout in seconds before archiving (default: 300 = 5 min)
 # CONVO_TIMEOUT=300
 
+# Optional: sliding-window history to keep long conversations cheap.
+# Once the live convo exceeds CONVO_MAX_TURNS user/assistant pairs, the oldest
+# CONVO_SUMMARIZE_TURNS pairs are folded into a running summary (kept above the
+# recent turns) using CONVO_SUMMARY_MODEL. Recent turns stay verbatim.
+# CONVO_MAX_TURNS=20
+# CONVO_SUMMARIZE_TURNS=10
+# CONVO_SUMMARY_MODEL="haiku"
+
 # Optional: custom system prompt file — appended to the core prompt
 # Use this for project-specific context, custom instructions, etc.
 # CUSTOM_PROMPT="$HOME/.config/deskcrab/custom-prompt.md"

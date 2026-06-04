@@ -20,8 +20,15 @@ PROJECT_DIR="${PROJECT_DIR:-$HOME}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/.local/share/deskcrab/archive}"
 CONVO_TIMEOUT="${CONVO_TIMEOUT:-300}"
 NOTIFY_NAME="${NOTIFY_NAME:-DeskCrab}"
+# Sliding-window history: once the live convo exceeds CONVO_MAX_TURNS user/assistant
+# pairs, the oldest CONVO_SUMMARIZE_TURNS pairs are folded into a running summary.
+CONVO_MAX_TURNS="${CONVO_MAX_TURNS:-20}"
+CONVO_SUMMARIZE_TURNS="${CONVO_SUMMARIZE_TURNS:-10}"
+# Model used for the cheap summarization pass (keep it small/fast).
+CONVO_SUMMARY_MODEL="${CONVO_SUMMARY_MODEL:-haiku}"
 
 CONVOFILE="/tmp/deskcrab-convo.txt"
+SUMMARYFILE="/tmp/deskcrab-convo-summary.txt"
 TTSPIDFILE="/tmp/deskcrab-tts.pid"
 DEBUGLOG="/tmp/deskcrab-debug.log"
 
@@ -39,18 +46,78 @@ rotate_convo() {
         NOW=$(date +%s)
         if (( NOW - LAST_MOD >= CONVO_TIMEOUT )); then
             mkdir -p "$ARCHIVE_DIR"
-            mv "$CONVOFILE" "$ARCHIVE_DIR/$(date -d "@$LAST_MOD" '+%Y%m%d-%H%M%S').txt"
+            local STAMP
+            STAMP="$(date -d "@$LAST_MOD" '+%Y%m%d-%H%M%S')"
+            [ -f "$SUMMARYFILE" ] && mv "$SUMMARYFILE" "$ARCHIVE_DIR/$STAMP-summary.txt"
+            mv "$CONVOFILE" "$ARCHIVE_DIR/$STAMP.txt"
         fi
     fi
 }
 
 # Build conversation context string
 build_convo_context() {
+    local OUT=""
+    if [ -f "$SUMMARYFILE" ] && [ -s "$SUMMARYFILE" ]; then
+        OUT="
+
+Summary of earlier conversation (older turns, condensed):
+$(cat "$SUMMARYFILE")"
+    fi
     if [ -f "$CONVOFILE" ]; then
-        echo "
+        OUT="$OUT
 
 Here is your conversation so far:
 $(cat "$CONVOFILE")"
+    fi
+    [ -n "$OUT" ] && echo "$OUT"
+}
+
+# Fold the oldest CONVO_SUMMARIZE_TURNS pairs into the running summary once the live
+# convo exceeds CONVO_MAX_TURNS pairs. Keeps recent turns verbatim, older ones condensed.
+compact_convo() {
+    [ -f "$CONVOFILE" ] || return 0
+    local PAIRS
+    PAIRS=$(grep -c '^User: ' "$CONVOFILE")
+    (( PAIRS > CONVO_MAX_TURNS )) || return 0
+
+    # Split: oldest N pairs -> /tmp old, the rest stays in CONVOFILE.
+    # awk numbers each block, incrementing the counter at every line that starts a
+    # user turn ("^User: "). Blocks 1..N are the oldest pairs to fold away.
+    local OLDFILE="/tmp/deskcrab-convo-old.$$"
+    local NEWFILE="/tmp/deskcrab-convo-new.$$"
+    awk -v n="$CONVO_SUMMARIZE_TURNS" '
+        /^User: / { turn++ }
+        { if (turn <= n) print > OLD; else print > NEW }
+    ' OLD="$OLDFILE" NEW="$NEWFILE" "$CONVOFILE"
+
+    [ -s "$OLDFILE" ] || { rm -f "$OLDFILE" "$NEWFILE"; return 0; }
+
+    local PRIOR=""
+    [ -f "$SUMMARYFILE" ] && PRIOR="$(cat "$SUMMARYFILE")"
+
+    local SUMPROMPT NEWSUM
+    SUMPROMPT="You are condensing the older part of a voice-assistant conversation to save context.
+Produce a concise summary (a short paragraph or a few bullet points) that preserves facts, decisions,
+names, preferences, and any unresolved threads. Merge the prior summary with the new excerpt into one
+coherent summary. Output ONLY the summary text, no preamble.
+
+=== Prior summary ===
+${PRIOR:-(none)}
+
+=== New excerpt to fold in ===
+$(cat "$OLDFILE")"
+
+    CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    NEWSUM=$(cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null)
+
+    if [ -n "$NEWSUM" ]; then
+        printf '%s\n' "$NEWSUM" > "$SUMMARYFILE"
+        mv "$NEWFILE" "$CONVOFILE"
+        rm -f "$OLDFILE"
+    else
+        # Summarization failed — leave history untouched rather than lose turns.
+        rm -f "$OLDFILE" "$NEWFILE"
     fi
 }
 
@@ -144,6 +211,7 @@ run_claude_and_respond() {
 
     if [ -n "$RESPONSE" ]; then
         printf "Assistant: %s\n\n" "$RESPONSE" >> "$CONVOFILE"
+        compact_convo
 
         local DISPLAY_PART
         DISPLAY_PART=$(echo "$RESPONSE" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}')
