@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | status | shutup | wake | wake-at <when> | serve | remote <text> | <text>
+# Usage: crab start | stop | status | shutup | job <desc> | jobs | wake | wake-at <when> | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -214,6 +214,29 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         exec python3 "$SCRIPT_DIR/lib/serve.py"
         ;;
 
+    job)
+        # Detached work: dispatched to systemd, it survives the end of this
+        # turn and never holds the conversation open. `crab job` returns
+        # instantly; the worker wakes the assistant with an event when it
+        # finishes. `crab job log <id>` shows a job's output; anything else
+        # after `job` is the description of the work itself.
+        shift
+        if [ "${1:-}" = "log" ] && [ -n "${2:-}" ] && [ -e "$JOBS_DIR/$2.json" ]; then
+            if [ -f "$JOBS_DIR/$2.log" ]; then cat "$JOBS_DIR/$2.log"; else echo "Job $2 has produced no output yet."; fi
+            exit 0
+        fi
+        job_start "$@"
+        exit $?
+        ;;
+
+    jobs)
+        # What is running detached right now and what finished while nobody
+        # was looking.
+        echo "Detached jobs (logs in $JOBS_DIR):"
+        jobs_report
+        exit 0
+        ;;
+
     wake-at)
         # Schedule a one-shot autonomous wake via a transient systemd user timer.
         WHEN="${2:-}"
@@ -239,7 +262,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|wake|wake-at <when>|serve [port]|remote <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|wake|wake-at <when>|serve [port]|remote <text>|<message>"
             exit 1
         fi
         stop_tts

@@ -1,0 +1,82 @@
+#!/bin/bash
+# Detached job worker. Runs ONE claude builder session under the systemd user
+# manager, not under the turn that asked for it.
+#
+# Why this exists: a subagent dispatched from inside a turn is a child of that
+# turn's claude process. When the turn ends the child dies, so every "an agent
+# is working on it in the background" was false the moment the reply finished —
+# and worse, while the turn was alive it held the session open, so the next
+# push-to-talk had nothing to talk to. Both halves of that are the same bug:
+# work was welded to a conversation. Here systemd owns the process; the turn
+# that started it can end a second later and the work carries on.
+#
+# Silent by contract: nothing here speaks, notifies, or opens windows. The
+# job's outputs are its log, its JSON status sidecar, and (when wants are
+# configured) one event wake so the assistant hears that it finished.
+#
+# Usage (called by `crab job`, not by hand):
+#   job-runner <id> <workdir>
+
+set -u
+ID="$1"; WORKDIR="$2"
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+mkdir -p "$JOBS_DIR"
+LOG="$JOBS_DIR/$ID.log"
+STATUS="$JOBS_DIR/$ID.json"
+TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
+[ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
+
+# The pid and its start time let `crab jobs` tell a hard-killed job from a
+# running one — a SIGKILLed worker never gets to write its own outcome.
+"$LIB_DIR/job-status" set "$STATUS" pid=$$ pidstart="$(_proc_starttime $$)"
+# systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
+# Without it a deliberately stopped job would look identical to a crashed one.
+trap '"$LIB_DIR/job-status" set "$STATUS" state=stopped finished=now; exit 143' TERM
+
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+
+# A builder, not a persona. It reports back to the assistant, and it is told
+# plainly that unproven work must be reported as unproven — the failure this
+# whole mechanism exists to end is a confident "done" behind which nothing ran.
+SYS="You are a detached build agent working for $ASSISTANT_NAME on her own machine.
+Nobody is watching this run and nothing you output is spoken or shown: work
+silently — never use TTS, notify-send, or windows; file output only. Your final
+message is a report she will read later in $LOG, so make it concrete — what you
+changed, file:line, what you ran, and what the output was.
+
+Hard rules:
+- Test what you claim. If you could not verify something, say so in plain words
+  rather than implying it works. An unproven claim is worse than an admitted gap.
+- Run long commands in the FOREGROUND and wait for them. Your session — and
+  everything it left running in the background — is killed the moment your
+  final message is written, so a backgrounded command is work that silently
+  never happens. If something must outlive you, dispatch it with 'crab job'.
+- If you commit, stage with an explicit \`git add -- <paths>\` (never \`git add -A\`;
+  another hand may have files open in the same repo).
+- Read the repo's CLAUDE.md before changing anything in it.
+- If the task turns out to be wrong or impossible, stop and report why. Do not
+  invent adjacent work to have something to show."
+
+cd "$WORKDIR" 2>/dev/null || cd "$HOME"
+"$CLAUDE_BIN" -p --dangerously-skip-permissions \
+    --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
+    --append-system-prompt "$SYS" \
+    "$TASK" >> "$LOG" 2>&1
+RC=$?
+trap - TERM
+
+SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
+STATE=finished
+[ "$RC" -eq 0 ] || STATE=failed
+"$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
+
+# Tell her it landed — via an event wake, not a voice: whether anything gets
+# said out loud is the wake's own decision, made by the usual busy/quiet rules.
+[ -n "$WANTS_FILE" ] && "$SCRIPT_DIR/crab" wake-at 5s event \
+    "Detached job $ID finished ($STATE, exit $RC). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them." \
+    >/dev/null 2>&1
+
+exit "$RC"

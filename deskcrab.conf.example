@@ -75,6 +75,19 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # low-CPU tools in the foreground.
 # WAKE_STALL_TIMEOUT=300
 
+# Optional: detached background jobs — `crab job "<description>"` runs work as
+# its own headless claude session under a transient systemd user unit
+# (deskcrab-job-<id>), so it survives the turn that launched it and never
+# holds the conversation open. Jobs are silent: no TTS, no windows; output
+# goes to JOBS_DIR/<id>.log with a JSON status sidecar, listed by `crab jobs`.
+# Jobs run unattended builds nobody is waiting on, so they default to the
+# strongest model at high effort.
+# JOBS_DIR="$HOME/.local/share/deskcrab/jobs"
+# JOB_MODEL="fable"
+# JOB_EFFORT="high"
+# JOBS_SHOW_FINISHED=6     # finished jobs shown by `crab jobs` and in the prompt
+# JOBS_KEEP_DAYS=14        # prune finished job records after this many days
+
 # Optional: assistant persona name (default: Crab)
 # The name the assistant sees in its system prompt: "You are <name>, a desktop
 # voice assistant...". Set this to rename the assistant (e.g. "Beatrice",

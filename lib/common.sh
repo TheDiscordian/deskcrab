@@ -69,6 +69,17 @@ SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 DEBUGLOG="${STATE_PREFIX}-debug.log"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
+# Detached jobs. Deliberately NOT under STATE_PREFIX (/tmp): a job outlives the
+# turn that started it, and may outlive a reboot's tmp cleanup too. Jobs run
+# unattended builds nobody is waiting on, so they default to the strongest
+# model at high effort rather than the fast interactive settings.
+JOBS_DIR="${JOBS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs}"
+JOB_MODEL="${JOB_MODEL:-fable}"
+JOB_EFFORT="${JOB_EFFORT:-high}"
+# How many finished jobs the report lists, and how long finished job records
+# (status + log) are kept before pruning.
+JOBS_SHOW_FINISHED="${JOBS_SHOW_FINISHED:-6}"
+JOBS_KEEP_DAYS="${JOBS_KEEP_DAYS:-14}"
 SESSIONS_LOCK="${STATE_PREFIX}-sessions.lock"
 SESSIONS_LOG="${STATE_PREFIX}-sessions.log"
 # How far back the journal of finished sessions is read, and how many entries
@@ -332,6 +343,8 @@ self_state_report() {
         n=$((n+1))
     done
     [ "$n" -eq 0 ] && echo "  (none registered)"
+    echo "Detached background jobs (they outlive turns — launch: crab job <description>; list: crab jobs):"
+    jobs_report
     echo "Interrupted mid-work (edits may be on disk — pick up or 'crab resolve'):"
     interrupted_report
     echo "Pending wakes:"
@@ -548,7 +561,8 @@ CURRENT STATE OF YOURSELF — you are one person, but more than one of you can b
 $(self_state_report)
 Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; a recently finished session means work was DONE in the gap, by you, even though this conversation never saw it. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began — sessions start and finish while you work. Run 'crab status' any time you need it live, and always before telling the user that nothing is happening.
-When you start multi-step work, run 'crab checkpoint <intent, files touched, what is done, what is next>' and update it as you go — if this turn is cut off (network drop, kill), that checkpoint is the ONLY explanation the next session gets for edits left on disk. If 'Interrupted mid-work' above lists a trace, that is an earlier you cut off mid-task: read it, pick up or finish the work, then clear it with 'crab resolve <name>'."
+When you start multi-step work, run 'crab checkpoint <intent, files touched, what is done, what is next>' and update it as you go — if this turn is cut off (network drop, kill), that checkpoint is the ONLY explanation the next session gets for edits left on disk. If 'Interrupted mid-work' above lists a trace, that is an earlier you cut off mid-task: read it, pick up or finish the work, then clear it with 'crab resolve <name>'.
+Work that must outlive this turn — or that would keep the user waiting while you watch it — is a detached job, NEVER a subagent: a subagent dies the moment this turn ends, and while it lives it holds the turn open so the user cannot speak to you. Run 'crab job \"<full, self-contained description of the work>\"' (optionally 'crab job -C <workdir> ...'): it becomes its own claude session under systemd, independent of this turn, silent by contract, logging to $JOBS_DIR/<id>.log, and it wakes you with an event when it finishes. 'crab jobs' lists what is running and what finished; 'crab job log <id>' shows a job's output. Never tell the user an agent is working in the background unless it is a job in that list."
 
     cat <<PROMPT
 You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
@@ -894,4 +908,61 @@ run_claude_and_respond() {
     fi
 
     echo "$RESPONSE"
+}
+
+# ---------------------------------------------------------------------------
+# Detached jobs
+#
+# A subagent lives and dies inside the turn that spawned it, and while it lives
+# the turn cannot answer. Both halves of that are wrong: work should outlive a
+# conversation, and a conversation should never be held hostage by work. These
+# helpers back `crab job`, which hands the build to systemd and returns at once.
+# ---------------------------------------------------------------------------
+
+# Dispatch a detached job and return at once. systemd owns the worker (with a
+# setsid fallback when no user manager is running), so the turn that asked can
+# end — and answer the next push-to-talk — while the work carries on. The
+# job's state lives in a JSON sidecar $JOBS_DIR/<id>.json kept by
+# lib/job-status; its output lands in $JOBS_DIR/<id>.log. Env is passed
+# explicitly: user units get a bare PATH, and a scratch instance's jobs must
+# stay in the scratch instance.
+job_start() {
+    local workdir="$PROJECT_DIR"
+    if [ "${1:-}" = "-C" ]; then workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null; fi
+    local task="$*"
+    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] <description of the work>"; return 1; }
+    local id unit
+    # Timestamp + pid, like wake-at units: two dispatches in the same second
+    # must not collide on the id or the unit name.
+    id="$(date +%Y%m%d-%H%M%S)-$$"
+    unit="deskcrab-job-$id"
+    "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "$unit" || return 1
+    if systemd-run --user --collect --quiet --unit="$unit" \
+        --setenv=PATH="$HOME/.local/bin:$PATH" \
+        --setenv=DESKCRAB_CONF="$CONF_FILE" \
+        --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
+        --setenv=JOBS_DIR="$JOBS_DIR" \
+        --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+        --setenv=JOB_MODEL="$JOB_MODEL" \
+        --setenv=JOB_EFFORT="$JOB_EFFORT" \
+        "$LIB_DIR/job-runner" "$id" "$workdir" 2>/dev/null; then
+        echo "Job $id dispatched (unit $unit) — detached, it survives this turn ending."
+    else
+        # No usable user manager — detach by hand. setsid puts the worker in
+        # its own session, out of reach of whatever ends this process tree.
+        "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" unit=
+        setsid "$LIB_DIR/job-runner" "$id" "$workdir" >/dev/null 2>&1 </dev/null &
+        echo "Job $id dispatched (setsid — no systemd user manager) — detached."
+    fi
+    echo "  log: $JOBS_DIR/$id.log    list: crab jobs"
+}
+
+# One line per job, running first, recent finishes last — read by `crab jobs`
+# and spliced into the self-state block so a later turn can report on work it
+# neither started nor waited for. The report also reaps: a job whose unit is
+# gone and whose recorded pid is dead is marked "died" instead of claiming
+# "running" forever — a SIGKILLed worker never writes its own outcome.
+jobs_report() {
+    "$LIB_DIR/job-status" report "$JOBS_DIR" "$JOBS_SHOW_FINISHED" "$JOBS_KEEP_DAYS" 2>/dev/null \
+        || echo "  (job status unavailable)"
 }
