@@ -90,6 +90,21 @@ case "${1:-}" in
         exit 0
         ;;
 
+    checkpoint)
+        # Durable mid-turn trace: intent, files touched, done, next. Append-only,
+        # so a hard kill leaves the last checkpoint intact for the next hand.
+        shift
+        session_checkpoint "$*"
+        exit $?
+        ;;
+
+    resolve)
+        # An interrupted trace has been picked up (or judged dead) — drop it.
+        shift
+        interrupted_resolve "$1"
+        exit $?
+        ;;
+
     shutup)
         stop_tts
         ;;
@@ -224,7 +239,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|wake|wake-at <when>|serve [port]|remote <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|wake|wake-at <when>|serve [port]|remote <text>|<message>"
             exit 1
         fi
         stop_tts

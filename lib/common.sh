@@ -190,10 +190,65 @@ session_unclaim() {
     echo "Claim released."
 }
 
+# --- Checkpoints: a resumable trace of a turn in progress -------------------
+# The journal only speaks at the END of a session, so a turn cut off mid-work
+# (network drop, SIGKILL) leaves edits on disk and no explanation — the next
+# hand sees orphan changes and cannot tell what was intended or what remained.
+# A checkpoint is recorded DURING the turn: intent, files touched, what is
+# done, what is next. It lives beside the registration as <pid>.ckpt and is
+# append-only — each line is a single O_APPEND write, so a kill mid-checkpoint
+# leaves every earlier line intact. A clean finish deletes it (the outcome
+# line covers a finished session); a reaped session's checkpoints are moved to
+# $CKPT_INTERRUPTED_DIR, where `crab status` surfaces them until someone picks
+# the work up and clears them with `crab resolve`.
+CKPT_INTERRUPTED_DIR="${STATE_PREFIX}-interrupted"
+CKPT_KEEP_DAYS="${CKPT_KEEP_DAYS:-7}"
+
+session_checkpoint() {
+    local what owner
+    what="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 500)"
+    [ -n "$what" ] || { echo "Usage: crab checkpoint <intent / progress / what is next>"; return 1; }
+    owner="$(_claim_owner_pid $PPID)" || owner="$(_claim_owner_pid $$)" || {
+        echo "No registered session in this process's ancestry — nothing to checkpoint against."
+        return 1
+    }
+    printf '%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$what" >> "$SESSIONS_DIR/$owner.ckpt"
+    echo "Checkpointed."
+}
+
+# List interrupted sessions' surviving checkpoints, most recent trace last.
+interrupted_report() {
+    local f n=0
+    [ -d "$CKPT_INTERRUPTED_DIR" ] || { echo "  (none)"; return 0; }
+    for f in "$CKPT_INTERRUPTED_DIR"/*.ckpt; do
+        [ -s "$f" ] || continue
+        printf '  - %s (clear with: crab resolve %s)\n' "$(basename "$f" .ckpt)" "$(basename "$f" .ckpt)"
+        tail -n 3 "$f" | awk -F'\t' '{ printf "      %s  %s\n", $1, $2 }'
+        n=$((n+1))
+    done
+    [ "$n" -eq 0 ] && echo "  (none)"
+    return 0
+}
+
+# The work an interrupted trace pointed at has been picked up (or judged dead):
+# drop it so status stops raising it.
+interrupted_resolve() {
+    local name="$1"
+    [ -n "$name" ] || { echo "Usage: crab resolve <name from crab status>"; return 1; }
+    case "$name" in */*|*..*) echo "Bad name."; return 1 ;; esac
+    if [ -e "$CKPT_INTERRUPTED_DIR/$name.ckpt" ]; then
+        rm -f "$CKPT_INTERRUPTED_DIR/$name.ckpt"
+        echo "Resolved: $name"
+    else
+        echo "No interrupted trace named '$name'."
+        return 1
+    fi
+}
+
 # Close the registration: drop the live file, append to the journal.
 session_finish() {
     [ -n "${SESSION_FILE:-}" ] || return 0
-    rm -f "$SESSION_FILE" "$SESSION_FILE.claim"
+    rm -f "$SESSION_FILE" "$SESSION_FILE.claim" "$SESSION_FILE.ckpt"
     local NOW; NOW=$(date +%s)
     {
         flock -w 10 9
@@ -220,18 +275,29 @@ session_reap() {
     local f pid kind started epoch startt
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
-        case "$f" in *.claim) continue ;; esac
+        case "$f" in *.claim|*.ckpt) continue ;; esac
         pid="$(basename "$f")"
         IFS=$'\t' read -r kind pid started epoch startt < "$f"
         kill -0 "$pid" 2>/dev/null \
             && [ "$(_proc_starttime "$pid")" = "${startt:-0}" ] && continue
-        rm -f "$f" "$f.claim"
+        # A killed session's checkpoints are the only account of what it was
+        # doing — keep them where status will keep raising them.
+        local note="(killed — no summary)"
+        if [ -s "$f.ckpt" ]; then
+            mkdir -p "$CKPT_INTERRUPTED_DIR"
+            mv "$f.ckpt" "$CKPT_INTERRUPTED_DIR/${epoch:-0}-$pid-$kind.ckpt"
+            note="(killed — checkpoints kept, see 'Interrupted' in crab status)"
+        fi
+        rm -f "$f" "$f.claim" "$f.ckpt"
         {
             flock -w 10 9
             printf '%s\t%s\t%s\t%s\t%s\n' "$started" "$(date '+%H:%M:%S')" "?" \
-                "$kind" "(killed — no summary)" >> "$SESSIONS_LOG"
+                "$kind" "$note" >> "$SESSIONS_LOG"
         } 9>"$SESSIONS_LOCK"
     done
+    # Interrupted traces are a hand-off aid, not an archive.
+    [ -d "$CKPT_INTERRUPTED_DIR" ] \
+        && find "$CKPT_INTERRUPTED_DIR" -name '*.ckpt' -mtime +"$CKPT_KEEP_DAYS" -delete 2>/dev/null
 }
 
 # The journal of sessions that have already finished. This is the half a live
@@ -254,15 +320,20 @@ self_state_report() {
     echo "Live sessions:"
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
-        case "$f" in *.claim) continue ;; esac
+        case "$f" in *.claim|*.ckpt) continue ;; esac
         IFS=$'\t' read -r kind pid started epoch startt < "$f"
         [ "$pid" = "$$" ] && kind="$kind (this one)"
         printf '  - %s, pid %s, started %s\n' "$kind" "$pid" "$started"
         # What it says it is holding, so another hand can avoid the same files.
         [ -s "$f.claim" ] && printf '      holding: %s\n' "$(cat "$f.claim")"
+        # Its latest checkpoint — where the work stood last time it said so.
+        [ -s "$f.ckpt" ] && tail -n 1 "$f.ckpt" \
+            | awk -F'\t' '{ printf "      last checkpoint (%s): %s\n", $1, $2 }'
         n=$((n+1))
     done
     [ "$n" -eq 0 ] && echo "  (none registered)"
+    echo "Interrupted mid-work (edits may be on disk — pick up or 'crab resolve'):"
+    interrupted_report
     echo "Pending wakes:"
     local timers u next
     timers=""
@@ -476,7 +547,8 @@ You can wake yourself later to work on your wants without being spoken to: run '
 CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
 $(self_state_report)
 Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; a recently finished session means work was DONE in the gap, by you, even though this conversation never saw it. Speak for the whole of yourself, not just this conversation.
-This is a snapshot taken when your turn began — sessions start and finish while you work. Run 'crab status' any time you need it live, and always before telling the user that nothing is happening."
+This is a snapshot taken when your turn began — sessions start and finish while you work. Run 'crab status' any time you need it live, and always before telling the user that nothing is happening.
+When you start multi-step work, run 'crab checkpoint <intent, files touched, what is done, what is next>' and update it as you go — if this turn is cut off (network drop, kill), that checkpoint is the ONLY explanation the next session gets for edits left on disk. If 'Interrupted mid-work' above lists a trace, that is an earlier you cut off mid-task: read it, pick up or finish the work, then clear it with 'crab resolve <name>'."
 
     cat <<PROMPT
 You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
