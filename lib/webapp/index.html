@@ -225,30 +225,61 @@ async function deliver(res, replyEl) {
 // The turn arrives as a stream of events, not one reply: thinking and tool use
 // are shown as they happen, exactly like the desktop client, so a long answer
 // isn't a silent spinner. The last event carries the finished reply.
+//
+// The uplink is a phone hotspot, so this stream routinely dies mid-turn. The
+// turn keeps running on the laptop and every event is buffered there under a
+// client-chosen id — on any error we reconnect with backoff (1s, 2s, 4s …
+// capped at 30s) to /turn/<id>?from=<n> and pick up exactly where we left off.
+// A dropped network is a "reconnecting…" status, never a dead error page.
 async function streamTurn(text, turn) {
-  const r = await fetch("/say", {
-    method: "POST", credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  const reader = r.body.getReader(), dec = new TextDecoder();
-  let buf = "", done = null;
-  while (true) {
-    const { value, done: eof } = await reader.read();
-    if (eof) break;
-    buf += dec.decode(value, { stream: true });
-    let cut;
-    while ((cut = buf.indexOf("\n\n")) !== -1) {
-      const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
-      if (!frame.startsWith("data:")) continue;
-      let ev; try { ev = JSON.parse(frame.slice(5).trim()); } catch (e) { continue; }
-      if (ev.kind === "done") { done = ev; continue; }
-      if (ev.kind === "voice") { enqueueVoice(ev.audio); continue; }
-      showThought(turn, ev);
+  const tid = randomHex(32);
+  let seen = 0, delay = 1000;
+  const deadline = Date.now() + 15 * 60 * 1000;
+  for (;;) {
+    try {
+      // While nothing has arrived we cannot know whether the POST ever landed,
+      // so retry the POST itself — the server treats a repeated id as "attach",
+      // never as a second run. Once events have arrived the turn provably
+      // exists, so reconnects go to /turn and only fetch what was missed.
+      const r = seen === 0
+        ? await fetch("/say", {
+            method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text, turn: tid }),
+          })
+        : await fetch("/turn/" + tid + "?from=" + seen,
+                      { credentials: "same-origin" });
+      if (r.status === 404 && seen > 0)
+        return { error: "the server restarted mid-turn; the reply was lost" };
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done: eof } = await reader.read();
+        if (eof) break;
+        buf += dec.decode(value, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          if (!frame.startsWith("data:")) continue;
+          let ev; try { ev = JSON.parse(frame.slice(5).trim()); } catch (e) { continue; }
+          seen++; delay = 1000;
+          if (ev.kind === "done") return ev;
+          if (ev.kind === "voice") { enqueueVoice(ev.audio); continue; }
+          showThought(turn, ev);
+        }
+      }
+      // Stream ended without a done event: the connection was cut, not the
+      // turn. Fall through to reconnect.
+      throw new Error("stream cut");
+    } catch (e) {
+      if (Date.now() > deadline)
+        return { error: "gave up reconnecting after 15 minutes" };
+      setStatus("reconnecting…", "busy");
+      await new Promise(res => setTimeout(res, delay));
+      delay = Math.min(delay * 2, 30000);
     }
   }
-  return done || { error: "connection ended early" };
 }
 
 function headText(box) {

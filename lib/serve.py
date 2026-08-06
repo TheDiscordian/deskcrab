@@ -22,6 +22,7 @@ refuses to run without a shared secret. The listener binds loopback by default;
 publishing it to a phone is a separate, deliberate act (Tailscale).
 """
 
+import contextlib
 import hashlib
 import hmac
 import http.cookies
@@ -59,6 +60,104 @@ KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
 
 TURN_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_TIMEOUT", "600"))
 MAX_UPLOAD = 25 * 1024 * 1024
+
+# How many turns are being answered right now. Restarting the server kills the
+# claude process mid-answer and drops whoever is on the wire, so anything that
+# wants to restart asks /health first and waits for this to reach zero.
+_IN_FLIGHT = [0]
+_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def turns_in_flight():
+    with _IN_FLIGHT_LOCK:
+        return _IN_FLIGHT[0]
+
+
+@contextlib.contextmanager
+def turn_in_flight():
+    with _IN_FLIGHT_LOCK:
+        _IN_FLIGHT[0] += 1
+    try:
+        yield
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT[0] -= 1
+
+
+# --- per-turn event buffers -------------------------------------------------
+#
+# The laptop's uplink is a phone hotspot, so the client's connection routinely
+# dies mid-turn. Every event a turn produces is therefore buffered here as well
+# as written to the socket; a client that reconnects asks /turn/<id>?from=<n>
+# and gets exactly the events it missed, then follows live. The turn itself
+# runs on its own thread, so a dead socket never kills the claude process.
+
+TURN_BUFFER_TTL = int(os.environ.get("DESKCRAB_SERVE_TURN_TTL", "3600"))
+
+
+class Turn:
+    def __init__(self, tid):
+        self.tid = tid
+        self.events = []
+        self.done = False
+        self.created = time.time()
+        self.cond = threading.Condition()
+
+    def emit(self, kind, payload):
+        with self.cond:
+            self.events.append({"kind": kind, **payload})
+            if kind == "done":
+                self.done = True
+            self.cond.notify_all()
+
+
+TURNS = {}
+TURNS_LOCK = threading.Lock()
+
+
+def get_turn(tid, create=False):
+    """Look up (and atomically maybe create) a turn buffer.
+
+    Returns (turn, created). Two racing requests with the same id get the same
+    buffer and exactly one `created=True` — the loser attaches instead of
+    running the turn twice.
+    """
+    with TURNS_LOCK:
+        now = time.time()
+        for dead in [k for k, v in TURNS.items()
+                     if v.done and now - v.created > TURN_BUFFER_TTL]:
+            TURNS.pop(dead)
+        t = TURNS.get(tid)
+        if t is None and create:
+            TURNS[tid] = t = Turn(tid)
+            return t, True
+        return t, False
+
+
+def _clean_tid(raw):
+    """Client-supplied turn id, hex only. Empty/absent -> fresh server id."""
+    tid = re.sub(r"[^a-f0-9]", "", (raw or "").lower())[:64]
+    return tid or uuid.uuid4().hex
+
+
+def run_turn(turn, text):
+    """The actual assistant turn, feeding the buffer. Socket-independent."""
+    try:
+        with turn_in_flight():
+            speaker = Speaker(turn.emit)
+            reply = ask(text,
+                        on_event=lambda kind, msg: turn.emit(kind, {"text": msg}),
+                        speaker=speaker)
+            turn.emit("done", {
+                "spoken": reply.get("spoken", ""),
+                "display_html": render_markdown(reply.get("display", "")),
+                "audio": "",
+                "error": reply.get("error", ""),
+            })
+    except Exception as exc:  # noqa: BLE001 — the client must hear about it
+        turn.emit("done", {"spoken": "", "display_html": "", "audio": "",
+                           "error": str(exc)[:300]})
+
 
 if not SECRET:
     sys.exit("serve.py: DESKCRAB_SERVE_SECRET is required (set SERVE_SECRET in the config)")
@@ -416,7 +515,9 @@ def _progress_events(logpath, stop, emit, speaker):
                         said = " ".join((block.get("text") or "").split())
                         said = said.split("---DISPLAY---")[0].strip()
                         if said:
-                            emit("text", said[:400])
+                            # Not truncated: this block IS part of the reply on
+                            # the phone, appended in order, not a status line.
+                            emit("text", said)
                             # Speak it now, exactly as the desktop's TTS
                             # streamer does — every text block gets a voice, not
                             # just the final one.
@@ -532,7 +633,10 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
 
         if path == "/health":
-            return self._json(200, {"ok": True, "name": NAME})
+            # `busy` is deliberately unauthenticated: it carries no content,
+            # only whether a turn is in flight, and a restarter needs to be
+            # able to ask without holding the secret.
+            return self._json(200, {"ok": True, "name": NAME, "busy": turns_in_flight()})
 
         if not self._authed(query_key):
             # No hint about what is running here for an unauthenticated caller.
@@ -560,6 +664,20 @@ class Handler(BaseHTTPRequestHandler):
                 since = None
             wait = (query.get("wait") or ["1"])[0] != "0"
             return self._json(200, watch_turns(since, wait), extra)
+
+        if path.startswith("/turn/"):
+            # Re-attach to an in-flight (or recently finished) turn: replay
+            # the buffered events past the client's cursor, then follow live.
+            tid = re.sub(r"[^a-f0-9]", "", os.path.basename(path).lower())[:64]
+            t, _ = get_turn(tid)
+            if t is None:
+                return self._json(404, {"error": "unknown turn"}, extra)
+            raw = (query.get("from") or ["0"])[0]
+            try:
+                start = int(raw)
+            except ValueError:
+                start = 0
+            return self._stream_turn(t, start)
 
         if path in ("/", "/index.html"):
             return self._send(200, (WEBAPP_DIR / "index.html").read_bytes(),
@@ -653,13 +771,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"error": err})
             if not text:
                 return self._json(200, {"error": "no speech detected"})
+            tid = _clean_tid((parse_qs(url.query).get("turn") or [""])[0])
         elif url.path == "/say":
             try:
-                text = json.loads(body.decode("utf-8")).get("text", "").strip()
+                doc = json.loads(body.decode("utf-8"))
+                text = doc.get("text", "").strip()
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return self._json(400, {"error": "bad json"})
             if not text:
                 return self._json(200, {"error": "empty message"})
+            tid = _clean_tid(doc.get("turn"))
         else:
             return self._send(404, "not found")
 
@@ -667,6 +788,23 @@ class Handler(BaseHTTPRequestHandler):
         # shows thinking and tool use as it happens and the phone should too.
         # Plain chunked SSE over the same POST — no second connection to
         # authenticate, correlate, and clean up.
+        #
+        # The turn itself runs on its own thread, feeding a buffer; this
+        # connection merely tails the buffer. If the hotspot drops mid-turn the
+        # turn carries on, and the client reconnects to /turn/<id>?from=<n> for
+        # the rest. The id comes from the client so a retried POST is
+        # idempotent: same id -> attach to the running turn, never a second run.
+        turn, created = get_turn(tid, create=True)
+        if created:
+            turn.emit("transcript", {"text": text})
+            threading.Thread(target=run_turn, args=(turn, text),
+                             daemon=True).start()
+        return self._stream_turn(turn, 0)
+
+    def _stream_turn(self, turn, start):
+        """SSE-over-chunked: replay buffered events from `start`, then follow
+        live until the turn is done. A write failure just ends this tail — the
+        buffer, and the turn, live on."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -674,46 +812,40 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
 
-        lock = threading.Lock()
-        alive = [True]
-
-        def event(kind, payload):
-            if not alive[0]:
-                return
-            body = json.dumps({"kind": kind, **payload})
-            with lock:
-                try:
-                    chunk = f"data: {body}\n\n".encode("utf-8")
-                    self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, ValueError):
-                    # He backgrounded the app or lost signal; the turn itself
-                    # carries on and lands in the conversation regardless.
-                    alive[0] = False
-
-        event("transcript", {"text": text})
-        try:
-            speaker = Speaker(event)
-            reply = ask(text, on_event=lambda kind, msg: event(kind, {"text": msg}),
-                        speaker=speaker)
-            # Everything sayable was already streamed as voice clips; replaying
-            # crab's own render of the same words would say it all twice.
-            audio = ""
-            event("done", {
-                "spoken": reply.get("spoken", ""),
-                "display_html": render_markdown(reply.get("display", "")),
-                "audio": audio,
-                "error": reply.get("error", ""),
-            })
-        except Exception as exc:  # noqa: BLE001 — the client must hear about it
-            event("done", {"spoken": "", "display_html": "", "audio": "",
-                           "error": str(exc)[:300]})
-        with lock:
+        def write(raw):
             try:
-                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(raw), raw))
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, ValueError):
-                pass
+                return True
+            except (BrokenPipeError, ConnectionResetError, ValueError, OSError):
+                return False
+
+        i = max(0, start)
+        while True:
+            with turn.cond:
+                if i >= len(turn.events) and not turn.done:
+                    turn.cond.wait(timeout=15)
+                events = turn.events[i:]
+                done = turn.done
+            if not events and not done:
+                # Keepalive comment: without traffic a dead hotspot socket can
+                # sit in ESTABLISHED forever and this thread would tail nothing
+                # to nobody. The client ignores non-data frames.
+                if not write(b": ping\n\n"):
+                    return
+                continue
+            for ev in events:
+                frame = f"data: {json.dumps(ev)}\n\n".encode("utf-8")
+                if not write(frame):
+                    return
+            i += len(events)
+            if done and i >= len(turn.events):
+                break
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ValueError, OSError):
+            pass
         return
 
 
