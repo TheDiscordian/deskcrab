@@ -49,6 +49,16 @@ SERVE_PORT="${SERVE_PORT:-8723}"
 SERVE_BIND="${SERVE_BIND:-127.0.0.1}"
 SERVE_SECRET="${SERVE_SECRET:-}"
 SERVE_TIMEOUT="${SERVE_TIMEOUT:-600}"
+# TLS for the phone client. Browsers refuse microphone access over plain http
+# from anything but localhost, so a phone needs https one way or another:
+#   off  - plain http (fine behind `tailscale serve`, which terminates TLS)
+#   self - self-signed cert, generated on demand; one "accept the risk" tap
+# SERVE_CERT/SERVE_KEY override both with a pair you supply (e.g. the output
+# of `tailscale cert`, which is a real, warning-free certificate).
+SERVE_TLS="${SERVE_TLS:-off}"
+SERVE_CERT="${SERVE_CERT:-}"
+SERVE_KEY="${SERVE_KEY:-}"
+TLS_DIR="${TLS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/tls}"
 
 # Runtime state. Overridable from the environment so a test run can be pointed
 # at a scratch conversation instead of stomping the live one.

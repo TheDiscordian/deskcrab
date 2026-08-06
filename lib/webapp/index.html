@@ -52,6 +52,8 @@
     color: var(--fg); background: var(--panel); border: 1px solid var(--border);
     border-radius: 14px; touch-action: none; user-select: none;
   }
+  #playnow { padding: 14px; font: inherit; font-size: 16px; color: #ffdada;
+             background: #143a1a; border: 1px solid #3a3; border-radius: 12px; }
   #talk.rec { background: #3a1414; border-color: #a33; color: #ffdada; }
   #talk:disabled { opacity: .45; }
   .row { display: flex; gap: 8px; }
@@ -89,15 +91,35 @@ function addTurn(you) {
   const r = document.createElement("div"); r.className = "reply"; r.textContent = "…";
   t.append(y, r); logEl.append(t);
   t.scrollIntoView({ block: "end" });
-  return r;
+  return { you: y, reply: r };
 }
 
 // Autoplay is only reliably granted inside a user gesture, and the reply lands
-// seconds after the button is released — so the element is unlocked with a
-// silent play() on the gesture itself and merely re-pointed at the reply later.
+// seconds after the button is released — so the element is unlocked during the
+// gesture and merely re-pointed at the reply later. It must actually PLAY
+// something to count: play() on a src-less element rejects immediately and
+// earns no activation at all, which is why the reply used to arrive silent.
+const SILENCE = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+let unlocked = false;
 function unlockAudio() {
-  player.muted = true;
-  player.play().catch(() => {}).finally(() => { player.pause(); player.muted = false; });
+  if (unlocked) return;
+  player.src = SILENCE;
+  const p = player.play();
+  if (p) p.then(() => { unlocked = true; }).catch(() => {});
+}
+
+// If the browser still refuses, don't silently swallow it — give him a button.
+function offerPlay(src) {
+  setStatus("tap ▶ to hear it", "err");
+  let b = $("playnow");
+  if (!b) {
+    b = document.createElement("button");
+    b.id = "playnow"; b.textContent = "▶ Play reply";
+    b.addEventListener("click", () => { player.play().catch(() => {}); setStatus("ready"); });
+    $("talk").parentNode.insertBefore(b, $("talk"));
+  }
+  b.hidden = false;
+  player.addEventListener("play", () => { b.hidden = true; }, { once: true });
 }
 
 async function deliver(res, replyEl) {
@@ -107,25 +129,42 @@ async function deliver(res, replyEl) {
   setStatus("ready");
   if (res.audio) {
     player.src = res.audio;
-    player.play().catch(() => setStatus("tap to play", "err"));
+    player.load();
+    const p = player.play();
+    if (p) p.catch(() => offerPlay(res.audio));
   }
   replyEl.scrollIntoView({ block: "end" });
 }
 
-async function send(url, body, headers, youText) {
+function post(url, body, headers) {
+  return fetch(url, { method: "POST", body, headers, credentials: "same-origin" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+}
+
+// A turn is two requests, not one: transcription comes back in a second or two
+// and is shown immediately, so a mis-heard sentence is visible during the long
+// wait for the answer rather than after it.
+async function runTurn(blob, ctype, typed) {
   if (busy) return;
   busy = true; $("talk").disabled = true;
-  const replyEl = addTurn(youText);
-  setStatus("thinking…", "busy");
+  const turn = addTurn(typed || "🎤 …");
   try {
-    const r = await fetch(url, { method: "POST", body, headers, credentials: "same-origin" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const res = await r.json();
-    if (res.transcript) replyEl.previousSibling.textContent = res.transcript;
-    await deliver(res, replyEl);
+    let text = typed;
+    if (!text) {
+      setStatus("transcribing…", "busy");
+      const t = await post("/transcribe", blob, { "X-Audio-Type": ctype });
+      if (t.error) { turn.reply.textContent = "(" + t.error + ")"; setStatus(t.error, "err"); return; }
+      text = t.transcript;
+      turn.you.textContent = text;
+      turn.you.scrollIntoView({ block: "end" });
+    }
+    setStatus("thinking…", "busy");
+    const res = await post("/say", JSON.stringify({ text }),
+                           { "Content-Type": "application/json" });
+    await deliver(res, turn.reply);
   } catch (e) {
     setStatus(String(e.message || e), "err");
-    replyEl.textContent = "(failed)";
+    turn.reply.textContent = "(failed)";
   } finally {
     busy = false; $("talk").disabled = false;
   }
@@ -148,7 +187,7 @@ async function startRec() {
   rec.onstop = () => {
     const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
     if (blob.size < 1200) { setStatus("too short", "err"); return; }
-    send("/ask", blob, { "X-Audio-Type": blob.type || "audio/webm" }, "🎤 …");
+    runTurn(blob, blob.type || "audio/webm", null);
   };
   recorder.start();
   $("talk").classList.add("rec");
@@ -173,7 +212,7 @@ function sendTyped() {
   if (!v) return;
   $("text").value = "";
   unlockAudio();
-  send("/say", JSON.stringify({ text: v }), { "Content-Type": "application/json" }, v);
+  runTurn(null, null, v);
 }
 $("send").addEventListener("click", sendTyped);
 $("text").addEventListener("keydown", e => { if (e.key === "Enter") sendTyped(); });

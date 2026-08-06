@@ -27,6 +27,7 @@ import http.cookies
 import json
 import os
 import subprocess
+import ssl
 import sys
 import tempfile
 import time
@@ -48,6 +49,9 @@ NAME = os.environ.get("DESKCRAB_NOTIFY_NAME") or os.environ.get(
 )
 
 # A remote turn is a full claude run; it can legitimately take a while.
+CERT = os.environ.get("DESKCRAB_SERVE_CERT", "")
+KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
+
 TURN_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_TIMEOUT", "600"))
 MAX_UPLOAD = 25 * 1024 * 1024
 
@@ -72,6 +76,15 @@ def render_markdown(text):
 
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, timeout=TURN_TIMEOUT, **kw)
+
+
+def _suffix_for(ctype):
+    """Chrome records webm/opus, iOS Safari mp4/aac — ffmpeg wants a hint."""
+    if "mp4" in ctype or "aac" in ctype:
+        return ".mp4"
+    if "ogg" in ctype:
+        return ".ogg"
+    return ".webm"
 
 
 def transcribe(blob, suffix):
@@ -221,12 +234,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "bad body length"})
         body = self.rfile.read(length)
 
+        if url.path == "/transcribe":
+            # Speech recognition only. The client shows the transcript the
+            # instant it lands and asks for the answer separately, so a
+            # mis-heard sentence is visible before the long wait, not after.
+            ctype = self.headers.get("X-Audio-Type", "audio/webm")
+            text, err = transcribe(body, _suffix_for(ctype))
+            if err:
+                return self._json(200, {"error": err})
+            if not text:
+                return self._json(200, {"error": "no speech detected"})
+            return self._json(200, {"transcript": text})
+
         if url.path == "/ask":
             ctype = self.headers.get("X-Audio-Type", "audio/webm")
-            suffix = ".mp4" if "mp4" in ctype or "aac" in ctype else ".webm"
-            if "ogg" in ctype:
-                suffix = ".ogg"
-            text, err = transcribe(body, suffix)
+            text, err = transcribe(body, _suffix_for(ctype))
             if err:
                 return self._json(200, {"error": err})
             if not text:
@@ -255,9 +277,21 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
     httpd.daemon_threads = True
-    print(f"{NAME} is listening on http://{BIND}:{PORT}/?k=<secret>")
-    print("To reach it from a phone: tailscale serve --bg https / "
-          f"http://127.0.0.1:{PORT}")
+
+    scheme = "http"
+    if CERT and KEY:
+        # A browser only grants microphone access over https (or to localhost),
+        # so a phone client needs TLS from somewhere: either here, or from a
+        # proxy like `tailscale serve` that terminates it in front of us.
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERT, KEY)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        scheme = "https"
+
+    print(f"{NAME} is listening on {scheme}://{BIND}:{PORT}/?k=<secret>")
+    if scheme == "http":
+        print("To reach it from a phone: tailscale serve --bg https / "
+              f"http://127.0.0.1:{PORT}   (or set SERVE_TLS=self)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
