@@ -49,7 +49,13 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Space-separated list of file paths. Their contents are appended to the prompt.
 # CONTEXT_FILES="$HOME/project/CLAUDE.md $HOME/project/notes.md"
 
-# Optional: assistant display name (default: DeskCrab)
+# Optional: assistant persona name (default: Crab)
+# The name the assistant sees in its system prompt: "You are <name>, a desktop
+# voice assistant...". Set this to rename the assistant (e.g. "Beatrice",
+# "Jarvis", etc). Also used as the notification/display title unless
+# NOTIFY_NAME is set separately.
+# ASSISTANT_NAME="Beatrice"
+
+# Optional: assistant display name (default: ASSISTANT_NAME if set, else DeskCrab)
 # Used as the notification title AND the title bar of the markdown display window.
-# Set this to your assistant's persona name (e.g. "Beatrice", "Jarvis", etc).
 # NOTIFY_NAME="DeskCrab"

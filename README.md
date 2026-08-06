@@ -122,7 +122,8 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `CUSTOM_PROMPT` | No | Path to a markdown file appended to Crab's core system prompt |
 | `WHISPER_FIXES` | No | `sed` expressions to fix common whisper mistranscriptions |
 | `CONTEXT_FILES` | No | Space-separated list of files to include in the prompt |
-| `NOTIFY_NAME` | No | Name shown in notifications (default: `DeskCrab`) |
+| `ASSISTANT_NAME` | No | Persona name the assistant sees in its system prompt (default: `Crab`) |
+| `NOTIFY_NAME` | No | Name shown in notifications (default: `ASSISTANT_NAME` if set, else `DeskCrab`) |
 
 ### Custom prompt
 

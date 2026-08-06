@@ -19,7 +19,11 @@ CLAUDE_EFFORT="${CLAUDE_EFFORT:-low}"
 PROJECT_DIR="${PROJECT_DIR:-$HOME}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/.local/share/deskcrab/archive}"
 CONVO_TIMEOUT="${CONVO_TIMEOUT:-300}"
-NOTIFY_NAME="${NOTIFY_NAME:-DeskCrab}"
+# NOTIFY_NAME inherits an explicitly set ASSISTANT_NAME so one variable renames
+# the whole assistant; ASSISTANT_NAME's own default is applied afterwards so
+# configs that set neither keep "DeskCrab" notification titles.
+NOTIFY_NAME="${NOTIFY_NAME:-${ASSISTANT_NAME:-DeskCrab}}"
+ASSISTANT_NAME="${ASSISTANT_NAME:-Crab}"
 # Sliding-window history: once the live convo exceeds CONVO_MAX_TURNS user/assistant
 # pairs, the oldest CONVO_SUMMARIZE_TURNS pairs are folded into a running summary.
 CONVO_MAX_TURNS="${CONVO_MAX_TURNS:-20}"
@@ -149,7 +153,7 @@ Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/a
     fi
 
     cat <<PROMPT
-You are Crab, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
+You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
 SPEED IS CRITICAL. The user is waiting for a spoken response. Avoid slow tools: use ToolSearch at most ONCE, and never use Agent. Prefer Bash (curl, etc.) and WebFetch which are fast. Do not retry failed fetches more than once — give the best answer you can with what you have.
 Today is $(date '+%A %B %d, %Y'), the current time is $(date '+%I:%M %p %Z'). Tomorrow is $(date -d '+1 day' '+%A'). Use today/tonight/tomorrow for the next 2 days, day names for anything further out. CRITICAL: Never quote alert text verbatim. Rephrase everything in your own words using relative day references. If an alert says 'Monday' and tomorrow is Monday, say 'tomorrow'.
 Your responses will be spoken aloud via TTS. ALWAYS start with a brief spoken reply (1-2 sentences, no markdown, no lists, no elaboration). Answer directly like a human would in conversation. Write numbers and units as spoken words (e.g. '22 degrees' not '22°C', 'percent' not '%'). NEVER use emojis in the spoken reply — they cannot be pronounced and make the audio output garbled. This overrides any general "use emojis" style rules for this voice channel. Emojis are allowed in the DISPLAY channel below the delimiter, never above it. NEVER speak URLs aloud either — TTS cannot pronounce them coherently and reading out "h-t-t-p-s colon slash slash" wastes the user's time. If you need to reference a URL, put it in the DISPLAY channel and say something like "I've put the link on screen" in the spoken reply. Same rule applies to long file paths, raw IDs, hashes, and any other strings that aren't natural spoken English — surface them via DISPLAY, summarise them in speech.
