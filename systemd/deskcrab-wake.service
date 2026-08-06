@@ -1,0 +1,8 @@
+[Unit]
+Description=DeskCrab autonomous wake
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/crab wake
+# An unattended session should never run away.
+RuntimeMaxSec=900

@@ -24,6 +24,7 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 ## Key details
 
 - Config loaded from `~/.config/deskcrab/deskcrab.conf` (override with `DESKCRAB_CONF` env var)
+- Autonomous mode: `WANTS_FILE` (durable goals injected into the prompt), `crab wake` (silent-capable unattended session via `run_claude_wake` — no TTS streamer, post-hoc speak/display decision, `(quiet)` reply = invisible wake), `crab wake-at <when>` (transient systemd timer), `systemd/deskcrab-wake.timer` (random 3–6 h background wakes), `WAKE_QUIET_HOURS` (never speak/show at night)
 - All temp files use `/tmp/deskcrab-*` prefix
 - Any argument that isn't a subcommand (start/stop/shutup) is treated as a text query
 - TTS streams in parallel with Claude's generation — speech starts before the full response is ready
