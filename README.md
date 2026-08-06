@@ -12,6 +12,7 @@ A push-to-talk desktop assistant for Linux powered by [Claude Code](https://docs
 - **Conversation memory** with automatic archiving after inactivity
 - **Text mode** — skip voice and type directly with `crab how's the weather?`
 - **Fully configurable** — custom prompts, whisper fixes, context files, model selection
+- **Remote client** — `crab serve` puts an installable web app in front of the same assistant, so a phone can talk to it while the CLI, tools, and conversation stay on the laptop
 - **Debug viewer** for watching Crab's tool calls and reasoning in real-time
 
 ## Dependencies
@@ -22,7 +23,8 @@ A push-to-talk desktop assistant for Linux powered by [Claude Code](https://docs
 - `aplay` (ALSA utils — for audio playback)
 - `notify-send` (for desktop notifications)
 - [render-md](https://github.com/TheDiscordian/render-md) (optional — for the display channel)
-- Python 3
+- `ffmpeg` and whisper.cpp's `whisper-cli` (optional — for the remote client)
+- Python 3 (the `markdown` package is optional — it renders the remote client's display channel)
 
 ### Arch Linux / CachyOS
 
@@ -68,6 +70,7 @@ Bind these to a key in your compositor:
 | Stop and process (release) | `crab stop` |
 | Stop TTS playback | `crab shutup` |
 | Open debug viewer | `crab-debug` |
+| Serve the phone client | `crab serve` |
 
 **Hyprland** example (SUPER+A as push-to-talk):
 
@@ -129,6 +132,10 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `WAKE_QUIET_HOURS` | No | Hours (`HH-HH`, wraps midnight) when wakes never speak or open windows |
 | `WAKE_EFFORT` | No | Effort level for autonomous wakes (default: `CLAUDE_EFFORT`) |
 | `WAKE_STALL_TIMEOUT` | No | Seconds without output or CPU activity before a wake is presumed hung (default: 300) |
+| `SERVE_SECRET` | No | Shared secret for the remote client; unset disables `crab serve` entirely |
+| `SERVE_PORT` | No | Port for `crab serve` (default: 8723) |
+| `SERVE_BIND` | No | Address for `crab serve` (default: `127.0.0.1`) |
+| `SERVE_TIMEOUT` | No | Seconds a single remote turn may take before it is abandoned (default: 600) |
 
 ### Custom prompt
 
@@ -173,6 +180,29 @@ systemctl --user enable --now deskcrab-wake.timer
 
 Set `WAKE_QUIET_HOURS="23-09"` to keep night wakes fully silent (they still run and can work — they just never speak or open windows).
 
+## Remote client (phone)
+
+`crab serve` puts a small web app in front of the assistant so a phone can talk to it. The assistant does not move: the phone is a microphone, a speaker, and a screen, while the `claude` CLI, the system prompt, the tools, the wants file, and the conversation all stay on this machine. A remote turn is the same conversation as the desktop one — ask something on the laptop, follow it up from the phone.
+
+```bash
+# in your config
+SERVE_SECRET="$(head -c 18 /dev/urandom | base64 | tr -d '/+=')"
+
+crab serve            # listens on 127.0.0.1:8723
+```
+
+Open `http://127.0.0.1:8723/?k=<secret>`. The key is stored in a cookie on first load, so the app can be installed to a home screen and opened with no querystring afterwards. Requests without the key get a flat `404` — an unauthenticated caller is told nothing about what is running here.
+
+**Reaching it from a phone.** Browsers only grant microphone access in a secure context, so the server must be behind TLS. It binds loopback by default; publishing it is a separate, deliberate act:
+
+```bash
+tailscale serve --bg https / http://127.0.0.1:8723
+```
+
+Under the hood, `/ask` takes the browser's recording (Chrome sends WebM/Opus, iOS Safari sends MP4/AAC — ffmpeg decodes either), transcribes it with **batch** `whisper-cli` rather than `whisper-stream`, and hands the text to `crab remote`, which runs a normal turn and returns the spoken half as an Opus file plus the display half as HTML. Batch transcription of a finished clip is both simpler and faster than the desktop's settle-and-poll loop, so a remote turn costs only a couple of seconds more than a local one end to end. Remote turns are serialized — two overlapping requests queue rather than race.
+
+`crab serve` needs `ffmpeg` and `whisper-cli`; the optional Python `markdown` package renders the display channel properly (without it, display content is shown as preformatted text).
+
 ## Display channel
 
 When Crab's response includes visual content (code, tables, images), it uses a display channel. The response includes a `---DISPLAY---` delimiter, and everything after it is rendered in a floating [render-md](https://github.com/TheDiscordian/render-md) window.
@@ -210,10 +240,14 @@ crab start   →  whisper-stream (recording)
 crab stop    →  whisper transcription → claude CLI → TTS streaming
                                                   → display channel (optional)
 crab <text>  →  claude CLI → TTS streaming → display channel (optional)
+crab serve   →  HTTP  →  ffmpeg → whisper-cli (batch) → crab remote
+                                               → opus reply + display HTML
 ```
 
 - `crab` — main entry point (voice + text)
 - `lib/common.sh` — shared functions (TTS, conversation, prompt building, Claude invocation)
+- `lib/serve.py` — stdlib HTTP front end for the remote client
+- `lib/webapp/` — the phone client (single page, installable)
 - `crab-debug` — real-time debug viewer
 
 ## License

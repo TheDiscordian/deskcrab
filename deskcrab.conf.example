@@ -85,3 +85,21 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Optional: assistant display name (default: ASSISTANT_NAME if set, else DeskCrab)
 # Used as the notification title AND the title bar of the markdown display window.
 # NOTIFY_NAME="DeskCrab"
+
+# Optional: remote client (crab serve) — a phone talks to this machine.
+# The assistant itself never moves: the phone is a microphone, a speaker, and a
+# screen; the claude CLI, the prompt, the tools, and the conversation all stay
+# here. Serving is off until SERVE_SECRET is set.
+#
+# Generate a secret with:  head -c 18 /dev/urandom | base64 | tr -d '/+='
+# SERVE_SECRET="change-me"
+#
+# The listener binds loopback by default. Publishing it to a phone is a
+# separate, deliberate act — a browser will not grant microphone access over
+# plain HTTP, so put it behind TLS, e.g. Tailscale:
+#   tailscale serve --bg https / http://127.0.0.1:8723
+# SERVE_PORT=8723
+# SERVE_BIND="127.0.0.1"
+#
+# Optional: seconds a single remote turn may take before it is abandoned.
+# SERVE_TIMEOUT=600

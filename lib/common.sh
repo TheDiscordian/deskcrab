@@ -44,10 +44,20 @@ WAKE_EFFORT="${WAKE_EFFORT:-$CLAUDE_EFFORT}"
 # it is hung, not thinking. Wall-clock limits would kill productive sessions.
 WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
 
-CONVOFILE="/tmp/deskcrab-convo.txt"
-SUMMARYFILE="/tmp/deskcrab-convo-summary.txt"
-TTSPIDFILE="/tmp/deskcrab-tts.pid"
-DEBUGLOG="/tmp/deskcrab-debug.log"
+# Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
+SERVE_PORT="${SERVE_PORT:-8723}"
+SERVE_BIND="${SERVE_BIND:-127.0.0.1}"
+SERVE_SECRET="${SERVE_SECRET:-}"
+SERVE_TIMEOUT="${SERVE_TIMEOUT:-600}"
+
+# Runtime state. Overridable from the environment so a test run can be pointed
+# at a scratch conversation instead of stomping the live one.
+STATE_PREFIX="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}"
+CONVOFILE="${STATE_PREFIX}-convo.txt"
+CONVOLOCK="${STATE_PREFIX}-convo.lock"
+SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
+TTSPIDFILE="${STATE_PREFIX}-tts.pid"
+DEBUGLOG="${STATE_PREFIX}-debug.log"
 
 # Kill any active TTS
 stop_tts() {
@@ -56,8 +66,14 @@ stop_tts() {
     pkill -f "aplay.*S16_LE" 2>/dev/null
 }
 
-# Archive stale conversation (default: >5 min idle)
+# Archive stale conversation (default: >5 min idle). Under the convo lock like
+# every other writer: the mv would otherwise be able to carry off a turn another
+# client appended a microsecond earlier.
 rotate_convo() {
+    { flock -w 60 9; _rotate_convo_locked; } 9>"$CONVOLOCK"
+}
+
+_rotate_convo_locked() {
     if [ -f "$CONVOFILE" ]; then
         LAST_MOD=$(stat -c %Y "$CONVOFILE")
         NOW=$(date +%s)
@@ -89,25 +105,31 @@ $(cat "$CONVOFILE")"
     [ -n "$OUT" ] && echo "$OUT"
 }
 
+# Append to the conversation under the convo lock. Two clients can now be talking
+# to the same conversation at once (desktop, phone, autonomous wake), and the
+# dangerous overlap is an append landing *during* compact_convo's summarize-and-
+# swap window — the mv would silently drop that turn. Both take the same lock.
+# Takes printf-style arguments deliberately: a "$(printf ...)" argument would
+# have its trailing newlines eaten by command substitution, welding every turn
+# onto the previous one.
+convo_append() {
+    local FMT="$1"; shift
+    { flock -w 60 9; printf "$FMT" "$@" >> "$CONVOFILE"; } 9>"$CONVOLOCK"
+}
+
 # Fold the oldest CONVO_SUMMARIZE_TURNS pairs into the running summary once the live
 # convo exceeds CONVO_MAX_TURNS pairs. Keeps recent turns verbatim, older ones condensed.
+# The lock is deliberately NOT held across the summarization call: that is a
+# whole claude run, and every other client — desktop, phone, wake — would be
+# stuck behind it. Instead the lock is taken twice, and the second pass drops
+# the oldest LINES lines rather than swapping in a file captured before the
+# call. Appends only ever go to the end, so those first lines are still exactly
+# the block that was summarized, and turns that landed meanwhile survive.
 compact_convo() {
-    [ -f "$CONVOFILE" ] || return 0
-    local PAIRS
-    PAIRS=$(grep -c '^User: ' "$CONVOFILE")
-    (( PAIRS > CONVO_MAX_TURNS )) || return 0
-
-    # Split: oldest N pairs -> /tmp old, the rest stays in CONVOFILE.
-    # awk numbers each block, incrementing the counter at every line that starts a
-    # user turn ("^User: "). Blocks 1..N are the oldest pairs to fold away.
     local OLDFILE="/tmp/deskcrab-convo-old.$$"
-    local NEWFILE="/tmp/deskcrab-convo-new.$$"
-    awk -v n="$CONVO_SUMMARIZE_TURNS" '
-        /^User: / { turn++ }
-        { if (turn <= n) print > OLD; else print > NEW }
-    ' OLD="$OLDFILE" NEW="$NEWFILE" "$CONVOFILE"
-
-    [ -s "$OLDFILE" ] || { rm -f "$OLDFILE" "$NEWFILE"; return 0; }
+    local LINES
+    LINES=$({ flock -w 60 9; _compact_split "$OLDFILE"; } 9>"$CONVOLOCK")
+    [ -n "$LINES" ] || return 0
 
     local PRIOR=""
     [ -f "$SUMMARYFILE" ] && PRIOR="$(cat "$SUMMARYFILE")"
@@ -130,12 +152,38 @@ $(cat "$OLDFILE")"
 
     if [ -n "$NEWSUM" ]; then
         printf '%s\n' "$NEWSUM" > "$SUMMARYFILE"
-        mv "$NEWFILE" "$CONVOFILE"
-        rm -f "$OLDFILE"
-    else
-        # Summarization failed — leave history untouched rather than lose turns.
-        rm -f "$OLDFILE" "$NEWFILE"
+        { flock -w 60 9; _compact_drop "$LINES"; } 9>"$CONVOLOCK"
     fi
+    # Summarization failed — leave history untouched rather than lose turns.
+    rm -f "$OLDFILE"
+}
+
+# Pass one, under the lock: write the oldest CONVO_SUMMARIZE_TURNS pairs to
+# $1 and print how many lines they occupy. Prints nothing when there is
+# nothing to fold away. awk numbers each block, incrementing at every line
+# that starts a user turn ("^User: ").
+_compact_split() {
+    local OLDFILE="$1"
+    [ -f "$CONVOFILE" ] || return 0
+    local PAIRS
+    PAIRS=$(grep -c '^User: ' "$CONVOFILE")
+    (( PAIRS > CONVO_MAX_TURNS )) || return 0
+
+    awk -v n="$CONVO_SUMMARIZE_TURNS" '
+        /^User: / { turn++ }
+        turn <= n { print > OLD }
+    ' OLD="$OLDFILE" "$CONVOFILE"
+
+    [ -s "$OLDFILE" ] || { rm -f "$OLDFILE"; return 0; }
+    wc -l < "$OLDFILE" | tr -d ' '
+}
+
+# Pass two, under the lock: drop the first $1 lines, keeping everything that
+# has been appended since — including turns from another client.
+_compact_drop() {
+    local NEWFILE="/tmp/deskcrab-convo-new.$$"
+    tail -n "+$(( $1 + 1 ))" "$CONVOFILE" > "$NEWFILE" && mv "$NEWFILE" "$CONVOFILE"
+    rm -f "$NEWFILE"
 }
 
 # Build the system prompt with dynamic date/time and optional custom context
@@ -248,7 +296,7 @@ run_claude_wake() {
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
 
-    printf "[Autonomous wake — %s]\n" "$(date '+%Y-%m-%d %H:%M')" >> "$CONVOFILE"
+    convo_append '[Autonomous wake — %s]\n' "$(date '+%Y-%m-%d %H:%M')"
 
     : > "$DEBUGLOG"
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
@@ -292,7 +340,7 @@ run_claude_wake() {
     RESPONSE=$(extract_response)
     [ -z "$RESPONSE" ] && return 0
 
-    printf "Assistant: %s\n\n" "$RESPONSE" >> "$CONVOFILE"
+    convo_append 'Assistant: %s\n\n' "$RESPONSE"
     compact_convo
 
     # Silent completion: quiet hours, or the reply opens with "(quiet)".
@@ -300,8 +348,8 @@ run_claude_wake() {
     in_quiet_hours && return 0
 
     local SPOKEN DISPLAY_PART
-    SPOKEN=$(echo "$RESPONSE" | sed '/^---DISPLAY---$/,$d')
-    DISPLAY_PART=$(echo "$RESPONSE" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}')
+    SPOKEN=$(spoken_part "$RESPONSE")
+    DISPLAY_PART=$(display_part "$RESPONSE")
 
     if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ]; then
         notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(echo "$SPOKEN" | head -c 140)" 2>/dev/null
@@ -339,21 +387,18 @@ extract_response() {
     DESKCRAB_DEBUGLOG="$DEBUGLOG" "$LIB_DIR/extract-response" 2>/dev/null
 }
 
-# Run claude, save response, handle display channel
-run_claude_and_respond() {
-    local TEXT="$1"
+# One turn of generation: prompt in, response text out. No speech, no windows,
+# no conversation writes — every caller (desktop, wake, remote) layers its own
+# output on top of this. The stream still lands in DEBUGLOG, so a TTS streamer
+# started beforehand speaks in parallel exactly as it always did.
+claude_generate() {
+    local TEXT="$1" EFFORT="${2:-$CLAUDE_EFFORT}"
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
 
-    printf "User: %s\n" "$TEXT" >> "$CONVOFILE"
-
-    start_tts_streamer
-
-    notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Thinking..."
-
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT" \
+        --model "$CLAUDE_MODEL" --effort "$EFFORT" \
         --verbose --output-format stream-json \
         --append-system-prompt "$SYSTEM_PROMPT" \
         "$TEXT" > "$DEBUGLOG" 2>&1
@@ -366,18 +411,104 @@ run_claude_and_respond() {
     # terminator is harmless on the success path.
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
+    extract_response
+}
+
+# Split a response into its spoken half (everything above ---DISPLAY---).
+spoken_part() {
+    printf '%s\n' "$1" | sed '/^---DISPLAY---$/,$d'
+}
+
+# Split a response into its display half (everything below ---DISPLAY---).
+display_part() {
+    printf '%s\n' "$1" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}'
+}
+
+# Synthesize spoken text to an opus file instead of the speakers — the remote
+# client wants a blob it can play, not this machine's sound card.
+synth_opus() {
+    local TEXT="$1" OUT="$2"
+    TEXT=$(printf '%s' "$TEXT" | sed -E 's/\*+//g; s/`[^`]*`//g')
+    [ -n "$TTS_FIXES" ] && TEXT=$(printf '%s' "$TEXT" | sed -E "$TTS_FIXES")
+    [ -z "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ] && return 1
+    local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
+    [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
+    [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
+    printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null \
+        | ffmpeg -y -loglevel error -f s16le -ar 22050 -ac 1 -i - \
+            -c:a libopus -b:a 32k "$OUT" 2>/dev/null
+    [ -s "$OUT" ]
+}
+
+# Remote turn (crab serve / the phone). Same conversation, same prompt, but the
+# reply comes back as data — spoken audio file + display markdown — instead of
+# being played and rendered on this desktop.
+run_claude_remote() {
+    # Serialize remote turns: two overlapping requests would otherwise run two
+    # claude processes whose stream logs and conversation appends race. The
+    # phone is one person talking, so queueing is the honest behaviour.
+    { flock -w 600 8; _run_claude_remote_locked "$1"; } 8>"${STATE_PREFIX}-remote.lock"
+}
+
+_run_claude_remote_locked() {
+    local TEXT="$1"
+    # A private stream log, so a remote turn can never truncate the log a
+    # desktop turn's TTS streamer is tailing.
+    local DEBUGLOG="${STATE_PREFIX}-remote-$$.log"
+    rotate_convo
+    convo_append 'User: %s\n' "$TEXT"
+
+    local RESPONSE
+    RESPONSE=$(claude_generate "$TEXT")
+
+    if [ -n "$RESPONSE" ]; then
+        convo_append 'Assistant: %s\n\n' "$RESPONSE"
+        compact_convo
+    fi
+
+    local SPOKEN DISPLAY_MD AUDIO=""
+    SPOKEN=$(spoken_part "$RESPONSE")
+    DISPLAY_MD=$(display_part "$RESPONSE")
+
+    if [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
+        local CANDIDATE="/tmp/deskcrab-remote-$(date +%s%N).opus"
+        synth_opus "$SPOKEN" "$CANDIDATE" && AUDIO="$CANDIDATE"
+        # Let the desktop see that the phone is talking to it.
+        notify-send -t 6000 -h string:x-dunst-stack-tag:deskcrab \
+            "$NOTIFY_NAME (remote)" "$(printf '%s' "$SPOKEN" | head -c 140)" 2>/dev/null
+    fi
+
+    rm -f "$DEBUGLOG"
+    # Reply audio the client has had time to fetch. Scoped to this server's own
+    # generated files and to clips older than an hour.
+    find /tmp -maxdepth 1 -name 'deskcrab-remote-*.opus' -mmin +60 -delete 2>/dev/null
+
+    python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3]}))' \
+        "$SPOKEN" "$DISPLAY_MD" "$AUDIO"
+}
+
+# Run claude, save response, handle display channel
+run_claude_and_respond() {
+    local TEXT="$1"
+
+    convo_append 'User: %s\n' "$TEXT"
+
+    start_tts_streamer
+
+    notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Thinking..."
+
+    local RESPONSE
+    RESPONSE=$(claude_generate "$TEXT")
+
     # Dismiss thinking notification
     notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "" 2>/dev/null
 
-    local RESPONSE
-    RESPONSE=$(extract_response)
-
     if [ -n "$RESPONSE" ]; then
-        printf "Assistant: %s\n\n" "$RESPONSE" >> "$CONVOFILE"
+        convo_append 'Assistant: %s\n\n' "$RESPONSE"
         compact_convo
 
         local DISPLAY_PART
-        DISPLAY_PART=$(echo "$RESPONSE" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}')
+        DISPLAY_PART=$(display_part "$RESPONSE")
 
         if [ -n "$DISPLAY_PART" ]; then
             local DISPLAYFILE="/tmp/deskcrab-display.md"

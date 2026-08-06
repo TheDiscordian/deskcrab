@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | shutup | wake | wake-at <when> | <text>
+# Usage: crab start | stop | shutup | wake | wake-at <when> | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -93,6 +93,43 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         run_claude_wake "(Autonomous wake — nobody is talking to you. You woke up $WAKE_SOURCE to pursue your own wants. Review your wants file, pick at most ONE want, and advance it: think it through, research with your tools, prepare something, or revise the file. Nobody is waiting, so take the time the work actually needs — you control when this session ends. For work bigger than one sitting, wrap up deliberately: save dated progress to your wants file, then schedule your next session with 'crab wake-at'. There is no wall-clock limit; only a session with no output AND no CPU activity for several minutes is presumed hung and reaped — long compiles and heavy work count as alive, but for long LOW-activity commands (big downloads, remote waits) prefer background execution so your session stays visibly alive. While unattended, take no destructive or outward-facing actions: nothing leaves this machine — no messages, no emails, no pushes — and delete nothing. Update your wants file with dated progress before finishing. If you found something genuinely worth telling the user right now, say it briefly (a display section is fine too); otherwise begin your reply with (quiet) and nothing will be spoken or shown.$WAKE_NOTE)"
         ;;
 
+    remote)
+        # One turn from a remote client (crab serve). Prints a JSON object
+        # {spoken, display, audio} on stdout and touches no desktop output
+        # except a courtesy notification. --voice applies WHISPER_FIXES first,
+        # because the text came from speech recognition on the phone.
+        shift
+        if [ "${1:-}" = "--voice" ]; then
+            shift
+            [ -n "$WHISPER_FIXES" ] && set -- "$(printf '%s' "$*" | sed -E "$WHISPER_FIXES")"
+        fi
+        TEXT="$*"
+        if [ -z "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ]; then
+            echo '{"spoken":"","display":"","audio":"","error":"empty query"}'
+            exit 1
+        fi
+        run_claude_remote "$TEXT"
+        ;;
+
+    serve)
+        # Serve the phone client. The listener stays on loopback by default;
+        # exposing it to a phone is a separate, deliberate step (Tailscale:
+        #   tailscale serve --bg https / http://127.0.0.1:$SERVE_PORT
+        # ) so nothing is ever published just by starting the server.
+        [ -n "${2:-}" ] && SERVE_PORT="$2"
+        if [ -z "$SERVE_SECRET" ]; then
+            echo "SERVE_SECRET is not set in $CONF_FILE — refusing to serve."
+            echo "Add a shared secret, e.g.:"
+            echo "  SERVE_SECRET=\"$(head -c 18 /dev/urandom | base64 | tr -d '/+=')\""
+            exit 1
+        fi
+        export DESKCRAB_SERVE_PORT="$SERVE_PORT" DESKCRAB_SERVE_BIND="$SERVE_BIND" \
+               DESKCRAB_SERVE_SECRET="$SERVE_SECRET" DESKCRAB_WHISPER_MODEL="$WHISPER_MODEL" \
+               DESKCRAB_NOTIFY_NAME="$NOTIFY_NAME" DESKCRAB_ASSISTANT_NAME="$ASSISTANT_NAME" \
+               DESKCRAB_SERVE_TIMEOUT="$SERVE_TIMEOUT" DESKCRAB_CRAB_BIN="$SCRIPT_DIR/crab"
+        exec python3 "$SCRIPT_DIR/lib/serve.py"
+        ;;
+
     wake-at)
         # Schedule a one-shot autonomous wake via a transient systemd user timer.
         WHEN="${2:-}"
@@ -112,7 +149,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|shutup|wake|wake-at <when>|<message>"
+            echo "Usage: crab start|stop|shutup|wake|wake-at <when>|serve [port]|remote <text>|<message>"
             exit 1
         fi
         stop_tts

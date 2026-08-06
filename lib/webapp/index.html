@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>DeskCrab</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>
+  :root { --bg:#000; --fg:#e0e0e0; --dim:#888; --accent:#6aafff;
+          --panel:#141414; --code:#2a2a2a; --border:#333; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 15px; line-height: 1.6;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { color: var(--dim); font-size: 13px; }
+  #status.busy { color: var(--accent); }
+  #status.err { color: #ff8080; }
+
+  main { flex: 1; overflow-y: auto; padding: 16px; }
+  .turn { margin-bottom: 18px; }
+  .you { color: var(--dim); }
+  .you::before { content: "› "; }
+  .reply { white-space: pre-wrap; }
+  #display { margin-top: 14px; padding: 12px; background: var(--panel);
+             border: 1px solid var(--border); border-radius: 8px; }
+  #display:empty { display: none; }
+  #display img { max-width: 100%; height: auto; border-radius: 6px; }
+  #display pre { background: var(--code); padding: 12px; border-radius: 6px; overflow-x: auto; }
+  #display code { background: var(--code); padding: 2px 6px; border-radius: 3px; }
+  #display pre code { background: none; padding: 0; }
+  #display table { border-collapse: collapse; width: 100%; }
+  #display th, #display td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  #display a { color: var(--accent); }
+
+  footer { padding: 16px; border-top: 1px solid var(--border); display: flex;
+           flex-direction: column; gap: 12px; }
+  #talk {
+    width: 100%; padding: 26px; font: inherit; font-size: 17px; font-weight: 600;
+    color: var(--fg); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; touch-action: none; user-select: none;
+  }
+  #talk.rec { background: #3a1414; border-color: #a33; color: #ffdada; }
+  #talk:disabled { opacity: .45; }
+  .row { display: flex; gap: 8px; }
+  #text { flex: 1; min-width: 0; padding: 12px; font: inherit; color: var(--fg);
+          background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+  #send { padding: 12px 16px; font: inherit; color: var(--fg); background: var(--panel);
+          border: 1px solid var(--border); border-radius: 10px; }
+</style>
+</head>
+<body>
+<header><h1 id="name">DeskCrab</h1><span id="status">ready</span></header>
+<main>
+  <div id="log"></div>
+  <div id="display"></div>
+</main>
+<footer>
+  <button id="talk">Hold to talk</button>
+  <div class="row">
+    <input id="text" placeholder="…or type" autocomplete="off" enterkeyhint="send">
+    <button id="send">Send</button>
+  </div>
+</footer>
+<audio id="player" playsinline></audio>
+<script>
+const $ = id => document.getElementById(id);
+const statusEl = $("status"), logEl = $("log"), dispEl = $("display"), player = $("player");
+let recorder = null, chunks = [], stream = null, busy = false;
+
+function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ""; }
+
+function addTurn(you) {
+  const t = document.createElement("div");
+  t.className = "turn";
+  const y = document.createElement("div"); y.className = "you"; y.textContent = you;
+  const r = document.createElement("div"); r.className = "reply"; r.textContent = "…";
+  t.append(y, r); logEl.append(t);
+  t.scrollIntoView({ block: "end" });
+  return r;
+}
+
+// Autoplay is only reliably granted inside a user gesture, and the reply lands
+// seconds after the button is released — so the element is unlocked with a
+// silent play() on the gesture itself and merely re-pointed at the reply later.
+function unlockAudio() {
+  player.muted = true;
+  player.play().catch(() => {}).finally(() => { player.pause(); player.muted = false; });
+}
+
+async function deliver(res, replyEl) {
+  if (res.error) { setStatus(res.error, "err"); replyEl.textContent = "(" + res.error + ")"; return; }
+  replyEl.textContent = res.spoken || "(no reply)";
+  dispEl.innerHTML = res.display_html || "";
+  setStatus("ready");
+  if (res.audio) {
+    player.src = res.audio;
+    player.play().catch(() => setStatus("tap to play", "err"));
+  }
+  replyEl.scrollIntoView({ block: "end" });
+}
+
+async function send(url, body, headers, youText) {
+  if (busy) return;
+  busy = true; $("talk").disabled = true;
+  const replyEl = addTurn(youText);
+  setStatus("thinking…", "busy");
+  try {
+    const r = await fetch(url, { method: "POST", body, headers, credentials: "same-origin" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const res = await r.json();
+    if (res.transcript) replyEl.previousSibling.textContent = res.transcript;
+    await deliver(res, replyEl);
+  } catch (e) {
+    setStatus(String(e.message || e), "err");
+    replyEl.textContent = "(failed)";
+  } finally {
+    busy = false; $("talk").disabled = false;
+  }
+}
+
+async function startRec() {
+  if (busy) return;
+  unlockAudio();
+  try {
+    if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) { setStatus("no microphone: " + e.name, "err"); return; }
+  // No mimeType is specified on purpose: Chrome gives webm/opus, iOS Safari
+  // gives mp4/aac, and ffmpeg decodes either. Hardcoding one breaks the other.
+  chunks = [];
+  // Held in a local as well: stopRec() clears the global immediately, and
+  // onstop fires afterwards — reading the global there would be reading null.
+  const rec = new MediaRecorder(stream);
+  recorder = rec;
+  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    if (blob.size < 1200) { setStatus("too short", "err"); return; }
+    send("/ask", blob, { "X-Audio-Type": blob.type || "audio/webm" }, "🎤 …");
+  };
+  recorder.start();
+  $("talk").classList.add("rec");
+  $("talk").textContent = "Release to send";
+  setStatus("listening…", "busy");
+}
+
+function stopRec() {
+  if (recorder && recorder.state === "recording") recorder.stop();
+  recorder = null;
+  $("talk").classList.remove("rec");
+  $("talk").textContent = "Hold to talk";
+}
+
+const talk = $("talk");
+talk.addEventListener("pointerdown", e => { e.preventDefault(); startRec(); });
+["pointerup", "pointercancel", "pointerleave"].forEach(ev =>
+  talk.addEventListener(ev, e => { e.preventDefault(); stopRec(); }));
+
+function sendTyped() {
+  const v = $("text").value.trim();
+  if (!v) return;
+  $("text").value = "";
+  unlockAudio();
+  send("/say", JSON.stringify({ text: v }), { "Content-Type": "application/json" }, v);
+}
+$("send").addEventListener("click", sendTyped);
+$("text").addEventListener("keydown", e => { if (e.key === "Enter") sendTyped(); });
+
+fetch("/health").then(r => r.json()).then(h => {
+  if (h.name) { $("name").textContent = h.name; document.title = h.name; }
+}).catch(() => {});
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+</script>
+</body>
+</html>
