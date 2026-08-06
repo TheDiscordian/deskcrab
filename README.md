@@ -121,6 +121,7 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `CONVO_TIMEOUT` | No | Seconds of inactivity before archiving conversation (default: 300) |
 | `CUSTOM_PROMPT` | No | Path to a markdown file appended to Crab's core system prompt |
 | `WHISPER_FIXES` | No | `sed` expressions to fix common whisper mistranscriptions |
+| `TTS_FIXES` | No | `sed` expressions to fix TTS pronunciation (spoken text only) |
 | `CONTEXT_FILES` | No | Space-separated list of files to include in the prompt |
 | `ASSISTANT_NAME` | No | Persona name the assistant sees in its system prompt (default: `Crab`) |
 | `NOTIFY_NAME` | No | Name shown in notifications (default: `ASSISTANT_NAME` if set, else `DeskCrab`) |
@@ -141,6 +142,14 @@ Whisper often mistranscribes proper nouns. Fix them with sed expressions:
 
 ```bash
 WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
+```
+
+### TTS fixes
+
+Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. Fixes apply only to the spoken reply; display-channel content is untouched:
+
+```bash
+TTS_FIXES='s/\bhmph\b/humph/gi'
 ```
 
 ## Display channel
