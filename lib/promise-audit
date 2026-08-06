@@ -65,4 +65,4 @@ VERDICT="$(cd "$PROJECT_DIR" 2>/dev/null || cd /; printf '%s' "$PROMPT" \
 [ -n "$VERDICT" ] || exit 0
 
 REASON="${VERDICT#UNSAVED: }"
-"$SCRIPT_DIR/crab" wake event "You said this and did not write it down: \"$REASON\" — check your wants file, and if it is genuinely not there, record it now. If it IS already there, do nothing and reply (quiet)." >/dev/null 2>&1
+"$SCRIPT_DIR/crab" wake event "You said this and did not write it down: \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and reply (quiet)." >/dev/null 2>&1
