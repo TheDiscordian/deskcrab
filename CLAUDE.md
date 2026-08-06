@@ -1,6 +1,6 @@
 # DeskCrab
 
-A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant is named "Crab".
+A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant is named "Crab" by default; `ASSISTANT_NAME` in the config renames it.
 
 ## Project structure
 
