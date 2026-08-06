@@ -280,6 +280,15 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
             echo "Cannot make sense of '$WHEN' — nothing scheduled."
             exit 1
         fi
+        # One promise, not a stack. Sessions overlap and each books its own
+        # "come back later"; without this the timers land minutes apart and
+        # every fired wake re-reads the same wants and re-announces the same
+        # progress. A scheduled booking equivalent to a pending one (same
+        # reason, firing within WAKE_COALESCE_WINDOW) is already covered.
+        if EXISTING="$(wake_pending_equivalent "$FIRE" "$KIND" "$REASON")"; then
+            echo "Wake already pending as $EXISTING (fires within $((WAKE_COALESCE_WINDOW / 60))min of '$WHEN') — not booking another."
+            exit 0
+        fi
         # Record first, book second: a crash between the two leaves a record
         # the reconciler will honor, where the other order leaves a timer
         # nothing remembers.

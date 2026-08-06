@@ -43,6 +43,19 @@ WAKE_EFFORT="${WAKE_EFFORT:-$CLAUDE_EFFORT}"
 # writes stream events constantly, so this many seconds without any output means
 # it is hung, not thinking. Wall-clock limits would kill productive sessions.
 WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
+# A wake that speaks moments after an interactive turn is an echo: the turn
+# almost certainly already covered what the wake is about to announce, and two
+# near-identical voices in a row reads as malfunction. If the last interactive
+# turn (desk or phone) began within this many seconds of the wake's speak
+# decision, the wake completes silently — the work still happened and its
+# outcome still lands in the journal. 0 disables.
+WAKE_MUTE_AFTER_TURN="${WAKE_MUTE_AFTER_TURN:-300}"
+# Self-booked wakes stack: several sessions each promise "come back in 45min"
+# and the timers land minutes apart, each re-reading the wants and
+# re-announcing the same progress. A scheduled booking whose fire time is
+# within this many seconds of a pending one with the same reason is not
+# booked — the existing promise already covers it. 0 disables.
+WAKE_COALESCE_WINDOW="${WAKE_COALESCE_WINDOW:-900}"
 
 # Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
 SERVE_PORT="${SERVE_PORT:-8723}"
@@ -414,6 +427,32 @@ wake_state_clear() {
     rm -f -- "$WAKES_DIR/$1.wake"
 }
 
+# An equivalent pending booking, if one exists: scheduled kind, same reason,
+# firing within WAKE_COALESCE_WINDOW of the proposed moment. Prints its unit
+# name. Two "come back to the wants" promises minutes apart are one promise —
+# each fired wake re-reads the same wants and re-announces the same progress,
+# so the second booking adds noise, not coverage. Event wakes never coalesce:
+# each carries its own reason for existing.
+wake_pending_equivalent() {  # <fire-epoch> <kind> <reason>
+    [ "${WAKE_COALESCE_WINDOW:-0}" -gt 0 ] || return 1
+    [ "$2" = "scheduled" ] || return 1
+    local f fire kind reason now diff
+    now=$(date +%s)
+    for f in "$WAKES_DIR"/*.wake; do
+        [ -e "$f" ] || continue
+        IFS=$'\t' read -r fire kind reason < "$f"
+        [ "$kind" = "scheduled" ] || continue
+        [ "${fire:-0}" -gt "$now" ] || continue
+        [ "$reason" = "$3" ] || continue
+        diff=$(( fire - $1 )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
+        if [ "$diff" -le "$WAKE_COALESCE_WINDOW" ]; then
+            f="${f##*/}"; printf '%s\n' "${f%.wake}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # The transient half: one systemd-run timer carrying its own booking id, so the
 # wake it fires can retire its record. A scratch instance's identity travels
 # with the unit — its wakes must fire back into the scratch state, not the live
@@ -780,6 +819,22 @@ last_origin() {
     [ -f "$LAST_ORIGIN_FILE" ] && cut -f1 "$LAST_ORIGIN_FILE"
 }
 
+last_origin_epoch() {
+    [ -f "$LAST_ORIGIN_FILE" ] && cut -f2 "$LAST_ORIGIN_FILE"
+}
+
+# True while inside the echo window: an interactive turn (desk or phone) began
+# within WAKE_MUTE_AFTER_TURN seconds. A wake speaking in this window is
+# almost always repeating what that turn just said — the same content, twice,
+# minutes apart, in the user's ear. Inside the window a wake works silently.
+wake_in_echo_window() {
+    [ "${WAKE_MUTE_AFTER_TURN:-0}" -gt 0 ] || return 1
+    local TS
+    TS="$(last_origin_epoch)"
+    [ -n "$TS" ] || return 1
+    [ $(( $(date +%s) - TS )) -lt "$WAKE_MUTE_AFTER_TURN" ]
+}
+
 # Is the phone client connected right now? serve.py touches the seen-file on
 # every authenticated /watch poll from a wake-capable client — the same channel
 # that would deliver the audio, so freshness means it will actually be played.
@@ -923,9 +978,28 @@ run_claude_wake() {
     # a meeting while this session was working; speaking now would talk over it.
     user_busy && return 0
 
+    # Echo window: an interactive turn just happened, and a wake speaking on
+    # its heels almost always repeats what that turn already said — the same
+    # content, twice, in the user's ear seconds apart. Applies to every wake
+    # kind: the promise-audit event wake is the worst offender, announcing the
+    # very sentence the turn that spawned it just spoke.
+    if wake_in_echo_window; then
+        session_outcome "(muted — echo window after an interactive turn) $(spoken_part "$RESPONSE")"
+        return 0
+    fi
+
     local SPOKEN DISPLAY_PART
     SPOKEN=$(spoken_part "$RESPONSE")
     DISPLAY_PART=$(display_part "$RESPONSE")
+
+    # Nothing new to say means saying NOTHING — the house rule, now enforced
+    # in code rather than trusted to the prompt's "(quiet)" convention. A wake
+    # whose spoken reply merely rewords what recent turns and wakes already
+    # said completes silently, display and all.
+    if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN"; then
+        session_outcome "(muted — said nothing the conversation had not already heard) $SPOKEN"
+        return 0
+    fi
 
     if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ]; then
         notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(echo "$SPOKEN" | head -c 140)" 2>/dev/null
@@ -999,6 +1073,38 @@ spoken_part() {
 # Split a response into its display half (everything below ---DISPLAY---).
 display_part() {
     printf '%s\n' "$1" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}'
+}
+
+# Does this spoken text say anything the conversation has not already said?
+# Content words of the candidate are compared against each recent assistant
+# message (excluding the last, which is the wake's own just-appended reply);
+# heavy overlap means the wake is re-announcing, not announcing. Lexical and
+# fuzzy on purpose — the echo window is the hard guard, this catches a later
+# wake restating the same progress in fresh words. Exit 0 = nothing new.
+wake_says_nothing_new() {  # <spoken-text>
+    [ -s "$CONVOFILE" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$CONVOFILE" "$1" <<'PY'
+import re, sys
+convo = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+spoken = sys.argv[2]
+STOP = set("""a an and are as at be been but by can could did do for from get got
+had has have he her him his how i if in is it just me more my no not now of on
+or our out she so some that the their them then there they this to up was we
+were what when will with would you your""".split())
+def words(t):
+    return set(re.findall(r"[a-z0-9]+", t.replace("'", "").lower())) - STOP
+blocks = re.split(r"^(?=User: |Assistant: |\[)", convo, flags=re.M)
+msgs = [b[len("Assistant: "):] for b in blocks if b.startswith("Assistant: ")]
+msgs = msgs[:-1]  # drop the wake's own reply, appended moments before this check
+mine = words(spoken)
+if len(mine) < 4:
+    sys.exit(1)  # too short to judge fairly — let it speak
+for m in msgs[-6:]:
+    if len(mine & words(m)) / len(mine) >= 0.6:
+        sys.exit(0)
+sys.exit(1)
+PY
 }
 
 # Synthesize spoken text to an opus file instead of the speakers — the remote

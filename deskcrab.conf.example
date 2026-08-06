@@ -75,6 +75,20 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # low-CPU tools in the foreground.
 # WAKE_STALL_TIMEOUT=300
 
+# Optional: echo window (seconds, default 300, 0 = off). A wake whose speak
+# decision lands within this window of the last interactive turn (desk or
+# phone) completes silently — a wake speaking on the heels of a turn almost
+# always repeats what the turn just said. The work still happens and the
+# outcome still reaches the session journal.
+# WAKE_MUTE_AFTER_TURN=300
+
+# Optional: wake coalescing window (seconds, default 900, 0 = off). A
+# `crab wake-at` booking of scheduled kind whose fire time is within this
+# window of a pending booking with the same reason is not added — the pending
+# promise already covers it. Stops overlapping sessions from stacking near-
+# duplicate timers that each re-announce the same progress.
+# WAKE_COALESCE_WINDOW=900
+
 # Optional: detached background jobs — `crab job "<description>"` runs work as
 # its own headless claude session under a transient systemd user unit
 # (deskcrab-job-<id>), so it survives the turn that launched it and never
