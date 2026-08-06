@@ -85,6 +85,12 @@ JOB_EFFORT="${JOB_EFFORT:-high}"
 # (status + log) are kept before pruning.
 JOBS_SHOW_FINISHED="${JOBS_SHOW_FINISHED:-6}"
 JOBS_KEEP_DAYS="${JOBS_KEEP_DAYS:-14}"
+# Durable wake bookings. A transient timer lives only inside the running user
+# manager — a reboot or logout erases it with no trace — so every wake-at also
+# writes one record here (fire-epoch \t kind \t reason) and `crab wake-restore`
+# rebuilds timers from the records at login. Deliberately NOT under
+# STATE_PREFIX: a promise for tomorrow morning must survive /tmp being cleared.
+WAKES_DIR="${WAKES_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes}"
 SESSIONS_LOCK="${STATE_PREFIX}-sessions.lock"
 SESSIONS_LOG="${STATE_PREFIX}-sessions.log"
 # How far back the journal of finished sessions is read, and how many entries
@@ -373,20 +379,122 @@ self_state_report() {
     session_history
 }
 
+# --- Durable wakes ---------------------------------------------------------
+# When "2h" / "45min" / "09:30" will actually fire, as an epoch. Relative specs
+# are computed directly; calendar specs are resolved through systemd-analyze so
+# the recorded moment is exactly the one systemd will pick. Prints nothing when
+# the spec is unparseable.
+wake_when_to_epoch() {
+    local when="$1" n
+    if [[ "$when" =~ ^([0-9]+)(s|sec|min|m|h|hr|hours?|d|days?)$ ]]; then
+        n="${BASH_REMATCH[1]}"
+        case "${BASH_REMATCH[2]}" in
+            s|sec) : ;;
+            m|min) n=$((n * 60)) ;;
+            h|hr|hour|hours) n=$((n * 3600)) ;;
+            *) n=$((n * 86400)) ;;
+        esac
+        echo $(( $(date +%s) + n ))
+    else
+        local next
+        next="$(systemd-analyze calendar "$when" 2>/dev/null \
+                | awk -F': +' '/Next elapse/ { print $2; exit }')"
+        [ -n "$next" ] && date -d "$next" +%s 2>/dev/null
+    fi
+}
+
+# The durable half of a booking: one small file per pending wake. The timer is
+# what fires; this record is what survives the timer's death.
+wake_state_write() {  # <unit> <fire-epoch> <kind> <reason>
+    mkdir -p "$WAKES_DIR"
+    printf '%s\t%s\t%s\n' "$2" "$3" "$4" > "$WAKES_DIR/$1.wake"
+}
+
+wake_state_clear() {
+    rm -f -- "$WAKES_DIR/$1.wake"
+}
+
+# The transient half: one systemd-run timer carrying its own booking id, so the
+# wake it fires can retire its record. A scratch instance's identity travels
+# with the unit — its wakes must fire back into the scratch state, not the live
+# one.
+_wake_book() {  # <unit> <when> <kind> <reason>
+    local -a extra=()
+    [ -n "${DESKCRAB_CONF:-}" ] && extra+=(--setenv=DESKCRAB_CONF="$DESKCRAB_CONF")
+    [ -n "${DESKCRAB_STATE_PREFIX:-}" ] && extra+=(--setenv=DESKCRAB_STATE_PREFIX="$DESKCRAB_STATE_PREFIX")
+    if [[ "$2" =~ ^[0-9]+(s|sec|min|m|h|hr|hours?|d|days?)$ ]]; then
+        systemd-run --user --quiet --unit="$1" "${extra[@]}" --on-active="$2" \
+            "$SCRIPT_DIR/crab" wake "$3" "$4" "$1"
+    else
+        systemd-run --user --quiet --unit="$1" "${extra[@]}" --on-calendar="$2" \
+            "$SCRIPT_DIR/crab" wake "$3" "$4" "$1"
+    fi
+}
+
+# Rebuild timers from the booking records. Run at login by
+# deskcrab-wake-restore.service and at the end of every wake; harmless to run
+# by hand. Still-future bookings come back at their original moment. Overdue
+# ones — the machine was off when they were due — fire once, promptly, but
+# staggered (90s, then +5min apart) so a long-off machine does not wake a
+# crowd at once; duplicate overdue generic wakes collapse into one, since two
+# identical "come back to the wants" promises are one promise.
+wake_restore() {
+    local now f unit fire kind reason overdue=0 generic_seen=0 delay
+    now=$(date +%s)
+    while IFS=$'\t' read -r fire f; do
+        [ -n "$f" ] && [ -e "$f" ] || continue
+        unit="${f##*/}"; unit="${unit%.wake}"
+        # A live timer needs nothing from us; a dead one may linger as failed
+        # and would block systemd-run reusing its name.
+        systemctl --user is-active --quiet "$unit.timer" && continue
+        systemctl --user reset-failed "$unit.timer" "$unit.service" 2>/dev/null
+        IFS=$'\t' read -r fire kind reason < "$f"
+        if [ "${fire:-0}" -gt "$now" ]; then
+            _wake_book "$unit" "$((fire - now))s" "$kind" "$reason" \
+                && echo "restored: $unit fires $(date -d "@$fire" '+%F %H:%M') ($kind${reason:+ — $reason})"
+        else
+            if [ "${kind:-scheduled}" = "scheduled" ] && [ -z "$reason" ]; then
+                if [ "$generic_seen" -gt 0 ]; then
+                    wake_state_clear "$unit"
+                    echo "collapsed: $unit (duplicate overdue wants wake)"
+                    continue
+                fi
+                generic_seen=1
+            fi
+            delay=$((90 + overdue * 300)); overdue=$((overdue + 1))
+            wake_state_write "$unit" "$((now + delay))" "$kind" "$reason"
+            _wake_book "$unit" "${delay}s" "$kind" "$reason" \
+                && echo "overdue: $unit (was due $(date -d "@$fire" '+%F %H:%M')) fires in ${delay}s"
+        fi
+    done < <(for f in "$WAKES_DIR"/*.wake; do
+                 [ -e "$f" ] || continue
+                 IFS=$'\t' read -r fire _ < "$f"
+                 printf '%s\t%s\n' "${fire:-0}" "$f"
+             done | sort -n)
+}
+
 # Agency over her own time. Wants only get worked on when something wakes her
 # to work on them, so a wake that ends without scheduling the next one quietly
 # breaks the chain — the intent survives in the wants file, but nothing ever
-# comes back to it. Self-scheduled wakes are transient units named
-# deskcrab-wake-<epoch>; if none is pending when a wake exits, book one. This
-# is a floor, not a schedule: a wake that scheduled its own follow-up is left
-# alone.
+# comes back to it. Only a pending wake that will COME BACK TO THE WANTS
+# counts: a scheduled-kind booking does, an event wake is pending for its
+# event. The old check counted any deskcrab-wake-* timer, so one unrelated
+# long-dated booking suppressed every floor booking and the chain ended
+# anyway. This is a floor, not a schedule: a wake that scheduled its own
+# follow-up is left alone.
 ENSURE_WAKE_DELAY="${ENSURE_WAKE_DELAY:-45min}"
 ensure_next_wake() {
     [ -n "$WANTS_FILE" ] || return 0
-    local pending
-    pending="$(systemctl --user list-units --type=timer --state=active --no-legend --no-pager 2>/dev/null \
-               | awk '$1 ~ /^deskcrab-wake-[0-9]+\.timer$/' | wc -l)"
-    [ "${pending:-0}" -gt 0 ] && return 0
+    # Heal first: any booking whose timer died with a past user manager gets
+    # its timer back now, not only at next login.
+    wake_restore >/dev/null 2>&1
+    local f fire kind reason now
+    now=$(date +%s)
+    for f in "$WAKES_DIR"/*.wake; do
+        [ -e "$f" ] || continue
+        IFS=$'\t' read -r fire kind reason < "$f"
+        [ "$kind" = "scheduled" ] && [ "${fire:-0}" -gt "$now" ] && return 0
+    done
     "$SCRIPT_DIR/crab" wake-at "$ENSURE_WAKE_DELAY" >/dev/null 2>&1 || true
 }
 

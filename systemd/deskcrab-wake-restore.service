@@ -1,0 +1,14 @@
+[Unit]
+Description=DeskCrab: restore self-scheduled wakes after a reboot
+# Transient wake timers die with the user manager, taking every promise the
+# assistant made itself for later with them. The durable booking records in
+# ~/.local/share/deskcrab/wakes survive; this rebuilds each pending timer from
+# them at login — still-future wakes at their original moment, overdue ones
+# once and promptly, staggered instead of all at once.
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/crab wake-restore
+
+[Install]
+WantedBy=default.target

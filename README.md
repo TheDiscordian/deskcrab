@@ -169,7 +169,15 @@ Give the assistant its own durable goals and let it work on them unprompted. Set
 
 - **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. The file is injected into every prompt, so wants persist across sessions.
 - **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it replies `(quiet)` and the wake is invisible. Wakes are skipped (or rescheduled) if a recording or speech is in progress, and unattended sessions are told to take no destructive or outward-facing actions. Sessions have **no wall-clock limit** — the assistant controls its own duration and can chain longer work across wakes; only a session showing no life signs (no output *and* no process-tree CPU activity, so long compiles count as alive) for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped.
-- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake via a transient systemd timer: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`.
+- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`. Bookings are durable: the timer itself is transient, but each booking is also recorded under `~/.local/share/deskcrab/wakes/`, and `crab wake-restore` rebuilds timers from those records — still-future wakes at their original moment, wakes that came due while the machine was off fired once, promptly, staggered rather than all at once. Install the login reconciler so this happens automatically after a reboot:
+
+```bash
+cp systemd/deskcrab-wake-restore.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable deskcrab-wake-restore.service
+```
+
+  Cancel a pending wake with `crab wake-cancel <unit>` — stopping just the timer is not enough, the record would bring it back at next login.
 - **Random background wakes** — install the provided timer for wakes every 3–6 hours:
 
 ```bash

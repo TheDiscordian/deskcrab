@@ -111,19 +111,25 @@ case "${1:-}" in
 
     wake)
         # Autonomous wake: pursue the wants file without user interaction.
-        if [ -z "$WANTS_FILE" ]; then
-            echo "WANTS_FILE is not configured — autonomous wakes are disabled."
-            exit 1
-        fi
-        mkdir -p "$(dirname "$WANTS_FILE")"
-
         # KIND is "scheduled" (self-scheduled), "event" (something on the
         # machine happened), or empty (the background timer came round).
         # A wake with a KIND had a purpose, so a blocked one is pushed back
         # rather than dropped — and an event wake carries its reason along.
         WAKE_KIND="${2:-}"
         WAKE_REASON="${3:-}"
+        WAKE_ID="${4:-}"
         [ "$WAKE_KIND" = "scheduled" ] || [ "$WAKE_KIND" = "event" ] || WAKE_KIND=""
+
+        # This booking has fired: retire its durable record before anything can
+        # exit early, or wake-restore would resurrect a wake that already ran.
+        # A deferral below re-books itself and re-records in the same motion.
+        case "$WAKE_ID" in deskcrab-wake-*) wake_state_clear "$WAKE_ID" ;; esac
+
+        if [ -z "$WANTS_FILE" ]; then
+            echo "WANTS_FILE is not configured — autonomous wakes are disabled."
+            exit 1
+        fi
+        mkdir -p "$(dirname "$WANTS_FILE")"
 
         # Don't barge into an active interaction (recording or speech in progress).
         # A wake with a purpose is pushed back instead of dropped, reason intact.
@@ -238,7 +244,11 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         ;;
 
     wake-at)
-        # Schedule a one-shot autonomous wake via a transient systemd user timer.
+        # Schedule a one-shot autonomous wake. The timer itself is a transient
+        # systemd user unit and dies with the user manager, so the booking is
+        # recorded durably in $WAKES_DIR first and rebuilt from there by
+        # `crab wake-restore` — what survives a reboot is the record, not the
+        # timer.
         WHEN="${2:-}"
         if [ -z "$WHEN" ]; then
             echo "Usage: crab wake-at <when> [kind] [reason]   (e.g. 2h, 45min, \"09:30\", \"Sat 14:00\")"
@@ -251,18 +261,50 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # $$ as well as the timestamp: two deferrals in the same second would
         # otherwise collide on the unit name and the second one would vanish.
         UNIT="deskcrab-wake-$(date +%s)-$$"
-        if echo "$WHEN" | grep -qE '^[0-9]+(s|sec|min|m|h|hr|hours?|d|days?)$'; then
-            systemd-run --user --quiet --unit="$UNIT" --on-active="$WHEN" "$SCRIPT_DIR/crab" wake "$KIND" "$REASON"
+        FIRE="$(wake_when_to_epoch "$WHEN")"
+        if [ -z "$FIRE" ]; then
+            echo "Cannot make sense of '$WHEN' — nothing scheduled."
+            exit 1
+        fi
+        # Record first, book second: a crash between the two leaves a record
+        # the reconciler will honor, where the other order leaves a timer
+        # nothing remembers.
+        wake_state_write "$UNIT" "$FIRE" "$KIND" "$REASON"
+        if _wake_book "$UNIT" "$WHEN" "$KIND" "$REASON"; then
+            echo "Wake scheduled ($WHEN) as $UNIT"
         else
-            systemd-run --user --quiet --unit="$UNIT" --on-calendar="$WHEN" "$SCRIPT_DIR/crab" wake "$KIND" "$REASON"
-        fi && echo "Wake scheduled ($WHEN) as $UNIT"
+            wake_state_clear "$UNIT"
+            echo "Failed to schedule wake ($WHEN)."
+            exit 1
+        fi
+        ;;
+
+    wake-restore)
+        # Rebuild wake timers from their durable records: still-future ones at
+        # their original moment, overdue ones once and promptly but staggered.
+        # Run at login by deskcrab-wake-restore.service; safe to run by hand.
+        wake_restore
+        ;;
+
+    wake-cancel)
+        # The only real cancellation. Stopping just the timer is not one any
+        # more — the record survives and wake-restore would bring it back.
+        UNIT="${2:-}"
+        if [ -z "$UNIT" ]; then
+            echo "Usage: crab wake-cancel <unit>   (pending wakes: crab status)"
+            exit 1
+        fi
+        UNIT="${UNIT%.timer}"
+        systemctl --user stop "$UNIT.timer" 2>/dev/null
+        wake_state_clear "$UNIT"
+        echo "Cancelled $UNIT"
         ;;
 
     *)
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|wake|wake-at <when>|serve [port]|remote <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|<message>"
             exit 1
         fi
         stop_tts
