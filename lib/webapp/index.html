@@ -386,14 +386,19 @@ async function runTurn(blob, ctype, typed) {
       turn.you.scrollIntoView({ block: "end" });
     }
     setStatus("thinking…", "busy");
+    // This turn is about to land in the convo file too; the watcher filters
+    // it by text rather than skipping everything in the window, so a wake or
+    // laptop turn landing mid-flight still renders instead of vanishing.
+    pendingUser = norm(text);
+    pendingReply = null;
     const res = await streamTurn(text, turn);
     foldThoughts(turn);
+    if (res && res.spoken) pendingReply = norm(res.spoken);
     await deliver(res, turn.reply);
   } catch (e) {
     setStatus(String(e.message || e), "err");
     turn.reply.textContent = "(failed)";
   } finally {
-    await resyncWatch();
     busy = false; $("talk").disabled = false;
   }
 }
@@ -487,20 +492,29 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
 
   // The convo file stores one line per turn, so a user turn and the reply that
   // follows it are paired back up here into the same shape a live turn takes.
+  // An assistant turn with no user turn before it — an autonomous wake — is
+  // rendered on its own: skipping non-user turns here silently erased every
+  // wake exchange from a reloaded page.
   for (let i = 0; i < turns.length; i++) {
-    if (turns[i].role !== "user") continue;
     const t = document.createElement("div");
     t.className = "turn";
-    const y = document.createElement("div");
-    y.className = "you"; y.textContent = turns[i].text;
-    t.append(y);
-    const next = turns[i + 1];
-    if (next && next.role === "assistant") {
+    if (turns[i].role === "user") {
+      const y = document.createElement("div");
+      y.className = "you"; y.textContent = turns[i].text;
+      t.append(y);
+      const next = turns[i + 1];
+      if (next && next.role === "assistant") {
+        const r = document.createElement("div");
+        r.className = "reply"; r.textContent = next.text;
+        t.append(r);
+        if (next.display_html) attachDisplay(r, next.display_html);
+        i++;
+      }
+    } else {
       const r = document.createElement("div");
-      r.className = "reply"; r.textContent = next.text;
+      r.className = "reply"; r.textContent = turns[i].text;
       t.append(r);
-      if (next.display_html) attachDisplay(r, next.display_html);
-      i++;
+      if (turns[i].display_html) attachDisplay(r, turns[i].display_html);
     }
     seed.append(t);
   }
@@ -515,8 +529,26 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
 let cursor = null;
 let watching = false;
 
+// The turn taken on this phone also lands in the convo file, and the watcher
+// must not echo it back as a duplicate bubble. It used to handle that by not
+// rendering at all while busy and snapping the cursor forward afterwards —
+// which silently swallowed any OTHER turn (an autonomous wake, a turn spoken
+// at the laptop) that landed in the same window: consumed by the cursor,
+// never rendered, unrecoverable. Instead the own turn is remembered by its
+// text and filtered out individually; everything else always renders.
+let pendingUser = null;
+let pendingReply = null;
+
 function renderRemote(turns) {
   for (let i = 0; i < turns.length; i++) {
+    if (pendingUser && turns[i].role === "user" && norm(turns[i].text) === pendingUser) {
+      pendingUser = null;
+      continue;
+    }
+    if (pendingReply && turns[i].role === "assistant" && norm(turns[i].text) === pendingReply) {
+      pendingReply = null;
+      continue;
+    }
     const t = document.createElement("div");
     t.className = "turn elsewhere";
     if (turns[i].role === "user") {
@@ -554,7 +586,7 @@ async function startWatch() {
       const first = cursor === null;
       cursor = data.n;
       // The first reply only establishes where we are; the seed already showed it.
-      if (!first && data.turns.length && !busy) renderRemote(data.turns);
+      if (!first && data.turns.length) renderRemote(data.turns);
     } catch (e) {
       // Phone asleep, laptop rebooting, tailnet blipping — just try again.
       await new Promise(r => setTimeout(r, 3000));
@@ -562,13 +594,6 @@ async function startWatch() {
   }
 }
 
-// A turn taken here is already on screen, so skip it rather than echo it back.
-async function resyncWatch() {
-  try {
-    const res = await fetch("/watch?wait=0", { credentials: "same-origin" });
-    cursor = (await res.json()).n;
-  } catch (e) { /* the watcher will resync on its own next pass */ }
-}
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 </script>

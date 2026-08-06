@@ -246,6 +246,12 @@ def read_turns():
         elif line.startswith("Assistant: "):
             cur = {"role": "assistant", "text": line[11:]}
             turns.append(cur)
+        elif line.startswith("[Autonomous wake"):
+            # A wake marker is a turn boundary, not prose. Without this it is
+            # welded onto the end of whatever turn preceded it as a
+            # "continuation", polluting that bubble and hiding the fact that
+            # the assistant turn that follows stands alone.
+            cur = None
         elif cur is not None:
             # Continuation of a multi-line turn.
             cur["text"] += "\n" + line
