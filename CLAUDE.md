@@ -9,6 +9,7 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 - `lib/common.sh` — shared functions: TTS, conversation management, prompt building, Claude invocation
 - `lib/serve.py` — stdlib HTTP front end for the remote (phone) client, started by `crab serve`
 - `lib/webapp/` — the phone client: one HTML page, a manifest, a network-only service worker
+- `lib/notice-newfiles` — event emitter: turns files arriving in a watched directory into an event wake
 - `deskcrab.conf.example` — example configuration
 - `custom-prompt.md.example` — example custom prompt file
 
@@ -26,7 +27,9 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 ## Key details
 
 - Config loaded from `~/.config/deskcrab/deskcrab.conf` (override with `DESKCRAB_CONF` env var)
-- Autonomous mode: `WANTS_FILE` (durable goals injected into the prompt), `crab wake` (silent-capable unattended session via `run_claude_wake` — no TTS streamer, post-hoc speak/display decision, `(quiet)` reply = invisible wake), `crab wake-at <when>` (transient systemd timer), `systemd/deskcrab-wake.timer` (random 3–6 h background wakes), `WAKE_QUIET_HOURS` (never speak/show at night)
+- Autonomous mode: `WANTS_FILE` (durable goals injected into the prompt), `crab wake` (silent-capable unattended session via `run_claude_wake` — no TTS streamer, post-hoc speak/display decision, `(quiet)` reply = invisible wake), `crab wake-at <when> [kind] [reason]` (transient systemd timer), `systemd/deskcrab-wake.timer` (random 3–6 h background wakes), `WAKE_QUIET_HOURS` (never speak/show at night)
+- Event wakes: `crab wake event "<reason>"` wakes the assistant *about something*, and the reason becomes that session's agenda instead of the wants file. Emitters live in `lib/` and are driven by systemd `.path` units, which watch with the kernel's own inotify — no polling daemon, no `inotify-tools`. `lib/notice-newfiles` is the first one (a transcript lands → wake about it); it seeds silently on first run so an existing backlog never fires, and defers while a Parley recording is still writing. Event units are shipped but **not** enabled by default — enabling one changes how the machine behaves towards its user, which is their call: `systemctl --user enable --now deskcrab-notice-transcriptions.path`
+- Only one wake session runs at a time (`${STATE_PREFIX}-wake.lock`, held for the life of the process). A wake blocked by the lock — or by an active recording or speech — is re-armed 10–15 min later with its kind and reason intact, rather than dropped
 - Remote client: `crab serve` (HTTP front end) + `crab remote <text>` (one turn in, JSON out). The phone is only a microphone/speaker/screen — the CLI, prompt, tools, and conversation never leave this machine. Uploaded clips go through **batch** `whisper-cli`, not `whisper-stream`: the clip is already complete, so batch is both simpler and faster. Serving requires `SERVE_SECRET` and binds loopback; exposing it (Tailscale, for the TLS a browser mic demands) is a separate, deliberate step
 - `serve.py` is stdlib-only on purpose — no pip, no virtualenv to go stale, it must start on an offline laptop
 - All temp files use `/tmp/deskcrab-*` prefix (override the whole prefix with `DESKCRAB_STATE_PREFIX` to run a scratch instance beside the live one)
