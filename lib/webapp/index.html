@@ -87,7 +87,15 @@
   .disp-body > :last-child { margin-bottom: 0; }
 
   footer { padding: 16px; border-top: 1px solid var(--border); display: flex;
-           flex-direction: column; gap: 12px; }
+           flex-direction: column; gap: 12px; position: relative; }
+  /* Floats above the footer instead of living in it, so appearing and
+     disappearing never shoves the talk button around mid-press. */
+  #stopspeech { position: absolute; bottom: 100%; left: 50%;
+                transform: translateX(-50%); margin-bottom: 10px;
+                padding: 12px 24px; font: inherit; font-size: 16px;
+                font-weight: 600; white-space: nowrap; color: #ffdada;
+                background: #3a1414; border: 1px solid #a33;
+                border-radius: 999px; box-shadow: 0 2px 12px rgba(0,0,0,.6); }
   #talk {
     width: 100%; padding: 26px; font: inherit; font-size: 17px; font-weight: 600;
     color: var(--fg); background: var(--panel); border: 1px solid var(--border);
@@ -110,6 +118,7 @@
   <div id="log"></div>
 </main>
 <footer>
+  <button id="stopspeech" hidden>◼ Stop speaking</button>
   <button id="talk">Hold to talk</button>
   <div class="row">
     <input id="text" placeholder="…or type" autocomplete="off" enterkeyhint="send">
@@ -162,7 +171,11 @@ function offerPlay(src) {
   if (!b) {
     b = document.createElement("button");
     b.id = "playnow"; b.textContent = "▶ Play reply";
-    b.addEventListener("click", () => { player.play().catch(() => {}); setStatus("ready"); });
+    b.addEventListener("click", () => {
+      const p = player.play();
+      if (p) p.then(() => { voicePlaying = true; updateStopBtn(); }).catch(() => {});
+      setStatus("ready");
+    });
     $("talk").parentNode.insertBefore(b, $("talk"));
   }
   b.hidden = false;
@@ -190,9 +203,35 @@ function attachDisplay(replyEl, html) {
 const voiceQueue = [];
 let voicePlaying = false;
 
+// The phone's SUPER+SHIFT+A. Stopping is not pausing: the queue is emptied,
+// the current clip unloaded (which aborts its download), and clips still
+// streaming in for this turn are dropped on arrival — otherwise the voice
+// would fall silent only until the next chunk landed and then carry on.
+// A new turn, or a new wake, speaks again.
+let voiceMuted = false;
+const stopBtn = $("stopspeech");
+
+function updateStopBtn() {
+  stopBtn.hidden = !voicePlaying && !voiceQueue.length;
+}
+
+function stopSpeech() {
+  voiceMuted = true;
+  voiceQueue.length = 0;
+  voicePlaying = false;
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  updateStopBtn();
+  setStatus("speech stopped");
+}
+stopBtn.addEventListener("click", stopSpeech);
+
 function enqueueVoice(url) {
+  if (voiceMuted) return;
   voiceQueue.push(url);
   playNextVoice();
+  updateStopBtn();
 }
 
 function playNextVoice() {
@@ -202,11 +241,12 @@ function playNextVoice() {
   player.src = url;
   player.load();
   const p = player.play();
-  if (p) p.catch(() => { voicePlaying = false; offerPlay(url); });
+  if (p) p.catch(() => { voicePlaying = false; updateStopBtn(); offerPlay(url); });
+  updateStopBtn();
 }
 
-player.addEventListener("ended", () => { voicePlaying = false; playNextVoice(); });
-player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); });
+player.addEventListener("ended", () => { voicePlaying = false; playNextVoice(); updateStopBtn(); });
+player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); updateStopBtn(); });
 
 async function deliver(res, replyEl) {
   if (res.error) { setStatus(res.error, "err"); replyEl.textContent = "(" + res.error + ")"; return; }
@@ -369,6 +409,8 @@ function post(url, body, headers) {
 async function runTurn(blob, ctype, typed) {
   if (busy) return;
   busy = true; $("talk").disabled = true;
+  // Asking again means wanting the answer aloud again.
+  voiceMuted = false;
   const turn = addTurn(typed || "🎤 …");
   try {
     let text = typed;
@@ -606,6 +648,9 @@ async function startWatch() {
       // next poll doesn't repeat it.
       if (data.wake && data.wake.id !== wakeSeen) {
         wakeSeen = data.wake.id;
+        // A stop applies to the speech it interrupted, not to a wake that
+        // hasn't spoken yet.
+        voiceMuted = false;
         enqueueVoice(data.wake.audio);
       }
       // The first reply only establishes where we are; the seed already showed it.
