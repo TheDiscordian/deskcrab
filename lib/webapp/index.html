@@ -38,6 +38,10 @@
   .you { color: var(--dim); }
   .you::before { content: "› "; }
   .reply { white-space: pre-wrap; }
+  .thoughts { margin: 6px 0 8px; padding-left: 10px; border-left: 2px solid var(--border); }
+  .thought { color: var(--dim); font-size: 12px; line-height: 1.45;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thought.tool { color: var(--accent); opacity: .8; }
   #display { margin-top: 14px; padding: 12px; background: var(--panel);
              border: 1px solid var(--border); border-radius: 8px; }
   #display:empty { display: none; }
@@ -140,6 +144,54 @@ async function deliver(res, replyEl) {
   replyEl.scrollIntoView({ block: "end" });
 }
 
+// The turn arrives as a stream of events, not one reply: thinking and tool use
+// are shown as they happen, exactly like the desktop client, so a long answer
+// isn't a silent spinner. The last event carries the finished reply.
+async function streamTurn(text, turn) {
+  const r = await fetch("/say", {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "", done = null;
+  while (true) {
+    const { value, done: eof } = await reader.read();
+    if (eof) break;
+    buf += dec.decode(value, { stream: true });
+    let cut;
+    while ((cut = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+      if (!frame.startsWith("data:")) continue;
+      let ev; try { ev = JSON.parse(frame.slice(5).trim()); } catch (e) { continue; }
+      if (ev.kind === "done") { done = ev; continue; }
+      showThought(turn, ev);
+    }
+  }
+  return done || { error: "connection ended early" };
+}
+
+function showThought(turn, ev) {
+  if (ev.kind === "transcript") return;
+  if (ev.kind === "text") { turn.reply.textContent = ev.text; return; }
+  let box = turn.thoughts;
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "thoughts";
+    turn.reply.parentNode.insertBefore(box, turn.reply);
+    turn.thoughts = box;
+  }
+  const line = document.createElement("div");
+  line.className = "thought " + ev.kind;
+  line.textContent = (ev.kind === "tool" ? "⚙ " : "… ") + ev.text;
+  box.append(line);
+  // Only the last few matter; the rest is noise on a phone screen.
+  while (box.children.length > 6) box.removeChild(box.firstChild);
+  setStatus(ev.kind === "tool" ? "working…" : "thinking…", "busy");
+  line.scrollIntoView({ block: "end" });
+}
+
 function post(url, body, headers) {
   return fetch(url, { method: "POST", body, headers, credentials: "same-origin" })
     .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
@@ -163,8 +215,7 @@ async function runTurn(blob, ctype, typed) {
       turn.you.scrollIntoView({ block: "end" });
     }
     setStatus("thinking…", "busy");
-    const res = await post("/say", JSON.stringify({ text }),
-                           { "Content-Type": "application/json" });
+    const res = await streamTurn(text, turn);
     await deliver(res, turn.reply);
   } catch (e) {
     setStatus(String(e.message || e), "err");

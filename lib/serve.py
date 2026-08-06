@@ -30,6 +30,7 @@ import subprocess
 import ssl
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,9 +113,84 @@ def transcribe(blob, suffix):
             f.unlink(missing_ok=True)
 
 
-def ask(text):
-    """One turn through the real assistant. Returns the crab remote JSON."""
-    r = run([CRAB_BIN, "remote", "--voice", text])
+def _progress_events(logpath, stop, emit):
+    """Tail a turn's stream-json log and report what the assistant is doing.
+
+    The desktop client shows thinking and tool use as it happens; without this
+    the phone stares at a spinner for the whole turn. Same stream, different
+    consumer — we only summarise, the TTS streamer is not involved here.
+    """
+    seen_tools = 0
+    while not stop.is_set() and not os.path.exists(logpath):
+        time.sleep(0.05)
+    try:
+        with open(logpath, "r", errors="replace") as f:
+            while not stop.is_set():
+                line = f.readline()
+                if not line:
+                    time.sleep(0.05)
+                    continue
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("type") == "result":
+                    return
+                if d.get("type") != "assistant" or "message" not in d:
+                    continue
+                for block in d["message"].get("content", []):
+                    kind = block.get("type")
+                    if kind == "thinking":
+                        thought = " ".join((block.get("thinking") or "").split())
+                        if thought:
+                            emit("thinking", thought[-400:])
+                    elif kind == "tool_use":
+                        seen_tools += 1
+                        emit("tool", _tool_label(block))
+                    elif kind == "text":
+                        said = " ".join((block.get("text") or "").split())
+                        said = said.split("---DISPLAY---")[0].strip()
+                        if said:
+                            emit("text", said[:400])
+    except OSError:
+        return
+
+
+def _tool_label(block):
+    """A short human line for a tool call — the command, not the whole payload."""
+    name = block.get("name", "tool")
+    inp = block.get("input") or {}
+    for field in ("command", "pattern", "file_path", "path", "query", "url", "prompt"):
+        val = inp.get(field)
+        if isinstance(val, str) and val.strip():
+            return f"{name}: {' '.join(val.split())[:120]}"
+    return name
+
+
+def ask(text, on_event=None):
+    """One turn through the real assistant. Returns the crab remote JSON.
+
+    With on_event, progress is reported live while the turn runs.
+    """
+    if on_event is None:
+        r = run([CRAB_BIN, "remote", "--voice", text])
+    else:
+        logpath = f"/tmp/deskcrab-turn-{uuid.uuid4().hex}.log"
+        stop = threading.Event()
+        watcher = threading.Thread(
+            target=_progress_events, args=(logpath, stop, on_event), daemon=True
+        )
+        watcher.start()
+        env = dict(os.environ, DESKCRAB_REMOTE_LOG=logpath)
+        try:
+            r = run([CRAB_BIN, "remote", "--voice", text], env=env)
+        finally:
+            stop.set()
+            watcher.join(timeout=1)
+            Path(logpath).unlink(missing_ok=True)
     out = r.stdout.decode("utf-8", "replace").strip()
     # crab remote prints exactly one JSON object last; anything a tool leaked to
     # stdout before it would otherwise poison the parse.
@@ -267,15 +343,54 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._send(404, "not found")
 
-        reply = ask(text)
-        audio = reply.get("audio") or ""
-        return self._json(200, {
-            "transcript": text,
-            "spoken": reply.get("spoken", ""),
-            "display_html": render_markdown(reply.get("display", "")),
-            "audio": "/audio/" + os.path.basename(audio) if audio else "",
-            "error": reply.get("error", ""),
-        })
+        # The answer is streamed, not returned in one lump: the desktop client
+        # shows thinking and tool use as it happens and the phone should too.
+        # Plain chunked SSE over the same POST — no second connection to
+        # authenticate, correlate, and clean up.
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        lock = threading.Lock()
+        alive = [True]
+
+        def event(kind, payload):
+            if not alive[0]:
+                return
+            body = json.dumps({"kind": kind, **payload})
+            with lock:
+                try:
+                    chunk = f"data: {body}\n\n".encode("utf-8")
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ValueError):
+                    # He backgrounded the app or lost signal; the turn itself
+                    # carries on and lands in the conversation regardless.
+                    alive[0] = False
+
+        event("transcript", {"text": text})
+        try:
+            reply = ask(text, on_event=lambda kind, msg: event(kind, {"text": msg}))
+            audio = reply.get("audio") or ""
+            event("done", {
+                "spoken": reply.get("spoken", ""),
+                "display_html": render_markdown(reply.get("display", "")),
+                "audio": "/audio/" + os.path.basename(audio) if audio else "",
+                "error": reply.get("error", ""),
+            })
+        except Exception as exc:  # noqa: BLE001 — the client must hear about it
+            event("done", {"spoken": "", "display_html": "", "audio": "",
+                           "error": str(exc)[:300]})
+        with lock:
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ValueError):
+                pass
+        return
 
 
 def main():

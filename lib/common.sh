@@ -464,7 +464,9 @@ _run_claude_remote_locked() {
     local TEXT="$1"
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
-    local DEBUGLOG="${STATE_PREFIX}-remote-$$.log"
+    # crab serve sets DESKCRAB_REMOTE_LOG when it wants to tail this stream and
+    # relay the thinking to the phone; otherwise it stays private to this turn.
+    local DEBUGLOG="${DESKCRAB_REMOTE_LOG:-${STATE_PREFIX}-remote-$$.log}"
     rotate_convo
     convo_append 'User: %s\n' "$TEXT"
 
