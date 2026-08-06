@@ -22,11 +22,14 @@ refuses to run without a shared secret. The listener binds loopback by default;
 publishing it to a phone is a separate, deliberate act (Tailscale).
 """
 
+import hashlib
 import hmac
 import http.cookies
 import json
 import os
+import mimetypes
 import queue
+import re
 import subprocess
 import ssl
 import sys
@@ -73,7 +76,34 @@ def render_markdown(text):
         from html import escape
 
         return "<pre>" + escape(text) + "</pre>"
-    return _markdown.markdown(text, extensions=["fenced_code", "tables"])
+    return publish_local_images(
+        _markdown.markdown(text, extensions=["fenced_code", "tables"]))
+
+
+# Display markdown routinely points <img> at a local file (/tmp/cat.jpg), which
+# means nothing to a phone. Each such path gets a token and is served back over
+# this connection; nothing is exposed that a reply did not deliberately name.
+IMAGES = {}
+IMG_RE = re.compile(r'(<img\b[^>]*?\bsrc=")([^"]+)(")', re.I)
+
+
+def publish_local_images(html):
+    def sub(m):
+        src = m.group(2)
+        if "://" in src or src.startswith("//") or src.startswith("/img/"):
+            return m.group(0)
+        p = Path(src[7:] if src.startswith("file://") else src).expanduser()
+        try:
+            p = p.resolve(strict=True)
+        except OSError:
+            return m.group(0)
+        if not p.is_file():
+            return m.group(0)
+        token = hashlib.sha256(str(p).encode()).hexdigest()[:24]
+        IMAGES[token] = p
+        return m.group(1) + "/img/" + token + m.group(3)
+
+    return IMG_RE.sub(sub, html)
 
 
 def run(cmd, **kw):
@@ -337,6 +367,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/icon.svg":
             return self._send(200, (WEBAPP_DIR / "icon.svg").read_bytes(),
                               "image/svg+xml", extra)
+        if path.startswith("/img/"):
+            f = IMAGES.get(os.path.basename(path))
+            if f is None or not f.is_file():
+                return self._send(404, "not found")
+            ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+            return self._send(200, f.read_bytes(), ctype, extra)
         if path.startswith("/audio/"):
             name = os.path.basename(path)
             # Only ever serve this server's own generated replies.
