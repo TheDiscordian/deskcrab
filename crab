@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | shutup | <text>
+# Usage: crab start | stop | shutup | wake | wake-at <when> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -71,11 +71,48 @@ case "${1:-}" in
         stop_tts
         ;;
 
+    wake)
+        # Autonomous wake: pursue the wants file without user interaction.
+        if [ -z "$WANTS_FILE" ]; then
+            echo "WANTS_FILE is not configured — autonomous wakes are disabled."
+            exit 1
+        fi
+        mkdir -p "$(dirname "$WANTS_FILE")"
+        # Don't barge into an active interaction (recording or speech in progress).
+        # A self-scheduled wake had a purpose, so push it back instead of dropping it.
+        if [ -f "$PIDFILE" ] || [ -f "$TTSPIDFILE" ]; then
+            [ "${2:-}" = "scheduled" ] && "$SCRIPT_DIR/crab" wake-at 10min >/dev/null
+            exit 0
+        fi
+        rotate_convo
+        WAKE_SOURCE="on your background timer"
+        [ "${2:-}" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"
+        WAKE_NOTE=""
+        in_quiet_hours && WAKE_NOTE="
+Quiet hours are in effect: speaking and windows are suppressed — work silently."
+        run_claude_wake "(Autonomous wake — nobody is talking to you. You woke up $WAKE_SOURCE to pursue your own wants. Review your wants file, pick at most ONE want, and advance it: think it through, research with your tools, prepare something, or revise the file. Nobody is waiting, so speed does not matter this session — but keep it modest and finish within a few minutes. While unattended, take no destructive or outward-facing actions: nothing leaves this machine — no messages, no emails, no pushes — and delete nothing. Update your wants file with dated progress before finishing. If you found something genuinely worth telling the user right now, say it briefly (a display section is fine too); otherwise begin your reply with (quiet) and nothing will be spoken or shown.$WAKE_NOTE)"
+        ;;
+
+    wake-at)
+        # Schedule a one-shot autonomous wake via a transient systemd user timer.
+        WHEN="${2:-}"
+        if [ -z "$WHEN" ]; then
+            echo "Usage: crab wake-at <when>   (e.g. 2h, 45min, \"09:30\", \"Sat 14:00\")"
+            exit 1
+        fi
+        UNIT="deskcrab-wake-$(date +%s)"
+        if echo "$WHEN" | grep -qE '^[0-9]+(s|sec|min|m|h|hr|hours?|d|days?)$'; then
+            systemd-run --user --quiet --unit="$UNIT" --on-active="$WHEN" "$SCRIPT_DIR/crab" wake scheduled
+        else
+            systemd-run --user --quiet --unit="$UNIT" --on-calendar="$WHEN" "$SCRIPT_DIR/crab" wake scheduled
+        fi && echo "Wake scheduled ($WHEN) as $UNIT"
+        ;;
+
     *)
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|shutup|<message>"
+            echo "Usage: crab start|stop|shutup|wake|wake-at <when>|<message>"
             exit 1
         fi
         stop_tts

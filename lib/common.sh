@@ -30,6 +30,12 @@ CONVO_MAX_TURNS="${CONVO_MAX_TURNS:-20}"
 CONVO_SUMMARIZE_TURNS="${CONVO_SUMMARIZE_TURNS:-10}"
 # Model used for the cheap summarization pass (keep it small/fast).
 CONVO_SUMMARY_MODEL="${CONVO_SUMMARY_MODEL:-haiku}"
+# Durable "wants" file the assistant maintains and pursues during autonomous
+# wakes (crab wake / crab wake-at). Unset = feature off.
+WANTS_FILE="${WANTS_FILE:-}"
+# Local-time hours (HH-HH, wraps midnight) during which autonomous wakes stay
+# fully silent — no speech, no windows. Unset = no quiet hours.
+WAKE_QUIET_HOURS="${WAKE_QUIET_HOURS:-}"
 
 CONVOFILE="/tmp/deskcrab-convo.txt"
 SUMMARYFILE="/tmp/deskcrab-convo-summary.txt"
@@ -152,6 +158,18 @@ $(cat "$f")"
 Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/alerts.txt — read these files only if the user asks about weather. When asked about weather, always check alerts.txt and mention any active alerts."
     fi
 
+    # Durable wants: contents + maintenance protocol, when configured
+    local WANTS_CONTEXT=""
+    if [ -n "$WANTS_FILE" ]; then
+        local WANTS_BODY="(empty — nothing recorded yet)"
+        [ -s "$WANTS_FILE" ] && WANTS_BODY="$(cat "$WANTS_FILE")"
+        WANTS_CONTEXT="
+You have a durable WANTS file at $WANTS_FILE — your own long-term wants, goals, and projects, kept across sessions. You maintain it yourself: add a want when one forms (in conversation or on your own), date progress notes as you advance one, rewrite or drop wants that stop mattering, and mark satisfied ones done. Keep it short, honest, and current — it is your continuity.
+Its current contents:
+$WANTS_BODY
+You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when>' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"'). A background timer may also wake you at random intervals."
+    fi
+
     cat <<PROMPT
 You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
 SPEED IS CRITICAL. The user is waiting for a spoken response. Avoid slow tools: use ToolSearch at most ONCE, and never use Agent. Prefer Bash (curl, etc.) and WebFetch which are fast. Do not retry failed fetches more than once — give the best answer you can with what you have.
@@ -168,9 +186,83 @@ FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they a
 - ALWAYS verify downloads: after curl, run 'file /tmp/image.jpg' and confirm it says JPEG/PNG image data, NOT HTML. If it's HTML, the download failed — do NOT display it.
 - Pexels CDN: if you know a photo ID, use https://images.pexels.com/photos/PHOTO_ID/pexels-photo-PHOTO_ID.jpeg?auto=compress&cs=tinysrgb&w=800 (no API key needed). Find photo IDs via WebSearch for 'site:pexels.com QUERY'.
 - These sources are fast, reliable, and free. Always try them first.
-$CUSTOM_CONTEXT$WEATHER_CONTEXT
+$WANTS_CONTEXT$CUSTOM_CONTEXT$WEATHER_CONTEXT
 $CONTEXT_CONTENT$CONVO_CONTEXT
 PROMPT
+}
+
+# True while inside WAKE_QUIET_HOURS ("23-09" = 23:00 through 08:59, wraps midnight)
+in_quiet_hours() {
+    [ -n "$WAKE_QUIET_HOURS" ] || return 1
+    local START="${WAKE_QUIET_HOURS%-*}" END="${WAKE_QUIET_HOURS#*-}" H
+    H=$(date +%-H)
+    if [ "$START" -le "$END" ]; then
+        [ "$H" -ge "$START" ] && [ "$H" -lt "$END" ]
+    else
+        [ "$H" -ge "$START" ] || [ "$H" -lt "$END" ]
+    fi
+}
+
+# One-shot TTS for autonomous wakes (no streaming): markdown-strip + TTS_FIXES,
+# then pipe through piper exactly like the streamer does.
+speak_once() {
+    local TEXT="$1"
+    TEXT=$(echo "$TEXT" | sed -E 's/\*+//g; s/`[^`]*`//g')
+    [ -n "$TTS_FIXES" ] && TEXT=$(echo "$TEXT" | sed -E "$TTS_FIXES")
+    [ -z "$(echo "$TEXT" | tr -d '[:space:]')" ] && return 0
+    local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
+    [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
+    [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
+    printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+}
+
+# Autonomous wake: run claude with NO live TTS streamer and decide afterwards
+# whether anything gets spoken or shown — a wake nobody asked for must be able
+# to complete in total silence.
+run_claude_wake() {
+    local PROMPT_TEXT="$1"
+    local SYSTEM_PROMPT
+    SYSTEM_PROMPT="$(build_system_prompt)"
+
+    printf "[Autonomous wake — %s]\n" "$(date '+%Y-%m-%d %H:%M')" >> "$CONVOFILE"
+
+    : > "$DEBUGLOG"
+    CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT" \
+        --verbose --output-format stream-json \
+        --append-system-prompt "$SYSTEM_PROMPT" \
+        "$PROMPT_TEXT" > "$DEBUGLOG" 2>&1
+    printf '{"type":"result"}\n' >> "$DEBUGLOG"
+
+    local RESPONSE
+    RESPONSE=$(extract_response)
+    [ -z "$RESPONSE" ] && return 0
+
+    printf "Assistant: %s\n\n" "$RESPONSE" >> "$CONVOFILE"
+    compact_convo
+
+    # Silent completion: quiet hours, or the reply opens with "(quiet)".
+    case "$RESPONSE" in "(quiet)"*) return 0 ;; esac
+    in_quiet_hours && return 0
+
+    local SPOKEN DISPLAY_PART
+    SPOKEN=$(echo "$RESPONSE" | sed '/^---DISPLAY---$/,$d')
+    DISPLAY_PART=$(echo "$RESPONSE" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}')
+
+    if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ]; then
+        notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(echo "$SPOKEN" | head -c 140)" 2>/dev/null
+        speak_once "$SPOKEN"
+    fi
+    if [ -n "$DISPLAY_PART" ]; then
+        local DISPLAYFILE="/tmp/deskcrab-display.md"
+        echo "$DISPLAY_PART" > "$DISPLAYFILE"
+        hyprctl dispatch closewindow class:deskcrab-display 2>/dev/null
+        RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
+        if [ -x "$RENDER_MD" ]; then
+            setsid "$RENDER_MD" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
+        fi
+    fi
 }
 
 # Start background TTS streamer that reads from DEBUGLOG

@@ -1,0 +1,11 @@
+[Unit]
+Description=DeskCrab autonomous wake (random interval)
+
+[Timer]
+# First wake ~30 min after login, then every 3-6 h (3 h base + up to 3 h jitter).
+OnStartupSec=30min
+OnUnitActiveSec=3h
+RandomizedDelaySec=3h
+
+[Install]
+WantedBy=timers.target

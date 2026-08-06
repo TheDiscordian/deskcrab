@@ -125,6 +125,8 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `CONTEXT_FILES` | No | Space-separated list of files to include in the prompt |
 | `ASSISTANT_NAME` | No | Persona name the assistant sees in its system prompt (default: `Crab`) |
 | `NOTIFY_NAME` | No | Name shown in notifications (default: `ASSISTANT_NAME` if set, else `DeskCrab`) |
+| `WANTS_FILE` | No | Durable goals file the assistant maintains and pursues during autonomous wakes |
+| `WAKE_QUIET_HOURS` | No | Hours (`HH-HH`, wraps midnight) when wakes never speak or open windows |
 
 ### Custom prompt
 
@@ -151,6 +153,23 @@ Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hm
 ```bash
 TTS_FIXES='s/\bhmph\b/humph/gi'
 ```
+
+## Autonomous wants & wakes
+
+Give the assistant its own durable goals and let it work on them unprompted. Set `WANTS_FILE` in your config and the assistant gains:
+
+- **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. The file is injected into every prompt, so wants persist across sessions.
+- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it replies `(quiet)` and the wake is invisible. Wakes are skipped (or rescheduled) if a recording or speech is in progress, and unattended sessions are told to take no destructive or outward-facing actions.
+- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake via a transient systemd timer: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`.
+- **Random background wakes** — install the provided timer for wakes every 3–6 hours:
+
+```bash
+cp systemd/deskcrab-wake.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-wake.timer
+```
+
+Set `WAKE_QUIET_HOURS="23-09"` to keep night wakes fully silent (they still run and can work — they just never speak or open windows).
 
 ## Display channel
 
