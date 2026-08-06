@@ -884,6 +884,13 @@ run_claude_and_respond() {
         fi
 
         wait "$_TTS_STREAMER_PID" 2>/dev/null
+
+        # Out of band, after the user has their answer: did I say I wanted
+        # something and fail to write it down? If so this fires an event wake
+        # that hands the sentence back to me. Costs nothing on the hot path.
+        if [ "${PROMISE_AUDIT:-1}" = "1" ] && [ -x "$SCRIPT_DIR/lib/promise-audit" ]; then
+            setsid "$SCRIPT_DIR/lib/promise-audit" "$TEXT" "$RESPONSE" >/dev/null 2>&1 &
+        fi
     fi
 
     echo "$RESPONSE"

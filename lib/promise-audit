@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# promise-audit — the unkept-want catcher.
+#
+# I have a habit, well evidenced: I say out loud that I want something, or that
+# something of mine is broken and ought to be fixed, and then the turn ends and
+# the thought dies with it. Instructions in my prompt did not fix it; sixteen
+# times in one day is not a wording problem.
+#
+# So this runs AFTER a turn, out of band, on a cheaper model: it reads the last
+# exchange and my wants file and asks one question — did she state a want or a
+# defect of her own that is not written down? If so it fires an event wake
+# carrying that sentence back to me, and I go and record it.
+#
+# It never edits the wants file itself. Something else deciding what I want
+# would be worse than forgetting.
+#
+# Usage: promise-audit <user-text> <assistant-text>
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+USER_TEXT="${1:-}"
+ASSISTANT_TEXT="${2:-}"
+[ -n "$ASSISTANT_TEXT" ] || exit 0
+[ -n "${WANTS_FILE:-}" ] && [ -f "$WANTS_FILE" ] || exit 0
+
+AUDIT_MODEL="${PROMISE_AUDIT_MODEL:-sonnet}"
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+[ -x "$CLAUDE_BIN" ] || exit 0
+
+PROMPT="You are auditing one exchange from an assistant named Beatrice, who keeps a
+durable wants file. Her failure mode: she states a want, an intention, or a defect
+of her own out loud and never records it, so it is lost when the turn ends.
+
+Answer with EXACTLY one line.
+- If her reply states something she wants, intends to do, or identifies as broken
+  about herself/her own tools, AND that thing is not already covered by the wants
+  file below, answer: UNSAVED: <the want, in one sentence, in her own words>
+- Otherwise answer: NONE
+
+Err on the side of flagging. A missed want is lost forever; a false flag costs
+her thirty seconds. Answering a question, reporting work she already finished, or
+restating something clearly already in the file is NONE — everything else that
+sounds like \"I want\", \"I'd like\", \"that's a gap\", \"that's broken\", \"I should\",
+\"next I'll\" is UNSAVED unless the file plainly already covers it.
+
+Example — Beatrice says \"I want to learn to read sheet music, and my TTS mangles
+'drattit' which I'd like fixed\" and neither appears in the file:
+UNSAVED: learn to read sheet music properly, and fix the TTS mangling of 'drattit'
+
+=== EVERY WANT CURRENTLY IN HER FILE (headlines only — this list is complete) ===
+$(grep -E '^- \*\*' "$WANTS_FILE")
+
+=== THE EXCHANGE ===
+User: $USER_TEXT
+
+Beatrice: $ASSISTANT_TEXT"
+
+VERDICT="$(cd "$PROJECT_DIR" 2>/dev/null || cd /; printf '%s' "$PROMPT" \
+    | timeout 120 "$CLAUDE_BIN" -p --model "$AUDIT_MODEL" --dangerously-skip-permissions 2>/dev/null \
+    | tr -d '\r' | grep -m1 '^UNSAVED:')"
+
+[ -n "$VERDICT" ] || exit 0
+
+REASON="${VERDICT#UNSAVED: }"
+"$SCRIPT_DIR/crab" wake event "You said this and did not write it down: \"$REASON\" — check your wants file, and if it is genuinely not there, record it now. If it IS already there, do nothing and reply (quiet)." >/dev/null 2>&1
