@@ -68,10 +68,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Nobody is waiting on a wake, so it can afford more thinking.
 # WAKE_EFFORT="medium"
 
-# Optional: seconds of TOTAL output silence before an autonomous wake is
-# presumed hung and reaped (default: 300). There is no wall-clock limit on
-# wakes — an active session streams output constantly, so only true silence
-# triggers this. Raise it if your wakes run very slow tools.
+# Optional: seconds without life signs before an autonomous wake is presumed
+# hung and reaped (default: 300). There is no wall-clock limit on wakes — a
+# session counts as alive while it streams output OR its process tree burns
+# CPU (long compiles count as work). Raise it if your wakes run very slow,
+# low-CPU tools in the foreground.
 # WAKE_STALL_TIMEOUT=300
 
 # Optional: assistant persona name (default: Crab)
