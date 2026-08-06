@@ -4,5 +4,8 @@ Description=DeskCrab autonomous wake
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/crab wake
-# An unattended session should never run away.
-RuntimeMaxSec=900
+# Absolute last-resort backstop only. Hung sessions are reaped gracefully by
+# crab's own stall watchdog (WAKE_STALL_TIMEOUT — silence, not wall-clock);
+# this ceiling exists solely for a runaway session the watchdog can't see
+# (still producing output, never finishing).
+RuntimeMaxSec=2h

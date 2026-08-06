@@ -39,6 +39,10 @@ WAKE_QUIET_HOURS="${WAKE_QUIET_HOURS:-}"
 # Effort for autonomous wakes. Nobody is waiting on a wake, so it can afford
 # more thinking than the interactive default.
 WAKE_EFFORT="${WAKE_EFFORT:-$CLAUDE_EFFORT}"
+# Reap an autonomous wake only when it goes completely silent: an active session
+# writes stream events constantly, so this many seconds without any output means
+# it is hung, not thinking. Wall-clock limits would kill productive sessions.
+WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
 
 CONVOFILE="/tmp/deskcrab-convo.txt"
 SUMMARYFILE="/tmp/deskcrab-convo-summary.txt"
@@ -231,11 +235,30 @@ run_claude_wake() {
 
     : > "$DEBUGLOG"
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
-        --verbose --output-format stream-json \
-        --append-system-prompt "$SYSTEM_PROMPT" \
-        "$PROMPT_TEXT" > "$DEBUGLOG" 2>&1
+    (
+        cd "$PROJECT_DIR" && exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
+            --verbose --output-format stream-json \
+            --append-system-prompt "$SYSTEM_PROMPT" \
+            "$PROMPT_TEXT" > "$DEBUGLOG" 2>&1
+    ) &
+    local CPID=$!
+    # Stall watchdog: no wall-clock limit — an active session streams events
+    # continuously, so reap only after WAKE_STALL_TIMEOUT seconds of total
+    # silence (a hung network call, a tool waiting on stdin forever).
+    while kill -0 "$CPID" 2>/dev/null; do
+        sleep 10
+        local LAST NOW
+        LAST=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || date +%s)
+        NOW=$(date +%s)
+        if [ $((NOW - LAST)) -ge "$WAKE_STALL_TIMEOUT" ]; then
+            kill "$CPID" 2>/dev/null
+            sleep 2
+            kill -9 "$CPID" 2>/dev/null
+            break
+        fi
+    done
+    wait "$CPID" 2>/dev/null
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
     local RESPONSE
