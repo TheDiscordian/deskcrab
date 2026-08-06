@@ -26,6 +26,7 @@ import hmac
 import http.cookies
 import json
 import os
+import queue
 import subprocess
 import ssl
 import sys
@@ -113,7 +114,42 @@ def transcribe(blob, suffix):
             f.unlink(missing_ok=True)
 
 
-def _progress_events(logpath, stop, emit):
+class Speaker:
+    """Voices text blocks as they stream in, one at a time and in order.
+
+    The desktop speaks every text block through piper while the turn is still
+    running; the phone gets the same thing as a series of opus clips. Synthesis
+    runs on its own thread so tailing the log never blocks, and strictly
+    sequentially — a reply spoken out of order is worse than one spoken late.
+    """
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.queue = queue.Queue()
+        self.thread = threading.Thread(target=self._work, daemon=True)
+        self.thread.start()
+
+    def say(self, text):
+        self.queue.put(text)
+
+    def _work(self):
+        while True:
+            text = self.queue.get()
+            if text is None:
+                return
+            out = os.path.join(
+                tempfile.gettempdir(), f"deskcrab-remote-{uuid.uuid4().hex}.opus")
+            r = run([CRAB_BIN, "synth", out, text])
+            if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out):
+                self.emit("voice", {"text": text,
+                                    "audio": "/audio/" + os.path.basename(out)})
+
+    def finish(self):
+        self.queue.put(None)
+        self.thread.join(timeout=120)
+
+
+def _progress_events(logpath, stop, emit, speaker):
     """Tail a turn's stream-json log and report what the assistant is doing.
 
     The desktop client shows thinking and tool use as it happens; without this
@@ -155,6 +191,11 @@ def _progress_events(logpath, stop, emit):
                         said = said.split("---DISPLAY---")[0].strip()
                         if said:
                             emit("text", said[:400])
+                            # Speak it now, exactly as the desktop's TTS
+                            # streamer does — every text block gets a voice, not
+                            # just the final one.
+                            if speaker:
+                                speaker.say(said)
     except OSError:
         return
 
@@ -170,10 +211,11 @@ def _tool_label(block):
     return name
 
 
-def ask(text, on_event=None):
+def ask(text, on_event=None, speaker=None):
     """One turn through the real assistant. Returns the crab remote JSON.
 
-    With on_event, progress is reported live while the turn runs.
+    With on_event, progress is reported live while the turn runs. With speaker,
+    each text block is also voiced as it arrives instead of only at the end.
     """
     if on_event is None:
         r = run([CRAB_BIN, "remote", "--voice", text])
@@ -181,7 +223,8 @@ def ask(text, on_event=None):
         logpath = f"/tmp/deskcrab-turn-{uuid.uuid4().hex}.log"
         stop = threading.Event()
         watcher = threading.Thread(
-            target=_progress_events, args=(logpath, stop, on_event), daemon=True
+            target=_progress_events, args=(logpath, stop, on_event, speaker),
+            daemon=True,
         )
         watcher.start()
         env = dict(os.environ, DESKCRAB_REMOTE_LOG=logpath)
@@ -190,6 +233,8 @@ def ask(text, on_event=None):
         finally:
             stop.set()
             watcher.join(timeout=1)
+            if speaker:
+                speaker.finish()
             Path(logpath).unlink(missing_ok=True)
     out = r.stdout.decode("utf-8", "replace").strip()
     # crab remote prints exactly one JSON object last; anything a tool leaked to
@@ -373,12 +418,16 @@ class Handler(BaseHTTPRequestHandler):
 
         event("transcript", {"text": text})
         try:
-            reply = ask(text, on_event=lambda kind, msg: event(kind, {"text": msg}))
-            audio = reply.get("audio") or ""
+            speaker = Speaker(event)
+            reply = ask(text, on_event=lambda kind, msg: event(kind, {"text": msg}),
+                        speaker=speaker)
+            # Everything sayable was already streamed as voice clips; replaying
+            # crab's own render of the same words would say it all twice.
+            audio = ""
             event("done", {
                 "spoken": reply.get("spoken", ""),
                 "display_html": render_markdown(reply.get("display", "")),
-                "audio": "/audio/" + os.path.basename(audio) if audio else "",
+                "audio": audio,
                 "error": reply.get("error", ""),
             })
         except Exception as exc:  # noqa: BLE001 — the client must hear about it

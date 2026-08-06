@@ -111,6 +111,14 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         run_claude_remote "$TEXT"
         ;;
 
+    synth)
+        # Speak one line of text into an opus file, for crab serve's streaming
+        # voice. Prints the path on success, nothing on failure.
+        shift
+        OUT="$1"; shift
+        synth_opus "$*" "$OUT" && printf '%s\n' "$OUT"
+        ;;
+
     serve)
         # Serve the phone client. The listener stays on loopback by default;
         # exposing it to a phone is a separate, deliberate step (Tailscale:

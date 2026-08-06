@@ -160,17 +160,36 @@ function attachDisplay(replyEl, html) {
   replyEl.parentNode.append(box);
 }
 
+// Clips arrive while the turn is still running (one per text block, exactly as
+// the desktop speaks them), so they queue and play back to back — never on top
+// of each other.
+const voiceQueue = [];
+let voicePlaying = false;
+
+function enqueueVoice(url) {
+  voiceQueue.push(url);
+  playNextVoice();
+}
+
+function playNextVoice() {
+  if (voicePlaying || !voiceQueue.length) return;
+  const url = voiceQueue.shift();
+  voicePlaying = true;
+  player.src = url;
+  player.load();
+  const p = player.play();
+  if (p) p.catch(() => { voicePlaying = false; offerPlay(url); });
+}
+
+player.addEventListener("ended", () => { voicePlaying = false; playNextVoice(); });
+player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); });
+
 async function deliver(res, replyEl) {
   if (res.error) { setStatus(res.error, "err"); replyEl.textContent = "(" + res.error + ")"; return; }
   replyEl.textContent = res.spoken || "(no reply)";
   if (res.display_html) attachDisplay(replyEl, res.display_html);
   setStatus("ready");
-  if (res.audio) {
-    player.src = res.audio;
-    player.load();
-    const p = player.play();
-    if (p) p.catch(() => offerPlay(res.audio));
-  }
+  if (res.audio) enqueueVoice(res.audio);
   replyEl.scrollIntoView({ block: "end" });
 }
 
@@ -196,6 +215,7 @@ async function streamTurn(text, turn) {
       if (!frame.startsWith("data:")) continue;
       let ev; try { ev = JSON.parse(frame.slice(5).trim()); } catch (e) { continue; }
       if (ev.kind === "done") { done = ev; continue; }
+      if (ev.kind === "voice") { enqueueVoice(ev.audio); continue; }
       showThought(turn, ev);
     }
   }
