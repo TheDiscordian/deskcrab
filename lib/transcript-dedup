@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Collapse whisper-stream's overlapping-window output into clean text.
+
+whisper-stream appends EVERY step's transcription to its output file — not just
+finalized lines — so consecutive lines re-transcribe overlapping audio and naive
+concatenation repeats phrases ("Piper doesn't have a display channel. Piper
+doesn't have a display channel."). Fold a word-level merge across the lines,
+emitting only the genuinely-new words of each window.
+
+Words are compared case- and punctuation-insensitively because whisper revises
+both between windows ("No it has" -> "No, it has ..."), but the original
+spelling is what gets emitted.
+
+Usage: transcript-dedup <whisper-output-file>
+"""
+import re
+import string
+import sys
+
+# Timestamps ([00:00:00.000 --> 00:00:02.000]), [BLANK_AUDIO], (buzzing), etc.
+NOISE = re.compile(r"\[[^\]]*\]|\([^)]*\)")
+SILENCE_LINES = 2   # consecutive blank lines = utterance boundary -> reset hypothesis
+HYP_WINDOW = 30     # cap the rolling hypothesis kept for alignment (words)
+
+
+def norm(word):
+    return word.strip(string.punctuation).lower()
+
+
+def _overlap(hyp, cur):
+    """Largest k where hyp's last k words align with cur's first k. Tolerates a
+    few mismatches at k >= 4 because whisper re-hears boundary words differently
+    between windows ("with it" -> "with that")."""
+    for k in range(min(len(hyp), len(cur)), 0, -1):
+        mism = sum(1 for a, b in zip(hyp[-k:], cur[:k]) if a != b)
+        if mism == 0 or (k >= 4 and mism <= k // 4):
+            return k
+    return 0
+
+
+def merge(hyp, cur):
+    """(new_word_indices, new_hyp) from the previous normalized hypothesis and a
+    new normalized window. Never re-emits an overlap."""
+    if not hyp:
+        return range(len(cur)), cur
+    if cur[:len(hyp)] == hyp:                    # extension: hyp is a prefix of cur
+        return range(len(hyp), len(cur)), cur
+    k = _overlap(hyp, cur)                       # slide/re-transcription overlap
+    if k:
+        return range(k, len(cur)), hyp + cur[k:]
+    if hyp[0] == cur[0]:                         # same start -> revision: emit only new positions
+        return range(len(hyp), len(cur)), cur
+    return range(len(cur)), cur                  # different start -> new utterance: emit all
+
+
+def main():
+    out = []
+    hyp = []
+    blanks = 0
+    with open(sys.argv[1]) as f:
+        for line in f:
+            line = NOISE.sub(" ", line).strip()
+            if not line:
+                blanks += 1
+                if blanks >= SILENCE_LINES:
+                    hyp = []
+                continue
+            blanks = 0
+            raw = [w for w in line.split() if norm(w)]
+            if not raw:
+                continue
+            cur = [norm(w) for w in raw]
+            idx, hyp = merge(hyp, cur)
+            hyp = hyp[-HYP_WINDOW:]
+            out.extend(raw[i] for i in idx)
+    print(" ".join(out))
+
+
+if __name__ == "__main__":
+    main()
