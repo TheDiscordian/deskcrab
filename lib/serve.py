@@ -204,7 +204,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, (WEBAPP_DIR / "index.html").read_bytes(),
                               "text/html; charset=utf-8", extra)
         if path == "/manifest.webmanifest":
-            return self._send(200, (WEBAPP_DIR / "manifest.webmanifest").read_bytes(),
+            # The installed app launches in its own context, which may not carry
+            # the cookie, so bake the key into start_url.
+            doc = json.loads((WEBAPP_DIR / "manifest.webmanifest").read_text())
+            doc["start_url"] = "/?k=" + SECRET
+            return self._send(200, json.dumps(doc),
                               "application/manifest+json", extra)
         if path == "/sw.js":
             return self._send(200, (WEBAPP_DIR / "sw.js").read_bytes(),
