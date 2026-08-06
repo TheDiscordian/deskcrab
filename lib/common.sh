@@ -36,6 +36,9 @@ WANTS_FILE="${WANTS_FILE:-}"
 # Local-time hours (HH-HH, wraps midnight) during which autonomous wakes stay
 # fully silent — no speech, no windows. Unset = no quiet hours.
 WAKE_QUIET_HOURS="${WAKE_QUIET_HOURS:-}"
+# Effort for autonomous wakes. Nobody is waiting on a wake, so it can afford
+# more thinking than the interactive default.
+WAKE_EFFORT="${WAKE_EFFORT:-$CLAUDE_EFFORT}"
 
 CONVOFILE="/tmp/deskcrab-convo.txt"
 SUMMARYFILE="/tmp/deskcrab-convo-summary.txt"
@@ -229,7 +232,7 @@ run_claude_wake() {
     : > "$DEBUGLOG"
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CLAUDE_MODEL" --effort "$CLAUDE_EFFORT" \
+        --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
         --verbose --output-format stream-json \
         --append-system-prompt "$SYSTEM_PROMPT" \
         "$PROMPT_TEXT" > "$DEBUGLOG" 2>&1
