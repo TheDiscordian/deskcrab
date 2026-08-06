@@ -145,10 +145,14 @@ compact_convo() {
     [ -f "$SUMMARYFILE" ] && PRIOR="$(cat "$SUMMARYFILE")"
 
     local SUMPROMPT NEWSUM
-    SUMPROMPT="You are condensing the older part of a voice-assistant conversation to save context.
+    SUMPROMPT="You are condensing the older part of a conversation between ${ASSISTANT_NAME:-the assistant} and the user, to save context.
 Produce a concise summary (a short paragraph or a few bullet points) that preserves facts, decisions,
 names, preferences, and any unresolved threads. Merge the prior summary with the new excerpt into one
 coherent summary. Output ONLY the summary text, no preamble.
+
+Naming rule, strictly: the assistant's name is ${ASSISTANT_NAME:-the assistant}. Refer to her by that name
+only. Never call her 'deskcrab', 'crab', 'the voice assistant', 'the model', or 'the assistant' — 'deskcrab'
+is only ever a file path, a systemd unit, or a repo name, never a person.
 
 === Prior summary ===
 ${PRIOR:-(none)}
