@@ -49,6 +49,7 @@ PORT = int(os.environ.get("DESKCRAB_SERVE_PORT", "8723"))
 BIND = os.environ.get("DESKCRAB_SERVE_BIND", "127.0.0.1")
 SECRET = os.environ.get("DESKCRAB_SERVE_SECRET", "")
 WHISPER_MODEL = os.environ.get("DESKCRAB_WHISPER_MODEL", "")
+WHISPER_FIXES = os.environ.get("DESKCRAB_WHISPER_FIXES", "")
 CRAB_BIN = os.environ.get("DESKCRAB_CRAB_BIN", "crab")
 NAME = os.environ.get("DESKCRAB_NOTIFY_NAME") or os.environ.get(
     "DESKCRAB_ASSISTANT_NAME", "DeskCrab"
@@ -299,6 +300,28 @@ def _suffix_for(ctype):
     return ".webm"
 
 
+def apply_whisper_fixes(text):
+    """Speech-recognition rewrites (WHISPER_FIXES in the config), applied the
+    moment a transcript is born. They used to be applied later, by
+    `crab remote --voice` — after the raw transcript had already been shown to
+    the phone — so the User: line stored in the conversation differed from the
+    text the phone remembered, and the phone's own-turn filter let the turn
+    echo back onto the screen as if it had been said elsewhere. One canonical
+    transcript, fixed once, seen identically by the phone, the conversation
+    file, and the prompt."""
+    if not WHISPER_FIXES or not text:
+        return text
+    try:
+        r = subprocess.run(["sed", "-E", WHISPER_FIXES], input=text.encode(),
+                           capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return text
+    if r.returncode != 0:
+        return text
+    fixed = " ".join(r.stdout.decode("utf-8", "replace").split()).strip()
+    return fixed or text
+
+
 def transcribe(blob, suffix):
     """Browser recording -> text. ffmpeg decodes whatever container arrived."""
     tmp = Path(tempfile.gettempdir())
@@ -318,7 +341,7 @@ def transcribe(blob, suffix):
         # whisper emits these for silence; they are not something anybody said.
         if text.lower() in ("[blank_audio]", "(silence)", "[silence]", "."):
             text = ""
-        return text, None
+        return apply_whisper_fixes(text), None
     finally:
         for f in (raw, wav):
             f.unlink(missing_ok=True)
@@ -549,9 +572,14 @@ def ask(text, on_event=None, speaker=None):
 
     With on_event, progress is reported live while the turn runs. With speaker,
     each text block is also voiced as it arrives instead of only at the end.
+
+    No --voice here: WHISPER_FIXES was already applied when the transcript was
+    made, and --voice would apply it a second time — worse, to typed text too.
+    The turn must store the text exactly as the phone knows it, or the phone
+    cannot recognise its own turn coming back around in /watch.
     """
     if on_event is None:
-        r = run([CRAB_BIN, "remote", "--voice", text])
+        r = run([CRAB_BIN, "remote", text])
     else:
         logpath = f"/tmp/deskcrab-turn-{uuid.uuid4().hex}.log"
         stop = threading.Event()
@@ -562,7 +590,7 @@ def ask(text, on_event=None, speaker=None):
         watcher.start()
         env = dict(os.environ, DESKCRAB_REMOTE_LOG=logpath)
         try:
-            r = run([CRAB_BIN, "remote", "--voice", text], env=env)
+            r = run([CRAB_BIN, "remote", text], env=env)
         finally:
             stop.set()
             watcher.join(timeout=1)
@@ -750,7 +778,7 @@ class Handler(BaseHTTPRequestHandler):
             s.advance(final=final)
             if not final:
                 return self._json(200, {"partial": s.transcript()})
-            text = s.transcript()
+            text = apply_whisper_fixes(s.transcript())
             with STT_LOCK:
                 STT_SESSIONS.pop(sid, None)
             s.close()

@@ -317,6 +317,13 @@ function addSaid(replyEl, text) {
   if (!norm(text)) return;
   if (norm(said[said.length - 1]) === norm(text)) return;
   said.push(text);
+  // The stored Assistant: line is exactly these blocks joined, and it lands
+  // in the convo file seconds BEFORE the done event — conversation compaction
+  // and voice synthesis both run between the append and the JSON that becomes
+  // done. The own-turn filter must therefore be kept current block by block:
+  // waiting for done meant the watcher echoed every reply back as a turn
+  // "at the laptop" during that gap.
+  pendingReply = norm(said.join(" "));
   replyEl.textContent = said.join("\n\n");
   replyEl.scrollIntoView({ block: "end" });
 }

@@ -210,7 +210,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
                DESKCRAB_SERVE_SECRET="$SERVE_SECRET" DESKCRAB_WHISPER_MODEL="$WHISPER_MODEL" \
                DESKCRAB_NOTIFY_NAME="$NOTIFY_NAME" DESKCRAB_ASSISTANT_NAME="$ASSISTANT_NAME" \
                DESKCRAB_SERVE_TIMEOUT="$SERVE_TIMEOUT" DESKCRAB_CRAB_BIN="$SCRIPT_DIR/crab" \
-               DESKCRAB_STATE_PREFIX="$STATE_PREFIX"
+               DESKCRAB_STATE_PREFIX="$STATE_PREFIX" DESKCRAB_WHISPER_FIXES="$WHISPER_FIXES"
         exec python3 "$SCRIPT_DIR/lib/serve.py"
         ;;
 
