@@ -15,20 +15,48 @@
 # would be worse than forgetting.
 #
 # Usage: promise-audit <user-text> <assistant-text>
+#        promise-audit --wake <agenda> <assistant-text>
+# --wake: the turn was an autonomous wake — nobody was talking to her. The
+# agenda is the event reason (empty for a timer wake), never a faked user line.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 
+WAKE_MODE=0
+[ "${1:-}" = "--wake" ] && { WAKE_MODE=1; shift; }
 USER_TEXT="${1:-}"
 ASSISTANT_TEXT="${2:-}"
 [ -n "$ASSISTANT_TEXT" ] || exit 0
 [ -n "${WANTS_FILE:-}" ] && [ -f "$WANTS_FILE" ] || exit 0
 
+# One line per audit — the only trace a detached auditor leaves, and the only
+# way to tell "it ran and found nothing" from "it never ran".
+AUDIT_LOG="${STATE_PREFIX}-promise-audit.log"
+audit_log() {
+    printf '%s\t%s\t%s\n' "$(date '+%F %T')" "$([ "$WAKE_MODE" = 1 ] && echo wake || echo turn)" "$1" >> "$AUDIT_LOG"
+}
+
 AUDIT_MODEL="${PROMISE_AUDIT_MODEL:-sonnet}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 [ -x "$CLAUDE_BIN" ] || exit 0
+
+if [ "$WAKE_MODE" = 1 ]; then
+    AGENDA_LINE=""
+    [ -n "$USER_TEXT" ] && AGENDA_LINE="
+The wake's agenda: $USER_TEXT"
+    EXCHANGE="This was an autonomous wake — nobody was talking to her; she woke alone
+and this is what she said to herself. A wake reporting progress on a want
+already on her shelf is NONE; a NEW want or defect she voiced mid-wake and did
+not record is UNSAVED.$AGENDA_LINE
+
+Beatrice (to herself): $ASSISTANT_TEXT"
+else
+    EXCHANGE="User: $USER_TEXT
+
+Beatrice: $ASSISTANT_TEXT"
+fi
 
 PROMPT="You are auditing one exchange from an assistant named Beatrice, who keeps a
 durable wants file. Her failure mode: she states a want, an intention, or a defect
@@ -54,15 +82,20 @@ UNSAVED: learn to read sheet music properly, and fix the TTS mangling of 'dratti
 $(grep -E '^- \*\*' "$WANTS_FILE")
 
 === THE EXCHANGE ===
-User: $USER_TEXT
-
-Beatrice: $ASSISTANT_TEXT"
+$EXCHANGE"
 
 VERDICT="$(cd "$PROJECT_DIR" 2>/dev/null || cd /; printf '%s' "$PROMPT" \
     | timeout 120 "$CLAUDE_BIN" -p --model "$AUDIT_MODEL" --dangerously-skip-permissions 2>/dev/null \
     | tr -d '\r' | grep -m1 '^UNSAVED:')"
 
-[ -n "$VERDICT" ] || exit 0
+if [ -z "$VERDICT" ]; then
+    audit_log "NONE"
+    exit 0
+fi
+audit_log "$VERDICT"
 
 REASON="${VERDICT#UNSAVED: }"
-"$SCRIPT_DIR/crab" wake event "You said this and did not write it down: \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and reply (quiet)." >/dev/null 2>&1
+# The reason MUST open with PROMISE_AUDIT_REASON_PREFIX (common.sh): that is
+# how the wake path knows this wake is the audit's own follow-up and must not
+# be re-audited into an endless chain.
+"$SCRIPT_DIR/crab" wake event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and reply (quiet)." >/dev/null 2>&1

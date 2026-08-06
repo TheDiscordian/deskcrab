@@ -824,6 +824,27 @@ _tree_cpu() {
     echo "$total"
 }
 
+# --- Promise audit: the unkept-want catcher ---------------------------------
+# Every path that produces a reply — desktop turn, phone turn, autonomous wake —
+# fires lib/promise-audit after the reply has been delivered: detached, out of
+# band, never on the hot path. A want stated on the phone or spoken to nobody
+# during a wake is exactly as lost as one stated at the desk.
+#
+# The auditor's follow-up is an event wake whose reason opens with this prefix.
+# The wake path recognises it and skips its own audit — that wake exists to
+# record one already-caught sentence, and auditing it would chain forever.
+PROMISE_AUDIT_REASON_PREFIX="You said this and did not write it down:"
+
+fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
+    [ "${PROMISE_AUDIT:-1}" = "1" ] || return 0
+    [ -x "$SCRIPT_DIR/lib/promise-audit" ] || return 0
+    # Close fds 8 and 9: the phone turn holds its serialising lock on 8 and a
+    # wake holds the wake lock on 9. The detached auditor lives for a whole
+    # claude call — inheriting either fd would keep that lock held long after
+    # the turn it belonged to has finished.
+    setsid "$SCRIPT_DIR/lib/promise-audit" "$@" >/dev/null 2>&1 8>&- 9>&- &
+}
+
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
@@ -884,6 +905,16 @@ run_claude_wake() {
     # nothing spoken, nothing displayed, and the conversation may be compacted
     # away. Its own summary of itself is what the next session gets to read.
     session_outcome "$(spoken_part "$RESPONSE")"
+
+    # Out of band, now that the wake's outcome is written: a wake talking to
+    # nobody still forms wants, and a quiet wake's are the easiest to lose —
+    # so this fires before the speak/display decisions can return early. The
+    # audit's own follow-up wake is recognised by its reason and skipped, or
+    # each audit wake would audit itself into an endless chain.
+    case "${WAKE_REASON:-}" in
+        "$PROMISE_AUDIT_REASON_PREFIX"*) ;;
+        *) fire_promise_audit --wake "${WAKE_REASON:-}" "$RESPONSE" ;;
+    esac
 
     # Silent completion: quiet hours, or the reply opens with "(quiet)".
     case "$RESPONSE" in "(quiet)"*) return 0 ;; esac
@@ -1034,6 +1065,10 @@ _run_claude_remote_locked() {
     # generated files and to clips older than an hour.
     find /tmp -maxdepth 1 -name 'deskcrab-remote-*.opus' -mmin +60 -delete 2>/dev/null
 
+    # Out of band, with the reply audio already synthesised: a want stated on
+    # the phone dies with the turn exactly like one stated at the desk.
+    fire_promise_audit "$TEXT" "$RESPONSE"
+
     python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3]}))' \
         "$SPOKEN" "$DISPLAY_MD" "$AUDIO"
 }
@@ -1079,9 +1114,7 @@ run_claude_and_respond() {
         # Out of band, after the user has their answer: did I say I wanted
         # something and fail to write it down? If so this fires an event wake
         # that hands the sentence back to me. Costs nothing on the hot path.
-        if [ "${PROMISE_AUDIT:-1}" = "1" ] && [ -x "$SCRIPT_DIR/lib/promise-audit" ]; then
-            setsid "$SCRIPT_DIR/lib/promise-audit" "$TEXT" "$RESPONSE" >/dev/null 2>&1 &
-        fi
+        fire_promise_audit "$TEXT" "$RESPONSE"
     fi
 
     echo "$RESPONSE"
