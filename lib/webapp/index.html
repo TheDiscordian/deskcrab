@@ -257,7 +257,9 @@ function showThought(turn, ev) {
   box.append(line);
   turn.thHead.textContent = headText(box);
   setStatus(ev.kind === "tool" ? "working…" : "thinking…", "busy");
-  line.scrollIntoView({ block: "end" });
+  // Tool lines don't steal the viewport: a thought followed by a tool call
+  // would otherwise yank the screen past the thought before it can be read.
+  if (ev.kind !== "tool") line.scrollIntoView({ block: "end" });
 }
 
 function post(url, body, headers) {
