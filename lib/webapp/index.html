@@ -42,6 +42,12 @@
   .thought { color: var(--dim); font-size: 12px; line-height: 1.45;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .thought.tool { color: var(--accent); opacity: .8; }
+  /* The whole trail is kept, not just the tail — scrolling back through the
+     log should show what was thought and run on every past turn. Folded once
+     the turn ends so old turns stay one line. */
+  .thoughts.folded .thought { display: none; }
+  .th-head { color: var(--dim); font-size: 12px; cursor: pointer;
+             margin: 6px 0 2px; user-select: none; }
   /* Display blocks live inside the turn that produced them, so scrolling back
      through the log shows each one where it belongs. Tap the header to fold. */
   .display { margin-top: 12px; background: var(--panel);
@@ -196,22 +202,40 @@ async function streamTurn(text, turn) {
   return done || { error: "connection ended early" };
 }
 
+function headText(box) {
+  const n = box.children.length;
+  return (box.classList.contains("folded") ? "▸ " : "▾ ") + n +
+         (n === 1 ? " step" : " steps");
+}
+
+function foldThoughts(turn) {
+  if (!turn.thoughts) return;
+  turn.thoughts.classList.add("folded");
+  turn.thHead.textContent = headText(turn.thoughts);
+}
+
 function showThought(turn, ev) {
   if (ev.kind === "transcript") return;
   if (ev.kind === "text") { turn.reply.textContent = ev.text; return; }
   let box = turn.thoughts;
   if (!box) {
+    const head = document.createElement("div");
+    head.className = "th-head";
     box = document.createElement("div");
     box.className = "thoughts";
+    head.onclick = () => {
+      box.classList.toggle("folded");
+      head.textContent = headText(box);
+    };
+    turn.reply.parentNode.insertBefore(head, turn.reply);
     turn.reply.parentNode.insertBefore(box, turn.reply);
-    turn.thoughts = box;
+    turn.thoughts = box; turn.thHead = head;
   }
   const line = document.createElement("div");
   line.className = "thought " + ev.kind;
   line.textContent = (ev.kind === "tool" ? "⚙ " : "… ") + ev.text;
   box.append(line);
-  // Only the last few matter; the rest is noise on a phone screen.
-  while (box.children.length > 6) box.removeChild(box.firstChild);
+  turn.thHead.textContent = headText(box);
   setStatus(ev.kind === "tool" ? "working…" : "thinking…", "busy");
   line.scrollIntoView({ block: "end" });
 }
@@ -240,6 +264,7 @@ async function runTurn(blob, ctype, typed) {
     }
     setStatus("thinking…", "busy");
     const res = await streamTurn(text, turn);
+    foldThoughts(turn);
     await deliver(res, turn.reply);
   } catch (e) {
     setStatus(String(e.message || e), "err");
