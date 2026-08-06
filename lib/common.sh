@@ -70,38 +70,109 @@ TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 DEBUGLOG="${STATE_PREFIX}-debug.log"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
 SESSIONS_LOCK="${STATE_PREFIX}-sessions.lock"
+SESSIONS_LOG="${STATE_PREFIX}-sessions.log"
+# How far back the journal of finished sessions is read, and how many entries
+# of it reach the prompt.
+SESSIONS_LOG_HOURS="${SESSIONS_LOG_HOURS:-12}"
+SESSIONS_LOG_SHOW="${SESSIONS_LOG_SHOW:-8}"
+SESSIONS_LOG_KEEP="${SESSIONS_LOG_KEEP:-400}"
+
+# Kernel boot-relative start time of a pid, in clock ticks (field 22 of
+# /proc/PID/stat). Recorded alongside the pid so a recycled pid cannot make a
+# long-dead session look live: same number, different start time, still dead.
+_proc_starttime() {
+    awk '{ n = split($0, f, ") "); split(f[n], g, " "); print g[20] }' \
+        "/proc/$1/stat" 2>/dev/null || echo 0
+}
 
 # --- Self-awareness: who else is running right now -------------------------
 # Every claude invocation registers itself here so that any one of them can see
 # the others. Without this an interactive turn has no idea a wake is working in
 # parallel, and reports "nothing is happening" while something is.
 session_register() {
-    local KIND="$1"
+    SESSION_KIND="$1"
+    SESSION_START=$(date +%s)
+    SESSION_OUTCOME=""
     mkdir -p "$SESSIONS_DIR"
     SESSION_FILE="$SESSIONS_DIR/$$"
-    printf '%s\t%s\t%s\n' "$KIND" "$$" "$(date '+%Y-%m-%d %H:%M:%S')" > "$SESSION_FILE"
-    trap 'rm -f "$SESSION_FILE"' EXIT INT TERM
+    printf '%s\t%s\t%s\t%s\t%s\n' "$SESSION_KIND" "$$" \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$SESSION_START" "$(_proc_starttime $$)" \
+        > "$SESSION_FILE"
+    trap session_finish EXIT INT TERM
+}
+
+# What this session actually accomplished, in one line. Recorded so the NEXT
+# session can see it: a live registry only ever answers "who is running", and
+# the failure it does not catch is concluding "I did no work" when an earlier
+# session already finished the work and exited.
+session_outcome() {
+    SESSION_OUTCOME="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 300)"
+}
+
+# Close the registration: drop the live file, append to the journal.
+session_finish() {
+    [ -n "${SESSION_FILE:-}" ] || return 0
+    rm -f "$SESSION_FILE"
+    local NOW; NOW=$(date +%s)
+    {
+        flock -w 10 9
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$(date -d "@${SESSION_START:-$NOW}" '+%Y-%m-%d %H:%M:%S')" \
+            "$(date '+%H:%M:%S')" \
+            "$(( NOW - ${SESSION_START:-$NOW} ))" \
+            "${SESSION_KIND:-session}" \
+            "${SESSION_OUTCOME:-(no summary recorded)}" >> "$SESSIONS_LOG"
+        # Keep the journal bounded; it is a memory aid, not an archive.
+        if [ "$(wc -l < "$SESSIONS_LOG" 2>/dev/null || echo 0)" -gt "$SESSIONS_LOG_KEEP" ]; then
+            tail -n "$SESSIONS_LOG_KEEP" "$SESSIONS_LOG" > "$SESSIONS_LOG.tmp" \
+                && mv "$SESSIONS_LOG.tmp" "$SESSIONS_LOG"
+        fi
+    } 9>"$SESSIONS_LOCK"
+    SESSION_FILE=""
 }
 
 # Prune registrations whose process is gone (a killed session leaves its file).
+# A session killed with SIGKILL never ran its trap, so it also never journalled;
+# reaping notes it as interrupted rather than letting it vanish silently.
 session_reap() {
     [ -d "$SESSIONS_DIR" ] || return 0
-    local f pid
+    local f pid kind started epoch startt
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
         pid="$(basename "$f")"
-        kill -0 "$pid" 2>/dev/null || rm -f "$f"
+        IFS=$'\t' read -r kind pid started epoch startt < "$f"
+        kill -0 "$pid" 2>/dev/null \
+            && [ "$(_proc_starttime "$pid")" = "${startt:-0}" ] && continue
+        rm -f "$f"
+        {
+            flock -w 10 9
+            printf '%s\t%s\t%s\t%s\t%s\n' "$started" "$(date '+%H:%M:%S')" "?" \
+                "$kind" "(killed — no summary)" >> "$SESSIONS_LOG"
+        } 9>"$SESSIONS_LOCK"
     done
+}
+
+# The journal of sessions that have already finished. This is the half a live
+# registry cannot cover: work done in a gap is invisible the moment it ends.
+session_history() {
+    [ -s "$SESSIONS_LOG" ] || { echo "  (nothing recorded)"; return 0; }
+    local CUTOFF; CUTOFF=$(date -d "-${SESSIONS_LOG_HOURS} hours" '+%Y-%m-%d %H:%M:%S')
+    local OUT
+    OUT="$(awk -F'\t' -v cut="$CUTOFF" '$1 >= cut' "$SESSIONS_LOG" \
+        | tail -n "$SESSIONS_LOG_SHOW" \
+        | awk -F'\t' '{ d = ($3 == "?") ? "?" : $3 "s"; \
+            printf "  - %s (%s, ran %s) %s\n", $1, $4, d, $5 }')"
+    if [ -n "$OUT" ]; then echo "$OUT"; else echo "  (nothing in the last ${SESSIONS_LOG_HOURS}h)"; fi
 }
 
 # Human-readable state of self: live sessions and pending wakes.
 self_state_report() {
     session_reap
-    local f kind pid started n=0
+    local f kind pid started epoch startt n=0
     echo "Live sessions:"
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
-        IFS=$'\t' read -r kind pid started < "$f"
+        IFS=$'\t' read -r kind pid started epoch startt < "$f"
         [ "$pid" = "$$" ] && kind="$kind (this one)"
         printf '  - %s, pid %s, started %s\n' "$kind" "$pid" "$started"
         n=$((n+1))
@@ -115,12 +186,17 @@ self_state_report() {
         # Calendar timers report realtime; transient --on-active ones report
         # monotonic, so fall back to the list-timers row for those.
         next="$(systemctl --user show "$u" -p NextElapseUSecRealtime --value 2>/dev/null)"
+        # Only accept a row that actually starts with a weekday — a timer whose
+        # moment has passed prints placeholder dashes, and stitching those into
+        # a sentence invents a wake that is not coming.
         [ -z "$next" ] && next="$(systemctl --user list-timers "$u" --no-pager --legend=false 2>/dev/null \
-                                  | awk '{print $1" "$2" "$3" "$4" (in "$5" "$6")"}')"
+                                  | awk '$1 ~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/ {print $1" "$2" "$3" "$4}')"
         [ -n "$next" ] && timers="$timers  - $u fires $next
 "
     done
     if [ -n "$timers" ]; then echo "$timers"; else echo "  (none scheduled)"; fi
+    echo "Recently finished (last ${SESSIONS_LOG_HOURS}h):"
+    session_history
 }
 
 # Kill any active TTS
@@ -297,7 +373,8 @@ You can wake yourself later to work on your wants without being spoken to: run '
     SELF_STATE="
 CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
 $(self_state_report)
-Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking. Speak for the whole of yourself, not just this conversation."
+Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; a recently finished session means work was DONE in the gap, by you, even though this conversation never saw it. Speak for the whole of yourself, not just this conversation.
+This is a snapshot taken when your turn began — sessions start and finish while you work. Run 'crab status' any time you need it live, and always before telling the user that nothing is happening."
 
     cat <<PROMPT
 You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
@@ -418,6 +495,11 @@ run_claude_wake() {
 
     convo_append 'Assistant: %s\n\n' "$RESPONSE"
     compact_convo
+
+    # A wake that ends quietly leaves no trace anywhere a later session looks:
+    # nothing spoken, nothing displayed, and the conversation may be compacted
+    # away. Its own summary of itself is what the next session gets to read.
+    session_outcome "$(spoken_part "$RESPONSE")"
 
     # Silent completion: quiet hours, or the reply opens with "(quiet)".
     case "$RESPONSE" in "(quiet)"*) return 0 ;; esac
@@ -543,6 +625,7 @@ _run_claude_remote_locked() {
     if [ -n "$RESPONSE" ]; then
         convo_append 'Assistant: %s\n\n' "$RESPONSE"
         compact_convo
+        session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
     fi
 
     local SPOKEN DISPLAY_MD AUDIO=""
@@ -586,6 +669,7 @@ run_claude_and_respond() {
     if [ -n "$RESPONSE" ]; then
         convo_append 'Assistant: %s\n\n' "$RESPONSE"
         compact_convo
+        session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
 
         local DISPLAY_PART
         DISPLAY_PART=$(display_part "$RESPONSE")
