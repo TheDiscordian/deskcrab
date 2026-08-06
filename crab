@@ -73,6 +73,23 @@ case "${1:-}" in
         exit 0
         ;;
 
+    claim)
+        # Announce what this session is holding so another hand can see it
+        # before it starts. Advisory: it reports, it never blocks.
+        shift
+        if [ -z "$*" ]; then
+            echo "Usage: crab claim <what you are working on>   |   crab unclaim"
+            exit 1
+        fi
+        session_claim "$*"
+        exit $?
+        ;;
+
+    unclaim)
+        session_unclaim
+        exit 0
+        ;;
+
     shutup)
         stop_tts
         ;;

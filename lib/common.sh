@@ -109,10 +109,91 @@ session_outcome() {
     SESSION_OUTCOME="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 300)"
 }
 
+# --- Work claims -----------------------------------------------------------
+# The registry reports; it does not claim. Knowing another session is alive is
+# not the same as knowing it has lib/common.sh open — twice in twenty minutes
+# two sessions edited and committed the same file, and one set of changes went
+# in under the other's commit message because `git add -A` in one hand sweeps up
+# whatever the other has staged. A claim is deliberately advisory: a lock held
+# by a session that dies mid-edit would wedge every later one, and a hand that
+# cannot start is worse than two hands that can see each other.
+#
+# The claim lives beside the live registration as <pid>.claim. A claude session
+# calls `crab claim` from a tool call, so the claiming process is a descendant
+# of the registered shell rather than the shell itself: walk up the ppid chain
+# to find whichever ancestor is registered.
+_claim_owner_pid() {
+    local p="${1:-$$}" guard=0
+    while [ "$p" -gt 1 ] && [ "$guard" -lt 40 ]; do
+        [ -e "$SESSIONS_DIR/$p" ] && { echo "$p"; return 0; }
+        p="$(awk '{ n = split($0, f, ") "); split(f[n], g, " "); print g[2] }' \
+             "/proc/$p/stat" 2>/dev/null)" || return 1
+        [ -n "$p" ] || return 1
+        guard=$((guard+1))
+    done
+    return 1
+}
+
+# Words too generic to mean two sessions are in each other's way.
+_CLAIM_STOPWORDS=" the a an and or of in on to for with my her at is are be it its this that work working "
+
+# Shared significant tokens between two claims, if any.
+_claim_overlap() {
+    local t out=""
+    for t in $(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9./_-' ' '); do
+        [ "${#t}" -ge 3 ] || continue
+        case "$_CLAIM_STOPWORDS" in *" $t "*) continue ;; esac
+        case " $(printf '%s' "$2" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9./_-' ' ') " in
+            *" $t "*) out="$out $t" ;;
+        esac
+    done
+    printf '%s' "${out# }"
+}
+
+# Announce what this session is holding. Prints any other live session's claim,
+# and shouts when the two touch the same thing.
+session_claim() {
+    local what="$1" owner
+    owner="$(_claim_owner_pid $PPID)" || owner="$(_claim_owner_pid $$)" || {
+        echo "No registered session in this process's ancestry — nothing to claim against."
+        return 1
+    }
+    mkdir -p "$SESSIONS_DIR"
+    session_reap
+    local f pid other clash=0
+    for f in "$SESSIONS_DIR"/*.claim; do
+        [ -e "$f" ] || continue
+        pid="$(basename "$f" .claim)"
+        [ "$pid" = "$owner" ] && continue
+        [ -e "$SESSIONS_DIR/$pid" ] || { rm -f "$f"; continue; }
+        other="$(cat "$f")"
+        local shared; shared="$(_claim_overlap "$what" "$other")"
+        if [ -n "$shared" ]; then
+            echo "CONFLICT — pid $pid is already holding: $other"
+            echo "           (both touch:$( printf ' %s' $shared ))"
+            clash=1
+        else
+            echo "also live — pid $pid holds: $other"
+        fi
+    done
+    printf '%s\n' "$what" > "$SESSIONS_DIR/$owner.claim"
+    [ "$clash" -eq 1 ] \
+        && echo "Claim recorded anyway (advisory, never a lock). Coordinate or pick different files." \
+        || echo "Claimed: $what"
+    return 0
+}
+
+session_unclaim() {
+    local owner
+    owner="$(_claim_owner_pid $PPID)" || owner="$(_claim_owner_pid $$)" || return 0
+    rm -f "$SESSIONS_DIR/$owner.claim"
+    echo "Claim released."
+}
+
 # Close the registration: drop the live file, append to the journal.
 session_finish() {
     [ -n "${SESSION_FILE:-}" ] || return 0
-    rm -f "$SESSION_FILE"
+    rm -f "$SESSION_FILE" "$SESSION_FILE.claim"
     local NOW; NOW=$(date +%s)
     {
         flock -w 10 9
@@ -139,11 +220,12 @@ session_reap() {
     local f pid kind started epoch startt
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
+        case "$f" in *.claim) continue ;; esac
         pid="$(basename "$f")"
         IFS=$'\t' read -r kind pid started epoch startt < "$f"
         kill -0 "$pid" 2>/dev/null \
             && [ "$(_proc_starttime "$pid")" = "${startt:-0}" ] && continue
-        rm -f "$f"
+        rm -f "$f" "$f.claim"
         {
             flock -w 10 9
             printf '%s\t%s\t%s\t%s\t%s\n' "$started" "$(date '+%H:%M:%S')" "?" \
@@ -172,9 +254,12 @@ self_state_report() {
     echo "Live sessions:"
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
+        case "$f" in *.claim) continue ;; esac
         IFS=$'\t' read -r kind pid started epoch startt < "$f"
         [ "$pid" = "$$" ] && kind="$kind (this one)"
         printf '  - %s, pid %s, started %s\n' "$kind" "$pid" "$started"
+        # What it says it is holding, so another hand can avoid the same files.
+        [ -s "$f.claim" ] && printf '      holding: %s\n' "$(cat "$f.claim")"
         n=$((n+1))
     done
     [ "$n" -eq 0 ] && echo "  (none registered)"
