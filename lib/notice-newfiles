@@ -1,0 +1,83 @@
+#!/bin/bash
+# Notice files arriving in a directory and wake the assistant about them.
+#
+#   notice-newfiles <name> <dir> <phrase> [attempt]
+#
+#   name     short identifier; names the state file
+#   dir      directory to watch (non-recursive)
+#   phrase   how the arrival is described to the assistant
+#   attempt  internal — deferral counter, do not pass by hand
+#
+# Meant to be driven by a systemd .path unit, which watches the directory with
+# the kernel's own inotify — no extra daemon, no inotify-tools dependency.
+#
+# Two things keep this quiet rather than chatty:
+#   * the first run seeds the state file silently, so an existing backlog of
+#     files never triggers a wake;
+#   * a wake is deferred while a Parley recording is still running, because a
+#     transcript being written incrementally would be read half-finished.
+set -u
+
+NAME="${1:-}"
+DIR="${2:-}"
+PHRASE="${3:-}"
+ATTEMPT="${4:-0}"
+
+if [ -z "$NAME" ] || [ -z "$DIR" ] || [ -z "$PHRASE" ]; then
+    echo "Usage: notice-newfiles <name> <dir> <phrase>" >&2
+    exit 1
+fi
+
+# lib/ lives beside the crab script in the repo; ~/.local/lib/deskcrab is a
+# symlink to it, so resolve before stepping up.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CRAB="$SCRIPT_DIR/crab"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab"
+STATE="$STATE_DIR/notice-$NAME.list"
+
+# How many times a wake may be pushed back to wait out a recording before it
+# goes ahead anyway. Bounded on purpose: a stale Parley state file left behind
+# by a crashed recording would otherwise defer this for ever.
+MAX_DEFERRALS=10
+
+[ -d "$DIR" ] || exit 0
+mkdir -p "$STATE_DIR"
+
+list_files() {
+    find "$DIR" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort
+}
+
+# Parley keeps one JSON file for the life of a recording. Its own state dir
+# resolution tries XDG_RUNTIME_DIR first, then XDG_STATE_HOME, then a fixed
+# fallback — check all three rather than assume which one it landed on.
+recording_active() {
+    local d
+    for d in "${XDG_RUNTIME_DIR:-}" "${XDG_STATE_HOME:-}" "$HOME/.local/state"; do
+        [ -n "$d" ] && [ -f "$d/parley/state.json" ] && return 0
+    done
+    return 1
+}
+
+if [ ! -f "$STATE" ]; then
+    list_files > "$STATE"
+    exit 0
+fi
+
+NEW="$(comm -13 "$STATE" <(list_files))"
+[ -z "$NEW" ] && exit 0
+
+if recording_active && [ "$ATTEMPT" -lt "$MAX_DEFERRALS" ]; then
+    # Leave the state file alone so the file still reads as new next time.
+    # If the timer can't be placed there may never be another directory change
+    # to re-trigger on, so a failure here falls through and wakes now rather
+    # than dropping the event on the floor.
+    if systemd-run --user --quiet --unit="deskcrab-notice-$NAME-$(date +%s)-$$" \
+        --on-active=60 "$0" "$NAME" "$DIR" "$PHRASE" "$((ATTEMPT + 1))" 2>/dev/null
+    then
+        exit 0
+    fi
+fi
+
+list_files > "$STATE"
+exec "$CRAB" wake event "$PHRASE: $(echo "$NEW" | paste -sd, - | sed 's/,/, /g')"

@@ -101,17 +101,44 @@ case "${1:-}" in
             exit 1
         fi
         mkdir -p "$(dirname "$WANTS_FILE")"
+
+        # KIND is "scheduled" (self-scheduled), "event" (something on the
+        # machine happened), or empty (the background timer came round).
+        # A wake with a KIND had a purpose, so a blocked one is pushed back
+        # rather than dropped — and an event wake carries its reason along.
+        WAKE_KIND="${2:-}"
+        WAKE_REASON="${3:-}"
+        [ "$WAKE_KIND" = "scheduled" ] || [ "$WAKE_KIND" = "event" ] || WAKE_KIND=""
+
         # Don't barge into an active interaction (recording or speech in progress).
-        # A self-scheduled wake had a purpose, so push it back instead of dropping it.
+        # A wake with a purpose is pushed back instead of dropped, reason intact.
         if user_busy; then
-            [ "${2:-}" = "scheduled" ] && "$SCRIPT_DIR/crab" wake-at 10min >/dev/null
+            [ -n "$WAKE_KIND" ] && "$SCRIPT_DIR/crab" wake-at 10min "$WAKE_KIND" "$WAKE_REASON" >/dev/null
             exit 0
         fi
+
+        # One waking mind at a time. Without this, a file landing at the wrong
+        # moment could start a second session that interleaves its turns with
+        # the first one's and works the same want twice. The lock is held for
+        # the life of this process, so it covers the whole session.
+        exec 9>"${STATE_PREFIX}-wake.lock"
+        if ! flock -n 9; then
+            [ -n "$WAKE_KIND" ] && "$SCRIPT_DIR/crab" wake-at 15min "$WAKE_KIND" "$WAKE_REASON" >/dev/null
+            exit 0
+        fi
+
         rotate_convo
         WAKE_SOURCE="on your background timer"
-        [ "${2:-}" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"
+        [ "$WAKE_KIND" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"
         WAKE_NOTE=""
-        in_quiet_hours && WAKE_NOTE="
+        if [ "$WAKE_KIND" = "event" ]; then
+            WAKE_SOURCE="because something you asked to be told about happened on this machine"
+            WAKE_NOTE="
+What happened: $WAKE_REASON
+That is this session's agenda — look into it first. Only fall back to your
+wants file if it turns out to need nothing from you."
+        fi
+        in_quiet_hours && WAKE_NOTE="$WAKE_NOTE
 Quiet hours are in effect: speaking and windows are suppressed — work silently."
         run_claude_wake "(Autonomous wake — nobody is talking to you. You woke up $WAKE_SOURCE to pursue your own wants. Review your wants file, pick at most ONE want, and advance it: think it through, research with your tools, prepare something, or revise the file. Nobody is waiting, so take the time the work actually needs — you control when this session ends. For work bigger than one sitting, wrap up deliberately: save dated progress to your wants file, then schedule your next session with 'crab wake-at'. There is no wall-clock limit; only a session with no output AND no CPU activity for several minutes is presumed hung and reaped — long compiles and heavy work count as alive, but for long LOW-activity commands (big downloads, remote waits) prefer background execution so your session stays visibly alive. While unattended, take no destructive or outward-facing actions: nothing leaves this machine — no messages, no emails, no pushes — and delete nothing. Update your wants file with dated progress before finishing. If you found something genuinely worth telling the user right now, say it briefly (a display section is fine too); otherwise begin your reply with (quiet) and nothing will be spoken or shown.$WAKE_NOTE)"
         # Never let the chain of self-scheduled wakes end. A wake that finished
@@ -176,14 +203,20 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Schedule a one-shot autonomous wake via a transient systemd user timer.
         WHEN="${2:-}"
         if [ -z "$WHEN" ]; then
-            echo "Usage: crab wake-at <when>   (e.g. 2h, 45min, \"09:30\", \"Sat 14:00\")"
+            echo "Usage: crab wake-at <when> [kind] [reason]   (e.g. 2h, 45min, \"09:30\", \"Sat 14:00\")"
             exit 1
         fi
-        UNIT="deskcrab-wake-$(date +%s)"
+        # A deferred wake keeps whatever kind and reason it started with, so an
+        # event wake pushed back past a recording still arrives knowing why.
+        KIND="${3:-scheduled}"
+        REASON="${4:-}"
+        # $$ as well as the timestamp: two deferrals in the same second would
+        # otherwise collide on the unit name and the second one would vanish.
+        UNIT="deskcrab-wake-$(date +%s)-$$"
         if echo "$WHEN" | grep -qE '^[0-9]+(s|sec|min|m|h|hr|hours?|d|days?)$'; then
-            systemd-run --user --quiet --unit="$UNIT" --on-active="$WHEN" "$SCRIPT_DIR/crab" wake scheduled
+            systemd-run --user --quiet --unit="$UNIT" --on-active="$WHEN" "$SCRIPT_DIR/crab" wake "$KIND" "$REASON"
         else
-            systemd-run --user --quiet --unit="$UNIT" --on-calendar="$WHEN" "$SCRIPT_DIR/crab" wake scheduled
+            systemd-run --user --quiet --unit="$UNIT" --on-calendar="$WHEN" "$SCRIPT_DIR/crab" wake "$KIND" "$REASON"
         fi && echo "Wake scheduled ($WHEN) as $UNIT"
         ;;
 

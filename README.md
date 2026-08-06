@@ -180,6 +180,24 @@ systemctl --user enable --now deskcrab-wake.timer
 
 Set `WAKE_QUIET_HOURS="23-09"` to keep night wakes fully silent (they still run and can work — they just never speak or open windows).
 
+Only one wake runs at a time. A wake that arrives while another is thinking — or while you are talking to the assistant — is re-armed for a few minutes later with its reason intact, never dropped.
+
+### Event wakes
+
+A timer wakes the assistant *at* a moment; an event wake tells it *why*. `crab wake event "<reason>"` starts an autonomous session whose agenda is the reason, falling back to the wants file only if the event turns out to need nothing.
+
+Emitters are small scripts driven by systemd `.path` units, which watch the filesystem with the kernel's own inotify — no polling loop and no `inotify-tools` dependency. One ships as an example: a new meeting transcript appearing means a call just ended, which is worth noticing.
+
+```bash
+cp systemd/deskcrab-notice-transcriptions.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-notice-transcriptions.path
+```
+
+It watches `~/Documents/Transcriptions` (edit the unit for another path), seeds its state silently on first run so an existing backlog never triggers a wake, and defers while a [Parley](https://github.com/devdocsorg/parley) recording is still writing, so it reads a finished transcript rather than half of one. Write your own emitter by pointing `lib/notice-newfiles <name> <dir> <phrase>` at any directory worth watching.
+
+These units are deliberately not enabled by installation. Turning one on changes how the machine behaves towards you, unprompted — that should be a decision you make, not a default you inherit.
+
 ## Remote client (phone)
 
 `crab serve` puts a small web app in front of the assistant so a phone can talk to it. The assistant does not move: the phone is a microphone, a speaker, and a screen, while the `claude` CLI, the system prompt, the tools, the wants file, and the conversation all stay on this machine. A remote turn is the same conversation as the desktop one — ask something on the laptop, follow it up from the phone.
