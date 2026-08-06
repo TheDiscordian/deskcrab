@@ -35,6 +35,16 @@
 
   main { flex: 1; overflow-y: auto; padding: 16px; }
   .turn { margin-bottom: 18px; }
+  /* Where the conversation already was when this page loaded — dimmed, so it
+     never reads as something said just now. */
+  #seed { margin-bottom: 22px; padding-bottom: 14px;
+          border-bottom: 1px dashed var(--border); }
+  #seed .turn { opacity: .72; }
+  .seed-label { color: var(--dim); font-size: 12px; text-transform: uppercase;
+                letter-spacing: .08em; margin-bottom: 10px; }
+  .seed-summary { color: var(--dim); font-size: 13px; line-height: 1.5;
+                  white-space: pre-wrap; margin-bottom: 16px;
+                  padding-left: 10px; border-left: 2px solid var(--border); }
   .you { color: var(--dim); }
   .you::before { content: "› "; }
   .reply { white-space: pre-wrap; }
@@ -379,6 +389,50 @@ $("text").addEventListener("keydown", e => { if (e.key === "Enter") sendTyped();
 
 fetch("/health").then(r => r.json()).then(h => {
   if (h.name) { $("name").textContent = h.name; document.title = h.name; }
+}).catch(() => {});
+
+// Seed a freshly loaded page with where the conversation currently stands, so
+// picking the phone up mid-thread doesn't start from a blank screen. Nothing
+// stored yet means nothing shown — no empty scaffolding.
+fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx => {
+  const turns = ctx.turns || [];
+  if (!ctx.summary && !turns.length) return;
+
+  const seed = document.createElement("div");
+  seed.id = "seed";
+  const label = document.createElement("div");
+  label.className = "seed-label";
+  label.textContent = "where we were";
+  seed.append(label);
+
+  if (ctx.summary) {
+    const s = document.createElement("div");
+    s.className = "seed-summary";
+    s.textContent = ctx.summary;
+    seed.append(s);
+  }
+
+  // The convo file stores one line per turn, so a user turn and the reply that
+  // follows it are paired back up here into the same shape a live turn takes.
+  for (let i = 0; i < turns.length; i++) {
+    if (turns[i].role !== "user") continue;
+    const t = document.createElement("div");
+    t.className = "turn";
+    const y = document.createElement("div");
+    y.className = "you"; y.textContent = turns[i].text;
+    t.append(y);
+    const next = turns[i + 1];
+    if (next && next.role === "assistant") {
+      const r = document.createElement("div");
+      r.className = "reply"; r.textContent = next.text;
+      t.append(r);
+      i++;
+    }
+    seed.append(t);
+  }
+
+  logEl.prepend(seed);
+  seed.scrollIntoView({ block: "end" });
 }).catch(() => {});
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

@@ -110,6 +110,45 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, timeout=TURN_TIMEOUT, **kw)
 
 
+STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
+CONTEXT_TURNS = int(os.environ.get("DESKCRAB_SERVE_CONTEXT_TURNS", "6"))
+
+
+def read_context():
+    """Where the conversation currently stands, for seeding a freshly loaded page.
+
+    Returns the running compaction summary (if compaction has happened at all)
+    plus the last CONTEXT_TURNS exchanges still live in the convo file. Both are
+    optional: a brand-new conversation yields nothing and the client shows
+    nothing rather than an empty shell.
+    """
+    summary = ""
+    sp = Path(STATE_PREFIX + "-convo-summary.txt")
+    if sp.is_file():
+        summary = sp.read_text(errors="replace").strip()
+
+    turns = []
+    cp = Path(STATE_PREFIX + "-convo.txt")
+    if cp.is_file():
+        cur = None
+        for line in cp.read_text(errors="replace").splitlines():
+            if line.startswith("User: "):
+                cur = {"role": "user", "text": line[6:]}
+                turns.append(cur)
+            elif line.startswith("Assistant: "):
+                cur = {"role": "assistant", "text": line[11:]}
+                turns.append(cur)
+            elif cur is not None:
+                # Continuation of a multi-line turn.
+                cur["text"] += "\n" + line
+        for t in turns:
+            t["text"] = t["text"].strip()
+        # Pairs, not messages — six exchanges reads as six exchanges.
+        turns = turns[-(CONTEXT_TURNS * 2):]
+
+    return {"summary": summary, "turns": turns}
+
+
 def _suffix_for(ctype):
     """Chrome records webm/opus, iOS Safari mp4/aac — ffmpeg wants a hint."""
     if "mp4" in ctype or "aac" in ctype:
@@ -471,6 +510,9 @@ class Handler(BaseHTTPRequestHandler):
                 f"crabkey={query_key}; Path=/; Max-Age=31536000; "
                 "SameSite=Strict; HttpOnly"
             )
+
+        if path == "/context":
+            return self._json(200, read_context(), extra)
 
         if path in ("/", "/index.html"):
             return self._send(200, (WEBAPP_DIR / "index.html").read_bytes(),
