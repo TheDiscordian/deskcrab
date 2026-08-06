@@ -45,6 +45,13 @@
   .seed-summary { color: var(--dim); font-size: 13px; line-height: 1.5;
                   white-space: pre-wrap; margin-bottom: 16px;
                   padding-left: 10px; border-left: 2px solid var(--border); }
+  /* Said at the laptop, not here — marked so it never reads as this phone's
+     own turn arriving. */
+  .turn.elsewhere { border-left: 2px solid var(--border); padding-left: 10px; }
+  .turn.elsewhere::before { content: "at the laptop"; display: block;
+                            color: var(--dim); font-size: 11px;
+                            text-transform: uppercase; letter-spacing: .08em;
+                            margin-bottom: 6px; }
   .you { color: var(--dim); }
   .you::before { content: "› "; }
   .reply { white-space: pre-wrap; }
@@ -321,6 +328,7 @@ async function runTurn(blob, ctype, typed) {
     setStatus(String(e.message || e), "err");
     turn.reply.textContent = "(failed)";
   } finally {
+    await resyncWatch();
     busy = false; $("talk").disabled = false;
   }
 }
@@ -433,7 +441,65 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
 
   logEl.prepend(seed);
   seed.scrollIntoView({ block: "end" });
-}).catch(() => {});
+}).then(startWatch).catch(startWatch);
+
+// Follow the conversation while it happens somewhere else. Turns spoken at the
+// laptop go into the same file, so the phone long-polls for anything past its
+// cursor and shows it arriving rather than only on the next page load.
+let cursor = null;
+let watching = false;
+
+function renderRemote(turns) {
+  for (let i = 0; i < turns.length; i++) {
+    const t = document.createElement("div");
+    t.className = "turn elsewhere";
+    if (turns[i].role === "user") {
+      const y = document.createElement("div");
+      y.className = "you"; y.textContent = turns[i].text;
+      t.append(y);
+      const next = turns[i + 1];
+      if (next && next.role === "assistant") {
+        const r = document.createElement("div");
+        r.className = "reply"; r.textContent = next.text;
+        t.append(r); i++;
+      }
+    } else {
+      const r = document.createElement("div");
+      r.className = "reply"; r.textContent = turns[i].text;
+      t.append(r);
+    }
+    logEl.append(t);
+    t.scrollIntoView({ block: "end" });
+  }
+}
+
+async function startWatch() {
+  if (watching) return;
+  watching = true;
+  for (;;) {
+    try {
+      const q = "/watch?wait=1" + (cursor === null ? "" : "&since=" + cursor);
+      const res = await fetch(q, { credentials: "same-origin" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const first = cursor === null;
+      cursor = data.n;
+      // The first reply only establishes where we are; the seed already showed it.
+      if (!first && data.turns.length && !busy) renderRemote(data.turns);
+    } catch (e) {
+      // Phone asleep, laptop rebooting, tailnet blipping — just try again.
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+}
+
+// A turn taken here is already on screen, so skip it rather than echo it back.
+async function resyncWatch() {
+  try {
+    const res = await fetch("/watch?wait=0", { credentials: "same-origin" });
+    cursor = (await res.json()).n;
+  } catch (e) { /* the watcher will resync on its own next pass */ }
+}
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 </script>

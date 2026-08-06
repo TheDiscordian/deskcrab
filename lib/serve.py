@@ -127,26 +127,55 @@ def read_context():
     if sp.is_file():
         summary = sp.read_text(errors="replace").strip()
 
+    turns = read_turns()
+    n = len(turns)
+    # Pairs, not messages — six exchanges reads as six exchanges.
+    return {"summary": summary, "turns": turns[-(CONTEXT_TURNS * 2):], "n": n}
+
+
+def read_turns():
+    """Every turn still live in the convo file, oldest first."""
     turns = []
     cp = Path(STATE_PREFIX + "-convo.txt")
-    if cp.is_file():
-        cur = None
-        for line in cp.read_text(errors="replace").splitlines():
-            if line.startswith("User: "):
-                cur = {"role": "user", "text": line[6:]}
-                turns.append(cur)
-            elif line.startswith("Assistant: "):
-                cur = {"role": "assistant", "text": line[11:]}
-                turns.append(cur)
-            elif cur is not None:
-                # Continuation of a multi-line turn.
-                cur["text"] += "\n" + line
-        for t in turns:
-            t["text"] = t["text"].strip()
-        # Pairs, not messages — six exchanges reads as six exchanges.
-        turns = turns[-(CONTEXT_TURNS * 2):]
+    if not cp.is_file():
+        return turns
+    cur = None
+    for line in cp.read_text(errors="replace").splitlines():
+        if line.startswith("User: "):
+            cur = {"role": "user", "text": line[6:]}
+            turns.append(cur)
+        elif line.startswith("Assistant: "):
+            cur = {"role": "assistant", "text": line[11:]}
+            turns.append(cur)
+        elif cur is not None:
+            # Continuation of a multi-line turn.
+            cur["text"] += "\n" + line
+    for t in turns:
+        t["text"] = t["text"].strip()
+    return turns
 
-    return {"summary": summary, "turns": turns}
+
+WATCH_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_WATCH_TIMEOUT", "25"))
+
+
+def watch_turns(since, wait):
+    """Long-poll for turns that appeared since the caller's cursor.
+
+    The cursor is a turn count. Compaction drops the oldest lines, so the count
+    can shrink; when it does the cursor is simply snapped back to the new total
+    rather than replaying the whole file as if it were new.
+    """
+    deadline = time.time() + (WATCH_TIMEOUT if wait else 0)
+    while True:
+        turns = read_turns()
+        n = len(turns)
+        if since is None or since > n:
+            since = n
+        if n > since:
+            return {"n": n, "turns": turns[since:]}
+        if time.time() >= deadline:
+            return {"n": n, "turns": []}
+        time.sleep(0.5)
 
 
 def _suffix_for(ctype):
@@ -513,6 +542,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/context":
             return self._json(200, read_context(), extra)
+
+        if path == "/watch":
+            # Turns spoken at the laptop land in the same conversation file, so
+            # the phone can follow along by watching it rather than being told.
+            raw = (query.get("since") or [None])[0]
+            try:
+                since = int(raw) if raw is not None else None
+            except ValueError:
+                since = None
+            wait = (query.get("wait") or ["1"])[0] != "0"
+            return self._json(200, watch_turns(since, wait), extra)
 
         if path in ("/", "/index.html"):
             return self._send(200, (WEBAPP_DIR / "index.html").read_bytes(),
