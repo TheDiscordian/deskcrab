@@ -13,7 +13,7 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 ## How it works
 
 1. `deskcrab start` launches whisper-stream for real-time STT
-2. `deskcrab stop` kills whisper, reads transcription, applies whisper fixes
+2. `deskcrab stop` kills whisper, reads the transcription through `lib/transcript-dedup` (collapses whisper-stream's overlapping-window repeats), applies whisper fixes
 3. Builds system prompt from core instructions + custom prompt + context files + conversation history
 4. Launches a background TTS streamer that reads Claude's stream-json output
 5. Calls `claude` CLI with `--output-format stream-json` and pipes output to the TTS streamer

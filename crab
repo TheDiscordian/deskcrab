@@ -46,9 +46,10 @@ case "${1:-}" in
         kill "$WSPID" 2>/dev/null
         wait "$WSPID" 2>/dev/null
 
-        # Read transcription output
+        # Read transcription output, collapsing whisper-stream's overlapping-window
+        # repeats (it appends every step's re-transcription, not just final lines)
         TEXT=""
-        [ -f "$WHISPER_OUT" ] && TEXT=$(sed '/^$/d; s/^\[.*\] //g' "$WHISPER_OUT" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//')
+        [ -f "$WHISPER_OUT" ] && TEXT=$("$SCRIPT_DIR/lib/transcript-dedup" "$WHISPER_OUT" 2>/dev/null)
         rm -f "$WHISPER_OUT"
 
         # Apply custom whisper fixes
