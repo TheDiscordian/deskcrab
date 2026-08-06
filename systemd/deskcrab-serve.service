@@ -1,0 +1,20 @@
+[Unit]
+Description=DeskCrab phone server (crab serve)
+Documentation=https://github.com/TheDiscordian/deskcrab
+After=network-online.target
+
+[Service]
+Type=simple
+# SERVE_SECRET and SERVE_PORT are read from ~/.config/deskcrab/deskcrab.conf
+ExecStart=%h/.local/bin/crab serve
+WorkingDirectory=%h
+Restart=always
+RestartSec=3
+# The server shells out to claude, ffmpeg, whisper-cli and piper, all of which
+# live in ~/.local/bin — not on PATH for a systemd user unit by default.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:/tmp/crab-serve.log
+StandardError=append:/tmp/crab-serve.log
+
+[Install]
+WantedBy=default.target
