@@ -45,6 +45,12 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Example: WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 # WHISPER_FIXES=''
 
+# Optional: TTS pronunciation fixes (sed expressions applied to spoken text)
+# Useful for words piper mispronounces or spells out letter-by-letter.
+# Applied only to the spoken reply — display-channel content is untouched.
+# Example: TTS_FIXES='s/\bhmph\b/humph/gi'
+# TTS_FIXES=''
+
 # Optional: additional files to include in system prompt context
 # Space-separated list of file paths. Their contents are appended to the prompt.
 # CONTEXT_FILES="$HOME/project/CLAUDE.md $HOME/project/notes.md"

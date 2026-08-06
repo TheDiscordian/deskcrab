@@ -17,6 +17,26 @@ PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
 LENGTH_SCALE = os.environ.get("DESKCRAB_PIPER_LENGTH_SCALE", "").strip()
 SPEAKER = os.environ.get("DESKCRAB_PIPER_SPEAKER", "").strip()
 
+# Optional sed expressions (same format as WHISPER_FIXES) applied to spoken
+# text only — display content is untouched. Lets users rewrite words piper
+# mispronounces or spells out letter-by-letter, e.g. s/\bhmph\b/humph/gi
+TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
+
+
+def fix_pronunciation(text):
+    if not TTS_FIXES:
+        return text
+    try:
+        out = subprocess.run(
+            ["sed", "-E", TTS_FIXES],
+            input=text.encode(), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL)
+        if out.returncode == 0:
+            return out.stdout.decode()
+    except Exception:
+        pass
+    return text
+
 
 def speak(text):
     try:
@@ -77,6 +97,7 @@ with open(LOG) as f:
                     text = text.split("---DISPLAY---")[0].strip()
                     text = re.sub(r"\*+", "", text)
                     text = re.sub(r"\x60[^\x60]*\x60", "", text)
+                    text = fix_pronunciation(text)
                     text = text.strip()
                     if not text:
                         continue
