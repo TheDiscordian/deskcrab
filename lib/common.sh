@@ -512,6 +512,28 @@ in_quiet_hours() {
     fi
 }
 
+# True while the user is mid-something a wake must not interrupt: a crab
+# recording or speech in flight, a parley recording, or ANY other application
+# holding the microphone — a meeting in a browser or a call app shows up as a
+# capture stream, which is the only signal that catches a meeting parley never
+# started. Checked at wake START *and* again immediately before speaking: a
+# wake that began before the meeting did would otherwise talk over it minutes
+# later, which is exactly how this was discovered.
+user_busy() {
+    [ -f "$PIDFILE" ] && return 0
+    [ -f "$TTSPIDFILE" ] && return 0
+    local PARLEY_STATE="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/parley/state.json"
+    [ -f "$PARLEY_STATE" ] && return 0
+    [ -f "$HOME/.local/state/parley/state.json" ] && return 0
+    # Someone else is on the mic. Exclude our own capture tooling so crab never
+    # sees itself as a reason to stay silent.
+    command -v pactl >/dev/null 2>&1 || return 1
+    pactl list source-outputs 2>/dev/null \
+        | grep 'application.name' \
+        | grep -qviE 'whisper|parley|crab|piper|aplay|arecord' && return 0
+    return 1
+}
+
 # One-shot TTS for autonomous wakes (no streaming): markdown-strip + TTS_FIXES,
 # then pipe through piper exactly like the streamer does.
 speak_once() {
@@ -606,6 +628,9 @@ run_claude_wake() {
     # Silent completion: quiet hours, or the reply opens with "(quiet)".
     case "$RESPONSE" in "(quiet)"*) return 0 ;; esac
     in_quiet_hours && return 0
+    # Re-check RIGHT HERE, not just at wake start. The user may have walked into
+    # a meeting while this session was working; speaking now would talk over it.
+    user_busy && return 0
 
     local SPOKEN DISPLAY_PART
     SPOKEN=$(spoken_part "$RESPONSE")

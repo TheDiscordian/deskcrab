@@ -103,7 +103,7 @@ case "${1:-}" in
         mkdir -p "$(dirname "$WANTS_FILE")"
         # Don't barge into an active interaction (recording or speech in progress).
         # A self-scheduled wake had a purpose, so push it back instead of dropping it.
-        if [ -f "$PIDFILE" ] || [ -f "$TTSPIDFILE" ]; then
+        if user_busy; then
             [ "${2:-}" = "scheduled" ] && "$SCRIPT_DIR/crab" wake-at 10min >/dev/null
             exit 0
         fi
