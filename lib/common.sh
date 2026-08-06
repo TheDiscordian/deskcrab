@@ -653,6 +653,52 @@ speech_busy() {
     return 0
 }
 
+# --- Wake audio routing: desk speakers or the phone -------------------------
+# The user's attention is wherever he last spoke from. Every interactive turn
+# records its origin device here — durable, because "he last spoke from the
+# phone" easily survives a reboot while /tmp does not.
+LAST_ORIGIN_FILE="${LAST_ORIGIN_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/last-origin}"
+# How recently the phone client must have polled /watch to count as connected.
+# The client long-polls with a 25 s timeout and re-asks immediately, so a live
+# page touches the seen-file at least that often; 40 allows one blip of grace.
+PHONE_SEEN_WINDOW="${PHONE_SEEN_WINDOW:-40}"
+
+record_origin() {
+    mkdir -p "$(dirname "$LAST_ORIGIN_FILE")"
+    printf '%s\t%s\n' "$1" "$(date +%s)" > "$LAST_ORIGIN_FILE"
+}
+
+last_origin() {
+    [ -f "$LAST_ORIGIN_FILE" ] && cut -f1 "$LAST_ORIGIN_FILE"
+}
+
+# Is the phone client connected right now? serve.py touches the seen-file on
+# every authenticated /watch poll from a wake-capable client — the same channel
+# that would deliver the audio, so freshness means it will actually be played.
+phone_connected() {
+    local SEEN="${STATE_PREFIX}-phone-seen" M
+    M=$(stat -c %Y "$SEEN" 2>/dev/null) || return 1
+    [ $(( $(date +%s) - M )) -le "$PHONE_SEEN_WINDOW" ]
+}
+
+# Deliver a wake's spoken reply to the phone instead of the desk speakers.
+# Fails — so the caller falls back to speak_once — unless the last interactive
+# turn came from the phone AND the phone client is connected right now.
+# Delivery is a pointer file the server's /watch loop notices; the client
+# fetches the opus over the connection it is already holding open.
+wake_speak_to_phone() {
+    [ "$(last_origin)" = "phone" ] || return 1
+    phone_connected || return 1
+    local ID OUT PTR="${STATE_PREFIX}-wake-audio"
+    ID="$(date +%s%N)"
+    # deskcrab-remote- prefix: the only pattern /audio/ serves, and the hourly
+    # cleanup in the remote turn path sweeps it like any reply clip.
+    OUT="/tmp/deskcrab-remote-wake-$ID.opus"
+    synth_opus "$1" "$OUT" || return 1
+    python3 -c 'import json,sys; print(json.dumps({"id":sys.argv[1],"audio":"/audio/"+sys.argv[2],"spoken":sys.argv[3]}))' \
+        "$ID" "$(basename "$OUT")" "$1" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR"
+}
+
 # Total utime+stime jiffies for a PID and all its descendants. Field extraction
 # strips through the ')' ending the comm field, which may itself contain spaces.
 _tree_cpu() {
@@ -744,7 +790,7 @@ run_claude_wake() {
 
     if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ]; then
         notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(echo "$SPOKEN" | head -c 140)" 2>/dev/null
-        speak_once "$SPOKEN"
+        wake_speak_to_phone "$SPOKEN" || speak_once "$SPOKEN"
     fi
     if [ -n "$DISPLAY_PART" ]; then
         local DISPLAYFILE="/tmp/deskcrab-display.md"
@@ -844,6 +890,7 @@ run_claude_remote() {
 
 _run_claude_remote_locked() {
     session_register "phone turn"
+    record_origin phone
     local TEXT="$1"
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
@@ -886,6 +933,7 @@ _run_claude_remote_locked() {
 # Run claude, save response, handle display channel
 run_claude_and_respond() {
     session_register "desktop turn"
+    record_origin desk
     local TEXT="$1"
 
     convo_append 'User: %s\n' "$TEXT"

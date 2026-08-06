@@ -480,6 +480,9 @@ fetch("/health").then(r => r.json()).then(h => {
 // picking the phone up mid-thread doesn't start from a blank screen. Nothing
 // stored yet means nothing shown — no empty scaffolding.
 fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx => {
+  // Any wake audio already pending was routed before this page existed —
+  // mark it heard so loading the app never blares an old clip.
+  wakeSeen = ctx.wake_id || "";
   const turns = ctx.turns || [];
   if (!ctx.summary && !turns.length) return;
 
@@ -536,6 +539,11 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
 let cursor = null;
 let watching = false;
 
+// The last wake-audio clip this page played (or was told predates it). Sent
+// with every poll: its presence tells the server this client can play wake
+// audio at all — and so counts as "connected" when a wake picks a speaker.
+let wakeSeen = "";
+
 // The turn taken on this phone also lands in the convo file, and the watcher
 // must not echo it back as a duplicate bubble. It used to handle that by not
 // rendering at all while busy and snapping the cursor forward afterwards —
@@ -586,12 +594,20 @@ async function startWatch() {
   watching = true;
   for (;;) {
     try {
-      const q = "/watch?wait=1" + (cursor === null ? "" : "&since=" + cursor);
+      const q = "/watch?wait=1&wakeseen=" + encodeURIComponent(wakeSeen)
+              + (cursor === null ? "" : "&since=" + cursor);
       const res = await fetch(q, { credentials: "same-origin" });
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
       const first = cursor === null;
       cursor = data.n;
+      // A wake routed its voice here because this phone was the live device.
+      // Played through the same queue as reply clips, acknowledged so the
+      // next poll doesn't repeat it.
+      if (data.wake && data.wake.id !== wakeSeen) {
+        wakeSeen = data.wake.id;
+        enqueueVoice(data.wake.audio);
+      }
       // The first reply only establishes where we are; the seed already showed it.
       if (!first && data.turns.length) renderRemote(data.turns);
     } catch (e) {

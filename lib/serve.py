@@ -213,6 +213,33 @@ def run(cmd, **kw):
 STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
 CONTEXT_TURNS = int(os.environ.get("DESKCRAB_SERVE_CONTEXT_TURNS", "6"))
 
+# The phone's liveness beacon: touched on every authenticated /watch poll. An
+# autonomous wake deciding whether its voice belongs on the phone checks this
+# file's freshness — the same channel that would deliver the audio, so a fresh
+# beacon means the audio will actually be picked up.
+PHONE_SEEN = STATE_PREFIX + "-phone-seen"
+
+# Pointer a wake writes when it routes its spoken reply here instead of the
+# desk speakers. Freshness is bounded so a pointer nobody collected never
+# replays days later when a page finally loads.
+WAKE_AUDIO = STATE_PREFIX + "-wake-audio"
+WAKE_AUDIO_TTL = int(os.environ.get("DESKCRAB_SERVE_WAKE_TTL", "120"))
+
+
+def read_wake():
+    """The current wake-audio pointer, if it is still fresh."""
+    p = Path(WAKE_AUDIO)
+    try:
+        if time.time() - p.stat().st_mtime > WAKE_AUDIO_TTL:
+            return None
+        doc = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    if doc.get("id") and doc.get("audio"):
+        return {"id": str(doc["id"]), "audio": doc["audio"],
+                "spoken": doc.get("spoken", "")}
+    return None
+
 
 def read_context():
     """Where the conversation currently stands, for seeding a freshly loaded page.
@@ -229,8 +256,12 @@ def read_context():
 
     turns = read_turns()
     n = len(turns)
+    wake = read_wake()
+    # wake_id lets a freshly loaded page mark the current wake audio as already
+    # heard instead of blaring it on open.
     # Pairs, not messages — six exchanges reads as six exchanges.
-    return {"summary": summary, "turns": turns[-(CONTEXT_TURNS * 2):], "n": n}
+    return {"summary": summary, "turns": turns[-(CONTEXT_TURNS * 2):], "n": n,
+            "wake_id": wake["id"] if wake else ""}
 
 
 def read_turns():
@@ -271,12 +302,20 @@ def read_turns():
 WATCH_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_WATCH_TIMEOUT", "25"))
 
 
-def watch_turns(since, wait):
+def watch_turns(since, wait, wakeseen=None):
     """Long-poll for turns that appeared since the caller's cursor.
 
     The cursor is a turn count. Compaction drops the oldest lines, so the count
     can shrink; when it does the cursor is simply snapped back to the new total
     rather than replaying the whole file as if it were new.
+
+    Wake audio rides the same poll with its own cursor: `wakeseen` is the id of
+    the last wake clip the client played, and a fresh pointer with a different
+    id ends the poll early so the voice arrives within a beat of being written.
+    A client that sent no wakeseen at all cannot acknowledge an id, so handing
+    it the wake would turn every poll into an instant return for the pointer's
+    whole TTL — a hot loop. Wake delivery is strictly opt-in by the parameter's
+    presence (an empty value opts in; None does not).
     """
     deadline = time.time() + (WATCH_TIMEOUT if wait else 0)
     while True:
@@ -284,8 +323,14 @@ def watch_turns(since, wait):
         n = len(turns)
         if since is None or since > n:
             since = n
-        if n > since:
-            return {"n": n, "turns": turns[since:]}
+        wake = read_wake() if wakeseen is not None else None
+        if wake is not None and wake["id"] == wakeseen:
+            wake = None
+        if n > since or wake is not None:
+            out = {"n": n, "turns": turns[since:]}
+            if wake is not None:
+                out["wake"] = wake
+            return out
         if time.time() >= deadline:
             return {"n": n, "turns": []}
         time.sleep(0.5)
@@ -662,7 +707,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        query = parse_qs(url.query)
+        # keep_blank_values: "wakeseen=" (nothing played yet) is an opt-in that
+        # must survive parsing — parse_qs silently drops empty values otherwise.
+        query = parse_qs(url.query, keep_blank_values=True)
         query_key = (query.get("k") or [None])[0]
         path = url.path
 
@@ -697,7 +744,14 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 since = None
             wait = (query.get("wait") or ["1"])[0] != "0"
-            return self._json(200, watch_turns(since, wait), extra)
+            wakeseen = (query.get("wakeseen") or [None])[0]
+            # Only a wake-capable client (one that sends wakeseen) counts as
+            # "connected": routing audio at a page too old to play it would
+            # swallow the wake into silence on both devices.
+            if wakeseen is not None:
+                with contextlib.suppress(OSError):
+                    Path(PHONE_SEEN).touch()
+            return self._json(200, watch_turns(since, wait, wakeseen), extra)
 
         if path.startswith("/turn/"):
             # Re-attach to an in-flight (or recently finished) turn: replay
