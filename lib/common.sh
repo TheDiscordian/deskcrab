@@ -68,6 +68,60 @@ CONVOLOCK="${STATE_PREFIX}-convo.lock"
 SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 DEBUGLOG="${STATE_PREFIX}-debug.log"
+SESSIONS_DIR="${STATE_PREFIX}-sessions"
+SESSIONS_LOCK="${STATE_PREFIX}-sessions.lock"
+
+# --- Self-awareness: who else is running right now -------------------------
+# Every claude invocation registers itself here so that any one of them can see
+# the others. Without this an interactive turn has no idea a wake is working in
+# parallel, and reports "nothing is happening" while something is.
+session_register() {
+    local KIND="$1"
+    mkdir -p "$SESSIONS_DIR"
+    SESSION_FILE="$SESSIONS_DIR/$$"
+    printf '%s\t%s\t%s\n' "$KIND" "$$" "$(date '+%Y-%m-%d %H:%M:%S')" > "$SESSION_FILE"
+    trap 'rm -f "$SESSION_FILE"' EXIT INT TERM
+}
+
+# Prune registrations whose process is gone (a killed session leaves its file).
+session_reap() {
+    [ -d "$SESSIONS_DIR" ] || return 0
+    local f pid
+    for f in "$SESSIONS_DIR"/*; do
+        [ -e "$f" ] || continue
+        pid="$(basename "$f")"
+        kill -0 "$pid" 2>/dev/null || rm -f "$f"
+    done
+}
+
+# Human-readable state of self: live sessions and pending wakes.
+self_state_report() {
+    session_reap
+    local f kind pid started n=0
+    echo "Live sessions:"
+    for f in "$SESSIONS_DIR"/*; do
+        [ -e "$f" ] || continue
+        IFS=$'\t' read -r kind pid started < "$f"
+        [ "$pid" = "$$" ] && kind="$kind (this one)"
+        printf '  - %s, pid %s, started %s\n' "$kind" "$pid" "$started"
+        n=$((n+1))
+    done
+    [ "$n" -eq 0 ] && echo "  (none registered)"
+    echo "Pending wakes:"
+    local timers u next
+    timers=""
+    for u in $(systemctl --user list-timers 'deskcrab-*' --no-pager --legend=false 2>/dev/null \
+                | grep -o 'deskcrab-[^ ]*\.timer'); do
+        # Calendar timers report realtime; transient --on-active ones report
+        # monotonic, so fall back to the list-timers row for those.
+        next="$(systemctl --user show "$u" -p NextElapseUSecRealtime --value 2>/dev/null)"
+        [ -z "$next" ] && next="$(systemctl --user list-timers "$u" --no-pager --legend=false 2>/dev/null \
+                                  | awk '{print $1" "$2" "$3" "$4" (in "$5" "$6")"}')"
+        [ -n "$next" ] && timers="$timers  - $u fires $next
+"
+    done
+    if [ -n "$timers" ]; then echo "$timers"; else echo "  (none scheduled)"; fi
+}
 
 # Kill any active TTS
 stop_tts() {
@@ -239,6 +293,12 @@ $WANTS_BODY
 You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when>' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"'). A background timer may also wake you at random intervals."
     fi
 
+    local SELF_STATE
+    SELF_STATE="
+CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
+$(self_state_report)
+Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking. Speak for the whole of yourself, not just this conversation."
+
     cat <<PROMPT
 You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
 SPEED IS CRITICAL. The user is waiting for a spoken response. Avoid slow tools: use ToolSearch at most ONCE, and never use Agent. Prefer Bash (curl, etc.) and WebFetch which are fast. Do not retry failed fetches more than once — give the best answer you can with what you have.
@@ -255,6 +315,7 @@ FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they a
 - ALWAYS verify downloads: after curl, run 'file /tmp/image.jpg' and confirm it says JPEG/PNG image data, NOT HTML. If it's HTML, the download failed — do NOT display it.
 - Pexels CDN: if you know a photo ID, use https://images.pexels.com/photos/PHOTO_ID/pexels-photo-PHOTO_ID.jpeg?auto=compress&cs=tinysrgb&w=800 (no API key needed). Find photo IDs via WebSearch for 'site:pexels.com QUERY'.
 - These sources are fast, reliable, and free. Always try them first.
+$SELF_STATE
 $WANTS_CONTEXT$CUSTOM_CONTEXT$WEATHER_CONTEXT
 $CONTEXT_CONTENT$CONVO_CONTEXT
 PROMPT
@@ -306,6 +367,7 @@ _tree_cpu() {
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
 run_claude_wake() {
+    session_register "autonomous wake"
     local PROMPT_TEXT="$1"
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
@@ -465,6 +527,7 @@ run_claude_remote() {
 }
 
 _run_claude_remote_locked() {
+    session_register "phone turn"
     local TEXT="$1"
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
@@ -505,6 +568,7 @@ _run_claude_remote_locked() {
 
 # Run claude, save response, handle display channel
 run_claude_and_respond() {
+    session_register "desktop turn"
     local TEXT="$1"
 
     convo_append 'User: %s\n' "$TEXT"

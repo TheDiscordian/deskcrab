@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | shutup | wake | wake-at <when> | serve | remote <text> | <text>
+# Usage: crab start | stop | status | shutup | wake | wake-at <when> | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -65,6 +65,12 @@ case "${1:-}" in
         rotate_convo
 
         run_claude_and_respond "$TEXT"
+        ;;
+
+    status)
+        # What all of me is doing right now: live sessions and pending wakes.
+        self_state_report
+        exit 0
         ;;
 
     shutup)
@@ -164,7 +170,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|shutup|wake|wake-at <when>|serve [port]|remote <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|wake|wake-at <when>|serve [port]|remote <text>|<message>"
             exit 1
         fi
         stop_tts
