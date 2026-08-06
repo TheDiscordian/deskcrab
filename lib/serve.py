@@ -152,6 +152,13 @@ def read_turns():
             cur["text"] += "\n" + line
     for t in turns:
         t["text"] = t["text"].strip()
+        # A stored reply keeps its display channel inline. Live turns arrive
+        # already split, so split these the same way — otherwise the markdown
+        # lands in the spoken bubble as a wall of raw asterisks.
+        if t["role"] == "assistant" and "---DISPLAY---" in t["text"]:
+            spoken, _, disp = t["text"].partition("---DISPLAY---")
+            t["text"] = spoken.strip()
+            t["display_html"] = render_markdown(disp.strip())
     return turns
 
 

@@ -434,6 +434,7 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
       const r = document.createElement("div");
       r.className = "reply"; r.textContent = next.text;
       t.append(r);
+      if (next.display_html) attachDisplay(r, next.display_html);
       i++;
     }
     seed.append(t);
@@ -461,12 +462,15 @@ function renderRemote(turns) {
       if (next && next.role === "assistant") {
         const r = document.createElement("div");
         r.className = "reply"; r.textContent = next.text;
-        t.append(r); i++;
+        t.append(r);
+        if (next.display_html) attachDisplay(r, next.display_html);
+        i++;
       }
     } else {
       const r = document.createElement("div");
       r.className = "reply"; r.textContent = turns[i].text;
       t.append(r);
+      if (turns[i].display_html) attachDisplay(r, turns[i].display_html);
     }
     logEl.append(t);
     t.scrollIntoView({ block: "end" });
