@@ -210,7 +210,12 @@ player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); 
 
 async function deliver(res, replyEl) {
   if (res.error) { setStatus(res.error, "err"); replyEl.textContent = "(" + res.error + ")"; return; }
-  replyEl.textContent = res.spoken || "(no reply)";
+  // `spoken` is every text block of the turn joined — the SAME blocks already
+  // streamed in as `text` events. Appending it wholesale printed the entire
+  // reply a second time. Only the part that never streamed is added, which
+  // covers the non-streaming path where nothing arrived live at all.
+  addSaid(replyEl, residue(replyEl, res.spoken));
+  if (!replyEl.textContent) replyEl.textContent = "(no reply)";
   if (res.display_html) attachDisplay(replyEl, res.display_html);
   setStatus("ready");
   if (res.audio) enqueueVoice(res.audio);
@@ -258,9 +263,38 @@ function foldThoughts(turn) {
   turn.thHead.textContent = headText(turn.thoughts);
 }
 
+// The reply accumulates on the element itself, so the final `done` event can
+// tell whether crab's spoken text is a block already shown or a new one.
+function norm(s) { return (s || "").replace(/\s+/g, " ").trim(); }
+
+// What of `text` has NOT already been shown. crab's final `spoken` is the whole
+// turn's blocks joined, so after streaming it is normally entirely redundant;
+// when nothing streamed it is entirely new. Both are the same subtraction.
+function residue(replyEl, text) {
+  const said = replyEl._said || [];
+  if (!said.length) return text;
+  let rest = norm(text);
+  for (const block of said) {
+    const b = norm(block);
+    if (b && rest.startsWith(b)) rest = rest.slice(b.length).trim();
+  }
+  return rest;
+}
+
+function addSaid(replyEl, text) {
+  const said = replyEl._said || (replyEl._said = []);
+  if (!norm(text)) return;
+  if (norm(said[said.length - 1]) === norm(text)) return;
+  said.push(text);
+  replyEl.textContent = said.join("\n\n");
+  replyEl.scrollIntoView({ block: "end" });
+}
+
 function showThought(turn, ev) {
   if (ev.kind === "transcript") return;
-  if (ev.kind === "text") { turn.reply.textContent = ev.text; return; }
+  // Every text block is part of the answer, not a status line — append it in
+  // order so the transcript grows as the turn runs, exactly as it's spoken.
+  if (ev.kind === "text") { addSaid(turn.reply, ev.text); return; }
   let box = turn.thoughts;
   if (!box) {
     const head = document.createElement("div");
