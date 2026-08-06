@@ -2,6 +2,7 @@
 """Stream TTS from DeskCrab's debug log. Reads stream-json events,
 extracts assistant text, and pipes it to piper-tts for speech."""
 
+import fcntl
 import json
 import subprocess
 import time
@@ -11,6 +12,14 @@ import signal
 import sys
 
 signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
+
+# Speech mutex: hold the flock for the whole TTS stage of this turn, so no
+# other session (a wake's speak_once, another streamer) can talk over it.
+# Released automatically when this process exits — even via os._exit above.
+_SPEECHLOCK = os.environ.get("DESKCRAB_SPEECHLOCK", "").strip()
+if _SPEECHLOCK:
+    _lockfd = os.open(_SPEECHLOCK, os.O_CREAT | os.O_WRONLY, 0o644)
+    fcntl.flock(_lockfd, fcntl.LOCK_EX)
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]

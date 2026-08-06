@@ -69,6 +69,11 @@ SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 DEBUGLOG="${STATE_PREFIX}-debug.log"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
+# Speech mutex: every path that puts audio on the speakers — the interactive
+# TTS streamer and a wake's speak_once — holds this flock for the whole speak
+# stage. Two voices at once is never acceptable: the later speaker queues
+# behind the lock, and a wake checks it first and stays silent instead.
+SPEECHLOCK="${STATE_PREFIX}-speech.lock"
 # Detached jobs. Deliberately NOT under STATE_PREFIX (/tmp): a job outlives the
 # turn that started it, and may outlive a reboot's tmp cleanup too. Jobs run
 # unattended builds nobody is waiting on, so they default to the strongest
@@ -608,6 +613,9 @@ in_quiet_hours() {
 user_busy() {
     [ -f "$PIDFILE" ] && return 0
     [ -f "$TTSPIDFILE" ] && return 0
+    # A live desktop turn holds the speech lock for its whole TTS stage — a
+    # wake must defer, not talk over it.
+    speech_busy && return 0
     local PARLEY_STATE="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/parley/state.json"
     [ -f "$PARLEY_STATE" ] && return 0
     [ -f "$HOME/.local/state/parley/state.json" ] && return 0
@@ -630,7 +638,19 @@ speak_once() {
     local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
     [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
-    printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+    # Speech mutex: queue behind any voice already on the speakers rather than
+    # talking over it. Held for the whole utterance.
+    {
+        flock -w 300 7
+        printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+    } 7>"$SPEECHLOCK"
+}
+
+# Is another session speaking right now? (non-blocking probe of SPEECHLOCK)
+speech_busy() {
+    [ -e "$SPEECHLOCK" ] || return 1
+    flock -n "$SPEECHLOCK" true 2>/dev/null && return 1
+    return 0
 }
 
 # Total utime+stime jiffies for a PID and all its descendants. Field extraction
@@ -749,6 +769,7 @@ start_tts_streamer() {
         DESKCRAB_PIPER_LENGTH_SCALE="${PIPER_LENGTH_SCALE:-}" \
         DESKCRAB_PIPER_SPEAKER="${PIPER_SPEAKER:-}" \
         DESKCRAB_TTS_FIXES="${TTS_FIXES:-}" \
+        DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
         "$LIB_DIR/tts-streamer" &
     _TTS_STREAMER_PID=$!
 }
