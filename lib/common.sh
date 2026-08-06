@@ -900,6 +900,35 @@ fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
     setsid "$SCRIPT_DIR/lib/promise-audit" "$@" >/dev/null 2>&1 8>&- 9>&- &
 }
 
+# Did the stream fail before the model did any real work? The CLI reports
+# API-level failures — session limit, auth, network — SHAPED LIKE A REPLY: a
+# fabricated assistant message ("model":"<synthetic>", is_api_error_message)
+# whose text is the error, plus a result event flagged is_error carrying the
+# same text in its "result" field. extract_response cannot tell it from a real
+# reply. Exit 0 = the stream holds an error and no genuine model output.
+wake_stream_failed() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$DEBUGLOG" <<'PY'
+import json, sys
+err = real = False
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if d.get("type") == "result" and d.get("is_error"):
+        err = True
+    elif d.get("type") == "assistant":
+        if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
+            continue
+        real = True
+sys.exit(0 if err and not real else 1)
+PY
+}
+
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
@@ -946,12 +975,34 @@ run_claude_wake() {
             break
         fi
     done
+    local CLAUDE_STATUS
     wait "$CPID" 2>/dev/null
+    CLAUDE_STATUS=$?
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
     local RESPONSE
     RESPONSE=$(extract_response)
-    [ -z "$RESPONSE" ] && return 0
+
+    # A wake that never got a model does not get a voice. When the CLI fails
+    # before any real work (session limit, auth, network), the error text
+    # comes back looking like a reply — and treated as one it was appended to
+    # the conversation as the assistant's own words, chased by the promise
+    # audit, and spoken aloud at the desk ("You've hit your session limit…").
+    # Journal the failure instead, and re-book a wake that had a purpose so
+    # its agenda survives to a retry after the outage clears.
+    if wake_stream_failed; then
+        session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(printf '%s' "$RESPONSE" | tr '\n\t' '  ' | head -c 160))"
+        [ -n "${WAKE_KIND:-}" ] && "$SCRIPT_DIR/crab" wake-at 30min "$WAKE_KIND" "${WAKE_REASON:-}" >/dev/null
+        return 0
+    fi
+
+    if [ -z "$RESPONSE" ]; then
+        # No output at all — crash or stall-reap before the first text block.
+        # Without this line the journal shows "(no summary recorded)" and the
+        # next session cannot tell a died wake from one that chose silence.
+        session_outcome "(wake produced no output — claude exit $CLAUDE_STATUS)"
+        return 0
+    fi
 
     convo_append 'Assistant: %s\n\n' "$RESPONSE"
     compact_convo
