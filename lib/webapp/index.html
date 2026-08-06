@@ -42,16 +42,26 @@
   .thought { color: var(--dim); font-size: 12px; line-height: 1.45;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .thought.tool { color: var(--accent); opacity: .8; }
-  #display { margin-top: 14px; padding: 12px; background: var(--panel);
-             border: 1px solid var(--border); border-radius: 8px; }
-  #display:empty { display: none; }
-  #display img { max-width: 100%; height: auto; border-radius: 6px; }
-  #display pre { background: var(--code); padding: 12px; border-radius: 6px; overflow-x: auto; }
-  #display code { background: var(--code); padding: 2px 6px; border-radius: 3px; }
-  #display pre code { background: none; padding: 0; }
-  #display table { border-collapse: collapse; width: 100%; }
-  #display th, #display td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-  #display a { color: var(--accent); }
+  /* Display blocks live inside the turn that produced them, so scrolling back
+     through the log shows each one where it belongs. Tap the header to fold. */
+  .display { margin-top: 12px; background: var(--panel);
+             border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .disp-head { padding: 8px 12px; font-size: 13px; color: var(--dim);
+               display: flex; align-items: center; gap: 8px; cursor: pointer;
+               user-select: none; background: var(--code); }
+  .disp-head .caret { transition: transform .15s; }
+  .display.folded .disp-head .caret { transform: rotate(-90deg); }
+  .disp-body { padding: 12px; }
+  .display.folded .disp-body { display: none; }
+  .disp-body img { max-width: 100%; height: auto; border-radius: 6px; }
+  .disp-body pre { background: var(--code); padding: 12px; border-radius: 6px; overflow-x: auto; }
+  .disp-body code { background: var(--code); padding: 2px 6px; border-radius: 3px; }
+  .disp-body pre code { background: none; padding: 0; }
+  .disp-body table { border-collapse: collapse; width: 100%; }
+  .disp-body th, .disp-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .disp-body a { color: var(--accent); }
+  .disp-body > :first-child { margin-top: 0; }
+  .disp-body > :last-child { margin-bottom: 0; }
 
   footer { padding: 16px; border-top: 1px solid var(--border); display: flex;
            flex-direction: column; gap: 12px; }
@@ -75,7 +85,6 @@
 <header><h1 id="name">DeskCrab</h1><span id="status">ready</span></header>
 <main>
   <div id="log"></div>
-  <div id="display"></div>
 </main>
 <footer>
   <button id="talk">Hold to talk</button>
@@ -87,7 +96,7 @@
 <audio id="player" playsinline></audio>
 <script>
 const $ = id => document.getElementById(id);
-const statusEl = $("status"), logEl = $("log"), dispEl = $("display"), player = $("player");
+const statusEl = $("status"), logEl = $("log"), player = $("player");
 let recorder = null, chunks = [], stream = null, busy = false;
 
 function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ""; }
@@ -130,10 +139,25 @@ function offerPlay(src) {
   player.addEventListener("play", () => { b.hidden = true; }, { once: true });
 }
 
+// One collapsible card per turn, appended after that turn's reply.
+function attachDisplay(replyEl, html) {
+  const box = document.createElement("div");
+  box.className = "display";
+  const head = document.createElement("div");
+  head.className = "disp-head";
+  head.innerHTML = '<span class="caret">\u25be</span><span>details</span>';
+  const body = document.createElement("div");
+  body.className = "disp-body";
+  body.innerHTML = html;
+  head.addEventListener("click", () => box.classList.toggle("folded"));
+  box.append(head, body);
+  replyEl.parentNode.append(box);
+}
+
 async function deliver(res, replyEl) {
   if (res.error) { setStatus(res.error, "err"); replyEl.textContent = "(" + res.error + ")"; return; }
   replyEl.textContent = res.spoken || "(no reply)";
-  dispEl.innerHTML = res.display_html || "";
+  if (res.display_html) attachDisplay(replyEl, res.display_html);
   setStatus("ready");
   if (res.audio) {
     player.src = res.audio;
