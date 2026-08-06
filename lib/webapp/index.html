@@ -104,6 +104,13 @@
 const $ = id => document.getElementById(id);
 const statusEl = $("status"), logEl = $("log"), player = $("player");
 let recorder = null, chunks = [], stream = null, busy = false;
+let sttSid = null, sttChain = Promise.resolve(), sttFailed = false;
+
+function randomHex(n) {
+  const b = new Uint8Array(n / 2);
+  crypto.getRandomValues(b);
+  return [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+}
 
 function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ""; }
 
@@ -278,7 +285,19 @@ async function runTurn(blob, ctype, typed) {
     let text = typed;
     if (!text) {
       setStatus("transcribing…", "busy");
-      const t = await post("/transcribe", blob, { "X-Audio-Type": ctype });
+      // Nearly all of this audio is already on the laptop and decoded, so
+      // finishing usually only leaves the last slice to transcribe. If any
+      // slice failed to upload the session is incomplete and we fall back to
+      // sending the whole recording the old way.
+      let t;
+      const sid = sttSid;
+      await sttChain.catch(() => { sttFailed = true; });
+      if (sid && !sttFailed) {
+        t = await post("/stt/finish?s=" + sid, null, { "X-Audio-Type": ctype })
+              .catch(() => ({ error: "stream lost" }));
+        if (t.error) t = null;
+      }
+      if (!t) t = await post("/transcribe", blob, { "X-Audio-Type": ctype });
       if (t.error) { turn.reply.textContent = "(" + t.error + ")"; setStatus(t.error, "err"); return; }
       text = t.transcript;
       turn.you.textContent = text;
@@ -309,13 +328,28 @@ async function startRec() {
   // onstop fires afterwards — reading the global there would be reading null.
   const rec = new MediaRecorder(stream);
   recorder = rec;
-  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  // Audio goes up while you are still talking, not after you let go: by the
+  // time the button is released the laptop has already decoded and largely
+  // transcribed everything but the tail. Slices are chained rather than fired
+  // in parallel because after the first they carry no container header and
+  // only mean anything appended in order.
+  sttSid = randomHex(24);
+  sttChain = Promise.resolve();
+  sttFailed = false;
+  rec.ondataavailable = e => {
+    if (!e.data.size) return;
+    chunks.push(e.data);
+    const ctype = rec.mimeType || "audio/webm";
+    sttChain = sttChain.then(() =>
+      post("/stt/chunk?s=" + sttSid, e.data, { "X-Audio-Type": ctype })
+    ).catch(() => { sttFailed = true; });
+  };
   rec.onstop = () => {
     const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
     if (blob.size < 1200) { setStatus("too short", "err"); return; }
     runTurn(blob, blob.type || "audio/webm", null);
   };
-  recorder.start();
+  recorder.start(2000);
   $("talk").classList.add("rec");
   $("talk").textContent = "Release to send";
   setStatus("listening…", "busy");

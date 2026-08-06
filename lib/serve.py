@@ -144,6 +144,127 @@ def transcribe(blob, suffix):
             f.unlink(missing_ok=True)
 
 
+def _wav_seconds(path):
+    """16 kHz mono s16le: 32000 bytes a second, minus the 44-byte header."""
+    try:
+        return max(0.0, (os.path.getsize(path) - 44) / 32000.0)
+    except OSError:
+        return 0.0
+
+
+def _silences(wav):
+    """Times (seconds) where a pause starts, so segments never cut mid-word."""
+    r = run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(wav),
+             "-af", "silencedetect=n=-35dB:d=0.35", "-f", "null", "-"])
+    out = r.stderr.decode("utf-8", "replace")
+    return [float(m) for m in re.findall(r"silence_start:\s*([0-9.]+)", out)]
+
+
+class SttSession:
+    """Incremental speech-to-text over a recording that is still happening.
+
+    The phone uploads its MediaRecorder output in slices while you are still
+    talking, so by the time the button is released almost all of the audio has
+    already crossed the wire *and* been decoded. Only the tail is left.
+
+    Slices after the first carry no container header, so they are only
+    meaningful appended to the ones before them — the accumulated file is
+    re-decoded each time (cheap, ~30 ms) and whisper is then run on just the
+    part that has not been transcribed yet. Segment boundaries are placed at
+    detected pauses rather than at slice boundaries: cutting mid-word costs
+    more accuracy than waiting one more slice costs latency.
+    """
+
+    TTL = 600  # seconds; a session the phone abandoned is swept on next use
+
+    def __init__(self, sid, suffix):
+        self.sid = sid
+        tmp = Path(tempfile.gettempdir())
+        self.raw = tmp / f"deskcrab-stream-{sid}{suffix}"
+        self.wav = tmp / f"deskcrab-stream-{sid}.wav"
+        self.parts = []
+        self.consumed = 0.0
+        self.touched = time.time()
+        self.lock = threading.Lock()
+        self.raw.write_bytes(b"")
+
+    def append(self, blob):
+        with self.lock:
+            self.touched = time.time()
+            with open(self.raw, "ab") as f:
+                f.write(blob)
+
+    def advance(self, final=False):
+        """Decode what has arrived and transcribe everything that has settled."""
+        with self.lock:
+            self.touched = time.time()
+            if not self.raw.stat().st_size:
+                return
+            r = run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(self.raw),
+                     "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                     str(self.wav)])
+            if r.returncode != 0 or not self.wav.exists():
+                return
+            total = _wav_seconds(self.wav)
+            if final:
+                cut = total
+            else:
+                # Only pauses comfortably inside the audio are candidates: the
+                # trailing silence of a slice is usually just the gap before
+                # the next word, not the end of a phrase.
+                pauses = [s for s in _silences(self.wav)
+                          if s > self.consumed + 1.0 and s < total - 0.4]
+                if not pauses:
+                    return
+                cut = pauses[-1]
+            if cut - self.consumed < 0.4:
+                return
+            text = self._decode(self.consumed, cut - self.consumed)
+            self.consumed = cut
+            if text:
+                self.parts.append(text)
+
+    def _decode(self, start, dur):
+        seg = self.wav.with_name(self.wav.stem + f"-{int(start * 100)}.wav")
+        try:
+            r = run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(self.wav),
+                     "-ss", f"{start:.2f}", "-t", f"{dur:.2f}", str(seg)])
+            if r.returncode != 0 or not seg.exists() or not seg.stat().st_size:
+                return ""
+            r = run(["whisper-cli", "-m", WHISPER_MODEL, "-f", str(seg),
+                     "-nt", "-np"])
+            if r.returncode != 0:
+                return ""
+            text = " ".join(r.stdout.decode("utf-8", "replace").split()).strip()
+            if text.lower() in ("[blank_audio]", "(silence)", "[silence]", "."):
+                return ""
+            return text
+        finally:
+            seg.unlink(missing_ok=True)
+
+    def transcript(self):
+        return " ".join(p for p in self.parts if p).strip()
+
+    def close(self):
+        for f in (self.raw, self.wav):
+            f.unlink(missing_ok=True)
+
+
+STT_SESSIONS = {}
+STT_LOCK = threading.Lock()
+
+
+def stt_session(sid, suffix, create=False):
+    with STT_LOCK:
+        for dead in [k for k, v in STT_SESSIONS.items()
+                     if time.time() - v.touched > SttSession.TTL]:
+            STT_SESSIONS.pop(dead).close()
+        s = STT_SESSIONS.get(sid)
+        if s is None and create:
+            s = STT_SESSIONS[sid] = SttSession(sid, suffix)
+        return s
+
+
 class Speaker:
     """Voices text blocks as they stream in, one at a time and in order.
 
@@ -391,9 +512,38 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
 
         length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > MAX_UPLOAD:
+        # /stt/finish legitimately carries nothing — the audio already arrived
+        # in slices while the user was still talking.
+        empty_ok = url.path == "/stt/finish"
+        if length > MAX_UPLOAD or (length <= 0 and not empty_ok):
             return self._json(400, {"error": "bad body length"})
-        body = self.rfile.read(length)
+        body = self.rfile.read(length) if length > 0 else b""
+
+        if url.path in ("/stt/chunk", "/stt/finish"):
+            q = parse_qs(url.query)
+            sid = re.sub(r"[^a-f0-9]", "", (q.get("s") or [""])[0])[:32]
+            if not sid:
+                return self._json(400, {"error": "bad session"})
+            ctype = self.headers.get("X-Audio-Type", "audio/webm")
+            final = url.path == "/stt/finish"
+            s = stt_session(sid, _suffix_for(ctype), create=not final)
+            if s is None:
+                return self._json(200, {"error": "unknown session"})
+            if body:
+                s.append(body)
+            # Non-final slices advance opportunistically: if the audio has not
+            # reached a pause yet there is simply nothing to transcribe, and
+            # saying so costs nothing.
+            s.advance(final=final)
+            if not final:
+                return self._json(200, {"partial": s.transcript()})
+            text = s.transcript()
+            with STT_LOCK:
+                STT_SESSIONS.pop(sid, None)
+            s.close()
+            if not text:
+                return self._json(200, {"error": "no speech detected"})
+            return self._json(200, {"transcript": text})
 
         if url.path == "/transcribe":
             # Speech recognition only. The client shows the transcript the
