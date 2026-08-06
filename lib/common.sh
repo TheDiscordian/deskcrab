@@ -199,6 +199,23 @@ self_state_report() {
     session_history
 }
 
+# Agency over her own time. Wants only get worked on when something wakes her
+# to work on them, so a wake that ends without scheduling the next one quietly
+# breaks the chain — the intent survives in the wants file, but nothing ever
+# comes back to it. Self-scheduled wakes are transient units named
+# deskcrab-wake-<epoch>; if none is pending when a wake exits, book one. This
+# is a floor, not a schedule: a wake that scheduled its own follow-up is left
+# alone.
+ENSURE_WAKE_DELAY="${ENSURE_WAKE_DELAY:-45min}"
+ensure_next_wake() {
+    [ -n "$WANTS_FILE" ] || return 0
+    local pending
+    pending="$(systemctl --user list-units --type=timer --state=active --no-legend --no-pager 2>/dev/null \
+               | awk '$1 ~ /^deskcrab-wake-[0-9]+\.timer$/' | wc -l)"
+    [ "${pending:-0}" -gt 0 ] && return 0
+    "$SCRIPT_DIR/crab" wake-at "$ENSURE_WAKE_DELAY" >/dev/null 2>&1 || true
+}
+
 # Kill any active TTS
 stop_tts() {
     [ -f "$TTSPIDFILE" ] && kill "$(cat "$TTSPIDFILE")" 2>/dev/null && rm -f "$TTSPIDFILE"
