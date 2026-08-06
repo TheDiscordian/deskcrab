@@ -203,6 +203,16 @@ Under the hood, `/ask` takes the browser's recording (Chrome sends WebM/Opus, iO
 
 `crab serve` needs `ffmpeg` and `whisper-cli`; the optional Python `markdown` package renders the display channel properly (without it, display content is shown as preformatted text).
 
+**Keeping it up.** A phone is only useful if the server is running when you reach for it, which a hand-started process is not — it dies with the terminal that launched it and with the next reboot. Install the unit instead:
+
+```bash
+cp systemd/deskcrab-serve.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-serve.service
+```
+
+`Restart=always` covers a crash; `WantedBy=default.target` covers a reboot. The unit sets `PATH` to include `~/.local/bin`, since a user unit does not inherit a login shell's PATH and the server shells out to `claude`, `ffmpeg`, `whisper-cli`, and `piper`. Logs go to `/tmp/crab-serve.log` and to `journalctl --user -u deskcrab-serve`.
+
 ## Display channel
 
 When Crab's response includes visual content (code, tables, images), it uses a display channel. The response includes a `---DISPLAY---` delimiter, and everything after it is rendered in a floating [render-md](https://github.com/TheDiscordian/render-md) window.
