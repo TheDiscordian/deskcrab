@@ -128,7 +128,7 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `WANTS_FILE` | No | Durable goals file the assistant maintains and pursues during autonomous wakes |
 | `WAKE_QUIET_HOURS` | No | Hours (`HH-HH`, wraps midnight) when wakes never speak or open windows |
 | `WAKE_EFFORT` | No | Effort level for autonomous wakes (default: `CLAUDE_EFFORT`) |
-| `WAKE_STALL_TIMEOUT` | No | Seconds of output silence before a wake is presumed hung (default: 300) |
+| `WAKE_STALL_TIMEOUT` | No | Seconds without output or CPU activity before a wake is presumed hung (default: 300) |
 
 ### Custom prompt
 
@@ -161,7 +161,7 @@ TTS_FIXES='s/\bhmph\b/humph/gi'
 Give the assistant its own durable goals and let it work on them unprompted. Set `WANTS_FILE` in your config and the assistant gains:
 
 - **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. The file is injected into every prompt, so wants persist across sessions.
-- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it replies `(quiet)` and the wake is invisible. Wakes are skipped (or rescheduled) if a recording or speech is in progress, and unattended sessions are told to take no destructive or outward-facing actions. Sessions have **no wall-clock limit** — the assistant controls its own duration and can chain longer work across wakes; only a session that goes completely silent for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped.
+- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it replies `(quiet)` and the wake is invisible. Wakes are skipped (or rescheduled) if a recording or speech is in progress, and unattended sessions are told to take no destructive or outward-facing actions. Sessions have **no wall-clock limit** — the assistant controls its own duration and can chain longer work across wakes; only a session showing no life signs (no output *and* no process-tree CPU activity, so long compiles count as alive) for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped.
 - **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake via a transient systemd timer: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`.
 - **Random background wakes** — install the provided timer for wakes every 3–6 hours:
 

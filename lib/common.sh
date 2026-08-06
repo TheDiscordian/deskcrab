@@ -223,6 +223,23 @@ speak_once() {
     printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
 }
 
+# Total utime+stime jiffies for a PID and all its descendants. Field extraction
+# strips through the ')' ending the comm field, which may itself contain spaces.
+_tree_cpu() {
+    local total=0 queue=("$1") pid rest kids
+    while ((${#queue[@]})); do
+        pid="${queue[0]}"; queue=("${queue[@]:1}")
+        [ -r "/proc/$pid/stat" ] || continue
+        rest=$(cat "/proc/$pid/stat" 2>/dev/null) || continue
+        rest="${rest##*) }"
+        set -- $rest
+        total=$((total + ${12:-0} + ${13:-0}))
+        kids=$(cat /proc/"$pid"/task/*/children 2>/dev/null)
+        [ -n "$kids" ] && queue+=($kids)
+    done
+    echo "$total"
+}
+
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
@@ -243,15 +260,25 @@ run_claude_wake() {
             "$PROMPT_TEXT" > "$DEBUGLOG" 2>&1
     ) &
     local CPID=$!
-    # Stall watchdog: no wall-clock limit — an active session streams events
-    # continuously, so reap only after WAKE_STALL_TIMEOUT seconds of total
-    # silence (a hung network call, a tool waiting on stdin forever).
+    # Stall watchdog: no wall-clock limit — reap only a session that is BOTH
+    # silent and idle. The stream log gets nothing during a single long tool
+    # call (a compile delivers its output in one event at completion), so log
+    # freshness alone would kill genuine work; CPU burn across the process
+    # tree is the second life sign. A hung network call or a tool stuck on
+    # stdin sits at ~zero CPU, so real hangs are still caught.
+    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M
+    LAST_ACTIVE=$(date +%s)
+    PREV_CPU=$(_tree_cpu "$CPID")
     while kill -0 "$CPID" 2>/dev/null; do
         sleep 10
-        local LAST NOW
-        LAST=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || date +%s)
-        NOW=$(date +%s)
-        if [ $((NOW - LAST)) -ge "$WAKE_STALL_TIMEOUT" ]; then
+        CUR_CPU=$(_tree_cpu "$CPID")
+        LOG_M=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || echo 0)
+        # Alive = new log output, or >=10 jiffies (~0.1 s) of CPU since last check
+        if [ "$LOG_M" -gt "$LAST_ACTIVE" ] || [ $((CUR_CPU - PREV_CPU)) -ge 10 ]; then
+            LAST_ACTIVE=$(date +%s)
+        fi
+        PREV_CPU=$CUR_CPU
+        if [ $(( $(date +%s) - LAST_ACTIVE )) -ge "$WAKE_STALL_TIMEOUT" ]; then
             kill "$CPID" 2>/dev/null
             sleep 2
             kill -9 "$CPID" 2>/dev/null
