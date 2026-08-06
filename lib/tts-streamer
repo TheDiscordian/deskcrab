@@ -39,6 +39,12 @@ def speak(text):
         pass
 
 
+# Remember who launched us (the crab process). If it dies we get reparented —
+# to PID 1 or, under a systemd user manager, to a subreaper — either way our
+# ppid changes. That's our cue to stop, since an orphaned crab can no longer
+# append the terminator and we must not tail the log forever.
+ORIG_PPID = os.getppid()
+
 while not os.path.exists(LOG):
     time.sleep(0.1)
 
@@ -46,6 +52,11 @@ with open(LOG) as f:
     while True:
         line = f.readline()
         if not line:
+            # Backstop: if our launching crab process is gone we've been
+            # reparented (ppid changes) — it can no longer append a terminator,
+            # so stop instead of tailing the log forever.
+            if os.getppid() != ORIG_PPID:
+                break
             time.sleep(0.05)
             continue
         line = line.strip()

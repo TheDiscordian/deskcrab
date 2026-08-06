@@ -171,6 +171,11 @@ PROMPT
 
 # Start background TTS streamer that reads from DEBUGLOG
 start_tts_streamer() {
+    # Kill any prior streamer before truncating the shared log. A streamer left
+    # running from an overlapping request keeps its read cursor at the old
+    # offset; truncating the log strands that cursor past EOF and the streamer
+    # then tails the file forever — hanging the crab stop that waits on it.
+    pkill -f "$LIB_DIR/tts-streamer" 2>/dev/null
     : > "$DEBUGLOG"
     DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
         DESKCRAB_PIPER_LENGTH_SCALE="${PIPER_LENGTH_SCALE:-}" \
@@ -202,6 +207,14 @@ run_claude_and_respond() {
         --verbose --output-format stream-json \
         --append-system-prompt "$SYSTEM_PROMPT" \
         "$TEXT" > "$DEBUGLOG" 2>&1
+
+    # Guarantee the TTS streamer always receives a stop signal. claude normally
+    # ends its stream with a {"type":"result"} line, but if it crashed, was
+    # killed, or got rate-limited mid-stream it may not — and without a result
+    # event the streamer tails the log forever and the wait below never returns.
+    # extract-response ignores a result line that has no "result" field, so this
+    # terminator is harmless on the success path.
+    printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
     # Dismiss thinking notification
     notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "" 2>/dev/null
