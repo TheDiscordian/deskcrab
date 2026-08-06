@@ -123,6 +123,12 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
             echo "  SERVE_SECRET=\"$(head -c 18 /dev/urandom | base64 | tr -d '/+=')\""
             exit 1
         fi
+        if [ -z "$SERVE_CERT" ] && [ "$SERVE_TLS" = "self" ]; then
+            SERVE_CERT="$TLS_DIR/cert.pem"
+            SERVE_KEY="$TLS_DIR/key.pem"
+            "$SCRIPT_DIR/lib/gen-cert" "$TLS_DIR" || exit 1
+        fi
+        export DESKCRAB_SERVE_CERT="$SERVE_CERT" DESKCRAB_SERVE_KEY="$SERVE_KEY"
         export DESKCRAB_SERVE_PORT="$SERVE_PORT" DESKCRAB_SERVE_BIND="$SERVE_BIND" \
                DESKCRAB_SERVE_SECRET="$SERVE_SECRET" DESKCRAB_WHISPER_MODEL="$WHISPER_MODEL" \
                DESKCRAB_NOTIFY_NAME="$NOTIFY_NAME" DESKCRAB_ASSISTANT_NAME="$ASSISTANT_NAME" \
