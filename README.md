@@ -127,6 +127,7 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `NOTIFY_NAME` | No | Name shown in notifications (default: `ASSISTANT_NAME` if set, else `DeskCrab`) |
 | `WANTS_FILE` | No | Durable goals file the assistant maintains and pursues during autonomous wakes |
 | `WAKE_QUIET_HOURS` | No | Hours (`HH-HH`, wraps midnight) when wakes never speak or open windows |
+| `WAKE_EFFORT` | No | Effort level for autonomous wakes (default: `CLAUDE_EFFORT`) |
 
 ### Custom prompt
 
