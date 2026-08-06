@@ -168,6 +168,14 @@ try:
 except ImportError:
     _markdown = None
 
+# Web Push (reaching the phone with the page closed) needs ECDH + AES-GCM,
+# which stdlib cannot do. Same deal as `markdown`: optional. Without the
+# `cryptography` package the push routes answer 501 and everything else works.
+try:
+    import webpush as _webpush
+except ImportError:
+    _webpush = None
+
 
 def render_markdown(text):
     if not text.strip():
@@ -735,6 +743,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/context":
             return self._json(200, read_context(), extra)
 
+        if path == "/push/key":
+            # The VAPID public key the browser subscribes against. Generated
+            # once on first ask and kept forever — rotating it would orphan
+            # every existing subscription.
+            if _webpush is None:
+                return self._json(501, {"error": "push unavailable: python-cryptography is not installed"}, extra)
+            return self._json(200, {"key": _webpush.vapid_keys()[1]}, extra)
+
         if path == "/watch":
             # Turns spoken at the laptop land in the same conversation file, so
             # the phone can follow along by watching it rather than being told.
@@ -839,6 +855,24 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._json(200, {"error": "no speech detected"})
             return self._json(200, {"transcript": text})
+
+        if url.path in ("/push/subscribe", "/push/unsubscribe"):
+            # The browser's PushSubscription, stored so `crab notify` can reach
+            # this phone with the page closed. Idempotent by endpoint: the page
+            # re-posts its subscription on every load and the store never grows
+            # a duplicate.
+            if _webpush is None:
+                return self._json(501, {"error": "push unavailable: python-cryptography is not installed"})
+            try:
+                doc = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return self._json(400, {"error": "bad json"})
+            if url.path == "/push/unsubscribe":
+                removed, left = _webpush.remove_subscription(str(doc.get("endpoint", "")))
+                return self._json(200, {"ok": True, "removed": removed, "stored": left})
+            if not _webpush.valid_subscription(doc):
+                return self._json(400, {"error": "not a valid PushSubscription"})
+            return self._json(200, {"ok": True, "stored": _webpush.add_subscription(doc)})
 
         if url.path == "/transcribe":
             # Speech recognition only. The client shows the transcript the

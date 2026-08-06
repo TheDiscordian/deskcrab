@@ -194,6 +194,20 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         synth_opus "$*" "$OUT" && printf '%s\n' "$OUT"
         ;;
 
+    notify)
+        # Web Push to every subscribed phone — the channel that works with the
+        # page CLOSED. Transport only: no TTS, no windows, no desktop
+        # notification. Subscriptions come from the phone page's bell button;
+        # per-subscription results are printed and dead ones pruned.
+        shift
+        if [ -z "$*" ]; then
+            echo "Usage: crab notify <text>"
+            exit 1
+        fi
+        DESKCRAB_PUSH_SUBJECT="${PUSH_SUBJECT:-}" \
+            exec python3 "$SCRIPT_DIR/lib/webpush.py" send "$NOTIFY_NAME" "$*"
+        ;;
+
     serve)
         # Serve the phone client. The listener stays on loopback by default;
         # exposing it to a phone is a separate, deliberate step (Tailscale:
@@ -304,7 +318,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
         fi
         stop_tts

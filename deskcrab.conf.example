@@ -116,3 +116,12 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 #
 # Optional: seconds a single remote turn may take before it is abandoned.
 # SERVE_TIMEOUT=600
+
+# Optional: Web Push (crab notify) — reach the phone even with the page closed.
+# Subscribe from the phone page's bell button; send with `crab notify <text>`.
+# Needs the python-cryptography package (a stock system package on most
+# distros); VAPID keys and subscriptions live under
+# ~/.local/share/deskcrab/webpush/. PUSH_SUBJECT is the RFC 8292 `sub` claim —
+# how the push service's operators could reach the sender (mailto: or https:
+# URL). The default identifies this project on GitHub.
+# PUSH_SUBJECT="mailto:you@example.com"

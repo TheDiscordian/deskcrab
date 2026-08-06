@@ -29,9 +29,12 @@
     display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  #status { color: var(--dim); font-size: 13px; }
+  #status { color: var(--dim); font-size: 13px; flex: 1; text-align: right; }
   #status.busy { color: var(--accent); }
   #status.err { color: #ff8080; }
+  #bell { background: none; border: none; font: inherit; font-size: 16px;
+          padding: 0 2px; cursor: pointer; filter: grayscale(1); opacity: .55; }
+  #bell.on { filter: none; opacity: 1; }
 
   main { flex: 1; overflow-y: auto; padding: 16px; }
   .turn { margin-bottom: 18px; }
@@ -113,7 +116,7 @@
 </style>
 </head>
 <body>
-<header><h1 id="name">DeskCrab</h1><span id="status">ready</span></header>
+<header><h1 id="name">DeskCrab</h1><span id="status">ready</span><button id="bell" hidden>🔔</button></header>
 <main>
   <div id="log"></div>
 </main>
@@ -663,7 +666,87 @@ async function startWatch() {
 }
 
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+// --- Web Push: reaching this phone with the page CLOSED ----------------------
+// Subscribing is a deliberate act (the bell) because it pops the browser's
+// permission prompt, and that prompt is only granted inside a user gesture.
+// Everything after that is idempotent: every page load re-posts the existing
+// subscription, so the server's store survives reloads and endpoint rotation.
+const bell = $("bell");
+const pushOk = "serviceWorker" in navigator && "PushManager" in window
+            && "Notification" in window;
+
+function b64uToBytes(s) {
+  const raw = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+function setBell(on) {
+  bell.classList.toggle("on", !!on);
+  bell.title = on ? "Notifications on — tap to disable" : "Enable notifications";
+}
+
+async function pushSync() {
+  // On iOS the Push API only exists once the page is installed to the home
+  // screen — until then the bell simply stays hidden.
+  if (!pushOk) return;
+  bell.hidden = false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub && Notification.permission === "granted") {
+      await post("/push/subscribe", JSON.stringify(sub),
+                 { "Content-Type": "application/json" });
+      setBell(true);
+      return;
+    }
+  } catch (_) {}
+  setBell(false);
+}
+
+async function pushToggle() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      // Off means off on both sides: a subscription dropped only in the
+      // browser would linger in the store and fail forever at send time.
+      await sub.unsubscribe().catch(() => {});
+      await post("/push/unsubscribe", JSON.stringify({ endpoint: sub.endpoint }),
+                 { "Content-Type": "application/json" }).catch(() => {});
+      setBell(false);
+      setStatus("notifications off");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setStatus("notifications blocked in browser settings", "err");
+      return;
+    }
+    if ((await Notification.requestPermission()) !== "granted") {
+      setStatus("notifications not allowed", "err");
+      return;
+    }
+    const key = await fetch("/push/key", { credentials: "same-origin" })
+      .then(r => {
+        if (!r.ok) throw new Error(r.status === 501
+          ? "server is missing python-cryptography" : "HTTP " + r.status);
+        return r.json();
+      });
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64uToBytes(key.key),
+    });
+    await post("/push/subscribe", JSON.stringify(sub),
+               { "Content-Type": "application/json" });
+    setBell(true);
+    setStatus("notifications on");
+  } catch (e) {
+    setStatus("push: " + (e.message || e), "err");
+  }
+}
+if (pushOk) bell.addEventListener("click", pushToggle);
+
+if ("serviceWorker" in navigator)
+  navigator.serviceWorker.register("/sw.js").then(pushSync).catch(() => {});
 </script>
 </body>
 </html>
