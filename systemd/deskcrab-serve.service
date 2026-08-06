@@ -2,6 +2,11 @@
 Description=DeskCrab phone server (crab serve)
 Documentation=https://github.com/TheDiscordian/deskcrab
 After=network-online.target
+# Never give up permanently. The default rate limit (5 starts / 10 s) would put
+# the unit in a failed state if the port is briefly held by a stray manual
+# server or if a boot race makes the first few binds fail — and a phone server
+# that has quietly stopped retrying is worse than one that never started.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
