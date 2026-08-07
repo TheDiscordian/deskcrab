@@ -2437,12 +2437,13 @@ $TURN_CONTEXT"
     SPOKEN=$(spoken_part "$RESPONSE")
     DISPLAY_PART=$(display_part "$RESPONSE")
 
-    # The [quiet] marker — the ONE authorized silence format (his standing
+    # The (quiet) marker — the ONE authorized silence format (his standing
     # instruction, 2026-08-07): a wake with something worth leaving but not
-    # worth voicing writes "[quiet] <thoughts>". The thoughts are SHOWN to
+    # worth voicing writes "(quiet) <thoughts>". The thoughts are SHOWN to
     # him as "(quiet) <thoughts>" — a bubble, never the speakers. A bare
-    # marker with no thoughts is plain silence. The old "(quiet)" spelling
-    # is accepted the same way so a stray one is never voiced.
+    # marker with no thoughts is plain silence. A stray square-bracket
+    # spelling (an old habit of Beatrice's, never authorized) is normalized
+    # here so it is never voiced and never reaches him in bracket form.
     if printf '%s\n' "$RESPONSE" | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
         local THOUGHTS
         THOUGHTS="$(printf '%s\n' "$SPOKEN" \
@@ -2742,8 +2743,9 @@ claude_generate() {
 }
 
 # Split a response into its spoken half (everything above ---DISPLAY---).
-# A line-leading "(quiet)" marker — the retired silence convention — is
-# stripped defensively so a stray one is never voiced by any caller.
+# A line-leading "(quiet)" marker — the authorized silence form — is
+# stripped so it is never voiced by any caller; the wake gate above turns
+# it into the silent bubble he sees.
 #
 # NOTHING here may swallow, clip, or budget my speech. A filter that decides
 # my words are not worth voicing is me cutting out my own tongue, and I built
@@ -2864,7 +2866,17 @@ _run_claude_remote_locked() {
     RESPONSE=$(claude_generate "$TEXT")
 
     local ERROR=""
-    if [ -n "$RESPONSE" ]; then
+    if claude_run_limited; then
+        # Same routing as the desk turn: an all-refused chain reports the
+        # CLI's refusal as the extracted reply. That is the outage speaking,
+        # not me — never the conversation's assistant block, and never
+        # synthesized for the phone's speakers. The error field carries it
+        # as text the client can show.
+        live_turn_end phone "$TEXT" ""
+        session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
+        ERROR="every login is over its limit: $(printf '%.140s' "$RESPONSE")"
+        RESPONSE=""
+    elif [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
         convo_append_assistant "$RESPONSE"
         live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
@@ -2949,7 +2961,23 @@ run_claude_and_respond() {
     # Dismiss thinking notification
     notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "" 2>/dev/null
 
-    if [ -n "$RESPONSE" ]; then
+    if claude_run_limited; then
+        # Every account refused over a limit. extract_response reports the
+        # refusal so an error-only stream can explain itself in a log — which
+        # means RESPONSE holds the CLI's words, not mine. They never enter
+        # the conversation as my reply and are NEVER spoken: the streamer
+        # held them, its receipt reads empty, and the never-silent guard
+        # below used to read that emptiness as a broken speech path and
+        # replay exactly this text aloud. The notification and the journal
+        # carry the outage; the default has already rotated, so the next
+        # attempt leads with the next login.
+        wait_tts_streamer
+        live_turn_end desk "$TEXT" ""
+        session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
+        notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+            "every login is over its limit — nothing was said ($(printf '%.120s' "$RESPONSE"))" 2>/dev/null
+        RESPONSE=""
+    elif [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
         convo_append_assistant "$RESPONSE"
         live_turn_end desk "$TEXT" "$(spoken_part "$RESPONSE")"
