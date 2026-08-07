@@ -476,6 +476,44 @@ def apply_whisper_fixes(text):
     return fixed or text
 
 
+# Whisper invents these out of room tone. "help" is the one that has actually
+# bitten — a quiet clip comes back as a single frightened word nobody said.
+SILENCE_WORDS = {
+    "help", "help me", "you", "thank you", "thanks", "thanks for watching",
+    "bye", "okay", "oh", "hmm", "mm", "yeah", "so", "uh", "um", "hi",
+    "thank you for watching", "please subscribe", "the", "and", "silence",
+}
+
+
+def _wav_rms(path):
+    """Loudness of a 16 kHz mono s16le wav, 0..32768. Silence sits near zero."""
+    try:
+        import array
+        data = Path(path).read_bytes()[44:]
+        if len(data) < 2:
+            return 0.0
+        a = array.array("h")
+        a.frombytes(data[: len(data) - (len(data) % 2)])
+        if not a:
+            return 0.0
+        return (sum(float(s) * s for s in a) / len(a)) ** 0.5
+    except Exception:
+        return None
+
+
+def is_hallucinated_silence(text, wav):
+    """True when a short, contentless transcript came off near-silent audio."""
+    stripped = text.lower().strip(" .,!?…\"'")
+    if not stripped:
+        return False
+    if len(stripped.split()) > 3:
+        return False
+    if stripped not in SILENCE_WORDS:
+        return False
+    rms = _wav_rms(wav)
+    return rms is not None and rms < 350.0
+
+
 def transcribe(blob, suffix):
     """Browser recording -> text. ffmpeg decodes whatever container arrived."""
     tmp = Path(tempfile.gettempdir())
@@ -494,6 +532,8 @@ def transcribe(blob, suffix):
         text = " ".join(r.stdout.decode("utf-8", "replace").split()).strip()
         # whisper emits these for silence; they are not something anybody said.
         if text.lower() in ("[blank_audio]", "(silence)", "[silence]", "."):
+            text = ""
+        if is_hallucinated_silence(text, wav):
             text = ""
         return apply_whisper_fixes(text), None
     finally:
@@ -594,6 +634,8 @@ class SttSession:
                 return ""
             text = " ".join(r.stdout.decode("utf-8", "replace").split()).strip()
             if text.lower() in ("[blank_audio]", "(silence)", "[silence]", "."):
+                return ""
+            if is_hallucinated_silence(text, seg):
                 return ""
             return text
         finally:
