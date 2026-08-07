@@ -148,6 +148,14 @@ WAKES_SHOW="${WAKES_SHOW:-5}"
 # push-back, and the minimum distance two bookings must keep from each other.
 WAKE_DEFER_DELAY="${WAKE_DEFER_DELAY:-900}"
 WAKE_SLOT_SPREAD="${WAKE_SLOT_SPREAD:-180}"
+# Booking is check-then-act three times over — is an equivalent wake already
+# pending, is this moment free, write the record, book the timer — and several
+# sessions book at once. Two wakes finishing in the same second each asked "is a
+# scheduled wake pending?", each got no, and each booked one: that is how two
+# floor bookings came to sit on 13:05:54. Every booking and every reconciliation
+# goes through this lock, so the question and the answer cannot be separated by
+# another hand.
+WAKE_BOOK_LOCK="${STATE_PREFIX}-wake-book.lock"
 SESSIONS_LOCK="${STATE_PREFIX}-sessions.lock"
 SESSIONS_LOG="${STATE_PREFIX}-sessions.log"
 # How far back the journal of finished sessions is read, and how many entries
@@ -715,18 +723,32 @@ session_reap() {
 # state block than everything actually running put together.
 session_history() {  # [--recent]
     [ -s "$SESSIONS_LOG" ] || { echo "  (nothing recorded)"; return 0; }
-    local CUTOFF SHOW WIDTH SPAN
+    local CUTOFF CUTEPOCH SHOW WIDTH SPAN
     if [ "${1:-}" = "--recent" ]; then
         CUTOFF=$(date -d "-${SESSIONS_RECENT_MINUTES} minutes" '+%Y-%m-%d %H:%M:%S')
+        CUTEPOCH=$(date -d "-${SESSIONS_RECENT_MINUTES} minutes" +%s)
         SHOW="$SESSIONS_RECENT_SHOW"; WIDTH="$SESSIONS_RECENT_WIDTH"
         SPAN="${SESSIONS_RECENT_MINUTES} min"
     else
         CUTOFF=$(date -d "-${SESSIONS_LOG_HOURS} hours" '+%Y-%m-%d %H:%M:%S')
+        CUTEPOCH=0
         SHOW="$SESSIONS_LOG_SHOW"; WIDTH=0
         SPAN="${SESSIONS_LOG_HOURS}h"
     fi
     local OUT
-    OUT="$(awk -F'\t' -v cut="$CUTOFF" '$1 >= cut' "$SESSIONS_LOG" \
+    # A session is finished at start + duration, not at start. Field 1 is when
+    # it BEGAN, so a plain string cut on it drops exactly the entries a short
+    # window is for: a forty-minute wake that ended five minutes ago is not in
+    # "the last thirty minutes" by its start, and it is the longest work of the
+    # half hour. The wide window keeps the cheap string compare (CUTEPOCH 0) —
+    # over twelve hours the distinction buys nothing.
+    OUT="$(awk -F'\t' -v cut="$CUTOFF" -v cutepoch="$CUTEPOCH" '
+            cutepoch == 0 { if ($1 >= cut) print; next }
+            { s = $1; gsub(/[-:]/, " ", s); st = mktime(s)
+              # An unparseable stamp falls back to the string compare rather
+              # than vanishing — a corrupt line is still a line that happened.
+              if (st < 0) { if ($1 >= cut) print; next }
+              if (st + (($3 == "?") ? 0 : $3 + 0) >= cutepoch) print }' "$SESSIONS_LOG" \
         | tail -n "$SHOW" \
         | awk -F'\t' -v w="$WIDTH" '{ d = ($3 == "?") ? "?" : $3 "s"; \
             t = $5; \
@@ -847,7 +869,7 @@ self_state_report() {
             *) echo "Interrupted mid-work (edits may be on disk — pick up or 'crab resolve'):"
                echo "$interrupted" ;;
         esac
-        echo "Just finished (last ${SESSIONS_RECENT_MINUTES} min — older: crab status, crab journal):"
+        echo "Recently finished (last ${SESSIONS_RECENT_MINUTES} min — older: crab status, crab journal):"
         session_history --recent
     else
         echo "Detached background jobs (they outlive turns — launch: crab job <description>; list: crab jobs):"
@@ -1015,7 +1037,13 @@ wake_free_slot() {  # [base-delay-seconds] -> delay in seconds
 # The record is the authority throughout; a timer is only ever the record's
 # shadow. A unit whose SERVICE is active is skipped everywhere — that is a wake
 # firing right now, and it cleared its own record first thing.
+# Under the booking lock, like every writer of the queue. Two tidies running at
+# once would each judge the other's fresh booking a duplicate.
 wake_tidy() {
+    { flock -w 30 6; _wake_tidy_locked; } 6>"$WAKE_BOOK_LOCK"
+}
+
+_wake_tidy_locked() {
     local u base purged=0 collapsed=0 spread=0
     mkdir -p "$WAKES_DIR"
     for u in $(systemctl --user list-units --all --no-pager --legend=false 'deskcrab-wake-*.timer' 2>/dev/null \

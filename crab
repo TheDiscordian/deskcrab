@@ -312,6 +312,12 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # event wake pushed back past a recording still arrives knowing why.
         KIND="${3:-scheduled}"
         REASON="${4:-}"
+        # One booker at a time. Everything from here to the timer being booked
+        # is check-then-act, and several sessions book at once: two wakes
+        # finishing in the same second each found no pending floor and each
+        # booked one. The lock is released when this process exits.
+        exec 6>"$WAKE_BOOK_LOCK"
+        flock -w 30 6 || true
         # $$ as well as the timestamp: two deferrals in the same second would
         # otherwise collide on the unit name and the second one would vanish.
         UNIT="deskcrab-wake-$(date +%s)-$$"
@@ -329,12 +335,32 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
             echo "Wake already pending as $EXISTING (fires within $((WAKE_COALESCE_WINDOW / 60))min of '$WHEN') — not booking another."
             exit 0
         fi
+        # Two wakes cannot run at once, so two bookings on one second are one
+        # wake and one deferral. Spacing the retries was not enough on its own:
+        # concurrent sessions each booking a DIFFERENT wake for the same instant
+        # rebuild the collision from the front, and within a minute of the
+        # deferral fix two fresh bookings had already landed together at
+        # 13:05:54. Every booking now snaps to a moment nothing else holds. A
+        # nudge of a few minutes costs a promise to herself nothing; landing on
+        # another wake's second costs it a quarter of an hour.
+        # Booking as a delay rather than passing $WHEN through also retires the
+        # accidental daily repetition: a bare calendar spec ('09:45') made a
+        # timer that came back every morning, while the record covered only the
+        # next firing. A wake-at is one-shot, and now it is one-shot in systemd
+        # too.
+        DELAY=$(( FIRE - $(date +%s) )); [ "$DELAY" -lt 1 ] && DELAY=1
+        SLOT="$(wake_free_slot "$DELAY")"
+        NEWFIRE=$(( $(date +%s) + SLOT ))
+        if [ "$NEWFIRE" -ne "$FIRE" ]; then
+            echo "Moved off a moment another wake already holds: $(date -d "@$FIRE" '+%H:%M:%S') -> $(date -d "@$NEWFIRE" '+%H:%M:%S')"
+            FIRE="$NEWFIRE"
+        fi
         # Record first, book second: a crash between the two leaves a record
         # the reconciler will honor, where the other order leaves a timer
         # nothing remembers.
         wake_state_write "$UNIT" "$FIRE" "$KIND" "$REASON"
-        if _wake_book "$UNIT" "$WHEN" "$KIND" "$REASON"; then
-            echo "Wake scheduled ($WHEN) as $UNIT"
+        if _wake_book "$UNIT" "${SLOT}s" "$KIND" "$REASON"; then
+            echo "Wake scheduled ($WHEN — $(date -d "@$FIRE" '+%H:%M:%S')) as $UNIT"
         else
             wake_state_clear "$UNIT"
             echo "Failed to schedule wake ($WHEN)."

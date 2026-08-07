@@ -105,6 +105,41 @@ moments="$(cut -f1 "$T"/wakes/*.wake | sort -u | wc -l)"
                      || fail "survivors are spaced apart" "$moments"
 
 echo
+echo "crab wake-at — a NEW booking is spaced too, not only a retry:"
+# Spacing the retries alone was measurably not enough: two concurrent sessions
+# booking two different wakes for the same instant rebuild the collision from
+# the front. This runs the real `crab wake-at` twice, with systemd-run stubbed
+# so no unit is ever created.
+rm -f "$T"/wakes/*.wake
+mkdir -p "$T/bin"
+cat > "$T/bin/systemd-run" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+chmod +x "$T/bin/systemd-run"
+book() {
+    PATH="$T/bin:$PATH" WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" \
+        DESKCRAB_STATE_PREFIX="$T/state" WANTS_FILE="$T/wants.md" \
+        "$REPO_DIR/crab" wake-at "$@" 2>&1
+}
+: > "$T/wants.md"
+book 3600s event "first thing" >/dev/null
+out="$(book 3600s event "second thing")"
+case "$out" in
+    *"Moved off a moment another wake already holds"*) ok "the second booking is moved off the taken second" ;;
+    *) fail "new bookings are spaced" "$out" ;;
+esac
+moments="$(cut -f1 "$T"/wakes/*.wake | sort -u | wc -l)"
+[ "$moments" = "2" ] && ok "two bookings for one instant hold two moments" \
+                     || fail "two distinct moments" "$moments"
+# ...but the same promise twice is still one promise, spacing or no spacing.
+out="$(book 3600s event "first thing")"
+case "$out" in
+    *"already pending"*) ok "an identical promise is still refused, not spaced" ;;
+    *) fail "identical promise refused" "$out" ;;
+esac
+
+echo
 echo "wake_tidy — a timer that never fired is not a ghost:"
 # Two record-less transient timers. One has already gone off (LastTriggerUSec
 # set) — that one is finished business and gets purged. The other has never
@@ -204,7 +239,7 @@ esac
 
 out="$(run 'self_state_report --prompt')"
 case "$out" in
-    *"Just finished (last 30 min"*) ok "'Just finished' replaces the twelve-hour log in the prompt block" ;;
+    *"Recently finished (last 30 min"*) ok "the prompt block reaches back thirty minutes, not twelve hours" ;;
     *) fail "prompt block keeps a 30-minute memory" "$out" ;;
 esac
 case "$out" in
