@@ -112,12 +112,33 @@ rm "$T/library/doomed.md"
 run
 check "her own declared deletion stays quiet" [ "$(wakes)" = 3 ]
 
-echo "== an expired touching record no longer suppresses =="
-printf '%s\t%s\n' "$(( NOW - 5 ))" "$T/data/deskcrab/conduct" >> "$STATE/notice-self.suppress"
+echo "== a record that died BEFORE the last judgement no longer suppresses =="
+printf '%s\t%s\n' "$(( NOW - 3600 ))" "$T/data/deskcrab/conduct" >> "$STATE/notice-self.suppress"
 echo "rule" > "$T/data/deskcrab/conduct/new-rule.md"
 run
 check "expired record does not suppress" [ "$(wakes)" = 4 ]
 check "expired record pruned from file" bash -c "! grep -q 'conduct' '$STATE/notice-self.suppress'"
+
+echo "== a record that died DURING the gap since the last judgement still suppresses =="
+# The real failure of 2026-08-07: she wrote two engineering notes at 05:05 and
+# declared them for fifteen minutes, but nothing judged until 05:40 — so by the
+# time anything looked, her own declaration had died of old age and her own
+# hand was reported to her as an intruder's. The window a scan consults must
+# cover the same interval its diff covers.
+printf '%s\n' "$(( NOW - 1800 ))" > "$STATE/notice-self.judged"   # last judged 30 min ago
+printf '%s\t%s\n' "$(( NOW - 900 ))" "$T/data/deskcrab/engineering" >> "$STATE/notice-self.suppress"
+echo "a note of my own" > "$T/data/deskcrab/engineering/thread.md"
+run
+check "declaration alive during the gap still suppresses" [ "$(wakes)" = 4 ]
+check "quiet logged for the gap-declared write" \
+    grep -q "quiet: created.*thread.md (touching)" "$STATE/notice-self.log"
+
+echo "== but the honoured window is bounded by the backstop =="
+printf '%s\n' "$(( NOW - 999999 ))" > "$STATE/notice-self.judged"   # judgement long dead
+printf '%s\t%s\n' "$(( NOW - 86400 ))" "$T/data/deskcrab/conduct" >> "$STATE/notice-self.suppress"
+echo "another rule" > "$T/data/deskcrab/conduct/older-rule.md"
+run
+check "an ancient declaration cannot silence a stalled watcher" [ "$(wakes)" = 5 ]
 
 echo "== a live session's claim suppresses modifications =="
 mkdir -p "$T/sessions-prefix/deskcrab-sessions"
@@ -125,13 +146,13 @@ echo "live" > "$T/sessions-prefix/deskcrab-sessions/$$"          # our own pid: 
 echo "working on engineering/OPEN.md right now" > "$T/sessions-prefix/deskcrab-sessions/$$.claim"
 echo "open list" > "$T/data/deskcrab/engineering/OPEN.md"
 run
-check "claimed modification stays quiet" [ "$(wakes)" = 4 ]
+check "claimed modification stays quiet" [ "$(wakes)" = 5 ]
 check "claim suppression logged" grep -q "quiet: created.*OPEN.md (claimed" "$STATE/notice-self.log"
 
 echo "== but a claim never excuses a deletion =="
 rm "$T/data/deskcrab/engineering/OPEN.md"
 run
-check "claimed deletion still fires" [ "$(wakes)" = 5 ]
+check "claimed deletion still fires" [ "$(wakes)" = 6 ]
 rm -f "$T/sessions-prefix/deskcrab-sessions/$$" "$T/sessions-prefix/deskcrab-sessions/$$.claim"
 
 echo "== memory.db churn beside a recent session is her own plumbing =="
@@ -140,11 +161,11 @@ run   # consume the creation as a burst of its own (fires; wake 6)
 touch "$T/sessions-prefix/deskcrab-sessions.log"                 # fresh activity
 echo "more sqlite bytes" >> "$T/data/deskcrab/memory/memory.db"
 run
-check "memory.db + recent session stays quiet" [ "$(wakes)" = 6 ]
+check "memory.db + recent session stays quiet" [ "$(wakes)" = 7 ]
 touch -d '30 min ago' "$T/sessions-prefix/deskcrab-sessions.log"
 echo "even more bytes" >> "$T/data/deskcrab/memory/memory.db"
 run
-check "memory.db with no recent session fires" [ "$(wakes)" = 7 ]
+check "memory.db with no recent session fires" [ "$(wakes)" = 8 ]
 
 echo "== attempt 0 defers instead of judging (systemd absent → judges now) =="
 # The sandbox stubs systemd-run to fail, so the emitter must fall through to
@@ -152,7 +173,7 @@ echo "== attempt 0 defers instead of judging (systemd absent → judges now) =="
 # wants/ touching record from earlier is still active.)
 echo "late change" >> "$T/data/deskcrab/conduct/new-rule.md"
 run 0
-check "falls through to a wake when it cannot defer" [ "$(wakes)" = 8 ]
+check "falls through to a wake when it cannot defer" [ "$(wakes)" = 9 ]
 
 echo "== a weak record excuses a modification but never a deletion =="
 # Weak records carry a third column; the two-column records used everywhere
@@ -160,17 +181,17 @@ echo "== a weak record excuses a modification but never a deletion =="
 NOW=$(date +%s)
 echo "weak subject" > "$T/library/weak.md"
 run   # the creation is undeclared and fires (wake 9)
-check "undeclared creation fired" [ "$(wakes)" = 9 ]
+check "undeclared creation fired" [ "$(wakes)" = 10 ]
 printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library/weak.md" >> "$STATE/notice-self.suppress"
 echo "changed" >> "$T/library/weak.md"
 run
-check "weak record suppresses a modification" [ "$(wakes)" = 9 ]
+check "weak record suppresses a modification" [ "$(wakes)" = 10 ]
 check "weak suppression is logged as weak" \
     grep -q "quiet: modified.*weak.md (touching (weak" "$STATE/notice-self.log"
 printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library/weak.md" >> "$STATE/notice-self.suppress"
 rm "$T/library/weak.md"
 run
-check "weak record does NOT excuse a deletion" [ "$(wakes)" = 10 ]
+check "weak record does NOT excuse a deletion" [ "$(wakes)" = 11 ]
 
 echo "== a weak record for a directory covers creations beneath it, nothing else =="
 # This is how a tool that derives its own output name stays quiet: I name the
@@ -178,24 +199,24 @@ echo "== a weak record for a directory covers creations beneath it, nothing else
 printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
 echo "inside" > "$T/library/under-a-weak-dir.md"
 run
-check "weak directory record excuses a creation beneath it" [ "$(wakes)" = 10 ]
+check "weak directory record excuses a creation beneath it" [ "$(wakes)" = 11 ]
 check "the creation is logged as a weak-directory suppression" \
     grep -q "quiet: created.*under-a-weak-dir.md (touching (weak — created under" \
         "$STATE/notice-self.log"
 printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
 echo "edited" >> "$T/library/under-a-weak-dir.md"
 run
-check "weak directory record does NOT excuse a modification beneath it" [ "$(wakes)" = 11 ]
+check "weak directory record does NOT excuse a modification beneath it" [ "$(wakes)" = 12 ]
 printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
 rm "$T/library/under-a-weak-dir.md"
 run
-check "weak directory record does NOT excuse a deletion beneath it" [ "$(wakes)" = 12 ]
+check "weak directory record does NOT excuse a deletion beneath it" [ "$(wakes)" = 13 ]
 
 echo "== .gitignored repo files are invisible =="
 mkdir -p "$T/repo/ignored-stuff"
 echo "scratch" > "$T/repo/ignored-stuff/scratch.txt"
 run
-check "ignored file fires nothing" [ "$(wakes)" = 12 ]
+check "ignored file fires nothing" [ "$(wakes)" = 13 ]
 
 echo
 echo "passed $PASS, failed $FAIL"

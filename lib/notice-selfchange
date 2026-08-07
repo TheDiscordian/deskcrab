@@ -21,6 +21,9 @@
 #   * a LIVE session's `crab claim` names it — creations and modifications
 #     only: a deletion is never excused by a fuzzy claim match, because a
 #     deleted want must always surface unless the deleter declared it, or
+#     A record counts if it was alive at any point since judgement last ran,
+#     not merely at this instant: the diff covers that whole interval, and the
+#     interval can outlast a declaration's window, or
 #   * it is memory.db and any of her sessions ran recently — sqlite plumbing
 #     touches that file on ~every prompt build, and every opener of the store
 #     is her own code (deletions again exempt).
@@ -49,6 +52,10 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab"
 SNAP="$STATE_DIR/notice-self.snap"
 SUPPRESS="$STATE_DIR/notice-self.suppress"
 PENDING="$STATE_DIR/notice-self.pending"
+# When judgement last actually ran. The snapshot diff below reports every
+# change since that moment, so the suppression records consulted must cover
+# that same interval — see SUP_FLOOR.
+JUDGED="$STATE_DIR/notice-self.judged"
 LOGFILE="$STATE_DIR/notice-self.log"
 HEARTBEAT="$STATE_DIR/notice-self.heartbeat"
 SESSIONS_DIR="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions"
@@ -114,6 +121,7 @@ snapshot > "$CUR"
 # First run seeds silently: an existing tree is history, not news.
 if [ ! -f "$SNAP" ]; then
     mv "$CUR" "$SNAP"
+    printf '%s\n' "$NOW" > "$JUDGED"
     log "seeded ($(wc -l < "$SNAP") files)"
     exit 0
 fi
@@ -129,6 +137,7 @@ CHANGES="$(awk -F'\t' '
 
 if [ -z "$CHANGES" ]; then
     rm -f "$CUR"
+    printf '%s\n' "$NOW" > "$JUDGED"
     exit 0
 fi
 
@@ -177,11 +186,31 @@ rm -f "$PENDING"
 
 # --- attribution: which of these changes were her own hand? ------------------
 # Prune expired suppression records first, under the writers' lock.
+#
+# The floor is NOT "now". The changes under judgement are everything that
+# happened since judgement last ran, and that interval can be far longer than
+# a declaration's 15-minute window: a burst defers, a nine-minute wake writes
+# continuously, a poke lands while the service is busy and is swallowed. A
+# record honoured only if it is alive at scan time then loses to the clock,
+# and a file she wrote herself at the START of the gap is reported to her as
+# an intruder's. That happened on 2026-08-07: two engineering notes written
+# 05:05, declared until 05:21, judged at 05:40, and she was woken about her
+# own hand.
+#
+# So a record is honoured by this scan if it was alive at ANY point in the
+# same interval the diff covers. Bounded by a backstop so a watcher that has
+# not judged for days cannot be silenced by ancient declarations.
+LAST_JUDGED="$(cat "$JUDGED" 2>/dev/null || echo "$NOW")"
+case "$LAST_JUDGED" in ''|*[!0-9]*) LAST_JUDGED="$NOW" ;; esac
+SUP_BACKSTOP="${NOTICE_SUPPRESS_BACKSTOP:-21600}"
+SUP_FLOOR="$LAST_JUDGED"
+[ "$SUP_FLOOR" -lt $(( NOW - SUP_BACKSTOP )) ] && SUP_FLOOR=$(( NOW - SUP_BACKSTOP ))
+[ "$SUP_FLOOR" -gt "$NOW" ] && SUP_FLOOR="$NOW"
 ACTIVE="$(mktemp /tmp/deskcrab-notice-sup.XXXXXX)"
 if [ -f "$SUPPRESS" ]; then
     {
         flock 9
-        awk -F'\t' -v now="$NOW" '($1+0) >= now' "$SUPPRESS" > "$SUPPRESS.new" \
+        awk -F'\t' -v floor="$SUP_FLOOR" '($1+0) >= floor' "$SUPPRESS" > "$SUPPRESS.new" \
             && mv "$SUPPRESS.new" "$SUPPRESS"
     } 9>>"$SUPPRESS.lock"
     cp "$SUPPRESS" "$ACTIVE" 2>/dev/null
@@ -284,6 +313,7 @@ done <<< "$CHANGES"
 # The judged burst is consumed either way — a suppressed change was hers, not
 # something to re-litigate on the next trigger.
 mv "$CUR" "$SNAP"
+printf '%s\n' "$NOW" > "$JUDGED"
 rm -f "$ACTIVE"
 
 if [ "${#FIRE_PATH[@]}" -eq 0 ]; then
