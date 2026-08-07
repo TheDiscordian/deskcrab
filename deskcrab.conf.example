@@ -115,6 +115,12 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # MEMORY_EMBED_MODEL="nomic-embed-text"
 # MEMORY_EMBED_URL="http://localhost:11434/api/embed"
 # MEMORY_INGEST_MODEL="sonnet"   # judges what earns a record in `crab memory ingest`
+# Reinforcement: after each turn's reply is delivered, a detached judge asks
+# which of the injected records GENUINELY influenced the reply and reinforces
+# only those (bumping last_used_at/use_count, which score retrieval). Records
+# surfaced but ignored get no boost — mere retrieval never reinforces.
+# MEMORY_JUDGE=1                 # set 0 to disable the turn-end judge
+# MEMORY_JUDGE_MODEL="opus"      # judging use is taste — same tier as the sift
 
 # Optional: assistant persona name (default: Crab)
 # The name the assistant sees in its system prompt: "You are <name>, a desktop

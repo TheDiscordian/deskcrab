@@ -393,6 +393,23 @@ class TestBlockCap(unittest.TestCase):
         block = memory.format_block([fake_row(text="short note")])
         self.assertNotIn("TRUNCATED", block)
 
+    def test_kept_rows_match_the_block(self):
+        # The judge sidecar must list exactly what reached the prompt: a note
+        # truncated out of the block must not be judgeable.
+        directives = [fake_row(kind="directive", rec_id=i,
+                               text=f"rule {i} " + "d" * 120)
+                      for i in range(5)]
+        notes = [fake_row(rec_id=100 + i, text=f"note {i} " + "n" * 200)
+                 for i in range(30)]
+        block, kept = memory.build_block(directives + notes)
+        self.assertLess(len(kept), 35)
+        for r in kept:
+            self.assertIn(r[1], block)
+        dropped = [r for r in directives + notes if r not in kept]
+        self.assertTrue(dropped)
+        for r in dropped:
+            self.assertNotIn(r[1], block)
+
 
 class TestIngest(StoreCase):
     def test_journal_delta_and_cursor(self):
@@ -451,6 +468,150 @@ class TestIngest(StoreCase):
         row = memory.Store(self.dir).db.execute(
             "SELECT kind, source FROM memories").fetchone()
         self.assertEqual(row, ("directive", "conversation"))
+
+
+class TestRecallBlockIds(StoreCase):
+    def test_ids_out_lists_the_injected_records(self):
+        a = self.store.insert("His character Xena is a Paladin on DiscoWoW.",
+                              kind="note", topics="wow")
+        self.store.insert("The weather cache refreshes every fifteen minutes.",
+                          kind="note", topics="weather")
+        out = os.path.join(self.dir, "injected.json")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "recall-block", "--query", "which WoW character does he play",
+             "--ids-out", out],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(out) as f:
+            injected = json.load(f)
+        self.assertIn(a, [r["id"] for r in injected])
+        for r in injected:  # every listed record really is in the block
+            self.assertIn(r["text"], proc.stdout)
+
+    def test_empty_store_writes_no_sidecar(self):
+        out = os.path.join(self.dir, "injected.json")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "recall-block", "--query", "anything", "--ids-out", out],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(os.path.exists(out))
+
+    def test_degraded_path_still_reports_pinned(self):
+        # Embedder down -> pinned records still reach the prompt, so they are
+        # still judgeable and the sidecar must say so.
+        p = self.store.insert("Nothing outward-facing while unattended.",
+                              kind="directive", pinned=True,
+                              vec=[0.1] * memory.EMBED_DIM)
+        out = os.path.join(self.dir, "injected.json")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   MEMORY_EMBED_URL="http://127.0.0.1:9")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "recall-block", "--query", "anything", "--ids-out", out],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(out) as f:
+            self.assertEqual([r["id"] for r in json.load(f)], [p])
+
+
+class TestJudgeTurn(StoreCase):
+    """The turn-end genuinely-used judge, with the judge model stubbed: the
+    claude binary is a script echoing a canned verdict, so what is under test
+    is the plumbing — judged subset reinforced, ignored records untouched,
+    sidecar consumed, hallucinated ids rejected."""
+
+    def setUp(self):
+        super().setUp()
+        vec = [0.1] * memory.EMBED_DIM
+        self.used = self.store.insert("His character Xena is a Paladin.",
+                                      vec=vec)
+        self.ignored = self.store.insert("The lux sensor lives on the i2c bus.",
+                                         vec=vec)
+        self.log = os.path.join(self.dir, "judge.log")
+
+    def stub_claude(self, verdict):
+        path = os.path.join(self.dir, "claude-stub")
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{verdict}'\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def judge(self, verdict, ids=None, reply="Xena is your Paladin."):
+        ids_file = os.path.join(self.dir, "injected.json")
+        rows = [(self.used, "note"), (self.ignored, "note")] \
+            if ids is None else ids
+        with open(ids_file, "w") as f:
+            json.dump([{"id": i, "kind": k, "text": "t"} for i, k in rows], f)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   CLAUDE_BIN=self.stub_claude(verdict))
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "judge-turn", "--ids-file", ids_file, "--user", "who do I play",
+             "--reply", reply, "--log", self.log],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return ids_file
+
+    def usage(self, rec_id):
+        return self.store.db.execute(
+            "SELECT use_count, last_used_at FROM memories WHERE id=?",
+            (rec_id,)).fetchone()
+
+    def test_judged_subset_reinforced_ignored_untouched(self):
+        ids_file = self.judge(f"[{self.used}]")
+        count, stamp = self.usage(self.used)
+        self.assertEqual(count, 1)
+        self.assertIsNotNone(stamp)
+        self.assertEqual(self.usage(self.ignored), (0, None))
+        # The sidecar describes one turn and is consumed by the judgement.
+        self.assertFalse(os.path.exists(ids_file))
+        with open(self.log) as f:
+            self.assertIn(f"used=[{self.used}]", f.read())
+
+    def test_none_verdict_reinforces_nothing(self):
+        self.judge("[]")
+        self.assertEqual(self.usage(self.used), (0, None))
+        self.assertEqual(self.usage(self.ignored), (0, None))
+        with open(self.log) as f:
+            self.assertIn("used=NONE", f.read())
+
+    def test_hallucinated_ids_are_rejected(self):
+        # The judge may only reinforce what was actually injected — an id from
+        # outside the sidecar must not stamp an unrelated record.
+        self.judge(f"[{self.used}, {self.ignored}, 999]",
+                   ids=[(self.used, "note")])
+        self.assertEqual(self.usage(self.used)[0], 1)
+        self.assertEqual(self.usage(self.ignored), (0, None))
+
+    def test_empty_reply_skips_the_model(self):
+        ids_file = self.judge(f"[{self.used}]", reply="  ")
+        self.assertEqual(self.usage(self.used), (0, None))
+        self.assertFalse(os.path.exists(ids_file))
+        with open(self.log) as f:
+            self.assertIn("skipped (empty reply)", f.read())
+
+    def test_reinforcement_lands_in_the_score(self):
+        # End state of the whole path: the judged record now outranks its
+        # pre-judgement self in score_row.
+        now = datetime.now().astimezone()
+        self.store.db.execute("UPDATE memories SET created=? WHERE id=?",
+                              (days_ago(120), self.used))
+        self.store.db.commit()
+
+        def score():
+            row = self.store.db.execute(
+                "SELECT id, text, kind, pinned, source, topics, confidence,"
+                "       created, last_seen, 0.8, last_used_at, use_count"
+                " FROM memories WHERE id=?", (self.used,)).fetchone()
+            return memory.score_row(row, now)
+
+        before = score()
+        self.judge(f"[{self.used}]")
+        self.assertGreater(score(), before)
 
 
 if __name__ == "__main__":

@@ -175,8 +175,9 @@ class Store:
                 last_seen  TEXT NOT NULL,
                 -- Reinforcement (13:15 design revision): bumped by `memory
                 -- reinforce` only when a memory is judged GENUINELY USED at
-                -- turn end, never on mere retrieval. Read by score_row; the
-                -- turn-end judge itself is not wired yet.
+                -- turn end (`judge-turn`, fired detached by every turn path
+                -- via fire_memory_judge), never on mere retrieval. Read by
+                -- score_row.
                 last_used_at TEXT,
                 use_count  INTEGER NOT NULL DEFAULT 0
             );
@@ -381,9 +382,12 @@ def recall_query(reason, wants_file, convo_file):
     return "\n".join(p for p in parts if p).strip()
 
 
-def format_block(rows, warning=""):
+def build_block(rows, warning=""):
+    """The recall block plus the rows that actually made it in — truncation
+    drops rows, and the reinforcement judge must only ever see records that
+    genuinely reached the prompt."""
     if not rows and not warning:
-        return ""
+        return "", []
     directives = [r for r in rows if r[2] == "directive"]
     notes = [r for r in rows if r[2] == "note"]
     # ~BLOCK_TOKEN_CAP-token cap (13:15 revision): if it truncates, the header
@@ -405,16 +409,40 @@ def format_block(rows, warning=""):
         block = "\n".join(out)
         if len(block) <= BLOCK_TOKEN_CAP * CHARS_PER_TOKEN \
                 or not (notes or directives):
-            return block
+            return block, directives + notes
         truncated = True
         (notes or directives).pop()
+
+
+def format_block(rows, warning=""):
+    return build_block(rows, warning)[0]
+
+
+def write_ids_out(path, rows):
+    """Sidecar for the turn-end judge: which records were injected into this
+    prompt build. No injected records means no file — the judge has nothing
+    to weigh, and the turn path skips the spawn entirely."""
+    if not path:
+        return
+    if not rows:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump([{"id": r[0], "kind": r[2], "text": r[1]} for r in rows], f)
+    os.replace(tmp, path)
 
 
 def cmd_recall_block(store, args):
     query = args.query or recall_query(args.reason, args.wants, args.convo)
     if not query:
         rows = store.pinned_rows()
-        print(format_block(rows), end="" if not rows else "\n")
+        block, kept = build_block(rows)
+        write_ids_out(args.ids_out, kept)
+        print(block, end="" if not rows else "\n")
         return 0
     try:
         rows, _, _ = store.search(query)
@@ -422,13 +450,15 @@ def cmd_recall_block(store, args):
         # Degraded recall, never silent amnesia: the pinned tier plus a loud
         # warning still reach the prompt.
         rows = store.pinned_rows()
-        block = format_block(
+        block, kept = build_block(
             rows, f"WARNING: memory retrieval is DOWN ({e}); only pinned "
                   "records are shown. 'crab memory list' still works.")
+        write_ids_out(args.ids_out, kept)
         if block:
             print(block)
         return 0
-    block = format_block(rows)
+    block, kept = build_block(rows)
+    write_ids_out(args.ids_out, kept)
     if block:
         print(block)
     return 0
@@ -501,18 +531,26 @@ def transcript_delta(transcripts_dir, cursor, cap=20000):
     return chunks
 
 
-def extract_candidates(material, model):
+def claude_bin():
     claude = os.environ.get("CLAUDE_BIN") or "claude"
     if not any(os.access(os.path.join(p, claude), os.X_OK)
                for p in os.environ.get("PATH", "").split(":")) \
             and not os.path.isfile(claude):
         claude = os.path.expanduser("~/.local/bin/claude")
+    return claude
+
+
+def run_claude(prompt, model, timeout=600):
     proc = subprocess.run(
-        [claude, "-p", "--model", model, "--dangerously-skip-permissions"],
-        input=INGEST_PROMPT + material, capture_output=True, text=True, timeout=600)
+        [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"],
+        input=prompt, capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}")
-    body = proc.stdout.strip()
+    return proc.stdout.strip()
+
+
+def extract_candidates(material, model):
+    body = run_claude(INGEST_PROMPT + material, model)
     m = re.search(r"\[.*\]", body, re.S)
     if not m:
         return []
@@ -568,6 +606,84 @@ def cmd_ingest(store, args):
           f"{counts['duplicate']} duplicates, {counts['rejected']} rejected"
           + (" (dry run — cursor not advanced)" if args.dry_run else ""))
     return 0
+
+
+# --- judge-turn: the turn-end genuinely-used judge --------------------------
+# The write path for reinforcement (13:15 design revision). Fired DETACHED by
+# every turn path after the reply is delivered (fire_memory_judge in
+# lib/common.sh) — never on the hot path, never on mere retrieval. It reads
+# the ids sidecar recall-block left (which records were actually injected
+# into the prompt), asks the judge model which of them genuinely influenced
+# the reply, and reinforces only those. Surfaced-and-ignored records get
+# nothing and keep decaying.
+
+JUDGE_PROMPT = """You are auditing one turn of a desktop assistant. Before she \
+replied, the memory records below were retrieved and injected into her context. \
+Decide which of them GENUINELY influenced the reply: she referenced the \
+record's content, acted on it, or the reply's substance plainly depends on it.
+
+Retrieval is not use. A record that merely shares a topic with the exchange, \
+or without which she would have written the same reply, gets NO credit — the \
+default for every record is "not used". Crediting surfaced-but-ignored records \
+would teach the store that whatever the retriever happened to return is \
+important, which is flattery, not memory. When in doubt about a record, leave \
+it out.
+
+Reply with ONLY a JSON array of the ids genuinely used, e.g. [3,17] — no \
+prose, no code fence. [] is a common and correct answer.
+"""
+
+
+def cmd_judge_turn(store, args):
+    def jlog(line):
+        if args.log:
+            with open(args.log, "a") as f:
+                f.write(f"{now_iso()}\t{'wake' if args.wake else 'turn'}\t{line}\n")
+
+    try:
+        with open(args.ids_file) as f:
+            injected = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    try:
+        if not injected:
+            return 0
+        if not args.reply.strip():
+            jlog("skipped (empty reply)")
+            return 0
+        records = "\n".join(f"#{r['id']} [{r.get('kind', '?')}] {r['text']}"
+                            for r in injected)
+        if args.wake:
+            exchange = ("This was an autonomous wake — nobody was talking to "
+                        "her; the agenda was: " + (args.user or "(none — a timer wake)")
+                        + f"\n\nHer reply (to herself): {args.reply}")
+        else:
+            exchange = f"User: {args.user}\n\nHer reply: {args.reply}"
+        try:
+            body = run_claude(
+                JUDGE_PROMPT + "\n=== INJECTED RECORDS ===\n" + records
+                + "\n\n=== THE TURN ===\n" + exchange,
+                args.model, timeout=120)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            jlog(f"judge failed ({e})")
+            return 0
+        m = re.search(r"\[[\d,\s]*\]", body)
+        if not m:
+            jlog(f"unparseable verdict: {body[:120]!r}")
+            return 0
+        # Only ids that were actually injected can be reinforced — a judge
+        # hallucinating an id must not stamp an unrelated record.
+        allowed = {r["id"] for r in injected}
+        used = [i for i in json.loads(m.group(0)) if i in allowed]
+        hit = store.reinforce(used) if used else []
+        jlog(f"injected={sorted(allowed)} used={hit if hit else 'NONE'}")
+        return 0
+    finally:
+        # The sidecar is consumed either way: it describes exactly one turn.
+        try:
+            os.remove(args.ids_file)
+        except OSError:
+            pass
 
 
 # --- plain CLI verbs --------------------------------------------------------
@@ -710,7 +826,23 @@ def main():
     p.add_argument("--reason", default="")
     p.add_argument("--wants", default="")
     p.add_argument("--convo", default="")
+    p.add_argument("--ids-out", default="",
+                   help="write the injected records (id/kind/text JSON) here "
+                        "for the turn-end judge")
     p.set_defaults(fn=cmd_recall_block)
+
+    p = sub.add_parser("judge-turn",
+                       help="turn-end judge: reinforce only the injected "
+                            "records that genuinely influenced the reply")
+    p.add_argument("--ids-file", required=True,
+                   help="the sidecar recall-block wrote (consumed)")
+    p.add_argument("--user", default="", help="user text, or the wake's agenda")
+    p.add_argument("--reply", default="")
+    p.add_argument("--wake", action="store_true")
+    p.add_argument("--model",
+                   default=os.environ.get("MEMORY_JUDGE_MODEL") or "opus")
+    p.add_argument("--log", default="")
+    p.set_defaults(fn=cmd_judge_turn)
 
     args = ap.parse_args()
     store = Store()

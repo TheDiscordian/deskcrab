@@ -771,10 +771,15 @@ You can wake yourself later to work on your wants without being spoken to: run '
     # must never break a prompt build.
     local MEMORY_CONTEXT=""
     if [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ]; then
+        # --ids-out: which records actually reached this prompt, for the
+        # turn-end reinforcement judge (fire_memory_judge). $$ is stable
+        # inside this command substitution, so the turn path can find the
+        # sidecar again at turn end.
         MEMORY_CONTEXT="$("$LIB_DIR/memory.py" recall-block \
             --reason "${WAKE_REASON:-}" \
             --wants "${WANTS_FILE:-}" \
-            --convo "$CONVOFILE" 2>/dev/null)"
+            --convo "$CONVOFILE" \
+            --ids-out "${STATE_PREFIX}-memory-injected-$$.json" 2>/dev/null)"
         [ -n "$MEMORY_CONTEXT" ] && MEMORY_CONTEXT="
 $MEMORY_CONTEXT
 "
@@ -1011,6 +1016,39 @@ fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
     setsid "$SCRIPT_DIR/lib/promise-audit" "$@" >/dev/null 2>&1 8>&- 9>&- &
 }
 
+# --- Memory reinforcement: the turn-end genuinely-used judge ----------------
+# Retrieval must never reinforce — a record surfacing in a KNN query is not
+# evidence it mattered, and stamping it anyway teaches the store that whatever
+# the embedder returns is important. So reinforcement is judged: recall-block
+# leaves a sidecar naming the records injected into this turn's prompt
+# (build_system_prompt), and after the reply is delivered this hands the
+# sidecar plus the exchange to `memory.py judge-turn` — detached, same shape
+# as the promise audit, never on the hot path — which asks the judge model
+# which records ACTUALLY influenced the reply and reinforces only those.
+# Ignored records get nothing and keep decaying. One line per judgement lands
+# in ${STATE_PREFIX}-memory-judge.log.
+fire_memory_judge() {  # <user-text> <response>  |  --wake <agenda> <response>
+    local IDS_FILE="${STATE_PREFIX}-memory-injected-$$.json"
+    [ -f "$IDS_FILE" ] || return 0
+    local WAKE_FLAG=""
+    [ "${1:-}" = "--wake" ] && { WAKE_FLAG="--wake"; shift; }
+    local USER_TEXT="${1:-}" RESPONSE="${2:-}"
+    # No genuine reply means nothing to judge influence against; the judge is
+    # also switchable off. Either way the sidecar is consumed — it describes
+    # this turn only.
+    if [ "${MEMORY_JUDGE:-1}" != "1" ] \
+            || [ -z "$(printf '%s' "$RESPONSE" | tr -d '[:space:]')" ]; then
+        rm -f "$IDS_FILE"
+        return 0
+    fi
+    # Same fd hygiene as the promise audit: never inherit the remote or wake
+    # lock into a process that outlives the turn.
+    setsid "$LIB_DIR/memory.py" judge-turn --ids-file "$IDS_FILE" $WAKE_FLAG \
+        --user "$USER_TEXT" --reply "$RESPONSE" \
+        --model "${MEMORY_JUDGE_MODEL:-opus}" \
+        --log "${STATE_PREFIX}-memory-judge.log" >/dev/null 2>&1 8>&- 9>&- &
+}
+
 # Did the stream fail before the model did any real work? The CLI reports
 # API-level failures — session limit, auth, network — SHAPED LIKE A REPLY: a
 # fabricated assistant message ("model":"<synthetic>", is_api_error_message)
@@ -1180,10 +1218,16 @@ $TURN_CONTEXT"
     if wake_stream_failed; then
         session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(printf '%s' "$RESPONSE" | tr '\n\t' '  ' | head -c 160))"
         [ -n "${WAKE_KIND:-}" ] && "$SCRIPT_DIR/crab" wake-at 30min "$WAKE_KIND" "${WAKE_REASON:-}" >/dev/null
+        # An error dressed as a reply must never be judged for memory use —
+        # consume the recall sidecar without spawning the judge.
+        rm -f "${STATE_PREFIX}-memory-injected-$$.json"
         return 0
     fi
 
     if [ -z "$RESPONSE" ]; then
+        # No reply text means no evidence to judge memory influence against;
+        # the sidecar is consumed all the same.
+        rm -f "${STATE_PREFIX}-memory-injected-$$.json"
         # No text at all. On a clean exit that is the shape of silence — the
         # wake worked through tool calls and had nothing for the user — so
         # journal what it DID, from the stream's own tool calls. On a
@@ -1244,6 +1288,10 @@ $TURN_CONTEXT"
         "$PROMISE_AUDIT_REASON_PREFIX"*) ;;
         *) fire_promise_audit --wake "${WAKE_REASON:-}" "$RESPONSE" ;;
     esac
+    # Same moment for the memory judge: the wake's outcome is recorded, and a
+    # silent completion below must not skip the judgement — a memory used by
+    # a wake that chose to say nothing was still used.
+    fire_memory_judge --wake "${WAKE_REASON:-}" "$RESPONSE"
 
     # Nothing to say and nothing to show: the wake is complete, invisibly.
     # Silence is never narrated — no speech, no notification, no window.
@@ -1469,8 +1517,10 @@ _run_claude_remote_locked() {
     find /tmp -maxdepth 1 -name 'deskcrab-remote-*.opus' -mmin +60 -delete 2>/dev/null
 
     # Out of band, with the reply audio already synthesised: a want stated on
-    # the phone dies with the turn exactly like one stated at the desk.
+    # the phone dies with the turn exactly like one stated at the desk. The
+    # memory judge rides the same moment — reply delivered, hot path over.
     fire_promise_audit "$TEXT" "$RESPONSE"
+    fire_memory_judge "$TEXT" "$RESPONSE"
 
     python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3]}))' \
         "$SPOKEN" "$DISPLAY_MD" "$AUDIO"
@@ -1527,6 +1577,10 @@ run_claude_and_respond() {
         # that hands the sentence back to me. Costs nothing on the hot path.
         fire_promise_audit "$TEXT" "$RESPONSE"
     fi
+
+    # Also out of band: which of the injected memories genuinely shaped this
+    # reply? Consumes the recall sidecar even when the reply came back empty.
+    fire_memory_judge "$TEXT" "$RESPONSE"
 
     echo "$RESPONSE"
 }
