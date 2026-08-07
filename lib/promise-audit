@@ -99,6 +99,26 @@ fi
 audit_log "$VERDICT"
 
 REASON="${VERDICT#UNSAVED: }"
+
+# A ceiling on how many of the audit's own follow-up wakes may be PENDING at
+# once. Every wake is a full model session; a day of firefighting produces a
+# stream of differently-worded UNSAVED verdicts about the same crisis, the
+# booking collapse only merges identical wording, and the queue becomes a
+# token furnace — measured 2026-08-07: ~30 pending at once. The verdict is
+# already in the audit log above, so a declined booking loses nothing but the
+# alarm clock; the want is still one `grep UNSAVED` away.
+PROMISE_WAKE_CAP="${PROMISE_WAKE_CAP:-3}"
+PENDING=0
+for U in $(systemctl --user list-timers --all --no-pager 2>/dev/null \
+        | grep -o 'deskcrab-wake-[0-9-]*\.timer' | sort -u); do
+    systemctl --user show -p Description --value "${U%.timer}.service" 2>/dev/null \
+        | grep -qF "$PROMISE_AUDIT_REASON_PREFIX" && PENDING=$(( PENDING + 1 ))
+done
+if [ "$PENDING" -ge "$PROMISE_WAKE_CAP" ]; then
+    audit_log "capped ($PENDING promise wakes already pending): $REASON"
+    exit 0
+fi
+
 # The reason MUST open with PROMISE_AUDIT_REASON_PREFIX (common.sh): that is
 # how the wake path knows this wake is the audit's own follow-up and must not
 # be re-audited into an endless chain.
