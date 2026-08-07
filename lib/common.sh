@@ -980,6 +980,67 @@ sys.exit(0 if err and not real else 1)
 PY
 }
 
+# What did the wake actually DO? A "(quiet)" reply is the model's SPEECH
+# decision, not its work record — two wakes on 2026-08-06 each dispatched a
+# builder job and edited three files, replied "(quiet)" as the prompt asks,
+# and the journal showed a bare "(quiet)": indistinguishable from an hour of
+# nothing, and read as exactly that. The stream log already holds the truth,
+# so summarize it mechanically — files written (Write/Edit tools plus shell
+# redirections), jobs dispatched, commands run — instead of trusting the
+# reply to narrate. Prints nothing when the wake genuinely ran no tools.
+wake_work_trace() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$DEBUGLOG" 2>/dev/null <<'PY'
+import json, os, re, sys
+home = os.path.expanduser("~")
+files, jobs, cmds = [], 0, 0
+def add(path):
+    if not path:
+        return
+    if path.startswith(home):
+        path = "~" + path[len(home):]
+    if path not in files:
+        files.append(path)
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if d.get("type") != "assistant":
+        continue
+    if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
+        continue
+    for b in d.get("message", {}).get("content", []):
+        if b.get("type") != "tool_use":
+            continue
+        name, inp = b.get("name", ""), b.get("input") or {}
+        if name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            add(inp.get("file_path") or inp.get("notebook_path"))
+        elif name == "Bash":
+            cmds += 1
+            cmd = inp.get("command", "")
+            jobs += len(re.findall(r"\bcrab['\"]? +job\b", cmd))
+            # Heredoc appends and redirects are file writes too; a want doc
+            # grown with `cat >> ...` must not vanish from the record.
+            for m in re.finditer(r">>?\s*[\"']?([~/][^\s\"';|&)]+)", cmd):
+                p = os.path.expanduser(m.group(1))
+                if not p.startswith(("/dev/", "/proc/")):
+                    add(p)
+parts = []
+if files:
+    extra = " (+%d more)" % (len(files) - 4) if len(files) > 4 else ""
+    parts.append("wrote " + ", ".join(files[:4]) + extra)
+if jobs:
+    parts.append("dispatched %d job%s" % (jobs, "" if jobs == 1 else "s"))
+if cmds:
+    parts.append("ran %d command%s" % (cmds, "" if cmds == 1 else "s"))
+print("; ".join(parts))
+PY
+}
+
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
@@ -1080,7 +1141,18 @@ run_claude_wake() {
     esac
 
     # Silent completion: quiet hours, or the reply opens with "(quiet)".
-    case "$RESPONSE" in "(quiet)"*) return 0 ;; esac
+    # A quiet wake's journal line must still say what the wake DID — the
+    # reply chose silence, but silence is not a summary. Keep any words the
+    # model put after the marker, and back them with the mechanical trace of
+    # the stream, so a wake that worked reads as work and a wake that truly
+    # idled says so in as many words.
+    case "$RESPONSE" in "(quiet)"*)
+        local TRACE REST
+        TRACE="$(wake_work_trace)"
+        REST="$(spoken_part "$RESPONSE" | sed '1s/^(quiet)[[:space:]]*//')"
+        session_outcome "(quiet — ${TRACE:-ran no tools, touched nothing})${REST:+ — }$REST"
+        return 0 ;;
+    esac
     in_quiet_hours && return 0
     # User busy (recording, speech in flight, or a meeting holding the mic):
     # the wake still did its work — busyness suppresses OUTPUT only, exactly
