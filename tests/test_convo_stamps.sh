@@ -169,20 +169,8 @@ STUB
     grep -q "the excerpt is unstamped" "$WORK/sumprompt-bare.txt" \
         || fail "an unstamped excerpt did not tell the summariser its span is unknown"
 
-    # 7. The nothing-new backstop reads assistant blocks in either shape.
-    ECHOED="The backup finished and the archive verified clean overnight."
-    printf 'User: how did it go\nAssistant: %s\n\n' "$ECHOED" > "$CONVOFILE"
-    printf 'Assistant: %s\n\n' "a later unrelated line" >> "$CONVOFILE"
-    wake_says_nothing_new "$ECHOED" "a later unrelated line" \
-        || fail "an unstamped assistant block stopped being compared"
-    printf 'User [%s 09:12]: how did it go\nAssistant [%s 09:13]: %s\n\n' \
-        "$TODAY" "$TODAY" "$ECHOED" > "$CONVOFILE"
-    printf 'Assistant [%s 09:20]: %s\n\n' "$TODAY" "a later unrelated line" >> "$CONVOFILE"
-    wake_says_nothing_new "$ECHOED" "a later unrelated line" \
-        || fail "a STAMPED assistant block was not seen, so every wake reads as new"
-    wake_says_nothing_new "The disk it landed on has a bad sector in sector twelve" \
-        "a later unrelated line" \
-        && fail "genuinely new words were called an echo"
+    # 7. (retired) The nothing-new overlap mute is gone — a wake's speech is
+    # never judged after the fact. Nothing to test here.
 
     # 8. The prompt carries the stamps and says what they are for.
     printf 'User [%s 09:12]: how did it go\n' "$TODAY" > "$CONVOFILE"

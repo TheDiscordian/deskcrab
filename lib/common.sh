@@ -122,7 +122,23 @@ CONVOFILE="${STATE_PREFIX}-convo.txt"
 CONVOLOCK="${STATE_PREFIX}-convo.lock"
 SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
-DEBUGLOG="${STATE_PREFIX}-debug.log"
+# ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
+# of the worst silence in this thing. A wake firing beside a desktop turn ran
+# `: > "$DEBUGLOG"` on the very file that turn's TTS streamer was tailing: the
+# streamer's read cursor was left past EOF, it read nothing ever again, spoke
+# nothing, and never saw a result event — so the reply appeared on screen, was
+# never heard, and `wait "$_TTS_STREAMER_PID"` hung the turn behind it. And if
+# the wake then wrote past the stranded offset, the desktop streamer resumed
+# mid-file and spoke the WAKE's words as though they were the answer to the
+# question just asked. Both shapes are measured in tests/test_speech_path.sh.
+# The remote turn already had a private log for exactly this reason; now
+# everybody does, and the well-known name is a pointer to the newest.
+DEBUGLOG="${STATE_PREFIX}-debug-$$.log"
+DEBUGLOG_LATEST="${STATE_PREFIX}-debug.log"
+# Where a lost or failed utterance is recorded. Speech that vanishes without a
+# trace is the failure mode this file keeps re-learning; nothing on the audio
+# path may fail quietly again.
+SPEECH_LOG="${SPEECH_LOG:-${STATE_PREFIX}-speech.log}"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
@@ -1199,6 +1215,14 @@ ensure_next_wake() {
     "$SCRIPT_DIR/crab" wake-at "$ENSURE_WAKE_DELAY" >/dev/null 2>&1 || true
 }
 
+# One line per thing that went wrong on the way to the speakers. Speech that
+# disappears without a trace is the failure this path keeps repeating — every
+# silence now has to explain itself somewhere.
+speech_log() {
+    printf '%s [%d] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$1" >> "$SPEECH_LOG" 2>/dev/null
+    printf 'deskcrab speech: %s\n' "$1" >&2
+}
+
 # Kill any active TTS
 stop_tts() {
     [ -f "$TTSPIDFILE" ] && kill "$(cat "$TTSPIDFILE")" 2>/dev/null && rm -f "$TTSPIDFILE"
@@ -1627,12 +1651,21 @@ speak_once() {
     # said — the regroup block did that while this reply was being written; it
     # only keeps two voices off the speakers at the same instant, and it never
     # drops a word.
+    command -v piper-tts >/dev/null 2>&1 || {
+        speech_log "piper-tts is not on PATH — ${#TEXT} chars could not be spoken"
+        return 1
+    }
     {
         flock -w 300 7
         # Publish the words as they go out, so the next session to start
         # regroups against them instead of talking past them.
         live_speech_begin "desk" "$TEXT"
+        # PIPESTATUS, not $?: the exit status of a pipeline is aplay's, so a
+        # piper that never produced a sample used to look like a clean run.
         printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+        local ST=("${PIPESTATUS[@]}")
+        [ "${ST[1]}" = 0 ] && [ "${ST[2]}" = 0 ] || \
+            speech_log "speak_once failed (piper=${ST[1]} aplay=${ST[2]}) on ${#TEXT} chars: $(printf '%.60s' "$TEXT")"
         live_speech_end
     } 7>"$SPEECHLOCK"
 }
@@ -2122,7 +2155,37 @@ _wake_claude_run() {
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
+#
+# The wake's stream log is PRIVATE, and that is load-bearing. It used to be the
+# one shared $DEBUGLOG (/tmp/deskcrab-debug.log) that a DESKTOP turn also
+# writes — and a desktop turn starts by TRUNCATING it (start_tts_streamer, then
+# claude_generate's `>`). A wake and a desk turn overlap constantly, since a
+# wake beside a live conversation is no longer deferred, so:
+#   * a desk turn starting mid-wake wiped the wake's output — the wake then
+#     extracted nothing and journalled itself "(silent — ran no tools, touched
+#     nothing)" having worked for a minute;
+#   * a wake starting mid-desk-turn wiped the DESK's reply before
+#     extract_response read it, and the user got dead air for a question he
+#     had asked out loud;
+#   * whichever ran second read BOTH streams back, so the wake spoke the desk
+#     turn's answer as its own — four times inside twenty minutes on
+#     2026-08-07, verbatim, in the session journal.
+# One archived stream from that afternoon is 18 bytes: nothing but the
+# terminator this function appends, every line of a 42-second wake gone.
+# Nothing about the sharing was ever wanted; the phone turn had already been
+# given a private log for exactly this reason. Every reader inside the wake
+# (extract_response, wake_stream_failed, wake_work_trace, notice_own_writes,
+# claude_limit_fallback_due) picks the private log up through bash's dynamic
+# scoping, so the split costs one local.
 run_claude_wake() {
+    local DEBUGLOG="${STATE_PREFIX}-wake-$$.log"
+    _run_claude_wake "$@"
+    local RC=$?
+    rm -f "$DEBUGLOG"
+    return "$RC"
+}
+
+_run_claude_wake() {
     session_register "autonomous wake"
     # Nobody spoke, so the day journal's "user" slot carries the wake's
     # agenda — an event's reason reads back as what the wake was about.
@@ -2151,9 +2214,16 @@ run_claude_wake() {
 
 $TURN_CONTEXT"
 
-    convo_append '[Autonomous wake — %s]\n' "$(date '+%Y-%m-%d %H:%M')"
-
-    : > "$DEBUGLOG"
+    # The wake marker is NOT written here any more. It used to be, so that a
+    # wake which then said nothing (or was muted) left a marker in the
+    # conversation with no reply under it — and worse, the reply itself was
+    # appended below before any gate had run. See the delivery section at the
+    # end of this function: the conversation records what was DELIVERED.
+    # This session's own stream log. It used to be the ONE shared log, and this
+    # very line — a wake truncating it — is what stranded a desktop turn's TTS
+    # streamer past EOF and left his answer unspoken while a wake's words were
+    # read out in its place.
+    claim_debuglog
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     _wake_claude_run ""
     # The primary login refusing over a usage/session limit does not end the
@@ -2220,9 +2290,9 @@ $TURN_CONTEXT"
 
     # A genuine reply (the failure paths above never reach here): the journal
     # keeps it in full even when every gate below completes the wake silently.
+    # It is NOT appended to the conversation here — see the delivery section
+    # at the end of this function.
     SESSION_REPLY="$RESPONSE"
-    convo_append_assistant "$RESPONSE"
-    compact_convo
 
     local SPOKEN DISPLAY_PART TRACE SILENT_NOTE=""
     SPOKEN=$(spoken_part "$RESPONSE")
@@ -2239,6 +2309,23 @@ $TURN_CONTEXT"
     if printf '%s\n' "$RESPONSE" | grep -qi '^[[:space:]]*(quiet)'; then
         SILENT_NOTE="$(printf '%s\n' "$SPOKEN" | tr '\n' ' ')"
         SPOKEN="" DISPLAY_PART=""
+    fi
+
+    # The same backstop for the other way silence gets narrated: a whole reply
+    # that is nothing but "Nothing to say." / "No message." / "Nothing to
+    # report." A wake with nothing to say must produce ZERO output, and that
+    # filler was instead reaching the speakers and being read aloud — the
+    # interruption the silence existed to prevent, wearing the words of the
+    # thing that was supposed to prevent it. Muted whole here, before any
+    # delivery decision: no speech, no notification, no phone audio, no
+    # window, and (the conversation is only appended at delivery) no bubble.
+    # The words are not lost — SILENT_NOTE carries them into the journal line
+    # below, which is where a wake nobody heard has always belonged.
+    if wake_reply_is_filler "$SPOKEN"; then
+        SILENT_NOTE="(filler suppressed) $(printf '%s\n' "$SPOKEN" | tr '\n' ' ')"
+        SPOKEN=""
+        # A display section is real content the wake chose to make, and it
+        # stands on its own; only the announcement of silence is muted here.
     fi
 
     # A wake that ends silently leaves no trace anywhere a later session
@@ -2270,8 +2357,24 @@ $TURN_CONTEXT"
     # a wake that chose to say nothing was still used.
     fire_memory_judge --wake "${WAKE_REASON:-}" "$RESPONSE" "$TRACE"
 
+    # ---- Delivery. Everything above is work and record-keeping; from here on
+    # the only question is whether the user hears about this wake at all.
+    #
+    # NOTHING below this line has touched the conversation file yet, and that
+    # is the fix for the thing he actually saw: a wake's reply used to be
+    # appended the moment it existed, before a single gate had run. The phone
+    # follows the conversation file (serve.py /watch), so every wake that was
+    # "suppressed" — quiet hours, user mid-interaction, nothing new to say,
+    # nothing sayable at all — still posted its monologue into his chat as a
+    # bubble he had not asked for and could not answer. Suppressed meant
+    # suppressed on the speakers only. It is now suppressed everywhere: a wake
+    # that is not delivered leaves the conversation exactly as it found it, and
+    # its words survive in the session journal (session_outcome, above), which
+    # is where a wake nobody heard has always belonged.
+    #
     # Nothing to say and nothing to show: the wake is complete, invisibly.
-    # Silence is never narrated — no speech, no notification, no window.
+    # Silence is never narrated — no speech, no notification, no window, and
+    # now no bubble either.
     if [ -z "$(printf '%s' "$SPOKEN$DISPLAY_PART" | tr -d '[:space:]')" ]; then
         return 0
     fi
@@ -2293,19 +2396,20 @@ $TURN_CONTEXT"
     # (wake_concurrent_turn_context) and chose to speak anyway — that choice
     # stands. The nothing-new check below still catches a genuine echo.
 
-    # Nothing new to say means saying NOTHING — the house rule, enforced in
-    # code rather than trusted to the prompt. A wake whose spoken reply
-    # merely rewords what recent turns and wakes already said completes
-    # silently, display and all.
-    # …unless this wake was ASKED to regroup. A reply that folds in what
-    # another session is saying is supposed to share content with it; running
-    # the overlap test on it would mute exactly the replies the regroup design
-    # exists to produce.
-    if [ -z "$REGROUP_CONTEXT" ] && \
-       [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN" "$RESPONSE"; then
-        session_outcome "(muted — said nothing the conversation had not already heard) $SPOKEN"
-        return 0
-    fi
+    # NO overlap mute. There was one here — a word-overlap test that decided,
+    # after the fact, that a wake's reply merely reworded something already
+    # said, and swallowed the whole thing. The user called it what it is: a
+    # gate I built on my own tongue, which left me blind to what was happening
+    # to my own speech. It is gone, permanently. If a wake has nothing to say
+    # it writes nothing WHILE WRITING; nothing downstream of the writing gets
+    # to make that decision for me.
+
+    # Delivered — and only now does it become part of the conversation. The
+    # marker and the reply go in together, immediately before the voice, so
+    # the phone's /watch sees the bubble and hears the clip in that order.
+    convo_append '[Autonomous wake — %s]\n' "$(date '+%Y-%m-%d %H:%M')"
+    convo_append_assistant "$RESPONSE"
+    compact_convo
 
     if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ]; then
         notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(echo "$SPOKEN" | head -c 140)" 2>/dev/null
@@ -2323,14 +2427,29 @@ $TURN_CONTEXT"
     fi
 }
 
-# Start background TTS streamer that reads from DEBUGLOG
-start_tts_streamer() {
-    # Kill any prior streamer before truncating the shared log. A streamer left
-    # running from an overlapping request keeps its read cursor at the old
-    # offset; truncating the log strands that cursor past EOF and the streamer
-    # then tails the file forever — hanging the crab stop that waits on it.
-    pkill -f "$LIB_DIR/tts-streamer" 2>/dev/null
+# Take this session's stream log and point the well-known name at it. Every
+# session writes its own file, so no truncation by another hand can ever again
+# strand a TTS streamer's read cursor past EOF. crab-debug tails the
+# well-known path by hardcoded name, so that stays — as a symlink to whatever
+# is talking now.
+claim_debuglog() {
     : > "$DEBUGLOG"
+    ln -sfn "$DEBUGLOG" "$DEBUGLOG_LATEST" 2>/dev/null || true
+    # A session's own log is small; the leftovers of dead ones still add up.
+    find "$(dirname "$DEBUGLOG")" -maxdepth 1 \
+        -name "$(basename "$STATE_PREFIX")-debug-*.log" -mmin +180 -delete 2>/dev/null
+}
+
+# Start background TTS streamer that reads from DEBUGLOG.
+#
+# No pkill here any more. Killing "any prior streamer" existed only because the
+# stream log was shared and about to be truncated; with a log per session it is
+# pure harm — it silences another turn's reply mid-sentence, which is the exact
+# complaint this path keeps generating.
+start_tts_streamer() {
+    claim_debuglog
+    _TTS_RECEIPT="${STATE_PREFIX}-speech-receipt-$$.txt"
+    rm -f "$_TTS_RECEIPT"
     DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
         DESKCRAB_PIPER_LENGTH_SCALE="${PIPER_LENGTH_SCALE:-}" \
         DESKCRAB_PIPER_SPEAKER="${PIPER_SPEAKER:-}" \
@@ -2339,8 +2458,53 @@ start_tts_streamer() {
         DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
         DESKCRAB_CLAUDE_FALLBACK="$CLAUDE_FALLBACK_CONFIG_DIR" \
-        "$LIB_DIR/tts-streamer" &
+        DESKCRAB_SPEECH_LOG="$SPEECH_LOG" \
+        DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
+        "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
     _TTS_STREAMER_PID=$!
+}
+
+# Wait for the streamer, but never forever. The old unbounded `wait` is how a
+# stranded streamer took the whole turn down with it.
+wait_tts_streamer() {
+    local LIMIT="${TTS_WAIT_TIMEOUT:-900}" WAITED=0
+    [ -n "${_TTS_STREAMER_PID:-}" ] || return 0
+    while kill -0 "$_TTS_STREAMER_PID" 2>/dev/null; do
+        if [ "$WAITED" -ge "$((LIMIT * 5))" ]; then
+            speech_log "streamer $_TTS_STREAMER_PID still tailing after ${LIMIT}s — killing it"
+            kill "$_TTS_STREAMER_PID" 2>/dev/null
+            sleep 1
+            kill -9 "$_TTS_STREAMER_PID" 2>/dev/null
+            return 1
+        fi
+        sleep 0.2
+        WAITED=$((WAITED + 1))
+    done
+    wait "$_TTS_STREAMER_PID" 2>/dev/null
+    return 0
+}
+
+# THE GUARANTEE: if there was something to say, it was said. The streamer
+# leaves a receipt of how many characters actually reached piper; when the
+# reply has spoken text and that receipt is empty or missing, the speech was
+# lost somewhere in the plumbing — a dead sound card, a missing piper, a
+# stranded tail — and this says so loudly and speaks the reply itself rather
+# than letting the turn end in silence nobody can explain.
+tts_verify_spoken() {
+    local SPOKEN="$1" CHARS=0 ERR=""
+    [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] || return 0
+    if [ -f "${_TTS_RECEIPT:-}" ]; then
+        CHARS=$(sed -n 's/^chars=//p' "$_TTS_RECEIPT" | head -1)
+        ERR=$(sed -n 's/^error=//p' "$_TTS_RECEIPT" | head -1)
+        rm -f "$_TTS_RECEIPT"
+    else
+        ERR="no receipt — the streamer died before it could leave one"
+    fi
+    [ "${CHARS:-0}" -gt 0 ] 2>/dev/null && return 0
+    speech_log "SPOKE NOTHING for a reply of ${#SPOKEN} chars${ERR:+ — $ERR}; speaking it now"
+    notify-send -t 6000 -h string:x-dunst-stack-tag:deskcrab \
+        "$NOTIFY_NAME" "speech path failed — replaying the reply" 2>/dev/null
+    speak_once "$SPOKEN"
 }
 
 # Extract final response text from DEBUGLOG
@@ -2358,9 +2522,19 @@ claude_generate() {
     SYSTEM_PROMPT="$(build_system_prompt)"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    # --include-partial-messages is what makes speech start when she starts
+    # TALKING rather than when she stops. A plain stream-json run only emits a
+    # completed `assistant` event once a whole text block has been generated,
+    # so a ten-second answer began playing ten seconds late — measurably, and
+    # that is the whole of the "time to first speech" regression. The partial
+    # events carry the same text as deltas; the TTS streamer speaks each
+    # sentence as it completes and the completed event is then a no-op for the
+    # part already said. Nothing downstream reads stream_event lines
+    # (extract-response, serve.py's progress tailer and crab-debug all skip
+    # unknown types), so this is additive.
     cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
         --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-        --verbose --output-format stream-json \
+        --verbose --output-format stream-json --include-partial-messages \
         --append-system-prompt "$SYSTEM_PROMPT" \
         "$TEXT" > "$DEBUGLOG" 2>&1
 
@@ -2374,7 +2548,7 @@ claude_generate() {
         cd "$PROJECT_DIR" && CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
             "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-            --verbose --output-format stream-json \
+            --verbose --output-format stream-json --include-partial-messages \
             --append-system-prompt "$SYSTEM_PROMPT" \
             "$TEXT" >> "$DEBUGLOG" 2>&1
     fi
@@ -2412,56 +2586,58 @@ display_part() {
     printf '%s\n' "$1" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}'
 }
 
-# Does this spoken text say anything the conversation has not already said?
-# Content words of the candidate are compared against each recent assistant
-# message (excluding the wake's own just-appended reply); heavy overlap means
-# the wake is re-announcing, not announcing. Lexical and fuzzy on purpose —
-# the concurrent-turn evidence in the prompt is the persuasion, this is the
-# mechanical backstop that catches a wake echoing anyway, whether it echoes
-# the turn beside it or an earlier session's progress report in fresh words.
-# Exit 0 = nothing new.
-wake_says_nothing_new() {  # <spoken-text> <full-appended-reply>
-    [ -s "$CONVOFILE" ] || return 1
-    command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "$CONVOFILE" "$1" "${2:-}" <<'PY'
-import re, sys
-convo = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-spoken = sys.argv[2]
-own = sys.argv[3].strip() if len(sys.argv) > 3 else ""
-STOP = set("""a an and are as at be been but by can could did do for from get got
-had has have he her him his how i if in is it just me more my no not now of on
-or our out she so some that the their them then there they this to up was we
-were what when will with would you your""".split())
-def words(t):
-    return set(re.findall(r"[a-z0-9]+", t.replace("'", "").lower())) - STOP
-# The bracketed stamp on a block header is optional: files written before
-# stamping (and every archive of one) must still split into blocks here.
-HDR = re.compile(r"^(User|Assistant)(?: \[[^\]]*\])?: ")
-blocks = re.split(r"^(?=(?:User|Assistant)(?: \[[^\]]*\])?: |\[)", convo, flags=re.M)
-msgs = []
-for b in blocks:
-    m = HDR.match(b)
-    if m and m.group(1) == "Assistant":
-        msgs.append(b[m.end():])
-# Drop the wake's own just-appended reply by CONTENT, not position: a turn
-# answering beside this wake may append its reply after ours, making the
-# wake's own words the second-to-last message — and a positional drop would
-# then compare the wake against itself, a guaranteed false "nothing new".
-for i in range(len(msgs) - 1, -1, -1):
-    if own and msgs[i].strip() == own:
-        del msgs[i]
-        break
-else:
-    msgs = msgs[:-1]  # not found verbatim (split quirk) — old positional drop
-mine = words(spoken)
-if len(mine) < 4:
-    sys.exit(1)  # too short to judge fairly — let it speak
-for m in msgs[-6:]:
-    if len(mine & words(m)) / len(mine) >= 0.6:
-        sys.exit(0)
-sys.exit(1)
-PY
+# Is this spoken reply nothing but an announcement that there is nothing to
+# say? Exit 0 = filler, and the wake output gate mutes it whole.
+#
+# A wake with nothing to say must emit no text at all — the prompt says so
+# plainly — but the polite no-op is a reflex no instruction has managed to
+# suppress: "Nothing to say.", "No message.", "Nothing to report." Every one
+# of those was carried the whole way to the speakers and read out loud to the
+# user, which is precisely the interruption the silence was for. Announcing
+# silence is the worst of both: the noise with none of the content.
+#
+# Deliberately NARROW, and the narrowness is the point. It matches only a
+# short reply whose ENTIRE content is that sentence — an optional lead-in
+# ("I have", "there's", "well"), a no-op core, an optional tail ("right now",
+# "today"), and punctuation. Anything carrying real content alongside it
+# ("Nothing to report on the build, but two tests fail") is not filler and is
+# never touched. Muting one real reply is a worse failure than voicing one
+# stray no-op, so every ambiguous case must fall through to speech.
+wake_reply_is_filler() {  # <spoken-text>
+    local T CORE TAIL PREV
+    # Normalise to bare lowercase words: markdown emphasis, bullets, quotes,
+    # brackets, dashes, emoji and end punctuation all become spaces, so the
+    # judgement is about the words and nothing else. "n/a" keeps its slash.
+    T="$(printf '%s' "$1" | tr '\n\t' '  ' | tr '[:upper:]' '[:lower:]' \
+        | sed -e 's|[^a-z0-9/ ]| |g' -e 's|  *| |g' -e 's|^ ||' -e 's| $||')"
+
+    # Empty is not this gate's business — an empty spoken reply is already
+    # silence and the caller has always handled it.
+    [ -z "$T" ] && return 1
+    # Filler is a sentence, never a paragraph. A long reply is content.
+    [ "$(printf '%s\n' "$T" | wc -w)" -gt 12 ] && return 1
+
+    # Strip conversational lead-ins so "well, I have nothing to add" is judged
+    # on the part that carries the meaning. Never strip a leading "no" — that
+    # is the load-bearing word of "no message".
+    PREV=""
+    while [ "$T" != "$PREV" ]; do
+        PREV="$T"
+        T="$(printf '%s' "$T" | sed -E \
+            -e 's/^(well|ok|okay|so|and|but|hm+|humph|honestly|right|yeah|just|really) //' \
+            -e 's/^(i have|i ve|ive|i had|i got|i have got|i can think of|there is|there s|theres|there are|it s|its|that s|thats|this is|to be honest) //')"
+    done
+
+    CORE='nothing( (else|new|much|more|further|major|important|notable|significant|pressing|urgent))?( (to|worth) (say|saying|report|reporting|add|adding|share|sharing|mention|mentioning|note|noting|flag|flagging|announce|announcing|update|updating|tell|telling|do))?'
+    CORE="$CORE|no (message|messages|update|updates|news|report|reports|comment|comments|reply|response|output|note|notes|change|changes|word)"
+    CORE="$CORE|none|silence|silent|quiet|all quiet|all clear|nada|zilch|n/a|nil"
+    CORE="$CORE|(staying|stay|keeping|keep|remaining|remain) (quiet|silent)"
+    CORE="$CORE|no need to (speak|talk|say anything|report)"
+    TAIL='( (here|now|right now|today|tonight|yet|for now|at the moment|at present|from me|this time|this wake|either|though))*'
+
+    printf '%s\n' "$T" | grep -Eq "^($CORE)$TAIL\$"
 }
+
 
 # Synthesize spoken text to an opus file instead of the speakers — the remote
 # client wants a blob it can play, not this machine's sound card.
@@ -2508,12 +2684,23 @@ _run_claude_remote_locked() {
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
 
+    local ERROR=""
     if [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
         convo_append_assistant "$RESPONSE"
         live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+    else
+        # He asked and nothing came back. Reported as the failure it is: the
+        # phone used to receive {"spoken":"", ...} with no error at all, which
+        # the client had no way to read except as an empty bubble — the
+        # "(no reply)" placeholder he spent a day looking at. Silence is a
+        # thing I choose when nobody asked; it is never an answer to a
+        # question, and it is never left to the client to describe.
+        live_turn_end phone "$TEXT" ""
+        session_outcome "(no reply — the model produced no text for: $(printf '%.80s' "$TEXT"))"
+        ERROR="no reply — that turn produced no text"
     fi
 
     local SPOKEN DISPLAY_MD AUDIO=""
@@ -2545,8 +2732,18 @@ _run_claude_remote_locked() {
     fire_promise_audit "$TEXT" "$RESPONSE"
     fire_memory_judge "$TEXT" "$RESPONSE" "$(wake_work_trace)"
 
-    python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3]}))' \
-        "$SPOKEN" "$DISPLAY_MD" "$AUDIO"
+    # Text came back but neither half of it is anything the phone can render —
+    # a reply that was nothing but a "---DISPLAY---" line, or nothing but the
+    # retired (quiet) marker. Same rule as an empty reply: say what happened.
+    # The client must never have to invent a word for a turn that arrived
+    # holding nothing.
+    if [ -z "$ERROR" ] && \
+       [ -z "$(printf '%s' "$SPOKEN$DISPLAY_MD" | tr -d '[:space:]')" ]; then
+        ERROR="no reply — that turn produced nothing sayable"
+    fi
+
+    python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3],"error":sys.argv[4]}))' \
+        "$SPOKEN" "$DISPLAY_MD" "$AUDIO" "$ERROR"
 }
 
 # Run claude, save response, handle display channel
@@ -2594,12 +2791,31 @@ run_claude_and_respond() {
             fi
         fi
 
-        wait "$_TTS_STREAMER_PID" 2>/dev/null
+        # Bounded, because an unbounded wait on a stranded streamer took the
+        # whole turn down with it — and then the guarantee: if there was
+        # something to say and nothing reached the speakers, say it now and
+        # write down that the streaming path failed.
+        wait_tts_streamer
+        tts_verify_spoken "$(spoken_part "$RESPONSE")"
 
         # Out of band, after the user has their answer: did I say I wanted
         # something and fail to write it down? If so this fires an event wake
         # that hands the sentence back to me. Costs nothing on the hot path.
         fire_promise_audit "$TEXT" "$RESPONSE"
+    else
+        # He asked out loud and nothing came back. This branch used to do
+        # NOTHING AT ALL — no speech, no notification, no journal line — so a
+        # turn that produced no text was indistinguishable from a turn that
+        # was never taken, and a whole afternoon of them went unexplained and
+        # unrecorded. Silence is only ever legitimate when nobody asked;
+        # answering a question with nothing is a failure and is reported as
+        # one. Not spoken: an error read aloud in my own voice is the thing
+        # that put "You've hit your session limit" in his ears as if I had
+        # said it. The notification and the journal carry it instead.
+        live_turn_end desk "$TEXT" ""
+        session_outcome "(no reply — the model produced no text for: $(printf '%.80s' "$TEXT"))"
+        notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+            "no reply — that turn produced no text (nothing was said)" 2>/dev/null
     fi
 
     # Also out of band: which of the injected memories genuinely shaped this
