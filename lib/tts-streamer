@@ -515,7 +515,16 @@ with open(LOG) as f:
                     for b in mb.values():
                         b.replay()
                 continue
-            last_size = size
+            # last_size is NOT set from the stat here. It counts bytes this
+            # loop has actually READ, and the stat counts bytes the file HAS —
+            # two different numbers whenever a write lands between readline()
+            # returning '' and the stat a few microseconds later. Assigning
+            # the stat then counted those bytes again when the next readline
+            # delivered them, so the counter drifted permanently above the
+            # file size and the very next EOF read as a truncation that never
+            # happened: 143,766 "was truncated under me" lines in
+            # /tmp/deskcrab-speech.log, every one of them false, each one
+            # sending the tail back to byte zero.
             # Backstop: if our launching crab process is gone we've been
             # reparented (ppid changes) — it can no longer append a terminator,
             # so stop instead of tailing the log forever.
@@ -542,7 +551,10 @@ with open(LOG) as f:
             # When no run ever answers, crab's closing terminator — a result
             # with no error — ends the stream instead.
             if d.get("is_error") and _is_limit(str(d.get("result") or "")):
-                blocks = {}
+                # No reset of `blocks` here: the retry's events arrive under a
+                # new message id and message_start rebinds it. See the note at
+                # the end of the completed-assistant branch for why touching
+                # this dict at all was the doubling.
                 continue
             break
 
@@ -593,7 +605,6 @@ with open(LOG) as f:
                 # QUOTES a limit phrase is not gagged.
                 held_refusal = "\n".join(b.get("text", "") for b in content
                                          if b.get("type") == "text")
-                blocks = {}
                 continue
             mid = d["message"].get("id")
             idx = 0
@@ -624,10 +635,26 @@ with open(LOG) as f:
                                          or cand.raw.startswith(text))
                                     and (b is None or len(cand.raw) > len(b.raw))):
                                 b = cand
-                        b = b or Block()
-                        b.close(text)
-                idx += 1
-            blocks = {}
+            # `blocks` is NOT reset here, and must never be. It is the very
+            # dict `messages[mid]` holds, and `messages` is the whole of the
+            # replay protection: a truncation re-read walks the same bytes
+            # back through add(), and only a block still reachable from
+            # `messages` recognises them instead of speaking them again.
+            #
+            # This branch used to end `blocks = {}` — written when `blocks`
+            # was the only state there was, before the per-message registry
+            # existed, and left standing when it arrived. Both ways of doing
+            # it are wrong for the same reason: rebinding ORPHANS the message's
+            # map (blocks opened afterwards are unreachable from `messages`),
+            # and clearing DESTROYS it (the replay cursors go with it). And a
+            # message reaches this branch more than once — the CLI emits a
+            # completed assistant event per content block, so the thinking
+            # block's event lands here BEFORE the reply's text block has even
+            # been opened. Measured: the whole finished reply spoken a second
+            # time on the next re-read.
+            #
+            # The map ends when its message ends: message_start rebinds
+            # `blocks` to the next message's own dict, and nothing else may.
 
 if VOICE.queued_chars == 0 and held_refusal.strip():
     # Every run refused and nothing was even queued to be voiced. The refusal

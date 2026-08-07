@@ -195,5 +195,59 @@ n=$(said_count "Canary test seventeen.")
     || fail "the completed event must find the streamed block by content" "said $n times"
 
 echo
+echo "a thinking block AND a re-read — the two cases together, which is the live one:"
+# Each half passed on its own and the reply still doubled, because the bug was
+# in the seam. The CLI emits a completed assistant event PER CONTENT BLOCK, so
+# the thinking block's event arrives before the reply's text block has even
+# been opened — and that branch used to end `blocks = {}`, orphaning the dict
+# `messages` holds. The re-read replays only what it can reach through
+# `messages`, so the reply's block was rebuilt from scratch with nothing
+# consumed and the whole finished sentence was spoken again.
+start_streamer thinkread
+TMS='{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_TR"}}}'
+TTH='{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}'
+TTHS='{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
+TATH='{"type":"assistant","message":{"model":"m","id":"msg_TR","content":[{"type":"thinking","thinking":"mm"}]}}'
+TTB='{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}'
+TD='{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Behind a thought. "}}}'
+j "$TMS"; j "$TTH"; j "$TTHS"; j "$TATH"; j "$TTB"; j "$TD"
+sleep 0.8                      # the sentence reaches the stub piper once
+printf '%s\n%s\n%s\n' "$TMS" "$TTH" "$TTHS" > "$LOG"   # claimed and rewritten
+sleep 0.6
+j "$TATH"; j "$TTB"; j "$TD"
+j '{"type":"assistant","message":{"model":"m","id":"msg_TR","content":[{"type":"text","text":"Behind a thought. "}]}}'
+j "$RESULT"
+reap_streamer
+N=$(said_count "Behind a thought.")
+[ "$N" = 1 ] && ok "streamed behind a thinking block and then re-read: spoken once" \
+    || fail "the message's block map must survive its own completed events" "spoken $N times"
+
+echo
+echo "a log that only GROWS is never read as a truncation:"
+# The false-truncation loop's other half: the byte counter was assigned the
+# STAT SIZE at EOF, which includes bytes written between readline() returning
+# '' and the stat a moment later — then counted them again when the next
+# readline delivered them. The counter drifted permanently above the file and
+# every EOF after that read as a shrink. 143,766 of those lines in
+# /tmp/deskcrab-speech.log, every one false. The counter now only ever counts
+# bytes actually read, so a growing file cannot produce one at all.
+start_streamer grow
+j "$MSTART"; j "$TBLOCK"
+for i in $(seq 40); do
+    printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Filler %d. "}}}\n' "$i" >> "$LOG"
+done
+sleep 1.2
+for i in $(seq 41 80); do
+    printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Filler %d. "}}}\n' "$i" >> "$LOG"
+done
+j "$RESULT"
+reap_streamer
+N=$(grep -c "truncated under me" "$SPEECHLOG" 2>/dev/null)
+[ "${N:-0}" = 0 ] && ok "no truncation is reported for a file that only ever grew" \
+    || fail "the read counter must not be set from the file's size" "$N truncation lines"
+N=$(said_count "Filler 1.")
+[ "$N" = 1 ] && ok "and nothing in it is spoken twice" || fail "a growing log must speak once" "spoken $N times"
+
+echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
