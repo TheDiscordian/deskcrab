@@ -297,11 +297,31 @@ async function deliver(res, replyEl) {
 // client-chosen id — on any error we reconnect with backoff (1s, 2s, 4s …
 // capped at 30s) to /turn/<id>?from=<n> and pick up exactly where we left off.
 // A dropped network is a "reconnecting…" status, never a dead error page.
+// The server writes a `: ping` comment frame every ~15 s whenever the turn has
+// produced nothing, so bytes arriving is the liveness signal — and their
+// absence for this long means a socket that is open only in this end's
+// imagination (hotspot gone, laptop asleep), which TCP alone will sit on for
+// many minutes. Same shape as the 45 s guard on the /watch poll.
+const STREAM_IDLE_MS = 45000;
+
 async function streamTurn(text, turn) {
   const tid = randomHex(32);
   let seen = 0, delay = 1000;
   const deadline = Date.now() + 15 * 60 * 1000;
   for (;;) {
+    // Checked HERE as well as in the catch. It used to be consulted only
+    // after a throw, so a fetch that never threw and never delivered another
+    // byte held `busy` forever: recording refused, the reset redraw refused,
+    // and nothing short of a manual reload got the page back. There were 74
+    // hand reloads in 28 hours.
+    if (Date.now() > deadline)
+      return { error: "gave up reconnecting after 15 minutes" };
+    const ctl = new AbortController();
+    let idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
+    const alive = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
+    };
     try {
       // While nothing has arrived we cannot know whether the POST ever landed,
       // so retry the POST itself — the server treats a repeated id as "attach",
@@ -312,9 +332,10 @@ async function streamTurn(text, turn) {
             method: "POST", credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text, turn: tid }),
+            signal: ctl.signal,
           })
         : await fetch("/turn/" + tid + "?from=" + seen,
-                      { credentials: "same-origin" });
+                      { credentials: "same-origin", signal: ctl.signal });
       if (r.status === 404 && seen > 0)
         return { error: "the server restarted mid-turn; the reply was lost" };
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -323,6 +344,7 @@ async function streamTurn(text, turn) {
       while (true) {
         const { value, done: eof } = await reader.read();
         if (eof) break;
+        alive();
         buf += dec.decode(value, { stream: true });
         let cut;
         while ((cut = buf.indexOf("\n\n")) !== -1) {
@@ -339,11 +361,14 @@ async function streamTurn(text, turn) {
       // turn. Fall through to reconnect.
       throw new Error("stream cut");
     } catch (e) {
-      if (Date.now() > deadline)
-        return { error: "gave up reconnecting after 15 minutes" };
+      // An abort lands here like any other cut: the turn is still running on
+      // the laptop, buffered under its id, and the reconnect below picks it
+      // up from exactly where this socket stopped.
       setStatus("reconnecting…", "busy");
       await new Promise(res => setTimeout(res, delay));
       delay = Math.min(delay * 2, 30000);
+    } finally {
+      clearTimeout(idle);
     }
   }
 }
@@ -692,6 +717,10 @@ let wakeSeen = "";
 let pendingUser = null;
 let pendingReply = null;
 
+// A /watch reset that arrived while a turn was in flight. The redraw would
+// wipe the exchange being spoken, so it waits here until `busy` clears.
+let needReseed = false;
+
 function renderRemote(turns) {
   for (let i = 0; i < turns.length; i++) {
     // Same rule as the seed: an empty block is not a bubble. A wake that was
@@ -738,6 +767,10 @@ async function startWatch() {
   let retry = 1000;
   for (;;) {
     try {
+      // A rewrite that arrived while a turn was in flight: redraw now that
+      // the turn has landed. This is the only place it can happen, because
+      // it is the only loop that runs after `busy` clears.
+      if (needReseed && !busy) { await reseed(); needReseed = false; }
       const q = "/watch?wait=1&wakeseen=" + encodeURIComponent(wakeSeen)
               + (cursor === null ? "" : "&since=" + cursor)
               + "&gen=" + encodeURIComponent(gen);
@@ -767,13 +800,24 @@ async function startWatch() {
       if (data.reset) {
         // The conversation file was rewritten under the cursor (compaction,
         // archival) — a slice against it would be the wrong turns, so redraw
-        // from scratch instead. Mid-turn the redraw would wipe the exchange
-        // in flight; the cursor is left alone and the next poll after the
-        // turn lands here again.
-        if (!busy) await reseed();
-        // Still busy: the server answers a stale gen instantly, so pace the
-        // re-ask or this loop spins for the whole turn.
-        else await new Promise(r => setTimeout(r, 2000));
+        // from scratch instead.
+        //
+        // Mid-turn the redraw would wipe the exchange in flight, so it is
+        // DEFERRED, not skipped: the new incarnation is adopted right here so
+        // the poll goes back to waiting (the cursor and gen used to sit below
+        // the `continue`, so the next poll re-asked with the same stale gen,
+        // the server answered it instantly, and the loop span at 2 s for the
+        // whole turn and drew nothing — twelve identical polls in 23 seconds
+        // in the live log). Nothing is lost by consuming the cursor here,
+        // because the queued reseed redraws the whole conversation.
+        //
+        // The trigger is structural, not rare: compact_convo runs inside
+        // every phone turn, and compaction is exactly what changes the gen.
+        cursor = data.n;
+        if (data.gen !== undefined) gen = data.gen;
+        if (busy) { needReseed = true; continue; }
+        await reseed();
+        needReseed = false;
         continue;
       }
       cursor = data.n;
