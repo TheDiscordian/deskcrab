@@ -31,6 +31,7 @@ import os
 import mimetypes
 import queue
 import re
+import signal
 import subprocess
 import ssl
 import sys
@@ -83,6 +84,51 @@ def turn_in_flight():
     finally:
         with _IN_FLIGHT_LOCK:
             _IN_FLIGHT[0] -= 1
+
+
+# Graceful restart: SIGTERM (what `systemctl restart` sends) means "finish the
+# sentence, then go", not "drop whoever is on the wire". While draining, no new
+# turn may start — the client re-POSTs the same turn id with backoff, so a
+# refused turn lands on the fresh server instead — but attaching to a turn
+# already in flight keeps working, because that reply is what the drain exists
+# to protect. Once the last turn finishes (and its tail has had a moment to
+# flush to attached sockets) the listener stops and the process exits. The
+# unit must pair this with KillMode=mixed, or systemd SIGTERMs the whole
+# cgroup and the in-flight claude dies regardless of anything done here.
+_DRAINING = threading.Event()
+_HTTPD = [None]
+
+# Seconds to keep serving after the last turn finishes, so a client still
+# tailing the buffer receives the done event before the socket dies with us.
+DRAIN_LINGER = int(os.environ.get("DESKCRAB_SERVE_DRAIN_LINGER", "5"))
+
+
+def _drain_worker():
+    started = time.time()
+    # A turn's subprocesses are already capped at TURN_TIMEOUT, so the drain
+    # can only exceed it if something is wedged — at which point the reply is
+    # lost either way and exiting is the right move.
+    deadline = started + TURN_TIMEOUT + 30
+    waited = False
+    while turns_in_flight() and time.time() < deadline:
+        waited = True
+        time.sleep(0.5)
+    if turns_in_flight():
+        print(f"drain: gave up on {turns_in_flight()} wedged turn(s) after "
+              f"{int(time.time() - started)}s", flush=True)
+    elif waited:
+        time.sleep(DRAIN_LINGER)
+    if _HTTPD[0] is not None:
+        _HTTPD[0].shutdown()
+
+
+def _on_sigterm(signum, frame):
+    if _DRAINING.is_set():
+        return
+    _DRAINING.set()
+    print(f"SIGTERM: draining ({turns_in_flight()} turn(s) in flight)",
+          flush=True)
+    threading.Thread(target=_drain_worker, daemon=True).start()
 
 
 # --- per-turn event buffers -------------------------------------------------
@@ -725,7 +771,9 @@ class Handler(BaseHTTPRequestHandler):
             # `busy` is deliberately unauthenticated: it carries no content,
             # only whether a turn is in flight, and a restarter needs to be
             # able to ask without holding the secret.
-            return self._json(200, {"ok": True, "name": NAME, "busy": turns_in_flight()})
+            return self._json(200, {"ok": True, "name": NAME,
+                                    "busy": turns_in_flight(),
+                                    "draining": _DRAINING.is_set()})
 
         if not self._authed(query_key):
             # No hint about what is running here for an unauthenticated caller.
@@ -916,7 +964,12 @@ class Handler(BaseHTTPRequestHandler):
         # turn carries on, and the client reconnects to /turn/<id>?from=<n> for
         # the rest. The id comes from the client so a retried POST is
         # idempotent: same id -> attach to the running turn, never a second run.
-        turn, created = get_turn(tid, create=True)
+        # While draining, a turn the imminent exit would kill must not start;
+        # the client retries this POST (same id, backoff) against the fresh
+        # server. An id already in flight attaches as ever — see above.
+        turn, created = get_turn(tid, create=not _DRAINING.is_set())
+        if turn is None:
+            return self._json(503, {"error": "restarting — retry shortly"})
         if created:
             turn.emit("transcript", {"text": text})
             threading.Thread(target=run_turn, args=(turn, text),
@@ -974,6 +1027,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
     httpd.daemon_threads = True
+    _HTTPD[0] = httpd
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     scheme = "http"
     if CERT and KEY:
@@ -993,6 +1048,9 @@ def main():
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
+        return
+    # serve_forever only returns when the drain worker called shutdown().
+    print("drained, exiting", flush=True)
 
 
 if __name__ == "__main__":

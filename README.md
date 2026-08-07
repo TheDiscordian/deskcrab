@@ -239,6 +239,8 @@ systemctl --user enable --now deskcrab-serve.service
 
 `Restart=always` covers a crash; `WantedBy=default.target` covers a reboot. The unit sets `PATH` to include `~/.local/bin`, since a user unit does not inherit a login shell's PATH and the server shells out to `claude`, `ffmpeg`, `whisper-cli`, and `piper`. Logs go to `/tmp/crab-serve.log` and to `journalctl --user -u deskcrab-serve`.
 
+Restarts are graceful: on SIGTERM the server stops accepting new turns (the phone client retries them against the fresh server automatically) but finishes any reply already in flight before exiting, so a `systemctl --user restart deskcrab-serve` never cuts the assistant off mid-sentence. This relies on the unit's `KillMode=mixed` and `TimeoutStopSec` — keep them if you edit the unit. `/health` reports `draining: true` while a shutdown is waiting on a turn.
+
 ## Display channel
 
 When Crab's response includes visual content (code, tables, images), it uses a display channel. The response includes a `---DISPLAY---` delimiter, and everything after it is rendered in a floating [render-md](https://github.com/TheDiscordian/render-md) window.
