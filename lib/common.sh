@@ -1563,9 +1563,7 @@ Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/a
     # Durable wants: shelf location, titles, and wake mechanics — data only.
     # What wants ARE and how to keep them is explained exactly once, in
     # CUSTOM_PROMPT (the wake prompt carries the dated-progress protocol for
-    # the sessions that actually do the maintaining). This block must never
-    # grow an explanation of its own, or the prompt ends up with two separate
-    # sections explaining wants.
+    # the sessions that actually do the maintaining).
     local WANTS_CONTEXT=""
     if [ -n "$WANTS_FILE" ]; then
         # Titles only — not the bodies. A shelf whose whole contents sit in
@@ -1578,7 +1576,7 @@ Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/a
             [ -n "$WANTS_BODY" ] || WANTS_BODY="(titles unreadable — open the file)"
         fi
         WANTS_CONTEXT="
-Your durable wants shelf is at $WANTS_FILE. Only the TITLES are listed below; each want's thinking, progress, and history live in the file and in wants/<slug>.md — open them when you mean to work on one, never out of duty.
+Your durable wants shelf is at $WANTS_FILE. Titles below; each want's thinking, progress, and history live in the file and in wants/<slug>.md — open them when you mean to work on one.
 $WANTS_BODY
 You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when>' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"'). A background timer may also wake you at random intervals."
     fi
