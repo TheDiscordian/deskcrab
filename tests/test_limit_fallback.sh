@@ -137,69 +137,81 @@ out="$(DESKCRAB_DEBUGLOG="$T/refonly.log" "$REPO_DIR/lib/extract-response")"
 case "$out" in *"out of usage credits"*) ok "an error-only stream still reports itself" ;;
     *) fail "error-only stream must keep the refusal text" "$out" ;; esac
 
-echo "tts-streamer — rides through one refusal when a retry is coming:"
+echo "tts-streamer — a refusal is held, and voiced only if nothing answers:"
+# The streamer is told nothing about the chain: it cannot know how many
+# accounts this turn will really try (dry ones are skipped), and counting
+# rides against the config muted the FINAL refusal into unexplained silence
+# whenever the chain ran short. So every refusal is held off the speakers,
+# every limit-error result is ridden through, and the terminator decides:
+# genuine speech by then drops the held refusal, silence speaks it.
 mkdir -p "$T/bin"
 printf '#!/bin/bash\ncat >> "%s/spoken"\n' "$T" > "$T/bin/piper-tts"
 printf '#!/bin/bash\ncat > /dev/null\n' > "$T/bin/aplay"
 chmod +x "$T/bin/piper-tts" "$T/bin/aplay"
 LIMIT_RE_DEFAULT="$(run 'printf %s "$CLAUDE_LIMIT_RE"')"
+tts() { # <log> — run the streamer over a prewritten stream log
+    PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$1" DESKCRAB_PIPER_VOICE=/x \
+        DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" \
+        timeout 20 "$REPO_DIR/lib/tts-streamer"
+}
 
 rm -f "$T/spoken"
 { refusal_stream; reply_stream "HELLO FROM FALLBACK"; printf '{"type":"result"}\n'; } > "$T/tts.log"
-PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts.log" DESKCRAB_PIPER_VOICE=/x \
-    DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" DESKCRAB_CLAUDE_FALLBACK="$T/fb" \
-    timeout 20 "$REPO_DIR/lib/tts-streamer"
+tts "$T/tts.log"
 case "$(cat "$T/spoken" 2>/dev/null)" in
     *"HELLO FROM FALLBACK"*) ok "the retried reply is spoken" ;;
     *) fail "the retry's words must reach the voice" "$(cat "$T/spoken" 2>/dev/null)" ;; esac
 case "$(cat "$T/spoken" 2>/dev/null)" in
-    *"out of usage credits"*) fail "the refusal must not be voiced when a retry is coming" "$(cat "$T/spoken")" ;;
+    *"out of usage credits"*) fail "the refusal must not be voiced when a retry answered" "$(cat "$T/spoken")" ;;
     *) ok "the refusal stays unspoken" ;; esac
 
+# The case the ride-counting design got wrong: ONE refusal and no retry —
+# because the rest of the chain was known dry and skipped — must still be
+# audible. Counted against a configured fallback this was muted into silence.
 rm -f "$T/spoken"
-PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts.log" DESKCRAB_PIPER_VOICE=/x \
-    timeout 20 "$REPO_DIR/lib/tts-streamer"
-case "$(cat "$T/spoken" 2>/dev/null)" in
-    *"out of usage credits"*) ok "no fallback: the refusal keeps its voice" ;;
-    *) fail "without a fallback the refusal must still be spoken" "$(cat "$T/spoken" 2>/dev/null)" ;; esac
-case "$(cat "$T/spoken" 2>/dev/null)" in
-    *"HELLO FROM FALLBACK"*) fail "no fallback: must stop at the first result" "$(cat "$T/spoken")" ;;
-    *) ok "no fallback: the tail stops at the error result" ;; esac
+{ refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts1.log"
+tts "$T/tts1.log"
+n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "a lone refusal is spoken once, chain or no chain" \
+    || fail "a lone refusal must not be silence" "spoken ${n:-0} times"
 
 rm -f "$T/spoken"
 { refusal_stream; refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts2.log"
-PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts2.log" DESKCRAB_PIPER_VOICE=/x \
-    DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" DESKCRAB_CLAUDE_FALLBACK="$T/fb" \
-    timeout 20 "$REPO_DIR/lib/tts-streamer"
+tts "$T/tts2.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "both logins refusing is spoken once, not twice or never" \
     || fail "a second refusal is real news, exactly once" "spoken $n times"
 
-# A third subscription buys a third ride: two refusals in a row are both
-# ridden through when two accounts are still to be tried, and the reply that
-# finally arrives is spoken.
+# However long the chain runs, refusals mid-file are never voiced and the
+# reply that finally arrives is.
 rm -f "$T/spoken"
 { refusal_stream; refusal_stream; reply_stream "HELLO FROM THE THIRD"; printf '{"type":"result"}\n'; } > "$T/tts3.log"
-PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts3.log" DESKCRAB_PIPER_VOICE=/x \
-    DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" DESKCRAB_CLAUDE_FALLBACK="$T/fb $T/fb2" \
-    timeout 20 "$REPO_DIR/lib/tts-streamer"
+tts "$T/tts3.log"
 case "$(cat "$T/spoken" 2>/dev/null)" in
     *"HELLO FROM THE THIRD"*) ok "two refusals ridden through, the third account is heard" ;;
     *) fail "a two-account chain must reach the reply" "$(cat "$T/spoken" 2>/dev/null)" ;; esac
 case "$(cat "$T/spoken" 2>/dev/null)" in
-    *"out of usage credits"*) fail "neither refusal may be voiced with a retry still coming" "$(cat "$T/spoken")" ;;
+    *"out of usage credits"*) fail "no refusal may be voiced once an account answered" "$(cat "$T/spoken")" ;;
     *) ok "neither refusal is voiced mid-chain" ;; esac
 
-# …and the ride is not infinite: with every account spent, the last refusal is
-# the news, spoken once.
+# …and a spent chain still ends audibly: the last refusal is the news, once.
 rm -f "$T/spoken"
 { refusal_stream; refusal_stream; refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts4.log"
-PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts4.log" DESKCRAB_PIPER_VOICE=/x \
-    DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" DESKCRAB_CLAUDE_FALLBACK="$T/fb $T/fb2" \
-    timeout 20 "$REPO_DIR/lib/tts-streamer"
+tts "$T/tts4.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "a spent chain speaks its last refusal once" \
     || fail "the end of the chain must be audible, exactly once" "spoken $n times"
+
+# Her OWN words are never pattern-matched against the limit signature: a
+# genuine reply that QUOTES a limit phrase is not a refusal, and gagging it
+# mid-sentence is exactly the tongue-cutting the speech path forbids. Only
+# the CLI's synthetic marker names a refusal.
+rm -f "$T/spoken"
+{ reply_stream "He asked why. You are out of usage credits, the CLI said, and I told him so."; printf '{"type":"result"}\n'; } > "$T/tts5.log"
+tts "$T/tts5.log"
+case "$(cat "$T/spoken" 2>/dev/null)" in
+    *"I told him so"*) ok "a reply quoting the limit phrase is spoken in full" ;;
+    *) fail "quoting an outage must not be gagged as one" "$(cat "$T/spoken" 2>/dev/null)" ;; esac
 
 echo "wake_claude_run_chain — the wake walks the logins in order:"
 # A stream-mode stub: every login refuses except the one named in STUB_OK_DIR

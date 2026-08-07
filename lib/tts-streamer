@@ -50,16 +50,18 @@ TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
 
 # Usage-limit fallback (CLAUDE_FALLBACK_CONFIG_DIR in the config). When a login
 # refuses over a limit, crab retries the turn on the next account by APPENDING
-# another run to this same log. Two consequences here: the refusal's error
+# another run to this same log. Two consequences here: a refusal's error
 # result must not stop the tail (or the retry's words are extracted and
-# displayed but never spoken), and the refusal itself must not be voiced when a
-# retry is about to answer properly. Both apply exactly as many times as there
-# are accounts left to try — the env var carries the whole chain, so a third
-# subscription buys a third ride. The LAST refusal is spoken and stops the
-# stream, because at that point no further retry is coming and the silence
-# would be unexplained.
+# displayed but never spoken), and a refusal is never voiced on arrival — it
+# is HELD, and spoken at the end of the tail only if no run ever produced
+# genuine speech, so the LAST refusal still explains an otherwise silent turn.
+# Counting rides against the configured chain length was wrong twice over:
+# accounts known dry are skipped, so the config overstates the chain and the
+# final refusal was muted into unexplained silence; and a genuine reply that
+# merely QUOTED a limit phrase matched the same regex and was gagged
+# mid-sentence. A refusal is recognised by the CLI's synthetic marker on the
+# event, never by pattern-matching her actual words.
 LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
-FALLBACKS = os.environ.get("DESKCRAB_CLAUDE_FALLBACK", "").replace(":", " ").split()
 
 SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
 RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
@@ -134,6 +136,9 @@ class Voice(threading.Thread):
         self.aplay = None
         self.spoke_chars = 0
         self.spoke_lines = 0
+        self.queued_chars = 0   # enqueued for speech — counted on the caller's
+                                # thread, so "was anything said this turn?" can
+                                # be answered without racing the voice thread
         self.error = ""
         self._lockfd = None
         self._said = []
@@ -228,6 +233,7 @@ class Voice(threading.Thread):
     def say(self, text):
         text = " ".join(text.split())
         if text:
+            self.queued_chars += len(text)
             self.q.put(text)
 
     def finish(self):
@@ -391,7 +397,7 @@ class Block:
         completed-half dedup (closed / spoken_texts) cannot reach this half."""
         self.fed = 0
 
-    def add(self, delta, retry_coming):
+    def add(self, delta):
         if self.fed < len(self.raw):
             overlap = min(len(delta), len(self.raw) - self.fed)
             if delta[:overlap] == self.raw[self.fed:self.fed + overlap]:
@@ -413,11 +419,6 @@ class Block:
         if sep:
             self.pending = head
             self.done = True
-        # A limit refusal arrives shaped like a reply. With a retry still to
-        # come the user should hear the answer, not the outage — so hold this
-        # block back entirely rather than speaking half of it.
-        if retry_coming and _is_limit(self.raw):
-            return
         chunks, self.pending = _sentences(self.pending)
         for c in chunks:
             self.consumed += len(c)
@@ -427,12 +428,10 @@ class Block:
         if self.done:
             self.consumed = len(self.raw)
 
-    def close(self, full_text, retry_coming):
+    def close(self, full_text):
         """The completed assistant event for this block. Speak whatever the
         streaming half did not already say — which is everything, when the CLI
         was run without --include-partial-messages."""
-        if retry_coming and _is_limit(full_text):
-            return
         rest = full_text[self.consumed:] if len(full_text) >= self.consumed else full_text
         self.consumed = len(full_text)
         if self.done:
@@ -468,8 +467,9 @@ closed = set()       # (message id, block idx) already spoken to completion —
 spoken_texts = set() # whitespace-normalized text of every block spoken this
                      # turn — catches the re-emit that arrives under a NEW
                      # message id, which the id-keyed set cannot
-rides_left = len(FALLBACKS)   # refusals still worth riding through: one per
-                              # account the turn can still be retried on
+held_refusal = ""    # the newest limit refusal, held off the speakers: it is
+                     # voiced only at the end of the tail, and only if no run
+                     # produced genuine speech by then
 last_size = 0
 
 with open(LOG) as f:
@@ -520,13 +520,12 @@ with open(LOG) as f:
         kind = d.get("type")
 
         if kind == "result":
-            # A limit refusal with a retry still to come: ride through it and
-            # keep tailing — the next account's events land in this same file.
-            # One ride is spent per refusal, so a chain of accounts is followed
-            # to its end and the refusal that ends it is still spoken.
-            if (rides_left > 0 and d.get("is_error")
-                    and _is_limit(str(d.get("result") or ""))):
-                rides_left -= 1
+            # A limit refusal never ends the tail: crab may append the next
+            # account's run to this same file, and how long the chain really
+            # is cannot be known from here (accounts known dry are skipped).
+            # When no run ever answers, crab's closing terminator — a result
+            # with no error — ends the stream instead.
+            if d.get("is_error") and _is_limit(str(d.get("result") or "")):
                 blocks = {}
                 continue
             break
@@ -558,7 +557,7 @@ with open(LOG) as f:
                     b = blocks.get(ev.get("index"))
                     if b is None:
                         b = blocks[ev.get("index")] = Block()
-                    b.add(delta.get("text") or "", rides_left > 0)
+                    b.add(delta.get("text") or "")
             continue
 
         # --- completed half: authoritative, and the ONLY half when the run
@@ -567,9 +566,17 @@ with open(LOG) as f:
             synthetic = (d.get("is_api_error_message")
                          or d["message"].get("model") == "<synthetic>")
             content = d["message"].get("content", [])
-            if (rides_left > 0 and synthetic
+            if (synthetic
                     and any(_is_limit(b.get("text", "")) for b in content
                             if b.get("type") == "text")):
+                # A limit refusal, shaped like a reply. Another account may
+                # still answer in this same file, so hold it off the speakers
+                # rather than voicing it; the newest refusal takes the slot.
+                # Only the CLI's synthetic marker names a refusal — her own
+                # words are never pattern-matched, so a genuine reply that
+                # QUOTES a limit phrase is not gagged.
+                held_refusal = "\n".join(b.get("text", "") for b in content
+                                         if b.get("type") == "text")
                 blocks = {}
                 continue
             mid = d["message"].get("id")
@@ -585,9 +592,19 @@ with open(LOG) as f:
                         if fingerprint:
                             spoken_texts.add(fingerprint)
                         b = blocks.get(idx) or Block()
-                        b.close(block.get("text", ""), rides_left > 0)
+                        b.close(block.get("text", ""))
                 idx += 1
             blocks = {}
+
+if VOICE.queued_chars == 0 and held_refusal.strip():
+    # Every run refused and nothing was even queued to be voiced. Silence
+    # here would be unexplained — the last refusal is the turn's whole
+    # answer, so say it. (queued, not spoke: the voice thread may still be
+    # synthesizing a genuine reply when the tail ends, and a refusal must
+    # never chase a real answer out of the speakers.)
+    _spoken = for_speech(held_refusal)
+    if _spoken:
+        VOICE.say(_spoken)
 
 VOICE.finish()
 write_receipt()

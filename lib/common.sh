@@ -2600,7 +2600,6 @@ start_tts_streamer() {
         DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
         DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
-        DESKCRAB_CLAUDE_FALLBACK="$(claude_accounts | tail -n +2 | tr '\n' ' ')" \
         DESKCRAB_SPEECH_LOG="$SPEECH_LOG" \
         DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
