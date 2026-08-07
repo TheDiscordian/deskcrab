@@ -69,6 +69,12 @@ Hard rules:
   invent adjacent work to have something to show."
 
 cd "$WORKDIR" 2>/dev/null || cd "$HOME"
+# Deliberately NOT prefixed with $CLAUDE_NO_AUTO_MEMORY, unlike every other
+# claude run in this project (see the comment on it in lib/common.sh). That
+# switch exists to keep the WORKDIR's auto-memory out of HER prompt, because
+# it is the user's coding agent's memory and she is not that agent. A builder
+# is: it is a headless coding session working inside his project, and the
+# project's own memory index is precisely the rules it should arrive knowing.
 # ATT_OFF marks where the current attempt's output begins: every judgement
 # below reads only the final attempt's slice of the log, so a first-attempt
 # refusal kept as history can never masquerade as the retry's outcome.

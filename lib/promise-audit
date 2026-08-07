@@ -84,8 +84,12 @@ $(grep -E '^- \*\*' "$WANTS_FILE")
 === THE EXCHANGE ===
 $EXCHANGE"
 
+# env "$CLAUDE_NO_AUTO_MEMORY": PROJECT_DIR's auto-memory belongs to the user's
+# own coding agent, and a one-question classifier has no use for it at all.
+# See the comment on CLAUDE_NO_AUTO_MEMORY in lib/common.sh.
 VERDICT="$(cd "$PROJECT_DIR" 2>/dev/null || cd /; printf '%s' "$PROMPT" \
-    | timeout 120 "$CLAUDE_BIN" -p --model "$AUDIT_MODEL" --dangerously-skip-permissions 2>/dev/null \
+    | timeout 120 env "$CLAUDE_NO_AUTO_MEMORY" \
+      "$CLAUDE_BIN" -p --model "$AUDIT_MODEL" --dangerously-skip-permissions 2>/dev/null \
     | tr -d '\r' | grep -m1 '^UNSAVED:')"
 
 if [ -z "$VERDICT" ]; then

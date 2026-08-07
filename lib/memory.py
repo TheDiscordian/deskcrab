@@ -667,9 +667,16 @@ def claude_bin():
 
 
 def run_claude(prompt, model, timeout=600):
+    # CLAUDE_CODE_DISABLE_AUTO_MEMORY: the ingest distiller and the turn judge
+    # inherit whatever directory their caller was in, and `claude` reads that
+    # directory's auto-memory index into the system prompt. That index is the
+    # USER's coding agent's memory; this store is hers, and the two must not
+    # seed each other. Same knob and same reasoning as CLAUDE_NO_AUTO_MEMORY in
+    # lib/common.sh, applied here because nothing shell-side wraps these runs.
+    env = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
     proc = subprocess.run(
         [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"],
-        input=prompt, capture_output=True, text=True, timeout=timeout)
+        input=prompt, capture_output=True, text=True, timeout=timeout, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}")
     return proc.stdout.strip()

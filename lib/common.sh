@@ -39,6 +39,28 @@ CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # retry site and by job_output_blocked, so the two judgements can never drift.
 CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage}"
 PROJECT_DIR="${PROJECT_DIR:-$HOME}"
+# The auto-memory of the directory she is started in is not HER memory.
+# `claude` reads $HOME/.claude/projects/<cwd-slug>/memory/MEMORY.md straight
+# into the system prompt of any session started in that directory. PROJECT_DIR
+# is the user's own coding project, so every turn and every wake arrived
+# carrying his CODING agent's memory — a topic-hub index addressed to a
+# different assistant, telling her to read hub files before working in their
+# area. Her long-term memory is the vector store (`crab memory`), her rules are
+# the persona and the conduct file, and the two have nothing to do with each
+# other. Verified against claude 2.1.x: the gate reads this environment
+# variable FIRST, ahead of the `autoMemoryEnabled` setting, so this is a
+# per-invocation answer and not a machine-wide one.
+#
+# Prefixed onto the invocations that are HER — turn, wake, conversation
+# compaction, promise audit, memory ingest/judge — and deliberately NOT
+# exported and NOT written into any settings.json:
+#   * a key in ~/.claude/settings.json or $PROJECT_DIR/.claude/settings.json
+#     would switch auto-memory off for the USER's own coding sessions in the
+#     same directory, which is where that memory belongs;
+#   * an export here would reach lib/job-runner (it sources this file), and a
+#     detached builder working in a project is exactly the session that SHOULD
+#     have the project's rules.
+CLAUDE_NO_AUTO_MEMORY="CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/.local/share/deskcrab/archive}"
 CONVO_TIMEOUT="${CONVO_TIMEOUT:-300}"
 # NOTIFY_NAME inherits an explicitly set ASSISTANT_NAME so one variable renames
@@ -1388,7 +1410,8 @@ $(cat "$OLDFILE")"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     local SUMRC=0
-    NEWSUM=$(cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+    NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
+        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
         --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
     # In plain -p mode a limit refusal arrives as ordinary stdout, so gate on
     # the exit code — an error line must never be written over the summary of
@@ -1396,7 +1419,8 @@ $(cat "$OLDFILE")"
     if [ "$SUMRC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
             && printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE"; then
         SUMRC=0
-        NEWSUM=$(cd "$PROJECT_DIR" && CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
+        NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
+            CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
             "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
     fi
@@ -2116,6 +2140,7 @@ _wake_claude_run() {
     (
         cd "$PROJECT_DIR" || exit 1
         [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        export "${CLAUDE_NO_AUTO_MEMORY?}"
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
             --verbose --output-format stream-json \
@@ -2519,7 +2544,8 @@ claude_generate() {
     # part already said. Nothing downstream reads stream_event lines
     # (extract-response, serve.py's progress tailer and crab-debug all skip
     # unknown types), so this is additive.
-    cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+    cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
+        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
         --model "$CLAUDE_MODEL" --effort "$EFFORT" \
         --verbose --output-format stream-json --include-partial-messages \
         --append-system-prompt "$SYSTEM_PROMPT" \
@@ -2532,7 +2558,8 @@ claude_generate() {
     # the refusal (it knows the retry is coming) and extract-response drops
     # the refusal whenever a genuine reply follows it in the same log.
     if claude_limit_fallback_due; then
-        cd "$PROJECT_DIR" && CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
+        cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
+            CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
             "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CLAUDE_MODEL" --effort "$EFFORT" \
             --verbose --output-format stream-json --include-partial-messages \
