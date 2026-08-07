@@ -47,7 +47,10 @@ cat > "$T/bin/aplay" <<'EOF'
 #!/usr/bin/env bash
 cat > /dev/null
 EOF
-chmod +x "$T/bin/piper-tts" "$T/bin/aplay"
+# notify-send too: tts_verify_spoken announces a failed speech path, and an
+# unstubbed notify-send pops that announcement on the LIVE desktop.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/notify-send"
+chmod +x "$T/bin/piper-tts" "$T/bin/aplay" "$T/bin/notify-send"
 export PATH="$T/bin:$PATH"
 
 start_streamer() { # <name>

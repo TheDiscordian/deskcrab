@@ -42,7 +42,11 @@ cat > "$T/bin/aplay" <<'EOF'
 cat > /dev/null
 printf '%s\tPLAYED\n' "$(date +%s.%N)" >> "$TRACE"
 EOF
-chmod +x "$T/bin/piper-tts" "$T/bin/aplay"
+# notify-send too: tts_verify_spoken announces a failed speech path, and an
+# unstubbed notify-send pops that announcement on the LIVE desktop every time
+# this suite runs — a test that cries wolf on his screen.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/notify-send"
+chmod +x "$T/bin/piper-tts" "$T/bin/aplay" "$T/bin/notify-send"
 export PATH="$T/bin:$PATH"
 
 # --- run the streamer against a feeder, return the trace -------------------
