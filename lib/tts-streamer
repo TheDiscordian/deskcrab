@@ -1,77 +1,42 @@
 #!/usr/bin/env python3
-"""Stream TTS from DeskCrab's debug log. Reads stream-json events,
-extracts assistant text, and pipes it to piper-tts for speech."""
+"""Stream TTS from DeskCrab's stream-json log.
+
+Two things this must get right, and both were broken:
+
+1. SPEECH MUST NOT BE SILENTLY LOST. Every failure here used to be
+   `except Exception: pass` — a missing piper, a dead sound card, a stranded
+   read cursor all produced the same thing: a reply on screen that was never
+   heard, with no trace anywhere. Every path now writes to $DESKCRAB_SPEECH_LOG
+   and leaves a receipt at $DESKCRAB_SPEECH_RECEIPT saying how many characters
+   actually reached the speakers. The caller reads that receipt and speaks the
+   reply itself if this process spoke nothing — see tts_verify_spoken.
+
+2. FIRST AUDIO MUST NOT WAIT FOR THE WHOLE TURN. `--output-format stream-json`
+   only emits a completed `assistant` event once a whole text block has been
+   generated, so a ten-second answer began speaking ten seconds late. With
+   `--include-partial-messages` the CLI also emits `stream_event` text deltas
+   as they are produced; those are chunked into SENTENCES here and spoken the
+   moment each one is complete. The completed `assistant` event still arrives
+   afterwards and is still handled — only the part not already spoken is
+   voiced, so a stream WITHOUT partial messages (a wake, an older CLI) behaves
+   exactly as it always did.
+
+piper and aplay are started ONCE per speaking burst and kept alive, because
+loading the voice model costs ~0.9 s. One long-lived pair means that cost is
+paid once, the sentences play gaplessly, and the model is warm before the
+first sentence is even finished.
+"""
 
 import fcntl
 import json
-import subprocess
-import time
 import os
+import queue
 import re
 import signal
+import subprocess
 import sys
-
-signal.signal(signal.SIGTERM, lambda *a: (_clear_live_speech(), os._exit(0)))
-
-# Speech mutex: hold the flock for the whole TTS stage of this turn, so no
-# other session (a wake's speak_once, another streamer) can talk over it.
-# Released automatically when this process exits — even via os._exit above.
-# Taken LAZILY, at the first thing worth saying — never at startup. Held at
-# startup it silently ate whole replies: a wake overlapping a desk turn owns
-# the lock, this streamer blocks before it ever reads the stream, and by the
-# time the lock frees its parent has gone, the ppid check below fires, and it
-# exits having spoken nothing. The reply appeared on screen and was never
-# heard. Blocking here instead means the words wait their turn; they are not
-# discarded.
-_SPEECHLOCK = os.environ.get("DESKCRAB_SPEECHLOCK", "").strip()
-_lockfd = None
-
-
-def hold_speech_lock():
-    global _lockfd
-    if _SPEECHLOCK and _lockfd is None:
-        _lockfd = os.open(_SPEECHLOCK, os.O_CREAT | os.O_WRONLY, 0o644)
-        fcntl.flock(_lockfd, fcntl.LOCK_EX)
-
-
-# Live speech notice: the words currently on the speakers, published so the
-# NEXT session of her to start can REGROUP against them — fold what it has to
-# say and what is being said into one reply — instead of talking over them or
-# dropping its own point. Header line is `epoch \t device \t pid \t until`,
-# the text follows from line 2. Mirrors live_speech_begin/end in common.sh.
-#
-# This publishes; it never edits. No word reaching piper is changed or
-# withheld by anything here.
-_LIVE_SPEECH = os.environ.get("DESKCRAB_LIVE_SPEECH", "").strip()
-_said = []
-
-
-def _publish_live_speech(text):
-    if not _LIVE_SPEECH:
-        return
-    _said.append(text)
-    try:
-        tmp = "%s.%d.tmp" % (_LIVE_SPEECH, os.getpid())
-        with open(tmp, "w") as fh:
-            fh.write("%d\tdesk\t%d\t0\n%s\n" % (time.time(), os.getpid(),
-                                                "\n".join(_said)))
-        os.replace(tmp, _LIVE_SPEECH)
-    except Exception:
-        pass
-
-
-def _clear_live_speech():
-    # Only our own notice: a later session may already have taken the floor,
-    # and deleting its record would blind whoever starts next.
-    if not _LIVE_SPEECH:
-        return
-    try:
-        with open(_LIVE_SPEECH) as fh:
-            head = fh.readline().split("\t")
-        if len(head) > 2 and head[2] == str(os.getpid()):
-            os.unlink(_LIVE_SPEECH)
-    except Exception:
-        pass
+import threading
+import time
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
@@ -94,6 +59,39 @@ TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
 LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
 FALLBACK = os.environ.get("DESKCRAB_CLAUDE_FALLBACK", "").strip()
 
+SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
+RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
+
+DELIM = "---DISPLAY---"
+# Hold back any trailing text that could still turn out to be the delimiter.
+DELIM_PREFIXES = [DELIM[:i] for i in range(len(DELIM), 0, -1)]
+
+# Close the piper/aplay pair after this long with nothing to say, so a turn
+# that speaks once and then runs tools for five minutes is not holding the
+# sound device open the whole time. Reopened (and the model reloaded) if she
+# starts talking again.
+VOICE_IDLE_CLOSE = float(os.environ.get("DESKCRAB_VOICE_IDLE_CLOSE", "8"))
+# Flush an unpunctuated buffer once it gets this long rather than holding a
+# sentence that may never end.
+MAX_HOLD = int(os.environ.get("DESKCRAB_TTS_MAX_HOLD", "320"))
+
+
+def speech_log(msg):
+    """Loud, never swallowed. A speech failure that leaves no trace is the
+    bug this whole file exists to stop happening again."""
+    line = "%s [%d] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), msg)
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    if SPEECH_LOG:
+        try:
+            with open(SPEECH_LOG, "a") as fh:
+                fh.write(line + "\n")
+        except Exception:
+            pass
+
 
 def _is_limit(text):
     if not (FALLBACK and LIMIT_RE):
@@ -114,32 +112,307 @@ def fix_pronunciation(text):
             stderr=subprocess.DEVNULL)
         if out.returncode == 0:
             return out.stdout.decode()
-    except Exception:
-        pass
+    except Exception as exc:
+        speech_log("TTS_FIXES failed (%s) — speaking the text unfixed" % exc)
     return text
 
 
-def speak(text):
-    hold_speech_lock()
-    _publish_live_speech(text)
-    try:
+# --------------------------------------------------------------------------
+# The voice: one piper -> aplay pair, fed sentence by sentence from a thread.
+#
+# It runs in its own thread so that taking the speech mutex — which can block
+# for as long as another session is talking — never stops this process reading
+# the stream. Blocking the reader is how a whole reply used to be lost.
+# --------------------------------------------------------------------------
+class Voice(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self, daemon=True)
+        self.q = queue.Queue()
+        self.piper = None
+        self.aplay = None
+        self.spoke_chars = 0
+        self.spoke_lines = 0
+        self.error = ""
+        self._lockfd = None
+        self._said = []
+        self._stop = False
+
+    # Speech mutex: held for the whole TTS stage of this turn, so no other
+    # session (a wake's speak_once, another streamer) talks over it. Taken
+    # LAZILY, at the first thing worth saying — never at startup, and never on
+    # the reading thread. Held at startup it silently ate whole replies.
+    def _hold_lock(self):
+        path = os.environ.get("DESKCRAB_SPEECHLOCK", "").strip()
+        if path and self._lockfd is None:
+            try:
+                self._lockfd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o644)
+                fcntl.flock(self._lockfd, fcntl.LOCK_EX)
+            except Exception as exc:
+                # A broken lock must not cost us the speech. Talk anyway.
+                speech_log("speech lock unavailable (%s) — speaking without it"
+                           % exc)
+                self._lockfd = None
+
+    def _open(self):
+        if self.piper is not None:
+            return True
+        self._hold_lock()
         cmd = ["piper-tts", "--model", PIPER, "--output-raw"]
         if LENGTH_SCALE:
             cmd += ["--length-scale", LENGTH_SCALE]
         if SPEAKER:
             cmd += ["--speaker", SPEAKER]
-        piper = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        aplay = subprocess.Popen(
-            ["aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", "-t", "raw"],
-            stdin=piper.stdout, stderr=subprocess.DEVNULL)
-        piper.stdin.write(text.encode())
-        piper.stdin.close()
-        aplay.wait()
-        piper.wait()
+        try:
+            self.piper = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL)
+            self.aplay = subprocess.Popen(
+                ["aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", "-t", "raw"],
+                stdin=self.piper.stdout, stderr=subprocess.DEVNULL)
+            self.piper.stdout.close()   # aplay owns the read end now
+        except Exception as exc:
+            self.error = "cannot start the voice: %s" % exc
+            speech_log("SPEECH FAILED — %s (piper=%s)" % (self.error, PIPER))
+            self.piper = self.aplay = None
+            return False
+        return True
+
+    def _close(self):
+        if self.piper is None:
+            return
+        try:
+            self.piper.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.aplay.wait(timeout=600)
+        except Exception as exc:
+            speech_log("aplay did not finish (%s)" % exc)
+        try:
+            self.piper.wait(timeout=10)
+        except Exception:
+            pass
+        self.piper = self.aplay = None
+        # Give the speech mutex back the moment the voice goes idle. Holding
+        # it until process exit made every OTHER session queue its audio
+        # behind this turn's entire multi-minute run — text on screen, speech
+        # minutes late.
+        if self._lockfd is not None:
+            try:
+                fcntl.flock(self._lockfd, fcntl.LOCK_UN)
+                os.close(self._lockfd)
+            except Exception:
+                pass
+            self._lockfd = None
+
+    # Publish the words currently on the speakers so the NEXT session of her to
+    # start can REGROUP against them instead of talking over them. This
+    # publishes; it never edits. No word reaching piper is changed or withheld
+    # by anything here. Header line is `epoch \t device \t pid \t until`.
+    def _publish(self, text):
+        path = os.environ.get("DESKCRAB_LIVE_SPEECH", "").strip()
+        if not path:
+            return
+        self._said.append(text)
+        try:
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with open(tmp, "w") as fh:
+                fh.write("%d\tdesk\t%d\t0\n%s\n"
+                         % (time.time(), os.getpid(), "\n".join(self._said)))
+            os.replace(tmp, path)
+        except Exception:
+            pass
+
+    def say(self, text):
+        text = " ".join(text.split())
+        if text:
+            self.q.put(text)
+
+    def finish(self):
+        self.q.put(None)
+        self.join(timeout=900)
+        if self.is_alive():
+            speech_log("voice thread would not finish — audio may be cut short")
+
+    def run(self):
+        while True:
+            try:
+                item = self.q.get(timeout=VOICE_IDLE_CLOSE)
+            except queue.Empty:
+                # Nothing to say for a while: give the sound device back.
+                self._close()
+                continue
+            if item is None:
+                self._close()
+                return
+            if not self._open():
+                # Voice is unusable. Drain rather than block the reader, and
+                # let the receipt tell the caller nothing was spoken.
+                continue
+            try:
+                self.piper.stdin.write((item + "\n").encode())
+                self.piper.stdin.flush()
+            except Exception as exc:
+                self.error = "piper stopped accepting text: %s" % exc
+                speech_log("SPEECH INTERRUPTED — %s" % self.error)
+                self.piper = self.aplay = None
+                continue
+            self.spoke_chars += len(item)
+            self.spoke_lines += 1
+            self._publish(item)
+
+
+VOICE = Voice()
+
+
+def write_receipt():
+    """What actually reached the speakers. The caller compares this with the
+    reply it extracted, and speaks the reply itself if this came back empty."""
+    if not RECEIPT:
+        return
+    try:
+        with open(RECEIPT, "w") as fh:
+            fh.write("pid=%d\nchars=%d\nlines=%d\nerror=%s\n"
+                     % (os.getpid(), VOICE.spoke_chars, VOICE.spoke_lines,
+                        " ".join(VOICE.error.split())))
     except Exception:
         pass
+
+
+def clear_live_speech():
+    # Only our own notice: a later session may already have taken the floor,
+    # and deleting its record would blind whoever starts next.
+    path = os.environ.get("DESKCRAB_LIVE_SPEECH", "").strip()
+    if not path:
+        return
+    try:
+        with open(path) as fh:
+            head = fh.readline().split("\t")
+        if len(head) > 2 and head[2] == str(os.getpid()):
+            os.unlink(path)
+    except Exception:
+        pass
+
+
+def _on_term(*_a):
+    write_receipt()
+    clear_live_speech()
+    os._exit(0)
+
+
+signal.signal(signal.SIGTERM, _on_term)
+
+
+# --------------------------------------------------------------------------
+# Chunking a text block into speakable sentences as it streams in.
+# --------------------------------------------------------------------------
+# Each chunk becomes one piper utterance, so a boundary here is a full
+# sentence-final fall in the voice. Only real sentence enders qualify — a colon
+# or a semicolon mid-thought would land as a full stop and sound wrong. A
+# decimal ("3.5") is already safe: the lookahead requires whitespace after the
+# dot. Abbreviations are not, hence _ABBREV below.
+_SENT = re.compile(r".*?[.!?…](?=[\s\"')\]]|$)|.*?\n", re.S)
+_ABBREV = re.compile(r"(?:^|[\s(\"'])(?:[A-Za-z]|e\.g|i\.e|etc|vs|approx"
+                     r"|[Mm]r|[Mm]rs|[Mm]s|[Dd]r|[Pp]rof|[Ss]t|[Ff]ig)\.$")
+
+
+def _hold_back(buf):
+    """How many trailing characters must not be spoken yet, because they may
+    still turn out to be the ---DISPLAY--- delimiter or an unclosed `code`
+    span (both of which are stripped, and stripping half of one is wrong)."""
+    hold = 0
+    for pre in DELIM_PREFIXES:
+        if buf.endswith(pre):
+            hold = len(pre)
+            break
+    head = buf[:len(buf) - hold] if hold else buf
+    if head.count("\x60") % 2:
+        hold = len(buf) - head.rindex("\x60")
+    return hold
+
+
+def _sentences(buf):
+    """Split off every complete sentence. Returns (chunks, remainder)."""
+    hold = _hold_back(buf)
+    head, rest = (buf[:len(buf) - hold], buf[len(buf) - hold:]) if hold else (buf, "")
+    chunks, pos, carry = [], 0, ""
+    for m in _SENT.finditer(head):
+        cand = carry + m.group(0)
+        pos = m.end()
+        # "e.g." is not the end of a sentence; hold it and keep going, or the
+        # voice comes to a full stop in the middle of a clause.
+        if _ABBREV.search(cand.rstrip()):
+            carry = cand
+            continue
+        carry = ""
+        chunks.append(cand)
+    remainder = carry + head[pos:] + rest
+    # Never hold a runaway buffer forever — say it at the last space.
+    if not chunks and len(remainder) >= MAX_HOLD:
+        cut = remainder.rfind(" ", 0, MAX_HOLD)
+        if cut > 0:
+            chunks.append(remainder[:cut])
+            remainder = remainder[cut:]
+    return chunks, remainder
+
+
+def for_speech(text):
+    """Markdown strip + pronunciation fixes. Nothing here may DROP content —
+    it only rewrites how words are pronounced."""
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"\x60[^\x60]*\x60", "", text)
+    text = fix_pronunciation(text)
+    return text.strip()
+
+
+class Block:
+    """One streaming text block: what has arrived, and what has been said."""
+
+    def __init__(self):
+        self.raw = ""        # everything received for this block
+        self.consumed = 0    # how much of self.raw has been handed to the voice
+        self.pending = ""    # received, not yet a complete sentence
+        self.done = False    # ---DISPLAY--- reached: nothing further is spoken
+
+    def add(self, delta, rode_through):
+        self.raw += delta
+        if self.done:
+            return
+        self.pending += delta
+        head, sep, _tail = self.pending.partition(DELIM)
+        if sep:
+            self.pending = head
+            self.done = True
+        # A limit refusal arrives shaped like a reply. With a retry still to
+        # come the user should hear the answer, not the outage — so hold this
+        # block back entirely rather than speaking half of it.
+        if not rode_through and _is_limit(self.raw):
+            return
+        chunks, self.pending = _sentences(self.pending)
+        for c in chunks:
+            self.consumed += len(c)
+            spoken = for_speech(c)
+            if spoken:
+                VOICE.say(spoken)
+        if self.done:
+            self.consumed = len(self.raw)
+
+    def close(self, full_text, rode_through):
+        """The completed assistant event for this block. Speak whatever the
+        streaming half did not already say — which is everything, when the CLI
+        was run without --include-partial-messages."""
+        if not rode_through and _is_limit(full_text):
+            return
+        rest = full_text[self.consumed:] if len(full_text) >= self.consumed else full_text
+        self.consumed = len(full_text)
+        if self.done:
+            return
+        head, sep, _tail = rest.partition(DELIM)
+        if sep:
+            self.done = True
+        spoken = for_speech(head)
+        if spoken:
+            VOICE.say(spoken)
 
 
 # Remember who launched us (the crab process). If it dies we get reparented —
@@ -148,21 +421,45 @@ def speak(text):
 # append the terminator and we must not tail the log forever.
 ORIG_PPID = os.getppid()
 
-while not os.path.exists(LOG):
-    time.sleep(0.1)
+VOICE.start()
 
+while not os.path.exists(LOG):
+    time.sleep(0.05)
+
+blocks = {}          # stream index -> Block, for the message in flight
 rode_through = False
+last_size = 0
+
 with open(LOG) as f:
     while True:
         line = f.readline()
         if not line:
+            # The stream log is private to this turn now, but a truncation is
+            # still possible (a hand clearing /tmp, an older crab). Stranded
+            # past EOF the old code tailed forever in total silence; say so and
+            # follow the file back down instead.
+            try:
+                size = os.stat(LOG).st_size
+            except OSError:
+                size = last_size
+            if size < last_size:
+                speech_log("stream log %s was truncated under me "
+                           "(%d -> %d bytes) — re-reading from the start"
+                           % (LOG, last_size, size))
+                f.seek(0)
+                blocks = {}
+                last_size = size
+                continue
+            last_size = size
             # Backstop: if our launching crab process is gone we've been
             # reparented (ppid changes) — it can no longer append a terminator,
             # so stop instead of tailing the log forever.
             if os.getppid() != ORIG_PPID:
+                speech_log("launching process gone — stopping the tail")
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
             continue
+        last_size += len(line.encode("utf-8", "replace"))
         line = line.strip()
         if not line:
             continue
@@ -170,40 +467,61 @@ with open(LOG) as f:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if d.get("type") == "result":
+
+        kind = d.get("type")
+
+        if kind == "result":
             # A limit refusal with a retry still to come: ride through it and
             # keep tailing — the fallback run's events land in this same file.
             if (not rode_through and d.get("is_error")
                     and _is_limit(str(d.get("result") or ""))):
                 rode_through = True
+                blocks = {}
                 continue
             break
-        if d.get("type") == "assistant" and "message" in d:
-            # The refusal arrives shaped like a reply (a synthetic assistant
-            # message whose text is the error). With a retry coming the user
-            # should hear the answer, not the outage — skip it. After the
-            # ride-through, a second refusal is real news and gets its voice.
-            if (not rode_through
-                    and (d.get("is_api_error_message")
-                         or d["message"].get("model") == "<synthetic>")
-                    and any(_is_limit(b.get("text", ""))
-                            for b in d["message"].get("content", [])
-                            if b.get("type") == "text")):
-                continue
-            for block in d["message"].get("content", []):
-                if block.get("type") == "text":
-                    text = block["text"].strip()
-                    if not text:
-                        continue
-                    text = text.split("---DISPLAY---")[0].strip()
-                    text = re.sub(r"\*+", "", text)
-                    text = re.sub(r"\x60[^\x60]*\x60", "", text)
-                    text = fix_pronunciation(text)
-                    text = text.strip()
-                    if not text:
-                        continue
-                    speak(text)
 
+        # --- streaming half: speak each sentence the moment it is complete ---
+        if kind == "stream_event":
+            ev = d.get("event") or {}
+            et = ev.get("type")
+            if et == "message_start":
+                blocks = {}
+            elif et == "content_block_start":
+                if (ev.get("content_block") or {}).get("type") == "text":
+                    blocks[ev.get("index")] = Block()
+            elif et == "content_block_delta":
+                delta = ev.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    b = blocks.get(ev.get("index"))
+                    if b is None:
+                        b = blocks[ev.get("index")] = Block()
+                    b.add(delta.get("text") or "", rode_through)
+            continue
+
+        # --- completed half: authoritative, and the ONLY half when the run
+        #     had no --include-partial-messages ---
+        if kind == "assistant" and "message" in d:
+            synthetic = (d.get("is_api_error_message")
+                         or d["message"].get("model") == "<synthetic>")
+            content = d["message"].get("content", [])
+            if (not rode_through and synthetic
+                    and any(_is_limit(b.get("text", "")) for b in content
+                            if b.get("type") == "text")):
+                blocks = {}
+                continue
+            idx = 0
+            for block in content:
+                if block.get("type") == "text":
+                    b = blocks.get(idx) or Block()
+                    b.close(block.get("text", ""), rode_through)
+                idx += 1
+            blocks = {}
+
+VOICE.finish()
+write_receipt()
+if VOICE.spoke_chars == 0:
+    speech_log("spoke nothing from %s%s" % (LOG,
+               (" — " + VOICE.error) if VOICE.error else ""))
 # The floor is free again — retract the notice so the next session is not told
 # to regroup against words that finished a while ago.
-_clear_live_speech()
+clear_live_speech()
