@@ -1037,6 +1037,18 @@ $WANTS_BODY
 You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when>' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"'). A background timer may also wake you at random intervals."
     fi
 
+    # Durable conduct: the shelf's counterpart. Wants are what Betty wants;
+    # conduct is how she has agreed to behave. Both must be injected, or
+    # every correction gets filed as a want for want of anywhere else.
+    local CONDUCT_FILE="$(dirname "${WANTS_FILE:-/nonexistent}")/conduct/CONDUCT.md"
+    if [ -n "$WANTS_FILE" ] && [ -s "$CONDUCT_FILE" ]; then
+        WANTS_CONTEXT="$WANTS_CONTEXT
+
+You also have a durable CONDUCT file at $CONDUCT_FILE — how you have agreed to BEHAVE. It is not the same drawer as your wants and the two are never mixed: a want is something you would be glad to spend an evening on; a correction he gives you, a rule you must follow, a failure you must not repeat, is CONDUCT. When he corrects you, it goes here — never on the wants shelf.
+Its current contents:
+$(cat "$CONDUCT_FILE")"
+    fi
+
     # Long-term memory (lib/memory.py, design-memory-store.md), behind the
     # MEMORY_STORE knob. The query is the wake's reason when it has one,
     # otherwise the wants shelf plus the conversation tail. Fail-safe by
