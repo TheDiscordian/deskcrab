@@ -165,9 +165,9 @@ class TestRecallBlock(StoreCase):
                           kind="note")
         rows, _, _ = self.store.search("meetings and render-md work")
         block = memory.format_block(rows)
-        self.assertIn("## What you remember", block)
-        self.assertIn("Things he has told you:", block)
-        self.assertIn("Things you know from your own time:", block)
+        self.assertIn("## What I remember", block)
+        self.assertIn("What I hold to:", block)
+        self.assertIn("What I know from my own time:", block)
         self.assertLess(block.index("Stay silent"),
                         block.index("NON_UNIQUE"))
 

@@ -764,16 +764,16 @@ def build_block(rows, warning=""):
     # miss, so they go only when notes are already gone.
     truncated = False
     while True:
-        out = ["## What you remember (retrieved, not exhaustive"
+        out = ["## What I remember (retrieved, not exhaustive"
                + (", TRUNCATED to fit" if truncated else "")
                + " — 'crab memory search <query>' for more)"]
         if warning:
             out.append(f"\n{warning}")
         if directives:
-            out.append("\nThings he has told you:")
+            out.append("\nWhat I hold to:")
             out.extend(f"- {r[1]} ({r[7][:10]})" for r in directives)
         if notes:
-            out.append("\nThings you know from your own time:")
+            out.append("\nWhat I know from my own time:")
             out.extend(f"- {r[1]} ({r[7][:10]})" for r in notes)
         block = "\n".join(out)
         if len(block) <= BLOCK_TOKEN_CAP * CHARS_PER_TOKEN \

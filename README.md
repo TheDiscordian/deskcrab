@@ -243,7 +243,7 @@ crab memory forget 12       # retire a record by id
 crab memory ingest          # distil new journal turns + transcripts into records
 ```
 
-Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short "What you remember" block: a wake queries by its reason, an idle wake by the wants shelf and conversation tail. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
+Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short "What I remember" block: a wake queries by its reason, an idle wake by the wants shelf and conversation tail. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
 
 `crab memory ingest` reads what is new in the day journal and the transcriptions directory (tracked by a cursor file), asks a cheap Claude session what actually earns a permanent record, and writes the survivors through a dedup pass: a near-identical record just refreshes the existing one, and a conflicting one supersedes it — the newer voice wins, the older stays readable in `--all`.
 

@@ -140,7 +140,7 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # directives (the user's standing rules) and notes (the assistant's own) —
 # live in a sqlite-vec store under ~/.local/share/deskcrab/memory/, embedded
 # with nomic-embed-text on a local ollama daemon. MEMORY_STORE=1 retrieves a
-# "What you remember" block into every prompt build (wakes query by their
+# "What I remember" block into every prompt build (wakes query by their
 # reason, otherwise the wants shelf + conversation tail). Retrieval is
 # fail-safe: an empty store adds nothing, and an unreachable embedder degrades
 # to pinned records with a warning instead of breaking the prompt.
