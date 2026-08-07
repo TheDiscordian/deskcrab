@@ -917,7 +917,13 @@ $(cat "$SUMMARYFILE")"
     if [ -f "$CONVOFILE" ]; then
         OUT="$OUT
 
-Here is your conversation so far:
+Here is your conversation so far. This is the real record of what was said and
+done, and it is authoritative. Anything asked about earlier turns — what you
+said, what you built, what you promised — is answered by READING WHAT IS BELOW,
+not by searching the filesystem. A command's output never overrides the
+transcript: a clean grep or a clean git tree does not mean a thing you can see
+yourself writing here never happened. If a search and the transcript disagree,
+say that they disagree instead of picking the search.
 $(cat "$CONVOFILE")"
     fi
     [ -n "$OUT" ] && echo "$OUT"
@@ -1755,12 +1761,34 @@ claude_generate() {
     extract_response
 }
 
+# Silence is described to me in WORDS — the wake prompt and the
+# concurrent-turn context both say "end with no message text". A reply that
+# recites that instruction instead of obeying it was being spoken aloud
+# verbatim at the desk: the phrase arriving as speech is the loudest
+# possible way of saying nothing. Read for what it means. Narrow on
+# purpose — only a short reply that is essentially nothing but the phrase,
+# so a real sentence explaining this bug (he asked about it once) still
+# speaks. Exit 0 = this is silence wearing words.
+_silence_recitation() {  # <spoken-text>
+    local T
+    T=$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
+    [ "${#T}" -le 200 ] || return 1
+    printf '%s' "$T" | grep -qiE 'no message text|no reply text|nothing to report'
+}
+
 # Split a response into its spoken half (everything above ---DISPLAY---).
 # A line-leading "(quiet)" marker — the retired silence convention — is
 # stripped defensively so a stray one is never voiced by any caller.
 spoken_part() {
-    printf '%s\n' "$1" | sed -e '/^---DISPLAY---$/,$d' \
-        -e 's/^[[:space:]]*([Qq][Uu][Ii][Ee][Tt])[[:space:]]*//'
+    local S
+    S=$(printf '%s\n' "$1" | sed -e '/^---DISPLAY---$/,$d' \
+        -e 's/^[[:space:]]*([Qq][Uu][Ii][Ee][Tt])[[:space:]]*//')
+    # A reply that opens by reciting the silence instruction and then talks
+    # anyway: the length test below never catches it, so strip the recited
+    # phrase off the front and speak the rest.
+    S=$(printf '%s\n' "$S" | sed -E '1s/^[[:space:]]*[(]?[Nn]o (message|reply) text[.)]?[[:space:]]*(—|-|:)?[[:space:]]*//')
+    _silence_recitation "$S" && return 0
+    printf '%s\n' "$S"
 }
 
 # Split a response into its display half (everything below ---DISPLAY---).
