@@ -50,8 +50,15 @@ run() { # <shell body> — sources common.sh in a scratch instance with the stub
     # CLAUDE_BIN is passed in the environment on purpose: common.sh snapshots
     # an inherited CLAUDE_BIN and hands it back after sourcing the config,
     # which is the only way a test can keep a real builder from being started.
+    # NOTICE_STATE_DIR and ACCOUNT_DEFAULT_FILE are pinned because
+    # claude_generate ends in notice_own_writes, which copies the stream into
+    # ~/.local/state/deskcrab/streams and PRUNES that directory to
+    # NOTICE_STREAM_KEEP — a test run would delete real forensic streams and
+    # append to her live declaration log.
     DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="$T/state-debug.log" \
+        NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
+        ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" \
         CLAUDE_BIN="$T/claude-stub" WITNESS="$T/witness" \
         env -u CLAUDE_CONFIG_DIR \

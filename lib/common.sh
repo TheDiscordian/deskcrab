@@ -2282,7 +2282,15 @@ _wake_claude_run() {
     local CONFDIR="$1"
     (
         cd "$PROJECT_DIR" || exit 1
-        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        # The primary account is "no override" — which is only the primary if
+        # the variable is actually ABSENT. It is exported into a Claude Code
+        # session's Bash-tool environment and job_start deliberately forwards
+        # it, so a run inherited from a fallback turn used to walk the chain
+        # with its own first slot pointing back at the login that had just
+        # refused: three accounts became two, and the true primary was never
+        # tried. Unset, not left standing.
+        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
+        else unset CLAUDE_CONFIG_DIR; fi
         export "${CLAUDE_NO_AUTO_MEMORY?}"
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$WAKE_MODEL" --effort "$WAKE_EFFORT" \
@@ -2733,7 +2741,10 @@ _generate_claude_run() {
         cd "$PROJECT_DIR" || exit 1
         # Her turn, not the coding agent's — see CLAUDE_NO_AUTO_MEMORY.
         export "${CLAUDE_NO_AUTO_MEMORY?}"
-        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        # See _wake_claude_run: "the primary" means the variable is absent,
+        # never whatever the environment happened to arrive holding.
+        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
+        else unset CLAUDE_CONFIG_DIR; fi
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CLAUDE_MODEL" --effort "$EFFORT" \
             --verbose --output-format stream-json --include-partial-messages \

@@ -99,7 +99,13 @@ for ACCT in $(claude_accounts); do
     fi
     ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
     (
-        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        # "The primary login" is the ABSENCE of the variable, not whatever the
+        # environment arrived holding — and a job dispatched from a turn that
+        # was already on a fallback inherits it (job_start forwards it on
+        # purpose). Left standing, the chain's first slot re-ran the account
+        # that had just refused and the true primary was never tried.
+        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
+        else unset CLAUDE_CONFIG_DIR; fi
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
             --append-system-prompt "$SYS" \

@@ -32,9 +32,14 @@ EOF
 
 run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance.
     # Every argument but the last is an env assignment; the last is the body.
-    # CLAUDE_CONFIG_DIR is stripped: a claude session running these tests may
-    # itself live under one, and an inherited value makes the stub's "primary
-    # login" branch unreachable.
+    # CLAUDE_CONFIG_DIR is deliberately NOT stripped here any more. It used to
+    # be, with the note "an inherited value makes the stub's 'primary login'
+    # branch unreachable" — which was the bug, not the harness's problem: the
+    # run helpers only ever SET the variable, so the primary slot inherited
+    # whatever the environment held and a run dispatched from a fallback turn
+    # re-ran the account that had just refused. The suite was green because
+    # the harness removed the variable the shipping code failed to remove.
+    # The code unsets it now, and the cases below preset it on purpose.
     local -a envs=()
     while [ $# -gt 1 ]; do envs+=("$1"); shift; done
     # Every session has its OWN stream log now (one shared file is how a wake
@@ -43,11 +48,16 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # ACCOUNT_DEFAULT_FILE is pinned to the scratch dir: the real one is
     # durable in ~/.local/share, and a test that moved the LIVE default would
     # silently re-route every real session's login.
+    # NOTICE_STATE_DIR is pinned too: claude_generate ends in notice_own_writes,
+    # which copies the stream into ~/.local/state/deskcrab/streams and PRUNES
+    # that directory to NOTICE_STREAM_KEEP — a test run would delete real
+    # forensic streams and append to her live declaration log.
     DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
         ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
+        NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
-        env -u CLAUDE_CONFIG_DIR ${envs[@]+"${envs[@]}"} \
+        env ${envs[@]+"${envs[@]}"} \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
         _ "$REPO_DIR" "$1" 2>&1
 }
@@ -371,8 +381,9 @@ run_runner() { # <id> [ENV=val ...]
         python3 -c 'import json,sys,time; json.dump({"id":sys.argv[2],"description":"do a thing","started_epoch":int(time.time()),"state":"running","unit":""},open(sys.argv[1]+"/"+sys.argv[2]+".json","w"))' "$T/jobs" "$id"
     JOBS_DIR="$T/jobs" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
+        NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
         DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-plain" \
-        env -u CLAUDE_CONFIG_DIR "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
+        env "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }
 
 rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
@@ -452,6 +463,64 @@ grep -q "usage credits" "$T/spoken" 2>/dev/null \
 grep -qi "limit" "$T/notifies" 2>/dev/null \
     && ok "the notification carries the outage instead" \
     || fail "the outage must be notified" "$(cat "$T/notifies" 2>/dev/null || echo "no notification")"
+
+echo
+echo "an inherited CLAUDE_CONFIG_DIR is not the primary login:"
+# The chain's first slot is "no override" — which only means the primary if
+# the variable is ABSENT. It is exported into a Claude Code session's Bash-tool
+# environment, and job_start forwards it deliberately, so a run dispatched from
+# a turn already on a fallback used to walk the chain with its first attempt
+# pointed straight back at the login that had just refused: three accounts
+# behaving as two, and the true primary never tried at all. Every case here
+# presets CLAUDE_CONFIG_DIR to a dry account and demands a CALL:primary.
+mkdir -p "$T/dry"
+
+rm -f "$T/calls" "$T/state-account-default"
+out="$(run CLAUDE_CONFIG_DIR="$T/dry" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" \
+    CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "desk/phone turn: the fallback still answers" \
+    || fail "the turn must reach the account that answers" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
+CALL:$T/fb" ] && ok "desk/phone turn (_generate_claude_run): the primary is actually called" \
+    || fail "an inherited login must be unset for the primary slot" \
+            "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)"
+
+rm -f "$T/calls" "$T/state-account-default"
+out="$(run CLAUDE_CONFIG_DIR="$T/dry" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" \
+    CLAUDE_BIN="$T/claude-stream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "wake: the fallback still answers" \
+    || fail "the wake must reach the account that answers" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
+CALL:$T/fb" ] && ok "wake (_wake_claude_run): the primary is actually called" \
+    || fail "an inherited login must be unset for the primary slot" \
+            "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)"
+
+# The job path is where this bites hardest: a builder dispatched mid-turn
+# inherits the turn's login by design, so without the unset its "first
+# attempt" runs on the account the turn was already using — and the plain
+# stub below builds happily there, so nothing looks wrong at all.
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
+run_runner inherited CLAUDE_CONFIG_DIR="$T/dry" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/inherited.json" state)"
+[ "$out" = finished ] && ok "job: the fallback still carries it" \
+    || fail "the job must finish on the fallback" "$out"
+[ "$(head -n1 "$T/calls" 2>/dev/null)" = "CALL:primary" ] \
+    && ok "job (lib/job-runner): the first attempt is the primary, not the inherited login" \
+    || fail "an inherited login must be unset for the primary slot" \
+            "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)"
+
+# And the harness may not paper over it again: a test that strips the variable
+# is testing an environment the shipping code never runs in. The pattern is
+# assembled rather than written, so this assertion is not its own hit.
+strip="env -u CLAUDE_CONFIG""_DIR"
+hits="$(grep -cF "$strip" "$(readlink -f "$0")")"
+[ "$hits" = 0 ] && ok "the harness no longer strips the variable the code must strip itself" \
+    || fail "the suite must not remove CLAUDE_CONFIG_DIR on the code's behalf" "$hits uses"
 
 echo
 echo "$PASS passed, $FAIL failed"
