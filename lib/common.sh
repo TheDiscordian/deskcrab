@@ -2568,9 +2568,9 @@ $DISPLAY_PART"
         wake_speak_to_phone "$SPOKEN" || speak_once "$SPOKEN"
     fi
     if [ -n "$DISPLAY_PART" ]; then
-        local DISPLAYFILE="/tmp/deskcrab-display.md"
+        local DISPLAYFILE
+        DISPLAYFILE=$(mktemp /tmp/deskcrab-display-XXXXXX.md)
         echo "$DISPLAY_PART" > "$DISPLAYFILE"
-        hyprctl dispatch closewindow class:deskcrab-display 2>/dev/null
         RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
             RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
         if [ -x "$RENDER_MD" ]; then
@@ -2989,9 +2989,9 @@ run_claude_and_respond() {
         DISPLAY_PART=$(display_part "$RESPONSE")
 
         if [ -n "$DISPLAY_PART" ]; then
-            local DISPLAYFILE="/tmp/deskcrab-display.md"
+            local DISPLAYFILE
+            DISPLAYFILE=$(mktemp /tmp/deskcrab-display-XXXXXX.md)
             echo "$DISPLAY_PART" > "$DISPLAYFILE"
-            hyprctl dispatch closewindow class:deskcrab-display 2>/dev/null
             RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
             RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
             if [ -x "$RENDER_MD" ]; then
