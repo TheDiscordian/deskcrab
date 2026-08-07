@@ -173,6 +173,9 @@ def cmd_report(argv):
         state = j.get("state", "?")
         if state == "failed":
             state = "failed (exit %s)" % j.get("exit", "?")
+        elif state == "blocked":
+            # Never began — no attempt, nothing in the log worth reading.
+            state = "blocked (never ran)"
         lines.append("  - %s %s%s  %s — %s" % (
             state, (j.get("finished") or "?")[:16], ran,
             j.get("id", "?"), one_line(j.get("description", ""))))

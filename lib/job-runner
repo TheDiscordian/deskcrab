@@ -84,6 +84,16 @@ touch_suppress -w 900 "$WORKDIR" "$JOBS_DIR" 2>/dev/null
 SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
 STATE=finished
 [ "$RC" -eq 0 ] || STATE=failed
+# A build that never began is its own outcome. Reported as "failed" it reads as
+# a builder that tried and got it wrong, which sends the next wake to read a log
+# holding nothing but a refusal — and leaves the standing dispatch policy free
+# to send the next builder into the same wall.
+BLOCKED=""
+if [ "$RC" -ne 0 ] && job_output_blocked "$LOG"; then
+    STATE=blocked
+    BLOCKED="$(grep -ihoE "out of usage credits|usage limit reached|credit balance is too low|insufficient credit[a-z]*" -- "$LOG" | head -n1)"
+    job_block_record "${BLOCKED:-the CLI refused to run}"
+fi
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
 
 # The durable day record: the task in full, the report in full. A job is a
@@ -93,8 +103,13 @@ day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" \
 
 # Tell her it landed — via an event wake, not a voice: whether anything gets
 # said out loud is the wake's own decision, made by the usual busy/quiet rules.
-[ -n "$WANTS_FILE" ] && "$SCRIPT_DIR/crab" wake-at 5s event \
-    "Detached job $ID finished ($STATE, exit $RC). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them." \
-    >/dev/null 2>&1
+if [ "$STATE" = blocked ]; then
+    # Nothing ran, so there is nothing to read and nothing to verify. Say that
+    # plainly instead of sending the next wake to audit an empty log.
+    WAKE_REASON="Detached job $ID never began: ${BLOCKED:-the CLI refused to run}. NO WORK WAS ATTEMPTED and the log holds only the refusal — do not read it looking for results. Task still undone: $(printf '%.200s' "$TASK"). Further dispatches are held for $(( JOB_BLOCK_RETRY / 60 )) min; do the work by hand if it is small, or leave it for later."
+else
+    WAKE_REASON="Detached job $ID finished ($STATE, exit $RC). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
+fi
+[ -n "$WANTS_FILE" ] && "$SCRIPT_DIR/crab" wake-at 5s event "$WAKE_REASON" >/dev/null 2>&1
 
 exit "$RC"

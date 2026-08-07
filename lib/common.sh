@@ -103,6 +103,11 @@ JOB_EFFORT="${JOB_EFFORT:-high}"
 # (status + log) are kept before pruning.
 JOBS_SHOW_FINISHED="${JOBS_SHOW_FINISHED:-6}"
 JOBS_KEEP_DAYS="${JOBS_KEEP_DAYS:-14}"
+# A job that never began because the account had nothing left to spend is not a
+# failed build — nothing was attempted. The marker records that, and holds off
+# further dispatches for a while rather than firing them into the same wall.
+JOBS_BLOCKED_FILE="${JOBS_BLOCKED_FILE:-$JOBS_DIR/blocked}"
+JOB_BLOCK_RETRY="${JOB_BLOCK_RETRY:-1800}"
 # Durable wake bookings. A transient timer lives only inside the running user
 # manager — a reboot or logout erases it with no trace — so every wake-at also
 # writes one record here (fire-epoch \t kind \t reason) and `crab wake-restore`
@@ -1843,11 +1848,54 @@ run_claude_and_respond() {
 # lib/job-status; its output lands in $JOBS_DIR/<id>.log. Env is passed
 # explicitly: user units get a bare PATH, and a scratch instance's jobs must
 # stay in the scratch instance.
+# Did this job die before it began? A builder that exits in seconds having
+# written nothing but "You're out of usage credits" is not a failed build — no
+# work was attempted, there is nothing in the log to verify, and the standing
+# policy of dispatching a builder the moment work is noticed will keep firing
+# them into the same wall, one wasted wake per corpse. Signature match on the
+# CLI's own refusals; anything else is a real failure and stays one.
+job_output_blocked() {
+    grep -qiE "out of usage credits|usage limit reached|credit balance is too low|insufficient credit" -- "$1" 2>/dev/null
+}
+
+# Record the block, with the line that proved it. One file, last block wins.
+job_block_record() {
+    mkdir -p "$JOBS_DIR" 2>/dev/null
+    printf '%s\t%s\n' "$(date +%s)" "$1" > "$JOBS_BLOCKED_FILE" 2>/dev/null
+}
+
+# Prints "<age-seconds>\t<reason>" and returns 0 while a block is still fresh.
+# It expires on its own rather than needing to be cleared: nothing here can see
+# an account refill, so the next dispatch after the window IS the retry probe.
+job_block_active() {
+    local rec epoch reason age
+    rec="$(head -n1 "$JOBS_BLOCKED_FILE" 2>/dev/null)" || return 1
+    [ -n "$rec" ] || return 1
+    epoch="${rec%%	*}"; reason="${rec#*	}"
+    case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+    age=$(( $(date +%s) - epoch ))
+    [ "$age" -lt "$JOB_BLOCK_RETRY" ] || return 1
+    printf '%s\t%s\n' "$age" "$reason"
+}
+
 job_start() {
-    local workdir="$PROJECT_DIR"
-    if [ "${1:-}" = "-C" ]; then workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null; fi
+    local workdir="$PROJECT_DIR" force=""
+    while :; do
+        case "${1:-}" in
+            -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
+            -f) force=1; shift ;;
+            *) break ;;
+        esac
+    done
     local task="$*"
-    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] <description of the work>"; return 1; }
+    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [-f] <description of the work>"; return 1; }
+    local block
+    if [ -z "$force" ] && block="$(job_block_active)"; then
+        echo "Not dispatched — the last job never began: ${block#*	}"
+        echo "  Recorded $(( ${block%%	*} / 60 )) min ago; dispatch is held for ${JOB_BLOCK_RETRY} s from then, then the next job is the retry."
+        echo "  Do the work by hand, or force it with: crab job -f <description>"
+        return 1
+    fi
     local id unit
     # Timestamp + pid, like wake-at units: two dispatches in the same second
     # must not collide on the id or the unit name.
