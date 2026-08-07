@@ -2612,15 +2612,15 @@ wake_reply_is_filler() {  # <spoken-text>
         PREV="$T"
         T="$(printf '%s' "$T" | sed -E \
             -e 's/^(well|ok|okay|so|and|but|hm+|humph|honestly|right|yeah|just|really) //' \
-            -e 's/^(i have|i ve|ive|i had|i got|i have got|i can think of|there is|there s|theres|there are|it s|its|that s|thats|this is|to be honest) //')"
+            -e 's/^(i have|i ve|ive|i had|i got|i have got|i m|im|i am|i can think of|there is|there s|theres|there are|it s|its|that s|thats|this is|to be honest) //')"
     done
 
-    CORE='nothing( (else|new|much|more|further|major|important|notable|significant|pressing|urgent))?( (to|worth) (say|saying|report|reporting|add|adding|share|sharing|mention|mentioning|note|noting|flag|flagging|announce|announcing|update|updating|tell|telling|do))?'
-    CORE="$CORE|no (message|messages|update|updates|news|report|reports|comment|comments|reply|response|output|note|notes|change|changes|word)"
-    CORE="$CORE|none|silence|silent|quiet|all quiet|all clear|nada|zilch|n/a|nil"
+    CORE='nothing( (else|new|much|more|further|major|important|notable|significant|pressing|urgent|of note|of substance))?( (to|worth) (say|saying|report|reporting|add|adding|share|sharing|mention|mentioning|note|noting|flag|flagging|announce|announcing|update|updating|tell|telling|do))?'
+    CORE="$CORE|no (message|messages|update|updates|news|report|reports|comment|comments|reply|response|output|note|notes|change|changes|word)( to (report|share|say|add|give|offer))?"
+    CORE="$CORE|none|silence|silent|(all |still |everything |pretty )?(quiet|silent)|all clear|nada|zilch|n/a|nil"
     CORE="$CORE|(staying|stay|keeping|keep|remaining|remain) (quiet|silent)"
-    CORE="$CORE|no need to (speak|talk|say anything|report)"
-    TAIL='( (here|now|right now|today|tonight|yet|for now|at the moment|at present|from me|this time|this wake|either|though))*'
+    CORE="$CORE|no need to (speak|talk|say anything|report)|standing by|holding my peace"
+    TAIL='( (here|now|right now|today|tonight|yet|for now|at the moment|at present|from me|on my end|this time|this wake|either|though|really|so far))*'
 
     printf '%s\n' "$T" | grep -Eq "^($CORE)$TAIL\$"
 }
