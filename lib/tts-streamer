@@ -261,6 +261,11 @@ class Voice(threading.Thread):
                 continue
             self.spoke_chars += len(item)
             self.spoke_lines += 1
+            # The receipt is written as speech happens, never only at exit: a
+            # streamer killed mid-turn has still SPOKEN, and a receipt that
+            # dies with the process is how tts_verify_spoken once replayed a
+            # whole reply over its own still-draining audio.
+            write_receipt()
             self._publish(item)
 
 
@@ -375,9 +380,32 @@ class Block:
         self.consumed = 0    # how much of self.raw has been handed to the voice
         self.pending = ""    # received, not yet a complete sentence
         self.done = False    # ---DISPLAY--- reached: nothing further is spoken
+        self.fed = 0         # replay cursor: how far a re-read has walked back
+                             # through bytes this block already processed
+
+    def replay(self):
+        """This message is about to stream again — a truncation re-read, or
+        the CLI re-emitting the same message — and identical bytes are coming
+        back through add(). Point the cursor at the start of what is already
+        known so they are recognised instead of spoken a second time; the
+        completed-half dedup (closed / spoken_texts) cannot reach this half."""
+        self.fed = 0
 
     def add(self, delta, retry_coming):
+        if self.fed < len(self.raw):
+            overlap = min(len(delta), len(self.raw) - self.fed)
+            if delta[:overlap] == self.raw[self.fed:self.fed + overlap]:
+                self.fed += overlap
+                delta = delta[overlap:]
+                if not delta:
+                    return
+            else:
+                # Different bytes where the replay expected its own: this is
+                # a NEW reply in this slot (a real truncation put another
+                # run's stream here), not a re-read. Start the block over.
+                self.__init__()
         self.raw += delta
+        self.fed = len(self.raw)
         if self.done:
             return
         self.pending += delta
@@ -429,6 +457,11 @@ while not os.path.exists(LOG):
     time.sleep(0.05)
 
 blocks = {}          # stream index -> Block, for the message in flight
+messages = {}        # message id -> that message's blocks, kept for the whole
+                     # tail: a truncation re-read or a re-emitted message_start
+                     # walks the same bytes back through add(), and the replay
+                     # cursor (Block.fed) is what keeps them off the speakers
+anon = 0             # message_start events with no id still get distinct slots
 closed = set()       # (message id, block idx) already spoken to completion —
                      # the stream can hand us the same finished message twice,
                      # and the second copy must not be spoken again
@@ -456,8 +489,15 @@ with open(LOG) as f:
                            "(%d -> %d bytes) — re-reading from the start"
                            % (LOG, last_size, size))
                 f.seek(0)
-                blocks = {}
-                last_size = size
+                # From the top of the file the byte counter restarts at ZERO.
+                # It was set to the current size here once, so the re-read
+                # counted every byte twice, EOF read as another truncation,
+                # and the loop re-spoke the whole stream forever — hundreds of
+                # 2:1 truncation lines in the speech log are its signature.
+                last_size = 0
+                for mb in messages.values():
+                    for b in mb.values():
+                        b.replay()
                 continue
             last_size = size
             # Backstop: if our launching crab process is gone we've been
@@ -496,10 +536,22 @@ with open(LOG) as f:
             ev = d.get("event") or {}
             et = ev.get("type")
             if et == "message_start":
-                blocks = {}
+                mid = (ev.get("message") or {}).get("id")
+                if not mid:
+                    anon += 1
+                    mid = "anon-%d" % anon
+                blocks = messages.setdefault(mid, {})
+                # A message id seen before means these bytes have been here
+                # before — the CLI re-emitted the message, or a truncation
+                # sent the tail back down the file. Its blocks replay instead
+                # of speaking again.
+                for b in blocks.values():
+                    b.replay()
             elif et == "content_block_start":
                 if (ev.get("content_block") or {}).get("type") == "text":
-                    blocks[ev.get("index")] = Block()
+                    idx = ev.get("index")
+                    if idx not in blocks:
+                        blocks[idx] = Block()
             elif et == "content_block_delta":
                 delta = ev.get("delta") or {}
                 if delta.get("type") == "text_delta":

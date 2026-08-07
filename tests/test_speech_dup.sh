@@ -1,0 +1,174 @@
+#!/bin/bash
+# Tests for DOUBLE SPEECH — the same reply reaching the speakers twice.
+# Run: bash tests/test_speech_dup.sh
+#
+# Both failures measured live on 2026-08-07 (~13:09–13:42), heard as one
+# finished reply spoken twice, sometimes overlapping itself:
+#
+# 1. THE FALSE-TRUNCATION LOOP. On a detected truncation the streamer did
+#    `f.seek(0)` but set its byte counter to the CURRENT file size instead of
+#    zero, then counted every re-read byte on top — so at EOF the counter sat
+#    at exactly 2x the file size, which reads as another truncation, forever.
+#    /tmp/deskcrab-speech.log holds hundreds of "truncated under me
+#    (130202 -> 65101)" lines — 2:1, the loop's signature — and every pass
+#    re-spoke every streamed sentence: the same words back-to-back within one
+#    utterance. The streaming half had no dedup at all; the message-id and
+#    spoken-text guards added that day only covered the completed half.
+#
+# 2. THE CRASH REPLAY. The receipt saying how many chars reached piper was
+#    written only at exit. A streamer that died mid-turn (13:42: a NameError
+#    from a half-edited file) had already SPOKEN the reply, but left no
+#    receipt — so tts_verify_spoken read "spoke nothing" and replayed the
+#    whole reply over the still-draining piper/aplay orphans: spoken twice,
+#    overlapping.
+#
+# The stub piper/aplay below count utterances from OUTSIDE the streamer — the
+# assertions never trust the pipeline's own receipt or logs for the counts.
+set -u
+
+REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+T="$(mktemp -d /tmp/deskcrab-dup.XXXXXX)"
+trap 'rm -rf "$T"' EXIT
+
+PASS=0 FAIL=0
+ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
+fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
+
+# --- stub voice: records each utterance handed to piper ---------------------
+mkdir -p "$T/bin"
+cat > "$T/bin/piper-tts" <<'EOF'
+#!/usr/bin/env bash
+while IFS= read -r line || [ -n "$line" ]; do
+    printf 'SAY\t%s\n' "$line" >> "$TRACE"
+    head -c 2048 /dev/zero
+done
+EOF
+cat > "$T/bin/aplay" <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+EOF
+chmod +x "$T/bin/piper-tts" "$T/bin/aplay"
+export PATH="$T/bin:$PATH"
+
+start_streamer() { # <name>
+    LOG="$T/$1.log"; TRACE="$T/$1.trace"; RECEIPT="$T/$1.receipt"
+    SPEECHLOG="$T/$1.speechlog"
+    : > "$LOG"; : > "$TRACE"; : > "$SPEECHLOG"; rm -f "$RECEIPT"
+    TRACE="$TRACE" DESKCRAB_DEBUGLOG="$LOG" DESKCRAB_PIPER_VOICE=/dev/null \
+        DESKCRAB_SPEECHLOCK="$T/$1.speechlock" \
+        DESKCRAB_SPEECH_LOG="$SPEECHLOG" DESKCRAB_SPEECH_RECEIPT="$RECEIPT" \
+        DESKCRAB_VOICE_IDLE_CLOSE=30 \
+        "$REPO_DIR/lib/tts-streamer" 2>/dev/null &
+    SPID=$!
+    sleep 0.2
+}
+
+reap_streamer() { # waits, sets HUNG
+    local i; HUNG=no
+    for i in $(seq 100); do kill -0 "$SPID" 2>/dev/null || break; sleep 0.1; done
+    if kill -0 "$SPID" 2>/dev/null; then HUNG=yes; kill -9 "$SPID" 2>/dev/null; fi
+    wait "$SPID" 2>/dev/null
+}
+
+said_count() { grep -cF "SAY	$1" "$TRACE"; }
+
+j() { printf '%s\n' "$1" >> "$LOG"; }
+MSTART='{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_A"}}}'
+TBLOCK='{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}'
+DELTA1='{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"One two three. "}}}'
+DELTA2='{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Four five six."}}}'
+CLOSED='{"type":"assistant","message":{"model":"m","id":"msg_A","content":[{"type":"text","text":"One two three. Four five six."}]}}'
+RESULT='{"type":"result","result":"x"}'
+
+echo "the false-truncation loop — a log that shrinks but stays non-empty:"
+
+start_streamer shrink
+j "$MSTART"; j "$TBLOCK"; j "$DELTA1"
+sleep 0.6                      # first sentence consumed and spoken
+# The log is truncated and rewritten with a PREFIX of itself in one motion —
+# what the streamer actually observes when another hand claims the file and a
+# rerun's bytes land between two of its 20 ms polls. Size is non-zero and
+# smaller than what was already read.
+printf '%s\n%s\n' "$MSTART" "$TBLOCK" > "$LOG"
+sleep 1.5                      # the old code loops here, re-speaking forever
+j "$DELTA1"; j "$DELTA2"; j "$CLOSED"; j "$RESULT"
+reap_streamer
+[ "$HUNG" = no ] && ok "the streamer exits (the old one false-detected truncation forever)" \
+    || fail "streamer hung in the re-read loop" "hung; trace: $(sort "$TRACE" | uniq -c | tr '\n' ' ')"
+N=$(said_count "One two three.")
+[ "$N" = 1 ] && ok "the re-read sentence reached piper exactly once" \
+    || fail "sentence re-spoken after re-read" "spoken $N times"
+N=$(said_count "Four five six.")
+[ "$N" = 1 ] && ok "the sentence after the re-read is still spoken, once" \
+    || fail "post-re-read sentence" "spoken $N times"
+
+echo
+echo "a re-emitted stream message is not re-voiced (same id, deltas and all):"
+
+start_streamer reemit
+j "$MSTART"; j "$TBLOCK"; j "$DELTA1"; j "$DELTA2"
+sleep 0.5
+j "$MSTART"; j "$TBLOCK"; j "$DELTA1"; j "$DELTA2"   # the same message again
+j "$CLOSED"; j "$RESULT"
+reap_streamer
+N=$(said_count "One two three.")
+[ "$N" = 1 ] && ok "duplicate streamed message is spoken once" \
+    || fail "duplicate streamed message" "spoken $N times"
+
+echo
+echo "a fresh message keeps its voice (suppression is by id, not by habit):"
+
+start_streamer fresh
+j "$MSTART"; j "$TBLOCK"; j "$DELTA1"
+j '{"type":"assistant","message":{"model":"m","id":"msg_A","content":[{"type":"text","text":"One two three. "}]}}'
+j '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_B"}}}'
+j "$TBLOCK"
+j '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Seven eight nine."}}}'
+j '{"type":"assistant","message":{"model":"m","id":"msg_B","content":[{"type":"text","text":"Seven eight nine."}]}}'
+j "$RESULT"
+reap_streamer
+N=$(said_count "Seven eight nine.")
+[ "$N" = 1 ] && ok "second message with a new id is spoken" \
+    || fail "new message swallowed or repeated" "spoken $N times"
+
+echo
+echo "the crash replay — a dead streamer must still leave a receipt:"
+
+start_streamer crash
+j "$MSTART"; j "$TBLOCK"; j "$DELTA1"
+sleep 0.8                      # sentence reaches the stub piper
+kill -9 "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
+[ "$(said_count "One two three.")" = 1 ] || echo "  (setup: sentence was not spoken before the kill)"
+CHARS=$(sed -n 's/^chars=//p' "$RECEIPT" 2>/dev/null | head -1)
+[ "${CHARS:-0}" -gt 0 ] 2>/dev/null \
+    && ok "receipt written as speech happens — a SIGKILLed streamer leaves chars=$CHARS" \
+    || fail "no receipt after SIGKILL (tts_verify_spoken would replay the whole reply)" "$(cat "$RECEIPT" 2>/dev/null || echo missing)"
+
+echo
+echo "end to end: the verify guard does not replay a reply the dead streamer spoke:"
+cat > "$T/conf" <<EOF
+PIPER_VOICE=/dev/null
+WHISPER_MODEL=/nonexistent.bin
+PROJECT_DIR="$T"
+EOF
+TRACE="$T/e2e.trace"; : > "$TRACE"
+out=$(TRACE="$TRACE" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/st" \
+    JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
+    SPEECH_LOG="$T/st-speech.log" bash -c '
+    source "$1/lib/common.sh" >/dev/null 2>&1
+    start_tts_streamer >/dev/null 2>&1
+    printf "%s\n%s\n%s\n" \
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg_A\"}}}" \
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}" \
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Heard once is enough. \"}}}" >> "$DEBUGLOG"
+    sleep 0.8
+    kill -9 "$_TTS_STREAMER_PID" 2>/dev/null
+    wait "$_TTS_STREAMER_PID" 2>/dev/null
+    tts_verify_spoken "Heard once is enough."' _ "$REPO_DIR" 2>&1)
+N=$(grep -cF 'SAY	Heard once is enough.' "$TRACE")
+[ "$N" = 1 ] && ok "the reply reached piper exactly once across streamer + verify" \
+    || fail "verify replayed a spoken reply" "piper saw it $N times"
+
+echo
+echo "$PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
