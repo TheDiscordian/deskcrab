@@ -28,6 +28,10 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # failures still surface as themselves. Set up the second login once with:
 #   CLAUDE_CONFIG_DIR=$HOME/.claude-fallback claude /login
 # CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback"
+# After a limit refusal, runs start directly on the fallback for this many
+# seconds instead of re-probing the dry primary (a full CLI boot + refusal
+# ahead of every reply). The first run after the window probes again.
+# PRIMARY_LIMIT_RETRY=1800
 
 # Optional: project directory (Claude runs from here, gets project memory)
 # PROJECT_DIR="$HOME"

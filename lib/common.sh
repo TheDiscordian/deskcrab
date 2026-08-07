@@ -162,6 +162,17 @@ DEBUGLOG_LATEST="${STATE_PREFIX}-debug.log"
 # path may fail quietly again.
 SPEECH_LOG="${SPEECH_LOG:-${STATE_PREFIX}-speech.log}"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
+# Once the primary HAS refused over a limit, probing it again ahead of every
+# run is pure cost: a full CLI boot and refusal in front of every reply, on
+# an account that will not refill for hours. The refusal stamps this marker,
+# and while it is younger than PRIMARY_LIMIT_RETRY every run starts directly
+# on the fallback. It expires on its own — nothing here can see a refill, so
+# the first run after the window IS the probe (same design as the job block
+# marker). Under STATE_PREFIX — which must already be set, so this lives in
+# the runtime-state block: shared by every live session, wiped by a reboot
+# (one extra probe), and a scratch instance's marker stays scratch.
+PRIMARY_LIMIT_FILE="${PRIMARY_LIMIT_FILE:-${STATE_PREFIX}-primary-limited}"
+PRIMARY_LIMIT_RETRY="${PRIMARY_LIMIT_RETRY:-1800}"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
 # stage. Two voices at once is never acceptable: the later speaker queues
@@ -1409,15 +1420,20 @@ ${PRIOR:-(none)}
 $(cat "$OLDFILE")"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    local SUMRC=0
+    # ${SUMCONF:+...} hands env a CLAUDE_CONFIG_DIR override only while the
+    # primary is known-dry (claude_start_on_fallback); empty, it expands away.
+    local SUMRC=0 SUMCONF=""
+    claude_start_on_fallback && SUMCONF="$CLAUDE_FALLBACK_CONFIG_DIR"
     NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
+        ${SUMCONF:+CLAUDE_CONFIG_DIR="$SUMCONF"} \
         "$CLAUDE_BIN" -p --dangerously-skip-permissions \
         --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
     # In plain -p mode a limit refusal arrives as ordinary stdout, so gate on
     # the exit code — an error line must never be written over the summary of
     # real turns — and retry once on the fallback login like every other run.
-    if [ "$SUMRC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
+    if [ -z "$SUMCONF" ] && [ "$SUMRC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
             && printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE"; then
+        claude_primary_limit_record "$(printf '%s' "$NEWSUM" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
         SUMRC=0
         NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
             CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
@@ -2068,6 +2084,25 @@ claude_limit_fallback_due() {
     grep -qiE "$CLAUDE_LIMIT_RE" "$DEBUGLOG"
 }
 
+# The primary refused over a limit — stamp the marker so the next runs skip
+# straight to the fallback instead of re-probing a dry account. $1 = the
+# refusal line, kept for status displays and debugging.
+claude_primary_limit_record() {
+    printf '%s\t%s\n' "$(date +%s)" "${1:-limit refusal}" > "$PRIMARY_LIMIT_FILE" 2>/dev/null
+}
+
+# Should this run START on the fallback login? Yes while a fallback is
+# configured and the primary-limited marker is fresh. The run that finds the
+# marker expired probes the primary again and re-stamps on a fresh refusal.
+claude_start_on_fallback() {
+    [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] || return 1
+    local rec epoch
+    rec="$(head -n1 "$PRIMARY_LIMIT_FILE" 2>/dev/null)" || return 1
+    epoch="${rec%%	*}"
+    case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+    [ $(( $(date +%s) - epoch )) -lt "$PRIMARY_LIMIT_RETRY" ]
+}
+
 # What did the wake actually DO? A silent reply is the model's SPEECH
 # decision, not its work record — two wakes on 2026-08-06 each dispatched a
 # builder job and edited three files, chose silence as the prompt allows,
@@ -2237,14 +2272,22 @@ $TURN_CONTEXT"
     # read out in its place.
     claim_debuglog
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    _wake_claude_run ""
+    # While the primary is known-dry (fresh marker), start on the fallback
+    # directly — a doomed primary attempt is a whole CLI boot and refusal in
+    # front of the wake for nothing.
+    local FIRST_CONFDIR=""
+    claude_start_on_fallback && FIRST_CONFDIR="$CLAUDE_FALLBACK_CONFIG_DIR"
+    _wake_claude_run "$FIRST_CONFDIR"
     # The primary login refusing over a usage/session limit does not end the
-    # wake: run it again on the fallback account, still under the watchdog.
-    # The retry appends to the same stream log; a combined log reads correctly
-    # everywhere downstream — wake_stream_failed sees genuine output and stops
-    # calling the wake failed, and extract-response drops the refusal whenever
-    # a real reply follows it.
-    if claude_limit_fallback_due; then
+    # wake: stamp the marker so later runs skip the probe, then run it again
+    # on the fallback account, still under the watchdog. The retry appends to
+    # the same stream log; a combined log reads correctly everywhere
+    # downstream — wake_stream_failed sees genuine output and stops calling
+    # the wake failed, and extract-response drops the refusal whenever a real
+    # reply follows it. A run that STARTED on the fallback never retries —
+    # its refusal means both logins are dry and must surface as itself.
+    if [ -z "$FIRST_CONFDIR" ] && claude_limit_fallback_due; then
+        claude_primary_limit_record "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | head -n1)"
         _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
     fi
     local CLAUDE_STATUS="$WAKE_CLAUDE_STATUS"
@@ -2528,43 +2571,61 @@ extract_response() {
 # no conversation writes — every caller (desktop, wake, remote) layers its own
 # output on top of this. The stream still lands in DEBUGLOG, so a TTS streamer
 # started beforehand speaks in parallel exactly as it always did.
+# One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
+# CLAUDE_CONFIG_DIR override ("" = the primary login); reads TEXT / EFFORT /
+# SYSTEM_PROMPT / CLAUDE_BIN from claude_generate's scope (bash dynamic
+# scoping, same as _wake_claude_run).
+# --include-partial-messages is what makes speech start when she starts
+# TALKING rather than when she stops. A plain stream-json run only emits a
+# completed `assistant` event once a whole text block has been generated,
+# so a ten-second answer began playing ten seconds late — measurably, and
+# that is the whole of the "time to first speech" regression. The partial
+# events carry the same text as deltas; the TTS streamer speaks each
+# sentence as it completes and the completed event is then a no-op for the
+# part already said. Nothing downstream reads stream_event lines
+# (extract-response, serve.py's progress tailer and crab-debug all skip
+# unknown types), so this is additive.
+_generate_claude_run() {
+    local CONFDIR="$1"
+    (
+        cd "$PROJECT_DIR" || exit 1
+        # Her turn, not the coding agent's — see CLAUDE_NO_AUTO_MEMORY.
+        export "${CLAUDE_NO_AUTO_MEMORY?}"
+        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
+            --verbose --output-format stream-json --include-partial-messages \
+            --append-system-prompt "$SYSTEM_PROMPT" \
+            "$TEXT" >> "$DEBUGLOG" 2>&1
+    )
+}
+
 claude_generate() {
     local TEXT="$1" EFFORT="${2:-$CLAUDE_EFFORT}"
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    # --include-partial-messages is what makes speech start when she starts
-    # TALKING rather than when she stops. A plain stream-json run only emits a
-    # completed `assistant` event once a whole text block has been generated,
-    # so a ten-second answer began playing ten seconds late — measurably, and
-    # that is the whole of the "time to first speech" regression. The partial
-    # events carry the same text as deltas; the TTS streamer speaks each
-    # sentence as it completes and the completed event is then a no-op for the
-    # part already said. Nothing downstream reads stream_event lines
-    # (extract-response, serve.py's progress tailer and crab-debug all skip
-    # unknown types), so this is additive.
-    cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-        --verbose --output-format stream-json --include-partial-messages \
-        --append-system-prompt "$SYSTEM_PROMPT" \
-        "$TEXT" > "$DEBUGLOG" 2>&1
+    # While the primary is known-dry (fresh marker), start on the fallback
+    # directly — the doomed primary attempt was a whole CLI boot and refusal
+    # in front of every reply, the exact seconds a voice cannot afford.
+    local FIRST_CONFDIR=""
+    claude_start_on_fallback && FIRST_CONFDIR="$CLAUDE_FALLBACK_CONFIG_DIR"
+    : > "$DEBUGLOG"
+    _generate_claude_run "$FIRST_CONFDIR"
 
     # The primary login refusing over a usage/session limit is not the end of
-    # the turn: run it again on the fallback account. APPEND to the stream log
-    # rather than truncating — a TTS streamer is mid-tail on this very file,
-    # and truncation strands its cursor past EOF. The streamer rides through
-    # the refusal (it knows the retry is coming) and extract-response drops
-    # the refusal whenever a genuine reply follows it in the same log.
-    if claude_limit_fallback_due; then
-        cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-            CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
-            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-            --verbose --output-format stream-json --include-partial-messages \
-            --append-system-prompt "$SYSTEM_PROMPT" \
-            "$TEXT" >> "$DEBUGLOG" 2>&1
+    # the turn: stamp the marker so later runs skip the probe, then run it
+    # again on the fallback account. APPEND to the stream log rather than
+    # truncating — a TTS streamer is mid-tail on this very file, and
+    # truncation strands its cursor past EOF. The streamer rides through the
+    # refusal (it knows the retry is coming) and extract-response drops the
+    # refusal whenever a genuine reply follows it in the same log. A run that
+    # STARTED on the fallback never retries — its refusal means both logins
+    # are dry and must surface as itself.
+    if [ -z "$FIRST_CONFDIR" ] && claude_limit_fallback_due; then
+        claude_primary_limit_record "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | head -n1)"
+        _generate_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
     fi
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally

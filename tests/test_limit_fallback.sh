@@ -57,22 +57,38 @@ reply_stream() { # <text>
 }
 
 echo "claude_limit_fallback_due — retry exactly when a fallback can help:"
-refusal_stream > "$T/state-debug.log"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_fallback_due && echo DUE || echo no')"
+# DEBUGLOG is per-pid, so each case copies its fixture into place from inside
+# the sourced instance rather than guessing the name from outside.
+refusal_stream > "$T/fix-refusal"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-refusal" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = DUE ] && ok "limit refusal + configured fallback is due" || fail "should be due" "$out"
 
-out="$(run 'claude_limit_fallback_due && echo DUE || echo no')"
+out="$(run 'cp "'"$T"'/fix-refusal" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "no fallback configured, no retry" || fail "must not be due without a fallback" "$out"
 
 printf '%s\n' \
     '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"Invalid API key"}]}}' \
-    '{"type":"result","is_error":true,"result":"Invalid API key"}' > "$T/state-debug.log"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_fallback_due && echo DUE || echo no')"
+    '{"type":"result","is_error":true,"result":"Invalid API key"}' > "$T/fix-auth"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-auth" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "an auth failure is not retried" || fail "auth failures must surface as themselves" "$out"
 
-reply_stream "a genuine answer" > "$T/state-debug.log"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_fallback_due && echo DUE || echo no')"
+reply_stream "a genuine answer" > "$T/fix-reply"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-reply" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "a genuine reply is never retried" || fail "real output must not retry" "$out"
+
+echo "claude_start_on_fallback — skip the doomed probe while the primary is dry:"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_start_on_fallback && echo FB || echo primary')"
+[ "$out" = primary ] && ok "no marker: probe the primary" || fail "must probe without a marker" "$out"
+
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_primary_limit_record "out of usage credits"; claude_start_on_fallback && echo FB || echo primary')"
+[ "$out" = FB ] && ok "fresh marker: start on the fallback" || fail "fresh marker must skip the probe" "$out"
+
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" PRIMARY_LIMIT_RETRY=0 'claude_primary_limit_record x; claude_start_on_fallback && echo FB || echo primary')"
+[ "$out" = primary ] && ok "expired marker: the next run is the probe" || fail "stale marker must expire" "$out"
+
+out="$(run 'claude_primary_limit_record x; claude_start_on_fallback && echo FB || echo primary')"
+[ "$out" = primary ] && ok "no fallback configured: marker is inert" || fail "marker without a fallback must do nothing" "$out"
+rm -f "$T/state-primary-limited"
 
 echo "the shared signature — session-limit wordings match, prose does not:"
 for line in \
@@ -152,12 +168,17 @@ fi
 cat "$T/fixture-reply"
 EOF
 chmod +x "$T/claude-stream"
-rm -f "$T/calls"
+rm -f "$T/calls" "$T/state-primary-limited"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
-    _wake_claude_run ""
-    claude_limit_fallback_due && _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
+    FIRST_CONFDIR=""
+    claude_start_on_fallback && FIRST_CONFDIR="$CLAUDE_FALLBACK_CONFIG_DIR"
+    _wake_claude_run "$FIRST_CONFDIR"
+    if [ -z "$FIRST_CONFDIR" ] && claude_limit_fallback_due; then
+        claude_primary_limit_record "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | head -n1)"
+        _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
+    fi
     printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
     extract_response')"
 [ "$out" = "WAKE FALLBACK REPLY" ] && ok "wake run retries and extracts the real reply" \
@@ -165,6 +186,29 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
 [ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
 CALL:$T/fb" ] && ok "exactly two calls: primary then fallback" \
     || fail "call order must be primary, then fallback" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+[ -e "$T/state-primary-limited" ] && ok "the refusal stamps the primary-limited marker" \
+    || fail "detection must stamp the marker" "no marker"
+
+# Same sequence again with the marker now fresh: no probe, one call, straight
+# to the fallback.
+rm -f "$T/calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    FIRST_CONFDIR=""
+    claude_start_on_fallback && FIRST_CONFDIR="$CLAUDE_FALLBACK_CONFIG_DIR"
+    _wake_claude_run "$FIRST_CONFDIR"
+    if [ -z "$FIRST_CONFDIR" ] && claude_limit_fallback_due; then
+        claude_primary_limit_record x
+        _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
+    fi
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "known-dry: the reply still arrives" \
+    || fail "short-circuited run should reply" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:$T/fb" ] && ok "known-dry: one call, no primary probe" \
+    || fail "fresh marker must skip the primary" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+rm -f "$T/state-primary-limited"
 
 echo "job-runner — a limited primary is retried, not recorded blocked:"
 # Same scaffold as test_job_block.sh: copied runner, symlinked common.sh, fake
@@ -197,7 +241,7 @@ run_runner() { # <id> [ENV=val ...]
         env -u CLAUDE_CONFIG_DIR "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }
 
-rm -f "$T/calls" "$T/jobs/blocked"
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-primary-limited"
 run_runner fbworks CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/fbworks.json" state)"
 [ "$out" = finished ] && ok "fallback succeeds: the job is finished, not blocked" || fail "should finish via the fallback" "$out"
@@ -206,8 +250,21 @@ case "$(cat "$T/jobs/fbworks.log" 2>/dev/null)" in
     *) fail "the log must say a retry happened" "$(cat "$T/jobs/fbworks.log" 2>/dev/null | head -n2)" ;; esac
 [ ! -e "$T/jobs/blocked" ] && ok "no block marker when the fallback carried the job" \
     || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
+[ -e "$T/state-primary-limited" ] && ok "the job's refusal stamps the primary-limited marker" \
+    || fail "job detection must stamp the marker" "no marker"
 
+# Marker still fresh from the last case: the next job must not probe at all.
 rm -f "$T/calls" "$T/jobs/blocked"
+run_runner knowndry CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/knowndry.json" state)"
+[ "$out" = finished ] && ok "known-dry: the job finishes on the fallback" || fail "known-dry job should finish" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "known-dry: one call, no primary probe" || fail "fresh marker must skip the probe" "$n calls"
+case "$(cat "$T/jobs/knowndry.log" 2>/dev/null)" in
+    *"primary known-dry"*) ok "the short-circuit is recorded in the job log" ;;
+    *) fail "the log must say the probe was skipped" "$(head -n1 "$T/jobs/knowndry.log" 2>/dev/null)" ;; esac
+
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-primary-limited"
 run_runner bothout CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_FALLBACK_FAILS=1
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
 [ "$out" = blocked ] && ok "both logins refusing is blocked, as before" || fail "should block when the fallback is out too" "$out"
@@ -216,7 +273,7 @@ out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "exactly one retry — never a third attempt" || fail "must try each login once" "$n calls"
 
-rm -f "$T/calls" "$T/jobs/blocked"
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-primary-limited"
 run_runner nofb
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/nofb.json" state)"
 [ "$out" = blocked ] && ok "no fallback configured: blocked exactly as before" || fail "unconfigured must keep old behaviour" "$out"

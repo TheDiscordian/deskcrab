@@ -75,19 +75,31 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 # it is the user's coding agent's memory and she is not that agent. A builder
 # is: it is a headless coding session working inside his project, and the
 # project's own memory index is precisely the rules it should arrive knowing.
+# While the primary is known-dry (fresh marker), start the build on the
+# fallback directly instead of paying a doomed primary attempt first.
+FIRST_CONFDIR=""
+claude_start_on_fallback && FIRST_CONFDIR="$CLAUDE_FALLBACK_CONFIG_DIR"
+[ -n "$FIRST_CONFDIR" ] && echo "job-runner: primary known-dry — building via CLAUDE_CONFIG_DIR=$FIRST_CONFDIR" >> "$LOG"
 # ATT_OFF marks where the current attempt's output begins: every judgement
 # below reads only the final attempt's slice of the log, so a first-attempt
 # refusal kept as history can never masquerade as the retry's outcome.
 ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
-"$CLAUDE_BIN" -p --dangerously-skip-permissions \
-    --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
-    --append-system-prompt "$SYS" \
-    "$TASK" >> "$LOG" 2>&1
+(
+    [ -n "$FIRST_CONFDIR" ] && export CLAUDE_CONFIG_DIR="$FIRST_CONFDIR"
+    exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
+        --append-system-prompt "$SYS" \
+        "$TASK" >> "$LOG" 2>&1
+)
 RC=$?
 # The primary login refusing over a usage/session limit is not a dead job:
-# run the build once more on the fallback account before declaring anything.
-if [ "$RC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
+# stamp the marker so later runs skip the probe, then run the build once
+# more on the fallback account before declaring anything. A build that
+# STARTED on the fallback never retries — its refusal means both logins are
+# dry and blocks below as before.
+if [ -z "$FIRST_CONFDIR" ] && [ "$RC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
         && tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -qiE "$CLAUDE_LIMIT_RE"; then
+    claude_primary_limit_record "$(tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
     echo "job-runner: primary login refused (limit) — retrying once via CLAUDE_CONFIG_DIR=$CLAUDE_FALLBACK_CONFIG_DIR" >> "$LOG"
     ATT_OFF=$(wc -c < "$LOG")
     CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
