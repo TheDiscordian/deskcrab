@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location(
@@ -211,6 +212,186 @@ class TestFailSafe(StoreCase):
                 self.store.search("anything")
         finally:
             memory.EMBED_URL = old
+
+
+def days_ago(n):
+    return (datetime.now().astimezone() - timedelta(days=n)).isoformat(
+        timespec="seconds")
+
+
+def fake_row(kind="note", sim=0.8, conf=1.0, created_days=0, used_days=None,
+             uses=0, text="x", rec_id=1):
+    return (rec_id, text, kind, 0, "self", "", conf, days_ago(created_days),
+            days_ago(0), sim,
+            None if used_days is None else days_ago(used_days), uses)
+
+
+class TestScoreFormula(unittest.TestCase):
+    # The 13:15 formula is deterministic — no store, no embedder.
+    def setUp(self):
+        self.now = datetime.now().astimezone()
+
+    def test_directive_is_raw_cosine(self):
+        row = fake_row(kind="directive", sim=0.6, created_days=400,
+                       used_days=400, uses=50)
+        self.assertEqual(memory.score_row(row, self.now), 0.6)
+
+    def test_fresh_unused_note_scores_its_cosine(self):
+        self.assertAlmostEqual(
+            memory.score_row(fake_row(sim=0.8), self.now), 0.8, places=2)
+
+    def test_decay_halves_at_half_life(self):
+        row = fake_row(sim=0.8, used_days=memory.DECAY_HALF_LIFE_DAYS)
+        self.assertAlmostEqual(memory.score_row(row, self.now), 0.4, places=2)
+
+    def test_decay_counts_from_last_use_not_creation(self):
+        # He caught this flaw: a memory used all the time must not fade like
+        # one never used. Old note, used today -> no decay (only the boost).
+        stale = fake_row(sim=0.8, created_days=400)
+        lived = fake_row(sim=0.8, created_days=400, used_days=0, uses=1)
+        self.assertLess(memory.score_row(stale, self.now), 0.1)
+        self.assertGreater(memory.score_row(lived, self.now), 0.8)
+
+    def test_boost_is_log_shaped_and_capped(self):
+        s10 = memory.score_row(fake_row(sim=0.8, used_days=0, uses=10), self.now)
+        s100 = memory.score_row(fake_row(sim=0.8, used_days=0, uses=100), self.now)
+        self.assertGreater(s100, s10)          # a hundred beats ten...
+        self.assertLess(s100, s10 * 2)         # ...by a little, not tenfold
+        absurd = fake_row(sim=0.8, used_days=0, uses=10**9)
+        self.assertLessEqual(memory.score_row(absurd, self.now),
+                             0.8 * memory.REINFORCE_MAX_BOOST + 1e-9)
+
+    def test_confidence_still_fades_the_score(self):
+        weak = fake_row(sim=0.8, conf=0.5)
+        self.assertAlmostEqual(memory.score_row(weak, self.now), 0.4, places=2)
+
+
+class TestReinforce(StoreCase):
+    # vec supplied by hand -> no embedder needed.
+    def test_reinforce_stamps_use(self):
+        rec_id = self.store.insert("n", vec=[0.1] * memory.EMBED_DIM)
+        self.assertEqual(self.store.reinforce([rec_id, 999]), [rec_id])
+        self.store.reinforce([rec_id])
+        used, count = self.store.db.execute(
+            "SELECT last_used_at, use_count FROM memories WHERE id=?",
+            (rec_id,)).fetchone()
+        self.assertIsNotNone(used)
+        self.assertEqual(count, 2)
+
+    def test_retrieval_never_reinforces(self):
+        # Agreed guard: mere retrieval must not feed the boost — only the
+        # explicit reinforce path may, or the loop feeds itself.
+        self.store.insert("His character Xena is a Paladin.", topics="wow")
+        self.store.search("which character does he play")
+        used, count = self.store.db.execute(
+            "SELECT last_used_at, use_count FROM memories WHERE id=1").fetchone()
+        self.assertIsNone(used)
+        self.assertEqual(count, 0)
+
+
+class TestDecayPass(StoreCase):
+    def age(self, rec_id, days, column="last_seen"):
+        self.store.db.execute(f"UPDATE memories SET {column}=? WHERE id=?",
+                              (days_ago(days), rec_id))
+        self.store.db.commit()
+
+    def test_stale_note_loses_confidence_fresh_note_does_not(self):
+        vec = [0.1] * memory.EMBED_DIM
+        stale = self.store.insert("stale", vec=vec)
+        fresh = self.store.insert("fresh", vec=vec)
+        self.age(stale, memory.DECAY_STALE_DAYS + 10)
+        self.assertEqual(self.store.decay_pass(), (1, 0))
+        confs = dict(self.store.db.execute(
+            "SELECT id, confidence FROM memories"))
+        self.assertAlmostEqual(confs[stale], 0.9)
+        self.assertEqual(confs[fresh], 1.0)
+
+    def test_recent_use_blocks_decay(self):
+        rec = self.store.insert("used often", vec=[0.1] * memory.EMBED_DIM)
+        self.age(rec, 200)
+        self.age(rec, 1, column="last_used_at")
+        self.assertEqual(self.store.decay_pass(), (0, 0))
+
+    def test_note_retires_below_floor(self):
+        rec = self.store.insert("fading", vec=[0.1] * memory.EMBED_DIM)
+        self.store.db.execute("UPDATE memories SET confidence=0.35 WHERE id=?",
+                              (rec,))
+        self.age(rec, 200)
+        self.assertEqual(self.store.decay_pass(), (0, 1))
+        conf, status = self.store.db.execute(
+            "SELECT confidence, status FROM memories WHERE id=?",
+            (rec,)).fetchone()
+        self.assertEqual(status, "retired")
+        self.assertLess(conf, memory.DECAY_RETIRE_FLOOR)
+
+    def test_directives_never_decay(self):
+        rec = self.store.insert("his rule", kind="directive",
+                                vec=[0.1] * memory.EMBED_DIM)
+        self.age(rec, 400)
+        self.assertEqual(self.store.decay_pass(), (0, 0))
+        self.assertEqual(self.store.db.execute(
+            "SELECT confidence, status FROM memories WHERE id=?",
+            (rec,)).fetchone(), (1.0, "active"))
+
+
+class TestSearchScoring(StoreCase):
+    def test_directives_do_not_crowd_note_slots(self):
+        # Two pools, queried separately: the note pool is notes-only, so a
+        # high-similarity directive cannot spend one of the K note slots.
+        self.store.insert("His character Xena is a Paladin on DiscoWoW.",
+                          kind="note", topics="wow")
+        self.store.insert("When he asks about WoW, check DiscoWoW highscores.",
+                          kind="directive")
+        self.store.insert("Never spend gold from his WoW characters.",
+                          kind="directive")
+        rows, _, _ = self.store.search("which WoW character does he play", k=1)
+        self.assertIn("note", [r[2] for r in rows])
+
+    def test_decay_reranks_and_reinforce_recovers(self):
+        vec_a = self.store.embed_text(
+            "His character Xena is a Paladin on the DiscoWoW server.")
+        a = self.store.insert("His character Xena is a Paladin on the "
+                              "DiscoWoW server.", topics="wow", vec=vec_a)
+        b = self.store.insert("DiscoWoW runs on a WotLK 3.3.5a private "
+                              "server core.", topics="wow")
+
+        def order(rows):
+            ids = [r[0] for r in rows if r[2] == "note"]
+            return ids.index(a) < ids.index(b)
+
+        query = "which character does he play on DiscoWoW"
+        rows, _, _ = self.store.search(query)
+        self.assertTrue(order(rows))  # raw similarity favours the Xena note
+        # Age the Xena note far past the half-life (never used -> decays from
+        # creation): the fresher note must outrank it.
+        self.store.db.execute("UPDATE memories SET created=? WHERE id=?",
+                              (days_ago(400), a))
+        self.store.db.commit()
+        rows, _, _ = self.store.search(query)
+        self.assertFalse(order(rows))
+        # One genuine use resets the decay clock: back on top.
+        self.store.reinforce([a])
+        rows, _, _ = self.store.search(query)
+        self.assertTrue(order(rows))
+
+
+class TestBlockCap(unittest.TestCase):
+    def test_block_truncates_notes_first_and_says_so(self):
+        directives = [fake_row(kind="directive", rec_id=i,
+                               text=f"rule {i} " + "d" * 120)
+                      for i in range(5)]
+        notes = [fake_row(rec_id=100 + i, text=f"note {i} " + "n" * 200)
+                 for i in range(30)]
+        block = memory.format_block(directives + notes)
+        self.assertLessEqual(
+            len(block), memory.BLOCK_TOKEN_CAP * memory.CHARS_PER_TOKEN)
+        self.assertIn("TRUNCATED", block)
+        for r in directives:  # notes drop first; his rules survive
+            self.assertIn(r[1], block)
+
+    def test_small_block_is_not_marked_truncated(self):
+        block = memory.format_block([fake_row(text="short note")])
+        self.assertNotIn("TRUNCATED", block)
 
 
 class TestIngest(StoreCase):

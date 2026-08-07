@@ -15,6 +15,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import struct
@@ -54,6 +55,29 @@ SIM_FLOOR = 0.35
 DIRECTIVE_FLOOR = 0.28
 DIRECTIVE_CAP = 10
 NEAR_DUP_SIM = 0.92
+# Reinforcement scoring (13:15 design revision). Notes rank by
+#   score = cosine × confidence × decay(last_used_at) × (1 + log(1+use_count) × 0.15)
+# Decay counts from the last USE, never creation — a memory used all the time
+# must not fade like one never used; a note never yet used decays from its
+# creation. The boost is log-shaped (a hundred uses beats ten by a little, not
+# tenfold) and capped. Reinforcement lands only through `memory reinforce`
+# (the turn-end genuinely-used judge), NEVER on mere retrieval — no
+# self-reinforcing loops. Directives rank by raw cosine: never decayed, never
+# boosted. The floors above stay raw-cosine cuts; the score orders what
+# clears them.
+DECAY_HALF_LIFE_DAYS = 90
+REINFORCE_WEIGHT = 0.15
+REINFORCE_MAX_BOOST = 2.0
+# Recall-block size (13:15 revision): ~800 tokens; when it truncates, the
+# header says so. Lowest-ranked notes drop first, directives only after.
+BLOCK_TOKEN_CAP = 800
+CHARS_PER_TOKEN = 4
+# Confidence decay (design §3, run by the ingest pass per §5): a note neither
+# retrieved nor used in DECAY_STALE_DAYS loses DECAY_STEP confidence per pass
+# and retires below DECAY_RETIRE_FLOOR. Directives never decay.
+DECAY_STALE_DAYS = 90
+DECAY_STEP = 0.1
+DECAY_RETIRE_FLOOR = 0.3
 # Ingest dedup/supersession. The design left conflict judgement to the ingest
 # session; this mechanical layer cannot judge content, so both cuts are set
 # from measured data, not the design's thresholds. A one-word factual change
@@ -75,6 +99,31 @@ def default_dir():
 
 def now_iso():
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def parse_iso(ts):
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone() if parsed.tzinfo is None else parsed
+
+
+def score_row(row, now):
+    """The 13:15 scoring formula. Notes:
+    cosine × confidence × decay(last use) × (1 + log(1+use_count) × 0.15),
+    decay exponential with a DECAY_HALF_LIFE_DAYS half-life counted from
+    last_used_at (falling back to creation for a note never yet used), boost
+    capped at REINFORCE_MAX_BOOST. Directives: raw cosine, untouched."""
+    sim = row[9]
+    if row[2] != "note":
+        return sim
+    ts = parse_iso(row[10] or row[7])
+    days = max(0.0, (now - ts).total_seconds() / 86400) if ts else 0.0
+    decay = 0.5 ** (days / DECAY_HALF_LIFE_DAYS)
+    boost = min(1.0 + math.log1p(row[11] or 0) * REINFORCE_WEIGHT,
+                REINFORCE_MAX_BOOST)
+    return sim * row[6] * decay * boost
 
 
 def pack(vec):
@@ -124,9 +173,10 @@ class Store:
                 supersedes INTEGER REFERENCES memories(id),
                 created    TEXT NOT NULL,
                 last_seen  TEXT NOT NULL,
-                -- Reinforcement (13:15 design revision): bumped only when a
-                -- memory is judged GENUINELY USED at turn end, never on mere
-                -- retrieval. Schema-ready; the turn-end judge is not wired yet.
+                -- Reinforcement (13:15 design revision): bumped by `memory
+                -- reinforce` only when a memory is judged GENUINELY USED at
+                -- turn end, never on mere retrieval. Read by score_row; the
+                -- turn-end judge itself is not wired yet.
                 last_used_at TEXT,
                 use_count  INTEGER NOT NULL DEFAULT 0
             );
@@ -154,21 +204,23 @@ class Store:
         return cur.lastrowid
 
     def knn(self, vec, k):
-        """Raw KNN against active records: [(row, similarity)], best first."""
-        total = self.db.execute(
-            "SELECT count(*) FROM memories WHERE status='active'").fetchone()[0]
+        """Raw KNN against active records: rows with cosine similarity at
+        index 9, best raw similarity first."""
+        # Superseded/retired rows keep their vectors (history is kept), so the
+        # KNN budget must span the WHOLE vec table or low-similarity active
+        # rows fall off the end of the join filter. The corpus is small enough
+        # that fetching every vector is still sub-millisecond.
+        total = self.db.execute("SELECT count(*) FROM memories_vec").fetchone()[0]
         if total == 0:
             return []
-        # vec0 KNN cannot see the metadata table, so over-fetch and filter in
-        # the join; the corpus is small enough that fetching every vector is
-        # still sub-millisecond.
         rows = self.db.execute(
             "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
-            "       m.confidence, m.created, m.last_seen, 1.0 - v.distance AS sim"
+            "       m.confidence, m.created, m.last_seen, 1.0 - v.distance AS sim,"
+            "       m.last_used_at, m.use_count"
             " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
             " WHERE v.embedding MATCH ? AND v.k = ? AND m.status = 'active'"
-            " ORDER BY sim * m.confidence DESC",
-            (pack(vec), max(k * 4, 64))).fetchall()
+            " ORDER BY sim DESC",
+            (pack(vec), total)).fetchall()
         return rows[:k] if k else rows
 
     def vec_of(self, rec_id):
@@ -188,33 +240,45 @@ class Store:
         return False
 
     def search(self, query, k=TOP_K):
-        """The retrieval rule from the design: top-K above SIM_FLOOR, plus
-        every directive above the looser DIRECTIVE_FLOOR (capped), plus every
-        pinned record; near-duplicates of an already-taken record squashed."""
+        """The retrieval rule from the design's 13:15 revision — two pools
+        with different floors, queried separately so the assistant's own
+        chatter can never crowd the user's rules out: notes take the top-K
+        above SIM_FLOOR ranked by the reinforcement score, directives take
+        everything above the deliberately looser DIRECTIVE_FLOOR (capped, raw
+        cosine — never decayed or boosted), and every pinned record rides
+        along regardless. Near-duplicates of an already-taken record are
+        squashed so K slots hold K distinct things."""
         t0 = time.monotonic()
         qvec = embed([query], query=True)[0]
         t1 = time.monotonic()
         rows = self.knn(qvec, 0)
-        picked, seen, taken = [], set(), 0
-        for row in rows:
-            if taken >= k or row[9] < SIM_FLOOR:
-                break
-            if self._near_dup(row, picked):
-                continue
-            picked.append(row)
-            seen.add(row[0])
-            taken += 1
-        directives = 0
-        for row in rows:
-            if row[0] in seen:
-                directives += row[2] == "directive"
-                continue
-            want = (row[2] == "directive" and row[9] >= DIRECTIVE_FLOOR
-                    and directives < DIRECTIVE_CAP) or row[3]
-            if want and not self._near_dup(row, picked):
+        now = datetime.now().astimezone()
+        picked, seen = [], set()
+
+        def take(row):
+            if row[0] not in seen and not self._near_dup(row, picked):
                 picked.append(row)
                 seen.add(row[0])
-                directives += row[2] == "directive"
+                return True
+            return False
+
+        notes = sorted((r for r in rows if r[2] == "note" and r[9] >= SIM_FLOOR),
+                       key=lambda r: score_row(r, now), reverse=True)
+        taken = 0
+        for row in notes:
+            if taken >= k:
+                break
+            taken += take(row)
+        directives = 0
+        for row in rows:
+            if directives >= DIRECTIVE_CAP:
+                break
+            if row[2] == "directive" and row[9] >= DIRECTIVE_FLOOR:
+                directives += take(row)
+        for row in self.pinned_rows():
+            if row[0] not in seen:
+                picked.append(row)
+                seen.add(row[0])
         t2 = time.monotonic()
         if picked:
             now = now_iso()
@@ -251,9 +315,51 @@ class Store:
     def pinned_rows(self):
         return self.db.execute(
             "SELECT id, text, kind, pinned, source, topics, confidence,"
-            "       created, last_seen, 1.0"
+            "       created, last_seen, 1.0, last_used_at, use_count"
             " FROM memories WHERE status='active' AND pinned=1"
             " ORDER BY kind DESC, id").fetchall()
+
+    def reinforce(self, ids):
+        """Mark records as genuinely USED this turn (the turn-end judge's
+        write path — never called on mere retrieval): stamp last_used_at,
+        bump use_count. Returns the ids that actually existed."""
+        now = now_iso()
+        hit = []
+        for rec_id in ids:
+            n = self.db.execute(
+                "UPDATE memories SET last_used_at=?, use_count=use_count+1"
+                " WHERE id=?", (now, rec_id)).rowcount
+            if n:
+                hit.append(rec_id)
+        self.db.commit()
+        return hit
+
+    def decay_pass(self):
+        """§3 soft decay, run by the ingest pass (§5): an active note neither
+        retrieved nor used in DECAY_STALE_DAYS loses DECAY_STEP confidence;
+        below DECAY_RETIRE_FLOOR it flips to retired. Directives never decay."""
+        now = datetime.now().astimezone()
+        decayed, retired = 0, 0
+        for rec_id, conf, seen, used in self.db.execute(
+                "SELECT id, confidence, last_seen, last_used_at FROM memories"
+                " WHERE status='active' AND kind='note'").fetchall():
+            stamps = [t for t in (parse_iso(seen), parse_iso(used)) if t]
+            if not stamps:
+                continue
+            if (now - max(stamps)).total_seconds() < DECAY_STALE_DAYS * 86400:
+                continue
+            conf = round(conf - DECAY_STEP, 3)
+            if conf < DECAY_RETIRE_FLOOR:
+                self.db.execute(
+                    "UPDATE memories SET confidence=?, status='retired'"
+                    " WHERE id=?", (conf, rec_id))
+                retired += 1
+            else:
+                self.db.execute("UPDATE memories SET confidence=? WHERE id=?",
+                                (conf, rec_id))
+                decayed += 1
+        self.db.commit()
+        return decayed, retired
 
 
 # --- recall-block: the prompt-facing view -----------------------------------
@@ -278,19 +384,30 @@ def recall_query(reason, wants_file, convo_file):
 def format_block(rows, warning=""):
     if not rows and not warning:
         return ""
-    out = ["## What you remember (retrieved, not exhaustive — "
-           "'crab memory search <query>' for more)"]
-    if warning:
-        out.append(f"\n{warning}")
     directives = [r for r in rows if r[2] == "directive"]
     notes = [r for r in rows if r[2] == "note"]
-    if directives:
-        out.append("\nThings he has told you:")
-        out.extend(f"- {r[1]} ({r[7][:10]})" for r in directives)
-    if notes:
-        out.append("\nThings you know from your own time:")
-        out.extend(f"- {r[1]} ({r[7][:10]})" for r in notes)
-    return "\n".join(out)
+    # ~BLOCK_TOKEN_CAP-token cap (13:15 revision): if it truncates, the header
+    # says so. Lowest-ranked notes drop first; directives are expensive to
+    # miss, so they go only when notes are already gone.
+    truncated = False
+    while True:
+        out = ["## What you remember (retrieved, not exhaustive"
+               + (", TRUNCATED to fit" if truncated else "")
+               + " — 'crab memory search <query>' for more)"]
+        if warning:
+            out.append(f"\n{warning}")
+        if directives:
+            out.append("\nThings he has told you:")
+            out.extend(f"- {r[1]} ({r[7][:10]})" for r in directives)
+        if notes:
+            out.append("\nThings you know from your own time:")
+            out.extend(f"- {r[1]} ({r[7][:10]})" for r in notes)
+        block = "\n".join(out)
+        if len(block) <= BLOCK_TOKEN_CAP * CHARS_PER_TOKEN \
+                or not (notes or directives):
+            return block
+        truncated = True
+        (notes or directives).pop()
 
 
 def cmd_recall_block(store, args):
@@ -409,6 +526,14 @@ def cmd_ingest(store, args):
         with open(cursor_path) as f:
             cursor = json.load(f)
 
+    # The pass also runs decay (design §5): stale unretrieved notes fade
+    # before they die.
+    if not args.dry_run:
+        decayed, retired = store.decay_pass()
+        if decayed or retired:
+            print(f"decay: {decayed} stale notes lost {DECAY_STEP:g} confidence, "
+                  f"{retired} retired")
+
     if args.from_json:
         with open(args.from_json) as f:
             candidates = json.load(f)
@@ -465,7 +590,8 @@ def cmd_search(store, args):
     query = " ".join(args.query).strip()
     rows, embed_ms, knn_ms = store.search(query, k=args.n)
     for r in rows:
-        flags = "".join((" pinned" if r[3] else "",))
+        flags = ("" if not r[3] else " pinned") + \
+                ("" if not r[11] else f" used×{r[11]}")
         print(f"{r[9]:.3f}  #{r[0]:<4} {r[2]:<9}{flags} {r[1]}  ({r[7][:10]})")
     print(f"-- {len(rows)} records in {embed_ms + knn_ms:.1f} ms "
           f"(embed {embed_ms:.1f} ms + knn {knn_ms:.1f} ms)")
@@ -512,6 +638,16 @@ def cmd_dump(store, args):
     return 0
 
 
+def cmd_reinforce(store, args):
+    hit = store.reinforce(args.ids)
+    for rec_id in hit:
+        print(f"reinforced #{rec_id}")
+    missing = [i for i in args.ids if i not in hit]
+    for rec_id in missing:
+        print(f"no record #{rec_id}")
+    return 0 if not missing else 1
+
+
 def cmd_forget(store, args):
     n = store.db.execute("UPDATE memories SET status='retired' WHERE id=?",
                          (args.id,)).rowcount
@@ -550,6 +686,12 @@ def main():
     p = sub.add_parser("forget", help="retire a record by id")
     p.add_argument("id", type=int)
     p.set_defaults(fn=cmd_forget)
+
+    p = sub.add_parser("reinforce",
+                       help="mark records genuinely used this turn "
+                            "(bumps last_used_at and use_count)")
+    p.add_argument("ids", type=int, nargs="+")
+    p.set_defaults(fn=cmd_reinforce)
 
     p = sub.add_parser("ingest", help="distil new journal/transcript text into records")
     p.add_argument("--journal-dir",
