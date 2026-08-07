@@ -96,10 +96,13 @@ out="$(witness)"
 
 # compact_convo only reaches the CLI when the live conversation has grown past
 # its threshold, which is a lot of fixture for one env prefix — assert on the
-# source instead. Both of its runs (primary and fallback) must carry it.
+# source instead. There is now ONE invocation, inside the loop that walks the
+# account chain, so every login it tries carries the prefix by construction: the
+# check is that the loop still has exactly one CLI call in it, because a second
+# one is how the primary and the fallback drifted apart the first time.
 n_sum=$(grep -c 'NEWSUM=\$(cd "\$PROJECT_DIR" && env "\$CLAUDE_NO_AUTO_MEMORY"' "$REPO_DIR/lib/common.sh")
-[ "$n_sum" -eq 2 ] && ok "conversation compaction, both logins (compact_convo)" \
-    || fail "both compact_convo runs must disable auto-memory" "$n_sum of 2 prefixed"
+[ "$n_sum" -eq 1 ] && ok "conversation compaction, every login (compact_convo)" \
+    || fail "compact_convo must run the CLI in one prefixed place" "$n_sum of 1 prefixed"
 
 echo
 echo "the knob is per-invocation, never machine-wide:"

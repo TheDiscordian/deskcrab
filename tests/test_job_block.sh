@@ -126,8 +126,15 @@ chmod +x "$T/claude-stub"
 # "do a thing" job entries straight into my real day journal, where sleep would
 # have read them at 03:10 as work I had actually done.
 run_runner() { # <jobs-dir> <id>  -> emits nothing; side effects land in $T/wakes
+    # JOBS_BLOCKED_FILE is pinned to scratch explicitly: the live-jobs-dir case
+    # below otherwise derives it from the LIVE dir, and the stub's refusal then
+    # stamps the REAL block marker — on 2026-08-07 a builder running this suite
+    # held every live dispatch for 30 min with "out of usage credits" that no
+    # account had actually said. DESKCRAB_CONF is pinned for the same reason:
+    # the live config's fallback settings must not reach a stub runner.
     JOBS_DIR="$1" DESKCRAB_STATE_PREFIX="$T/state" WANTS_FILE="$T/wants.md" \
         DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-stub" \
+        JOBS_BLOCKED_FILE="$T/blocked-marker" \
         "$T/repo/lib/job-runner" "$2" "$T" >/dev/null 2>&1
 }
 "$REPO_DIR/lib/job-status" new "$T/jobs2/jobtest.json" jobtest "do a thing" >/dev/null 2>&1 || \

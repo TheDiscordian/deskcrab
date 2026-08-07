@@ -75,30 +75,41 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 # it is the user's coding agent's memory and she is not that agent. A builder
 # is: it is a headless coding session working inside his project, and the
 # project's own memory index is precisely the rules it should arrive knowing.
-# ATT_OFF marks where the current attempt's output begins: every judgement
-# below reads only the final attempt's slice of the log, so a first-attempt
-# refusal kept as history can never masquerade as the retry's outcome.
+# A login refusing over a usage/session limit is not a dead job: the build moves
+# to the next account and only a chain with nothing left in it blocks. Accounts
+# known dry are skipped outright — paying a doomed CLI boot and refusal in front
+# of every build buys nothing. Each refusal stamps its account, so the next job
+# starts past it too.
+#
+# ATT_OFF marks where the current attempt's output begins: every judgement below
+# reads only the final attempt's slice of the log, so an earlier attempt's
+# refusal kept as history can never masquerade as the last one's outcome.
 ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
-"$CLAUDE_BIN" -p --dangerously-skip-permissions \
-    --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
-    --append-system-prompt "$SYS" \
-    "$TASK" >> "$LOG" 2>&1
-RC=$?
-# A login refusing over a usage/session limit is not a dead job: run the build
-# again on each remaining account in the fallback chain before declaring
-# anything. ATT_OFF moves to the head of every attempt, so each account's
-# refusal is judged on its own bytes and the loop stops the moment one of them
-# either works or fails for some other reason.
-for FBDIR in $(claude_fallback_dirs); do
+RC=0
+ATTEMPT=0
+for ACCT in $(claude_accounts); do
+    CONFDIR="$(claude_account_confdir "$ACCT")"
+    ATTEMPT=$(( ATTEMPT + 1 ))
+    if [ -n "$CONFDIR" ]; then
+        if [ "$ATTEMPT" = 1 ]; then
+            echo "job-runner: earlier logins known dry — building via CLAUDE_CONFIG_DIR=$CONFDIR" >> "$LOG"
+        else
+            echo "job-runner: login refused (limit) — retrying via CLAUDE_CONFIG_DIR=$CONFDIR" >> "$LOG"
+        fi
+    fi
+    ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+    (
+        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
+            --append-system-prompt "$SYS" \
+            "$TASK" >> "$LOG" 2>&1
+    )
+    RC=$?
     [ "$RC" -ne 0 ] || break
     tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -qiE "$CLAUDE_LIMIT_RE" || break
-    echo "job-runner: login refused (limit) — retrying via CLAUDE_CONFIG_DIR=$FBDIR" >> "$LOG"
-    ATT_OFF=$(wc -c < "$LOG")
-    CLAUDE_CONFIG_DIR="$FBDIR" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
-        --append-system-prompt "$SYS" \
-        "$TASK" >> "$LOG" 2>&1
-    RC=$?
+    claude_limit_record "$CONFDIR" \
+        "$(tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
 done
 trap - TERM
 

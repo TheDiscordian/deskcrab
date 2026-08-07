@@ -19,15 +19,25 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # CLAUDE_MODEL="opus"
 # CLAUDE_EFFORT="low"
 
-# Optional: a second Claude Code config directory (a separate `claude` login /
-# subscription) to fall back to when the primary account refuses to run at all
+# Optional: further Claude Code config directories (separate `claude` logins /
+# subscriptions) to fall back to when the account in hand refuses to run at all
 # — session/usage limit reached or credits exhausted. The refused run is
-# retried once with CLAUDE_CONFIG_DIR pointed here. Applies everywhere the
+# retried with CLAUDE_CONFIG_DIR pointed at each in turn. Applies everywhere the
 # assistant runs claude: interactive turns, autonomous wakes, detached jobs,
 # and conversation summarization. Limit refusals only — auth and network
-# failures still surface as themselves. Set up the second login once with:
+# failures still surface as themselves.
+#
+# One entry or many: whitespace- or colon-separated, tried left to right. Set up
+# each login once with its own /login (never copy credentials between config
+# dirs — racing token refreshes corrupt them):
 #   CLAUDE_CONFIG_DIR=$HOME/.claude-fallback claude /login
 # CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback"
+# CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback:$HOME/.claude-fallback2"
+
+# After an account refuses over a limit, runs skip it for this many seconds
+# rather than re-probing it (a full CLI boot + refusal ahead of every reply).
+# The first run after the window probes it again.
+# ACCOUNT_LIMIT_RETRY=1800
 
 # Optional: project directory (Claude runs from here, gets project memory)
 # PROJECT_DIR="$HOME"

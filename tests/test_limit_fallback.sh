@@ -71,22 +71,47 @@ out="$(run 'claude_fallback_dirs | wc -l')"
 [ "$out" = 0 ] && ok "unset is an empty chain, not one empty dir" || fail "unset must yield nothing" "$out"
 
 echo "claude_limit_fallback_due — retry exactly when a fallback can help:"
-refusal_stream > "$T/state-debug.log"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_fallback_due && echo DUE || echo no')"
+# DEBUGLOG is per-pid, so each case copies its fixture into place from inside
+# the sourced instance rather than guessing the name from outside.
+refusal_stream > "$T/fix-refusal"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-refusal" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = DUE ] && ok "limit refusal + configured fallback is due" || fail "should be due" "$out"
 
-out="$(run 'claude_limit_fallback_due && echo DUE || echo no')"
+out="$(run 'cp "'"$T"'/fix-refusal" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "no fallback configured, no retry" || fail "must not be due without a fallback" "$out"
 
 printf '%s\n' \
     '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"Invalid API key"}]}}' \
-    '{"type":"result","is_error":true,"result":"Invalid API key"}' > "$T/state-debug.log"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_fallback_due && echo DUE || echo no')"
+    '{"type":"result","is_error":true,"result":"Invalid API key"}' > "$T/fix-auth"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-auth" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "an auth failure is not retried" || fail "auth failures must surface as themselves" "$out"
 
-reply_stream "a genuine answer" > "$T/state-debug.log"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_fallback_due && echo DUE || echo no')"
+reply_stream "a genuine answer" > "$T/fix-reply"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-reply" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "a genuine reply is never retried" || fail "real output must not retry" "$out"
+
+echo "claude_accounts — skip the doomed probe while an account is known dry:"
+ACCTS='claude_accounts | tr "\n" ","'
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" "$ACCTS")"
+[ "$out" = "-,$T/fb," ] && ok "no marker: the login in hand leads" || fail "must probe without a marker" "$out"
+
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_record "" "out of usage credits"; '"$ACCTS")"
+[ "$out" = "$T/fb," ] && ok "fresh marker: that account is skipped" || fail "fresh marker must skip the probe" "$out"
+
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" ACCOUNT_LIMIT_RETRY=0 'claude_limit_record "" x; '"$ACCTS")"
+[ "$out" = "-,$T/fb," ] && ok "expired marker: the next run is the probe" || fail "stale marker must expire" "$out"
+
+# Markers are a shortcut, never a gate: with every account stamped there is
+# nothing left to skip TO, and a run that tried nothing would be silence with
+# no error to explain it.
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_record "" x; claude_limit_record "'"$T"'/fb" x; '"$ACCTS")"
+[ "$out" = "-,$T/fb," ] && ok "every account dry: the whole chain is tried anyway" \
+    || fail "a fully-stamped chain must not run nothing" "$out"
+
+out="$(run 'claude_limit_record "" x; '"$ACCTS")"
+[ "$out" = "-," ] && ok "no fallback configured: the one account still runs" \
+    || fail "a marker must never leave a lone account unrun" "$out"
+rm -f "$T"/state-limited-*
 
 echo "the shared signature — session-limit wordings match, prose does not:"
 for line in \
@@ -194,7 +219,7 @@ cat "$T/fixture-refusal"
 exit 1
 EOF
 chmod +x "$T/claude-stream"
-rm -f "$T/calls"
+rm -f "$T/calls" "$T"/state-limited-*
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
@@ -206,10 +231,27 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
 [ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
 CALL:$T/fb" ] && ok "exactly two calls: primary then fallback" \
     || fail "call order must be primary, then fallback" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+[ -e "$T/state-limited-primary" ] && ok "the refusal stamps that account's marker" \
+    || fail "detection must stamp the marker" "no marker"
+
+# Same sequence again with the marker now fresh: no probe, one call, straight
+# to the fallback.
+rm -f "$T/calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "known-dry: the reply still arrives" \
+    || fail "short-circuited run should reply" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:$T/fb" ] && ok "known-dry: one call, no wasted probe" \
+    || fail "fresh marker must skip the dry account" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+rm -f "$T"/state-limited-*
 
 # The whole point of a chain: the second fallback is reached when the first is
 # out too, and the accounts are tried left to right.
-rm -f "$T/calls"
+rm -f "$T/calls" "$T"/state-limited-*
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR="$T/fb2" \
     CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
@@ -225,7 +267,7 @@ CALL:$T/fb2" ] && ok "three calls, in the configured order" \
     || fail "the chain must be walked left to right" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
 
 # A spent chain stops. Nothing here may loop back to an account already tried.
-rm -f "$T/calls"
+rm -f "$T/calls" "$T"/state-limited-*
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR=/never \
     CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
@@ -275,7 +317,7 @@ run_runner() { # <id> [ENV=val ...]
         env -u CLAUDE_CONFIG_DIR "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }
 
-rm -f "$T/calls" "$T/jobs/blocked"
+rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
 run_runner fbworks CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/fbworks.json" state)"
 [ "$out" = finished ] && ok "fallback succeeds: the job is finished, not blocked" || fail "should finish via the fallback" "$out"
@@ -284,8 +326,21 @@ case "$(cat "$T/jobs/fbworks.log" 2>/dev/null)" in
     *) fail "the log must say a retry happened" "$(cat "$T/jobs/fbworks.log" 2>/dev/null | head -n2)" ;; esac
 [ ! -e "$T/jobs/blocked" ] && ok "no block marker when the fallback carried the job" \
     || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
+[ -e "$T/state-limited-primary" ] && ok "the job's refusal stamps that account's marker" \
+    || fail "job detection must stamp the marker" "no marker"
 
+# Marker still fresh from the last case: the next job must not probe at all.
 rm -f "$T/calls" "$T/jobs/blocked"
+run_runner knowndry CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/knowndry.json" state)"
+[ "$out" = finished ] && ok "known-dry: the job finishes on the fallback" || fail "known-dry job should finish" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "known-dry: one call, no primary probe" || fail "fresh marker must skip the probe" "$n calls"
+case "$(cat "$T/jobs/knowndry.log" 2>/dev/null)" in
+    *"known dry"*) ok "the short-circuit is recorded in the job log" ;;
+    *) fail "the log must say the probe was skipped" "$(head -n1 "$T/jobs/knowndry.log" 2>/dev/null)" ;; esac
+
+rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
 run_runner bothout CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_FALLBACK_FAILS=1
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
 [ "$out" = blocked ] && ok "both logins refusing is blocked, as before" || fail "should block when the fallback is out too" "$out"
@@ -294,7 +349,7 @@ out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "exactly one retry — never a third attempt" || fail "must try each login once" "$n calls"
 
-rm -f "$T/calls" "$T/jobs/blocked"
+rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
 run_runner chain CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR="$T/fb2"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/chain.json" state)"
 [ "$out" = finished ] && ok "a job carried by the third subscription finishes" \
@@ -305,7 +360,7 @@ n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ ! -e "$T/jobs/blocked" ] && ok "no block marker when a later account carried the job" \
     || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
 
-rm -f "$T/calls" "$T/jobs/blocked"
+rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
 run_runner nofb
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/nofb.json" state)"
 [ "$out" = blocked ] && ok "no fallback configured: blocked exactly as before" || fail "unconfigured must keep old behaviour" "$out"

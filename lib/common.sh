@@ -169,6 +169,17 @@ DEBUGLOG_LATEST="${STATE_PREFIX}-debug.log"
 # path may fail quietly again.
 SPEECH_LOG="${SPEECH_LOG:-${STATE_PREFIX}-speech.log}"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
+# Once an account HAS refused over a limit, probing it again ahead of every run
+# is pure cost: a full CLI boot and refusal in front of every reply, on an
+# account that will not refill for hours. Each refusal stamps a marker for that
+# account (claude_limit_marker, under STATE_PREFIX — which must already be set,
+# so this lives in the runtime-state block: shared by every live session, wiped
+# by a reboot at the price of one extra probe, and a scratch instance's markers
+# stay scratch), and while it is younger than ACCOUNT_LIMIT_RETRY every run
+# starts past that account. Markers expire on their own — nothing here can see a
+# refill — so the first run after the window IS the probe, the same design as
+# the job block marker.
+ACCOUNT_LIMIT_RETRY="${ACCOUNT_LIMIT_RETRY:-1800}"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
 # stage. Two voices at once is never acceptable: the later speaker queues
@@ -1429,25 +1440,26 @@ ${PRIOR:-(none)}
 $(cat "$OLDFILE")"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    local SUMRC=0
-    NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
     # In plain -p mode a limit refusal arrives as ordinary stdout, so gate on
     # the exit code — an error line must never be written over the summary of
-    # real turns — and walk the fallback chain like every other run. Each
-    # attempt is judged on ITS OWN output: the previous account's refusal is
-    # replaced by this one's, so a refusal kept as history can never send the
-    # loop round again after a genuine failure of another kind.
-    local FBDIR
-    for FBDIR in $(claude_fallback_dirs); do
-        [ "$SUMRC" -ne 0 ] || break
-        printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE" || break
+    # real turns — and walk the accounts like every other run. Each attempt is
+    # judged on ITS OWN output: the previous account's refusal is replaced by
+    # this one's, so a refusal kept as history can never send the loop round
+    # again after a genuine failure of another kind. ${SUMCONF:+...} hands env a
+    # CLAUDE_CONFIG_DIR override only for a fallback account; empty (the login
+    # in hand), it expands away.
+    local SUMRC=0 SUMCONF="" ACCT
+    for ACCT in $(claude_accounts); do
+        SUMCONF="$(claude_account_confdir "$ACCT")"
         SUMRC=0
         NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-            CLAUDE_CONFIG_DIR="$FBDIR" \
+            ${SUMCONF:+CLAUDE_CONFIG_DIR="$SUMCONF"} \
             "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
+        [ "$SUMRC" -ne 0 ] || break
+        printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE" || break
+        claude_limit_record "$SUMCONF" \
+            "$(printf '%s' "$NEWSUM" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
     done
 
     if [ "$SUMRC" -eq 0 ] && [ -n "$NEWSUM" ]; then
@@ -2094,18 +2106,81 @@ claude_fallback_dirs() {
         | grep -v '^[[:space:]]*$' || true
 }
 
-# Should the run that just wrote $DEBUGLOG be retried on the next login?
-# Yes only when all three hold: a fallback is configured, the stream shows the
-# CLI failing before any genuine model output (wake_stream_failed's shape),
-# and the failure text is a usage/session limit. An auth or network failure
-# fails the other accounts too and must surface as itself, not as a retry.
-# Asked again after each attempt: the stream accumulates, so the answer stays
-# yes for as long as every account tried so far has refused, and turns to no
-# the moment one of them produces genuine output.
-claude_limit_fallback_due() {
-    [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] || return 1
+# Did the run that just wrote $DEBUGLOG refuse over a usage/session limit —
+# that is, did the CLI fail before any genuine model output (wake_stream_failed's
+# shape) with limit-flavoured text? An auth or network failure fails every other
+# account too and must surface as itself, never as a retry. Asked again after
+# each attempt: the stream accumulates, so the answer stays yes for as long as
+# every account tried so far has refused, and turns to no the moment one of them
+# produces genuine output.
+claude_run_limited() {
     wake_stream_failed || return 1
     grep -qiE "$CLAUDE_LIMIT_RE" "$DEBUGLOG"
+}
+
+# The same question, plus "and there is somewhere else to go". Kept because it
+# is the honest name for the decision to retry at all.
+claude_limit_fallback_due() {
+    [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] || return 1
+    claude_run_limited
+}
+
+# Accounts are named by their config dir; the login already in the environment
+# is the token "-" (no CLAUDE_CONFIG_DIR override), which no directory can
+# collide with. These two translate between the token and the dir.
+CLAUDE_PRIMARY_TOKEN="-"
+claude_account_confdir() { [ "$1" = "$CLAUDE_PRIMARY_TOKEN" ] || printf '%s' "$1"; }
+
+# Where the "this account is dry" stamp for one account lives. Per account, not
+# one global marker: with a chain, knowing the primary is out says nothing about
+# the second subscription, and a single file would make one account's outage
+# look like every account's.
+claude_limit_marker() {
+    printf '%s-limited-%s' "$STATE_PREFIX" \
+        "$(printf '%s' "${1:-primary}" | tr -c 'A-Za-z0-9' '_')"
+}
+
+# This account refused over a limit — stamp it so the next runs skip straight
+# past it instead of re-probing a dry account. $2 is the refusal line, kept for
+# status displays and debugging.
+claude_limit_record() {
+    printf '%s\t%s\n' "$(date +%s)" "${2:-limit refusal}" \
+        > "$(claude_limit_marker "$1")" 2>/dev/null
+}
+
+# Is this account known dry? True while its marker is younger than
+# ACCOUNT_LIMIT_RETRY. The marker expires on its own — nothing here can see an
+# account refill — so the first run after the window IS the probe, the same
+# design as the job block marker.
+claude_account_limited() {
+    local rec epoch
+    rec="$(head -n1 "$(claude_limit_marker "$1")" 2>/dev/null)" || return 1
+    epoch="${rec%%	*}"
+    case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+    [ $(( $(date +%s) - epoch )) -lt "$ACCOUNT_LIMIT_RETRY" ]
+}
+
+# Every account this run may use, in order, one token per line: the login in
+# hand first, then each configured fallback. Accounts with a fresh limit marker
+# are dropped — with an account known dry, probing it ahead of every run is a
+# full CLI boot and a refusal in front of every reply, for hours, on an account
+# that will not refill.
+#
+# If that leaves nothing, the WHOLE chain is returned. The markers are a
+# shortcut, never a gate: a run that tried nothing at all would produce silence
+# with no error to explain it, which is worse than one wasted probe.
+claude_accounts() {
+    local all avail="" d
+    all="$(printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs)"
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        claude_account_limited "$(claude_account_confdir "$d")" && continue
+        avail="$avail$d
+"
+    done <<EOF
+$all
+EOF
+    if [ -n "$avail" ]; then printf '%s' "$avail"; else printf '%s\n' "$all"; fi
 }
 
 # What did the wake actually DO? A silent reply is the model's SPEECH
@@ -2217,22 +2292,25 @@ _wake_claude_run() {
     WAKE_CLAUDE_STATUS=$?
 }
 
-# The whole of a wake's CLI work: the account in hand, then each fallback in
-# turn for as long as the answer is a limit refusal. A login refusing over a
+# The whole of a wake's CLI work: every account that is worth trying, in order,
+# for as long as the answer is a limit refusal. A login refusing over a
 # usage/session limit does not end the wake — it moves it to the next
 # subscription, still under the watchdog, until one answers or the chain is
-# spent. Every run APPENDS to the same stream log; a combined log reads
-# correctly everywhere downstream (wake_stream_failed sees genuine output and
-# stops calling the wake failed, extract-response drops the refusals whenever a
-# real reply follows them). Factored out of run_claude_wake so the walk itself
-# is testable and exists exactly once. Leaves the last run's exit status in
-# WAKE_CLAUDE_STATUS, like the single run it replaced.
+# spent; each refusal stamps that account so the next wake starts past it
+# instead of paying a doomed CLI boot for nothing. Every run APPENDS to the same
+# stream log; a combined log reads correctly everywhere downstream
+# (wake_stream_failed sees genuine output and stops calling the wake failed,
+# extract-response drops the refusals whenever a real reply follows them).
+# Factored out of run_claude_wake so the walk itself is testable and exists
+# exactly once. Leaves the last run's exit status in WAKE_CLAUDE_STATUS, like
+# the single run it replaced.
 wake_claude_run_chain() {
-    _wake_claude_run ""
-    local FBDIR
-    for FBDIR in $(claude_fallback_dirs); do
-        claude_limit_fallback_due || break
-        _wake_claude_run "$FBDIR"
+    local ACCT CONFDIR
+    for ACCT in $(claude_accounts); do
+        CONFDIR="$(claude_account_confdir "$ACCT")"
+        _wake_claude_run "$CONFDIR"
+        claude_run_limited || break
+        claude_limit_record "$CONFDIR" "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | tail -n1)"
     done
 }
 
@@ -2522,7 +2600,7 @@ start_tts_streamer() {
         DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
         DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
-        DESKCRAB_CLAUDE_FALLBACK="$(claude_fallback_dirs | tr '\n' ' ')" \
+        DESKCRAB_CLAUDE_FALLBACK="$(claude_accounts | tail -n +2 | tr '\n' ' ')" \
         DESKCRAB_SPEECH_LOG="$SPEECH_LOG" \
         DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
@@ -2609,6 +2687,37 @@ _generate_claude_run() {
     )
 }
 
+# One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
+# CLAUDE_CONFIG_DIR override ("" = the login already in the environment); every
+# account in the chain runs through here, so the flags cannot drift between the
+# first attempt and the retries. Reads TEXT / EFFORT / SYSTEM_PROMPT /
+# CLAUDE_BIN from claude_generate's scope (bash dynamic scoping, same as
+# _wake_claude_run).
+# --include-partial-messages is what makes speech start when she starts
+# TALKING rather than when she stops. A plain stream-json run only emits a
+# completed `assistant` event once a whole text block has been generated,
+# so a ten-second answer began playing ten seconds late — measurably, and
+# that is the whole of the "time to first speech" regression. The partial
+# events carry the same text as deltas; the TTS streamer speaks each
+# sentence as it completes and the completed event is then a no-op for the
+# part already said. Nothing downstream reads stream_event lines
+# (extract-response, serve.py's progress tailer and crab-debug all skip
+# unknown types), so this is additive.
+_generate_claude_run() {
+    local CONFDIR="$1"
+    (
+        cd "$PROJECT_DIR" || exit 1
+        # Her turn, not the coding agent's — see CLAUDE_NO_AUTO_MEMORY.
+        export "${CLAUDE_NO_AUTO_MEMORY?}"
+        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
+            --verbose --output-format stream-json --include-partial-messages \
+            --append-system-prompt "$SYSTEM_PROMPT" \
+            "$TEXT" >> "$DEBUGLOG" 2>&1
+    )
+}
+
 # One turn of generation: prompt in, response text out. No speech, no windows,
 # no conversation writes — every caller (desktop, wake, remote) layers its own
 # output on top of this. The stream still lands in DEBUGLOG, so a TTS streamer
@@ -2622,18 +2731,20 @@ claude_generate() {
     # The log is claimed by truncating it ONCE, here, and every run of this
     # turn APPENDS. Truncating for a retry instead would strand the cursor of
     # the TTS streamer that is mid-tail on this very file.
+    #
+    # Accounts known dry are skipped outright: a doomed attempt is a whole CLI
+    # boot and refusal in front of every reply, the exact seconds a voice cannot
+    # afford. Each refusal stamps its account and moves to the next; the
+    # streamer rides through the refusals (it is told how many retries are still
+    # to come) and extract-response drops them whenever a genuine reply follows
+    # in the same log.
     : > "$DEBUGLOG"
-    _generate_claude_run ""
-
-    # A login refusing over a usage/session limit is not the end of the turn:
-    # run it again on the next account in the chain. The streamer rides through
-    # each refusal (it knows how many retries are still to come) and
-    # extract-response drops them whenever a genuine reply follows in the same
-    # log.
-    local FBDIR
-    for FBDIR in $(claude_fallback_dirs); do
-        claude_limit_fallback_due || break
-        _generate_claude_run "$FBDIR"
+    local ACCT CONFDIR
+    for ACCT in $(claude_accounts); do
+        CONFDIR="$(claude_account_confdir "$ACCT")"
+        _generate_claude_run "$CONFDIR"
+        claude_run_limited || break
+        claude_limit_record "$CONFDIR" "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | tail -n1)"
     done
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally
