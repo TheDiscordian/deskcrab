@@ -1234,6 +1234,40 @@ _tree_cpu() {
     echo "$total"
 }
 
+# --- Detaching a child that must outlive the turn --------------------------
+# A wake runs INSIDE a transient systemd unit (deskcrab-wake-*.service), and
+# when that unit's main process exits systemd SIGKILLs everything still in the
+# unit's cgroup. `setsid` escapes the session, not the cgroup — so a turn-end
+# child launched with setsid alone dies the instant a silent wake ends. That
+# is why the memory judge had never once run and why the promise auditor's log
+# holds only three wake lines, all of them from before quiet hours began, when
+# a speaking wake still lingered through TTS playback long enough for its
+# child to finish first.
+#
+# The cure is the one job dispatch already uses: hand the child to the user
+# manager as its OWN transient unit, so it gets a cgroup of its own with
+# nothing to sweep it up. A manager-spawned process also inherits no fds, so
+# the fd-8/fd-9 lock hygiene that setsid needed by hand comes free. setsid
+# stays as the fallback for a box with no user manager — correct there, since
+# nothing is enforcing a cgroup in the first place.
+detach_turn_child() {  # <unit-suffix> <command> [args...]
+    local suffix="$1"; shift
+    local unit="deskcrab-${suffix}-$(date +%s)-$$"
+    systemctl --user reset-failed "$unit.service" 2>/dev/null
+    if systemd-run --user --collect --quiet --unit="$unit" \
+            --setenv=PATH="$HOME/.local/bin:$PATH" \
+            --setenv=DESKCRAB_CONF="$CONF_FILE" \
+            --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
+            --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+            "$@" >/dev/null 2>&1; then
+        return 0
+    fi
+    # Close fds 8 and 9: the phone turn holds its serialising lock on 8 and a
+    # wake holds the wake lock on 9. A child that lives for a whole claude
+    # call would keep either lock held long after its turn had finished.
+    setsid "$@" >/dev/null 2>&1 8>&- 9>&- &
+}
+
 # --- Promise audit: the unkept-want catcher ---------------------------------
 # Every path that produces a reply — desktop turn, phone turn, autonomous wake —
 # fires lib/promise-audit after the reply has been delivered: detached, out of
@@ -1248,11 +1282,7 @@ PROMISE_AUDIT_REASON_PREFIX="You said this and did not write it down:"
 fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
     [ "${PROMISE_AUDIT:-1}" = "1" ] || return 0
     [ -x "$SCRIPT_DIR/lib/promise-audit" ] || return 0
-    # Close fds 8 and 9: the phone turn holds its serialising lock on 8 and a
-    # wake holds the wake lock on 9. The detached auditor lives for a whole
-    # claude call — inheriting either fd would keep that lock held long after
-    # the turn it belonged to has finished.
-    setsid "$SCRIPT_DIR/lib/promise-audit" "$@" >/dev/null 2>&1 8>&- 9>&- &
+    detach_turn_child promise-audit "$SCRIPT_DIR/lib/promise-audit" "$@"
 }
 
 # --- Memory reinforcement: the turn-end genuinely-used judge ----------------
@@ -1280,12 +1310,13 @@ fire_memory_judge() {  # <user-text> <response>  |  --wake <agenda> <response>
         rm -f "$IDS_FILE"
         return 0
     fi
-    # Same fd hygiene as the promise audit: never inherit the remote or wake
-    # lock into a process that outlives the turn.
-    setsid "$LIB_DIR/memory.py" judge-turn --ids-file "$IDS_FILE" $WAKE_FLAG \
+    # Same detachment as the promise audit: its own transient unit, so the
+    # judge is not SIGKILLed with the wake's cgroup a moment after it starts.
+    detach_turn_child memory-judge \
+        "$LIB_DIR/memory.py" judge-turn --ids-file "$IDS_FILE" $WAKE_FLAG \
         --user "$USER_TEXT" --reply "$RESPONSE" \
         --model "${MEMORY_JUDGE_MODEL:-opus}" \
-        --log "${STATE_PREFIX}-memory-judge.log" >/dev/null 2>&1 8>&- 9>&- &
+        --log "${STATE_PREFIX}-memory-judge.log"
 }
 
 # Did the stream fail before the model did any real work? The CLI reports
