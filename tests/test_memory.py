@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 
@@ -173,18 +174,19 @@ class TestRecallBlock(StoreCase):
     def test_empty_store_empty_block(self):
         self.assertEqual(memory.format_block([]), "")
 
-    def test_recall_query_from_wants_and_convo(self):
+    def test_recall_query_wake_uses_the_shelf(self):
+        """A wake with no single identifiable want falls back to the shelf
+        topics — top-level bullets only, opening clauses only."""
         wants = os.path.join(self.dir, "wants.md")
         convo = os.path.join(self.dir, "convo.txt")
         with open(wants, "w") as f:
             f.write("# shelf\n- fix the lux widget\n  - old sub bullet\n")
         with open(convo, "w") as f:
             f.write("User: hello\nAssistant: hi\n")
-        q = memory.recall_query("", wants, convo)
+        q = memory.recall_query("", wants, convo, wake=True)
         self.assertIn("fix the lux widget", q)
         self.assertNotIn("old sub bullet", q)  # top-level bullets only
-        self.assertIn("hello", q)
-        # An explicit reason wins over the wants shelf.
+        # An explicit reason leads, and implies a wake on its own.
         self.assertTrue(memory.recall_query("build finished", wants, convo)
                         .startswith("build finished"))
 
@@ -208,12 +210,17 @@ class TestQueryBudget(StoreCase):
                 f.write(f"User: line {i} " + ("chatter " * 200) + "\n")
         return wants, convo
 
-    def test_composed_query_stays_within_budget(self):
+    def test_wake_query_stays_within_budget(self):
         wants, convo = self._fat_files()
-        q = memory.recall_query("", wants, convo)
+        q = memory.recall_query("", wants, convo, wake=True)
         self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
         self.assertIn("want 0", q)        # the shelf is still represented
-        self.assertIn("line 199", q)      # and so is the newest conversation
+
+    def test_conversation_query_stays_within_budget(self):
+        _, convo = self._fat_files()
+        q = memory.recall_query("", None, convo)
+        self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
+        self.assertIn("line 199", q)      # the newest turn, not the oldest
 
     def test_reason_query_stays_within_budget(self):
         _, convo = self._fat_files()
@@ -224,9 +231,178 @@ class TestQueryBudget(StoreCase):
         wants = os.path.join(self.dir, "wants.md")
         with open(wants, "w") as f:
             f.write("- \n-  \t \n- a real want\n- \n")
-        q = memory.recall_query("", wants, None)
+        q = memory.recall_query("", wants, None, wake=True)
         self.assertEqual(q, "a real want")
         self.assertEqual(memory.recall_query("   \n \t ", None, None), "")
+
+    def test_truncation_is_logged_never_silent(self):
+        """Degradation must not be as quiet as working: the outage was a query
+        that grew past the embedder's mouth with nothing anywhere saying so."""
+        log = os.path.join(self.dir, "recall.log")
+        convo = os.path.join(self.dir, "convo.txt")
+        with open(convo, "w") as f:
+            f.write("User: " + ("word " * 4000) + "\n")
+        def logged():
+            with open(log) as f:
+                return f.read()
+
+        q = memory.recall_query("", None, convo, budget=500, log=log)
+        self.assertLessEqual(len(q), 500)
+        self.assertGreater(len(q), 400)
+        self.assertIn("TRUNCATED", logged())
+        self.assertIn("user turn", logged())
+        # A query that fits leaves no line behind.
+        before = logged()
+        memory.recall_query("", None, convo, budget=99999, log=log)
+        self.assertEqual(logged(), before)
+
+    def test_budget_sits_under_the_embedder_ceiling(self):
+        """The cap is derived from 2048 tokens at a deliberately LOW
+        chars-per-token, so it is wrong in the safe direction."""
+        self.assertLessEqual(memory.RECALL_QUERY_CHARS, memory.EMBED_CHAR_CAP)
+        self.assertLessEqual(
+            memory.EMBED_CHAR_CAP,
+            memory.EMBED_TOKEN_LIMIT * memory.EMBED_CHARS_PER_TOKEN)
+        self.assertLess(memory.EMBED_CHARS_PER_TOKEN, 3.0)
+
+
+class TestQuerySubstance(StoreCase):
+    """What the query is ABOUT, which the 2026-08-07 length fix left wrong.
+
+    Shortening the query kept the wants shelf as its subject, so an
+    interactive turn asked the store about Beatrice's own topics while the
+    user was talking about his. Memories have nothing to do with wants unless
+    a want is actively being pursued."""
+
+    WANT_TEXT = "learn to read sheet music properly"
+
+    def _shelf(self, slug="sheet-music"):
+        wants = os.path.join(self.dir, "wants.md")
+        with open(wants, "w") as f:
+            f.write("# shelf\n")
+            f.write(f"- 🎼 **{self.WANT_TEXT}** — a standing sitting at "
+                    f"21:20, daily. → `wants/{slug}.md`\n")
+            f.write("- 🔊 **a voice that isn't flat** — measured it. "
+                    "→ `wants/my-speaking-voice.md`\n")
+        os.makedirs(os.path.join(self.dir, "wants"), exist_ok=True)
+        return wants
+
+    def _doc(self, slug="sheet-music"):
+        os.makedirs(os.path.join(self.dir, "wants"), exist_ok=True)
+        path = os.path.join(self.dir, "wants", slug + ".md")
+        with open(path, "w") as f:
+            f.write("# Sheet music\n\n## What I want\n\nTo read it.\n\n"
+                    "## 2026-08-05 — the founding entry\n\nANCIENT_HISTORY\n\n"
+                    "## 2026-08-07 04:15 — bar 12 blind\n\nTODAYS_PROGRESS\n")
+        return path
+
+    def _convo(self, text="User: what did the doctor say about my knee\n"):
+        convo = os.path.join(self.dir, "convo.txt")
+        with open(convo, "w") as f:
+            f.write(text)
+        return convo
+
+    # --- (a) in conversation ------------------------------------------------
+
+    def test_conversation_query_has_the_user_turn_and_no_wants(self):
+        wants, convo = self._shelf(), self._convo(
+            "User [2026-08-07 09:00]: an older thing entirely\n"
+            "Assistant [2026-08-07 09:01]: mm\n"
+            "User [2026-08-07 12:01]: what did the doctor say about my knee\n")
+        self._doc()
+        q = memory.recall_query("", wants, convo)
+        self.assertIn("what did the doctor say about my knee", q)
+        # Not one word of the shelf, by topic or by pointer.
+        self.assertNotIn(self.WANT_TEXT, q)
+        self.assertNotIn("sheet music", q.lower())
+        self.assertNotIn("wants/", q)
+        self.assertNotIn("voice that isn't flat", q)
+        # Only the last exchange — an older turn is not the subject.
+        self.assertNotIn("an older thing entirely", q)
+
+    def test_conversation_carries_the_preceding_reply_as_context(self):
+        convo = self._convo(
+            "User [2026-08-07 12:00]: is the knee thing still on\n"
+            "Assistant [2026-08-07 12:01]: the appointment is Thursday.\n"
+            "---DISPLAY---\n| a | markdown | table |\n"
+            "User [2026-08-07 12:05]: and what time\n")
+        q = memory.recall_query("", None, convo)
+        self.assertTrue(q.startswith("and what time"))   # user first
+        self.assertIn("the appointment is Thursday", q)  # her reply behind it
+        self.assertNotIn("markdown", q)                  # display is not speech
+        self.assertNotIn("Assistant", q)                 # headers stripped
+        self.assertNotIn("User", q)
+
+    def test_conversation_handles_unstamped_transcripts(self):
+        """Every archive and every transcript written before 2026-08-07 is
+        unstamped; a pattern that stopped matching those would compose an
+        empty query and look exactly like a quiet conversation."""
+        convo = self._convo("Assistant: earlier words\nUser: the newest ask\n")
+        q = memory.recall_query("", None, convo)
+        self.assertIn("the newest ask", q)
+        self.assertIn("earlier words", q)
+
+    def test_conversation_drops_inter_block_markers(self):
+        convo = self._convo("User: a real question\n\n"
+                            "[Autonomous wake — 2026-08-07 12:40]\n")
+        q = memory.recall_query("", None, convo)
+        self.assertIn("a real question", q)
+        self.assertNotIn("Autonomous wake", q)
+
+    def test_conversation_with_no_user_block_is_empty(self):
+        convo = self._convo("Assistant: talking to myself\n")
+        self.assertEqual(memory.recall_query("", None, convo), "")
+
+    # --- (b) on an autonomous wake ------------------------------------------
+
+    def test_wake_focuses_one_want_shelf_line_plus_current_note(self):
+        wants, doc = self._shelf(), self._doc()
+        os.utime(doc, None)  # just written == the want being worked
+        q = memory.recall_query("", wants, None, wake=True)
+        self.assertIn(self.WANT_TEXT, q)          # its shelf topic
+        self.assertIn("TODAYS_PROGRESS", q)       # its CURRENT dated note
+        self.assertNotIn("ANCIENT_HISTORY", q)    # not the whole document
+        self.assertNotIn("voice that isn't flat", q)  # not the other wants
+
+    def test_wake_reason_names_the_want(self):
+        wants = self._shelf()
+        self._doc()
+        # A second, more recently written want must not win over the one the
+        # reason actually names.
+        other = os.path.join(self.dir, "wants", "my-speaking-voice.md")
+        with open(other, "w") as f:
+            f.write("# Voice\n\n## 2026-08-07 — OTHER_WANT_NOTE\n\nx\n")
+        q = memory.recall_query("job finished on wants/sheet-music.md",
+                                wants, None, wake=True)
+        self.assertIn("TODAYS_PROGRESS", q)
+        self.assertNotIn("OTHER_WANT_NOTE", q)
+
+    def test_wake_falls_back_to_the_shelf_when_no_want_is_current(self):
+        wants, doc = self._shelf(), self._doc()
+        stale = time.time() - memory.WANT_RECENT_SECS - 60
+        os.utime(doc, (stale, stale))
+        q = memory.recall_query("", wants, None, wake=True)
+        self.assertIn(self.WANT_TEXT, q)            # shelf topics, as before
+        self.assertIn("voice that isn't flat", q)   # all of them
+        self.assertNotIn("TODAYS_PROGRESS", q)      # no want is in hand
+
+    def test_wake_reason_alone_is_not_padded_with_the_shelf(self):
+        """An event wake's agenda IS the subject; twelve unrelated shelf
+        topics behind it are the dilution this composition exists to stop."""
+        wants = self._shelf()
+        stale = time.time() - memory.WANT_RECENT_SECS - 60
+        os.utime(self._doc(), (stale, stale))
+        q = memory.recall_query("a transcript landed in ~/Documents",
+                                wants, None, wake=True)
+        self.assertEqual(q, "a transcript landed in ~/Documents")
+
+    def test_want_progress_takes_the_last_dated_section_only(self):
+        doc = self._doc()
+        note = memory.want_progress(doc)
+        self.assertIn("TODAYS_PROGRESS", note)
+        self.assertNotIn("ANCIENT_HISTORY", note)
+        self.assertNotIn("To read it", note)
+        self.assertLessEqual(len(note), memory.WANT_PROGRESS_CHARS)
 
     def test_segment_collapses_newlines(self):
         self.assertEqual(memory._segment(" a\n\n b \t c \n"), "a b c")

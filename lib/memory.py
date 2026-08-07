@@ -84,18 +84,64 @@ CHARS_PER_TOKEN = 4
 # Budgets below sit well under it, and embed() shrink-retries anyway, because
 # chars-per-token is a guess (emoji and CJK blow past 4) and a query that is
 # merely long must never cost the turn its memory.
-EMBED_CHAR_CAP = 5600
+# The embedder's real limit, derived rather than guessed: nomic-embed-text's
+# trained context is 2048 tokens, and chars-per-token is estimated LOW on
+# purpose — the cap must be wrong in the safe direction.
+#
+# Re-measured 2026-08-07 against the live daemon (ollama 0.21.0) with her own
+# want documents as the input, since the ceiling is a property of the text as
+# much as of the model: 7,000 chars embedded, 8,000 came back
+#   HTTP 400 {"error":"the input length exceeds the context length"}
+# which puts real prose near 3.5 chars/token. 2.5 puts the ceiling ~27 % under
+# the largest input actually observed to work, and the composition budget
+# under that again.
+#
+# Not carried into the design, because it is not understood: the same probe
+# with repeated filler ("word " × 40,000, 200,000 chars) embedded without
+# complaint at every size tried. Whatever that path is, prose refuses where
+# the arithmetic says it should, and prose is what this file embeds.
+EMBED_TOKEN_LIMIT = 2048
+EMBED_CHARS_PER_TOKEN = 2.5
+EMBED_CHAR_CAP = int(EMBED_TOKEN_LIMIT * EMBED_CHARS_PER_TOKEN)  # 5120
 EMBED_SHRINK_TRIES = 3
-# Composed recall query: the whole thing, all segments together.
+# Composed recall query: the whole thing, all segments together. Sits under
+# EMBED_CHAR_CAP with headroom for the "search_query: " prefix and for text
+# denser than the ratio above (emoji, CJK) — the wants shelf is full of emoji.
 RECALL_QUERY_CHARS = 4800
+
+# --- what the query is ABOUT ------------------------------------------------
+# Composition is a question of SUBSTANCE before it is a question of length.
+# The 2026-08-07 outage was fixed by shortening the query, and the shortening
+# left the wrong subject in place: every prompt build, interactive turns
+# included, asked the store about BEATRICE'S WANTS SHELF. Memories have
+# nothing to do with wants unless a want is actively being pursued, so:
+#
+#   in conversation -> the conversation. The user's last turn is the subject;
+#     the reply before it is context for that subject and nothing more.
+#   on a wake       -> the wake's agenda, and the ONE want being worked if it
+#     can be named — its shelf topic plus its most recent dated progress note,
+#     never the whole document (see WANT_PROGRESS_CHARS).
+#
+# Measured against the live store on 2026-08-07: on a conversation in which he
+# was telling her off for repeating herself, the wants-shelf query injected
+# #16 (CONVO_TIMEOUT) and #19 (verify before reporting done) while the
+# conversation query injected #3 (drop 'Claudisms' from your speech), #6 and
+# #10 — the store holds 17 directives and only 10 fit, so composition decides
+# which rules she is holding while she answers.
+RECALL_USER_SHARE = 0.7
 # One wants bullet contributes its topic, not its whole history. These are
 # multi-paragraph entries with dated progress logs appended; the opening
-# clause is what makes them findable.
+# clause is what makes them findable. Used only for the no-single-want wake
+# fallback — never in conversation.
 WANTS_BULLET_CHARS = 240
 WANTS_BULLET_MAX = 12
-# When there is a conversation tail, the head (reason or wants) keeps this
-# share of the budget and the tail takes the rest.
-RECALL_HEAD_SHARE = 0.6
+# A focused want gets room its shelf clause cannot hold: the dated note at the
+# end of its document is what she is actually doing, and it is the part a
+# head-clamped whole-document query throws away first (see recall_query).
+WANT_PROGRESS_CHARS = 1500
+# "Being worked" needs an upper bound in time, or the shelf's last-touched
+# document is named as current work forever.
+WANT_RECENT_SECS = 6 * 3600
 # Confidence decay (design §3, run by the ingest pass per §5): a note neither
 # retrieved nor used in DECAY_STALE_DAYS loses DECAY_STEP confidence per pass
 # and retires below DECAY_RETIRE_FLOOR. Directives never decay.
@@ -468,44 +514,241 @@ def _segment(text, limit=None):
     return out
 
 
-def recall_query(reason, wants_file, convo_file, budget=RECALL_QUERY_CHARS):
-    """Query formation when nobody asked anything: the wake's reason if it has
-    one, else the wants shelf lines, plus the tail of the live conversation.
+DISPLAY_DELIM = "---DISPLAY---"
+# The conversation's block headers, with the local-time stamp OPTIONAL — every
+# transcript written before 2026-08-07 and every archive is unstamped, and a
+# pattern that silently stops matching those would compose an empty query and
+# look exactly like a quiet conversation. Same shape as CONVO_BLOCK_RE in
+# common.sh and BLOCK_HDR in serve.py.
+CONVO_HDR_RE = re.compile(r"^(User|Assistant)(?: \[[^\]]*\])?: ", re.M)
+# Lines that are nothing but a bracketed marker — "[Autonomous wake — ...]" —
+# sit between blocks and belong to neither speaker.
+CONVO_MARKER_RE = re.compile(r"^\[[^\]]*\]\s*$", re.M)
 
-    Composed under a budget, because the embedder has a hard 2048-token
-    context and answers anything past it with a 400 rather than truncating —
-    the unclamped version of this function composed ~19 k chars and took
-    retrieval down to the pinned tier without a single failed command to show
-    for it. Each wants bullet contributes its opening clause only; the
-    conversation tail is kept from its END, since the most recent words are
-    what the turn is actually about."""
-    head = []
+
+def _spoken(text):
+    """One side of an exchange as it was actually said: the display channel
+    dropped (it is markdown for a window, not words about the subject), inter-
+    block markers dropped, whitespace collapsed."""
+    text = (text or "").split(DISPLAY_DELIM)[0]
+    return _segment(CONVO_MARKER_RE.sub("", text))
+
+
+def convo_last_exchange(convo_file):
+    """The last user block and the assistant block immediately before it,
+    headers stripped. Returns ("", "") when there is no user block at all —
+    a conversation nobody has spoken into yet is not a subject."""
+    if not convo_file or not os.path.isfile(convo_file):
+        return "", ""
+    with open(convo_file, errors="replace") as f:
+        text = f.read()
+    marks = [(m.start(), m.group(1), m.end())
+             for m in CONVO_HDR_RE.finditer(text)]
+    users = [i for i, m in enumerate(marks) if m[1] == "User"]
+    if not users:
+        return "", ""
+    i = users[-1]
+    end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+    user = _spoken(text[marks[i][2]:end])
+    prev = ""
+    if i and marks[i - 1][1] == "Assistant":
+        prev = _spoken(text[marks[i - 1][2]:marks[i][0]])
+    return user, prev
+
+
+def _clip(text, limit, dropped=None, what=""):
+    """Clip to a limit, RECORDING that it bit. Every silent clip in this file
+    is a place the query can quietly stop being the question that was asked —
+    which is the shape of the outage, not a detail of it."""
+    if len(text) <= limit:
+        return text
+    if dropped is not None:
+        dropped.append(f"{what} {len(text)}->{limit}")
+    return text[:limit].rstrip()
+
+
+def conversation_query(convo_file, budget=RECALL_QUERY_CHARS, dropped=None):
+    """(a) In conversation the subject is the conversation — the user's last
+    turn first and holding most of the budget, her own preceding reply behind
+    it as context. No wants: what she wants has nothing to do with what he
+    just asked, and putting the shelf in this query is what made every
+    interactive turn retrieve her sleep-pipeline housekeeping."""
+    user, prev = convo_last_exchange(convo_file)
+    if not user:
+        return ""
+    user_cap = budget if not prev else int(budget * RECALL_USER_SHARE)
+    parts = [_clip(user, user_cap, dropped, "user turn")]
+    room = budget - len(parts[0]) - 1
+    if prev and room > 0:
+        parts.append(_clip(prev, room, dropped, "preceding reply"))
+    elif prev:
+        _clip(prev, 0, dropped, "preceding reply")
+    return "\n".join(p for p in parts if p)
+
+
+def _shelf_bullets(wants_file):
+    """Top-level shelf bullets, whole, in shelf order, each paired with the
+    want document it points at."""
+    out = []
+    if not wants_file or not os.path.isfile(wants_file):
+        return out
+    with open(wants_file, errors="replace") as f:
+        for line in f:
+            if not line.startswith("- "):
+                continue
+            m = re.search(r"wants/([A-Za-z0-9._-]+)\.md", line)
+            out.append((line[2:].strip(), m.group(1) if m else ""))
+    return out
+
+
+def want_progress(doc_path, limit=WANT_PROGRESS_CHARS):
+    """A want document's most recent DATED section — what she is doing now.
+
+    Not the whole document, and the reason is measurable rather than
+    aesthetic: these documents grow by APPENDING today's log to the end, and
+    embed() clamps from the front, so a whole-document query is silently a
+    first-N-chars query over the OLDEST material. Measured 2026-08-07 on
+    wants/sleeping-every-night.md (24,399 chars): the clamp kept the founding
+    day and dropped all six of that day's dated sections, every one of them
+    the work actually in hand."""
+    try:
+        with open(doc_path, errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    heads = list(re.finditer(r"^##\s+.*$", text, re.M))
+    dated = [m for m in heads if re.search(r"20\d\d-\d\d-\d\d", m.group(0))]
+    if not dated:
+        return ""
+    last = dated[-1]
+    nxt = next((m.start() for m in heads if m.start() > last.start()), len(text))
+    return _segment(text[last.start():nxt], limit)
+
+
+def want_focus(reason, wants_file):
+    """The ONE want being worked, or None. Two ways to be identifiable, in
+    order of how directly they say so:
+
+    1. the wake's reason names the want's document or slug — it said what it
+       came about;
+    2. failing that, the single most recently written want document, if it was
+       written inside WANT_RECENT_SECS. A want she edited within the last few
+       hours is the want in hand; one she has not touched since yesterday is
+       not, and gets no special place in the query.
+
+    Neither holding means no single want is identifiable, and the caller falls
+    back to the shelf topics — which is what shipped before this, for every
+    session rather than for this one case."""
+    bullets = _shelf_bullets(wants_file)
+    if not bullets:
+        return None
+    wants_dir = os.path.join(os.path.dirname(wants_file), "wants")
+
     if reason:
-        head.append(_segment(reason, budget))
-    elif wants_file and os.path.isfile(wants_file):
-        with open(wants_file, errors="replace") as f:
-            head = [_segment(l[2:], WANTS_BULLET_CHARS)
-                    for l in f if l.startswith("- ")]
-        head = [b for b in head if b][:WANTS_BULLET_MAX]
-    head = [h for h in head if h]
+        named = [(line, slug) for line, slug in bullets
+                 if slug and (f"wants/{slug}.md" in reason or slug in reason)]
+        if len(named) == 1:
+            return named[0]
 
-    tail = ""
-    if convo_file and os.path.isfile(convo_file):
-        with open(convo_file, errors="replace") as f:
-            tail = _segment(" ".join(f.readlines()[-10:]))
+    newest, newest_at = None, 0
+    for line, slug in bullets:
+        if not slug:
+            continue
+        try:
+            at = os.path.getmtime(os.path.join(wants_dir, slug + ".md"))
+        except OSError:
+            continue
+        if at > newest_at:
+            newest, newest_at = (line, slug), at
+    if newest and time.time() - newest_at <= WANT_RECENT_SECS:
+        return newest
+    return None
 
+
+def wake_query(reason, wants_file, budget=RECALL_QUERY_CHARS, dropped=None):
+    """(b) On a wake there is no user turn, so the subject is the agenda: the
+    reason it woke, plus the one want being worked if one can be named — that
+    want's shelf topic and its current dated progress note. When no single
+    want is identifiable the shelf topics stand in, as before."""
     parts, used = [], 0
-    head_cap = int(budget * RECALL_HEAD_SHARE) if tail else budget
-    for h in head:
-        if used + len(h) + 1 > head_cap:
-            break
-        parts.append(h)
-        used += len(h) + 1
-    if tail:
-        room = budget - used - 1
-        if room > 0:
-            parts.append(tail[-room:])
-    return "\n".join(parts).strip()
+
+    def take(seg, what=""):
+        nonlocal used
+        if not seg:
+            return False
+        if used + len(seg) + 1 > budget:
+            if dropped is not None:
+                dropped.append(f"{what or 'segment'} dropped ({len(seg)} "
+                               f"chars, {budget - used} left)")
+            return False
+        parts.append(seg)
+        used += len(seg) + 1
+        return True
+
+    take(_clip(_segment(reason), budget, dropped, "wake reason"), "reason")
+    focus = want_focus(reason, wants_file)
+    if focus:
+        line, slug = focus
+        take(_segment(line, WANTS_BULLET_CHARS), f"want topic ({slug})")
+        take(want_progress(os.path.join(
+            os.path.dirname(wants_file), "wants", slug + ".md")),
+            f"want progress ({slug})")
+        return "\n".join(parts)
+    if reason:
+        # An agenda of its own and no want to attach it to: the reason IS the
+        # subject. Padding it with twelve unrelated shelf topics is the
+        # dilution this whole function exists to stop.
+        return "\n".join(parts)
+    for line, slug in _shelf_bullets(wants_file)[:WANTS_BULLET_MAX]:
+        take(_segment(line, WANTS_BULLET_CHARS), f"shelf topic ({slug})")
+    return "\n".join(parts)
+
+
+def recall_query(reason, wants_file, convo_file, budget=RECALL_QUERY_CHARS,
+                 wake=False, log=None):
+    """Compose the retrieval query for one prompt build, and never hand the
+    embedder more than it will take.
+
+    `wake` is the session's own knowledge of what it is (SESSION_KIND, the
+    same thing the rest of lib/ goes by); a non-empty reason implies it, since
+    only a wake has one. The two shapes are conversation_query (a) and
+    wake_query (b) above.
+
+    The cap is hard and its bite is LOGGED. The 2026-08-07 outage was not a
+    crash: the query grew to 19,471 chars, ollama refused it, the fail-safe
+    contract degraded retrieval to the pinned tier, and nothing anywhere said
+    so — for a whole day, while `crab memory search` looked perfectly healthy
+    because a typed query is short."""
+    dropped = []
+    if wake or reason:
+        shape = "wake"
+        query = wake_query(reason, wants_file, budget, dropped)
+    else:
+        shape = "conversation"
+        query = conversation_query(convo_file, budget, dropped)
+    query = _clip(query.strip(), budget, dropped, "composed query")
+    if dropped:
+        recall_log(log, f"TRUNCATED {shape} query to {len(query)}/{budget} "
+                        f"chars (embedder takes ~{EMBED_TOKEN_LIMIT} tokens): "
+                        + "; ".join(dropped))
+    return query
+
+
+def recall_log(path, line):
+    """One line to the deskcrab log. Degradation must never be as quiet as
+    working — that is the whole lesson of the outage this function dates
+    from — so the default sink is derived rather than required: a caller that
+    forgets to pass one still leaves a trace."""
+    if path is None:
+        prefix = os.environ.get("DESKCRAB_STATE_PREFIX") or "/tmp/deskcrab"
+        path = f"{prefix}-memory-recall.log"
+    if not path:
+        return
+    try:
+        with open(path, "a") as f:
+            f.write(f"{now_iso()}\t{line}\n")
+    except OSError:
+        pass
 
 
 def build_block(rows, warning=""):
@@ -563,7 +806,8 @@ def write_ids_out(path, rows):
 
 
 def cmd_recall_block(store, args):
-    query = args.query or recall_query(args.reason, args.wants, args.convo)
+    query = args.query or recall_query(args.reason, args.wants, args.convo,
+                                       wake=args.wake, log=args.log or None)
     if not query:
         rows = store.pinned_rows()
         block, kept = build_block(rows)
@@ -975,6 +1219,12 @@ def main():
     p.add_argument("--ids-out", default="",
                    help="write the injected records (id/kind/text JSON) here "
                         "for the turn-end judge")
+    p.add_argument("--wake", action="store_true",
+                   help="compose from the wake's agenda and the want being "
+                        "worked; without it the query is the conversation")
+    p.add_argument("--log", default="",
+                   help="where to record a truncated query (default: "
+                        "${DESKCRAB_STATE_PREFIX}-memory-recall.log)")
     p.set_defaults(fn=cmd_recall_block)
 
     p = sub.add_parser("judge-turn",
