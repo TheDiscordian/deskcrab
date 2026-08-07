@@ -487,6 +487,16 @@ held_refusal = ""    # the newest limit refusal, held off the speakers — and
                      # kept off them: refusals are never voiced, only logged;
                      # the caller notifies when a whole chain refuses
 last_size = 0
+partial = ""         # a line still being written: readline() at EOF hands
+                     # back the half of it that has landed, and the rest on
+                     # the next call. Neither half is JSON, so both were
+                     # dropped — and the lines long enough to be split in the
+                     # first place are exactly the completed assistant blocks,
+                     # the ones carrying whole finished replies. serve.py's
+                     # tailer has held the fragment since it was written and
+                     # crab-debug's docstring names the bug by name; this was
+                     # the last tail on this file that never got it. Whole
+                     # lines only — the fragment waits for its newline.
 
 with open(LOG) as f:
     while True:
@@ -511,6 +521,9 @@ with open(LOG) as f:
                 # and the loop re-spoke the whole stream forever — hundreds of
                 # 2:1 truncation lines in the speech log are its signature.
                 last_size = 0
+                # Whatever fragment we were holding belonged to the file that
+                # is gone; the bytes coming now are a different one.
+                partial = ""
                 for mb in messages.values():
                     for b in mb.values():
                         b.replay()
@@ -534,7 +547,13 @@ with open(LOG) as f:
             time.sleep(0.02)
             continue
         last_size += len(line.encode("utf-8", "replace"))
-        line = line.strip()
+        # Hold an incomplete line until its newline arrives. The bytes are
+        # counted above either way — the cursor moved whether or not the line
+        # is finished — but nothing is parsed or spoken from half a line.
+        partial += line
+        if not partial.endswith("\n"):
+            continue
+        line, partial = partial.strip(), ""
         if not line:
             continue
         try:

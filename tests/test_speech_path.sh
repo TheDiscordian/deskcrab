@@ -119,6 +119,48 @@ grep -q "spoke nothing" "$SPEECHLOG" \
     && ok "…and the silence is written down, not swallowed" || fail "silence must be logged" "$(cat "$SPEECHLOG")"
 
 echo
+echo "a line still being written is held until its newline, never half-parsed:"
+# readline() at EOF hands back the half of a line that has landed, and the
+# rest on the next call. Neither half is JSON, so both were dropped — and the
+# lines long enough to be split are exactly the completed assistant blocks,
+# the ones carrying whole finished replies. serve.py's tailer has held the
+# fragment since it was written and crab-debug's docstring names the bug;
+# this was the last tail on this file that never got it. Reproduced: a reply
+# written in two pieces 0.5 s apart, spoken nothing, receipt chars=0.
+python3 -c 'import json;print(json.dumps({"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"A finished block that arrived in two pieces."}]}}))' > "$T/split.json"
+HALF=$(( $(wc -c < "$T/split.json") / 2 ))
+head -c "$HALF" "$T/split.json" > "$T/split-a"
+tail -c "+$(( HALF + 1 ))" "$T/split.json" > "$T/split-b"
+stream splitblock '
+    cat "'"$T"'/split-a" >> "$LOG"
+    sleep 0.5
+    cat "'"$T"'/split-b" >> "$LOG"
+    sleep 0.3
+    done_json'
+[ "$SAID" = "A finished block that arrived in two pieces." ] \
+    && ok "a completed block split across a read is spoken whole" \
+    || fail "half a line must be held, not dropped" "${SAID:-nothing}"
+
+python3 -c 'import json;print(json.dumps({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"A streamed sentence split in two."}}}))' > "$T/splitd.json"
+HALF=$(( $(wc -c < "$T/splitd.json") / 2 ))
+head -c "$HALF" "$T/splitd.json" > "$T/splitd-a"
+tail -c "+$(( HALF + 1 ))" "$T/splitd.json" > "$T/splitd-b"
+stream splitdelta '
+    a "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"}}"
+    tblock 0
+    cat "'"$T"'/splitd-a" >> "$LOG"
+    sleep 0.5
+    cat "'"$T"'/splitd-b" >> "$LOG"
+    sleep 0.3
+    done_json'
+[ "$SAID" = "A streamed sentence split in two." ] \
+    && ok "a streamed delta split across a read is spoken whole" \
+    || fail "half a delta must be held, not dropped" "${SAID:-nothing}"
+CHARS=$(sed -n 's/^chars=//p' "$RECEIPT" 2>/dev/null | head -1)
+[ "${CHARS:-0}" -gt 0 ] 2>/dev/null && ok "and the receipt says so (chars=$CHARS)" \
+    || fail "the receipt read chars=0 — the guarantee would replay the whole reply" "${CHARS:-missing}"
+
+echo
 echo "the streaming path (--include-partial-messages): first sentence, not last:"
 
 stream partials '
