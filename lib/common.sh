@@ -2449,17 +2449,15 @@ $TURN_CONTEXT"
             | sed -E 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
         SILENT_NOTE="$(printf '%s\n' "$THOUGHTS" | tr '\n' ' ')"
         SPOKEN=""
-        if [ -n "$(printf '%s' "$THOUGHTS$DISPLAY_PART" | tr -d '[:space:]')" ]; then
-            RESPONSE="(quiet) $THOUGHTS"
-            if [ -n "$DISPLAY_PART" ]; then
-                RESPONSE="$RESPONSE
+        # ALWAYS visible — his instruction (2026-08-07): a quiet reply shows
+        # as a "(quiet) ..." bubble no matter what; hiding it is forbidden.
+        RESPONSE="(quiet) $THOUGHTS"
+        if [ -n "$DISPLAY_PART" ]; then
+            RESPONSE="$RESPONSE
 ---DISPLAY---
 $DISPLAY_PART"
-            else
-                DISPLAY_PART="(quiet) $THOUGHTS"
-            fi
         else
-            DISPLAY_PART=""
+            DISPLAY_PART="(quiet) $THOUGHTS"
         fi
     fi
 
