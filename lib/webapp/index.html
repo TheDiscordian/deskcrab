@@ -584,11 +584,12 @@ fetch("/health").then(r => r.json()).then(h => {
 
 // Seed a freshly loaded page with where the conversation currently stands, so
 // picking the phone up mid-thread doesn't start from a blank screen. Nothing
-// stored yet means nothing shown — no empty scaffolding.
-fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx => {
-  // Any wake audio already pending was routed before this page existed —
-  // mark it heard so loading the app never blares an old clip.
-  wakeSeen = ctx.wake_id || "";
+// stored yet means nothing shown — no empty scaffolding. The same rendering
+// serves a RESEED: when /watch reports the conversation file was rewritten
+// under the cursor (compaction, archival), the page redraws from a fresh
+// /context exactly as a manual refresh would — that refresh used to be his
+// hand's job.
+function renderSeed(ctx) {
   const turns = ctx.turns || [];
   if (!ctx.summary && !turns.length) return;
 
@@ -640,12 +641,40 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
 
   logEl.prepend(seed);
   seed.scrollIntoView({ block: "end" });
+}
+
+fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx => {
+  // Any wake audio already pending was routed before this page existed —
+  // mark it heard so loading the app never blares an old clip.
+  wakeSeen = ctx.wake_id || "";
+  cursor = ctx.n;
+  gen = ctx.gen || "";
+  renderSeed(ctx);
 }).then(startWatch).catch(startWatch);
+
+// The conversation file was rewritten under our cursor: redraw the whole page
+// from a fresh /context, the automatic form of the manual refresh. A reload
+// would do the same but would also cut off any clip mid-voice.
+async function reseed() {
+  const ctx = await (await fetch("/context", { credentials: "same-origin" })).json();
+  logEl.replaceChildren();
+  // The rewrite folded whatever the pending filters were guarding into the
+  // file itself; a match against some future identical turn would eat it.
+  pendingUser = pendingReply = null;
+  renderSeed(ctx);
+  cursor = ctx.n;
+  gen = ctx.gen || "";
+}
 
 // Follow the conversation while it happens somewhere else. Turns spoken at the
 // laptop go into the same file, so the phone long-polls for anything past its
 // cursor and shows it arriving rather than only on the next page load.
 let cursor = null;
+// Which incarnation of the conversation file the cursor was read from — the
+// server's rewrite detector. Compaction and archival invalidate every
+// position-based cursor; when this token stops matching, /watch says `reset`
+// instead of silently swallowing the turns that rode in with the rewrite.
+let gen = "";
 let watching = false;
 
 // The last wake-audio clip this page played (or was told predates it). Sent
@@ -706,15 +735,25 @@ function renderRemote(turns) {
 async function startWatch() {
   if (watching) return;
   watching = true;
+  let retry = 1000;
   for (;;) {
     try {
       const q = "/watch?wait=1&wakeseen=" + encodeURIComponent(wakeSeen)
-              + (cursor === null ? "" : "&since=" + cursor);
-      const res = await fetch(q, { credentials: "same-origin" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      const first = cursor === null;
-      cursor = data.n;
+              + (cursor === null ? "" : "&since=" + cursor)
+              + "&gen=" + encodeURIComponent(gen);
+      // The server answers every poll within its ~25 s window even when
+      // nothing happened — that answer is the heartbeat. A fetch still
+      // hanging well past it is a dead link (tailnet gone, laptop asleep)
+      // that TCP alone might sit on for many minutes; cut it and retry.
+      const ctl = new AbortController();
+      const guard = setTimeout(() => ctl.abort(), 45000);
+      let data;
+      try {
+        const res = await fetch(q, { credentials: "same-origin", signal: ctl.signal });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        data = await res.json();
+      } finally { clearTimeout(guard); }
+      retry = 1000;
       // A wake routed its voice here because this phone was the live device.
       // Played through the same queue as reply clips, acknowledged so the
       // next poll doesn't repeat it.
@@ -725,11 +764,26 @@ async function startWatch() {
         voiceMuted = false;
         enqueueVoice(data.wake.audio);
       }
-      // The first reply only establishes where we are; the seed already showed it.
-      if (!first && data.turns.length) renderRemote(data.turns);
+      if (data.reset) {
+        // The conversation file was rewritten under the cursor (compaction,
+        // archival) — a slice against it would be the wrong turns, so redraw
+        // from scratch instead. Mid-turn the redraw would wipe the exchange
+        // in flight; the cursor is left alone and the next poll after the
+        // turn lands here again.
+        if (!busy) await reseed();
+        // Still busy: the server answers a stale gen instantly, so pace the
+        // re-ask or this loop spins for the whole turn.
+        else await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      cursor = data.n;
+      if (data.gen !== undefined) gen = data.gen;
+      if (data.turns.length) renderRemote(data.turns);
     } catch (e) {
-      // Phone asleep, laptop rebooting, tailnet blipping — just try again.
-      await new Promise(r => setTimeout(r, 3000));
+      // Phone asleep, laptop rebooting, tailnet blipping — try again, backing
+      // off so a long outage isn't hammered, snapping back on any success.
+      await new Promise(r => setTimeout(r, retry));
+      retry = Math.min(retry * 2, 30000);
     }
   }
 }

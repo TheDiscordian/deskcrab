@@ -321,6 +321,7 @@ def read_context():
     # heard instead of blaring it on open.
     # Pairs, not messages — six exchanges reads as six exchanges.
     return {"summary": summary, "turns": turns[-(CONTEXT_TURNS * 2):], "n": n,
+            "gen": turns_gen(turns, summary),
             "wake_id": wake["id"] if wake else ""}
 
 
@@ -370,12 +371,42 @@ def read_turns():
 WATCH_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_WATCH_TIMEOUT", "25"))
 
 
-def watch_turns(since, wait, wakeseen=None):
+def turns_gen(turns, summary=None):
+    """Identity of this incarnation of the conversation file.
+
+    The /watch cursor is a position in a list that compaction and archival
+    rewrite, and a position in a rewritten list points at the wrong turns —
+    or past the end, where the old handling snapped it down and silently
+    consumed every turn that rode in with the rewrite (the first exchange of
+    each freshly archived conversation, most visibly). The gen is how a
+    rewrite is *detected*: derived from the summary and the first surviving
+    turn, so plain appends never change it, while compaction (folds the head
+    into the summary) and archival (new file, summary gone) always do.
+    """
+    if summary is None:
+        try:
+            summary = Path(STATE_PREFIX + "-convo-summary.txt").read_text(
+                errors="replace")
+        except OSError:
+            summary = ""
+    head = summary.strip()
+    if turns:
+        t = turns[0]
+        head += "\x00" + t["role"] + "\x00" + t["time"] + "\x00" + t["text"][:200]
+    return hashlib.sha1(head.encode()).hexdigest()[:12] if head else ""
+
+
+def watch_turns(since, wait, wakeseen=None, gen=None):
     """Long-poll for turns that appeared since the caller's cursor.
 
-    The cursor is a turn count. Compaction drops the oldest lines, so the count
-    can shrink; when it does the cursor is simply snapped back to the new total
-    rather than replaying the whole file as if it were new.
+    The cursor is a turn count, valid only for the incarnation of the file it
+    was read from — so a client that knows its generation sends it, and the
+    moment the file is rewritten (compaction, archival) the poll answers
+    immediately with `reset` and the whole current list instead of a slice
+    measured against a list that no longer exists. The client redraws from
+    scratch, exactly as a manual refresh would. The old behaviour — snap the
+    cursor down and wait — silently consumed every turn that rode in with the
+    rewrite; it survives only for clients too old to send a gen.
 
     Wake audio rides the same poll with its own cursor: `wakeseen` is the id of
     the last wake clip the client played, and a fresh pointer with a different
@@ -389,18 +420,28 @@ def watch_turns(since, wait, wakeseen=None):
     while True:
         turns = read_turns()
         n = len(turns)
-        if since is None or since > n:
-            since = n
+        cur = turns_gen(turns)
         wake = read_wake() if wakeseen is not None else None
         if wake is not None and wake["id"] == wakeseen:
             wake = None
+        # A gen the client holds that no longer matches means the list was
+        # rewritten under its cursor. The one benign mismatch is a client that
+        # has seen nothing at all (empty gen, cursor at zero): its cursor is
+        # trivially valid in any incarnation, so delivery stays incremental.
+        if gen is not None and gen != cur and not (gen == "" and not since):
+            out = {"n": n, "gen": cur, "turns": turns, "reset": True}
+            if wake is not None:
+                out["wake"] = wake
+            return out
+        if since is None or since > n:
+            since = n
         if n > since or wake is not None:
-            out = {"n": n, "turns": turns[since:]}
+            out = {"n": n, "gen": cur, "turns": turns[since:]}
             if wake is not None:
                 out["wake"] = wake
             return out
         if time.time() >= deadline:
-            return {"n": n, "turns": []}
+            return {"n": n, "gen": cur, "turns": []}
         time.sleep(0.5)
 
 
@@ -849,13 +890,14 @@ class Handler(BaseHTTPRequestHandler):
                 since = None
             wait = (query.get("wait") or ["1"])[0] != "0"
             wakeseen = (query.get("wakeseen") or [None])[0]
+            gen = (query.get("gen") or [None])[0]
             # Only a wake-capable client (one that sends wakeseen) counts as
             # "connected": routing audio at a page too old to play it would
             # swallow the wake into silence on both devices.
             if wakeseen is not None:
                 with contextlib.suppress(OSError):
                     Path(PHONE_SEEN).touch()
-            return self._json(200, watch_turns(since, wait, wakeseen), extra)
+            return self._json(200, watch_turns(since, wait, wakeseen, gen), extra)
 
         if path.startswith("/turn/"):
             # Re-attach to an in-flight (or recently finished) turn: replay
