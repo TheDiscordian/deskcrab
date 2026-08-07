@@ -217,6 +217,16 @@ systemctl --user daemon-reload
 systemctl --user enable --now deskcrab-notice-selfchange.path
 ```
 
+A watcher only speaks when something is wrong, which means a watcher that has silently stopped being triggered looks exactly like a quiet week. `lib/canary-selfchange` asks the question the silence cannot — it creates and removes a sentinel inside a watched directory and waits for the emitter's heartbeat to move, proving the whole chain from kernel inotify to the emitter's own code:
+
+```bash
+cp systemd/deskcrab-canary-selfchange.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-canary-selfchange.timer
+```
+
+A stopped `.path` unit is restarted and reported; a heartbeat that will not move fires an event wake naming what is currently unguarded; an emitter that is merely busy is inconclusive rather than an alarm. Run it by hand with `lib/canary-selfchange --no-wake`; results land in `~/.local/state/deskcrab/canary-self.log`.
+
 Attribution is the point: the assistant's own writes never wake it. Writers declare themselves with `crab touching <paths>` — a windowed suppression record, wired automatically into turns and wakes (from the stream's own tool calls), detached jobs, the day journal, and the memory store — and a change named by a live session's `crab claim` is likewise read as its own. Deletions are stricter than anything else: only an explicit `touching` record excuses one, so a deleted want always surfaces. Bursts settle (`NOTICE_SELF_SETTLE`) into a single wake, and judgement waits for a live session to finish writing before deciding whose hand it saw. Extra personal directories go in `SELF_WATCH_EXTRA` (colon-separated) plus matching `PathChanged=` lines in a drop-in on the `.path` unit. The emitter's decisions are logged to `~/.local/state/deskcrab/notice-self.log`.
 
 ## Long-term memory

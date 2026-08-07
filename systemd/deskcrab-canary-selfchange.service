@@ -1,0 +1,10 @@
+[Unit]
+Description=DeskCrab: prove the self-change watcher is still alive
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/deskcrab/canary-selfchange --quiet
+# Must NOT run inside deskcrab-notice-selfchange.service: the canary waits on
+# that unit being free to be triggered, and a wake it fires would then be a
+# child of the very unit under test.
+TimeoutStartSec=180

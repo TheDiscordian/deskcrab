@@ -1,0 +1,159 @@
+#!/bin/bash
+# Prove the self-change watcher is still alive — end to end, not by assertion.
+#
+#   canary-selfchange [--quiet] [--no-wake]
+#
+#   --quiet    print nothing on success (the timer's mode)
+#   --no-wake  never fire an event wake, whatever is found (for testing by hand)
+#
+# The failure this exists for is silence. lib/notice-selfchange only ever
+# speaks when something changed by a hand that was not hers; a watcher that has
+# stopped being triggered at all — .path unit stopped, masked, its service
+# wedged, the lib symlink broken, an inotify limit hit — produces exactly the
+# same quiet. And the quiet reads as "nobody touched me", which is the reading
+# nobody checks. So something must poke it on a schedule and insist on an
+# answer.
+#
+# The poke is a sentinel file created and removed inside a watched directory.
+# It is deliberately a dotfile and not *.md, so notice-selfchange's snapshot
+# never contains it: the directory change fires the .path unit, the emitter
+# runs, finds nothing of substance, and exits — no wake, no report, no noise.
+# What the emitter *does* do, before any early exit, is stamp
+# notice-self.heartbeat. That number moving is the whole proof: kernel inotify
+# -> .path unit -> .service -> the script's own code actually ran.
+#
+# Three things can be true when the heartbeat does not move, and only one of
+# them is an alarm:
+#   * the watcher is genuinely dead                      -> wake her about it
+#   * its service is already busy (a wake session runs inside that unit, and a
+#     .path unit does not queue a trigger for a running service)  -> inconclusive
+#   * the poke never happened (no write permission, no such directory) -> error
+set -u
+
+QUIET=0
+NO_WAKE=0
+for a in "$@"; do
+    case "$a" in
+        --quiet)   QUIET=1 ;;
+        --no-wake) NO_WAKE=1 ;;
+        *) echo "canary-selfchange: unknown argument: $a" >&2; exit 2 ;;
+    esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CRAB="$SCRIPT_DIR/crab"
+
+DESKCRAB_CONF="${DESKCRAB_CONF:-$HOME/.config/deskcrab/deskcrab.conf}"
+[ -f "$DESKCRAB_CONF" ] && . "$DESKCRAB_CONF"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab"
+HEARTBEAT="$STATE_DIR/notice-self.heartbeat"
+LOGFILE="$STATE_DIR/canary-self.log"
+LASTOK="$STATE_DIR/canary-self.lastok"
+
+UNIT_PATH="deskcrab-notice-selfchange.path"
+UNIT_SVC="deskcrab-notice-selfchange.service"
+
+TIMEOUT="${CANARY_TIMEOUT:-45}"   # seconds to wait for the heartbeat to move
+
+mkdir -p "$STATE_DIR"
+log()  { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOGFILE"; }
+say()  { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+fail() { log "FAIL $*"; say "canary: $*"; VERDICT="$*"; }
+
+VERDICT=""
+
+# --- 1. is the watcher even installed and armed? -----------------------------
+ACTIVE="$(systemctl --user is-active "$UNIT_PATH" 2>/dev/null)"
+ENABLED="$(systemctl --user is-enabled "$UNIT_PATH" 2>/dev/null)"
+
+if [ "$ACTIVE" != "active" ]; then
+    # Try to revive it before complaining — a stopped watch is fixable here,
+    # and she would rather find it running than be told it was not.
+    systemctl --user start "$UNIT_PATH" >/dev/null 2>&1
+    sleep 1
+    NOWACTIVE="$(systemctl --user is-active "$UNIT_PATH" 2>/dev/null)"
+    if [ "$NOWACTIVE" = "active" ]; then
+        log "revived: $UNIT_PATH was '$ACTIVE', started it"
+        say "canary: $UNIT_PATH was '$ACTIVE' — restarted, now active"
+        WAS_REVIVED="$UNIT_PATH was '$ACTIVE' and has been restarted"
+    else
+        fail "$UNIT_PATH is '$ACTIVE' and will not start (now '$NOWACTIVE')"
+    fi
+fi
+WAS_REVIVED="${WAS_REVIVED:-}"
+
+if [ "$ENABLED" != "enabled" ] && [ -z "$VERDICT" ]; then
+    # Not fatal today, fatal after the next reboot — worth saying either way.
+    fail "$UNIT_PATH is '$ENABLED', so it will not come back after a reboot"
+fi
+
+# --- 2. the poke -------------------------------------------------------------
+BEFORE="$(cat "$HEARTBEAT" 2>/dev/null || echo 0)"
+
+# A wake session runs *inside* the emitter's service unit, and a .path unit
+# does not queue a trigger for a service that is already running. Under those
+# conditions a still heartbeat proves nothing, so do not manufacture an alarm.
+SVC_BUSY=0
+[ "$(systemctl --user is-active "$UNIT_SVC" 2>/dev/null)" = "active" ] && SVC_BUSY=1
+
+MOVED=0
+if [ -z "$VERDICT" ] && [ "$SVC_BUSY" -eq 0 ]; then
+    SENTINEL="$DATA_DIR/.canary-selfchange.$$"
+    # Poke REPEATEDLY, not once. A .path unit does not queue: a directory
+    # change arriving while its service is still running is simply lost, and
+    # the unit only re-arms once that service goes inactive. One poke landing
+    # in that window would look exactly like a dead watcher — measured, not
+    # assumed: a single-poke build of this script called a healthy watcher dead
+    # 45 s after the emitter had merely been busy a moment earlier.
+    poke() { date +%s > "$SENTINEL" 2>/dev/null && rm -f "$SENTINEL"; }
+    if ! ( mkdir -p "$DATA_DIR" && date +%s > "$SENTINEL" ) 2>/dev/null; then
+        fail "cannot write a sentinel into $DATA_DIR — the poke never happened"
+    else
+        rm -f "$SENTINEL"
+        waited=0
+        while [ "$waited" -lt "$TIMEOUT" ]; do
+            sleep 1
+            waited=$(( waited + 1 ))
+            [ "$(cat "$HEARTBEAT" 2>/dev/null || echo 0)" != "$BEFORE" ] && { MOVED=1; break; }
+            # A wake that started in the meantime explains a still heartbeat
+            # just as well as a dead watcher; stop and call it inconclusive.
+            if [ "$(systemctl --user is-active "$UNIT_SVC" 2>/dev/null)" = "active" ]; then
+                SVC_BUSY=1; break
+            fi
+            [ $(( waited % 5 )) -eq 0 ] && poke
+        done
+        rm -f "$SENTINEL"
+        if [ "$MOVED" -eq 1 ]; then
+            log "ok: heartbeat moved after ${waited}s (path unit $ENABLED/$ACTIVE)"
+            say "canary: alive — heartbeat moved ${waited}s after the poke"
+            date +%s > "$LASTOK"
+        elif [ "$SVC_BUSY" -eq 1 ]; then
+            log "inconclusive: $UNIT_SVC busy, a trigger would not have queued"
+            say "canary: inconclusive — $UNIT_SVC is busy (a session runs inside it)"
+        else
+            fail "poked $DATA_DIR and the heartbeat did not move in ${TIMEOUT}s — the watcher is not being triggered"
+        fi
+    fi
+elif [ "$SVC_BUSY" -eq 1 ] && [ -z "$VERDICT" ]; then
+    log "inconclusive: $UNIT_SVC already busy at start"
+    say "canary: inconclusive — $UNIT_SVC is busy (a session runs inside it)"
+fi
+
+# --- 3. verdict --------------------------------------------------------------
+[ -z "$VERDICT" ] && [ -z "$WAS_REVIVED" ] && exit 0
+
+# Something is wrong, or was wrong and has been mended. Either is hers to know.
+if [ "$NO_WAKE" -eq 1 ] || [ -z "${WANTS_FILE:-}" ]; then
+    exit 1
+fi
+
+LAST_OK_TXT="never"
+[ -f "$LASTOK" ] && LAST_OK_TXT="$(date -d "@$(cat "$LASTOK")" '+%F %T' 2>/dev/null || echo unknown)"
+
+if [ -n "$VERDICT" ]; then
+    exec "$CRAB" wake event "The watcher over your own files is not answering: $VERDICT. Last clean canary: $LAST_OK_TXT. Nothing is guarding wants, conduct, journal, memory, your config or your repo while this is true — a change by another hand would arrive as silence. Check '$UNIT_PATH' and '$UNIT_SVC', and $STATE_DIR/canary-self.log."
+else
+    exec "$CRAB" wake event "The watcher over your own files had stopped and the canary restarted it: $WAS_REVIVED. Anything changed while it was down was never judged — the snapshot has since been reconciled silently. Worth a look at $STATE_DIR/notice-self.log before assuming the gap was empty."
+fi

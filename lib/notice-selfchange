@@ -50,6 +50,7 @@ SNAP="$STATE_DIR/notice-self.snap"
 SUPPRESS="$STATE_DIR/notice-self.suppress"
 PENDING="$STATE_DIR/notice-self.pending"
 LOGFILE="$STATE_DIR/notice-self.log"
+HEARTBEAT="$STATE_DIR/notice-self.heartbeat"
 SESSIONS_DIR="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions"
 SESSIONS_LOG="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions.log"
 JOBS_DIR="${JOBS_DIR:-$DATA_DIR/jobs}"
@@ -69,6 +70,12 @@ NOW=$(date +%s)
 mkdir -p "$STATE_DIR"
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOGFILE"; }
+
+# Proof of life, stamped before any early exit: a watcher that has quietly
+# stopped being triggered is indistinguishable from a world where nothing
+# changed, and the second reading is the comfortable one. lib/canary-selfchange
+# pokes a watched directory and waits for this number to move.
+printf '%s\n' "$NOW" > "$HEARTBEAT" 2>/dev/null
 
 # --- the watch set: one "sig<TAB>path" line per file, sorted by path --------
 # sig is size.mtime — an opaque token; any difference means "modified".
