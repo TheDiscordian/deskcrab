@@ -2658,36 +2658,6 @@ extract_response() {
 }
 
 # One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
-# CLAUDE_CONFIG_DIR override ("" = the account in hand); the fallback chain
-# runs through here too, so every account's run is invoked identically and the
-# flags cannot drift between the first attempt and the retries. Reads TEXT /
-# EFFORT / SYSTEM_PROMPT / CLAUDE_BIN from the caller's scope (bash dynamic
-# scoping, same as _wake_claude_run).
-#
-# --include-partial-messages is what makes speech start when she starts TALKING
-# rather than when she stops. A plain stream-json run only emits a completed
-# `assistant` event once a whole text block has been generated, so a ten-second
-# answer began playing ten seconds late — measurably, and that is the whole of
-# the "time to first speech" regression. The partial events carry the same text
-# as deltas; the TTS streamer speaks each sentence as it completes and the
-# completed event is then a no-op for the part already said. Nothing downstream
-# reads stream_event lines (extract-response, serve.py's progress tailer and
-# crab-debug all skip unknown types), so this is additive.
-_generate_claude_run() {
-    local CONFDIR="$1"
-    (
-        cd "$PROJECT_DIR" || exit 1
-        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
-        export "${CLAUDE_NO_AUTO_MEMORY?}"
-        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-            --verbose --output-format stream-json --include-partial-messages \
-            --append-system-prompt "$SYSTEM_PROMPT" \
-            "$TEXT" >> "$DEBUGLOG" 2>&1
-    )
-}
-
-# One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
 # CLAUDE_CONFIG_DIR override ("" = the login already in the environment); every
 # account in the chain runs through here, so the flags cannot drift between the
 # first attempt and the retries. Reads TEXT / EFFORT / SYSTEM_PROMPT /
@@ -3114,6 +3084,7 @@ job_start() {
         --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
         --setenv=JOBS_DIR="$JOBS_DIR" \
         --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+        --setenv=CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}" \
         --setenv=JOB_MODEL="$JOB_MODEL" \
         --setenv=JOB_EFFORT="$JOB_EFFORT" \
         "$LIB_DIR/job-runner" "$id" "$workdir" 2>/dev/null; then
