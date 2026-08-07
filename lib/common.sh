@@ -1250,6 +1250,14 @@ _tree_cpu() {
 # the fd-8/fd-9 lock hygiene that setsid needed by hand comes free. setsid
 # stays as the fallback for a box with no user manager — correct there, since
 # nothing is enforcing a cgroup in the first place.
+#
+# Every DESKCRAB_* variable that redirects state MUST be forwarded here, or a
+# scratch instance's child writes to the real one's files. DESKCRAB_MEMORY_DIR
+# was missing until 2026-08-07, and tests/test_turn_reinforce.sh — which asks
+# a stubbed judge for the verdict [1] against its own two-record scratch store
+# — reinforced record #1 of the LIVE store instead, twice. It looked like a
+# failing test (the scratch db never got its stamp) and was actually the test
+# reaching out of its sandbox.
 detach_turn_child() {  # <unit-suffix> <command> [args...]
     local suffix="$1"; shift
     local unit="deskcrab-${suffix}-$(date +%s)-$$"
@@ -1258,6 +1266,7 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
             --setenv=PATH="$HOME/.local/bin:$PATH" \
             --setenv=DESKCRAB_CONF="$CONF_FILE" \
             --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
+            --setenv=DESKCRAB_MEMORY_DIR="${DESKCRAB_MEMORY_DIR:-}" \
             --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
             "$@" >/dev/null 2>&1; then
         return 0
@@ -1296,17 +1305,22 @@ fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
 # which records ACTUALLY influenced the reply and reinforces only those.
 # Ignored records get nothing and keep decaying. One line per judgement lands
 # in ${STATE_PREFIX}-memory-judge.log.
-fire_memory_judge() {  # <user-text> <response>  |  --wake <agenda> <response>
+fire_memory_judge() {  # <user-text> <response> [actions]  |  --wake <agenda> <response> [actions]
     local IDS_FILE="${STATE_PREFIX}-memory-injected-$$.json"
     [ -f "$IDS_FILE" ] || return 0
     local WAKE_FLAG=""
     [ "${1:-}" = "--wake" ] && { WAKE_FLAG="--wake"; shift; }
-    local USER_TEXT="${1:-}" RESPONSE="${2:-}"
-    # No genuine reply means nothing to judge influence against; the judge is
+    local USER_TEXT="${1:-}" RESPONSE="${2:-}" ACTIONS="${3:-}"
+    # A turn's output is its words AND its work. Judging influence against the
+    # reply alone credits nothing to a wake that spent ten minutes obeying a
+    # directive through tool calls and then said one parenthetical sentence —
+    # which is exactly the reinforcement he asked for and precisely what the
+    # first six live judgements refused to give (all `used=NONE`). So the
+    # gate is no evidence of either kind, not merely no words. The judge is
     # also switchable off. Either way the sidecar is consumed — it describes
     # this turn only.
     if [ "${MEMORY_JUDGE:-1}" != "1" ] \
-            || [ -z "$(printf '%s' "$RESPONSE" | tr -d '[:space:]')" ]; then
+            || [ -z "$(printf '%s%s' "$RESPONSE" "$ACTIONS" | tr -d '[:space:]')" ]; then
         rm -f "$IDS_FILE"
         return 0
     fi
@@ -1314,7 +1328,7 @@ fire_memory_judge() {  # <user-text> <response>  |  --wake <agenda> <response>
     # judge is not SIGKILLed with the wake's cgroup a moment after it starts.
     detach_turn_child memory-judge \
         "$LIB_DIR/memory.py" judge-turn --ids-file "$IDS_FILE" $WAKE_FLAG \
-        --user "$USER_TEXT" --reply "$RESPONSE" \
+        --user "$USER_TEXT" --reply "$RESPONSE" --actions "$ACTIONS" \
         --model "${MEMORY_JUDGE_MODEL:-opus}" \
         --log "${STATE_PREFIX}-memory-judge.log"
 }
@@ -1499,9 +1513,6 @@ $TURN_CONTEXT"
     fi
 
     if [ -z "$RESPONSE" ]; then
-        # No reply text means no evidence to judge memory influence against;
-        # the sidecar is consumed all the same.
-        rm -f "${STATE_PREFIX}-memory-injected-$$.json"
         # No text at all. On a clean exit that is the shape of silence — the
         # wake worked through tool calls and had nothing for the user — so
         # journal what it DID, from the stream's own tool calls. On a
@@ -1511,8 +1522,17 @@ $TURN_CONTEXT"
             local TRACE
             TRACE="$(wake_work_trace)"
             session_outcome "(silent — ${TRACE:-ran no tools, touched nothing})"
+            # A wordless wake is the case reinforcement most needs to see, not
+            # the one to skip: its entire output is the work. The trace is the
+            # evidence, so the judge runs on it. A crashed wake still just
+            # consumes the sidecar — there is no turn to judge.
+            # The sidecar is NOT removed here — the detached judge reads it and
+            # consumes it itself; deleting it now would race the child to its
+            # own evidence.
+            fire_memory_judge --wake "${WAKE_REASON:-}" "" "$TRACE"
         else
             session_outcome "(wake produced no output — claude exit $CLAUDE_STATUS)"
+            rm -f "${STATE_PREFIX}-memory-injected-$$.json"
         fi
         return 0
     fi
@@ -1546,8 +1566,10 @@ $TURN_CONTEXT"
     # read, and silence is a speech decision, not a summary — so a silent
     # wake's line still says what the wake DID, from the stream's own tool
     # calls.
+    # Read once, used twice: the journal line below when the wake stays quiet,
+    # and the memory judge always — a talkative wake's work is evidence too.
+    TRACE="$(wake_work_trace)"
     if [ -z "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
-        TRACE="$(wake_work_trace)"
         session_outcome "(silent — ${TRACE:-ran no tools, touched nothing})${SILENT_NOTE:+ — }$SILENT_NOTE"
     else
         session_outcome "$SPOKEN"
@@ -1565,7 +1587,7 @@ $TURN_CONTEXT"
     # Same moment for the memory judge: the wake's outcome is recorded, and a
     # silent completion below must not skip the judgement — a memory used by
     # a wake that chose to say nothing was still used.
-    fire_memory_judge --wake "${WAKE_REASON:-}" "$RESPONSE"
+    fire_memory_judge --wake "${WAKE_REASON:-}" "$RESPONSE" "$TRACE"
 
     # Nothing to say and nothing to show: the wake is complete, invisibly.
     # Silence is never narrated — no speech, no notification, no window.
@@ -1798,7 +1820,7 @@ _run_claude_remote_locked() {
     # the phone dies with the turn exactly like one stated at the desk. The
     # memory judge rides the same moment — reply delivered, hot path over.
     fire_promise_audit "$TEXT" "$RESPONSE"
-    fire_memory_judge "$TEXT" "$RESPONSE"
+    fire_memory_judge "$TEXT" "$RESPONSE" "$(wake_work_trace)"
 
     python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3]}))' \
         "$SPOKEN" "$DISPLAY_MD" "$AUDIO"
@@ -1857,8 +1879,10 @@ run_claude_and_respond() {
     fi
 
     # Also out of band: which of the injected memories genuinely shaped this
-    # reply? Consumes the recall sidecar even when the reply came back empty.
-    fire_memory_judge "$TEXT" "$RESPONSE"
+    # turn? The work trace goes with the reply — a directive obeyed in an edit
+    # rather than said out loud is still a directive obeyed. Consumes the
+    # recall sidecar even when the reply came back empty.
+    fire_memory_judge "$TEXT" "$RESPONSE" "$(wake_work_trace)"
 
     echo "$RESPONSE"
 }

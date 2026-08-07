@@ -534,13 +534,18 @@ class TestJudgeTurn(StoreCase):
         self.log = os.path.join(self.dir, "judge.log")
 
     def stub_claude(self, verdict):
+        # The prompt the judge builds is kept, so a test can assert what the
+        # model was actually shown rather than only what it answered.
         path = os.path.join(self.dir, "claude-stub")
+        self.seen_prompt = os.path.join(self.dir, "judge-prompt.txt")
         with open(path, "w") as f:
-            f.write(f"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{verdict}'\n")
+            f.write(f"#!/bin/sh\ncat >'{self.seen_prompt}'\n"
+                    f"printf '%s\\n' '{verdict}'\n")
         os.chmod(path, 0o755)
         return path
 
-    def judge(self, verdict, ids=None, reply="Xena is your Paladin."):
+    def judge(self, verdict, ids=None, reply="Xena is your Paladin.",
+              actions=""):
         ids_file = os.path.join(self.dir, "injected.json")
         rows = [(self.used, "note"), (self.ignored, "note")] \
             if ids is None else ids
@@ -551,7 +556,7 @@ class TestJudgeTurn(StoreCase):
         proc = subprocess.run(
             [sys.executable, os.path.join(REPO, "lib", "memory.py"),
              "judge-turn", "--ids-file", ids_file, "--user", "who do I play",
-             "--reply", reply, "--log", self.log],
+             "--reply", reply, "--actions", actions, "--log", self.log],
             capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return ids_file
@@ -587,12 +592,30 @@ class TestJudgeTurn(StoreCase):
         self.assertEqual(self.usage(self.used)[0], 1)
         self.assertEqual(self.usage(self.ignored), (0, None))
 
-    def test_empty_reply_skips_the_model(self):
+    def test_no_reply_and_no_actions_skips_the_model(self):
         ids_file = self.judge(f"[{self.used}]", reply="  ")
         self.assertEqual(self.usage(self.used), (0, None))
         self.assertFalse(os.path.exists(ids_file))
         with open(self.log) as f:
-            self.assertIn("skipped (empty reply)", f.read())
+            self.assertIn("skipped (no reply, no actions)", f.read())
+
+    def test_wordless_turn_is_judged_on_its_actions(self):
+        # The case the directive exists for: a wake whose whole output is tool
+        # calls. Words are not the only evidence a record was obeyed, so an
+        # empty reply plus a work trace must still reach the judge.
+        ids_file = self.judge(f"[{self.used}]", reply="",
+                              actions="wrote ~/notes.md; ran 4 commands")
+        self.assertEqual(self.usage(self.used)[0], 1)
+        self.assertFalse(os.path.exists(ids_file))
+        with open(self.log) as f:
+            self.assertIn(f"used=[{self.used}]", f.read())
+
+    def test_actions_reach_the_judge_prompt(self):
+        # Not merely accepted as a flag — actually put in front of the model.
+        self.judge("[]", reply="a word",
+                   actions="wrote ~/canary-marker.md; ran 9 commands")
+        with open(self.seen_prompt) as f:
+            self.assertIn("wrote ~/canary-marker.md; ran 9 commands", f.read())
 
     def test_reinforcement_lands_in_the_score(self):
         # End state of the whole path: the judged record now outranks its

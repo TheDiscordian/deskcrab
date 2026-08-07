@@ -652,6 +652,11 @@ would teach the store that whatever the retriever happened to return is \
 important, which is flattery, not memory. When in doubt about a record, leave \
 it out.
 
+A turn's output is not only its words. When the turn lists what it DID — files \
+written, commands run, jobs dispatched, commits made — weigh those actions as \
+its real output, and credit a record the actions plainly obey even when the \
+words never mention it. A directive followed in silence was still followed.
+
 Reply with ONLY a JSON array of the ids genuinely used, e.g. [3,17] — no \
 prose, no code fence. [] is a common and correct answer.
 """
@@ -671,17 +676,25 @@ def cmd_judge_turn(store, args):
     try:
         if not injected:
             return 0
-        if not args.reply.strip():
-            jlog("skipped (empty reply)")
+        # A wake that says nothing has not done nothing: its whole output is
+        # tool calls, and that is the case his directive most cares about —
+        # reinforcement must credit what she DOES while pursuing her own
+        # wants, not only what she says. So the gate is "no evidence at all",
+        # not "no words".
+        if not args.reply.strip() and not args.actions.strip():
+            jlog("skipped (no reply, no actions)")
             return 0
         records = "\n".join(f"#{r['id']} [{r.get('kind', '?')}] {r['text']}"
                             for r in injected)
+        did = f"\n\nWhat she DID this turn (from her own tool calls): {args.actions}" \
+            if args.actions.strip() else ""
+        said = args.reply.strip() or "(nothing — she worked and said nothing)"
         if args.wake:
             exchange = ("This was an autonomous wake — nobody was talking to "
                         "her; the agenda was: " + (args.user or "(none — a timer wake)")
-                        + f"\n\nHer reply (to herself): {args.reply}")
+                        + f"\n\nHer reply (to herself): {said}" + did)
         else:
-            exchange = f"User: {args.user}\n\nHer reply: {args.reply}"
+            exchange = f"User: {args.user}\n\nHer reply: {said}" + did
         try:
             body = run_claude(
                 JUDGE_PROMPT + "\n=== INJECTED RECORDS ===\n" + records
@@ -861,6 +874,9 @@ def main():
                    help="the sidecar recall-block wrote (consumed)")
     p.add_argument("--user", default="", help="user text, or the wake's agenda")
     p.add_argument("--reply", default="")
+    p.add_argument("--actions", default="",
+                   help="what the turn DID, from its own tool calls "
+                        "(wake_work_trace) — a wake's real output")
     p.add_argument("--wake", action="store_true")
     p.add_argument("--model",
                    default=os.environ.get("MEMORY_JUDGE_MODEL") or "opus")
