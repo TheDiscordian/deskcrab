@@ -44,8 +44,17 @@ CONVO = f"{PREFIX}-convo.txt"
 # (glob, label) — every stream a reply can be produced into. The label is
 # printed when the view switches streams, so it is never ambiguous whether
 # what you are reading was said at the desk or to the phone.
+# The desk/wake stream is one file PER SESSION now, not one shared file — a
+# wake truncating the shared log is what used to strand a desktop turn's TTS
+# streamer past EOF and cost him the reply. So this is a glob like the others,
+# and two sessions running at once are both visible instead of overwriting
+# each other. LOG (the unsuffixed name) survives as a symlink to the newest,
+# for anything that still wants "whatever is talking right now"; globbing the
+# suffixed files rather than the symlink is what keeps a stream from being
+# printed twice.
 SOURCES = [
     (LOG, "desk"),
+    (f"{PREFIX}-debug-*.log", "desk"),
     (f"{PREFIX}-turn-*.log", "phone"),
     (f"{PREFIX}-remote-*.log", "phone"),
 ]
@@ -204,15 +213,24 @@ class Stream:
 def follow():
     """Yield (label, line) from every stream log, live, as they are written."""
     open_streams = {}   # path -> Stream
+    # The file each open path RESOLVES to. The unsuffixed desk log is a symlink
+    # to whichever per-session log is talking right now, so it and its target
+    # both match a pattern here; without this every line of the current turn
+    # would be printed twice.
+    open_reals = {}     # realpath -> path
     while True:
         for pattern, label in SOURCES:
             for path in sorted(glob.glob(pattern)):
                 if path in open_streams:
                     continue
+                real = os.path.realpath(path)
+                if real in open_reals:
+                    continue
                 try:
                     open_streams[path] = Stream(path, label)
                 except OSError:
                     continue   # vanished between glob and open — nothing to read
+                open_reals[real] = path
         moved_on = []
         for path, stream in list(open_streams.items()):
             for line in stream.lines():
@@ -224,6 +242,9 @@ def follow():
                 moved_on.append(path)
         for path in moved_on:
             del open_streams[path]
+            for real, p in list(open_reals.items()):
+                if p == path:
+                    del open_reals[real]
         time.sleep(0.05)
 
 
