@@ -1703,6 +1703,7 @@ speak_once() {
     TEXT=$(echo "$TEXT" | sed -E 's/\*+//g; s/`[^`]*`//g')
     [ -n "$TTS_FIXES" ] && TEXT=$(echo "$TEXT" | sed -E "$TTS_FIXES")
     [ -z "$(echo "$TEXT" | tr -d '[:space:]')" ] && return 0
+    speech_log "speak_once: ${TEXT:0:90}"
     local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
     [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")

@@ -173,5 +173,27 @@ N=$(grep -cF 'SAY	Heard once is enough.' "$TRACE")
     || fail "verify replayed a spoken reply" "piper saw it $N times"
 
 echo
+echo "a thinking block shifts the stream's index space — the reply speaks once:"
+# The CLI emits the finished text block ALONE, at position 0 of its own
+# assistant event — NOT at its stream index, which a preceding thinking block
+# pushed to 1. Looked up by position, the closer found a fresh block with
+# nothing consumed and spoke the whole reply a second time. Measured live at
+# 15:31 on 2026-08-07: one canary turn, two SAIDs from one streamer pid —
+# every reply with a thinking block doubled, which was every reply.
+start_streamer thinkshift
+j '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_T"}}}'
+j '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}'
+j '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
+j '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}'
+j '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Canary test seventeen. "}}}'
+sleep 0.6
+j '{"type":"assistant","message":{"model":"m","id":"msg_T","content":[{"type":"text","text":"Canary test seventeen. "}]}}'
+j "$RESULT"
+reap_streamer
+n=$(said_count "Canary test seventeen.")
+[ "$n" = 1 ] && ok "streamed behind a thinking block, spoken exactly once" \
+    || fail "the completed event must find the streamed block by content" "said $n times"
+
+echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
