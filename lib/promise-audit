@@ -98,4 +98,4 @@ REASON="${VERDICT#UNSAVED: }"
 # The reason MUST open with PROMISE_AUDIT_REASON_PREFIX (common.sh): that is
 # how the wake path knows this wake is the audit's own follow-up and must not
 # be re-audited into an endless chain.
-"$SCRIPT_DIR/crab" wake event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and reply (quiet)." >/dev/null 2>&1
+"$SCRIPT_DIR/crab" wake event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and end with no message text — say nothing." >/dev/null 2>&1

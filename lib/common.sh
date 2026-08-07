@@ -918,13 +918,13 @@ wake_concurrent_turn_context() {
         cat <<EOF
 CONCURRENT CONVERSATION — as this wake begins, the user has just spoken to another session of you (from the $DEV), and that session is answering him RIGHT NOW. Its reply will reach him before anything you say. What he said:
 $EXCHANGE
-That message is being handled — it is not yours to answer, even though it may look unanswered in the conversation above. Behave like a person who walks in while someone is mid-answer: do not answer it yourself, do not talk over the reply, do not repeat what is being said. If everything you might say is covered by that exchange, begin your reply with (quiet) — staying silent while your other self answers is the natural thing, not a failure. Speak only if you have something genuinely NEW to add that the answering session plainly would not say.
+That message is being handled — it is not yours to answer, even though it may look unanswered in the conversation above. Behave like a person who walks in while someone is mid-answer: do not answer it yourself, do not talk over the reply, do not repeat what is being said. If everything you might say is covered by that exchange, say nothing — end with no message text at all; staying silent while your other self answers is the natural thing, not a failure, and silence is never announced. Speak only if you have something genuinely NEW to add that the answering session plainly would not say.
 EOF
     else
         cat <<EOF
 CONCURRENT CONVERSATION — moments ago the user spoke to another session of you (from the $DEV), and that session has already answered him. The exchange, which he has just heard:
 $EXCHANGE
-You have, in effect, just heard yourself say that. Never restate, rephrase, or re-answer any of it — hearing it again seconds later reads as malfunction. If what you were going to say is already covered, begin your reply with (quiet); silence after the answer has been given is the natural thing, not a failure. Speak only to add something genuinely new that this exchange did not cover.
+You have, in effect, just heard yourself say that. Never restate, rephrase, or re-answer any of it — hearing it again seconds later reads as malfunction. If what you were going to say is already covered, say nothing — end with no message text at all; silence after the answer has been given is the natural thing, not a failure, and silence is never announced. Speak only to add something genuinely new that this exchange did not cover.
 EOF
     fi
 }
@@ -1023,10 +1023,10 @@ sys.exit(0 if err and not real else 1)
 PY
 }
 
-# What did the wake actually DO? A "(quiet)" reply is the model's SPEECH
+# What did the wake actually DO? A silent reply is the model's SPEECH
 # decision, not its work record — two wakes on 2026-08-06 each dispatched a
-# builder job and edited three files, replied "(quiet)" as the prompt asks,
-# and the journal showed a bare "(quiet)": indistinguishable from an hour of
+# builder job and edited three files, chose silence as the prompt allows,
+# and the journal showed none of it: indistinguishable from an hour of
 # nothing, and read as exactly that. The stream log already holds the truth,
 # so summarize it mechanically — files written (Write/Edit tools plus shell
 # redirections), jobs dispatched, commands run — instead of trusting the
@@ -1167,10 +1167,18 @@ $TURN_CONTEXT"
     fi
 
     if [ -z "$RESPONSE" ]; then
-        # No output at all — crash or stall-reap before the first text block.
-        # Without this line the journal shows "(no summary recorded)" and the
-        # next session cannot tell a died wake from one that chose silence.
-        session_outcome "(wake produced no output — claude exit $CLAUDE_STATUS)"
+        # No text at all. On a clean exit that is the shape of silence — the
+        # wake worked through tool calls and had nothing for the user — so
+        # journal what it DID, from the stream's own tool calls. On a
+        # non-zero exit it is a crash or stall-reap, and the journal must
+        # say so or "(no summary recorded)" hides the death.
+        if [ "$CLAUDE_STATUS" -eq 0 ]; then
+            local TRACE
+            TRACE="$(wake_work_trace)"
+            session_outcome "(silent — ${TRACE:-ran no tools, touched nothing})"
+        else
+            session_outcome "(wake produced no output — claude exit $CLAUDE_STATUS)"
+        fi
         return 0
     fi
 
@@ -1180,13 +1188,38 @@ $TURN_CONTEXT"
     convo_append 'Assistant: %s\n\n' "$RESPONSE"
     compact_convo
 
-    # A wake that ends quietly leaves no trace anywhere a later session looks:
-    # nothing spoken, nothing displayed, and the conversation may be compacted
-    # away. Its own summary of itself is what the next session gets to read.
-    session_outcome "$(spoken_part "$RESPONSE")"
+    local SPOKEN DISPLAY_PART TRACE SILENT_NOTE=""
+    SPOKEN=$(spoken_part "$RESPONSE")
+    DISPLAY_PART=$(display_part "$RESPONSE")
+
+    # Legacy backstop: no prompt asks for a "(quiet)" marker any more —
+    # silence is an EMPTY spoken reply — but a stray marker from old habit
+    # must never be voiced. It used to slip past the old prefix match
+    # whenever mid-turn narration was joined ahead of it, and the whole
+    # private note went to the speakers ("quiet checked wants slash
+    # sheet-music dot md"). A line opening with the marker anywhere in the
+    # reply means the wake meant silence: mute everything, keep the words
+    # for the journal.
+    if printf '%s\n' "$RESPONSE" | grep -qi '^[[:space:]]*(quiet)'; then
+        SILENT_NOTE="$(printf '%s\n' "$SPOKEN" | tr '\n' ' ')"
+        SPOKEN="" DISPLAY_PART=""
+    fi
+
+    # A wake that ends silently leaves no trace anywhere a later session
+    # looks: nothing spoken, nothing displayed, and the conversation may be
+    # compacted away. Its journal line is what the next session gets to
+    # read, and silence is a speech decision, not a summary — so a silent
+    # wake's line still says what the wake DID, from the stream's own tool
+    # calls.
+    if [ -z "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
+        TRACE="$(wake_work_trace)"
+        session_outcome "(silent — ${TRACE:-ran no tools, touched nothing})${SILENT_NOTE:+ — }$SILENT_NOTE"
+    else
+        session_outcome "$SPOKEN"
+    fi
 
     # Out of band, now that the wake's outcome is written: a wake talking to
-    # nobody still forms wants, and a quiet wake's are the easiest to lose —
+    # nobody still forms wants, and a silent wake's are the easiest to lose —
     # so this fires before the speak/display decisions can return early. The
     # audit's own follow-up wake is recognised by its reason and skipped, or
     # each audit wake would audit itself into an endless chain.
@@ -1195,26 +1228,21 @@ $TURN_CONTEXT"
         *) fire_promise_audit --wake "${WAKE_REASON:-}" "$RESPONSE" ;;
     esac
 
-    # Silent completion: quiet hours, or the reply opens with "(quiet)".
-    # A quiet wake's journal line must still say what the wake DID — the
-    # reply chose silence, but silence is not a summary. Keep any words the
-    # model put after the marker, and back them with the mechanical trace of
-    # the stream, so a wake that worked reads as work and a wake that truly
-    # idled says so in as many words.
-    case "$RESPONSE" in "(quiet)"*)
-        local TRACE REST
-        TRACE="$(wake_work_trace)"
-        REST="$(spoken_part "$RESPONSE" | sed '1s/^(quiet)[[:space:]]*//')"
-        session_outcome "(quiet — ${TRACE:-ran no tools, touched nothing})${REST:+ — }$REST"
-        return 0 ;;
-    esac
+    # Nothing to say and nothing to show: the wake is complete, invisibly.
+    # Silence is never narrated — no speech, no notification, no window.
+    if [ -z "$(printf '%s' "$SPOKEN$DISPLAY_PART" | tr -d '[:space:]')" ]; then
+        return 0
+    fi
+
     in_quiet_hours && return 0
     # User busy (recording, speech in flight, or a meeting holding the mic):
     # the wake still did its work — busyness suppresses OUTPUT only. Checked
     # here, at the last moment before speaking, because a wake that started
-    # in a quiet room may end mid-meeting.
+    # in a quiet room may end mid-meeting. A display-only wake keeps its
+    # silent outcome — the trace is worth more than the mute notice.
     if user_busy; then
-        session_outcome "(muted — user was mid-interaction) $(spoken_part "$RESPONSE")"
+        [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && \
+            session_outcome "(muted — user was mid-interaction) $SPOKEN"
         return 0
     fi
 
@@ -1223,14 +1251,10 @@ $TURN_CONTEXT"
     # (wake_concurrent_turn_context) and chose to speak anyway — that choice
     # stands. The nothing-new check below still catches a genuine echo.
 
-    local SPOKEN DISPLAY_PART
-    SPOKEN=$(spoken_part "$RESPONSE")
-    DISPLAY_PART=$(display_part "$RESPONSE")
-
-    # Nothing new to say means saying NOTHING — the house rule, now enforced
-    # in code rather than trusted to the prompt's "(quiet)" convention. A wake
-    # whose spoken reply merely rewords what recent turns and wakes already
-    # said completes silently, display and all.
+    # Nothing new to say means saying NOTHING — the house rule, enforced in
+    # code rather than trusted to the prompt. A wake whose spoken reply
+    # merely rewords what recent turns and wakes already said completes
+    # silently, display and all.
     if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN" "$RESPONSE"; then
         session_outcome "(muted — said nothing the conversation had not already heard) $SPOKEN"
         return 0
@@ -1301,8 +1325,11 @@ claude_generate() {
 }
 
 # Split a response into its spoken half (everything above ---DISPLAY---).
+# A line-leading "(quiet)" marker — the retired silence convention — is
+# stripped defensively so a stray one is never voiced by any caller.
 spoken_part() {
-    printf '%s\n' "$1" | sed '/^---DISPLAY---$/,$d'
+    printf '%s\n' "$1" | sed -e '/^---DISPLAY---$/,$d' \
+        -e 's/^[[:space:]]*([Qq][Uu][Ii][Ee][Tt])[[:space:]]*//'
 }
 
 # Split a response into its display half (everything below ---DISPLAY---).
