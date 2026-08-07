@@ -11,7 +11,7 @@ import re
 import signal
 import sys
 
-signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
+signal.signal(signal.SIGTERM, lambda *a: (_clear_live_speech(), os._exit(0)))
 
 # Speech mutex: hold the flock for the whole TTS stage of this turn, so no
 # other session (a wake's speak_once, another streamer) can talk over it.
@@ -32,6 +32,46 @@ def hold_speech_lock():
     if _SPEECHLOCK and _lockfd is None:
         _lockfd = os.open(_SPEECHLOCK, os.O_CREAT | os.O_WRONLY, 0o644)
         fcntl.flock(_lockfd, fcntl.LOCK_EX)
+
+
+# Live speech notice: the words currently on the speakers, published so the
+# NEXT session of her to start can REGROUP against them — fold what it has to
+# say and what is being said into one reply — instead of talking over them or
+# dropping its own point. Header line is `epoch \t device \t pid \t until`,
+# the text follows from line 2. Mirrors live_speech_begin/end in common.sh.
+#
+# This publishes; it never edits. No word reaching piper is changed or
+# withheld by anything here.
+_LIVE_SPEECH = os.environ.get("DESKCRAB_LIVE_SPEECH", "").strip()
+_said = []
+
+
+def _publish_live_speech(text):
+    if not _LIVE_SPEECH:
+        return
+    _said.append(text)
+    try:
+        tmp = "%s.%d.tmp" % (_LIVE_SPEECH, os.getpid())
+        with open(tmp, "w") as fh:
+            fh.write("%d\tdesk\t%d\t0\n%s\n" % (time.time(), os.getpid(),
+                                                "\n".join(_said)))
+        os.replace(tmp, _LIVE_SPEECH)
+    except Exception:
+        pass
+
+
+def _clear_live_speech():
+    # Only our own notice: a later session may already have taken the floor,
+    # and deleting its record would blind whoever starts next.
+    if not _LIVE_SPEECH:
+        return
+    try:
+        with open(_LIVE_SPEECH) as fh:
+            head = fh.readline().split("\t")
+        if len(head) > 2 and head[2] == str(os.getpid()):
+            os.unlink(_LIVE_SPEECH)
+    except Exception:
+        pass
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
@@ -61,6 +101,7 @@ def fix_pronunciation(text):
 
 def speak(text):
     hold_speech_lock()
+    _publish_live_speech(text)
     try:
         cmd = ["piper-tts", "--model", PIPER, "--output-raw"]
         if LENGTH_SCALE:
@@ -124,3 +165,7 @@ with open(LOG) as f:
                     if not text:
                         continue
                     speak(text)
+
+# The floor is free again — retract the notice so the next session is not told
+# to regroup against words that finished a while ago.
+_clear_live_speech()

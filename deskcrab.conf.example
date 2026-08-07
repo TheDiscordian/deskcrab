@@ -81,9 +81,18 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # A wake that fires while an interactive turn (desk or phone) is in flight —
 # or within this window of one finishing — is shown that exchange in its
 # prompt: the user's message, and the reply once there is one. The wake is
-# asked to behave like someone who just heard the answer given: stay quiet,
-# or add only what is genuinely new. Nothing is muted; the wake decides.
+# asked to behave like someone who just heard the answer given: regroup —
+# carry its own point forward from there as ONE reply, never restating — and
+# stay quiet only if it has nothing to add. Nothing is muted; it decides.
 # WAKE_TURN_CONTEXT_WINDOW=300
+
+# Optional: regroup window (seconds, default 180, 0 = off). When one session
+# is speaking and another starts, the second is shown the first reply
+# VERBATIM and asked to fold both things into ONE reply rather than queue its
+# own thought away or fall silent. This is how long a published utterance
+# counts as "being said right now" (a dead speaker's record is ignored
+# immediately, whatever this is set to).
+# LIVE_SPEECH_WINDOW=180
 
 # Optional: wake coalescing window (seconds, default 900, 0 = off). A
 # `crab wake-at` booking of scheduled kind whose fire time is within this

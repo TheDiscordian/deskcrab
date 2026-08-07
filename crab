@@ -6,7 +6,11 @@
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
-PIDFILE="/tmp/deskcrab.pid"
+# The running whisper-stream's pid. Overridable so a scratch instance does not
+# read the LIVE desk's recording state: user_busy consults this file, and a
+# scratch test that happened to run while someone was holding push-to-talk was
+# told the user was busy by an instance it has nothing to do with.
+PIDFILE="${DESKCRAB_PIDFILE:-/tmp/deskcrab.pid}"
 
 case "${1:-}" in
     start)
@@ -147,8 +151,10 @@ case "${1:-}" in
         # reason to hold the tongue, not the mind: the session runs, the
         # user-busy re-check in run_claude_wake's speak decision suppresses
         # every output — speech, display, phone — and a wake beside a live
-        # turn is shown that exchange in its prompt so it can choose silence
-        # itself (wake_concurrent_turn_context) rather than be muted.
+        # turn is shown that exchange in its prompt (wake_concurrent_turn_context)
+        # so it can REGROUP: one reply covering both, rather than a mute or a
+        # restatement. Another of her own voices is not "busy" and never was a
+        # reason to swallow a reply — see regroup_context in lib/common.sh.
 
         # One waking mind at a time. Without this, a file landing at the wrong
         # moment could start a second session that interleaves its turns with

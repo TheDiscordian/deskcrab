@@ -66,10 +66,11 @@ WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
 # interactive turn started or finished within this many seconds, the turn's
 # user message — and the reply, once there is one — are spliced into the
 # wake's prompt (wake_concurrent_turn_context) with instructions to behave
-# like someone who just heard the answer given: stay quiet, or add only what
-# is genuinely new, never restate. 0 disables the evidence block. The
+# like someone who just heard the answer given: REGROUP — fold what it came
+# with into one reply that follows on, never restate, and stay quiet only when
+# there is genuinely nothing left to add. 0 disables the evidence block. The
 # nothing-new check stays as the mechanical backstop for a wake that echoes
-# anyway.
+# anyway — except when regrouping was asked for, where overlap is the point.
 WAKE_TURN_CONTEXT_WINDOW="${WAKE_TURN_CONTEXT_WINDOW:-300}"
 # Self-booked wakes stack: several sessions each promise "come back in 45min"
 # and the timers land minutes apart, each re-reading the wants and
@@ -77,6 +78,14 @@ WAKE_TURN_CONTEXT_WINDOW="${WAKE_TURN_CONTEXT_WINDOW:-300}"
 # within this many seconds of a pending one with the same reason is not
 # booked — the existing promise already covers it. 0 disables.
 WAKE_COALESCE_WINDOW="${WAKE_COALESCE_WINDOW:-900}"
+# Regrouping. When one session of me is already speaking and another is about
+# to, the second does NOT queue its thought away and does NOT default to
+# silence: it is shown the other reply verbatim while its prompt is being
+# built, and asked to compose ONE reply that covers both things — the way a
+# person with two things to say folds them into a single sentence instead of
+# saying them twice. This is the seconds-scale window in which the other
+# reply still counts as "being said right now". 0 disables the block.
+LIVE_SPEECH_WINDOW="${LIVE_SPEECH_WINDOW:-180}"
 
 # Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
 SERVE_PORT="${SERVE_PORT:-8723}"
@@ -1098,6 +1107,16 @@ build_system_prompt() {
     local CONVO_CONTEXT CUSTOM_CONTEXT CONTEXT_CONTENT
     CONVO_CONTEXT="$(build_convo_context)"
 
+    # Regrouping: if another session of me has the floor as this prompt is
+    # built, this turn is told exactly what is being said and asked to fold
+    # both things into one reply. Every session path builds its prompt here —
+    # desk turn and phone turn through claude_generate, wakes directly — so
+    # this is the one place it needs to live. A caller that must know
+    # afterwards whether it regrouped (run_claude_wake does) sets
+    # REGROUP_CONTEXT before calling; bash's dynamic scoping hands its value
+    # down and the default below does not re-run.
+    local REGROUP_CONTEXT="${REGROUP_CONTEXT-$(regroup_context)}"
+
     # Load custom prompt file if configured
     CUSTOM_CONTEXT=""
     if [ -n "$CUSTOM_PROMPT" ] && [ -f "$CUSTOM_PROMPT" ]; then
@@ -1202,6 +1221,7 @@ FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they a
 $SELF_STATE
 $MEMORY_CONTEXT$WANTS_CONTEXT$CUSTOM_CONTEXT$WEATHER_CONTEXT
 $CONTEXT_CONTENT$CONVO_CONTEXT
+$REGROUP_CONTEXT
 PROMPT
 }
 
@@ -1227,9 +1247,14 @@ in_quiet_hours() {
 user_busy() {
     [ -f "$PIDFILE" ] && return 0
     [ -f "$TTSPIDFILE" ] && return 0
-    # A live desktop turn holds the speech lock for its whole TTS stage — a
-    # wake must defer, not talk over it.
-    speech_busy && return 0
+    # NOT a reason to be busy: another session of me speaking. That test used
+    # to live here (speech_busy), and it is precisely the bug — a wake landing
+    # beside a desk reply had its whole output swallowed, so the second thing
+    # was never said at all. A voice of my own on the speakers is answered by
+    # REGROUPING (the reply was written knowing what the other one is saying)
+    # and by the speech mutex, which makes the regrouped reply follow rather
+    # than overlap. Nothing is dropped for it. This function is for the USER
+    # being mid-something, not for me.
     local PARLEY_STATE="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/parley/state.json"
     [ -f "$PARLEY_STATE" ] && return 0
     [ -f "$HOME/.local/state/parley/state.json" ] && return 0
@@ -1253,14 +1278,23 @@ speak_once() {
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
     [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
     # Speech mutex: queue behind any voice already on the speakers rather than
-    # talking over it. Held for the whole utterance.
+    # talking over it. Held for the whole utterance. It does not decide WHAT is
+    # said — the regroup block did that while this reply was being written; it
+    # only keeps two voices off the speakers at the same instant, and it never
+    # drops a word.
     {
         flock -w 300 7
+        # Publish the words as they go out, so the next session to start
+        # regroups against them instead of talking past them.
+        live_speech_begin "desk" "$TEXT"
         printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+        live_speech_end
     } 7>"$SPEECHLOCK"
 }
 
 # Is another session speaking right now? (non-blocking probe of SPEECHLOCK)
+# No longer a gate on anything — kept as a probe for diagnostics. It must
+# never again be wired into a decision about whether a reply gets spoken.
 speech_busy() {
     [ -e "$SPEECHLOCK" ] || return 1
     flock -n "$SPEECHLOCK" true 2>/dev/null && return 1
@@ -1309,13 +1343,115 @@ live_turn_end() {  # <device> <user-text> <spoken-reply>
         && mv "$LIVE_TURN_FILE.tmp" "$LIVE_TURN_FILE"
 }
 
+# --- Live speech: the words another session of me is saying RIGHT NOW --------
+# Mirrors LIVE_TURN_FILE, one level closer to the speakers: written the moment
+# a voice starts (the TTS streamer's first utterance, speak_once, a reply
+# handed to the phone), cleared when it stops. Its whole purpose is to be read
+# by the NEXT session while that session's prompt is being built, so that
+# session can REGROUP — fold what it has to say into one reply with what is
+# already being said — instead of talking over it, queueing its thought behind
+# it, or swallowing it. Header line: epoch \t device \t pid \t until-epoch;
+# everything after line 1 is the spoken text, verbatim.
+#
+# Nothing here may edit, clip or withhold a word of speech. This file is a
+# NOTICE, not a gate: no path reads it to decide whether a reply may be
+# spoken, only to decide what the next reply should SAY.
+LIVE_SPEECH_FILE="${LIVE_SPEECH_FILE:-${STATE_PREFIX}-live-speech}"
+
+# Rough spoken duration of a text, seconds — used only for voices this machine
+# hands off and cannot watch finish (a reply played on the phone). Piper runs
+# about two and a half words a second; a few seconds of grace on top.
+_speech_seconds() {
+    local W
+    W=$(printf '%s' "$1" | wc -w)
+    echo $(( 3 + W * 2 / 5 ))
+}
+
+# <device> <text> [pid] [until-epoch]
+# pid defaults to this shell; a live pid is how a reader knows the voice is
+# still going. until-epoch (0 = watch the pid instead) covers handed-off audio.
+live_speech_begin() {
+    local NOW
+    NOW=$(date +%s)
+    printf '%s\t%s\t%s\t%s\n%s\n' "$NOW" "$1" "${3:-$$}" "${4:-0}" "$2" > "$LIVE_SPEECH_FILE.$$.tmp" \
+        && mv "$LIVE_SPEECH_FILE.$$.tmp" "$LIVE_SPEECH_FILE"
+}
+
+# Clear only OUR OWN record: two voices may have started in sequence, and
+# deleting the other one's notice would blind the next session.
+live_speech_end() {
+    local TS DEV PID
+    [ -f "$LIVE_SPEECH_FILE" ] || return 0
+    IFS=$'\t' read -r TS DEV PID _ < "$LIVE_SPEECH_FILE"
+    [ "$PID" = "${1:-$$}" ] && rm -f "$LIVE_SPEECH_FILE"
+    rm -f "$LIVE_SPEECH_FILE.$$.tmp"
+    return 0
+}
+
+# Is another session of me speaking right now, and what is it saying? Prints
+# the device on line 1 and the spoken text from line 2 on (one stream, so a
+# caller in a command substitution gets both — a variable set here would die
+# with the subshell). Non-zero when nobody else has the floor.
+live_speech_now() {
+    [ "${LIVE_SPEECH_WINDOW:-0}" -gt 0 ] || return 1
+    [ -f "$LIVE_SPEECH_FILE" ] || return 1
+    local TS DEV PID UNTIL NOW TEXT
+    IFS=$'\t' read -r TS DEV PID UNTIL < "$LIVE_SPEECH_FILE"
+    case "$TS" in ''|*[!0-9]*) return 1 ;; esac
+    case "$PID" in ''|*[!0-9]*) PID=0 ;; esac
+    case "$UNTIL" in ''|*[!0-9]*) UNTIL=0 ;; esac
+    NOW=$(date +%s)
+    # Never regroup against myself: my own turn's streamer is not another of me.
+    [ "$PID" = "$$" ] && return 1
+    [ -n "${_TTS_STREAMER_PID:-}" ] && [ "$PID" = "$_TTS_STREAMER_PID" ] && return 1
+    # Sanity cap, then liveness: a living speaker, or handed-off audio still
+    # inside its estimated play time. A speaker killed mid-word (crab shutup)
+    # leaves its record behind — the dead pid is what catches that.
+    [ $(( NOW - TS )) -lt "$LIVE_SPEECH_WINDOW" ] || return 1
+    if ! kill -0 "$PID" 2>/dev/null && [ "$UNTIL" -le "$NOW" ]; then
+        return 1
+    fi
+    TEXT="$(tail -n +2 "$LIVE_SPEECH_FILE")"
+    [ -n "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ] || return 1
+    printf '%s\n%s\n' "${DEV:-desk}" "$TEXT"
+}
+
+# The REGROUP block: spliced into any session's prompt — desk turn, phone
+# turn, autonomous wake — that begins while another session of me is speaking.
+# It replaces the old answer to this situation (queue the second voice behind a
+# mutex, or mute it) with the human one: stop, and say ONE thing that covers
+# both.
+regroup_context() {
+    local RAW DEV SAYING
+    RAW="$(live_speech_now)" || return 0
+    DEV="$(printf '%s\n' "$RAW" | head -n 1)"
+    SAYING="$(printf '%s\n' "$RAW" | tail -n +2)"
+    [ -n "$(printf '%s' "$SAYING" | tr -d '[:space:]')" ] || return 0
+    cat <<EOF
+ANOTHER OF YOU IS SPEAKING RIGHT NOW — a second session of you (on the ${DEV:-desk}) is mid-utterance as you begin. These are its exact words, already reaching the user or about to:
+--- being said now ---
+$SAYING
+--- end ---
+He hears one voice, not two, and two replies seconds apart about the same moment reads as malfunction. So REGROUP, the way a person does when they find they have two things to say at once: stop, take what that other reply is saying and what you have to add, and compose ONE conversational reply that covers both — a single natural utterance, not two stitched together, not a preamble about the other session.
+Do NOT queue your point for later — later never comes, and a thought deferred here is a thought lost. Do NOT default to silence because someone else is talking; you have the floor next and you are expected to use it. Do NOT restate, rephrase or re-deliver what is above as if it were news — fold it in as something already said, and carry it forward.
+Say nothing — end with no message text at all — only if, having read the above, you genuinely have nothing to add to it. That is a real option, not the polite one; silence is never announced.
+EOF
+}
+
 # The evidence block for a wake's prompt: what the user just said to another
-# session of the assistant, that session's reply if it has finished, and how
-# to behave about it — silence, or something genuinely new, never a
-# restatement. Prints nothing when no interactive turn has happened, or once
-# the exchange is older than WAKE_TURN_CONTEXT_WINDOW. This replaced the echo
-# window that muted the wake's reply outright: the wake decides for itself
-# now, with the exchange in front of it.
+# session of the assistant, and that session's reply if it has finished.
+# Prints nothing when no interactive turn has happened, or once the exchange
+# is older than WAKE_TURN_CONTEXT_WINDOW. This replaced the echo window that
+# muted the wake's reply outright: the wake decides for itself, with the
+# exchange in front of it.
+#
+# The guidance here used to be "say nothing" by default — silence as the
+# polite response to overlapping with another session. That is not the design:
+# the answer to having two things to say at once is to REGROUP them into one
+# reply, exactly as a person does, not to drop the second. So this block now
+# asks for one folded reply and keeps silence as the honest option for when
+# there is genuinely nothing to add. See regroup_context(), which does the same
+# job one level lower — against words actually on the speakers right now.
 wake_concurrent_turn_context() {
     [ "${WAKE_TURN_CONTEXT_WINDOW:-0}" -gt 0 ] || return 0
     [ -f "$LIVE_TURN_FILE" ] || return 0
@@ -1327,15 +1463,17 @@ wake_concurrent_turn_context() {
     [ -n "$EXCHANGE" ] || return 0
     if [ "$STATUS" = "answering" ]; then
         cat <<EOF
-CONCURRENT CONVERSATION — as this wake begins, the user has just spoken to another session of you (from the $DEV), and that session is answering him RIGHT NOW. Its reply will reach him before anything you say. What he said:
+CONCURRENT CONVERSATION — as this wake begins, the user has just spoken to another session of you (from the $DEV), and that session is answering him RIGHT NOW. Its reply reaches him before anything you say. What he said:
 $EXCHANGE
-That message is being handled — it is not yours to answer, even though it may look unanswered in the conversation above. Behave like a person who walks in while someone is mid-answer: do not answer it yourself, do not talk over the reply, do not repeat what is being said. If everything you might say is covered by that exchange, say nothing — end with no message text at all; staying silent while your other self answers is the natural thing, not a failure, and silence is never announced. Speak only if you have something genuinely NEW to add that the answering session plainly would not say.
+That message is being answered — it is not yours to answer over again, even though it may look unanswered in the conversation above. But whatever YOU came here with does not get dropped for that. REGROUP: take what you have and what is already being said to him, and make it ONE reply — a single natural thing to say next, carrying your point forward from where that answer leaves off, never re-answering his message and never repeating the other session's words back at him.
+Say nothing — end with no message text at all — only if, having read the above, you genuinely have nothing to add to it. Not because someone else is talking; silence here is a judgement about content, and it is never announced.
 EOF
     else
         cat <<EOF
 CONCURRENT CONVERSATION — moments ago the user spoke to another session of you (from the $DEV), and that session has already answered him. The exchange, which he has just heard:
 $EXCHANGE
-You have, in effect, just heard yourself say that. Never restate, rephrase, or re-answer any of it — hearing it again seconds later reads as malfunction. If what you were going to say is already covered, say nothing — end with no message text at all; silence after the answer has been given is the natural thing, not a failure, and silence is never announced. Speak only to add something genuinely new that this exchange did not cover.
+You have, in effect, just heard yourself say that. Never restate, rephrase or re-answer any of it — hearing it again seconds later reads as malfunction. What you came here with still stands, though: REGROUP it into ONE reply that follows on from what was just said, as a person does who has more to add a moment after answering — no preamble about the other session, no summary of it, just the next thing.
+Say nothing — end with no message text at all — only if everything you had is genuinely covered by that exchange. Silence is a judgement about content, never a courtesy to the other session, and it is never announced.
 EOF
     fi
 }
@@ -1364,7 +1502,12 @@ wake_speak_to_phone() {
     OUT="/tmp/deskcrab-remote-wake-$ID.opus"
     synth_opus "$1" "$OUT" || return 1
     python3 -c 'import json,sys; print(json.dumps({"id":sys.argv[1],"audio":"/audio/"+sys.argv[2],"spoken":sys.argv[3]}))' \
-        "$ID" "$(basename "$OUT")" "$1" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR"
+        "$ID" "$(basename "$OUT")" "$1" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR" || return 1
+    # Handed off: the phone plays this, and this process is about to exit, so
+    # there is no pid for the next session to watch. Publish the words with an
+    # estimated end time instead — a voice on the phone is still a voice, and
+    # a wake starting behind it must regroup with it, not talk past it.
+    live_speech_begin "phone" "$1" 0 $(( $(date +%s) + $(_speech_seconds "$1") ))
 }
 
 # Total utime+stime jiffies for a PID and all its descendants. Field extraction
@@ -1583,6 +1726,14 @@ run_claude_wake() {
     SESSION_USER_TEXT="${WAKE_REASON:-}"
     local PROMPT_TEXT="$1"
     local SYSTEM_PROMPT
+    # Regroup evidence, captured HERE rather than left to build_system_prompt,
+    # because this function needs to know afterwards that it asked for a
+    # regrouped reply: a reply told to fold in what another session is saying
+    # will overlap it heavily by design, and the nothing-new backstop below
+    # must not then read that overlap as an echo and swallow the whole thing.
+    # build_system_prompt picks this up through bash's dynamic scoping.
+    local REGROUP_CONTEXT
+    REGROUP_CONTEXT="$(regroup_context)"
     SYSTEM_PROMPT="$(build_system_prompt)"
 
     # Evidence, not muting: a wake firing beside an interactive turn is shown
@@ -1766,7 +1917,12 @@ $TURN_CONTEXT"
     # code rather than trusted to the prompt. A wake whose spoken reply
     # merely rewords what recent turns and wakes already said completes
     # silently, display and all.
-    if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN" "$RESPONSE"; then
+    # …unless this wake was ASKED to regroup. A reply that folds in what
+    # another session is saying is supposed to share content with it; running
+    # the overlap test on it would mute exactly the replies the regroup design
+    # exists to produce.
+    if [ -z "$REGROUP_CONTEXT" ] && \
+       [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN" "$RESPONSE"; then
         session_outcome "(muted — said nothing the conversation had not already heard) $SPOKEN"
         return 0
     fi
@@ -1800,6 +1956,7 @@ start_tts_streamer() {
         DESKCRAB_PIPER_SPEAKER="${PIPER_SPEAKER:-}" \
         DESKCRAB_TTS_FIXES="${TTS_FIXES:-}" \
         DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
+        DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
         "$LIB_DIR/tts-streamer" &
     _TTS_STREAMER_PID=$!
 }
@@ -1962,6 +2119,12 @@ _run_claude_remote_locked() {
     if [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
         local CANDIDATE="/tmp/deskcrab-remote-$(date +%s%N).opus"
         synth_opus "$SPOKEN" "$CANDIDATE" && AUDIO="$CANDIDATE"
+        # The phone is about to play this. Same hand-off as a wake's phone
+        # audio: no pid to watch, so publish the words with an estimated end
+        # time, and a session starting behind it regroups rather than
+        # answering into the middle of it.
+        [ -n "$AUDIO" ] && live_speech_begin "phone" "$SPOKEN" 0 \
+            $(( $(date +%s) + $(_speech_seconds "$SPOKEN") ))
         # Let the desktop see that the phone is talking to it.
         notify-send -t 6000 -h string:x-dunst-stack-tag:deskcrab \
             "$NOTIFY_NAME (remote)" "$(printf '%s' "$SPOKEN" | head -c 140)" 2>/dev/null
