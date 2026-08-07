@@ -2620,6 +2620,12 @@ wake_reply_is_filler() {  # <spoken-text>
     CORE="$CORE|none|silence|silent|(all |still |everything |pretty )?(quiet|silent)|all clear|nada|zilch|n/a|nil"
     CORE="$CORE|(staying|stay|keeping|keep|remaining|remain) (quiet|silent)"
     CORE="$CORE|no need to (speak|talk|say anything|report)|standing by|holding my peace"
+    # Not a sentence at all: the CLI's own stringified nothing. Measured on two
+    # of three real wakes on 2026-08-07 — a wake that ended with no message text
+    # arrived here as an assistant text block holding the literal word
+    # "undefined", and the desk said it out loud. Only the bare word counts;
+    # "the config value is undefined" is a real sentence and speaks.
+    CORE="$CORE|undefined|null"
     TAIL='( (here|now|right now|today|tonight|yet|for now|at the moment|at present|from me|on my end|this time|this wake|either|though|really|so far))*'
 
     printf '%s\n' "$T" | grep -Eq "^($CORE)$TAIL\$"

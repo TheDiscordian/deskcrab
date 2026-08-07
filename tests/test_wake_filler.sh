@@ -132,6 +132,11 @@ fail() { echo "FAIL: $*"; exit 1; }
         "Standing by." "I'm quiet." "No updates." "Nothing else."
         "Nothing of note." "Nothing new here." "No response."
         "Nothing to say, really." "All quiet here."
+        # Not a sentence but the CLI's own stringified nothing. Measured on
+        # 2026-08-07: two of three real wakes that meant to end with no message
+        # text arrived as an assistant text block holding the literal word
+        # "undefined", and it was spoken aloud through the desk.
+        "undefined" "Undefined."
     )
     # Real speech that merely CONTAINS the words. Muting any of these is the
     # failure this gate must never become — several are shorter than the
@@ -166,6 +171,8 @@ fail() { echo "FAIL: $*"; exit 1; }
         "Nothing of note in the log except the crash."
         "Still quiet on the disk, but the build broke."
         "I am quiet about it because the test failed."
+        "The config value is undefined."
+        "Undefined is what the recall block returned."
     )
     for t in "${FILLER[@]}"; do
         wake_reply_is_filler "$t" || fail "filler would be spoken aloud: $t"
@@ -241,5 +248,16 @@ run_wake "$REAL_TWO"
 grep -qF "Quiet hours start at ten" "$WORK/spoken.txt" \
     || fail "the second genuine reply was not the text spoken"
 echo "  ok: a genuine short reply about 'quiet' is spoken"
+
+# --- 4: the prompt says it too ----------------------------------------------
+# The gate is the backstop, not the instruction. The wake prompt has to ask for
+# real silence in words — no message text at all — and name the filler sentence
+# it keeps producing, or the code spends every wake swallowing something the
+# prompt never told her not to write.
+grep -q "ZERO message text" "$REPO/crab" \
+    || fail "the wake prompt no longer asks for zero message text"
+grep -q "Nothing to say" "$REPO/crab" \
+    || fail "the wake prompt no longer forbids the filler sentence by name"
+echo "  ok: the wake prompt asks for silence in words, not just in code"
 
 echo "OK: silence is silent — filler muted whole, real speech untouched"
