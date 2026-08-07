@@ -1025,9 +1025,14 @@ run_claude_wake() {
     # Silent completion: quiet hours, or the reply opens with "(quiet)".
     case "$RESPONSE" in "(quiet)"*) return 0 ;; esac
     in_quiet_hours && return 0
-    # Re-check RIGHT HERE, not just at wake start. The user may have walked into
-    # a meeting while this session was working; speaking now would talk over it.
-    user_busy && return 0
+    # User busy (recording, speech in flight, or a meeting holding the mic):
+    # the wake still did its work — busyness suppresses OUTPUT only, exactly
+    # like the echo window below. Checked here, at the last moment before
+    # speaking, because a wake that started in a quiet room may end mid-meeting.
+    if user_busy; then
+        session_outcome "(muted — user was mid-interaction) $(spoken_part "$RESPONSE")"
+        return 0
+    fi
 
     # Echo window: an interactive turn just happened, and a wake speaking on
     # its heels almost always repeats what that turn already said — the same

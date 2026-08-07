@@ -131,12 +131,13 @@ case "${1:-}" in
         fi
         mkdir -p "$(dirname "$WANTS_FILE")"
 
-        # Don't barge into an active interaction (recording or speech in progress).
-        # A wake with a purpose is pushed back instead of dropped, reason intact.
-        if user_busy; then
-            [ -n "$WAKE_KIND" ] && "$SCRIPT_DIR/crab" wake-at 10min "$WAKE_KIND" "$WAKE_REASON" >/dev/null
-            exit 0
-        fi
+        # An active interaction (recording, speech, someone on the mic) does NOT
+        # defer the session. It used to exit right here, so during any active
+        # conversation a wake did no reading, no want work, no dated thought —
+        # and reached the user as an indistinguishable (quiet). Busyness is a
+        # reason to hold the tongue, not the mind: the session runs, and the
+        # user-busy re-check in run_claude_wake's speak decision (beside the
+        # echo window) suppresses every output — speech, display, phone.
 
         # One waking mind at a time. Without this, a file landing at the wrong
         # moment could start a second session that interleaves its turns with
