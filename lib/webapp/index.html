@@ -256,14 +256,33 @@ player.addEventListener("ended", () => { voicePlaying = false; playNextVoice(); 
 player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); updateTalkBtn(); });
 
 async function deliver(res, replyEl) {
-  if (res.error) { setStatus(res.error, "err"); replyEl.textContent = "(" + res.error + ")"; return; }
+  if (res.error) {
+    setStatus(res.error, "err");
+    // Never overwrite what she already said. A reply that streamed in full and
+    // then lost its connection used to have every word replaced by the error
+    // text — the reply was on the screen and the failure erased it. The error
+    // is a note under the answer when there is one, and the whole bubble only
+    // when there is not.
+    if (replyEl.textContent) {
+      const note = document.createElement("div");
+      note.className = "thought";
+      note.textContent = "(" + res.error + ")";
+      replyEl.parentNode.append(note);
+    } else {
+      replyEl.textContent = "(" + res.error + ")";
+    }
+    return;
+  }
   // `spoken` is every text block of the turn joined — the SAME blocks already
   // streamed in as `text` events. Appending it wholesale printed the entire
   // reply a second time. Only the part that never streamed is added, which
   // covers the non-streaming path where nothing arrived live at all.
   addSaid(replyEl, residue(replyEl, res.spoken));
-  if (!replyEl.textContent) replyEl.textContent = "(no reply)";
   if (res.display_html) attachDisplay(replyEl, res.display_html);
+  // Silence is silence. A turn that produced no spoken text and nothing to
+  // show leaves NO bubble behind — printing a placeholder announced the
+  // emptiness, which reads as the assistant saying "no reply" out loud.
+  if (!replyEl.textContent && !replyEl.querySelector("*")) replyEl.remove();
   setStatus("ready");
   if (res.audio) enqueueVoice(res.audio);
   replyEl.scrollIntoView({ block: "end" });
@@ -593,6 +612,9 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
   // rendered on its own: skipping non-user turns here silently erased every
   // wake exchange from a reloaded page.
   for (let i = 0; i < turns.length; i++) {
+    // A turn holding nothing is not drawn. The server filters these too; this
+    // is the second belt, for a page cached against an older one.
+    if (!norm(turns[i].text) && !turns[i].display_html) continue;
     const t = document.createElement("div");
     t.className = "turn";
     if (turns[i].role === "user") {
@@ -643,6 +665,11 @@ let pendingReply = null;
 
 function renderRemote(turns) {
   for (let i = 0; i < turns.length; i++) {
+    // Same rule as the seed: an empty block is not a bubble. A wake that was
+    // suppressed no longer writes to the conversation at all, so this should
+    // now be unreachable for wakes — it stays because "there is nothing to
+    // draw" must never again resolve to "draw an empty thing".
+    if (!norm(turns[i].text) && !turns[i].display_html) continue;
     if (pendingUser && turns[i].role === "user" && norm(turns[i].text) === pendingUser) {
       pendingUser = null;
       continue;

@@ -358,7 +358,13 @@ def read_turns():
             spoken, _, disp = t["text"].partition("---DISPLAY---")
             t["text"] = spoken.strip()
             t["display_html"] = render_markdown(disp.strip())
-    return turns
+    # A block holding nothing is not a turn. It reached the phone as a bare
+    # empty bubble — the shape he read as "she answered me with nothing" —
+    # and it is never anything the client can usefully draw. Kept only when a
+    # display card hangs off it, which IS content. Dropping them here rather
+    # than in the page means the /watch cursor counts what the page will
+    # actually show, so nothing is silently consumed on the way past.
+    return [t for t in turns if t["text"] or t.get("display_html")]
 
 
 WATCH_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_WATCH_TIMEOUT", "25"))

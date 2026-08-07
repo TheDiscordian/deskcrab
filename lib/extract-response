@@ -71,5 +71,15 @@ for b in blocks:
 
 out = "\n\n".join(spoken)
 if display:
-    out += "\n\n" + DELIM + "\n" + "\n\n".join(display)
-print(out)
+    # No leading blank line when the spoken half is empty. A display-only
+    # reply used to come back as "\n\n---DISPLAY---\n…", which every caller
+    # reads as a non-empty response — so a turn with nothing to SAY looked
+    # exactly like a turn with something to say, and what reached the phone
+    # was an empty speech bubble with a details card hanging off it.
+    out = (out + "\n\n" if out else "") + DELIM + "\n" + "\n\n".join(display)
+# A stream with nothing in it prints nothing at all — not a blank line. The
+# callers test this output with `[ -n "$RESPONSE" ]`, and a lone newline is
+# not empty to that test; it is the difference between "she said nothing" and
+# "she said something unprintable".
+if out:
+    print(out)

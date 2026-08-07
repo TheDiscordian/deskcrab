@@ -2156,36 +2156,23 @@ _wake_claude_run() {
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
 #
-# The wake's stream log is PRIVATE, and that is load-bearing. It used to be the
-# one shared $DEBUGLOG (/tmp/deskcrab-debug.log) that a DESKTOP turn also
-# writes — and a desktop turn starts by TRUNCATING it (start_tts_streamer, then
-# claude_generate's `>`). A wake and a desk turn overlap constantly, since a
-# wake beside a live conversation is no longer deferred, so:
-#   * a desk turn starting mid-wake wiped the wake's output — the wake then
-#     extracted nothing and journalled itself "(silent — ran no tools, touched
-#     nothing)" having worked for a minute;
+# The measured cost of the shared stream log this wake no longer writes to
+# (see DEBUGLOG at the top of this file, now one file per session). On the
+# afternoon of 2026-08-07, with wakes firing beside a live conversation:
+#   * a desk turn starting mid-wake truncated the wake's output — the wake
+#     then extracted nothing and journalled itself "(silent — ran no tools,
+#     touched nothing)" having worked for a minute; one archived stream from
+#     that hour is 18 bytes, nothing but the terminator this function appends;
 #   * a wake starting mid-desk-turn wiped the DESK's reply before
-#     extract_response read it, and the user got dead air for a question he
-#     had asked out loud;
-#   * whichever ran second read BOTH streams back, so the wake spoke the desk
-#     turn's answer as its own — four times inside twenty minutes on
-#     2026-08-07, verbatim, in the session journal.
-# One archived stream from that afternoon is 18 bytes: nothing but the
-# terminator this function appends, every line of a 42-second wake gone.
-# Nothing about the sharing was ever wanted; the phone turn had already been
-# given a private log for exactly this reason. Every reader inside the wake
-# (extract_response, wake_stream_failed, wake_work_trace, notice_own_writes,
-# claude_limit_fallback_due) picks the private log up through bash's dynamic
-# scoping, so the split costs one local.
+#     extract_response read it, and he got dead air for a question he had
+#     asked out loud;
+#   * whichever read the file second read BOTH streams, so the wake spoke the
+#     desk turn's answer as its own — four times inside twenty minutes,
+#     verbatim, in the session journal.
+# Every reader in here (extract_response, wake_stream_failed, wake_work_trace,
+# notice_own_writes, claude_limit_fallback_due) goes through $DEBUGLOG, so the
+# per-session name is all it takes. tests/test_silent_wake.sh holds the line.
 run_claude_wake() {
-    local DEBUGLOG="${STATE_PREFIX}-wake-$$.log"
-    _run_claude_wake "$@"
-    local RC=$?
-    rm -f "$DEBUGLOG"
-    return "$RC"
-}
-
-_run_claude_wake() {
     session_register "autonomous wake"
     # Nobody spoke, so the day journal's "user" slot carries the wake's
     # agenda — an event's reason reads back as what the wake was about.
@@ -2364,9 +2351,9 @@ $TURN_CONTEXT"
     # is the fix for the thing he actually saw: a wake's reply used to be
     # appended the moment it existed, before a single gate had run. The phone
     # follows the conversation file (serve.py /watch), so every wake that was
-    # "suppressed" — quiet hours, user mid-interaction, nothing new to say,
-    # nothing sayable at all — still posted its monologue into his chat as a
-    # bubble he had not asked for and could not answer. Suppressed meant
+    # "suppressed" — quiet hours, user mid-interaction, nothing sayable at all
+    # — still posted its monologue into his chat as a bubble he had not asked
+    # for and could not answer. Suppressed meant
     # suppressed on the speakers only. It is now suppressed everywhere: a wake
     # that is not delivered leaves the conversation exactly as it found it, and
     # its words survive in the session journal (session_outcome, above), which
