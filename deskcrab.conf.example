@@ -29,9 +29,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # CONVO_TIMEOUT=300
 
 # Optional: sliding-window history to keep long conversations cheap.
-# Once the live convo exceeds CONVO_MAX_TURNS user/assistant pairs, the oldest
-# CONVO_SUMMARIZE_TURNS pairs are folded into a running summary (kept above the
+# Once the live convo exceeds CONVO_MAX_TURNS blocks, the oldest
+# CONVO_SUMMARIZE_TURNS blocks are folded into a running summary (kept above the
 # recent turns) using CONVO_SUMMARY_MODEL. Recent turns stay verbatim.
+# A block is one thing said by one side — a "User: " line or an "Assistant: "
+# line — so an autonomous wake, which has no user line above it, counts too.
 # CONVO_MAX_TURNS=20
 # CONVO_SUMMARIZE_TURNS=10
 # CONVO_SUMMARY_MODEL="haiku"

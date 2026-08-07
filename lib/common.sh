@@ -34,8 +34,14 @@ CONVO_TIMEOUT="${CONVO_TIMEOUT:-300}"
 # configs that set neither keep "DeskCrab" notification titles.
 NOTIFY_NAME="${NOTIFY_NAME:-${ASSISTANT_NAME:-DeskCrab}}"
 ASSISTANT_NAME="${ASSISTANT_NAME:-Crab}"
-# Sliding-window history: once the live convo exceeds CONVO_MAX_TURNS user/assistant
-# pairs, the oldest CONVO_SUMMARIZE_TURNS pairs are folded into a running summary.
+# Sliding-window history: once the live convo exceeds CONVO_MAX_TURNS blocks, the
+# oldest CONVO_SUMMARIZE_TURNS blocks are folded into a running summary. A block
+# is one thing said by one of us — a "User: " line or an "Assistant: " line —
+# NOT a matched pair. It used to count only "^User: ", which meant every
+# autonomous wake (an Assistant block with no user line above it) was invisible
+# to the window: on 2026-08-07 the live conversation stood at 17 user blocks and
+# 27 assistant blocks against a threshold of 20 and had never once compacted,
+# so roughly double the intended history rode along on every single turn.
 CONVO_MAX_TURNS="${CONVO_MAX_TURNS:-20}"
 CONVO_SUMMARIZE_TURNS="${CONVO_SUMMARIZE_TURNS:-10}"
 # Model used for the cheap summarization pass (keep it small/fast).
@@ -924,9 +930,62 @@ not by searching the filesystem. A command's output never overrides the
 transcript: a clean grep or a clean git tree does not mean a thing you can see
 yourself writing here never happened. If a search and the transcript disagree,
 say that they disagree instead of picking the search.
+Each block is headed with the local time it was said — 'User [2026-08-07 12:01]:'. Read them: they are
+how you tell a minute ago from this morning. Compare them against the current time given above before
+saying when something happened, and say 'a few minutes ago' or 'about two hours ago' rather than
+reading a timestamp aloud. Blocks with no stamp are older than this record kept one — you know only
+that they came before the stamped ones.
 $(cat "$CONVOFILE")"
     fi
     [ -n "$OUT" ] && echo "$OUT"
+}
+
+# The header line that opens a block in the conversation file. Every block is
+# now stamped with the local time it was written — "User [2026-08-07 12:01]: …" —
+# because a transcript with no clock in it cannot answer "a minute ago": every
+# turn read the same whether it happened thirty seconds or six hours back.
+# The stamp is OPTIONAL in every pattern below, and deliberately loose about
+# what sits inside the brackets: conversation files written before this change,
+# and every archive of one, must keep parsing exactly as they did. Match a
+# header with these, never with a bare '^User: '.
+# Bracket CLASSES, never backslash escapes: this pattern is handed to awk as a
+# dynamic regex (-v hdr_re, _compact_split) as well as to grep -E, and gawk
+# strips '\[' back to a plain '[' — with a warning — which silently rebuilds the
+# stamp group as the class '[[^]]' and stops it matching a stamped header at
+# all. Measured on a three-line fixture: the escaped form matched 1 of 3, this
+# form 3 of 3. Left escaped, the compaction split counts no stamped block, the
+# boundary never advances, and the whole conversation folds into the summary in
+# one pass instead of the oldest half.
+CONVO_STAMP_RE='( [[][^]]*[]])?'
+CONVO_USER_RE="^User${CONVO_STAMP_RE}: "
+CONVO_ASSISTANT_RE="^Assistant${CONVO_STAMP_RE}: "
+CONVO_BLOCK_RE="^(User|Assistant)${CONVO_STAMP_RE}: "
+
+# The stamp itself. Local time to the minute: this is for telling a minute ago
+# from this morning, not for timing anything.
+convo_stamp() { date '+%Y-%m-%d %H:%M'; }
+
+# The only two writers of a conversation block. Every path that speaks or is
+# spoken to — desktop turn, phone turn, autonomous wake — goes through these,
+# so the stamp cannot be added in one place and forgotten in another.
+convo_append_user() { convo_append 'User [%s]: %s\n' "$(convo_stamp)" "$1"; }
+convo_append_assistant() { convo_append 'Assistant [%s]: %s\n\n' "$(convo_stamp)" "$1"; }
+
+# The span a stretch of conversation covers, from the stamps in it: "HH:MM to
+# HH:MM" on one day, full dates across days, empty when nothing in the file is
+# stamped (an old, unstamped conversation being compacted for the first time).
+convo_time_range() {  # <file>
+    local FIRST LAST
+    FIRST=$(grep -oE "$CONVO_BLOCK_RE" "$1" 2>/dev/null | grep -oE '\[[^]]*\]' | head -n1 | tr -d '[]')
+    LAST=$(grep -oE "$CONVO_BLOCK_RE" "$1" 2>/dev/null | grep -oE '\[[^]]*\]' | tail -n1 | tr -d '[]')
+    [ -n "$FIRST" ] || return 0
+    if [ "$FIRST" = "$LAST" ]; then
+        printf '%s' "$FIRST"
+    elif [ "${FIRST%% *}" = "${LAST%% *}" ]; then
+        printf '%s to %s' "$FIRST" "${LAST#* }"
+    else
+        printf '%s to %s' "$FIRST" "$LAST"
+    fi
 }
 
 # Append to the conversation under the convo lock. Two clients can now be talking
@@ -941,8 +1000,8 @@ convo_append() {
     { flock -w 60 9; printf "$FMT" "$@" >> "$CONVOFILE"; } 9>"$CONVOLOCK"
 }
 
-# Fold the oldest CONVO_SUMMARIZE_TURNS pairs into the running summary once the live
-# convo exceeds CONVO_MAX_TURNS pairs. Keeps recent turns verbatim, older ones condensed.
+# Fold the oldest CONVO_SUMMARIZE_TURNS blocks into the running summary once the live
+# convo exceeds CONVO_MAX_TURNS blocks. Keeps recent turns verbatim, older ones condensed.
 # The lock is deliberately NOT held across the summarization call: that is a
 # whole claude run, and every other client — desktop, phone, wake — would be
 # stuck behind it. Instead the lock is taken twice, and the second pass drops
@@ -986,20 +1045,40 @@ $(cat "$OLDFILE")"
     rm -f "$OLDFILE"
 }
 
-# Pass one, under the lock: write the oldest CONVO_SUMMARIZE_TURNS pairs to
+# How many blocks the live conversation currently holds. A block is one thing
+# said by one of us, whoever spoke: a "User: " line or an "Assistant: " line.
+# Counting only "^User: " — which this did until 2026-08-07 — makes every
+# autonomous wake invisible, because a wake is an Assistant block with no user
+# line above it. A conversation that is mostly wakes then never reaches the
+# threshold at all and the window never slides.
+convo_block_count() {
+    [ -f "$CONVOFILE" ] || { echo 0; return 0; }
+    grep -cE "$CONVO_BLOCK_RE" "$CONVOFILE" || true
+}
+
+# Pass one, under the lock: write the oldest CONVO_SUMMARIZE_TURNS blocks to
 # $1 and print how many lines they occupy. Prints nothing when there is
-# nothing to fold away. awk numbers each block, incrementing at every line
-# that starts a user turn ("^User: ").
+# nothing to fold away. awk numbers each block, incrementing at every line that
+# starts one — from either speaker.
 _compact_split() {
     local OLDFILE="$1"
     [ -f "$CONVOFILE" ] || return 0
-    local PAIRS
-    PAIRS=$(grep -c '^User: ' "$CONVOFILE")
-    (( PAIRS > CONVO_MAX_TURNS )) || return 0
+    local BLOCKS
+    BLOCKS=$(convo_block_count)
+    (( BLOCKS > CONVO_MAX_TURNS )) || return 0
 
-    awk -v n="$CONVO_SUMMARIZE_TURNS" '
-        /^User: / { turn++ }
-        turn <= n { print > OLD }
+    awk -v n="$CONVO_SUMMARIZE_TURNS" -v hdr_re="$CONVO_BLOCK_RE" '
+        # A wake header ("[Autonomous wake — ...]") is not a block of its own —
+        # it introduces the Assistant block written after it. Hold it back one
+        # line so it lands on the same side of the split as the reply it
+        # belongs to, instead of being torn off and left heading a block that
+        # was never a wake. Order is preserved either way, which _compact_drop
+        # depends on: what goes to OLD is always an exact line prefix of the
+        # conversation file.
+        /^\[Autonomous wake/ { hdr = hdr $0 ORS; next }
+        $0 ~ hdr_re { blocks++ }
+        blocks <= n { printf "%s%s\n", hdr, $0 > OLD }
+        { hdr = "" }
     ' OLD="$OLDFILE" "$CONVOFILE"
 
     [ -s "$OLDFILE" ] || { rm -f "$OLDFILE"; return 0; }
