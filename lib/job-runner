@@ -19,6 +19,7 @@
 
 set -u
 ID="$1"; WORKDIR="$2"
+START=$(date +%s)
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
@@ -34,7 +35,8 @@ TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 "$LIB_DIR/job-status" set "$STATUS" pid=$$ pidstart="$(_proc_starttime $$)"
 # systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
 # Without it a deliberately stopped job would look identical to a crashed one.
-trap '"$LIB_DIR/job-status" set "$STATUS" state=stopped finished=now; exit 143' TERM
+# The day journal gets the stop too, with whatever log the job managed to write.
+trap '"$LIB_DIR/job-status" set "$STATUS" state=stopped finished=now; day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" "$TASK" "$(cat "$LOG" 2>/dev/null)" "stopped"; exit 143' TERM
 
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 
@@ -72,6 +74,11 @@ SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
 STATE=finished
 [ "$RC" -eq 0 ] || STATE=failed
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
+
+# The durable day record: the task in full, the report in full. A job is a
+# turn of the day like any other — it just had nobody waiting on it.
+day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" \
+    "$TASK" "$(cat "$LOG" 2>/dev/null)" "$STATE (exit $RC)"
 
 # Tell her it landed — via an event wake, not a voice: whether anything gets
 # said out loud is the wake's own decision, made by the usual busy/quiet rules.

@@ -111,6 +111,18 @@ SESSIONS_LOG="${STATE_PREFIX}-sessions.log"
 SESSIONS_LOG_HOURS="${SESSIONS_LOG_HOURS:-12}"
 SESSIONS_LOG_SHOW="${SESSIONS_LOG_SHOW:-8}"
 SESSIONS_LOG_KEEP="${SESSIONS_LOG_KEEP:-400}"
+# The durable day record beneath the sessions log. The log above is the live
+# view — trimmed lines, capped, erased with /tmp at every reboot. This is the
+# archive: one JSON object per finished turn (desktop, phone, wake, job) in
+# journal/YYYY-MM-DD.jsonl, user text and reply IN FULL, never trimmed, never
+# rotated, written at the same moments the log is. Deliberately NOT under
+# STATE_PREFIX: its whole purpose is to be re-readable after a reboot.
+DAY_JOURNAL_DIR="${DAY_JOURNAL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/journal}"
+
+# The conversation archive must exist before the first stale conversation
+# tries to land in it. rotate_convo mkdirs too, but a missing directory should
+# never be the reason anyone doubts the archive path has run.
+mkdir -p "$ARCHIVE_DIR" 2>/dev/null
 
 # Kernel boot-relative start time of a pid, in clock ticks (field 22 of
 # /proc/PID/stat). Recorded alongside the pid so a recycled pid cannot make a
@@ -128,6 +140,11 @@ session_register() {
     SESSION_KIND="$1"
     SESSION_START=$(date +%s)
     SESSION_OUTCOME=""
+    # Filled in by the turn as its text becomes known, read back by the day
+    # journal at finish. Full text on purpose — the sessions log keeps the
+    # trimmed line; the journal keeps the words.
+    SESSION_USER_TEXT=""
+    SESSION_REPLY=""
     mkdir -p "$SESSIONS_DIR"
     SESSION_FILE="$SESSIONS_DIR/$$"
     printf '%s\t%s\t%s\t%s\t%s\n' "$SESSION_KIND" "$$" \
@@ -280,6 +297,30 @@ interrupted_resolve() {
     fi
 }
 
+# --- Day journal: the record beneath the sessions log ----------------------
+# Appended at every point that appends to SESSIONS_LOG, plus job completion.
+# One JSON line per turn via lib/day-journal, which does the encoding — a
+# reply holds quotes, newlines, tabs and emoji, and a hand-concatenated line
+# would be a lost day. The three texts travel NUL-separated on stdin, not as
+# arguments: a job's full log can exceed the kernel's per-argument limit.
+day_journal_append() {  # <kind> <start-epoch> <duration|-> <pid> <user> <reply> [outcome]
+    command -v python3 >/dev/null 2>&1 || return 0
+    printf '%s\0%s\0%s' "$5" "$6" "${7:-}" \
+        | "$LIB_DIR/day-journal" append "$DAY_JOURNAL_DIR" "$1" "$2" "$3" "$4" 2>/dev/null
+    return 0
+}
+
+# The sessions log speaks in kind phrases ("desktop turn"); the journal keys
+# on one word so a reader can filter a day by kind.
+_day_journal_kind() {
+    case "$1" in
+        "desktop turn")    echo desktop ;;
+        "phone turn")      echo phone ;;
+        "autonomous wake") echo wake ;;
+        *)                 echo "${1:-session}" ;;
+    esac
+}
+
 # Close the registration: drop the live file, append to the journal.
 session_finish() {
     [ -n "${SESSION_FILE:-}" ] || return 0
@@ -299,6 +340,12 @@ session_finish() {
                 && mv "$SESSIONS_LOG.tmp" "$SESSIONS_LOG"
         fi
     } 9>"$SESSIONS_LOCK"
+    # The archive gets the same moment with nothing trimmed. Outside the flock
+    # above — the journal file carries its own lock, and holding two here
+    # would make every finishing session queue behind a slow python start.
+    day_journal_append "$(_day_journal_kind "${SESSION_KIND:-}")" \
+        "${SESSION_START:-$NOW}" "$(( NOW - ${SESSION_START:-$NOW} ))" "$$" \
+        "${SESSION_USER_TEXT:-}" "${SESSION_REPLY:-}" "${SESSION_OUTCOME:-}"
     SESSION_FILE=""
 }
 
@@ -329,6 +376,10 @@ session_reap() {
             printf '%s\t%s\t%s\t%s\t%s\n' "$started" "$(date '+%H:%M:%S')" "?" \
                 "$kind" "$note" >> "$SESSIONS_LOG"
         } 9>"$SESSIONS_LOCK"
+        # A killed session never reached session_finish, so its texts are
+        # gone — but the kill itself is part of the day, and a day record
+        # with a silent hole would read as a day with nothing in it.
+        day_journal_append "$(_day_journal_kind "$kind")" "${epoch:-0}" - "$pid" "" "" "$note"
     done
     # Interrupted traces are a hand-off aid, not an archive.
     [ -d "$CKPT_INTERRUPTED_DIR" ] \
@@ -934,6 +985,9 @@ PY
 # to complete in total silence.
 run_claude_wake() {
     session_register "autonomous wake"
+    # Nobody spoke, so the day journal's "user" slot carries the wake's
+    # agenda — an event's reason reads back as what the wake was about.
+    SESSION_USER_TEXT="${WAKE_REASON:-}"
     local PROMPT_TEXT="$1"
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
@@ -1004,6 +1058,9 @@ run_claude_wake() {
         return 0
     fi
 
+    # A genuine reply (the failure paths above never reach here): the journal
+    # keeps it in full even when every gate below completes the wake silently.
+    SESSION_REPLY="$RESPONSE"
     convo_append 'Assistant: %s\n\n' "$RESPONSE"
     compact_convo
 
@@ -1193,6 +1250,7 @@ _run_claude_remote_locked() {
     session_register "phone turn"
     record_origin phone
     local TEXT="$1"
+    SESSION_USER_TEXT="$TEXT"
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
     # crab serve sets DESKCRAB_REMOTE_LOG when it wants to tail this stream and
@@ -1205,6 +1263,7 @@ _run_claude_remote_locked() {
     RESPONSE=$(claude_generate "$TEXT")
 
     if [ -n "$RESPONSE" ]; then
+        SESSION_REPLY="$RESPONSE"
         convo_append 'Assistant: %s\n\n' "$RESPONSE"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
@@ -1240,6 +1299,9 @@ run_claude_and_respond() {
     session_register "desktop turn"
     record_origin desk
     local TEXT="$1"
+    # Recorded before generation: even a turn that dies mid-reply leaves the
+    # user's words in the day journal.
+    SESSION_USER_TEXT="$TEXT"
 
     convo_append 'User: %s\n' "$TEXT"
 
@@ -1254,6 +1316,7 @@ run_claude_and_respond() {
     notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "" 2>/dev/null
 
     if [ -n "$RESPONSE" ]; then
+        SESSION_REPLY="$RESPONSE"
         convo_append 'Assistant: %s\n\n' "$RESPONSE"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"

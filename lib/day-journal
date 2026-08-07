@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""The durable day record: one JSON object per finished turn, forever.
+
+The /tmp sessions log is the live view — one trimmed line per session, capped
+at a few hundred entries, erased by every reboot. This is the archive under
+it: ~/.local/share/deskcrab/journal/YYYY-MM-DD.jsonl, appended at the same
+moments, holding the user's words and the reply IN FULL. Never trimmed, never
+rotated — the whole point is that a day can be re-read after the machine has
+been off.
+
+Usage (append is called by lib/common.sh and lib/job-runner, not by hand):
+  day-journal append <dir> <kind> <epoch> <duration|-> <pid>
+      with the three text fields on stdin as  user \\0 reply \\0 outcome
+      (NUL-separated because a reply legitimately contains quotes, newlines,
+      tabs and emoji — anything except NUL, which bash cannot even hold)
+  day-journal show <dir> [YYYY-MM-DD]     (backs `crab journal`)
+"""
+
+import fcntl
+import json
+import os
+import sys
+import time
+
+
+def append(argv):
+    d, kind, epoch, dur, pid = argv
+    try:
+        epoch = int(epoch)
+    except ValueError:
+        epoch = int(time.time())
+    fields = sys.stdin.buffer.read().decode("utf-8", "replace").split("\0")
+    fields += [""] * (3 - len(fields))
+    user, reply, outcome = fields[0], fields[1], fields[2]
+    obj = {
+        "epoch": epoch,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(epoch)),
+        "kind": kind,
+        "duration": None if dur in ("", "-", "?") else int(dur),
+        "user": user,
+        "reply": reply,
+        "pid": int(pid) if pid.isdigit() else None,
+    }
+    if outcome:
+        obj["outcome"] = outcome
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, time.strftime("%Y-%m-%d", time.localtime(epoch)) + ".jsonl")
+    # One flocked write per entry: several sessions finish at once (a wake, a
+    # phone turn, a job), and interleaved partial lines would be a lost day.
+    with open(path, "a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        f.flush()
+    return 0
+
+
+def _block(label, text):
+    lines = text.splitlines() or [""]
+    return "\n".join(
+        "  %-7s %s" % (label + ":" if i == 0 else "", ln)
+        for i, ln in enumerate(lines)
+    )
+
+
+def show(argv):
+    d = argv[0]
+    day = argv[1] if len(argv) > 1 and argv[1] else time.strftime("%Y-%m-%d")
+    path = os.path.join(d, day + ".jsonl")
+    if not os.path.exists(path):
+        print("No journal for %s (%s)" % (day, path))
+        return 1
+    entries, bad = [], 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                bad += 1
+    # Sessions overlap, so append order is finish order; the day reads in the
+    # order it was lived — by when each turn began.
+    entries.sort(key=lambda e: e.get("epoch", 0))
+    print("=== %s — %d turn%s ===" % (day, len(entries), "" if len(entries) == 1 else "s"))
+    if bad:
+        print("(%d unparseable line%s skipped)" % (bad, "" if bad == 1 else "s"))
+    for e in entries:
+        t = (e.get("time") or "")[11:19] or "??:??:??"
+        dur = e.get("duration")
+        dur = "%ds" % dur if dur is not None else "?"
+        print()
+        print("[%s] %s (%s, pid %s)" % (t, e.get("kind", "?"), dur, e.get("pid", "?")))
+        if e.get("user"):
+            print(_block("user", e["user"]))
+        if e.get("reply"):
+            print(_block("reply", e["reply"]))
+        if e.get("outcome"):
+            print(_block("note", e["outcome"]))
+    return 0
+
+
+def main():
+    if len(sys.argv) == 7 and sys.argv[1] == "append":
+        return append(sys.argv[2:7])
+    if len(sys.argv) >= 3 and sys.argv[1] == "show":
+        return show(sys.argv[2:])
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -258,6 +258,14 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         exit 0
         ;;
 
+    journal)
+        # Read a day back: every turn — desktop, phone, wake, job — oldest
+        # first, full text. Default today; or any YYYY-MM-DD. This is the
+        # durable record under the /tmp sessions log, so it survives reboots.
+        "$SCRIPT_DIR/lib/day-journal" show "$DAY_JOURNAL_DIR" "${2:-}"
+        exit $?
+        ;;
+
     wake-at)
         # Schedule a one-shot autonomous wake. The timer itself is a transient
         # systemd user unit and dies with the user manager, so the booking is
@@ -328,7 +336,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|notify <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
         fi
         stop_tts
