@@ -169,17 +169,16 @@ DEBUGLOG_LATEST="${STATE_PREFIX}-debug.log"
 # path may fail quietly again.
 SPEECH_LOG="${SPEECH_LOG:-${STATE_PREFIX}-speech.log}"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
-# Once an account HAS refused over a limit, probing it again ahead of every run
-# is pure cost: a full CLI boot and refusal in front of every reply, on an
-# account that will not refill for hours. Each refusal stamps a marker for that
-# account (claude_limit_marker, under STATE_PREFIX — which must already be set,
-# so this lives in the runtime-state block: shared by every live session, wiped
-# by a reboot at the price of one extra probe, and a scratch instance's markers
-# stay scratch), and while it is younger than ACCOUNT_LIMIT_RETRY every run
-# starts past that account. Markers expire on their own — nothing here can see a
-# refill — so the first run after the window IS the probe, the same design as
-# the job block marker.
-ACCOUNT_LIMIT_RETRY="${ACCOUNT_LIMIT_RETRY:-1800}"
+# Which login runs FIRST is a POSITION that moves, never a timer: the default
+# account. When the login in hand refuses over a limit, the next one in the
+# chain becomes the default — immediately, durably — and stays the default
+# until IT refuses in its turn, wrapping past the end of the chain back to the
+# primary. Nothing moves it back on its own: the expiry stamp this replaces
+# re-probed a dry primary every half hour — a full CLI boot and refusal in
+# front of a reply, all afternoon, when the refusal itself had said "resets
+# 5pm". Durable like last-origin (a reboot must not quietly hand the chain
+# back to a dry primary); a scratch instance overrides the path.
+ACCOUNT_DEFAULT_FILE="${ACCOUNT_DEFAULT_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/account-default}"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
 # stage. Two voices at once is never acceptable: the later speaker queues
@@ -2131,56 +2130,56 @@ claude_limit_fallback_due() {
 CLAUDE_PRIMARY_TOKEN="-"
 claude_account_confdir() { [ "$1" = "$CLAUDE_PRIMARY_TOKEN" ] || printf '%s' "$1"; }
 
-# Where the "this account is dry" stamp for one account lives. Per account, not
-# one global marker: with a chain, knowing the primary is out says nothing about
-# the second subscription, and a single file would make one account's outage
-# look like every account's.
-claude_limit_marker() {
-    printf '%s-limited-%s' "$STATE_PREFIX" \
-        "$(printf '%s' "${1:-primary}" | tr -c 'A-Za-z0-9' '_')"
+# The current default account: the stored token, if it still names an account
+# in the chain — the conf may have changed since it was written — else the
+# primary. The file's first field is the token; the rest is a record of when
+# and why the default last moved, for `crab status` and debugging only.
+claude_account_default() {
+    local stored d
+    stored="$(head -n1 "$ACCOUNT_DEFAULT_FILE" 2>/dev/null | cut -f1)"
+    [ -n "$stored" ] || { printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; return; }
+    while IFS= read -r d; do
+        [ "$d" = "$stored" ] && { printf '%s\n' "$stored"; return; }
+    done <<EOF
+$CLAUDE_PRIMARY_TOKEN
+$(claude_fallback_dirs)
+EOF
+    printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"
 }
 
-# This account refused over a limit — stamp it so the next runs skip straight
-# past it instead of re-probing a dry account. $2 is the refusal line, kept for
+# This account refused over a limit — the default MOVES to the next account in
+# the chain, wrapping at the end, and stays there until that one refuses in
+# its turn. That is the whole mechanism: no per-account stamp, no expiry
+# window, no switchback. $2 is the refusal line, kept in the record for
 # status displays and debugging.
 claude_limit_record() {
-    printf '%s\t%s\n' "$(date +%s)" "${2:-limit refusal}" \
-        > "$(claude_limit_marker "$1")" 2>/dev/null
+    local refused="${1:-}" next
+    [ -n "$refused" ] || refused="$CLAUDE_PRIMARY_TOKEN"
+    next="$({ printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs; } \
+        | awk -v r="$refused" '
+            NR == 1 {first = $0}
+            take    {print; done = 1; exit}
+            $0 == r {take = 1}
+            END     {if (take && !done) print first}')"
+    [ -n "$next" ] || next="$CLAUDE_PRIMARY_TOKEN"
+    mkdir -p "$(dirname "$ACCOUNT_DEFAULT_FILE")" 2>/dev/null
+    printf '%s\t%s\tmoved off %s: %s\n' "$next" "$(date +%s)" "$refused" \
+        "${2:-limit refusal}" > "$ACCOUNT_DEFAULT_FILE" 2>/dev/null
 }
 
-# Is this account known dry? True while its marker is younger than
-# ACCOUNT_LIMIT_RETRY. The marker expires on its own — nothing here can see an
-# account refill — so the first run after the window IS the probe, the same
-# design as the job block marker.
-claude_account_limited() {
-    local rec epoch
-    rec="$(head -n1 "$(claude_limit_marker "$1")" 2>/dev/null)" || return 1
-    epoch="${rec%%	*}"
-    case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
-    [ $(( $(date +%s) - epoch )) -lt "$ACCOUNT_LIMIT_RETRY" ]
-}
-
-# Every account this run may use, in order, one token per line: the login in
-# hand first, then each configured fallback. Accounts with a fresh limit marker
-# are dropped — with an account known dry, probing it ahead of every run is a
-# full CLI boot and a refusal in front of every reply, for hours, on an account
-# that will not refill.
-#
-# If that leaves nothing, the WHOLE chain is returned. The markers are a
-# shortcut, never a gate: a run that tried nothing at all would produce silence
-# with no error to explain it, which is worse than one wasted probe.
+# Every account this run may use, one token per line: always the WHOLE chain,
+# rotated to start at the current default. A walk rides each refusal to the
+# next login (moving the default as it goes) and fails only when every one of
+# them has refused — so in the steady state the default is an account that
+# answered, the first boot succeeds, and it costs a refusal, never a timer,
+# to change which login leads.
 claude_accounts() {
-    local all avail="" d
-    all="$(printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs)"
-    while IFS= read -r d; do
-        [ -n "$d" ] || continue
-        claude_account_limited "$(claude_account_confdir "$d")" && continue
-        avail="$avail$d
-"
-    done <<EOF
-$all
-EOF
-    if [ -n "$avail" ]; then printf '%s' "$avail"; else printf '%s\n' "$all"; fi
+    { printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs; } \
+        | awk -v d="$(claude_account_default)" '
+            $0 == d {found = 1}
+            found   {print; next}
+                    {held = held $0 "\n"}
+            END     {printf "%s", held}'
 }
 
 # What did the wake actually DO? A silent reply is the model's SPEECH
@@ -2438,17 +2437,30 @@ $TURN_CONTEXT"
     SPOKEN=$(spoken_part "$RESPONSE")
     DISPLAY_PART=$(display_part "$RESPONSE")
 
-    # Legacy backstop: no prompt asks for a "(quiet)" marker any more —
-    # silence is an EMPTY spoken reply — but a stray marker from old habit
-    # must never be voiced. It used to slip past the old prefix match
-    # whenever mid-turn narration was joined ahead of it, and the whole
-    # private note went to the speakers ("quiet checked wants slash
-    # sheet-music dot md"). A line opening with the marker anywhere in the
-    # reply means the wake meant silence: mute everything, keep the words
-    # for the journal.
-    if printf '%s\n' "$RESPONSE" | grep -qi '^[[:space:]]*(quiet)'; then
-        SILENT_NOTE="$(printf '%s\n' "$SPOKEN" | tr '\n' ' ')"
-        SPOKEN="" DISPLAY_PART=""
+    # The [quiet] marker — the ONE authorized silence format (his standing
+    # instruction, 2026-08-07): a wake with something worth leaving but not
+    # worth voicing writes "[quiet] <thoughts>". The thoughts are SHOWN to
+    # him as "(quiet) <thoughts>" — a bubble, never the speakers. A bare
+    # marker with no thoughts is plain silence. The old "(quiet)" spelling
+    # is accepted the same way so a stray one is never voiced.
+    if printf '%s\n' "$RESPONSE" | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
+        local THOUGHTS
+        THOUGHTS="$(printf '%s\n' "$SPOKEN" \
+            | sed -E 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
+        SILENT_NOTE="$(printf '%s\n' "$THOUGHTS" | tr '\n' ' ')"
+        SPOKEN=""
+        if [ -n "$(printf '%s' "$THOUGHTS$DISPLAY_PART" | tr -d '[:space:]')" ]; then
+            RESPONSE="(quiet) $THOUGHTS"
+            if [ -n "$DISPLAY_PART" ]; then
+                RESPONSE="$RESPONSE
+---DISPLAY---
+$DISPLAY_PART"
+            else
+                DISPLAY_PART="(quiet) $THOUGHTS"
+            fi
+        else
+            DISPLAY_PART=""
+        fi
     fi
 
     # The same backstop for the other way silence gets narrated: a whole reply
@@ -2740,8 +2752,8 @@ claude_generate() {
 # one this morning and then told him nothing of the kind existed. Silence is
 # a thing I choose while writing — never something the plumbing imposes after.
 spoken_part() {
-    printf '%s\n' "$1" | sed -e '/^---DISPLAY---$/,$d' \
-        -e 's/^[[:space:]]*([Qq][Uu][Ii][Ee][Tt])[[:space:]]*//'
+    printf '%s\n' "$1" | sed -E -e '/^---DISPLAY---$/,$d' \
+        -e 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]]*//'
 }
 
 # Split a response into its display half (everything below ---DISPLAY---).
