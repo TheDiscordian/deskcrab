@@ -427,6 +427,9 @@ while not os.path.exists(LOG):
     time.sleep(0.05)
 
 blocks = {}          # stream index -> Block, for the message in flight
+closed = set()       # (message id, block idx) already spoken to completion —
+                     # the stream can hand us the same finished message twice,
+                     # and the second copy must not be spoken again
 rode_through = False
 last_size = 0
 
@@ -509,11 +512,14 @@ with open(LOG) as f:
                             if b.get("type") == "text")):
                 blocks = {}
                 continue
+            mid = d["message"].get("id")
             idx = 0
             for block in content:
                 if block.get("type") == "text":
-                    b = blocks.get(idx) or Block()
-                    b.close(block.get("text", ""), rode_through)
+                    if (mid, idx) not in closed:
+                        closed.add((mid, idx))
+                        b = blocks.get(idx) or Block()
+                        b.close(block.get("text", ""), rode_through)
                 idx += 1
             blocks = {}
 
