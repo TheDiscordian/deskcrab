@@ -1502,21 +1502,34 @@ $(cat "$CONDUCT_FILE")"
     fi
 
     # Long-term memory (lib/memory.py, design-memory-store.md), behind the
-    # MEMORY_STORE knob. The query is the wake's reason when it has one,
-    # otherwise the wants shelf plus the conversation tail. Fail-safe by
+    # MEMORY_STORE knob. What the store is ASKED is decided by what this
+    # session is: an autonomous wake asks about its agenda and the want it is
+    # working, and anything with a user in it asks about the conversation.
+    # Memories have nothing to do with wants unless a want is actively being
+    # pursued, so the shelf is not in an interactive turn's query at all —
+    # it used to be, and every turn all day retrieved her own housekeeping
+    # instead of the rules that bear on what he just said. Fail-safe by
     # contract: recall-block prints nothing (exit 0) on an empty store and
     # degrades to the pinned tier when the embedder is down — a broken memory
     # must never break a prompt build.
     local MEMORY_CONTEXT=""
     if [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ]; then
+        # SESSION_KIND is set by session_register before any prompt is built
+        # on all three paths (desktop turn / phone turn / autonomous wake), so
+        # it is the same thing the rest of lib/ goes by rather than a second
+        # opinion. A non-empty WAKE_REASON implies it either way.
+        local MEMORY_WAKE=()
+        [ "${SESSION_KIND:-}" = "autonomous wake" ] && MEMORY_WAKE=(--wake)
         # --ids-out: which records actually reached this prompt, for the
         # turn-end reinforcement judge (fire_memory_judge). $$ is stable
         # inside this command substitution, so the turn path can find the
         # sidecar again at turn end.
         MEMORY_CONTEXT="$("$LIB_DIR/memory.py" recall-block \
+            "${MEMORY_WAKE[@]}" \
             --reason "${WAKE_REASON:-}" \
             --wants "${WANTS_FILE:-}" \
             --convo "$CONVOFILE" \
+            --log "${STATE_PREFIX}-memory-recall.log" \
             --ids-out "${STATE_PREFIX}-memory-injected-$$.json" 2>/dev/null)"
         [ -n "$MEMORY_CONTEXT" ] && MEMORY_CONTEXT="
 $MEMORY_CONTEXT
@@ -1550,7 +1563,8 @@ FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they a
 - Pexels CDN: if you know a photo ID, use https://images.pexels.com/photos/PHOTO_ID/pexels-photo-PHOTO_ID.jpeg?auto=compress&cs=tinysrgb&w=800 (no API key needed). Find photo IDs via WebSearch for 'site:pexels.com QUERY'.
 - These sources are fast, reliable, and free. Always try them first.
 $SELF_STATE
-$MEMORY_CONTEXT$WANTS_CONTEXT$CUSTOM_CONTEXT$WEATHER_CONTEXT
+$MEMORY_CONTEXT$WANTS_CONTEXT
+$CUSTOM_CONTEXT$WEATHER_CONTEXT
 $CONTEXT_CONTENT$CONVO_CONTEXT
 $REGROUP_CONTEXT
 PROMPT
