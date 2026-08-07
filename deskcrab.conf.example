@@ -34,10 +34,12 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback"
 # CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback:$HOME/.claude-fallback2"
 
-# After an account refuses over a limit, runs skip it for this many seconds
-# rather than re-probing it (a full CLI boot + refusal ahead of every reply).
-# The first run after the window probes it again.
-# ACCOUNT_LIMIT_RETRY=1800
+# When an account refuses over a limit, the NEXT one in the chain becomes the
+# default login for every later run — durably, wrapping past the end back to
+# the primary — and stays the default until it refuses in its turn. Nothing
+# switches back on a timer. The pointer lives in
+# ~/.local/share/deskcrab/account-default; delete it to lead with the primary
+# again (`crab status` shows the current default and why it last moved).
 
 # Optional: project directory (Claude runs from here, gets project memory)
 # PROJECT_DIR="$HOME"

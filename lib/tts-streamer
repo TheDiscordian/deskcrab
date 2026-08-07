@@ -52,15 +52,15 @@ TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
 # refuses over a limit, crab retries the turn on the next account by APPENDING
 # another run to this same log. Two consequences here: a refusal's error
 # result must not stop the tail (or the retry's words are extracted and
-# displayed but never spoken), and a refusal is never voiced on arrival — it
-# is HELD, and spoken at the end of the tail only if no run ever produced
-# genuine speech, so the LAST refusal still explains an otherwise silent turn.
-# Counting rides against the configured chain length was wrong twice over:
-# accounts known dry are skipped, so the config overstates the chain and the
-# final refusal was muted into unexplained silence; and a genuine reply that
-# merely QUOTED a limit phrase matched the same regex and was gagged
-# mid-sentence. A refusal is recognised by the CLI's synthetic marker on the
-# event, never by pattern-matching her actual words.
+# displayed but never spoken), and a refusal is NEVER voiced — not on
+# arrival, and not at the end of a chain that produced no genuine speech
+# either. An outage read aloud in her voice is how "You've hit your session
+# limit" once landed in the conversation as her own words; the caller
+# recognises a limit-shaped stream and notifies instead, and the held text
+# goes to the speech log for the record. A refusal is recognised by the CLI's
+# synthetic marker on the event, never by pattern-matching her actual words —
+# a genuine reply that merely QUOTED a limit phrase was once gagged
+# mid-sentence by the regex.
 LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
 
 SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
@@ -265,6 +265,9 @@ class Voice(threading.Thread):
                 speech_log("SPEECH INTERRUPTED — %s" % self.error)
                 self.piper = self.aplay = None
                 continue
+            # Every utterance leaves a pid-stamped trace: "who spoke this
+            # twice" must be answerable from the speech log alone.
+            speech_log("SAID: %s" % item[:90])
             self.spoke_chars += len(item)
             self.spoke_lines += 1
             # The receipt is written as speech happens, never only at exit: a
@@ -452,6 +455,7 @@ ORIG_PPID = os.getppid()
 
 VOICE.start()
 
+speech_log("tailing %s" % LOG)
 while not os.path.exists(LOG):
     time.sleep(0.05)
 
@@ -467,9 +471,9 @@ closed = set()       # (message id, block idx) already spoken to completion —
 spoken_texts = set() # whitespace-normalized text of every block spoken this
                      # turn — catches the re-emit that arrives under a NEW
                      # message id, which the id-keyed set cannot
-held_refusal = ""    # the newest limit refusal, held off the speakers: it is
-                     # voiced only at the end of the tail, and only if no run
-                     # produced genuine speech by then
+held_refusal = ""    # the newest limit refusal, held off the speakers — and
+                     # kept off them: refusals are never voiced, only logged;
+                     # the caller notifies when a whole chain refuses
 last_size = 0
 
 with open(LOG) as f:
@@ -597,14 +601,14 @@ with open(LOG) as f:
             blocks = {}
 
 if VOICE.queued_chars == 0 and held_refusal.strip():
-    # Every run refused and nothing was even queued to be voiced. Silence
-    # here would be unexplained — the last refusal is the turn's whole
-    # answer, so say it. (queued, not spoke: the voice thread may still be
-    # synthesizing a genuine reply when the tail ends, and a refusal must
-    # never chase a real answer out of the speakers.)
-    _spoken = for_speech(held_refusal)
-    if _spoken:
-        VOICE.say(_spoken)
+    # Every run refused and nothing was even queued to be voiced. The refusal
+    # STILL never reaches the speakers: an outage read aloud in her voice is
+    # how "You've hit your session limit" once landed in the conversation as
+    # her own words. The empty receipt tells the caller nothing was spoken;
+    # the caller recognises the limit-shaped stream and notifies instead, and
+    # this line keeps the words for the record.
+    speech_log("chain spent — refusal held off the speakers: %s"
+               % " ".join(held_refusal.split()))
 
 VOICE.finish()
 write_receipt()

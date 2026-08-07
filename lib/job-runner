@@ -92,7 +92,7 @@ for ACCT in $(claude_accounts); do
     ATTEMPT=$(( ATTEMPT + 1 ))
     if [ -n "$CONFDIR" ]; then
         if [ "$ATTEMPT" = 1 ]; then
-            echo "job-runner: earlier logins known dry — building via CLAUDE_CONFIG_DIR=$CONFDIR" >> "$LOG"
+            echo "job-runner: default login is CLAUDE_CONFIG_DIR=$CONFDIR — building there" >> "$LOG"
         else
             echo "job-runner: login refused (limit) — retrying via CLAUDE_CONFIG_DIR=$CONFDIR" >> "$LOG"
         fi

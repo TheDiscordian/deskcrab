@@ -1,8 +1,10 @@
 #!/bin/bash
 # Tests for the usage-limit fallback (CLAUDE_FALLBACK_CONFIG_DIR): the
-# claude_limit_fallback_due predicate, the wake-path retry (_wake_claude_run),
+# claude_limit_fallback_due predicate, the moving account default (a refusal
+# makes the NEXT login in the chain the default — immediately, durably,
+# wrapping at the end, and never reverting on a timer), the wake-path retry,
 # extract-response on a combined refusal+reply log, the TTS streamer riding
-# through a refusal, and the job-runner's second attempt on the fallback login.
+# through a refusal, and the job-runner's attempts along the chain.
 # Run: bash tests/test_limit_fallback.sh
 #
 # The gap these were written for: on 2026-08-07 the primary account ran out of
@@ -38,8 +40,12 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # Every session has its OWN stream log now (one shared file is how a wake
     # used to strand a desktop turn's TTS streamer past EOF); pin this one to
     # the file the cases write, or the predicates read a log that never exists.
+    # ACCOUNT_DEFAULT_FILE is pinned to the scratch dir: the real one is
+    # durable in ~/.local/share, and a test that moved the LIVE default would
+    # silently re-route every real session's login.
     DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
+        ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
         env -u CLAUDE_CONFIG_DIR ${envs[@]+"${envs[@]}"} \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
@@ -90,28 +96,48 @@ reply_stream "a genuine answer" > "$T/fix-reply"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-reply" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "a genuine reply is never retried" || fail "real output must not retry" "$out"
 
-echo "claude_accounts — skip the doomed probe while an account is known dry:"
+echo "claude_accounts — the default is a position that moves, never a timer:"
 ACCTS='claude_accounts | tr "\n" ","'
+rm -f "$T/state-account-default"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" "$ACCTS")"
-[ "$out" = "-,$T/fb," ] && ok "no marker: the login in hand leads" || fail "must probe without a marker" "$out"
+[ "$out" = "-,$T/fb," ] && ok "no record: the primary leads" || fail "the primary must lead untouched" "$out"
 
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_record "" "out of usage credits"; '"$ACCTS")"
-[ "$out" = "$T/fb," ] && ok "fresh marker: that account is skipped" || fail "fresh marker must skip the probe" "$out"
+[ "$out" = "$T/fb,-," ] && ok "primary refused: the fallback IS the default now" \
+    || fail "a refusal must move the default" "$out"
 
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" ACCOUNT_LIMIT_RETRY=0 'claude_limit_record "" x; '"$ACCTS")"
-[ "$out" = "-,$T/fb," ] && ok "expired marker: the next run is the probe" || fail "stale marker must expire" "$out"
+# No timer anywhere: a default that moved long ago has not crept back, and the
+# whole chain is still offered — rotated, with the primary last, so a run that
+# exhausts the newer logins still wraps around rather than running nothing.
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'printf "%s\t1\tmoved long ago\n" "'"$T"'/fb" > "$ACCOUNT_DEFAULT_FILE"; '"$ACCTS")"
+[ "$out" = "$T/fb,-," ] && ok "the default NEVER reverts on age" \
+    || fail "no expiry may hand the chain back to the primary" "$out"
 
-# Markers are a shortcut, never a gate: with every account stamped there is
-# nothing left to skip TO, and a run that tried nothing would be silence with
-# no error to explain it.
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_record "" x; claude_limit_record "'"$T"'/fb" x; '"$ACCTS")"
-[ "$out" = "-,$T/fb," ] && ok "every account dry: the whole chain is tried anyway" \
-    || fail "a fully-stamped chain must not run nothing" "$out"
+# Written by one session, read by the next: the pointer is a file, not memory.
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" "$ACCTS")"
+[ "$out" = "$T/fb,-," ] && ok "the default is durable across sessions" \
+    || fail "the pointer must persist" "$out"
+
+# Refusing the LAST account wraps the default back to the primary.
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'claude_limit_record "'"$T"'/fb" x; '"$ACCTS")"
+[ "$out" = "-,$T/fb," ] && ok "the end of the chain wraps to the primary" \
+    || fail "the rotation must wrap" "$out"
+
+# Three accounts, two refusals: the default advances one position per refusal.
+rm -f "$T/state-account-default"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" 'claude_limit_record "" x; claude_limit_record "'"$T"'/fb" x; '"$ACCTS")"
+[ "$out" = "$T/fb2,-,$T/fb," ] && ok "two refusals land the default on the third account" \
+    || fail "each refusal must advance one position" "$out"
+
+# A stored default the conf no longer names resets to the primary.
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'printf "%s\t1\tgone\n" /no-such-dir > "$ACCOUNT_DEFAULT_FILE"; '"$ACCTS")"
+[ "$out" = "-,$T/fb," ] && ok "a default outside the chain resets to the primary" \
+    || fail "a stale pointer must not wedge the chain" "$out"
 
 out="$(run 'claude_limit_record "" x; '"$ACCTS")"
 [ "$out" = "-," ] && ok "no fallback configured: the one account still runs" \
-    || fail "a marker must never leave a lone account unrun" "$out"
-rm -f "$T"/state-limited-*
+    || fail "a lone account must keep running" "$out"
+rm -f "$T/state-account-default"
 
 echo "the shared signature — session-limit wordings match, prose does not:"
 for line in \
@@ -137,13 +163,13 @@ out="$(DESKCRAB_DEBUGLOG="$T/refonly.log" "$REPO_DIR/lib/extract-response")"
 case "$out" in *"out of usage credits"*) ok "an error-only stream still reports itself" ;;
     *) fail "error-only stream must keep the refusal text" "$out" ;; esac
 
-echo "tts-streamer — a refusal is held, and voiced only if nothing answers:"
+echo "tts-streamer — a refusal never reaches the speakers, full stop:"
 # The streamer is told nothing about the chain: it cannot know how many
-# accounts this turn will really try (dry ones are skipped), and counting
-# rides against the config muted the FINAL refusal into unexplained silence
-# whenever the chain ran short. So every refusal is held off the speakers,
-# every limit-error result is ridden through, and the terminator decides:
-# genuine speech by then drops the held refusal, silence speaks it.
+# accounts this turn will really try. Every refusal is held off the speakers,
+# every limit-error result is ridden through, and a chain that ends with no
+# genuine speech ends SILENT from this process — the outage is the caller's
+# to notify, never hers to say, and the speech log keeps the words for the
+# record.
 mkdir -p "$T/bin"
 printf '#!/bin/bash\ncat >> "%s/spoken"\n' "$T" > "$T/bin/piper-tts"
 printf '#!/bin/bash\ncat > /dev/null\n' > "$T/bin/aplay"
@@ -152,7 +178,8 @@ LIMIT_RE_DEFAULT="$(run 'printf %s "$CLAUDE_LIMIT_RE"')"
 tts() { # <log> — run the streamer over a prewritten stream log
     PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$1" DESKCRAB_PIPER_VOICE=/x \
         DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" \
-        timeout 20 "$REPO_DIR/lib/tts-streamer"
+        DESKCRAB_SPEECH_LOG="$T/speechlog" \
+        timeout 20 "$REPO_DIR/lib/tts-streamer" 2>/dev/null
 }
 
 rm -f "$T/spoken"
@@ -165,22 +192,25 @@ case "$(cat "$T/spoken" 2>/dev/null)" in
     *"out of usage credits"*) fail "the refusal must not be voiced when a retry answered" "$(cat "$T/spoken")" ;;
     *) ok "the refusal stays unspoken" ;; esac
 
-# The case the ride-counting design got wrong: ONE refusal and no retry —
-# because the rest of the chain was known dry and skipped — must still be
-# audible. Counted against a configured fallback this was muted into silence.
-rm -f "$T/spoken"
+# A lone refusal with no retry behind it is still NOT spoken: the caller
+# recognises the limit-shaped stream and notifies, and the streamer's job is
+# only to keep the outage out of her voice while leaving a written trace.
+rm -f "$T/spoken" "$T/speechlog"
 { refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts1.log"
 tts "$T/tts1.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
-[ "${n:-0}" = 1 ] && ok "a lone refusal is spoken once, chain or no chain" \
-    || fail "a lone refusal must not be silence" "spoken ${n:-0} times"
+[ "${n:-0}" = 0 ] && ok "a lone refusal is never voiced" \
+    || fail "the outage must not be in her voice" "spoken ${n:-0} times"
+grep -q "out of usage credits" "$T/speechlog" 2>/dev/null \
+    && ok "…and the speech log keeps the words" \
+    || fail "the held refusal must be recorded" "$(cat "$T/speechlog" 2>/dev/null || echo empty)"
 
-rm -f "$T/spoken"
+rm -f "$T/spoken" "$T/speechlog"
 { refusal_stream; refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts2.log"
 tts "$T/tts2.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
-[ "${n:-0}" = 1 ] && ok "both logins refusing is spoken once, not twice or never" \
-    || fail "a second refusal is real news, exactly once" "spoken $n times"
+[ "${n:-0}" = 0 ] && ok "both logins refusing is still not voiced" \
+    || fail "no number of refusals may be spoken" "spoken $n times"
 
 # However long the chain runs, refusals mid-file are never voiced and the
 # reply that finally arrives is.
@@ -194,13 +224,14 @@ case "$(cat "$T/spoken" 2>/dev/null)" in
     *"out of usage credits"*) fail "no refusal may be voiced once an account answered" "$(cat "$T/spoken")" ;;
     *) ok "neither refusal is voiced mid-chain" ;; esac
 
-# …and a spent chain still ends audibly: the last refusal is the news, once.
-rm -f "$T/spoken"
+# …and a wholly spent chain ends silent from the streamer too — the caller's
+# notification is the announcement, never her speakers.
+rm -f "$T/spoken" "$T/speechlog"
 { refusal_stream; refusal_stream; refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts4.log"
 tts "$T/tts4.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
-[ "${n:-0}" = 1 ] && ok "a spent chain speaks its last refusal once" \
-    || fail "the end of the chain must be audible, exactly once" "spoken $n times"
+[ "${n:-0}" = 0 ] && ok "a spent chain is never voiced" \
+    || fail "a spent chain must stay out of her voice" "spoken $n times"
 
 # Her OWN words are never pattern-matched against the limit signature: a
 # genuine reply that QUOTES a limit phrase is not a refusal, and gagging it
@@ -231,7 +262,7 @@ cat "$T/fixture-refusal"
 exit 1
 EOF
 chmod +x "$T/claude-stream"
-rm -f "$T/calls" "$T"/state-limited-*
+rm -f "$T/calls" "$T/state-account-default"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
@@ -243,11 +274,12 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
 [ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
 CALL:$T/fb" ] && ok "exactly two calls: primary then fallback" \
     || fail "call order must be primary, then fallback" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
-[ -e "$T/state-limited-primary" ] && ok "the refusal stamps that account's marker" \
-    || fail "detection must stamp the marker" "no marker"
+[ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "$T/fb" ] \
+    && ok "the refusal makes the fallback the default" \
+    || fail "detection must move the default" "$(cat "$T/state-account-default" 2>/dev/null || echo "no record")"
 
-# Same sequence again with the marker now fresh: no probe, one call, straight
-# to the fallback.
+# Same sequence again with the default moved: no probe, one call, straight
+# to the account that answers.
 rm -f "$T/calls"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
@@ -255,15 +287,15 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     wake_claude_run_chain
     printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
     extract_response')"
-[ "$out" = "WAKE FALLBACK REPLY" ] && ok "known-dry: the reply still arrives" \
-    || fail "short-circuited run should reply" "$out"
-[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:$T/fb" ] && ok "known-dry: one call, no wasted probe" \
-    || fail "fresh marker must skip the dry account" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
-rm -f "$T"/state-limited-*
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "moved default: the reply still arrives" \
+    || fail "the rotated chain should reply" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:$T/fb" ] && ok "moved default: one call, no doomed probe" \
+    || fail "the default must lead the walk" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+rm -f "$T/state-account-default"
 
 # The whole point of a chain: the second fallback is reached when the first is
 # out too, and the accounts are tried left to right.
-rm -f "$T/calls" "$T"/state-limited-*
+rm -f "$T/calls" "$T/state-account-default"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR="$T/fb2" \
     CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
@@ -279,7 +311,7 @@ CALL:$T/fb2" ] && ok "three calls, in the configured order" \
     || fail "the chain must be walked left to right" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
 
 # A spent chain stops. Nothing here may loop back to an account already tried.
-rm -f "$T/calls" "$T"/state-limited-*
+rm -f "$T/calls" "$T/state-account-default"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR=/never \
     CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
@@ -291,6 +323,9 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR=/never \
     || fail "a wholly refused wake must read as failed" "$out"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 3 ] && ok "each login is tried exactly once" || fail "must try each login once" "$n calls"
+[ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "-" ] \
+    && ok "a fully spent chain wraps the default back to the primary" \
+    || fail "the rotation must wrap at the end" "$(cut -f1 "$T/state-account-default" 2>/dev/null)"
 
 echo "job-runner — a limited primary is retried, not recorded blocked:"
 # Same scaffold as test_job_block.sh: copied runner, symlinked common.sh, fake
@@ -325,11 +360,12 @@ run_runner() { # <id> [ENV=val ...]
     "$REPO_DIR/lib/job-status" new "$T/jobs" "$id" "do a thing" "" >/dev/null 2>&1 || \
         python3 -c 'import json,sys,time; json.dump({"id":sys.argv[2],"description":"do a thing","started_epoch":int(time.time()),"state":"running","unit":""},open(sys.argv[1]+"/"+sys.argv[2]+".json","w"))' "$T/jobs" "$id"
     JOBS_DIR="$T/jobs" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
+        ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
         DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-plain" \
         env -u CLAUDE_CONFIG_DIR "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }
 
-rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
 run_runner fbworks CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/fbworks.json" state)"
 [ "$out" = finished ] && ok "fallback succeeds: the job is finished, not blocked" || fail "should finish via the fallback" "$out"
@@ -338,21 +374,23 @@ case "$(cat "$T/jobs/fbworks.log" 2>/dev/null)" in
     *) fail "the log must say a retry happened" "$(cat "$T/jobs/fbworks.log" 2>/dev/null | head -n2)" ;; esac
 [ ! -e "$T/jobs/blocked" ] && ok "no block marker when the fallback carried the job" \
     || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
-[ -e "$T/state-limited-primary" ] && ok "the job's refusal stamps that account's marker" \
-    || fail "job detection must stamp the marker" "no marker"
+[ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "$T/fb" ] \
+    && ok "the job's refusal makes the fallback the default" \
+    || fail "job detection must move the default" "$(cat "$T/state-account-default" 2>/dev/null || echo "no record")"
 
-# Marker still fresh from the last case: the next job must not probe at all.
+# Default still moved from the last case: the next job leads with the account
+# that answered and never probes the one that refused.
 rm -f "$T/calls" "$T/jobs/blocked"
-run_runner knowndry CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
-out="$("$REPO_DIR/lib/job-status" get "$T/jobs/knowndry.json" state)"
-[ "$out" = finished ] && ok "known-dry: the job finishes on the fallback" || fail "known-dry job should finish" "$out"
+run_runner defmoved CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/defmoved.json" state)"
+[ "$out" = finished ] && ok "moved default: the job finishes on the fallback" || fail "moved-default job should finish" "$out"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
-[ "${n:-0}" = 1 ] && ok "known-dry: one call, no primary probe" || fail "fresh marker must skip the probe" "$n calls"
-case "$(cat "$T/jobs/knowndry.log" 2>/dev/null)" in
-    *"known dry"*) ok "the short-circuit is recorded in the job log" ;;
-    *) fail "the log must say the probe was skipped" "$(head -n1 "$T/jobs/knowndry.log" 2>/dev/null)" ;; esac
+[ "${n:-0}" = 1 ] && ok "moved default: one call, no primary probe" || fail "the default must lead" "$n calls"
+case "$(cat "$T/jobs/defmoved.log" 2>/dev/null)" in
+    *"default login is"*) ok "the leading login is recorded in the job log" ;;
+    *) fail "the log must name the login that led" "$(head -n1 "$T/jobs/defmoved.log" 2>/dev/null)" ;; esac
 
-rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
 run_runner bothout CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_FALLBACK_FAILS=1
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
 [ "$out" = blocked ] && ok "both logins refusing is blocked, as before" || fail "should block when the fallback is out too" "$out"
@@ -361,7 +399,7 @@ out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "exactly one retry — never a third attempt" || fail "must try each login once" "$n calls"
 
-rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
 run_runner chain CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR="$T/fb2"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/chain.json" state)"
 [ "$out" = finished ] && ok "a job carried by the third subscription finishes" \
@@ -372,12 +410,38 @@ n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ ! -e "$T/jobs/blocked" ] && ok "no block marker when a later account carried the job" \
     || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
 
-rm -f "$T/calls" "$T/jobs/blocked" "$T"/state-limited-*
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
 run_runner nofb
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/nofb.json" state)"
 [ "$out" = blocked ] && ok "no fallback configured: blocked exactly as before" || fail "unconfigured must keep old behaviour" "$out"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "no fallback: a single attempt" || fail "must not retry without a fallback" "$n calls"
+
+echo "a wholly-refused desk turn is notified — never spoken, never conversed:"
+# The measured failure: with every login out, extract_response reports the
+# refusal as the reply, it landed in the conversation as her words, and the
+# never-silent guard read the streamer's empty receipt as a broken speech
+# path and spoke the refusal aloud. Now the turn recognises the limit-shaped
+# stream, keeps the refusal out of the conversation and off the speakers,
+# and the notification carries the outage.
+printf '#!/bin/bash\nprintf "NOTIFY:%%s\\n" "$*" >> "%s/notifies"\n' "$T" > "$T/bin/notify-send"
+chmod +x "$T/bin/notify-send"
+rm -f "$T/spoken" "$T/notifies" "$T/state-account-default" "$T/state-convo.txt"
+run PATH="$T/bin:$PATH" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_OK_DIR=/never \
+    CLAUDE_BIN="$T/claude-stream" LAST_ORIGIN_FILE="$T/state-last-origin" \
+    'run_claude_and_respond "hello there" >/dev/null' >/dev/null 2>&1
+grep -q "hello there" "$T/state-convo.txt" 2>/dev/null \
+    && ok "the user's words still enter the conversation" \
+    || fail "the user turn must be recorded" "$(cat "$T/state-convo.txt" 2>/dev/null || echo missing)"
+grep -q "usage credits" "$T/state-convo.txt" 2>/dev/null \
+    && fail "the refusal entered the conversation as her reply" "$(grep "usage credits" "$T/state-convo.txt")" \
+    || ok "the refusal never enters the conversation"
+grep -q "usage credits" "$T/spoken" 2>/dev/null \
+    && fail "the refusal reached the speakers" "$(cat "$T/spoken")" \
+    || ok "the refusal never reaches the speakers"
+grep -qi "limit" "$T/notifies" 2>/dev/null \
+    && ok "the notification carries the outage instead" \
+    || fail "the outage must be notified" "$(cat "$T/notifies" 2>/dev/null || echo "no notification")"
 
 echo
 echo "$PASS passed, $FAIL failed"
