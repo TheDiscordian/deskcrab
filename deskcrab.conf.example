@@ -75,12 +75,13 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # low-CPU tools in the foreground.
 # WAKE_STALL_TIMEOUT=300
 
-# Optional: echo window (seconds, default 300, 0 = off). A wake whose speak
-# decision lands within this window of the last interactive turn (desk or
-# phone) completes silently — a wake speaking on the heels of a turn almost
-# always repeats what the turn just said. The work still happens and the
-# outcome still reaches the session journal.
-# WAKE_MUTE_AFTER_TURN=300
+# Optional: concurrent-turn context window (seconds, default 300, 0 = off).
+# A wake that fires while an interactive turn (desk or phone) is in flight —
+# or within this window of one finishing — is shown that exchange in its
+# prompt: the user's message, and the reply once there is one. The wake is
+# asked to behave like someone who just heard the answer given: stay quiet,
+# or add only what is genuinely new. Nothing is muted; the wake decides.
+# WAKE_TURN_CONTEXT_WINDOW=300
 
 # Optional: wake coalescing window (seconds, default 900, 0 = off). A
 # `crab wake-at` booking of scheduled kind whose fire time is within this

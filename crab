@@ -135,9 +135,11 @@ case "${1:-}" in
         # defer the session. It used to exit right here, so during any active
         # conversation a wake did no reading, no want work, no dated thought —
         # and reached the user as an indistinguishable (quiet). Busyness is a
-        # reason to hold the tongue, not the mind: the session runs, and the
-        # user-busy re-check in run_claude_wake's speak decision (beside the
-        # echo window) suppresses every output — speech, display, phone.
+        # reason to hold the tongue, not the mind: the session runs, the
+        # user-busy re-check in run_claude_wake's speak decision suppresses
+        # every output — speech, display, phone — and a wake beside a live
+        # turn is shown that exchange in its prompt so it can choose silence
+        # itself (wake_concurrent_turn_context) rather than be muted.
 
         # One waking mind at a time. Without this, a file landing at the wrong
         # moment could start a second session that interleaves its turns with

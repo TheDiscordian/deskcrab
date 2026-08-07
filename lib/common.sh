@@ -43,13 +43,18 @@ WAKE_EFFORT="${WAKE_EFFORT:-$CLAUDE_EFFORT}"
 # writes stream events constantly, so this many seconds without any output means
 # it is hung, not thinking. Wall-clock limits would kill productive sessions.
 WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
-# A wake that speaks moments after an interactive turn is an echo: the turn
-# almost certainly already covered what the wake is about to announce, and two
-# near-identical voices in a row reads as malfunction. If the last interactive
-# turn (desk or phone) began within this many seconds of the wake's speak
-# decision, the wake completes silently — the work still happened and its
-# outcome still lands in the journal. 0 disables.
-WAKE_MUTE_AFTER_TURN="${WAKE_MUTE_AFTER_TURN:-300}"
+# A wake that fires beside an interactive turn used to be muted outright
+# (the old WAKE_MUTE_AFTER_TURN echo window) — its reply swallowed wholesale.
+# That was rejected: a wake with something genuinely new deserves its voice.
+# Instead the wake is handed the exchange as evidence: when the last
+# interactive turn started or finished within this many seconds, the turn's
+# user message — and the reply, once there is one — are spliced into the
+# wake's prompt (wake_concurrent_turn_context) with instructions to behave
+# like someone who just heard the answer given: stay quiet, or add only what
+# is genuinely new, never restate. 0 disables the evidence block. The
+# nothing-new check stays as the mechanical backstop for a wake that echoes
+# anyway.
+WAKE_TURN_CONTEXT_WINDOW="${WAKE_TURN_CONTEXT_WINDOW:-300}"
 # Self-booked wakes stack: several sessions each promise "come back in 45min"
 # and the timers land minutes apart, each re-reading the wants and
 # re-announcing the same progress. A scheduled booking whose fire time is
@@ -874,16 +879,54 @@ last_origin_epoch() {
     [ -f "$LAST_ORIGIN_FILE" ] && cut -f2 "$LAST_ORIGIN_FILE"
 }
 
-# True while inside the echo window: an interactive turn (desk or phone) began
-# within WAKE_MUTE_AFTER_TURN seconds. A wake speaking in this window is
-# almost always repeating what that turn just said — the same content, twice,
-# minutes apart, in the user's ear. Inside the window a wake works silently.
-wake_in_echo_window() {
-    [ "${WAKE_MUTE_AFTER_TURN:-0}" -gt 0 ] || return 1
-    local TS
-    TS="$(last_origin_epoch)"
-    [ -n "$TS" ] || return 1
-    [ $(( $(date +%s) - TS )) -lt "$WAKE_MUTE_AFTER_TURN" ]
+# --- Concurrent-turn evidence for wakes -------------------------------------
+# The current interactive exchange itself, not just its origin device: written
+# ("answering") the moment a desk or phone turn starts, rewritten ("answered",
+# reply included) when it finishes. A wake firing beside the turn reads this
+# and is TOLD what is being said, instead of being muted by a timer. Lives
+# under STATE_PREFIX so a scratch instance sees its own turns and a stale
+# record dies with /tmp.
+LIVE_TURN_FILE="${LIVE_TURN_FILE:-${STATE_PREFIX}-live-turn}"
+
+live_turn_begin() {  # <device> <user-text>
+    printf '%s\t%s\tanswering\nUser: %s\n' "$(date +%s)" "$1" "$2" > "$LIVE_TURN_FILE.tmp" \
+        && mv "$LIVE_TURN_FILE.tmp" "$LIVE_TURN_FILE"
+}
+
+live_turn_end() {  # <device> <user-text> <spoken-reply>
+    printf '%s\t%s\tanswered\nUser: %s\nAssistant: %s\n' "$(date +%s)" "$1" "$2" "$3" > "$LIVE_TURN_FILE.tmp" \
+        && mv "$LIVE_TURN_FILE.tmp" "$LIVE_TURN_FILE"
+}
+
+# The evidence block for a wake's prompt: what the user just said to another
+# session of the assistant, that session's reply if it has finished, and how
+# to behave about it — silence, or something genuinely new, never a
+# restatement. Prints nothing when no interactive turn has happened, or once
+# the exchange is older than WAKE_TURN_CONTEXT_WINDOW. This replaced the echo
+# window that muted the wake's reply outright: the wake decides for itself
+# now, with the exchange in front of it.
+wake_concurrent_turn_context() {
+    [ "${WAKE_TURN_CONTEXT_WINDOW:-0}" -gt 0 ] || return 0
+    [ -f "$LIVE_TURN_FILE" ] || return 0
+    local TS DEV STATUS EXCHANGE
+    IFS=$'\t' read -r TS DEV STATUS < "$LIVE_TURN_FILE"
+    case "$TS" in ''|*[!0-9]*) return 0 ;; esac
+    [ $(( $(date +%s) - TS )) -lt "$WAKE_TURN_CONTEXT_WINDOW" ] || return 0
+    EXCHANGE="$(tail -n +2 "$LIVE_TURN_FILE")"
+    [ -n "$EXCHANGE" ] || return 0
+    if [ "$STATUS" = "answering" ]; then
+        cat <<EOF
+CONCURRENT CONVERSATION — as this wake begins, the user has just spoken to another session of you (from the $DEV), and that session is answering him RIGHT NOW. Its reply will reach him before anything you say. What he said:
+$EXCHANGE
+That message is being handled — it is not yours to answer, even though it may look unanswered in the conversation above. Behave like a person who walks in while someone is mid-answer: do not answer it yourself, do not talk over the reply, do not repeat what is being said. If everything you might say is covered by that exchange, begin your reply with (quiet) — staying silent while your other self answers is the natural thing, not a failure. Speak only if you have something genuinely NEW to add that the answering session plainly would not say.
+EOF
+    else
+        cat <<EOF
+CONCURRENT CONVERSATION — moments ago the user spoke to another session of you (from the $DEV), and that session has already answered him. The exchange, which he has just heard:
+$EXCHANGE
+You have, in effect, just heard yourself say that. Never restate, rephrase, or re-answer any of it — hearing it again seconds later reads as malfunction. If what you were going to say is already covered, begin your reply with (quiet); silence after the answer has been given is the natural thing, not a failure. Speak only to add something genuinely new that this exchange did not cover.
+EOF
+    fi
 }
 
 # Is the phone client connected right now? serve.py touches the seen-file on
@@ -1053,6 +1096,18 @@ run_claude_wake() {
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
 
+    # Evidence, not muting: a wake firing beside an interactive turn is shown
+    # the exchange — what the user said, whether another session is already
+    # answering or has answered — and asked to behave like someone who heard
+    # it: silence, or something genuinely new. The old echo window swallowed
+    # the wake's reply wholesale here at speak time; that was rejected in
+    # favour of letting the wake choose with the facts in front of it.
+    local TURN_CONTEXT
+    TURN_CONTEXT="$(wake_concurrent_turn_context)"
+    [ -n "$TURN_CONTEXT" ] && SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+$TURN_CONTEXT"
+
     convo_append '[Autonomous wake — %s]\n' "$(date '+%Y-%m-%d %H:%M')"
 
     : > "$DEBUGLOG"
@@ -1155,23 +1210,18 @@ run_claude_wake() {
     esac
     in_quiet_hours && return 0
     # User busy (recording, speech in flight, or a meeting holding the mic):
-    # the wake still did its work — busyness suppresses OUTPUT only, exactly
-    # like the echo window below. Checked here, at the last moment before
-    # speaking, because a wake that started in a quiet room may end mid-meeting.
+    # the wake still did its work — busyness suppresses OUTPUT only. Checked
+    # here, at the last moment before speaking, because a wake that started
+    # in a quiet room may end mid-meeting.
     if user_busy; then
         session_outcome "(muted — user was mid-interaction) $(spoken_part "$RESPONSE")"
         return 0
     fi
 
-    # Echo window: an interactive turn just happened, and a wake speaking on
-    # its heels almost always repeats what that turn already said — the same
-    # content, twice, in the user's ear seconds apart. Applies to every wake
-    # kind: the promise-audit event wake is the worst offender, announcing the
-    # very sentence the turn that spawned it just spoke.
-    if wake_in_echo_window; then
-        session_outcome "(muted — echo window after an interactive turn) $(spoken_part "$RESPONSE")"
-        return 0
-    fi
+    # No echo-window mute here any more: a wake that fired beside an
+    # interactive turn was shown the exchange in its prompt
+    # (wake_concurrent_turn_context) and chose to speak anyway — that choice
+    # stands. The nothing-new check below still catches a genuine echo.
 
     local SPOKEN DISPLAY_PART
     SPOKEN=$(spoken_part "$RESPONSE")
@@ -1181,7 +1231,7 @@ run_claude_wake() {
     # in code rather than trusted to the prompt's "(quiet)" convention. A wake
     # whose spoken reply merely rewords what recent turns and wakes already
     # said completes silently, display and all.
-    if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN"; then
+    if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ] && wake_says_nothing_new "$SPOKEN" "$RESPONSE"; then
         session_outcome "(muted — said nothing the conversation had not already heard) $SPOKEN"
         return 0
     fi
@@ -1262,17 +1312,20 @@ display_part() {
 
 # Does this spoken text say anything the conversation has not already said?
 # Content words of the candidate are compared against each recent assistant
-# message (excluding the last, which is the wake's own just-appended reply);
-# heavy overlap means the wake is re-announcing, not announcing. Lexical and
-# fuzzy on purpose — the echo window is the hard guard, this catches a later
-# wake restating the same progress in fresh words. Exit 0 = nothing new.
-wake_says_nothing_new() {  # <spoken-text>
+# message (excluding the wake's own just-appended reply); heavy overlap means
+# the wake is re-announcing, not announcing. Lexical and fuzzy on purpose —
+# the concurrent-turn evidence in the prompt is the persuasion, this is the
+# mechanical backstop that catches a wake echoing anyway, whether it echoes
+# the turn beside it or an earlier session's progress report in fresh words.
+# Exit 0 = nothing new.
+wake_says_nothing_new() {  # <spoken-text> <full-appended-reply>
     [ -s "$CONVOFILE" ] || return 1
     command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "$CONVOFILE" "$1" <<'PY'
+    python3 - "$CONVOFILE" "$1" "${2:-}" <<'PY'
 import re, sys
 convo = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 spoken = sys.argv[2]
+own = sys.argv[3].strip() if len(sys.argv) > 3 else ""
 STOP = set("""a an and are as at be been but by can could did do for from get got
 had has have he her him his how i if in is it just me more my no not now of on
 or our out she so some that the their them then there they this to up was we
@@ -1281,7 +1334,16 @@ def words(t):
     return set(re.findall(r"[a-z0-9]+", t.replace("'", "").lower())) - STOP
 blocks = re.split(r"^(?=User: |Assistant: |\[)", convo, flags=re.M)
 msgs = [b[len("Assistant: "):] for b in blocks if b.startswith("Assistant: ")]
-msgs = msgs[:-1]  # drop the wake's own reply, appended moments before this check
+# Drop the wake's own just-appended reply by CONTENT, not position: a turn
+# answering beside this wake may append its reply after ours, making the
+# wake's own words the second-to-last message — and a positional drop would
+# then compare the wake against itself, a guaranteed false "nothing new".
+for i in range(len(msgs) - 1, -1, -1):
+    if own and msgs[i].strip() == own:
+        del msgs[i]
+        break
+else:
+    msgs = msgs[:-1]  # not found verbatim (split quirk) — old positional drop
 mine = words(spoken)
 if len(mine) < 4:
     sys.exit(1)  # too short to judge fairly — let it speak
@@ -1323,6 +1385,9 @@ _run_claude_remote_locked() {
     record_origin phone
     local TEXT="$1"
     SESSION_USER_TEXT="$TEXT"
+    # Mark the exchange in flight: a wake firing beside this turn reads it
+    # and is told the message is already being answered.
+    live_turn_begin phone "$TEXT"
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
     # crab serve sets DESKCRAB_REMOTE_LOG when it wants to tail this stream and
@@ -1337,6 +1402,7 @@ _run_claude_remote_locked() {
     if [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
         convo_append 'Assistant: %s\n\n' "$RESPONSE"
+        live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
     fi
@@ -1374,6 +1440,9 @@ run_claude_and_respond() {
     # Recorded before generation: even a turn that dies mid-reply leaves the
     # user's words in the day journal.
     SESSION_USER_TEXT="$TEXT"
+    # Mark the exchange in flight: a wake firing beside this turn reads it
+    # and is told the message is already being answered.
+    live_turn_begin desk "$TEXT"
 
     convo_append 'User: %s\n' "$TEXT"
 
@@ -1390,6 +1459,7 @@ run_claude_and_respond() {
     if [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
         convo_append 'Assistant: %s\n\n' "$RESPONSE"
+        live_turn_end desk "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
 
