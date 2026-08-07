@@ -408,6 +408,15 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         echo "Cancelled $UNIT"
         ;;
 
+    help|--help|-h|usage|commands)
+        # NOT speech. `crab help` used to fall into the catch-all below and be
+        # asked of me as a message — sixteen times on 2026-08-07 a script or a
+        # hand reaching for usage started a whole desktop turn where I was told
+        # "help" with no context. Usage is printed, never spoken to.
+        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+        exit 0
+        ;;
+
     *)
         # Anything else is treated as a text query — but a leading dash is a
         # mistyped flag, not speech; it must never reach the spoken channel.
