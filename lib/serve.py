@@ -626,23 +626,49 @@ def _progress_events(logpath, stop, emit, speaker):
     seen_tools = 0
     while not stop.is_set() and not os.path.exists(logpath):
         time.sleep(0.05)
+    partial = ""
     try:
         with open(logpath, "r", errors="replace") as f:
-            while not stop.is_set():
-                line = f.readline()
-                if not line:
+            draining = False
+            while True:
+                if stop.is_set():
+                    # The turn has ended; one last pass drains what landed
+                    # since the previous read, then EOF ends the tail.
+                    draining = True
+                chunk = f.readline()
+                if not chunk:
+                    if draining:
+                        return
                     time.sleep(0.05)
                     continue
-                line = line.strip()
+                # readline() at EOF hands back a HALF-WRITTEN line, and the
+                # rest arrives on the next call; neither half parses, and the
+                # lines long enough to be split are exactly the assistant
+                # blocks worth showing (the same bug crab-debug had). Hold the
+                # fragment until its newline arrives — whole lines only.
+                partial += chunk
+                if not partial.endswith("\n"):
+                    continue
+                line, partial = partial.strip(), ""
                 if not line.startswith("{"):
                     continue
                 try:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if d.get("type") == "result":
-                    return
+                # NEVER stop at a result event: the usage-limit fallback
+                # APPENDS a second claude run to this same log after the
+                # refusal run's result, so a tail that returns at the first
+                # result goes dark for the whole real turn — the phone shows
+                # a spinner until the reply lands in one lump. The turn's end
+                # is `stop`, set when `crab remote` exits; results are noise.
                 if d.get("type") != "assistant" or "message" not in d:
+                    continue
+                # A limit refusal arrives shaped like a reply (a synthetic
+                # assistant message). The fallback answers for real right
+                # after it — the refusal is never shown or voiced.
+                if d.get("is_api_error_message") or \
+                        d.get("message", {}).get("model") == "<synthetic>":
                     continue
                 for block in d["message"].get("content", []):
                     kind = block.get("type")
