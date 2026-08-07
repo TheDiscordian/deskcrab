@@ -333,21 +333,38 @@ day_journal_append() {  # <kind> <start-epoch> <duration|-> <pid> <user> <reply>
 # wants, conduct, engineering, journal, memory, config, the repo, her library
 # — change on disk. Every process of hers that writes such files declares it,
 # before or just after the write:
-#   touch_suppress [-w seconds] <path>...      (CLI: crab touching <paths>)
-# One record per line, "<expiry-epoch>\t<absolute path>"; a directory covers
-# its whole subtree. Appends hold a lock because the watcher prunes expired
-# lines by rewriting the file, and an append racing that rewrite would be a
-# lost declaration — which reads as an intruder's edit.
+#   touch_suppress [-w seconds] [-t weak] <path>...   (CLI: crab touching <paths>)
+# One record per line, "<expiry-epoch>\t<absolute path>[\t<tier>]"; a strong
+# record for a directory covers its whole subtree. Appends hold a lock because
+# the watcher prunes expired lines by rewriting the file, and an append racing
+# that rewrite would be a lost declaration — which reads as an intruder's edit.
+#
+# TWO TIERS, because the shapes a writer can take are unbounded:
+#   strong (default, and what every pre-existing two-column record parses as)
+#          — the path was in a provable write position. Excuses any change,
+#          a deletion included.
+#   weak   — the path merely appeared somewhere in a command I ran. Excuses a
+#          modification or a creation, NEVER a deletion, and never by subtree.
+# The asymmetry is the whole point: anything in my own tool stream came from my
+# own hand, so over-declaring modifications costs little, while "a deleted want
+# always surfaces unless its deleter said so" stays true by construction.
 touch_suppress() {
-    local win="$TOUCH_WINDOW" p
-    if [ "${1:-}" = "-w" ]; then win="$2"; shift 2; fi
+    local win="$TOUCH_WINDOW" tier="" p
+    while :; do
+        case "${1:-}" in
+            -w) win="$2"; shift 2 ;;
+            -t) tier="$2"; shift 2 ;;
+            *)  break ;;
+        esac
+    done
     [ $# -gt 0 ] || { echo "Usage: crab touching [-w seconds] <path>..."; return 1; }
     mkdir -p "$NOTICE_STATE_DIR"
     local exp=$(( $(date +%s) + win ))
     {
         flock 9
         for p in "$@"; do
-            printf '%s\t%s\n' "$exp" "$(readlink -m -- "$p" 2>/dev/null || printf '%s' "$p")" \
+            printf '%s\t%s\t%s\n' "$exp" \
+                "$(readlink -m -- "$p" 2>/dev/null || printf '%s' "$p")" "$tier" \
                 >> "$NOTICE_SUPPRESS"
         done
     } 9>>"$NOTICE_SUPPRESS.lock"
@@ -446,13 +463,89 @@ for p in seen:
 PY
 }
 
+# The weak tier. `stream_written_files` above can only recognise writers whose
+# shape it was taught, and the shapes are unbounded — on 2026-08-07, three
+# hours after the `sed -i` patch, this woke me about my own wants shelf again:
+#
+#     cd ~/.local/share/deskcrab && python3 - <<'EOF'
+#     p='wants.md'; s=open(p).read(); ... open(p,'w').write(s)
+#     EOF
+#
+# An inline interpreter, a RELATIVE path, set by a `cd` earlier in the same
+# command, inside a quoted heredoc body. No enumeration of writer shapes reaches
+# that. So this pass gives up on writer shapes entirely and collects every
+# path-shaped string anywhere in a Bash command of mine, resolving relative ones
+# against any `cd` in the same command. A mere `grep` of a want therefore
+# declares it too — accepted deliberately, because these records are weak and
+# cannot excuse a deletion, and because everything in my own tool stream came
+# from my own hand in the first place.
+stream_mentioned_files() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$DEBUGLOG" 2>/dev/null <<'PY'
+import json, os, re, sys
+
+MAX = 300
+seen = []
+def add(p):
+    p = os.path.normpath(os.path.expanduser(p))
+    if len(seen) >= MAX or not p or p in seen:
+        return
+    if p.startswith(("/dev/", "/proc/", "/sys/")) or p in ("/", "."):
+        return
+    seen.append(p)
+
+CD = re.compile(r"(?:^|[;|&\n(]|&&)\s*cd\s+([^\s;|&\n]+)")
+TOKEN = re.compile(r"[A-Za-z0-9_@+~./-]+")
+
+def mentioned(cmd):
+    bases = []
+    for m in CD.finditer(cmd):
+        b = os.path.expanduser(m.group(1).strip("'\"`"))
+        if os.path.isdir(b):
+            bases.append(b)
+    for tok in TOKEN.findall(cmd):
+        if tok.startswith("-") or len(tok) < 3:
+            continue
+        if tok.startswith(("/", "~")):
+            add(tok.rstrip("/"))
+        elif "." in tok or "/" in tok:
+            # Relative: only believed when it lands on something that exists,
+            # so a bare version number or a dotted identifier adds no noise.
+            for b in bases:
+                cand = os.path.join(b, tok)
+                if os.path.exists(cand):
+                    add(cand)
+
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if d.get("type") != "assistant":
+        continue
+    if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
+        continue
+    for b in d.get("message", {}).get("content", []):
+        if b.get("type") == "tool_use" and b.get("name") == "Bash":
+            mentioned((b.get("input") or {}).get("command", ""))
+for p in seen:
+    print(p)
+PY
+}
+
 notice_own_writes() {
-    local files
+    local files weak
     files="$(stream_written_files)"
-    [ -n "$files" ] || return 0
+    weak="$(stream_mentioned_files)"
     local IFS=$'\n'
     # shellcheck disable=SC2086 — newline-split on purpose, paths may hold spaces
-    touch_suppress $files
+    [ -n "$files" ] && touch_suppress $files
+    # shellcheck disable=SC2086
+    [ -n "$weak" ] && touch_suppress -t weak -w "${NOTICE_WEAK_WINDOW:-300}" $weak
+    return 0
 }
 
 # The sessions log speaks in kind phrases ("desktop turn"); the journal keys

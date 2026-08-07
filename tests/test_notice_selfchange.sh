@@ -154,11 +154,35 @@ echo "late change" >> "$T/data/deskcrab/conduct/new-rule.md"
 run 0
 check "falls through to a wake when it cannot defer" [ "$(wakes)" = 8 ]
 
+echo "== a weak record excuses a modification but never a deletion =="
+# Weak records carry a third column; the two-column records used everywhere
+# above are strong, which is how every pre-existing record on disk still reads.
+NOW=$(date +%s)
+echo "weak subject" > "$T/library/weak.md"
+run   # the creation is undeclared and fires (wake 9)
+check "undeclared creation fired" [ "$(wakes)" = 9 ]
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library/weak.md" >> "$STATE/notice-self.suppress"
+echo "changed" >> "$T/library/weak.md"
+run
+check "weak record suppresses a modification" [ "$(wakes)" = 9 ]
+check "weak suppression is logged as weak" \
+    grep -q "quiet: modified.*weak.md (touching (weak" "$STATE/notice-self.log"
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library/weak.md" >> "$STATE/notice-self.suppress"
+rm "$T/library/weak.md"
+run
+check "weak record does NOT excuse a deletion" [ "$(wakes)" = 10 ]
+
+echo "== a weak record for a directory does not cover its subtree =="
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+echo "inside" > "$T/library/under-a-weak-dir.md"
+run
+check "weak directory record covers nothing beneath it" [ "$(wakes)" = 11 ]
+
 echo "== .gitignored repo files are invisible =="
 mkdir -p "$T/repo/ignored-stuff"
 echo "scratch" > "$T/repo/ignored-stuff/scratch.txt"
 run
-check "ignored file fires nothing" [ "$(wakes)" = 8 ]
+check "ignored file fires nothing" [ "$(wakes)" = 11 ]
 
 echo
 echo "passed $PASS, failed $FAIL"

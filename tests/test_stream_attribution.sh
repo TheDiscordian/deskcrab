@@ -69,6 +69,49 @@ echo "== malformed input never explodes =="
 expect "unbalanced quote yields nothing, not a traceback" \
                                       "sed -i 's/a/b/ /home/x/m.md"           ""
 
+# ---------------------------------------------------------------------------
+# The weak tier: stream_mentioned_files. Writer shapes are unbounded, so this
+# pass stops guessing at them and takes every path-shaped string in a command,
+# resolving relative ones against a `cd` in the same command. Its records
+# cannot excuse a deletion, which is what makes the generosity safe.
+parse_weak() { # <command>
+    python3 - "$1" "$T/stream.jsonl" <<'PY'
+import json, sys
+open(sys.argv[2], "w").write(json.dumps({
+    "type": "assistant",
+    "message": {"model": "m", "content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": sys.argv[1]}}]},
+}) + "\n")
+PY
+    bash -c \
+        'source "$1/lib/common.sh" >/dev/null 2>&1; DEBUGLOG="$2" stream_mentioned_files' \
+        _ "$REPO_DIR" "$T/stream.jsonl" | sort | tr '\n' ' ' | sed 's/ *$//'
+}
+has_weak() { # <desc> <command> <path that must appear>
+    local got; got="$(parse_weak "$2")"
+    case " $got " in *" $3 "*) ok "$1" ;; *) fail "$1" "$got" ;; esac
+}
+lacks_weak() { # <desc> <command> <path that must NOT appear>
+    local got; got="$(parse_weak "$2")"
+    case " $got " in *" $3 "*) fail "$1" "$got" ;; *) ok "$1" ;; esac
+}
+
+mkdir -p "$T/data"
+: > "$T/data/wants.md"
+
+echo "== the weak tier catches what no writer list can =="
+# The exact 2026-08-07 02:23 command, in miniature: inline interpreter,
+# relative path, quoted heredoc body, cwd set by a cd in the same command.
+has_weak "heredoc python with a cd and a relative path" \
+    "$(printf 'cd %s && python3 - <<%sEOF%s\np = %swants.md%s\nopen(p, %sw%s).write(s)\nEOF' \
+        "$T/data" "'" "'" "'" "'" "'" "'")" \
+    "$T/data/wants.md"
+has_weak "an absolute path anywhere in a command is declared" \
+    "grep -n foo $T/data/wants.md"                     "$T/data/wants.md"
+lacks_weak "a relative name that resolves to nothing is not invented" \
+    "cd $T/data && cat nosuch.md"                      "$T/data/nosuch.md"
+lacks_weak "/dev is never declared"  "cat /dev/null"   "/dev/null"
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

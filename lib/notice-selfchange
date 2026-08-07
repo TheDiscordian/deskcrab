@@ -14,7 +14,10 @@
 # so a change is dropped when:
 #   * a `crab touching` suppression record covers it (the writer declared
 #     itself: touch_suppress in lib/common.sh, wired into wakes, turns, jobs,
-#     the day journal, and the memory store), or
+#     the day journal, and the memory store). Those records come in two tiers:
+#     STRONG (the path was in a provable write position; excuses anything,
+#     subtrees included) and WEAK (the path merely appeared in a command she
+#     ran; exact paths only, and never excuses a deletion), or
 #   * a LIVE session's `crab claim` names it — creations and modifications
 #     only: a deletion is never excused by a fuzzy claim match, because a
 #     deleted want must always surface unless the deleter declared it, or
@@ -186,15 +189,27 @@ for f in "$SESSIONS_DIR"/*.claim; do
     CLAIMS="$CLAIMS $(tr 'A-Z' 'a-z' < "$f")"
 done
 
-suppressed_by_touch() {  # <path> — exact file or declared directory subtree
-    local p="$1" exp rec
+# Sets TOUCH_TIER to "" (strong) or "weak" on a hit. A strong record is an
+# exact file or a declared directory subtree and excuses anything; a weak one
+# is an exact file only — a directory merely named in a command must not
+# blanket-silence its tree — and the caller refuses it for deletions.
+TOUCH_TIER=""
+suppressed_by_touch() {  # <path>
+    local p="$1" exp rec tier
+    TOUCH_TIER=""
     [ -s "$ACTIVE" ] || return 1
-    while IFS="$TAB" read -r exp rec; do
+    local hit=1
+    while IFS="$TAB" read -r exp rec tier; do
         [ -n "$rec" ] || continue
-        [ "$p" = "$rec" ] && return 0
-        case "$p" in "$rec"/*) return 0 ;; esac
+        if [ "$p" = "$rec" ]; then
+            [ -z "$tier" ] && { TOUCH_TIER=""; return 0; }   # strong wins outright
+            TOUCH_TIER="$tier"; hit=0; continue
+        fi
+        if [ -z "$tier" ]; then
+            case "$p" in "$rec"/*) TOUCH_TIER=""; return 0 ;; esac
+        fi
     done < "$ACTIVE"
-    return 1
+    return "$hit"
 }
 
 suppressed_by_claim() {  # <path> — never consulted for deletions
@@ -226,7 +241,14 @@ while IFS="$TAB" read -r kind path; do
     [ -n "$path" ] || continue
     why=""
     if suppressed_by_touch "$path"; then
-        why="touching"
+        if [ -z "$TOUCH_TIER" ]; then
+            why="touching"
+        elif [ "$kind" != "deleted" ]; then
+            why="touching (weak — named in a command of mine)"
+        fi
+    fi
+    if [ -n "$why" ]; then
+        :
     elif [ "$kind" != "deleted" ] && suppressed_by_claim "$path"; then
         why="claimed by a live session"
     elif [ "$kind" != "deleted" ] && [ "$path" = "$DATA_DIR/memory/memory.db" ] && recent_activity; then
