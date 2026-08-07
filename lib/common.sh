@@ -361,12 +361,53 @@ touch_suppress() {
 stream_written_files() {
     command -v python3 >/dev/null 2>&1 || return 0
     python3 - "$DEBUGLOG" 2>/dev/null <<'PY'
-import json, os, re, sys
+import json, os, re, shlex, sys
 seen = []
 def add(p):
     p = os.path.expanduser(p)
     if p and p not in seen and not p.startswith(("/dev/", "/proc/")):
         seen.append(p)
+
+# Commands that rewrite a file named as a plain argument, with no redirect to
+# give them away. sed/perl/ruby only count with -i; the rest always write.
+ALWAYS_WRITES = {"tee", "truncate", "install", "patch", "shred", "sponge"}
+INPLACE_FLAGGED = {"sed", "perl", "ruby"}
+
+def _tokens(cmd):
+    """Shell-ish tokens with operators separated out, quotes respected, so a
+    sed script full of pipes stays one token instead of reading as a pipeline."""
+    lx = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lx.whitespace_split = True
+    try:
+        return list(lx)
+    except ValueError:
+        return []
+
+def add_in_place_targets(cmd):
+    collecting = inplace = got = False
+    for tok in _tokens(cmd):
+        if not tok.strip("|&;<>()"):          # a bare shell operator: new command
+            collecting = inplace = got = False
+            continue
+        base = os.path.basename(tok)
+        if base in ALWAYS_WRITES or base in INPLACE_FLAGGED:
+            collecting, got = True, False
+            inplace = base in ALWAYS_WRITES
+            continue
+        if not collecting:
+            continue
+        if tok.startswith("-"):
+            # -i, -i.bak, -pi all mean in place; -e and -n do not.
+            if re.match(r"^-[a-zA-Z]*i", tok):
+                inplace = True
+            continue
+        if tok.startswith(("~", "/")):
+            if inplace:
+                add(tok)
+                got = True
+        elif got:
+            # A bare word after the operands is the next command, not a file.
+            collecting = inplace = got = False
 for line in open(sys.argv[1]):
     line = line.strip()
     if not line:
@@ -395,6 +436,11 @@ for line in open(sys.argv[1]):
                 for tok in m.group(1).split():
                     if not tok.startswith("-"):
                         add(tok.rstrip("/"))
+            # In-place editors write without a redirect, so the `>` rule above
+            # never sees them. This is not hypothetical: on 2026-08-07 a
+            # `sed -i` of my own wants shelf came back to me as an intruder's
+            # hand, because nothing here could tell it was mine.
+            add_in_place_targets(cmd)
 for p in seen:
     print(p)
 PY
