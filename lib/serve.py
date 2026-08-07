@@ -855,8 +855,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/icon.svg":
             return self._send(200, (WEBAPP_DIR / "icon.svg").read_bytes(),
                               "image/svg+xml", extra)
-        if path in ("/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"):
-            name = "icon-192.png" if path == "/apple-touch-icon.png" else path[1:]
+        if path in ("/icon-192.png", "/icon-512.png", "/apple-touch-icon.png",
+                    "/icon-maskable-192.png", "/icon-maskable-512.png"):
+            name = path[1:]
             return self._send(200, (WEBAPP_DIR / name).read_bytes(),
                               "image/png", extra)
         if path.startswith("/img/"):
