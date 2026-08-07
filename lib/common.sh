@@ -1026,11 +1026,24 @@ compact_convo() {
     local PRIOR=""
     [ -f "$SUMMARYFILE" ] && PRIOR="$(cat "$SUMMARYFILE")"
 
+    # The condensed half loses its clock unless the summary carries one: the
+    # live turns below it are stamped, so without this the reader can date
+    # everything from the last hour and nothing before it.
+    local RANGE
+    RANGE="$(convo_time_range "$OLDFILE")"
+
     local SUMPROMPT NEWSUM
     SUMPROMPT="You are condensing the older part of a conversation between ${ASSISTANT_NAME:-the assistant} and the user, to save context.
 Produce a concise summary (a short paragraph or a few bullet points) that preserves facts, decisions,
 names, preferences, and any unresolved threads. Merge the prior summary with the new excerpt into one
 coherent summary. Output ONLY the summary text, no preamble.
+
+Keep time in the summary. The excerpt's blocks are stamped with the local time they were said
+(\"User [2026-08-07 12:01]: …\"); the summary replaces them, so WHEN things happened must survive
+the condensing or the reader can no longer tell this morning from ten minutes ago. Open the summary
+with the span it covers — ${RANGE:-(the excerpt is unstamped; say the span is unknown rather than inventing one)} —
+and keep any coarse times already present in the prior summary, plus a rough time against anything
+in the excerpt where it matters (when something was decided, promised, or finished).
 
 Naming rule, strictly: the assistant's name is ${ASSISTANT_NAME:-the assistant}. Refer to her by that name
 only. Never call her 'deskcrab', 'crab', 'the voice assistant', 'the model', or 'the assistant' — 'deskcrab'
@@ -1841,7 +1854,7 @@ $TURN_CONTEXT"
     # A genuine reply (the failure paths above never reach here): the journal
     # keeps it in full even when every gate below completes the wake silently.
     SESSION_REPLY="$RESPONSE"
-    convo_append 'Assistant: %s\n\n' "$RESPONSE"
+    convo_append_assistant "$RESPONSE"
     compact_convo
 
     local SPOKEN DISPLAY_PART TRACE SILENT_NOTE=""
@@ -2037,8 +2050,15 @@ or our out she so some that the their them then there they this to up was we
 were what when will with would you your""".split())
 def words(t):
     return set(re.findall(r"[a-z0-9]+", t.replace("'", "").lower())) - STOP
-blocks = re.split(r"^(?=User: |Assistant: |\[)", convo, flags=re.M)
-msgs = [b[len("Assistant: "):] for b in blocks if b.startswith("Assistant: ")]
+# The bracketed stamp on a block header is optional: files written before
+# stamping (and every archive of one) must still split into blocks here.
+HDR = re.compile(r"^(User|Assistant)(?: \[[^\]]*\])?: ")
+blocks = re.split(r"^(?=(?:User|Assistant)(?: \[[^\]]*\])?: |\[)", convo, flags=re.M)
+msgs = []
+for b in blocks:
+    m = HDR.match(b)
+    if m and m.group(1) == "Assistant":
+        msgs.append(b[m.end():])
 # Drop the wake's own just-appended reply by CONTENT, not position: a turn
 # answering beside this wake may append its reply after ours, making the
 # wake's own words the second-to-last message — and a positional drop would
@@ -2099,14 +2119,14 @@ _run_claude_remote_locked() {
     # relay the thinking to the phone; otherwise it stays private to this turn.
     local DEBUGLOG="${DESKCRAB_REMOTE_LOG:-${STATE_PREFIX}-remote-$$.log}"
     rotate_convo
-    convo_append 'User: %s\n' "$TEXT"
+    convo_append_user "$TEXT"
 
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
 
     if [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
-        convo_append 'Assistant: %s\n\n' "$RESPONSE"
+        convo_append_assistant "$RESPONSE"
         live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
@@ -2157,7 +2177,7 @@ run_claude_and_respond() {
     # and is told the message is already being answered.
     live_turn_begin desk "$TEXT"
 
-    convo_append 'User: %s\n' "$TEXT"
+    convo_append_user "$TEXT"
 
     start_tts_streamer
 
@@ -2171,7 +2191,7 @@ run_claude_and_respond() {
 
     if [ -n "$RESPONSE" ]; then
         SESSION_REPLY="$RESPONSE"
-        convo_append 'Assistant: %s\n\n' "$RESPONSE"
+        convo_append_assistant "$RESPONSE"
         live_turn_end desk "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
         session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"

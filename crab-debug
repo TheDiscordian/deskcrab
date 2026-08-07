@@ -2,6 +2,7 @@
 """Live viewer for DeskCrab stream-json debug log."""
 
 import json
+import re
 import sys
 import time
 import os
@@ -113,10 +114,14 @@ def main():
     # Show the last thing Crab heard
     if os.path.exists(CONVO):
         last_heard = ""
+        # The header carries an optional local-time stamp ("User [2026-08-07
+        # 12:01]: …"); older unstamped lines match the same pattern.
+        user_hdr = re.compile(r"^User( \[[^\]]*\])?: ")
         with open(CONVO) as cf:
             for line in cf:
-                if line.startswith("User: "):
-                    last_heard = line[6:].strip()
+                m = user_hdr.match(line)
+                if m:
+                    last_heard = line[m.end():].strip()
         if last_heard:
             wrapped = textwrap.fill(last_heard, width=78, initial_indent="  ", subsequent_indent="  ")
             print(f"{YELLOW}{BOLD}Last heard:{RESET}\n{WHITE}{wrapped}{RESET}\n")
