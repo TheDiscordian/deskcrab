@@ -63,6 +63,12 @@ KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
 TURN_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_TIMEOUT", "600"))
 MAX_UPLOAD = 25 * 1024 * 1024
 
+# The header opening a block in the conversation file, with the local-time
+# stamp common.sh now writes: "User [2026-08-07 12:01]: …". The stamp group is
+# optional on purpose — conversations written before stamping, and every
+# archive of one, must keep parsing here unchanged.
+BLOCK_HDR = re.compile(r"^(User|Assistant)( \[[^\]]*\])?: ")
+
 # How many turns are being answered right now. Restarting the server kills the
 # claude process mid-answer and drops whoever is on the wire, so anything that
 # wants to restart asks /health first and waits for this to reach zero.
@@ -326,11 +332,13 @@ def read_turns():
         return turns
     cur = None
     for line in cp.read_text(errors="replace").splitlines():
-        if line.startswith("User: "):
-            cur = {"role": "user", "text": line[6:]}
-            turns.append(cur)
-        elif line.startswith("Assistant: "):
-            cur = {"role": "assistant", "text": line[11:]}
+        m = BLOCK_HDR.match(line)
+        if m:
+            # The stamp is metadata, not speech: it rides beside the bubble as
+            # "time" and never inside its text. Older, unstamped lines match the
+            # same pattern with the group empty and read exactly as they did.
+            cur = {"role": m.group(1).lower(), "text": line[m.end():],
+                   "time": (m.group(2) or "").strip("[] ")}
             turns.append(cur)
         elif line.startswith("[Autonomous wake"):
             # A wake marker is a turn boundary, not prose. Without this it is
@@ -847,6 +855,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/icon.svg":
             return self._send(200, (WEBAPP_DIR / "icon.svg").read_bytes(),
                               "image/svg+xml", extra)
+        if path in ("/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"):
+            name = "icon-192.png" if path == "/apple-touch-icon.png" else path[1:]
+            return self._send(200, (WEBAPP_DIR / name).read_bytes(),
+                              "image/png", extra)
         if path.startswith("/img/"):
             f = IMAGES.get(os.path.basename(path))
             if f is None or not f.is_file():
