@@ -172,17 +172,30 @@ rm "$T/library/weak.md"
 run
 check "weak record does NOT excuse a deletion" [ "$(wakes)" = 10 ]
 
-echo "== a weak record for a directory does not cover its subtree =="
+echo "== a weak record for a directory covers creations beneath it, nothing else =="
+# This is how a tool that derives its own output name stays quiet: I name the
+# directory (or a file in it), the tool writes siblings I never spelled out.
 printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
 echo "inside" > "$T/library/under-a-weak-dir.md"
 run
-check "weak directory record covers nothing beneath it" [ "$(wakes)" = 11 ]
+check "weak directory record excuses a creation beneath it" [ "$(wakes)" = 10 ]
+check "the creation is logged as a weak-directory suppression" \
+    grep -q "quiet: created.*under-a-weak-dir.md (touching (weak — created under" \
+        "$STATE/notice-self.log"
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+echo "edited" >> "$T/library/under-a-weak-dir.md"
+run
+check "weak directory record does NOT excuse a modification beneath it" [ "$(wakes)" = 11 ]
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+rm "$T/library/under-a-weak-dir.md"
+run
+check "weak directory record does NOT excuse a deletion beneath it" [ "$(wakes)" = 12 ]
 
 echo "== .gitignored repo files are invisible =="
 mkdir -p "$T/repo/ignored-stuff"
 echo "scratch" > "$T/repo/ignored-stuff/scratch.txt"
 run
-check "ignored file fires nothing" [ "$(wakes)" = 11 ]
+check "ignored file fires nothing" [ "$(wakes)" = 12 ]
 
 echo
 echo "passed $PASS, failed $FAIL"

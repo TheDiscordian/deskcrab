@@ -189,10 +189,17 @@ for f in "$SESSIONS_DIR"/*.claim; do
     CLAIMS="$CLAIMS $(tr 'A-Z' 'a-z' < "$f")"
 done
 
-# Sets TOUCH_TIER to "" (strong) or "weak" on a hit. A strong record is an
-# exact file or a declared directory subtree and excuses anything; a weak one
-# is an exact file only — a directory merely named in a command must not
-# blanket-silence its tree — and the caller refuses it for deletions.
+# Sets TOUCH_TIER to "" (strong), "weak", or "weakdir" on a hit.
+#   strong  — an exact file or a declared directory subtree; excuses anything.
+#   weak    — a file named in a command of mine; the caller refuses deletions.
+#   weakdir — a *directory* named in a command of mine, matched on a path
+#             beneath it. The caller allows this for CREATIONS ONLY. A file
+#             that did not exist and now does, inside a directory I named
+#             seconds ago, is mine — that is how every tool which derives its
+#             own output name works (lilypond .ly -> .pdf, timidity -Ow, a
+#             render script). Modifications stay loud, so a mere `grep -r` over
+#             my library still cannot silence an edit to a want, and deletions
+#             are refused outright.
 TOUCH_TIER=""
 suppressed_by_touch() {  # <path>
     local p="$1" exp rec tier
@@ -205,9 +212,12 @@ suppressed_by_touch() {  # <path>
             [ -z "$tier" ] && { TOUCH_TIER=""; return 0; }   # strong wins outright
             TOUCH_TIER="$tier"; hit=0; continue
         fi
-        if [ -z "$tier" ]; then
-            case "$p" in "$rec"/*) TOUCH_TIER=""; return 0 ;; esac
-        fi
+        case "$p" in "$rec"/*)
+            if [ -z "$tier" ]; then TOUCH_TIER=""; return 0; fi
+            # weakest of all — never overrides a weak exact hit already found
+            [ "$hit" = 0 ] || { TOUCH_TIER="weakdir"; hit=0; }
+            ;;
+        esac
     done < "$ACTIVE"
     return "$hit"
 }
@@ -243,6 +253,9 @@ while IFS="$TAB" read -r kind path; do
     if suppressed_by_touch "$path"; then
         if [ -z "$TOUCH_TIER" ]; then
             why="touching"
+        elif [ "$TOUCH_TIER" = "weakdir" ]; then
+            [ "$kind" = "created" ] \
+                && why="touching (weak — created under a directory of mine)"
         elif [ "$kind" != "deleted" ]; then
             why="touching (weak — named in a command of mine)"
         fi
