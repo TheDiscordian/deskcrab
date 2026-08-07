@@ -20,7 +20,9 @@ LOG = os.environ["DESKCRAB_DEBUGLOG"]
 DELIM = "---DISPLAY---"
 
 result_text = ""
-blocks = []
+error_text = ""
+blocks = []      # (text, synthetic) — synthetic = the CLI's own error dressed
+                 # as a reply ("model":"<synthetic>", is_api_error_message)
 for line in open(LOG):
     line = line.strip()
     if not line:
@@ -30,11 +32,29 @@ for line in open(LOG):
     except json.JSONDecodeError:
         continue
     if d.get("type") == "result" and d.get("result"):
-        result_text = d["result"]
+        if d.get("is_error"):
+            error_text = d["result"]
+        else:
+            result_text = d["result"]
     elif d.get("type") == "assistant":
+        synthetic = bool(d.get("is_api_error_message")
+                         or d.get("message", {}).get("model") == "<synthetic>")
         for block in d.get("message", {}).get("content", []):
             if block.get("type") == "text" and block.get("text", "").strip():
-                blocks.append(block["text"].strip())
+                blocks.append((block["text"].strip(), synthetic))
+
+# A usage-limit fallback retry APPENDS a second run to the same log, so a
+# refusal and a genuine reply can share the stream. When anything real was
+# said, the refusal (synthetic events, error results) is dropped — the outage
+# is plumbing, not her words. When the stream holds ONLY the refusal, its text
+# still stands in as the reply, so a run with no fallback reports why it has
+# no answer exactly as before.
+real = [t for t, synthetic in blocks if not synthetic]
+if real:
+    blocks = real
+else:
+    blocks = [t for t, _ in blocks]
+    result_text = result_text or error_text
 
 # The result event repeats the final block verbatim; only keep it if it is
 # genuinely new (some sessions emit a result and no assistant events at all).

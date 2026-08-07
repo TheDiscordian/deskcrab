@@ -83,6 +83,26 @@ SPEAKER = os.environ.get("DESKCRAB_PIPER_SPEAKER", "").strip()
 # mispronounces or spells out letter-by-letter, e.g. s/\bhmph\b/humph/gi
 TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
 
+# Usage-limit fallback (CLAUDE_FALLBACK_CONFIG_DIR in the config). When the
+# primary login refuses over a limit, crab retries the turn on the fallback
+# account by APPENDING a second run to this same log. Two consequences here:
+# the refusal's error result must not stop the tail (or the retry's words are
+# extracted and displayed but never spoken), and the refusal itself must not
+# be voiced when the retry is about to answer properly. Both apply exactly
+# once — a second refusal means the fallback failed too, and THAT one is
+# spoken and stops the stream, since no further retry is coming.
+LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
+FALLBACK = os.environ.get("DESKCRAB_CLAUDE_FALLBACK", "").strip()
+
+
+def _is_limit(text):
+    if not (FALLBACK and LIMIT_RE):
+        return False
+    try:
+        return bool(re.search(LIMIT_RE, text or "", re.I))
+    except re.error:
+        return False
+
 
 def fix_pronunciation(text):
     if not TTS_FIXES:
@@ -131,6 +151,7 @@ ORIG_PPID = os.getppid()
 while not os.path.exists(LOG):
     time.sleep(0.1)
 
+rode_through = False
 with open(LOG) as f:
     while True:
         line = f.readline()
@@ -150,8 +171,25 @@ with open(LOG) as f:
         except json.JSONDecodeError:
             continue
         if d.get("type") == "result":
+            # A limit refusal with a retry still to come: ride through it and
+            # keep tailing — the fallback run's events land in this same file.
+            if (not rode_through and d.get("is_error")
+                    and _is_limit(str(d.get("result") or ""))):
+                rode_through = True
+                continue
             break
         if d.get("type") == "assistant" and "message" in d:
+            # The refusal arrives shaped like a reply (a synthetic assistant
+            # message whose text is the error). With a retry coming the user
+            # should hear the answer, not the outage — skip it. After the
+            # ride-through, a second refusal is real news and gets its voice.
+            if (not rode_through
+                    and (d.get("is_api_error_message")
+                         or d["message"].get("model") == "<synthetic>")
+                    and any(_is_limit(b.get("text", ""))
+                            for b in d["message"].get("content", [])
+                            if b.get("type") == "text")):
+                continue
             for block in d["message"].get("content", []):
                 if block.get("type") == "text":
                     text = block["text"].strip()

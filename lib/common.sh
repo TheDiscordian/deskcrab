@@ -26,6 +26,18 @@ unset _INHERITED_CLAUDE_BIN
 # Defaults
 CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 CLAUDE_EFFORT="${CLAUDE_EFFORT:-low}"
+# A second `claude` login to fall back to when the primary account refuses to
+# run at all — session/usage limit reached, credits exhausted. Names another
+# Claude Code config directory (a separate subscription's login); the refused
+# run is retried once with CLAUDE_CONFIG_DIR pointed there. Limit refusals
+# ONLY: an auth or network failure would fail on the second account too, and
+# must surface as itself. Unset = fail exactly as before.
+CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
+# What a limit refusal looks like (case-insensitive ERE). A run that never
+# began outputs one line of the CLI's own refusal and nothing else; these are
+# the wordings observed live plus the session-limit variants. Shared by every
+# retry site and by job_output_blocked, so the two judgements can never drift.
+CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage}"
 PROJECT_DIR="${PROJECT_DIR:-$HOME}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/.local/share/deskcrab/archive}"
 CONVO_TIMEOUT="${CONVO_TIMEOUT:-300}"
@@ -1351,10 +1363,21 @@ ${PRIOR:-(none)}
 $(cat "$OLDFILE")"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    local SUMRC=0
     NEWSUM=$(cd "$PROJECT_DIR" && "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null)
+        --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
+    # In plain -p mode a limit refusal arrives as ordinary stdout, so gate on
+    # the exit code — an error line must never be written over the summary of
+    # real turns — and retry once on the fallback login like every other run.
+    if [ "$SUMRC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
+            && printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE"; then
+        SUMRC=0
+        NEWSUM=$(cd "$PROJECT_DIR" && CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
+            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
+    fi
 
-    if [ -n "$NEWSUM" ]; then
+    if [ "$SUMRC" -eq 0 ] && [ -n "$NEWSUM" ]; then
         printf '%s\n' "$NEWSUM" > "$SUMMARYFILE"
         { flock -w 60 9; _compact_drop "$LINES"; } 9>"$CONVOLOCK"
     fi
@@ -1963,6 +1986,17 @@ sys.exit(0 if err and not real else 1)
 PY
 }
 
+# Should the run that just wrote $DEBUGLOG be retried on the fallback login?
+# Yes only when all three hold: a fallback is configured, the stream shows the
+# CLI failing before any genuine model output (wake_stream_failed's shape),
+# and the failure text is a usage/session limit. An auth or network failure
+# fails the second account too and must surface as itself, not as a retry.
+claude_limit_fallback_due() {
+    [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] || return 1
+    wake_stream_failed || return 1
+    grep -qiE "$CLAUDE_LIMIT_RE" "$DEBUGLOG"
+}
+
 # What did the wake actually DO? A silent reply is the model's SPEECH
 # decision, not its work record — two wakes on 2026-08-06 each dispatched a
 # builder job and edited three files, chose silence as the prompt allows,
@@ -2024,6 +2058,53 @@ print("; ".join(parts))
 PY
 }
 
+# One CLI run for a wake, under the stall watchdog, APPENDING to $DEBUGLOG.
+# $1 is a CLAUDE_CONFIG_DIR override ("" = the primary login) — the fallback
+# retry runs through here too, so a hung fallback account is reaped exactly
+# like a hung primary. Reads SYSTEM_PROMPT / PROMPT_TEXT / CLAUDE_BIN from the
+# caller's scope (bash dynamic scoping, same as build_system_prompt); leaves
+# the CLI's exit status in WAKE_CLAUDE_STATUS.
+_wake_claude_run() {
+    local CONFDIR="$1"
+    (
+        cd "$PROJECT_DIR" || exit 1
+        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
+            --verbose --output-format stream-json \
+            --append-system-prompt "$SYSTEM_PROMPT" \
+            "$PROMPT_TEXT" >> "$DEBUGLOG" 2>&1
+    ) &
+    local CPID=$!
+    # Stall watchdog: no wall-clock limit — reap only a session that is BOTH
+    # silent and idle. The stream log gets nothing during a single long tool
+    # call (a compile delivers its output in one event at completion), so log
+    # freshness alone would kill genuine work; CPU burn across the process
+    # tree is the second life sign. A hung network call or a tool stuck on
+    # stdin sits at ~zero CPU, so real hangs are still caught.
+    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M
+    LAST_ACTIVE=$(date +%s)
+    PREV_CPU=$(_tree_cpu "$CPID")
+    while kill -0 "$CPID" 2>/dev/null; do
+        sleep 10
+        CUR_CPU=$(_tree_cpu "$CPID")
+        LOG_M=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || echo 0)
+        # Alive = new log output, or >=10 jiffies (~0.1 s) of CPU since last check
+        if [ "$LOG_M" -gt "$LAST_ACTIVE" ] || [ $((CUR_CPU - PREV_CPU)) -ge 10 ]; then
+            LAST_ACTIVE=$(date +%s)
+        fi
+        PREV_CPU=$CUR_CPU
+        if [ $(( $(date +%s) - LAST_ACTIVE )) -ge "$WAKE_STALL_TIMEOUT" ]; then
+            kill "$CPID" 2>/dev/null
+            sleep 2
+            kill -9 "$CPID" 2>/dev/null
+            break
+        fi
+    done
+    wait "$CPID" 2>/dev/null
+    WAKE_CLAUDE_STATUS=$?
+}
+
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
@@ -2060,42 +2141,17 @@ $TURN_CONTEXT"
 
     : > "$DEBUGLOG"
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    (
-        cd "$PROJECT_DIR" && exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
-            --verbose --output-format stream-json \
-            --append-system-prompt "$SYSTEM_PROMPT" \
-            "$PROMPT_TEXT" > "$DEBUGLOG" 2>&1
-    ) &
-    local CPID=$!
-    # Stall watchdog: no wall-clock limit — reap only a session that is BOTH
-    # silent and idle. The stream log gets nothing during a single long tool
-    # call (a compile delivers its output in one event at completion), so log
-    # freshness alone would kill genuine work; CPU burn across the process
-    # tree is the second life sign. A hung network call or a tool stuck on
-    # stdin sits at ~zero CPU, so real hangs are still caught.
-    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M
-    LAST_ACTIVE=$(date +%s)
-    PREV_CPU=$(_tree_cpu "$CPID")
-    while kill -0 "$CPID" 2>/dev/null; do
-        sleep 10
-        CUR_CPU=$(_tree_cpu "$CPID")
-        LOG_M=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || echo 0)
-        # Alive = new log output, or >=10 jiffies (~0.1 s) of CPU since last check
-        if [ "$LOG_M" -gt "$LAST_ACTIVE" ] || [ $((CUR_CPU - PREV_CPU)) -ge 10 ]; then
-            LAST_ACTIVE=$(date +%s)
-        fi
-        PREV_CPU=$CUR_CPU
-        if [ $(( $(date +%s) - LAST_ACTIVE )) -ge "$WAKE_STALL_TIMEOUT" ]; then
-            kill "$CPID" 2>/dev/null
-            sleep 2
-            kill -9 "$CPID" 2>/dev/null
-            break
-        fi
-    done
-    local CLAUDE_STATUS
-    wait "$CPID" 2>/dev/null
-    CLAUDE_STATUS=$?
+    _wake_claude_run ""
+    # The primary login refusing over a usage/session limit does not end the
+    # wake: run it again on the fallback account, still under the watchdog.
+    # The retry appends to the same stream log; a combined log reads correctly
+    # everywhere downstream — wake_stream_failed sees genuine output and stops
+    # calling the wake failed, and extract-response drops the refusal whenever
+    # a real reply follows it.
+    if claude_limit_fallback_due; then
+        _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
+    fi
+    local CLAUDE_STATUS="$WAKE_CLAUDE_STATUS"
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
     # A wake edits its own files freely (wants, conduct, the repo); declare
@@ -2267,6 +2323,8 @@ start_tts_streamer() {
         DESKCRAB_TTS_FIXES="${TTS_FIXES:-}" \
         DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
         DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
+        DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
+        DESKCRAB_CLAUDE_FALLBACK="$CLAUDE_FALLBACK_CONFIG_DIR" \
         "$LIB_DIR/tts-streamer" &
     _TTS_STREAMER_PID=$!
 }
@@ -2291,6 +2349,21 @@ claude_generate() {
         --verbose --output-format stream-json \
         --append-system-prompt "$SYSTEM_PROMPT" \
         "$TEXT" > "$DEBUGLOG" 2>&1
+
+    # The primary login refusing over a usage/session limit is not the end of
+    # the turn: run it again on the fallback account. APPEND to the stream log
+    # rather than truncating — a TTS streamer is mid-tail on this very file,
+    # and truncation strands its cursor past EOF. The streamer rides through
+    # the refusal (it knows the retry is coming) and extract-response drops
+    # the refusal whenever a genuine reply follows it in the same log.
+    if claude_limit_fallback_due; then
+        cd "$PROJECT_DIR" && CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
+            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
+            --verbose --output-format stream-json \
+            --append-system-prompt "$SYSTEM_PROMPT" \
+            "$TEXT" >> "$DEBUGLOG" 2>&1
+    fi
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally
     # ends its stream with a {"type":"result"} line, but if it crashed, was
@@ -2545,9 +2618,11 @@ run_claude_and_respond() {
 # work was attempted, there is nothing in the log to verify, and the standing
 # policy of dispatching a builder the moment work is noticed will keep firing
 # them into the same wall, one wasted wake per corpse. Signature match on the
-# CLI's own refusals; anything else is a real failure and stays one.
+# CLI's own refusals (the shared CLAUDE_LIMIT_RE, so the fallback-retry sites
+# and this judgement can never drift apart); anything else is a real failure
+# and stays one.
 job_output_blocked() {
-    grep -qiE "out of usage credits|usage limit reached|credit balance is too low|insufficient credit" -- "$1" 2>/dev/null
+    grep -qiE "$CLAUDE_LIMIT_RE" -- "$1" 2>/dev/null
 }
 
 # Record the block, with the line that proved it. One file, last block wins.

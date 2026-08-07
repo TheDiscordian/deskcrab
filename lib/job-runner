@@ -69,11 +69,27 @@ Hard rules:
   invent adjacent work to have something to show."
 
 cd "$WORKDIR" 2>/dev/null || cd "$HOME"
+# ATT_OFF marks where the current attempt's output begins: every judgement
+# below reads only the final attempt's slice of the log, so a first-attempt
+# refusal kept as history can never masquerade as the retry's outcome.
+ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 "$CLAUDE_BIN" -p --dangerously-skip-permissions \
     --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
     --append-system-prompt "$SYS" \
     "$TASK" >> "$LOG" 2>&1
 RC=$?
+# The primary login refusing over a usage/session limit is not a dead job:
+# run the build once more on the fallback account before declaring anything.
+if [ "$RC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
+        && tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -qiE "$CLAUDE_LIMIT_RE"; then
+    echo "job-runner: primary login refused (limit) — retrying once via CLAUDE_CONFIG_DIR=$CLAUDE_FALLBACK_CONFIG_DIR" >> "$LOG"
+    ATT_OFF=$(wc -c < "$LOG")
+    CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
+        --append-system-prompt "$SYS" \
+        "$TASK" >> "$LOG" 2>&1
+    RC=$?
+fi
 trap - TERM
 
 # Renewed: the status write, the day journal, and the completion wake below
@@ -89,9 +105,9 @@ STATE=finished
 # holding nothing but a refusal — and leaves the standing dispatch policy free
 # to send the next builder into the same wall.
 BLOCKED=""
-if [ "$RC" -ne 0 ] && job_output_blocked "$LOG"; then
+if [ "$RC" -ne 0 ] && tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -qiE "$CLAUDE_LIMIT_RE"; then
     STATE=blocked
-    BLOCKED="$(grep -ihoE "out of usage credits|usage limit reached|credit balance is too low|insufficient credit[a-z]*" -- "$LOG" | head -n1)"
+    BLOCKED="$(tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -ihoE "$CLAUDE_LIMIT_RE" | head -n1)"
     job_block_record "${BLOCKED:-the CLI refused to run}"
 fi
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
