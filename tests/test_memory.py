@@ -189,6 +189,85 @@ class TestRecallBlock(StoreCase):
                         .startswith("build finished"))
 
 
+class TestQueryBudget(StoreCase):
+    """The 2026-08-07 outage: a real wants shelf (paragraph-long bullets with
+    dated progress logs) plus a conversation tail composed a 19 k-char query,
+    ollama refused it with HTTP 400 'the input length exceeds the context
+    length', and every prompt build for a whole day carried only the pinned
+    tier while `crab memory search "test"` looked perfectly healthy."""
+
+    def _fat_files(self):
+        wants = os.path.join(self.dir, "wants.md")
+        convo = os.path.join(self.dir, "convo.txt")
+        with open(wants, "w") as f:
+            f.write("# shelf\n")
+            for i in range(30):
+                f.write(f"- want {i} " + ("history " * 400) + "\n")
+        with open(convo, "w") as f:
+            for i in range(200):
+                f.write(f"User: line {i} " + ("chatter " * 200) + "\n")
+        return wants, convo
+
+    def test_composed_query_stays_within_budget(self):
+        wants, convo = self._fat_files()
+        q = memory.recall_query("", wants, convo)
+        self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
+        self.assertIn("want 0", q)        # the shelf is still represented
+        self.assertIn("line 199", q)      # and so is the newest conversation
+
+    def test_reason_query_stays_within_budget(self):
+        _, convo = self._fat_files()
+        q = memory.recall_query("x" * 50000, None, convo)
+        self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
+
+    def test_no_empty_or_whitespace_segments(self):
+        wants = os.path.join(self.dir, "wants.md")
+        with open(wants, "w") as f:
+            f.write("- \n-  \t \n- a real want\n- \n")
+        q = memory.recall_query("", wants, None)
+        self.assertEqual(q, "a real want")
+        self.assertEqual(memory.recall_query("   \n \t ", None, None), "")
+
+    def test_segment_collapses_newlines(self):
+        self.assertEqual(memory._segment(" a\n\n b \t c \n"), "a b c")
+
+    def test_embed_clamps_and_shrinks_on_length_refusal(self):
+        """Nothing a caller hands embed() may cost the turn its memory: texts
+        are clamped, and a refusal naming the context length is retried
+        shorter rather than raised."""
+        sent = []
+
+        def fake_once(texts, prefix, timeout):
+            sent.append(len(texts[0]))
+            if len(texts[0]) > 3000:
+                raise memory.EmbedRejected(
+                    400, '{"error":"the input length exceeds the context length"}')
+            return [[0.0] * memory.EMBED_DIM for _ in texts]
+
+        old = memory._embed_once
+        memory._embed_once = fake_once
+        try:
+            out = memory.embed(["z" * 100000], query=True)
+        finally:
+            memory._embed_once = old
+        self.assertEqual(len(out[0]), memory.EMBED_DIM)
+        self.assertEqual(sent[0], memory.EMBED_CHAR_CAP)  # clamped first
+        self.assertLess(sent[-1], sent[0])                # then shrunk
+
+    def test_embed_raises_other_refusals_with_body(self):
+        def fake_once(texts, prefix, timeout):
+            raise memory.EmbedRejected(404, '{"error":"model not found"}')
+
+        old = memory._embed_once
+        memory._embed_once = fake_once
+        try:
+            with self.assertRaises(memory.EmbedRejected) as caught:
+                memory.embed(["hi"], query=True)
+        finally:
+            memory._embed_once = old
+        self.assertIn("model not found", str(caught.exception))
+
+
 class TestFailSafe(StoreCase):
     def test_embedder_down_degrades_to_pinned(self):
         self.store.insert("Nothing outward-facing while unattended.",

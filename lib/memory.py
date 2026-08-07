@@ -72,6 +72,30 @@ REINFORCE_MAX_BOOST = 2.0
 # header says so. Lowest-ranked notes drop first, directives only after.
 BLOCK_TOKEN_CAP = 800
 CHARS_PER_TOKEN = 4
+# What the EMBEDDER will take, which is a different and much smaller number
+# than what the prompt will take. nomic-embed-text's trained context is 2048
+# tokens (`ollama show nomic-embed-text`), and ollama answers anything longer
+# with HTTP 400 {"error":"the input length exceeds the context length"} — not
+# a truncation, a refusal. An unclamped composed recall query (12 wants
+# bullets, each a paragraph, plus 10 conversation lines) measured 19,471
+# chars ≈ 5k tokens, so EVERY prompt build 400ed and retrieval silently fell
+# back to the pinned tier while `crab memory search "test"` looked fine.
+# Measured on this store: 6,000 chars of that text embedded, 8,000 did not.
+# Budgets below sit well under it, and embed() shrink-retries anyway, because
+# chars-per-token is a guess (emoji and CJK blow past 4) and a query that is
+# merely long must never cost the turn its memory.
+EMBED_CHAR_CAP = 5600
+EMBED_SHRINK_TRIES = 3
+# Composed recall query: the whole thing, all segments together.
+RECALL_QUERY_CHARS = 4800
+# One wants bullet contributes its topic, not its whole history. These are
+# multi-paragraph entries with dated progress logs appended; the opening
+# clause is what makes them findable.
+WANTS_BULLET_CHARS = 240
+WANTS_BULLET_MAX = 12
+# When there is a conversation tail, the head (reason or wants) keeps this
+# share of the budget and the tail takes the rest.
+RECALL_HEAD_SHARE = 0.6
 # Confidence decay (design §3, run by the ingest pass per §5): a note neither
 # retrieved nor used in DECAY_STALE_DAYS loses DECAY_STEP confidence per pass
 # and retires below DECAY_RETIRE_FLOOR. Directives never decay.
@@ -130,17 +154,63 @@ def pack(vec):
     return struct.pack(f"{len(vec)}f", *vec)
 
 
-def embed(texts, query=False, timeout=30):
-    """Embed a list of texts via the local ollama daemon. nomic-embed-text
-    wants its task prefix: search_document at ingest, search_query at recall."""
-    prefix = "search_query: " if query else "search_document: "
+class EmbedRejected(RuntimeError):
+    """The daemon answered, and said no. Carries the response body."""
+
+    def __init__(self, code, body):
+        self.code = code
+        self.body = body
+        super().__init__(f"embedder rejected the request (HTTP {code})"
+                         + (f": {body}" if body else ""))
+
+    @property
+    def too_long(self):
+        return "context length" in self.body or "too long" in self.body
+
+
+def _embed_once(texts, prefix, timeout):
+    """One POST. An HTTPError's *body* is the only place the daemon says what
+    was actually wrong — urllib's str() is the generic 'HTTP Error 400: Bad
+    Request', which is what made a plain length refusal look like a dead
+    embedder for a whole day."""
     req = urllib.request.Request(
         EMBED_URL,
         data=json.dumps({"model": EMBED_MODEL,
                          "input": [prefix + t for t in texts]}).encode(),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        out = json.load(resp)["embeddings"]
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)["embeddings"]
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace").strip()
+        except Exception:
+            body = ""
+        raise EmbedRejected(e.code, body) from None
+
+
+def embed(texts, query=False, timeout=30):
+    """Embed a list of texts via the local ollama daemon. nomic-embed-text
+    wants its task prefix: search_document at ingest, search_query at recall.
+
+    Length is this call's job, not its callers'. Every text is clamped to
+    EMBED_CHAR_CAP, and a refusal that names the context length is retried
+    at half the length (EMBED_SHRINK_TRIES times) rather than raised: a
+    chars-per-token estimate is a guess, and no query is worth losing the
+    turn's whole memory over. Callers should still compose short queries —
+    this is the floor under them, not the plan."""
+    prefix = "search_query: " if query else "search_document: "
+    clamped = [(t or "")[:EMBED_CHAR_CAP] for t in texts]
+    cap = EMBED_CHAR_CAP
+    for attempt in range(EMBED_SHRINK_TRIES + 1):
+        try:
+            out = _embed_once(clamped, prefix, timeout)
+            break
+        except EmbedRejected as e:
+            if not e.too_long or attempt == EMBED_SHRINK_TRIES:
+                raise
+            cap = max(200, cap // 2)
+            clamped = [t[:cap] for t in clamped]
     if len(out) != len(texts) or any(len(v) != EMBED_DIM for v in out):
         raise RuntimeError(f"embedder returned wrong shape (model {EMBED_MODEL})")
     return out
@@ -388,21 +458,54 @@ class Store:
 
 # --- recall-block: the prompt-facing view -----------------------------------
 
-def recall_query(reason, wants_file, convo_file):
+def _segment(text, limit=None):
+    """One query segment: whitespace collapsed to single spaces (newlines and
+    blank runs are nothing but tokens here) and clamped. Empty in, empty out —
+    callers drop the empties rather than composing a query of blank lines."""
+    out = " ".join((text or "").split())
+    if limit is not None and len(out) > limit:
+        out = out[:limit].rstrip()
+    return out
+
+
+def recall_query(reason, wants_file, convo_file, budget=RECALL_QUERY_CHARS):
     """Query formation when nobody asked anything: the wake's reason if it has
-    one, else the wants shelf lines, plus the tail of the live conversation."""
-    parts = []
+    one, else the wants shelf lines, plus the tail of the live conversation.
+
+    Composed under a budget, because the embedder has a hard 2048-token
+    context and answers anything past it with a 400 rather than truncating —
+    the unclamped version of this function composed ~19 k chars and took
+    retrieval down to the pinned tier without a single failed command to show
+    for it. Each wants bullet contributes its opening clause only; the
+    conversation tail is kept from its END, since the most recent words are
+    what the turn is actually about."""
+    head = []
     if reason:
-        parts.append(reason)
+        head.append(_segment(reason, budget))
     elif wants_file and os.path.isfile(wants_file):
         with open(wants_file, errors="replace") as f:
-            bullets = [l.strip() for l in f if l.startswith("- ")]
-        parts.extend(bullets[:12])
+            head = [_segment(l[2:], WANTS_BULLET_CHARS)
+                    for l in f if l.startswith("- ")]
+        head = [b for b in head if b][:WANTS_BULLET_MAX]
+    head = [h for h in head if h]
+
+    tail = ""
     if convo_file and os.path.isfile(convo_file):
         with open(convo_file, errors="replace") as f:
-            tail = f.readlines()[-10:]
-        parts.append(" ".join(l.strip() for l in tail))
-    return "\n".join(p for p in parts if p).strip()
+            tail = _segment(" ".join(f.readlines()[-10:]))
+
+    parts, used = [], 0
+    head_cap = int(budget * RECALL_HEAD_SHARE) if tail else budget
+    for h in head:
+        if used + len(h) + 1 > head_cap:
+            break
+        parts.append(h)
+        used += len(h) + 1
+    if tail:
+        room = budget - used - 1
+        if room > 0:
+            parts.append(tail[-room:])
+    return "\n".join(parts).strip()
 
 
 def build_block(rows, warning=""):
