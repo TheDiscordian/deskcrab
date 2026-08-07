@@ -112,6 +112,55 @@ lacks_weak "a relative name that resolves to nothing is not invented" \
     "cd $T/data && cat nosuch.md"                      "$T/data/nosuch.md"
 lacks_weak "/dev is never declared"  "cat /dev/null"   "/dev/null"
 
+echo "== the harvest keeps its own evidence =="
+# A false alarm is only answerable if the stream that caused it survives the
+# next turn. notice_own_writes archives it and records what it declared; both
+# are forensics, so the test is that they EXIST and say the right thing, not
+# that they change any declaration.
+FT="$T/forensics"
+mkdir -p "$FT"
+: > "$FT/target.md"
+python3 - "$FT" > "$T/fstream.jsonl" <<'PY2'
+import json, sys
+print(json.dumps({"type": "assistant", "message": {"model": "m", "content": [
+    {"type": "tool_use", "name": "Write", "input": {"file_path": sys.argv[1] + "/target.md"}}]}}))
+PY2
+
+run_harvest() {
+    bash -c '
+      source "$1/lib/common.sh" >/dev/null 2>&1
+      DEBUGLOG="$2"
+      NOTICE_STATE_DIR="$3"; NOTICE_SUPPRESS="$3/sup"
+      NOTICE_STREAM_DIR="$3/streams"; NOTICE_DECLARED_LOG="$3/declared.log"
+      NOTICE_STREAM_KEEP="${4:-20}"
+      notice_own_writes' _ "$REPO_DIR" "$T/fstream.jsonl" "$FT" "${1:-20}"
+}
+
+run_harvest
+n=$(ls -1 "$FT/streams"/*.jsonl 2>/dev/null | wc -l)
+[ "$n" -eq 1 ] && ok "the turn's stream is archived" || fail "the turn's stream is archived" "$n"
+if grep -q "target.md" "$FT/streams"/*.jsonl 2>/dev/null; then
+    ok "the archived copy is the stream itself"
+else
+    fail "the archived copy is the stream itself" "$(ls "$FT/streams" 2>/dev/null)"
+fi
+if grep -q "strong=$FT/target.md	weak=$" "$FT/declared.log" 2>/dev/null; then
+    ok "the declared log names what was declared"
+else
+    fail "the declared log names what was declared" "$(cat "$FT/declared.log" 2>/dev/null)"
+fi
+if grep -q "$FT/target.md" "$FT/sup" 2>/dev/null; then
+    ok "forensics did not disturb the declaration itself"
+else
+    fail "forensics did not disturb the declaration itself" "$(cat "$FT/sup" 2>/dev/null)"
+fi
+
+# Rotation: the archive is scratch and must not grow without bound.
+for i in 1 2 3; do sleep 1; run_harvest 2; done
+n=$(ls -1 "$FT/streams"/*.jsonl 2>/dev/null | wc -l)
+[ "$n" -le 2 ] && ok "the archive is pruned to the keep count" \
+                || fail "the archive is pruned to the keep count" "$n"
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

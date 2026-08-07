@@ -137,6 +137,16 @@ NOTICE_STATE_DIR="${NOTICE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/desk
 NOTICE_SUPPRESS="${NOTICE_SUPPRESS:-$NOTICE_STATE_DIR/notice-self.suppress}"
 # How long a `crab touching` declaration lasts by default, seconds.
 TOUCH_WINDOW="${TOUCH_WINDOW:-900}"
+# Forensics for the watcher. $DEBUGLOG is ONE shared file, rewritten by the next
+# turn that starts, so by the time a false alarm reaches me the stream that
+# would explain it is already gone — twice now I have had to reason about a
+# missing declaration from the suppression records alone and stop at "cause
+# undetermined". These keep the last few turns' streams and a line per harvest
+# saying what was declared, so the next occurrence is answerable instead of
+# argued about.
+NOTICE_STREAM_DIR="${NOTICE_STREAM_DIR:-$NOTICE_STATE_DIR/streams}"
+NOTICE_STREAM_KEEP="${NOTICE_STREAM_KEEP:-20}"
+NOTICE_DECLARED_LOG="${NOTICE_DECLARED_LOG:-$NOTICE_STATE_DIR/notice-self.declared.log}"
 
 # The conversation archive must exist before the first stale conversation
 # tries to land in it. rotate_convo mkdirs too, but a missing directory should
@@ -541,10 +551,36 @@ for p in seen:
 PY
 }
 
+# Keep this turn's raw stream, and a one-line record of what the harvest above
+# made of it. Both are pure forensics — nothing reads them but me, after a
+# false alarm, and neither can change what gets declared. The point is that a
+# missing declaration should be answerable ("the stream never named it" vs "it
+# named it and the record was lost"), which the shared, self-overwriting
+# $DEBUGLOG makes impossible on its own.
+archive_turn_stream() {
+    [ -s "$DEBUGLOG" ] || return 0
+    mkdir -p "$NOTICE_STREAM_DIR" 2>/dev/null || return 0
+    cp -f -- "$DEBUGLOG" "$NOTICE_STREAM_DIR/$(date +%s)-$$.jsonl" 2>/dev/null
+    # Newest first; anything past the keep count goes. Deleting my own scratch
+    # copies, not any file that constitutes me.
+    local f n=0
+    for f in $(ls -1t "$NOTICE_STREAM_DIR"/*.jsonl 2>/dev/null); do
+        n=$((n + 1))
+        [ "$n" -gt "$NOTICE_STREAM_KEEP" ] && rm -f -- "$f"
+    done
+    return 0
+}
+
 notice_own_writes() {
     local files weak
     files="$(stream_written_files)"
     weak="$(stream_mentioned_files)"
+    archive_turn_stream
+    {
+        printf '%s\tpid=%s\tstrong=%s\tweak=%s\n' "$(date '+%F %T')" "$$" \
+            "$(printf '%s' "$files" | tr '\n' ',')" \
+            "$(printf '%s' "$weak" | tr '\n' ',')"
+    } >> "$NOTICE_DECLARED_LOG" 2>/dev/null
     local IFS=$'\n'
     # shellcheck disable=SC2086 — newline-split on purpose, paths may hold spaces
     [ -n "$files" ] && touch_suppress $files
