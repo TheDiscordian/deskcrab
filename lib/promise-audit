@@ -79,7 +79,7 @@ Example — Beatrice says \"I want to learn to read sheet music, and my TTS mang
 UNSAVED: learn to read sheet music properly, and fix the TTS mangling of 'drattit'
 
 === EVERY WANT CURRENTLY IN HER FILE (headlines only — this list is complete) ===
-$(grep -E '^- \*\*' "$WANTS_FILE")
+$(wants_titles "$WANTS_FILE")
 
 === THE EXCHANGE ===
 $EXCHANGE"

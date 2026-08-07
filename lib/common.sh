@@ -1528,6 +1528,21 @@ _compact_drop() {
     rm -f "$NEWFILE"
 }
 
+# The titles on the wants shelf, one per line — the ONE reading of that file's
+# bullet list, because there were two and they drifted. The prompt's grep was
+# made emoji-tolerant on 2026-08-07; lib/promise-audit's copy (`grep -E
+# '^- \*\*'`) was never updated, and every live want is written `- 🎼 **Title**`,
+# so the auditor's list matched ZERO of eleven. It is handed that list under the
+# words "this list is complete" and told to err on the side of flagging, so an
+# empty list makes everything she has already written down look unrecorded:
+# 172 UNSAVED verdicts in 309 audits, one event wake booked for each — the wake
+# storm. One grep, one function, both callers.
+wants_titles() { # [<wants file>]
+    local f="${1:-${WANTS_FILE:-}}"
+    [ -n "$f" ] && [ -s "$f" ] || return 0
+    grep -oP '^- \*\*.*?\*\*|^- [^ ]+ \*\*.*?\*\*' "$f" 2>/dev/null || true
+}
+
 # Build the system prompt with dynamic date/time and optional custom context
 build_system_prompt() {
     local CONVO_CONTEXT CUSTOM_CONTEXT CONTEXT_CONTENT
@@ -1577,7 +1592,7 @@ Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/a
         # reading by choice: open the file when a want is actually the work.
         local WANTS_BODY="(empty — nothing recorded yet)"
         if [ -s "$WANTS_FILE" ]; then
-            WANTS_BODY="$(grep -oP '^- \*\*.*?\*\*|^- [^ ]+ \*\*.*?\*\*' "$WANTS_FILE" 2>/dev/null)"
+            WANTS_BODY="$(wants_titles "$WANTS_FILE")"
             [ -n "$WANTS_BODY" ] || WANTS_BODY="(titles unreadable — open the file)"
         fi
         WANTS_CONTEXT="
