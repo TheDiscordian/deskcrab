@@ -21,8 +21,11 @@ fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
 
 # Every case runs in a scratch instance: its own JOBS_DIR and state prefix, so
 # nothing here can touch the live jobs directory or the live block marker.
+# No case in this file wants a real builder, so the guard belongs here rather
+# than on the two lines that happen to reach dispatch today — a preflight that
+# regresses must fail the assertion, not start a session on my account.
 run() { # <shell body>
-    JOBS_DIR="$T/jobs" DESKCRAB_STATE_PREFIX="$T/state" \
+    JOBS_DIR="$T/jobs" DESKCRAB_STATE_PREFIX="$T/state" DESKCRAB_NO_DISPATCH=1 \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
         _ "$REPO_DIR" "$*" 2>&1
 }
@@ -73,16 +76,19 @@ out="$(run 'job_block_record "out of usage credits"; job_start "build a thing" 2
 case "$out" in *"never began"*) ok "refusal says the last job never began" ;;
     *) fail "refusal must explain itself" "$out" ;; esac
 
-# -f must reach dispatch. It is allowed to fail there (no systemd in a test
-# shell, stub claude) — what matters is that it got past the preflight.
+# -f must reach dispatch — and reaching dispatch is ALL these two may prove.
+# The first version of them let job_start run to the end, and on a box that has
+# a systemd user manager and a real claude (which is to say: this one) that
+# started two live builders on my own account. DESKCRAB_NO_DISPATCH stops at
+# the line the assertion is actually about.
 out="$(run 'job_block_record "out of usage credits"; job_start -f "build a thing" 2>&1 | head -n1')"
-case "$out" in *"never began"*) fail "-f must bypass the preflight" "$out" ;;
-    *) ok "-f bypasses the preflight" ;; esac
+case "$out" in *"Would dispatch"*) ok "-f bypasses the preflight" ;;
+    *) fail "-f must bypass the preflight" "$out" ;; esac
 
 # -C must still work, before and after -f, now that the flags are a loop.
 out="$(run 'job_block_record "x"; job_start -C /tmp -f "w" 2>&1 | head -n1')"
-case "$out" in *"never began"*) fail "-C -f should reach dispatch" "$out" ;;
-    *) ok "-C composes with -f" ;; esac
+case "$out" in *"Would dispatch (DESKCRAB_NO_DISPATCH set) in /tmp:"*) ok "-C composes with -f" ;;
+    *) fail "-C -f should reach dispatch, in the given workdir" "$out" ;; esac
 
 echo "report — a blocked job does not read as a failed build:"
 mkdir -p "$T/rep"

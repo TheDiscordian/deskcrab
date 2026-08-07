@@ -1989,6 +1989,15 @@ job_start() {
         echo "  Do the work by hand, or force it with: crab job -f <description>"
         return 1
     fi
+    # A test may only ever prove that the preflight let it through. Past this
+    # line is a real systemd unit running a real claude session on a real
+    # account, and on 2026-08-07 two of them started from tests/test_job_block.sh
+    # — one of which fired a completion wake at me, seven hours later, about a
+    # job whose scratch log had long since been deleted.
+    if [ -n "${DESKCRAB_NO_DISPATCH:-}" ]; then
+        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task"
+        return 0
+    fi
     local id unit
     # Timestamp + pid, like wake-at units: two dispatches in the same second
     # must not collide on the id or the unit name.
