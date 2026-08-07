@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | status | shutup | job <desc> | jobs | wake | wake-at <when> | serve | remote <text> | <text>
+# Usage: crab start | stop | status | shutup | job <desc> | jobs | memory <verb> | wake | wake-at <when> | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -266,6 +266,15 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # durable record under the /tmp sessions log, so it survives reboots.
         "$SCRIPT_DIR/lib/day-journal" show "$DAY_JOURNAL_DIR" "${2:-}"
         exit $?
+        ;;
+
+    memory)
+        # Long-term vector memory (lib/memory.py, design-memory-store.md):
+        # add / search / list / dump / forget / ingest / recall-block.
+        # Exported so the python side sees config knobs from deskcrab.conf.
+        shift
+        export MEMORY_INGEST_MODEL MEMORY_EMBED_MODEL MEMORY_EMBED_URL 2>/dev/null
+        exec "$SCRIPT_DIR/lib/memory.py" "$@"
         ;;
 
     wake-at)

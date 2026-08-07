@@ -13,6 +13,7 @@ A push-to-talk desktop assistant for Linux powered by [Claude Code](https://docs
 - **Text mode** — skip voice and type directly with `crab how's the weather?`
 - **Fully configurable** — custom prompts, whisper fixes, context files, model selection
 - **Remote client** — `crab serve` puts an installable web app in front of the same assistant, so a phone can talk to it while the CLI, tools, and conversation stay on the laptop
+- **Long-term memory** — `crab memory` keeps a local vector store (sqlite-vec + ollama embeddings) of standing rules and learned facts, retrieved into the prompt instead of injected forever
 - **Debug viewer** for watching Crab's tool calls and reasoning in real-time
 
 ## Dependencies
@@ -205,6 +206,24 @@ systemctl --user enable --now deskcrab-notice-transcriptions.path
 It watches `~/Documents/Transcriptions` (edit the unit for another path), seeds its state silently on first run so an existing backlog never triggers a wake, and defers while a [Parley](https://github.com/devdocsorg/parley) recording is still writing, so it reads a finished transcript rather than half of one. Write your own emitter by pointing `lib/notice-newfiles <name> <dir> <phrase>` at any directory worth watching.
 
 These units are deliberately not enabled by installation. Turning one on changes how the machine behaves towards you, unprompted — that should be a decision you make, not a default you inherit.
+
+## Long-term memory
+
+`crab memory` gives the assistant a durable, local memory: a [sqlite-vec](https://github.com/asg017/sqlite-vec) store of short records embedded with `nomic-embed-text` on a local [ollama](https://ollama.com) daemon. Nothing leaves the machine. Records come in two kinds — a `directive` is something you told the assistant (a standing rule; never decayed, only superseded when you change your mind), a `note` is something it learned on its own.
+
+```bash
+crab memory add --kind directive "Stay silent during meetings: no speech, no windows."
+crab memory add "The transcript watcher sanitises filenames — ls the directory instead."
+crab memory search "what should I do during a meeting"
+crab memory list            # active records; --all includes superseded/retired
+crab memory dump            # the whole store as readable text
+crab memory forget 12       # retire a record by id
+crab memory ingest          # distil new journal turns + transcripts into records
+```
+
+Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short "What you remember" block: a wake queries by its reason, an idle wake by the wants shelf and conversation tail. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
+
+`crab memory ingest` reads what is new in the day journal and the transcriptions directory (tracked by a cursor file), asks a cheap Claude session what actually earns a permanent record, and writes the survivors through a dedup pass: a near-identical record just refreshes the existing one, and a conflicting one supersedes it — the newer voice wins, the older stays readable in `--all`.
 
 ## Remote client (phone)
 

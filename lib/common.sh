@@ -763,6 +763,23 @@ $WANTS_BODY
 You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when>' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"'). A background timer may also wake you at random intervals."
     fi
 
+    # Long-term memory (lib/memory.py, design-memory-store.md), behind the
+    # MEMORY_STORE knob. The query is the wake's reason when it has one,
+    # otherwise the wants shelf plus the conversation tail. Fail-safe by
+    # contract: recall-block prints nothing (exit 0) on an empty store and
+    # degrades to the pinned tier when the embedder is down — a broken memory
+    # must never break a prompt build.
+    local MEMORY_CONTEXT=""
+    if [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ]; then
+        MEMORY_CONTEXT="$("$LIB_DIR/memory.py" recall-block \
+            --reason "${WAKE_REASON:-}" \
+            --wants "${WANTS_FILE:-}" \
+            --convo "$CONVOFILE" 2>/dev/null)"
+        [ -n "$MEMORY_CONTEXT" ] && MEMORY_CONTEXT="
+$MEMORY_CONTEXT
+"
+    fi
+
     local SELF_STATE
     SELF_STATE="
 CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
@@ -789,7 +806,7 @@ FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they a
 - Pexels CDN: if you know a photo ID, use https://images.pexels.com/photos/PHOTO_ID/pexels-photo-PHOTO_ID.jpeg?auto=compress&cs=tinysrgb&w=800 (no API key needed). Find photo IDs via WebSearch for 'site:pexels.com QUERY'.
 - These sources are fast, reliable, and free. Always try them first.
 $SELF_STATE
-$WANTS_CONTEXT$CUSTOM_CONTEXT$WEATHER_CONTEXT
+$MEMORY_CONTEXT$WANTS_CONTEXT$CUSTOM_CONTEXT$WEATHER_CONTEXT
 $CONTEXT_CONTENT$CONVO_CONTEXT
 PROMPT
 }
