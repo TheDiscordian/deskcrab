@@ -110,7 +110,10 @@ snapshot() {
         fi
         local IFS=':'
         for d in $SELF_WATCH_EXTRA; do
+            # A plain file counts too — a single context file is as much a part
+            # of her as a directory of them.
             [ -d "$d" ] && find "$d" -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+            [ -f "$d" ] && stat --printf '%s.%Y\t%n\n' "$d" 2>/dev/null
         done
     } | sort -t "$TAB" -k2
 }
