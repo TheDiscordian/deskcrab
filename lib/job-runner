@@ -40,6 +40,12 @@ trap '"$LIB_DIR/job-status" set "$STATUS" state=stopped finished=now; day_journa
 
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 
+# A builder writes freely in its workdir and this runner writes the job log —
+# declare both for the self-change watcher, for as long as a job may run, so
+# a build in her own repo never reads as an intruder's hand. Renewed after the
+# run to cover the report and any trailing writes.
+touch_suppress -w "${JOB_TOUCH_WINDOW:-14400}" "$WORKDIR" "$JOBS_DIR" 2>/dev/null
+
 # A builder, not a persona. It reports back to the assistant, and it is told
 # plainly that unproven work must be reported as unproven — the failure this
 # whole mechanism exists to end is a confident "done" behind which nothing ran.
@@ -69,6 +75,11 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
     "$TASK" >> "$LOG" 2>&1
 RC=$?
 trap - TERM
+
+# Renewed: the status write, the day journal, and the completion wake below
+# all still touch her files after a run that may have outlived the first
+# declaration's window.
+touch_suppress -w 900 "$WORKDIR" "$JOBS_DIR" 2>/dev/null
 
 SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
 STATE=finished

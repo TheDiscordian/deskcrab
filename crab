@@ -90,6 +90,15 @@ case "${1:-}" in
         exit 0
         ;;
 
+    touching)
+        # Declare files this hand is writing (or just wrote, or is about to
+        # delete), so the self-change watcher reads the churn as her own and
+        # never wakes her about it. Windowed; a directory covers its subtree.
+        shift
+        touch_suppress "$@" && echo "Noted — those paths read as your own hand for a while."
+        exit $?
+        ;;
+
     checkpoint)
         # Durable mid-turn trace: intent, files touched, done, next. Append-only,
         # so a hard kill leaves the last checkpoint intact for the next hand.
@@ -347,7 +356,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|notify <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
         fi
         stop_tts

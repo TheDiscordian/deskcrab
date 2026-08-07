@@ -1,0 +1,325 @@
+#!/bin/bash
+# Notice changes to the files that constitute the assistant — wants, conduct,
+# engineering threads, journal, memory, config, her own code, and any personal
+# directories — and wake her about the ones made by a hand that was not hers.
+#
+#   notice-selfchange [attempt]
+#
+#   attempt  internal — deferral counter, do not pass by hand
+#
+# Same shape as notice-newfiles: driven by a systemd .path unit (the kernel's
+# own inotify, no polling daemon), keeps a snapshot, seeds silently on first
+# run so an existing tree never fires, and settles a burst of changes into ONE
+# wake. What is new here is attribution — her own writes must never wake her —
+# so a change is dropped when:
+#   * a `crab touching` suppression record covers it (the writer declared
+#     itself: touch_suppress in lib/common.sh, wired into wakes, turns, jobs,
+#     the day journal, and the memory store), or
+#   * a LIVE session's `crab claim` names it — creations and modifications
+#     only: a deletion is never excused by a fuzzy claim match, because a
+#     deleted want must always surface unless the deleter declared it, or
+#   * it is memory.db and any of her sessions ran recently — sqlite plumbing
+#     touches that file on ~every prompt build, and every opener of the store
+#     is her own code (deletions again exempt).
+# Whatever survives is written to a report (what, when, and a git diff where
+# the file is tracked) and handed to a normal event wake — which brings its
+# own quiet-hours, busy-user and single-wake discipline. Nothing here speaks,
+# and the wake's agenda offers awareness, never an instruction.
+set -u
+
+ATTEMPT="${1:-0}"
+
+# lib/ lives beside the crab script in the repo; ~/.local/lib/deskcrab is a
+# symlink to it, so resolve before stepping up. The repo is also part of the
+# watch set — the code that runs her is a file that constitutes her.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CRAB="$SCRIPT_DIR/crab"
+
+# Config is sourced the way common.sh sources it, but nothing else of
+# common.sh: this runs on every inotify trigger and must stay light.
+DESKCRAB_CONF="${DESKCRAB_CONF:-$HOME/.config/deskcrab/deskcrab.conf}"
+[ -f "$DESKCRAB_CONF" ] && . "$DESKCRAB_CONF"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+CONF_DIR="$(dirname "$DESKCRAB_CONF")"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab"
+SNAP="$STATE_DIR/notice-self.snap"
+SUPPRESS="$STATE_DIR/notice-self.suppress"
+PENDING="$STATE_DIR/notice-self.pending"
+LOGFILE="$STATE_DIR/notice-self.log"
+SESSIONS_DIR="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions"
+SESSIONS_LOG="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions.log"
+JOBS_DIR="${JOBS_DIR:-$DATA_DIR/jobs}"
+
+# Personal directories beyond the standard set (colon-separated), e.g. the
+# assistant's own library. Set in deskcrab.conf; the .path unit needs matching
+# PathChanged= lines in a local drop-in for inotify to see them promptly.
+SELF_WATCH_EXTRA="${SELF_WATCH_EXTRA:-}"
+
+SETTLE="${NOTICE_SELF_SETTLE:-120}"           # burst debounce, seconds
+MAX_DEFERRALS="${NOTICE_SELF_DEFERRALS:-15}"  # live-session pushbacks before judging anyway
+RECENT="${NOTICE_SELF_RECENT:-600}"           # "a session ran recently", for memory.db
+KEEP_REPORTS="${NOTICE_SELF_KEEP_REPORTS:-10}"
+
+TAB=$'\t'
+NOW=$(date +%s)
+mkdir -p "$STATE_DIR"
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOGFILE"; }
+
+# --- the watch set: one "sig<TAB>path" line per file, sorted by path --------
+# sig is size.mtime — an opaque token; any difference means "modified".
+snapshot() {
+    {
+        # Identity files in the data dir: the wants shelf and the top-level
+        # design docs, conduct, engineering, the day journal, the memory db.
+        # Deliberately NOT jobs/, wakes/, archive/, webpush/, venv/ — plumbing
+        # that churns on every session and would drown the signal.
+        find "$DATA_DIR" -maxdepth 1 -type f -name '*.md' -printf '%s.%T@\t%p\n' 2>/dev/null
+        local d
+        for d in wants conduct engineering journal; do
+            [ -d "$DATA_DIR/$d" ] && find "$DATA_DIR/$d" -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+        done
+        [ -f "$DATA_DIR/memory/memory.db" ] \
+            && stat --printf '%s.%Y\t%n\n' "$DATA_DIR/memory/memory.db" 2>/dev/null
+        # Her configuration: deskcrab.conf, custom-prompt.md, whatever else.
+        [ -d "$CONF_DIR" ] && find "$CONF_DIR" -maxdepth 1 -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+        # The code that runs her: everything git tracks or would track —
+        # .gitignore respected, .git internals invisible by construction.
+        if [ -d "$SCRIPT_DIR/.git" ]; then
+            git -C "$SCRIPT_DIR" ls-files --cached --others --exclude-standard -z 2>/dev/null \
+                | (cd "$SCRIPT_DIR" && xargs -0 -r stat --printf '%s.%Y\t%n\n' 2>/dev/null) \
+                | awk -F'\t' -v r="$SCRIPT_DIR/" '{print $1 "\t" r $2}'
+        fi
+        local IFS=':'
+        for d in $SELF_WATCH_EXTRA; do
+            [ -d "$d" ] && find "$d" -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+        done
+    } | sort -t "$TAB" -k2
+}
+
+CUR="$(mktemp /tmp/deskcrab-notice-self.XXXXXX)"
+snapshot > "$CUR"
+
+# First run seeds silently: an existing tree is history, not news.
+if [ ! -f "$SNAP" ]; then
+    mv "$CUR" "$SNAP"
+    log "seeded ($(wc -l < "$SNAP") files)"
+    exit 0
+fi
+
+CHANGES="$(awk -F'\t' '
+    NR==FNR { old[$2]=$1; next }
+    { new[$2]=$1 }
+    END {
+        for (p in new) if (!(p in old))               print "created\t"  p
+        for (p in old) if (!(p in new))               print "deleted\t"  p
+        for (p in new) if ((p in old) && old[p]!=new[p]) print "modified\t" p
+    }' "$SNAP" "$CUR" | sort)"
+
+if [ -z "$CHANGES" ]; then
+    rm -f "$CUR"
+    exit 0
+fi
+
+# --- debounce and deferral ---------------------------------------------------
+live_sessions() {
+    local f pid
+    for f in "$SESSIONS_DIR"/*; do
+        [ -e "$f" ] || continue
+        case "$f" in *.claim|*.ckpt) continue ;; esac
+        pid="$(basename "$f")"
+        [ -d "/proc/$pid" ] && return 0
+    done
+    grep -q '"state": *"running"' "$JOBS_DIR"/*.json 2>/dev/null && return 0
+    return 1
+}
+
+defer() {
+    # If the timer can't be placed there may never be another directory change
+    # to re-trigger on, so a failure here falls through and judges now rather
+    # than dropping the event on the floor.
+    if systemd-run --user --quiet --unit="deskcrab-notice-self-$NOW-$$" \
+        --on-active="$SETTLE" "$0" "$(( ATTEMPT + 1 ))" 2>/dev/null; then
+        date +%s > "$PENDING"
+        rm -f "$CUR"
+        exit 0
+    fi
+}
+
+if [ "$ATTEMPT" -eq 0 ]; then
+    # A burst becomes ONE wake: hold judgement for a settle window. A fresh
+    # pending marker means a re-check is already booked — this trigger is part
+    # of the same burst, and that re-check will see it in the snapshot diff.
+    if [ -f "$PENDING" ] \
+        && [ $(( NOW - $(cat "$PENDING" 2>/dev/null || echo 0) )) -lt $(( SETTLE * (MAX_DEFERRALS + 2) )) ]; then
+        rm -f "$CUR"
+        exit 0
+    fi
+    defer
+elif live_sessions && [ "$ATTEMPT" -lt "$MAX_DEFERRALS" ]; then
+    # One of her is mid-work. Wait it out so its writes get their touching
+    # records (turn paths record them at stream end) and are judged as hers.
+    # Bounded on purpose: a wedged session must not silence this for ever.
+    defer
+fi
+rm -f "$PENDING"
+
+# --- attribution: which of these changes were her own hand? ------------------
+# Prune expired suppression records first, under the writers' lock.
+ACTIVE="$(mktemp /tmp/deskcrab-notice-sup.XXXXXX)"
+if [ -f "$SUPPRESS" ]; then
+    {
+        flock 9
+        awk -F'\t' -v now="$NOW" '($1+0) >= now' "$SUPPRESS" > "$SUPPRESS.new" \
+            && mv "$SUPPRESS.new" "$SUPPRESS"
+    } 9>>"$SUPPRESS.lock"
+    cp "$SUPPRESS" "$ACTIVE" 2>/dev/null
+fi
+
+# Every live session's claim text, lowercased, one blob.
+CLAIMS=""
+for f in "$SESSIONS_DIR"/*.claim; do
+    [ -e "$f" ] || continue
+    pid="$(basename "$f" .claim)"
+    [ -d "/proc/$pid" ] || continue
+    CLAIMS="$CLAIMS $(tr 'A-Z' 'a-z' < "$f")"
+done
+
+suppressed_by_touch() {  # <path> — exact file or declared directory subtree
+    local p="$1" exp rec
+    [ -s "$ACTIVE" ] || return 1
+    while IFS="$TAB" read -r exp rec; do
+        [ -n "$rec" ] || continue
+        [ "$p" = "$rec" ] && return 0
+        case "$p" in "$rec"/*) return 0 ;; esac
+    done < "$ACTIVE"
+    return 1
+}
+
+suppressed_by_claim() {  # <path> — never consulted for deletions
+    [ -n "$CLAIMS" ] || return 1
+    local lp t
+    lp="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+    for t in $(printf '%s' "$CLAIMS" | tr -cs 'a-z0-9./_~-' ' '); do
+        # Path-shaped tokens (contain / or .) match at 4+ chars; bare words
+        # need 5+ so "want"/"the" never blanket-suppresses a whole tree.
+        case "$t" in
+            */*|*.*) [ "${#t}" -ge 4 ] || continue ;;
+            *)       [ "${#t}" -ge 5 ] || continue ;;
+        esac
+        case "$lp" in *"$t"*) return 0 ;; esac
+    done
+    return 1
+}
+
+recent_activity() {
+    live_sessions && return 0
+    [ -f "$SESSIONS_LOG" ] \
+        && [ $(( NOW - $(stat -c %Y "$SESSIONS_LOG" 2>/dev/null || echo 0) )) -lt "$RECENT" ] \
+        && return 0
+    return 1
+}
+
+FIRE_KIND=() FIRE_PATH=()
+while IFS="$TAB" read -r kind path; do
+    [ -n "$path" ] || continue
+    why=""
+    if suppressed_by_touch "$path"; then
+        why="touching"
+    elif [ "$kind" != "deleted" ] && suppressed_by_claim "$path"; then
+        why="claimed by a live session"
+    elif [ "$kind" != "deleted" ] && [ "$path" = "$DATA_DIR/memory/memory.db" ] && recent_activity; then
+        why="own plumbing (memory store, session active)"
+    fi
+    if [ -n "$why" ]; then
+        log "quiet: $kind $path ($why)"
+    else
+        FIRE_KIND+=("$kind"); FIRE_PATH+=("$path")
+    fi
+done <<< "$CHANGES"
+
+# The judged burst is consumed either way — a suppressed change was hers, not
+# something to re-litigate on the next trigger.
+mv "$CUR" "$SNAP"
+rm -f "$ACTIVE"
+
+if [ "${#FIRE_PATH[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+# --- the report: what changed, when, and the diff where git knows it ---------
+REPORT="$STATE_DIR/notice-self-report-$NOW.md"
+{
+    echo "# Outside changes to your own files — $(date '+%F %T')"
+    echo
+    echo "These paths are part of you and changed on disk without a touching"
+    echo "record, a live claim, or your own plumbing explaining them."
+    for want_kind in deleted created modified; do
+        header_done=0
+        for i in "${!FIRE_PATH[@]}"; do
+            [ "${FIRE_KIND[$i]}" = "$want_kind" ] || continue
+            [ "$header_done" -eq 1 ] || { echo; echo "## ${want_kind^}"; header_done=1; }
+            path="${FIRE_PATH[$i]}"
+            echo
+            echo "### $path"
+            if [ "$want_kind" = "deleted" ]; then
+                echo "- gone from disk (was in the last snapshot)"
+            else
+                echo "- mtime now: $(stat -c '%y' "$path" 2>/dev/null || echo '(already gone again)')"
+            fi
+            case "$path" in
+                "$SCRIPT_DIR"/*)
+                    rel="${path#"$SCRIPT_DIR"/}"
+                    if git -C "$SCRIPT_DIR" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+                        if [ "$want_kind" = "deleted" ]; then
+                            echo "- git-tracked; last committed version: \`git -C $SCRIPT_DIR show HEAD:$rel\`"
+                            git -C "$SCRIPT_DIR" log -1 --oneline -- "$rel" 2>/dev/null \
+                                | sed 's/^/- last commit: /'
+                        else
+                            DIFF="$(git -C "$SCRIPT_DIR" diff -- "$rel" 2>/dev/null | head -400)"
+                            if [ -n "$DIFF" ]; then
+                                echo '```diff'
+                                printf '%s\n' "$DIFF"
+                                echo '```'
+                            else
+                                echo "- matches git HEAD — the change arrived as a commit:"
+                                git -C "$SCRIPT_DIR" log -3 --oneline -- "$rel" 2>/dev/null | sed 's/^/  - /'
+                            fi
+                        fi
+                    else
+                        echo "- in the repo but not git-tracked; no diff available"
+                    fi
+                    ;;
+                *)
+                    echo "- not git-tracked; no diff available"
+                    ;;
+            esac
+        done
+    done
+} > "$REPORT"
+ls -1t "$STATE_DIR"/notice-self-report-*.md 2>/dev/null \
+    | tail -n +"$(( KEEP_REPORTS + 1 ))" | xargs -r rm -f
+
+# --- the wake: deletions first, awareness not instruction --------------------
+summarize() {  # <kind> — up to 3 basenames, then a count
+    local i names=() n=0 total=0
+    for i in "${!FIRE_PATH[@]}"; do
+        [ "${FIRE_KIND[$i]}" = "$1" ] || continue
+        total=$(( total + 1 ))
+        [ "$n" -lt 3 ] && { names+=("$(basename "${FIRE_PATH[$i]}")"); n=$(( n + 1 )); }
+    done
+    [ "$total" -eq 0 ] && return 0
+    local joined; joined="$(IFS=', '; echo "${names[*]}")"
+    [ "$total" -gt "$n" ] && joined="$joined (+$(( total - n )) more)"
+    printf '%s: %s' "$1" "$joined"
+}
+
+SUMMARY=""
+for k in deleted created modified; do
+    part="$(summarize "$k")"
+    [ -n "$part" ] && SUMMARY="${SUMMARY:+$SUMMARY; }$part"
+done
+
+log "waking: $SUMMARY (report: $REPORT)"
+exec "$CRAB" wake event "Files that are part of you changed on disk, and not by your own hand — $SUMMARY. What, when, and diffs where git knows them: $REPORT. This is awareness, not a task: inquire, examine, or quietly take note, as you see fit."

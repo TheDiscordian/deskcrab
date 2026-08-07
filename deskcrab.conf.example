@@ -122,6 +122,22 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # MEMORY_JUDGE=1                 # set 0 to disable the turn-end judge
 # MEMORY_JUDGE_MODEL="opus"      # judging use is taste — same tier as the sift
 
+# Optional: self-change awareness (lib/notice-selfchange, driven by
+# systemd/deskcrab-notice-selfchange.path). Wakes the assistant when files
+# that constitute her — wants, conduct, engineering, journal, memory, config,
+# the deskcrab repo — change by a hand that was not hers. Enable with:
+#   systemctl --user enable --now deskcrab-notice-selfchange.path
+# Her own writers declare themselves via `crab touching <paths>` (wired into
+# turns, wakes, jobs, the journal, and the memory store automatically).
+# TOUCH_WINDOW=900            # seconds a `crab touching` declaration lasts
+# NOTICE_SELF_SETTLE=120      # seconds a burst settles before ONE wake fires
+# NOTICE_SELF_DEFERRALS=15    # live-session pushbacks before judging anyway
+# NOTICE_SELF_RECENT=600      # "a session ran recently", for memory.db churn
+# Personal directories to watch beyond the standard set (colon-separated).
+# Give each one a PathChanged= line in a local drop-in of the .path unit too:
+#   systemctl --user edit deskcrab-notice-selfchange.path
+# SELF_WATCH_EXTRA="$HOME/SomewhereElse/Library"
+
 # Optional: assistant persona name (default: Crab)
 # The name the assistant sees in its system prompt: "You are <name>, a desktop
 # voice assistant...". Set this to rename the assistant (e.g. "Beatrice",

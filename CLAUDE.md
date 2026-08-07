@@ -11,9 +11,11 @@ A push-to-talk desktop assistant for Linux powered by Claude Code. The assistant
 - `lib/webapp/` — the phone client: one HTML page, a manifest, a service worker (network-only fetches + the Web Push notification handler)
 - `lib/webpush.py` — Web Push: RFC 8291 encryption, RFC 8292 VAPID, key/subscription store, sender (`crab notify`)
 - `lib/notice-newfiles` — event emitter: turns files arriving in a watched directory into an event wake
+- `lib/notice-selfchange` — event emitter: wakes the assistant when files that constitute her change by a hand that was not hers
 - `lib/job-runner` — detached job worker: one headless claude build session owned by systemd, not by the turn that asked for it
 - `lib/job-status` — JSON status sidecars for detached jobs (new/set/get/report; report also reaps hard-killed jobs)
 - `lib/memory.py` — long-term vector memory store (`crab memory`): sqlite-vec + local ollama embeddings
+- `lib/sleep-nightly` — nightly memory ingest ("sleep": run at 03:10 by `systemd/deskcrab-sleep.timer`, `Persistent=true` so a night the machine was off is caught up at boot; stamps `~/.local/share/deskcrab/last-slept`, and `sleep-nightly status` exits 1 when the last sleep is ≥48 h old); a failed ingest does not stamp — separate from the personal tidy timer, which never touches memory
 - `deskcrab.conf.example` — example configuration
 - `custom-prompt.md.example` — example custom prompt file
 

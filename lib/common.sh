@@ -123,6 +123,15 @@ SESSIONS_LOG_KEEP="${SESSIONS_LOG_KEEP:-400}"
 # rotated, written at the same moments the log is. Deliberately NOT under
 # STATE_PREFIX: its whole purpose is to be re-readable after a reboot.
 DAY_JOURNAL_DIR="${DAY_JOURNAL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/journal}"
+# Self-change suppression records (lib/notice-selfchange reads these): a hand
+# of the assistant's own, about to write files that constitute her, declares
+# it here so the watcher never wakes her about her own edits. Deliberately
+# NOT under STATE_PREFIX: a record written by a job must be visible to the
+# watcher no matter which instance wrote it.
+NOTICE_STATE_DIR="${NOTICE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab}"
+NOTICE_SUPPRESS="${NOTICE_SUPPRESS:-$NOTICE_STATE_DIR/notice-self.suppress}"
+# How long a `crab touching` declaration lasts by default, seconds.
+TOUCH_WINDOW="${TOUCH_WINDOW:-900}"
 
 # The conversation archive must exist before the first stale conversation
 # tries to land in it. rotate_convo mkdirs too, but a missing directory should
@@ -310,9 +319,94 @@ interrupted_resolve() {
 # arguments: a job's full log can exceed the kernel's per-argument limit.
 day_journal_append() {  # <kind> <start-epoch> <duration|-> <pid> <user> <reply> [outcome]
     command -v python3 >/dev/null 2>&1 || return 0
+    # The journal is in the self-change watch set, and this function is its
+    # only writer of hers — declare the write so it never reads as an outside
+    # hand's.
+    touch_suppress -w 300 "$DAY_JOURNAL_DIR" 2>/dev/null
     printf '%s\0%s\0%s' "$5" "$6" "${7:-}" \
         | "$LIB_DIR/day-journal" append "$DAY_JOURNAL_DIR" "$1" "$2" "$3" "$4" 2>/dev/null
     return 0
+}
+
+# --- Self-change suppression: my own hand must not read as an intruder's ---
+# lib/notice-selfchange wakes the assistant when files that constitute her —
+# wants, conduct, engineering, journal, memory, config, the repo, her library
+# — change on disk. Every process of hers that writes such files declares it,
+# before or just after the write:
+#   touch_suppress [-w seconds] <path>...      (CLI: crab touching <paths>)
+# One record per line, "<expiry-epoch>\t<absolute path>"; a directory covers
+# its whole subtree. Appends hold a lock because the watcher prunes expired
+# lines by rewriting the file, and an append racing that rewrite would be a
+# lost declaration — which reads as an intruder's edit.
+touch_suppress() {
+    local win="$TOUCH_WINDOW" p
+    if [ "${1:-}" = "-w" ]; then win="$2"; shift 2; fi
+    [ $# -gt 0 ] || { echo "Usage: crab touching [-w seconds] <path>..."; return 1; }
+    mkdir -p "$NOTICE_STATE_DIR"
+    local exp=$(( $(date +%s) + win ))
+    {
+        flock 9
+        for p in "$@"; do
+            printf '%s\t%s\n' "$exp" "$(readlink -m -- "$p" 2>/dev/null || printf '%s' "$p")" \
+                >> "$NOTICE_SUPPRESS"
+        done
+    } 9>>"$NOTICE_SUPPRESS.lock"
+    return 0
+}
+
+# The stream log knows which files this turn's tools wrote (same mechanical
+# read as wake_work_trace, paths only) — declare them after the fact. The
+# watcher waits out a live session before judging a burst, so a record written
+# at stream end still lands in time to explain the writes it saw mid-stream.
+stream_written_files() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$DEBUGLOG" 2>/dev/null <<'PY'
+import json, os, re, sys
+seen = []
+def add(p):
+    p = os.path.expanduser(p)
+    if p and p not in seen and not p.startswith(("/dev/", "/proc/")):
+        seen.append(p)
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if d.get("type") != "assistant":
+        continue
+    if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
+        continue
+    for b in d.get("message", {}).get("content", []):
+        if b.get("type") != "tool_use":
+            continue
+        name, inp = b.get("name", ""), b.get("input") or {}
+        if name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            add(inp.get("file_path") or inp.get("notebook_path") or "")
+        elif name == "Bash":
+            cmd = inp.get("command", "")
+            for m in re.finditer(r">>?\s*[\"']?([~/][^\s\"';|&)]+)", cmd):
+                add(m.group(1))
+            # Removals and moves are self-changes too — a deletion of her own
+            # is the one change the watcher never excuses on a fuzzy match.
+            for m in re.finditer(r"\b(?:rm|mv|cp)\s+((?:-[\w=-]+\s+)*(?:[~/][^\s;|&)]+\s*)+)", cmd):
+                for tok in m.group(1).split():
+                    if not tok.startswith("-"):
+                        add(tok.rstrip("/"))
+for p in seen:
+    print(p)
+PY
+}
+
+notice_own_writes() {
+    local files
+    files="$(stream_written_files)"
+    [ -n "$files" ] || return 0
+    local IFS=$'\n'
+    # shellcheck disable=SC2086 — newline-split on purpose, paths may hold spaces
+    touch_suppress $files
 }
 
 # The sessions log speaks in kind phrases ("desktop turn"); the journal keys
@@ -792,6 +886,7 @@ $(self_state_report)
 Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; a recently finished session means work was DONE in the gap, by you, even though this conversation never saw it. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began — sessions start and finish while you work. Run 'crab status' any time you need it live, and always before telling the user that nothing is happening.
 When you start multi-step work, run 'crab checkpoint <intent, files touched, what is done, what is next>' and update it as you go — if this turn is cut off (network drop, kill), that checkpoint is the ONLY explanation the next session gets for edits left on disk. If 'Interrupted mid-work' above lists a trace, that is an earlier you cut off mid-task: read it, pick up or finish the work, then clear it with 'crab resolve <name>'.
+The files that constitute you — wants, conduct, engineering, journal, memory, your config, the deskcrab repo, your library — are watched (lib/notice-selfchange): an outside hand changing or deleting them wakes you. Your own writes through the usual tools are declared for you automatically, but before you DELETE or move any of those files, or write them from a command the stream cannot parse (git checkout/pull, a script), run 'crab touching <paths>' first — without that declaration your own hand is reported to you as an intruder's.
 Work that must outlive this turn — or that would keep the user waiting while you watch it — is a detached job, NEVER a subagent: a subagent dies the moment this turn ends, and while it lives it holds the turn open so the user cannot speak to you. Run 'crab job \"<full, self-contained description of the work>\"' (optionally 'crab job -C <workdir> ...'): it becomes its own claude session under systemd, independent of this turn, silent by contract, logging to $JOBS_DIR/<id>.log, and it wakes you with an event when it finishes. 'crab jobs' lists what is running and what finished; 'crab job log <id>' shows a job's output. Never tell the user an agent is working in the background unless it is a job in that list."
 
     cat <<PROMPT
@@ -1205,6 +1300,10 @@ $TURN_CONTEXT"
     CLAUDE_STATUS=$?
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
+    # A wake edits its own files freely (wants, conduct, the repo); declare
+    # those writes before the self-change watcher judges the burst it saw.
+    notice_own_writes
+
     local RESPONSE
     RESPONSE=$(extract_response)
 
@@ -1385,6 +1484,10 @@ claude_generate() {
     # extract-response ignores a result line that has no "result" field, so this
     # terminator is harmless on the success path.
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
+
+    # Whatever this turn's tools wrote is her own hand — declare it before the
+    # self-change watcher judges the burst. Covers desktop and phone turns.
+    notice_own_writes
 
     extract_response
 }

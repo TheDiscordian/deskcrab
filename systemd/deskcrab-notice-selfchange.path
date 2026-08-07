@@ -1,0 +1,32 @@
+[Unit]
+Description=DeskCrab: notice outside changes to the assistant's own files
+Documentation=man:systemd.path(5)
+
+[Path]
+# systemd watches these with the kernel's own inotify — no polling daemon, no
+# inotify-tools. inotify is per-directory, not recursive, so each directory
+# holding files-that-are-her is listed. A trigger only starts
+# lib/notice-selfchange, which diffs a snapshot of the whole set — so a change
+# in an unlisted subdirectory is never lost, only delayed until the next
+# event anywhere in the set.
+PathChanged=%h/.local/share/deskcrab
+PathChanged=%h/.local/share/deskcrab/wants
+PathChanged=%h/.local/share/deskcrab/conduct
+PathChanged=%h/.local/share/deskcrab/engineering
+PathChanged=%h/.local/share/deskcrab/journal
+PathChanged=%h/.local/share/deskcrab/memory
+PathChanged=%h/.config/deskcrab
+# The repo the assistant runs from — adjust if you cloned elsewhere. Writes
+# inside .git/ never reach these watches (inotify on a directory does not see
+# events below its subdirectories), and the emitter's file list is built from
+# git ls-files, so .git internals and .gitignored files stay invisible.
+PathChanged=%h/Programming/Claude/deskcrab
+PathChanged=%h/Programming/Claude/deskcrab/lib
+PathChanged=%h/Programming/Claude/deskcrab/lib/webapp
+PathChanged=%h/Programming/Claude/deskcrab/systemd
+PathChanged=%h/Programming/Claude/deskcrab/tests
+# Personal directories (SELF_WATCH_EXTRA in deskcrab.conf) belong in a local
+# drop-in, not here:  systemctl --user edit deskcrab-notice-selfchange.path
+
+[Install]
+WantedBy=paths.target

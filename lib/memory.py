@@ -146,11 +146,34 @@ def embed(texts, query=False, timeout=30):
     return out
 
 
+def _notice_touch(directory, window=900):
+    """Declare an imminent write for lib/notice-selfchange (crab touching).
+
+    sqlite touches memory.db on ~every open — WAL checkpoints, last_seen
+    bumps — and every opener of this store is the assistant's own plumbing,
+    so the declaration happens here rather than at each call site. Same
+    record format and lock as touch_suppress in lib/common.sh.
+    """
+    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    sup = os.path.join(state, "deskcrab", "notice-self.suppress")
+    try:
+        import fcntl
+        os.makedirs(os.path.dirname(sup), exist_ok=True)
+        with open(sup + ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with open(sup, "a") as f:
+                f.write("%d\t%s\n" % (int(time.time()) + window,
+                                      os.path.abspath(directory)))
+    except OSError:
+        pass
+
+
 class Store:
     def __init__(self, directory=None):
         self.dir = directory or default_dir()
         os.makedirs(self.dir, exist_ok=True)
         self.path = os.path.join(self.dir, "memory.db")
+        _notice_touch(self.dir)
         self.db = sqlite3.connect(self.path)
         self.db.enable_load_extension(True)
         sqlite_vec.load(self.db)

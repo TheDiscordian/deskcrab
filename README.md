@@ -207,6 +207,18 @@ It watches `~/Documents/Transcriptions` (edit the unit for another path), seeds 
 
 These units are deliberately not enabled by installation. Turning one on changes how the machine behaves towards you, unprompted — that should be a decision you make, not a default you inherit.
 
+### Self-change awareness
+
+A second shipped emitter watches the files that constitute the assistant itself — the wants shelf and documents, conduct, engineering threads, the day journal, the memory store, the config, and the deskcrab repo — and fires an event wake when one is created, modified, or deleted by a hand that was not its own. The wake carries what changed, when, and a git diff where the file is tracked; it offers awareness, never an instruction.
+
+```bash
+cp systemd/deskcrab-notice-selfchange.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-notice-selfchange.path
+```
+
+Attribution is the point: the assistant's own writes never wake it. Writers declare themselves with `crab touching <paths>` — a windowed suppression record, wired automatically into turns and wakes (from the stream's own tool calls), detached jobs, the day journal, and the memory store — and a change named by a live session's `crab claim` is likewise read as its own. Deletions are stricter than anything else: only an explicit `touching` record excuses one, so a deleted want always surfaces. Bursts settle (`NOTICE_SELF_SETTLE`) into a single wake, and judgement waits for a live session to finish writing before deciding whose hand it saw. Extra personal directories go in `SELF_WATCH_EXTRA` (colon-separated) plus matching `PathChanged=` lines in a drop-in on the `.path` unit. The emitter's decisions are logged to `~/.local/state/deskcrab/notice-self.log`.
+
 ## Long-term memory
 
 `crab memory` gives the assistant a durable, local memory: a [sqlite-vec](https://github.com/asg017/sqlite-vec) store of short records embedded with `nomic-embed-text` on a local [ollama](https://ollama.com) daemon. Nothing leaves the machine. Records come in two kinds — a `directive` is something you told the assistant (a standing rule; never decayed, only superseded when you change your mind), a `note` is something it learned on its own.
@@ -224,6 +236,18 @@ crab memory ingest          # distil new journal turns + transcripts into record
 Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short "What you remember" block: a wake queries by its reason, an idle wake by the wants shelf and conversation tail. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
 
 `crab memory ingest` reads what is new in the day journal and the transcriptions directory (tracked by a cursor file), asks a cheap Claude session what actually earns a permanent record, and writes the survivors through a dedup pass: a near-identical record just refreshes the existing one, and a conflicting one supersedes it — the newer voice wins, the older stays readable in `--all`.
+
+### Sleeping every night
+
+Run the ingest nightly and the day's facts become records the assistant can recall in milliseconds; skip it and they exist only as raw transcript. `lib/sleep-nightly` wraps the ingest as that habit — "sleep" — and stamps `~/.local/share/deskcrab/last-slept` after a night that actually happened (a failed ingest does not stamp). `sleep-nightly status` reports how long since the last sleep and exits non-zero past 48 hours (`SLEEP_ROT_HOURS`), so rot is checkable in one command.
+
+```bash
+cp systemd/deskcrab-sleep.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-sleep.timer
+```
+
+The timer fires at 03:10 with `Persistent=true`: a machine that was off overnight sleeps at boot instead of skipping the night.
 
 ## Remote client (phone)
 

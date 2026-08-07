@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Sleep — the nightly ingest of the day into long-term memory.
+#
+# Not housekeeping with a friendly name. Awake too long and the day's facts
+# exist only as raw transcript, reachable by reading by hand; slept on, they
+# are records that answer a KNN query in milliseconds. A missed night is not a
+# skipped chore, it is a duller next day — so this must be Persistent=true and
+# it must leave behind something that says *when I last slept*, or "do not let
+# it rot" is a wish rather than a habit.
+#
+#   sleep-nightly run      ingest the delta, then stamp last-slept
+#   sleep-nightly status   how long since I last slept (exit 1 if it is rot)
+#
+# Deliberately separate from deskcrab-tidy, which tidies the wants shelf and
+# touches memory not at all.
+set -uo pipefail
+
+STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+STAMP="$STATE_DIR/last-slept"
+LOG_DIR="$STATE_DIR/sleep"
+CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
+
+# Two nights is the threshold at which I should feel it rather than be told.
+ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
+
+cmd_run() {
+    mkdir -p "$LOG_DIR"
+    local night log
+    night="$(date +%Y-%m-%d)"
+    log="$LOG_DIR/$night.log"
+
+    echo "=== sleep $night $(date +%H:%M:%S) ===" | tee -a "$log"
+    "$CRAB" memory ingest 2>&1 | tee -a "$log"
+    # The ingest's own exit, not tee's. (Not a brace group around the whole
+    # block: PIPESTATUS[0] would then be the group's exit — the trailing
+    # echo's 0 — and a failed night would stamp as slept.)
+    local rc="${PIPESTATUS[0]}"
+    echo "exit: $rc" | tee -a "$log"
+    if [ "$rc" -ne 0 ]; then
+        echo "sleep: ingest failed (rc=$rc) — not stamping. See $log" >&2
+        return "$rc"
+    fi
+
+    # Stamp only a night that actually happened. "nothing new since last
+    # cursor" still counts: there was nothing to learn, and I did look.
+    local added
+    added="$(grep -oE '^ingest: [0-9]+ added' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+    printf '%s\n%s\n%s\n' \
+        "$(date +%s)" \
+        "$(date -Iseconds)" \
+        "added=${added:-0}" > "$STAMP"
+    echo "sleep: stamped $STAMP (added=${added:-0})"
+}
+
+cmd_status() {
+    if [ ! -f "$STAMP" ]; then
+        echo "never slept — no $STAMP"
+        return 1
+    fi
+    local then now hours
+    then="$(head -1 "$STAMP")"
+    now="$(date +%s)"
+    hours=$(( (now - then) / 3600 ))
+    local when added
+    when="$(sed -n 2p "$STAMP")"
+    added="$(sed -n 3p "$STAMP")"
+    if [ "$hours" -ge "$ROT_HOURS" ]; then
+        echo "last slept ${hours}h ago ($when, $added) — that is rot, ingest is overdue"
+        return 1
+    fi
+    echo "last slept ${hours}h ago ($when, $added)"
+}
+
+case "${1:-status}" in
+    run)    cmd_run ;;
+    status) cmd_status ;;
+    *)      echo "Usage: sleep-nightly {run|status}" >&2; exit 2 ;;
+esac
