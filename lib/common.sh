@@ -3044,12 +3044,33 @@ job_block_active() {
     printf '%s\t%s\n' "$age" "$reason"
 }
 
+# Stop a running detached job by id: kill its unit (or recorded pid) and mark
+# it stopped. Grew out of `crab job stop <id>` being dispatched as a literal
+# job whose task was the words "stop <id>".
+job_stop() {
+    local id="$1"
+    [ -n "$id" ] && [ -e "$JOBS_DIR/$id.json" ] || { echo "Usage: crab job stop <id>   (ids: crab jobs)"; return 1; }
+    local unit pid
+    unit="$("$LIB_DIR/job-status" get "$JOBS_DIR/$id.json" unit 2>/dev/null || true)"
+    pid="$("$LIB_DIR/job-status" get "$JOBS_DIR/$id.json" pid 2>/dev/null || true)"
+    if [ -n "$unit" ]; then
+        systemctl --user stop "$unit" 2>/dev/null
+    elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+    fi
+    "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" status=stopped
+    echo "Job $id stopped."
+}
+
 job_start() {
     local workdir="$PROJECT_DIR" force=""
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
             -f) force=1; shift ;;
+            # Any other flag is a mistake, not a task description — once, a
+            # stray --help was dispatched as a real job that ran `claude --help`.
+            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [-f] <description of the work>"; return 1 ;;
             *) break ;;
         esac
     done

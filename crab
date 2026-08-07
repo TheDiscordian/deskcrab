@@ -268,6 +268,10 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
             if [ -f "$JOBS_DIR/$2.log" ]; then cat "$JOBS_DIR/$2.log"; else echo "Job $2 has produced no output yet."; fi
             exit 0
         fi
+        if [ "${1:-}" = "stop" ]; then
+            job_stop "${2:-}"
+            exit $?
+        fi
         job_start "$@"
         exit $?
         ;;
@@ -398,8 +402,12 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         ;;
 
     *)
-        # Anything else is treated as a text query
+        # Anything else is treated as a text query — but a leading dash is a
+        # mistyped flag, not speech; it must never reach the spoken channel.
         TEXT="$*"
+        case "$TEXT" in
+            -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
+        esac
         if [ -z "$TEXT" ]; then
             echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
