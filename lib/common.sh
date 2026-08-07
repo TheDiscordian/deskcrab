@@ -26,12 +26,16 @@ unset _INHERITED_CLAUDE_BIN
 # Defaults
 CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 CLAUDE_EFFORT="${CLAUDE_EFFORT:-low}"
-# A second `claude` login to fall back to when the primary account refuses to
-# run at all — session/usage limit reached, credits exhausted. Names another
-# Claude Code config directory (a separate subscription's login); the refused
-# run is retried once with CLAUDE_CONFIG_DIR pointed there. Limit refusals
-# ONLY: an auth or network failure would fail on the second account too, and
+# Further `claude` logins to fall back to when the account in hand refuses to
+# run at all — session/usage limit reached, credits exhausted. Names other
+# Claude Code config directories (separate subscriptions' logins); the refused
+# run is retried with CLAUDE_CONFIG_DIR pointed at each in turn. Limit refusals
+# ONLY: an auth or network failure would fail on the next account too, and
 # must surface as itself. Unset = fail exactly as before.
+#
+# The name is singular by history but the value is a CHAIN: a third or fourth
+# subscription is another entry, separated by whitespace or colons, tried
+# left to right. One entry behaves exactly as it always did.
 CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # What a limit refusal looks like (case-insensitive ERE). A run that never
 # began outputs one line of the CLI's own refusal and nothing else; these are
@@ -155,7 +159,10 @@ TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 # question just asked. Both shapes are measured in tests/test_speech_path.sh.
 # The remote turn already had a private log for exactly this reason; now
 # everybody does, and the well-known name is a pointer to the newest.
-DEBUGLOG="${STATE_PREFIX}-debug-$$.log"
+# DESKCRAB_STREAMLOG pins this session's log to a named file — for a test that
+# needs to hand a specific stream to the predicates, and for anything that
+# wants to read a stream it did not produce.
+DEBUGLOG="${DESKCRAB_STREAMLOG:-${STATE_PREFIX}-debug-$$.log}"
 DEBUGLOG_LATEST="${STATE_PREFIX}-debug.log"
 # Where a lost or failed utterance is recorded. Speech that vanishes without a
 # trace is the failure mode this file keeps re-learning; nothing on the audio
@@ -1252,6 +1259,19 @@ stop_tts() {
     pkill -f "aplay.*S16_LE" 2>/dev/null
 }
 
+# `crab shutup` — stop talking and MEAN it. Killing piper alone is not enough
+# now that the streamer keeps one voice alive across a whole turn: it would
+# simply open another for the next sentence. So the streamer goes too, and a
+# marker is left saying this silence was ASKED FOR — otherwise the never-silent
+# guarantee (tts_verify_spoken) would see an empty receipt, decide the audio
+# path had failed, and helpfully say the whole reply again.
+SHUTUP_MARKER="${STATE_PREFIX}-shutup"
+shutup_now() {
+    : > "$SHUTUP_MARKER"
+    pkill -f "$LIB_DIR/tts-streamer" 2>/dev/null
+    stop_tts
+}
+
 # Archive stale conversation (default: >5 min idle). Under the convo lock like
 # every other writer: the mv would otherwise be able to carry off a turn another
 # client appended a microsecond earlier.
@@ -1415,15 +1435,20 @@ $(cat "$OLDFILE")"
         --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
     # In plain -p mode a limit refusal arrives as ordinary stdout, so gate on
     # the exit code — an error line must never be written over the summary of
-    # real turns — and retry once on the fallback login like every other run.
-    if [ "$SUMRC" -ne 0 ] && [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] \
-            && printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE"; then
+    # real turns — and walk the fallback chain like every other run. Each
+    # attempt is judged on ITS OWN output: the previous account's refusal is
+    # replaced by this one's, so a refusal kept as history can never send the
+    # loop round again after a genuine failure of another kind.
+    local FBDIR
+    for FBDIR in $(claude_fallback_dirs); do
+        [ "$SUMRC" -ne 0 ] || break
+        printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE" || break
         SUMRC=0
         NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-            CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
+            CLAUDE_CONFIG_DIR="$FBDIR" \
             "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
-    fi
+    done
 
     if [ "$SUMRC" -eq 0 ] && [ -n "$NEWSUM" ]; then
         printf '%s\n' "$NEWSUM" > "$SUMMARYFILE"
@@ -2057,11 +2082,26 @@ sys.exit(0 if err and not real else 1)
 PY
 }
 
-# Should the run that just wrote $DEBUGLOG be retried on the fallback login?
+# The fallback logins, in the order they should be tried, one per line. The
+# config value is a CHAIN — whitespace- or colon-separated — because a second
+# subscription runs out exactly the way the first one did, and a run that gives
+# up at the end of a two-account chain is no more finished than one that gave
+# up at the end of a one-account chain. Every retry site walks this list rather
+# than reading the variable, so adding an account is a config edit and nothing
+# else.
+claude_fallback_dirs() {
+    printf '%s\n' "$CLAUDE_FALLBACK_CONFIG_DIR" | tr ':[:space:]' '\n\n' \
+        | grep -v '^[[:space:]]*$' || true
+}
+
+# Should the run that just wrote $DEBUGLOG be retried on the next login?
 # Yes only when all three hold: a fallback is configured, the stream shows the
 # CLI failing before any genuine model output (wake_stream_failed's shape),
 # and the failure text is a usage/session limit. An auth or network failure
-# fails the second account too and must surface as itself, not as a retry.
+# fails the other accounts too and must surface as itself, not as a retry.
+# Asked again after each attempt: the stream accumulates, so the answer stays
+# yes for as long as every account tried so far has refused, and turns to no
+# the moment one of them produces genuine output.
 claude_limit_fallback_due() {
     [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] || return 1
     wake_stream_failed || return 1
@@ -2177,6 +2217,25 @@ _wake_claude_run() {
     WAKE_CLAUDE_STATUS=$?
 }
 
+# The whole of a wake's CLI work: the account in hand, then each fallback in
+# turn for as long as the answer is a limit refusal. A login refusing over a
+# usage/session limit does not end the wake — it moves it to the next
+# subscription, still under the watchdog, until one answers or the chain is
+# spent. Every run APPENDS to the same stream log; a combined log reads
+# correctly everywhere downstream (wake_stream_failed sees genuine output and
+# stops calling the wake failed, extract-response drops the refusals whenever a
+# real reply follows them). Factored out of run_claude_wake so the walk itself
+# is testable and exists exactly once. Leaves the last run's exit status in
+# WAKE_CLAUDE_STATUS, like the single run it replaced.
+wake_claude_run_chain() {
+    _wake_claude_run ""
+    local FBDIR
+    for FBDIR in $(claude_fallback_dirs); do
+        claude_limit_fallback_due || break
+        _wake_claude_run "$FBDIR"
+    done
+}
+
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
 # whether anything gets spoken or shown — a wake nobody asked for must be able
 # to complete in total silence.
@@ -2237,16 +2296,7 @@ $TURN_CONTEXT"
     # read out in its place.
     claim_debuglog
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    _wake_claude_run ""
-    # The primary login refusing over a usage/session limit does not end the
-    # wake: run it again on the fallback account, still under the watchdog.
-    # The retry appends to the same stream log; a combined log reads correctly
-    # everywhere downstream — wake_stream_failed sees genuine output and stops
-    # calling the wake failed, and extract-response drops the refusal whenever
-    # a real reply follows it.
-    if claude_limit_fallback_due; then
-        _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
-    fi
+    wake_claude_run_chain
     local CLAUDE_STATUS="$WAKE_CLAUDE_STATUS"
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
@@ -2461,7 +2511,10 @@ claim_debuglog() {
 start_tts_streamer() {
     claim_debuglog
     _TTS_RECEIPT="${STATE_PREFIX}-speech-receipt-$$.txt"
-    rm -f "$_TTS_RECEIPT"
+    # A new turn is a new question — whatever silence was asked for last time
+    # is spent. Cleared HERE rather than at `crab shutup` time so that only a
+    # shutup DURING this turn suppresses the never-silent guarantee below.
+    rm -f "$_TTS_RECEIPT" "$SHUTUP_MARKER"
     DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
         DESKCRAB_PIPER_LENGTH_SCALE="${PIPER_LENGTH_SCALE:-}" \
         DESKCRAB_PIPER_SPEAKER="${PIPER_SPEAKER:-}" \
@@ -2469,7 +2522,7 @@ start_tts_streamer() {
         DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
         DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
-        DESKCRAB_CLAUDE_FALLBACK="$CLAUDE_FALLBACK_CONFIG_DIR" \
+        DESKCRAB_CLAUDE_FALLBACK="$(claude_fallback_dirs | tr '\n' ' ')" \
         DESKCRAB_SPEECH_LOG="$SPEECH_LOG" \
         DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
@@ -2505,6 +2558,8 @@ wait_tts_streamer() {
 tts_verify_spoken() {
     local SPOKEN="$1" CHARS=0 ERR=""
     [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] || return 0
+    # …unless he told me to shut up. Asked-for silence is not a failure.
+    [ -f "$SHUTUP_MARKER" ] && { rm -f "${_TTS_RECEIPT:-}"; return 0; }
     if [ -f "${_TTS_RECEIPT:-}" ]; then
         CHARS=$(sed -n 's/^chars=//p' "$_TTS_RECEIPT" | head -1)
         ERR=$(sed -n 's/^error=//p' "$_TTS_RECEIPT" | head -1)
@@ -2524,6 +2579,36 @@ extract_response() {
     DESKCRAB_DEBUGLOG="$DEBUGLOG" "$LIB_DIR/extract-response" 2>/dev/null
 }
 
+# One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
+# CLAUDE_CONFIG_DIR override ("" = the account in hand); the fallback chain
+# runs through here too, so every account's run is invoked identically and the
+# flags cannot drift between the first attempt and the retries. Reads TEXT /
+# EFFORT / SYSTEM_PROMPT / CLAUDE_BIN from the caller's scope (bash dynamic
+# scoping, same as _wake_claude_run).
+#
+# --include-partial-messages is what makes speech start when she starts TALKING
+# rather than when she stops. A plain stream-json run only emits a completed
+# `assistant` event once a whole text block has been generated, so a ten-second
+# answer began playing ten seconds late — measurably, and that is the whole of
+# the "time to first speech" regression. The partial events carry the same text
+# as deltas; the TTS streamer speaks each sentence as it completes and the
+# completed event is then a no-op for the part already said. Nothing downstream
+# reads stream_event lines (extract-response, serve.py's progress tailer and
+# crab-debug all skip unknown types), so this is additive.
+_generate_claude_run() {
+    local CONFDIR="$1"
+    (
+        cd "$PROJECT_DIR" || exit 1
+        [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
+        export "${CLAUDE_NO_AUTO_MEMORY?}"
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
+            --verbose --output-format stream-json --include-partial-messages \
+            --append-system-prompt "$SYSTEM_PROMPT" \
+            "$TEXT" >> "$DEBUGLOG" 2>&1
+    )
+}
+
 # One turn of generation: prompt in, response text out. No speech, no windows,
 # no conversation writes — every caller (desktop, wake, remote) layers its own
 # output on top of this. The stream still lands in DEBUGLOG, so a TTS streamer
@@ -2534,38 +2619,22 @@ claude_generate() {
     SYSTEM_PROMPT="$(build_system_prompt)"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    # --include-partial-messages is what makes speech start when she starts
-    # TALKING rather than when she stops. A plain stream-json run only emits a
-    # completed `assistant` event once a whole text block has been generated,
-    # so a ten-second answer began playing ten seconds late — measurably, and
-    # that is the whole of the "time to first speech" regression. The partial
-    # events carry the same text as deltas; the TTS streamer speaks each
-    # sentence as it completes and the completed event is then a no-op for the
-    # part already said. Nothing downstream reads stream_event lines
-    # (extract-response, serve.py's progress tailer and crab-debug all skip
-    # unknown types), so this is additive.
-    cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-        --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-        --verbose --output-format stream-json --include-partial-messages \
-        --append-system-prompt "$SYSTEM_PROMPT" \
-        "$TEXT" > "$DEBUGLOG" 2>&1
+    # The log is claimed by truncating it ONCE, here, and every run of this
+    # turn APPENDS. Truncating for a retry instead would strand the cursor of
+    # the TTS streamer that is mid-tail on this very file.
+    : > "$DEBUGLOG"
+    _generate_claude_run ""
 
-    # The primary login refusing over a usage/session limit is not the end of
-    # the turn: run it again on the fallback account. APPEND to the stream log
-    # rather than truncating — a TTS streamer is mid-tail on this very file,
-    # and truncation strands its cursor past EOF. The streamer rides through
-    # the refusal (it knows the retry is coming) and extract-response drops
-    # the refusal whenever a genuine reply follows it in the same log.
-    if claude_limit_fallback_due; then
-        cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-            CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" \
-            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
-            --verbose --output-format stream-json --include-partial-messages \
-            --append-system-prompt "$SYSTEM_PROMPT" \
-            "$TEXT" >> "$DEBUGLOG" 2>&1
-    fi
+    # A login refusing over a usage/session limit is not the end of the turn:
+    # run it again on the next account in the chain. The streamer rides through
+    # each refusal (it knows how many retries are still to come) and
+    # extract-response drops them whenever a genuine reply follows in the same
+    # log.
+    local FBDIR
+    for FBDIR in $(claude_fallback_dirs); do
+        claude_limit_fallback_due || break
+        _generate_claude_run "$FBDIR"
+    done
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally
     # ends its stream with a {"type":"result"} line, but if it crashed, was

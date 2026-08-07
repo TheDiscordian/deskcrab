@@ -35,7 +35,11 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # login" branch unreachable.
     local -a envs=()
     while [ $# -gt 1 ]; do envs+=("$1"); shift; done
+    # Every session has its OWN stream log now (one shared file is how a wake
+    # used to strand a desktop turn's TTS streamer past EOF); pin this one to
+    # the file the cases write, or the predicates read a log that never exists.
     DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
+        DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
         env -u CLAUDE_CONFIG_DIR ${envs[@]+"${envs[@]}"} \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
@@ -55,6 +59,16 @@ reply_stream() { # <text>
         '{"type":"assistant","message":{"model":"claude","content":[{"type":"text","text":"'"$1"'"}]}}' \
         '{"type":"result","result":"'"$1"'"}'
 }
+
+echo "claude_fallback_dirs — the chain parses however it is written:"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="/a:/b:/c" 'claude_fallback_dirs | tr "\n" ","')"
+[ "$out" = "/a,/b,/c," ] && ok "colon-separated" || fail "colons must split the chain" "$out"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="/a  /b" 'claude_fallback_dirs | tr "\n" ","')"
+[ "$out" = "/a,/b," ] && ok "space-separated, runs collapsed" || fail "whitespace must split the chain" "$out"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="/only" 'claude_fallback_dirs | tr "\n" ","')"
+[ "$out" = "/only," ] && ok "a single entry is still a single entry" || fail "one dir must survive unchanged" "$out"
+out="$(run 'claude_fallback_dirs | wc -l')"
+[ "$out" = 0 ] && ok "unset is an empty chain, not one empty dir" || fail "unset must yield nothing" "$out"
 
 echo "claude_limit_fallback_due — retry exactly when a fallback can help:"
 refusal_stream > "$T/state-debug.log"
@@ -84,7 +98,7 @@ do
     out="$(run 'job_output_blocked "'"$T"'/sig" && echo BLOCKED || echo no')"
     [ "$out" = BLOCKED ] && ok "matches: ${line:0:40}" || fail "should match: ${line:0:40}" "$out"
 done
-printf '%s\n' "job-runner: primary login refused (limit) — retrying once via CLAUDE_CONFIG_DIR=/x" > "$T/sig"
+printf '%s\n' "job-runner: login refused (limit) — retrying via CLAUDE_CONFIG_DIR=/x" > "$T/sig"
 out="$(run 'job_output_blocked "'"$T"'/sig" && echo BLOCKED || echo no')"
 [ "$out" = no ] && ok "the runner's own retry marker never matches" || fail "marker must not match the signature" "$out"
 
@@ -136,28 +150,55 @@ n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "both logins refusing is spoken once, not twice or never" \
     || fail "a second refusal is real news, exactly once" "spoken $n times"
 
-echo "_wake_claude_run — the wake retry lands on the fallback login:"
-# A stream-mode stub: refuses on the primary login, answers on the fallback.
-# The streams are prewritten fixtures — the refusal text holds an apostrophe,
-# which no quoting style survives being embedded in a generated script.
+# A third subscription buys a third ride: two refusals in a row are both
+# ridden through when two accounts are still to be tried, and the reply that
+# finally arrives is spoken.
+rm -f "$T/spoken"
+{ refusal_stream; refusal_stream; reply_stream "HELLO FROM THE THIRD"; printf '{"type":"result"}\n'; } > "$T/tts3.log"
+PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts3.log" DESKCRAB_PIPER_VOICE=/x \
+    DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" DESKCRAB_CLAUDE_FALLBACK="$T/fb $T/fb2" \
+    timeout 20 "$REPO_DIR/lib/tts-streamer"
+case "$(cat "$T/spoken" 2>/dev/null)" in
+    *"HELLO FROM THE THIRD"*) ok "two refusals ridden through, the third account is heard" ;;
+    *) fail "a two-account chain must reach the reply" "$(cat "$T/spoken" 2>/dev/null)" ;; esac
+case "$(cat "$T/spoken" 2>/dev/null)" in
+    *"out of usage credits"*) fail "neither refusal may be voiced with a retry still coming" "$(cat "$T/spoken")" ;;
+    *) ok "neither refusal is voiced mid-chain" ;; esac
+
+# …and the ride is not infinite: with every account spent, the last refusal is
+# the news, spoken once.
+rm -f "$T/spoken"
+{ refusal_stream; refusal_stream; refusal_stream; printf '{"type":"result"}\n'; } > "$T/tts4.log"
+PATH="$T/bin:$PATH" DESKCRAB_DEBUGLOG="$T/tts4.log" DESKCRAB_PIPER_VOICE=/x \
+    DESKCRAB_CLAUDE_LIMIT_RE="$LIMIT_RE_DEFAULT" DESKCRAB_CLAUDE_FALLBACK="$T/fb $T/fb2" \
+    timeout 20 "$REPO_DIR/lib/tts-streamer"
+n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "a spent chain speaks its last refusal once" \
+    || fail "the end of the chain must be audible, exactly once" "spoken $n times"
+
+echo "wake_claude_run_chain — the wake walks the logins in order:"
+# A stream-mode stub: every login refuses except the one named in STUB_OK_DIR
+# (unset = only the first fallback works). The streams are prewritten fixtures
+# — the refusal text holds an apostrophe, which no quoting style survives being
+# embedded in a generated script.
 refusal_stream > "$T/fixture-refusal"
 reply_stream "WAKE FALLBACK REPLY" > "$T/fixture-reply"
 cat > "$T/claude-stream" <<EOF
 #!/bin/bash
 echo "CALL:\${CLAUDE_CONFIG_DIR:-primary}" >> "$T/calls"
-if [ -z "\${CLAUDE_CONFIG_DIR:-}" ]; then
-    cat "$T/fixture-refusal"
-    exit 1
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "\${STUB_OK_DIR:-$T/fb}" ]; then
+    cat "$T/fixture-reply"
+    exit 0
 fi
-cat "$T/fixture-reply"
+cat "$T/fixture-refusal"
+exit 1
 EOF
 chmod +x "$T/claude-stream"
 rm -f "$T/calls"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
-    _wake_claude_run ""
-    claude_limit_fallback_due && _wake_claude_run "$CLAUDE_FALLBACK_CONFIG_DIR"
+    wake_claude_run_chain
     printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
     extract_response')"
 [ "$out" = "WAKE FALLBACK REPLY" ] && ok "wake run retries and extracts the real reply" \
@@ -165,6 +206,37 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
 [ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
 CALL:$T/fb" ] && ok "exactly two calls: primary then fallback" \
     || fail "call order must be primary, then fallback" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+
+# The whole point of a chain: the second fallback is reached when the first is
+# out too, and the accounts are tried left to right.
+rm -f "$T/calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR="$T/fb2" \
+    CLAUDE_BIN="$T/claude-stream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "a third subscription answers when the first two are out" \
+    || fail "the chain must reach the last account" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
+CALL:$T/fb
+CALL:$T/fb2" ] && ok "three calls, in the configured order" \
+    || fail "the chain must be walked left to right" "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+
+# A spent chain stops. Nothing here may loop back to an account already tried.
+rm -f "$T/calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR=/never \
+    CLAUDE_BIN="$T/claude-stream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    wake_stream_failed && echo FAILED')"
+[ "$out" = FAILED ] && ok "every account out still reports a failed wake" \
+    || fail "a wholly refused wake must read as failed" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 3 ] && ok "each login is tried exactly once" || fail "must try each login once" "$n calls"
 
 echo "job-runner — a limited primary is retried, not recorded blocked:"
 # Same scaffold as test_job_block.sh: copied runner, symlinked common.sh, fake
@@ -175,11 +247,17 @@ ln -sf "$REPO_DIR/lib/common.sh" "$T/repo/lib/common.sh"
 chmod +x "$T/repo/lib/job-runner"
 printf '#!/bin/bash\necho "WAKE: $*" >> "%s/wakes"\n' "$T" > "$T/repo/crab"
 chmod +x "$T/repo/crab"
-# A plain-mode stub: refuses on the primary login; on the fallback it builds —
-# unless STUB_FALLBACK_FAILS says that account is out too.
+# A plain-mode stub: refuses on the primary login; on a fallback it builds —
+# unless STUB_FALLBACK_FAILS says every other account is out too, or STUB_OK_DIR
+# names the one login in the chain that still has credit.
 cat > "$T/claude-plain" <<EOF
 #!/bin/bash
 echo "CALL:\${CLAUDE_CONFIG_DIR:-primary}" >> "$T/calls"
+if [ -n "\${STUB_OK_DIR:-}" ]; then
+    if [ "\${CLAUDE_CONFIG_DIR:-}" = "\$STUB_OK_DIR" ]; then echo "BUILT OK"; exit 0; fi
+    echo "$REFUSAL"
+    exit 1
+fi
 if [ -z "\${CLAUDE_CONFIG_DIR:-}" ] || [ -n "\${STUB_FALLBACK_FAILS:-}" ]; then
     echo "$REFUSAL"
     exit 1
@@ -202,7 +280,7 @@ run_runner fbworks CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/fbworks.json" state)"
 [ "$out" = finished ] && ok "fallback succeeds: the job is finished, not blocked" || fail "should finish via the fallback" "$out"
 case "$(cat "$T/jobs/fbworks.log" 2>/dev/null)" in
-    *"retrying once via CLAUDE_CONFIG_DIR="*) ok "the retry is recorded in the job log" ;;
+    *"retrying via CLAUDE_CONFIG_DIR="*) ok "the retry is recorded in the job log" ;;
     *) fail "the log must say a retry happened" "$(cat "$T/jobs/fbworks.log" 2>/dev/null | head -n2)" ;; esac
 [ ! -e "$T/jobs/blocked" ] && ok "no block marker when the fallback carried the job" \
     || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
@@ -215,6 +293,17 @@ out="$("$REPO_DIR/lib/job-status" get "$T/jobs/bothout.json" state)"
     || fail "double refusal must hold dispatches" "no marker"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "exactly one retry — never a third attempt" || fail "must try each login once" "$n calls"
+
+rm -f "$T/calls" "$T/jobs/blocked"
+run_runner chain CLAUDE_FALLBACK_CONFIG_DIR="$T/fb:$T/fb2" STUB_OK_DIR="$T/fb2"
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/chain.json" state)"
+[ "$out" = finished ] && ok "a job carried by the third subscription finishes" \
+    || fail "the runner must walk the whole chain" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 3 ] && ok "three attempts: primary, then each fallback in turn" \
+    || fail "every configured login must get one attempt" "$n calls"
+[ ! -e "$T/jobs/blocked" ] && ok "no block marker when a later account carried the job" \
+    || fail "a completed job must not hold future dispatches" "$(cat "$T/jobs/blocked")"
 
 rm -f "$T/calls" "$T/jobs/blocked"
 run_runner nofb

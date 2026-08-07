@@ -48,16 +48,18 @@ SPEAKER = os.environ.get("DESKCRAB_PIPER_SPEAKER", "").strip()
 # mispronounces or spells out letter-by-letter, e.g. s/\bhmph\b/humph/gi
 TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
 
-# Usage-limit fallback (CLAUDE_FALLBACK_CONFIG_DIR in the config). When the
-# primary login refuses over a limit, crab retries the turn on the fallback
-# account by APPENDING a second run to this same log. Two consequences here:
-# the refusal's error result must not stop the tail (or the retry's words are
-# extracted and displayed but never spoken), and the refusal itself must not
-# be voiced when the retry is about to answer properly. Both apply exactly
-# once — a second refusal means the fallback failed too, and THAT one is
-# spoken and stops the stream, since no further retry is coming.
+# Usage-limit fallback (CLAUDE_FALLBACK_CONFIG_DIR in the config). When a login
+# refuses over a limit, crab retries the turn on the next account by APPENDING
+# another run to this same log. Two consequences here: the refusal's error
+# result must not stop the tail (or the retry's words are extracted and
+# displayed but never spoken), and the refusal itself must not be voiced when a
+# retry is about to answer properly. Both apply exactly as many times as there
+# are accounts left to try — the env var carries the whole chain, so a third
+# subscription buys a third ride. The LAST refusal is spoken and stops the
+# stream, because at that point no further retry is coming and the silence
+# would be unexplained.
 LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
-FALLBACK = os.environ.get("DESKCRAB_CLAUDE_FALLBACK", "").strip()
+FALLBACKS = os.environ.get("DESKCRAB_CLAUDE_FALLBACK", "").replace(":", " ").split()
 
 SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
 RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
@@ -94,7 +96,7 @@ def speech_log(msg):
 
 
 def _is_limit(text):
-    if not (FALLBACK and LIMIT_RE):
+    if not LIMIT_RE:
         return False
     try:
         return bool(re.search(LIMIT_RE, text or "", re.I))
@@ -374,7 +376,7 @@ class Block:
         self.pending = ""    # received, not yet a complete sentence
         self.done = False    # ---DISPLAY--- reached: nothing further is spoken
 
-    def add(self, delta, rode_through):
+    def add(self, delta, retry_coming):
         self.raw += delta
         if self.done:
             return
@@ -386,7 +388,7 @@ class Block:
         # A limit refusal arrives shaped like a reply. With a retry still to
         # come the user should hear the answer, not the outage — so hold this
         # block back entirely rather than speaking half of it.
-        if not rode_through and _is_limit(self.raw):
+        if retry_coming and _is_limit(self.raw):
             return
         chunks, self.pending = _sentences(self.pending)
         for c in chunks:
@@ -397,11 +399,11 @@ class Block:
         if self.done:
             self.consumed = len(self.raw)
 
-    def close(self, full_text, rode_through):
+    def close(self, full_text, retry_coming):
         """The completed assistant event for this block. Speak whatever the
         streaming half did not already say — which is everything, when the CLI
         was run without --include-partial-messages."""
-        if not rode_through and _is_limit(full_text):
+        if retry_coming and _is_limit(full_text):
             return
         rest = full_text[self.consumed:] if len(full_text) >= self.consumed else full_text
         self.consumed = len(full_text)
@@ -433,7 +435,8 @@ closed = set()       # (message id, block idx) already spoken to completion —
 spoken_texts = set() # whitespace-normalized text of every block spoken this
                      # turn — catches the re-emit that arrives under a NEW
                      # message id, which the id-keyed set cannot
-rode_through = False
+rides_left = len(FALLBACKS)   # refusals still worth riding through: one per
+                              # account the turn can still be retried on
 last_size = 0
 
 with open(LOG) as f:
@@ -478,10 +481,12 @@ with open(LOG) as f:
 
         if kind == "result":
             # A limit refusal with a retry still to come: ride through it and
-            # keep tailing — the fallback run's events land in this same file.
-            if (not rode_through and d.get("is_error")
+            # keep tailing — the next account's events land in this same file.
+            # One ride is spent per refusal, so a chain of accounts is followed
+            # to its end and the refusal that ends it is still spoken.
+            if (rides_left > 0 and d.get("is_error")
                     and _is_limit(str(d.get("result") or ""))):
-                rode_through = True
+                rides_left -= 1
                 blocks = {}
                 continue
             break
@@ -501,7 +506,7 @@ with open(LOG) as f:
                     b = blocks.get(ev.get("index"))
                     if b is None:
                         b = blocks[ev.get("index")] = Block()
-                    b.add(delta.get("text") or "", rode_through)
+                    b.add(delta.get("text") or "", rides_left > 0)
             continue
 
         # --- completed half: authoritative, and the ONLY half when the run
@@ -510,7 +515,7 @@ with open(LOG) as f:
             synthetic = (d.get("is_api_error_message")
                          or d["message"].get("model") == "<synthetic>")
             content = d["message"].get("content", [])
-            if (not rode_through and synthetic
+            if (rides_left > 0 and synthetic
                     and any(_is_limit(b.get("text", "")) for b in content
                             if b.get("type") == "text")):
                 blocks = {}
@@ -528,7 +533,7 @@ with open(LOG) as f:
                         if fingerprint:
                             spoken_texts.add(fingerprint)
                         b = blocks.get(idx) or Block()
-                        b.close(block.get("text", ""), rode_through)
+                        b.close(block.get("text", ""), rides_left > 0)
                 idx += 1
             blocks = {}
 
