@@ -106,6 +106,68 @@ case "$out" in *"blocked (never ran)"*) ok "report renders 'blocked (never ran)'
 case "$out" in *"failed"*) fail "report must not call it failed" "$out" ;;
     *) ok "report never says failed for a blocked job" ;; esac
 
+echo "the event wake — a scratch runner must not reach the live me:"
+# 2026-08-07: a runner called "testid", task "do a thing", fired a real event
+# wake at me and left no log, no sidecar, nothing anywhere to trace it by. Its
+# JOBS_DIR was scratch, so the isolation held for everything EXCEPT the one
+# channel that interrupts a person. This runs job-runner end to end against a
+# fake claude and a fake crab, in a scratch tree, so the wake attempt is
+# observable without anything actually being woken.
+mkdir -p "$T/repo/lib" "$T/jobs2"
+cp "$REPO_DIR/lib/job-runner" "$T/repo/lib/job-runner"   # copied, not linked:
+ln -sf "$REPO_DIR/lib/common.sh" "$T/repo/lib/common.sh" # readlink -f would
+chmod +x "$T/repo/lib/job-runner"                        # walk back to the real
+printf '#!/bin/bash\necho "WAKE: $*" >> "%s/wakes"\n' "$T" > "$T/repo/crab"
+chmod +x "$T/repo/crab"                                  # repo and its real crab
+printf '#!/bin/bash\necho DESKCRAB_STUB_BUILDER\necho "You'"'"'re out of usage credits."\nexit 1\n' > "$T/claude-stub"
+chmod +x "$T/claude-stub"
+
+# DAY_JOURNAL_DIR is isolated too: the first version of this test wrote two
+# "do a thing" job entries straight into my real day journal, where sleep would
+# have read them at 03:10 as work I had actually done.
+run_runner() { # <jobs-dir> <id>  -> emits nothing; side effects land in $T/wakes
+    JOBS_DIR="$1" DESKCRAB_STATE_PREFIX="$T/state" WANTS_FILE="$T/wants.md" \
+        DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-stub" \
+        "$T/repo/lib/job-runner" "$2" "$T" >/dev/null 2>&1
+}
+"$REPO_DIR/lib/job-status" new "$T/jobs2/jobtest.json" jobtest "do a thing" >/dev/null 2>&1 || \
+    python3 - "$T/jobs2/jobtest.json" <<'PY'
+import json, sys, time
+json.dump({"id": "jobtest", "description": "do a thing", "started_epoch": int(time.time()),
+           "state": "running", "unit": ""}, open(sys.argv[1], "w"))
+PY
+rm -f "$T/wakes"
+run_runner "$T/jobs2" jobtest
+# First, and most important: prove no real builder ran. The config sets
+# CLAUDE_BIN unconditionally, so before 2026-08-07 sourcing it silently ate the
+# stub and every run of this file started a live session on my own account.
+case "$(cat "$T/jobs2/jobtest.log" 2>/dev/null)" in
+    *DESKCRAB_STUB_BUILDER*) ok "the stub builder ran — CLAUDE_BIN survives the config" ;;
+    *) fail "a test must never start a real builder" "$(head -n1 "$T/jobs2/jobtest.log" 2>/dev/null)" ;;
+esac
+[ ! -s "$T/wakes" ] && ok "scratch JOBS_DIR fires no event wake" \
+    || fail "scratch run must not wake the live assistant" "$(cat "$T/wakes")"
+case "$(cat "$T/jobs2/jobtest.log" 2>/dev/null)" in
+    *"event wake suppressed"*) ok "the suppression is recorded in the job log" ;;
+    *) fail "suppressing a wake must leave a trace" "$(tail -n1 "$T/jobs2/jobtest.log" 2>/dev/null)" ;;
+esac
+
+# ...and the guard must not silence the live path. Same runner, same fake crab,
+# but JOBS_DIR is the real one — so the wake attempt has to happen. Nothing is
+# written to the live directory: only the sidecar this test made is read.
+LIVE="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
+if [ -d "$LIVE" ]; then
+    cp "$T/jobs2/jobtest.json" "$LIVE/deskcrab-selftest-jobtest.json"
+    rm -f "$T/wakes"
+    run_runner "$LIVE" deskcrab-selftest-jobtest
+    grep -q "^WAKE: wake-at 5s event" "$T/wakes" 2>/dev/null \
+        && ok "the live jobs directory still fires its wake" \
+        || fail "the guard must not silence a real job" "$(cat "$T/wakes" 2>/dev/null)"
+    rm -f "$LIVE"/deskcrab-selftest-jobtest.*
+else
+    echo "  skip: no live jobs directory on this box"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

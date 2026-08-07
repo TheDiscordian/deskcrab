@@ -110,6 +110,17 @@ if [ "$STATE" = blocked ]; then
 else
     WAKE_REASON="Detached job $ID finished ($STATE, exit $RC). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
 fi
-[ -n "$WANTS_FILE" ] && "$SCRIPT_DIR/crab" wake-at 5s event "$WAKE_REASON" >/dev/null 2>&1
+# ...but not when this runner is a test. A scratch run gets its own JOBS_DIR so
+# it cannot dirty the live jobs directory — and on 2026-08-07 one still woke me
+# for real, about a job called "testid" whose task was "do a thing", leaving no
+# log and no sidecar anywhere for me to find. Isolating what a test may TOUCH
+# and what it may SPEND says nothing about who it may INTERRUPT. A run that is
+# not the live jobs directory does not get to reach the live me.
+LIVE_JOBS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
+if [ -n "${DESKCRAB_NO_DISPATCH:-}" ] || [ "$JOBS_DIR" != "$LIVE_JOBS_DIR" ]; then
+    echo "job-runner: scratch run ($JOBS_DIR) — event wake suppressed: $WAKE_REASON" >> "$LOG"
+elif [ -n "$WANTS_FILE" ]; then
+    "$SCRIPT_DIR/crab" wake-at 5s event "$WAKE_REASON" >/dev/null 2>&1
+fi
 
 exit "$RC"

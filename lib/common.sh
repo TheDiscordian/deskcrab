@@ -11,7 +11,17 @@ if [ ! -f "$CONF_FILE" ]; then
     exit 1
 fi
 
+# CLAUDE_BIN is the one setting a caller must be able to override from the
+# environment, because it is the only way a test can stand in a stub for the
+# builder. A plain `CLAUDE_BIN=...` line in the config clobbers the inherited
+# value, so every `${CLAUDE_BIN:-...}` downstream reads the config's answer and
+# the stub is never called — which is how, on 2026-08-07, a test meant to prove
+# a scratch runner stays quiet started two real builder sessions on my account
+# instead. Snapshot it, then hand it back.
+_INHERITED_CLAUDE_BIN="${CLAUDE_BIN:-}"
 source "$CONF_FILE"
+[ -n "$_INHERITED_CLAUDE_BIN" ] && CLAUDE_BIN="$_INHERITED_CLAUDE_BIN"
+unset _INHERITED_CLAUDE_BIN
 
 # Defaults
 CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
