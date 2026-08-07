@@ -430,6 +430,9 @@ blocks = {}          # stream index -> Block, for the message in flight
 closed = set()       # (message id, block idx) already spoken to completion —
                      # the stream can hand us the same finished message twice,
                      # and the second copy must not be spoken again
+spoken_texts = set() # whitespace-normalized text of every block spoken this
+                     # turn — catches the re-emit that arrives under a NEW
+                     # message id, which the id-keyed set cannot
 rode_through = False
 last_size = 0
 
@@ -516,8 +519,14 @@ with open(LOG) as f:
             idx = 0
             for block in content:
                 if block.get("type") == "text":
-                    if (mid, idx) not in closed:
+                    # Dedupe by content as well as id: a retried or re-emitted
+                    # reply arrives under a fresh message id, which the
+                    # (mid, idx) guard cannot catch.
+                    fingerprint = " ".join(block.get("text", "").split())
+                    if (mid, idx) not in closed and fingerprint not in spoken_texts:
                         closed.add((mid, idx))
+                        if fingerprint:
+                            spoken_texts.add(fingerprint)
                         b = blocks.get(idx) or Block()
                         b.close(block.get("text", ""), rode_through)
                 idx += 1
