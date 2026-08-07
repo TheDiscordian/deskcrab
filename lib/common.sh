@@ -41,7 +41,12 @@ CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # began outputs one line of the CLI's own refusal and nothing else; these are
 # the wordings observed live plus the session-limit variants. Shared by every
 # retry site and by job_output_blocked, so the two judgements can never drift.
-CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage}"
+# "Not logged in · Please run /login" earned its place here on 2026-08-07: four
+# builder jobs in a row died on that single line while a fallback login was
+# answering fine seconds later. It reads like an auth failure — the one thing
+# this list is supposed to exclude — but a login is per-account by definition,
+# so refusing to walk past it strands every job on one dead credential.
+CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage|not logged in|please run /login}"
 PROJECT_DIR="${PROJECT_DIR:-$HOME}"
 # The auto-memory of the directory she is started in is not HER memory.
 # `claude` reads $HOME/.claude/projects/<cwd-slug>/memory/MEMORY.md straight
@@ -3160,13 +3165,22 @@ job_start() {
     id="$(date +%Y%m%d-%H%M%S)-$$"
     unit="deskcrab-job-$id"
     "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "$unit" || return 1
+    # CLAUDE_CONFIG_DIR is forwarded ONLY when it is actually set. Passing it
+    # empty is not the same as not passing it: the unit then runs with the
+    # variable defined-but-blank, the CLI looks for a login in "" and every
+    # builder died in one second on "Not logged in". Worse, that is not a limit
+    # refusal, so job-runner's account walk broke on the first attempt and no
+    # fallback login was ever tried. Every job dispatched from a session with
+    # no explicit config dir — which is all of them — was dead on arrival.
+    local -a acctenv=()
+    [ -n "${CLAUDE_CONFIG_DIR:-}" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR")
     if systemd-run --user --collect --quiet --unit="$unit" \
         --setenv=PATH="$HOME/.local/bin:$PATH" \
         --setenv=DESKCRAB_CONF="$CONF_FILE" \
         --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
         --setenv=JOBS_DIR="$JOBS_DIR" \
         --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
-        --setenv=CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}" \
+        "${acctenv[@]}" \
         --setenv=JOB_MODEL="$JOB_MODEL" \
         --setenv=JOB_EFFORT="$JOB_EFFORT" \
         "$LIB_DIR/job-runner" "$id" "$workdir" 2>/dev/null; then

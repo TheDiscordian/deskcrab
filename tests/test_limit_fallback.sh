@@ -92,6 +92,16 @@ printf '%s\n' \
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-auth" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "an auth failure is not retried" || fail "auth failures must surface as themselves" "$out"
 
+# 2026-08-07: four builder jobs in a row died on this single line while another
+# login answered seconds later. It wears an auth failure's clothes, but a login
+# belongs to ONE account, so it must move the chain along like any refusal.
+printf '%s\n' \
+    '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}' \
+    '{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}' > "$T/fix-nologin"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-nologin" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
+[ "$out" = DUE ] && ok "a not-logged-in login is walked past, not died on" \
+    || fail "one dead login must not strand the whole chain" "$out"
+
 reply_stream "a genuine answer" > "$T/fix-reply"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-reply" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "a genuine reply is never retried" || fail "real output must not retry" "$out"
