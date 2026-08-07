@@ -761,7 +761,10 @@ def ask(text, on_event=None, speaker=None):
     if on_event is None:
         r = run([CRAB_BIN, "remote", text])
     else:
-        logpath = f"/tmp/deskcrab-turn-{uuid.uuid4().hex}.log"
+        # Under STATE_PREFIX, never a bare /tmp name: crab-debug follows
+        # <prefix>-turn-*.log, and a scratch instance (the test suite) writing
+        # to the LIVE prefix paints its canaries into the live debug view.
+        logpath = f"{STATE_PREFIX}-turn-{uuid.uuid4().hex}.log"
         stop = threading.Event()
         watcher = threading.Thread(
             target=_progress_events, args=(logpath, stop, on_event, speaker),

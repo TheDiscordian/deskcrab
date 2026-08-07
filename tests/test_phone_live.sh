@@ -168,6 +168,19 @@ else
     ok "the done event had not been sent yet"
 fi
 
+# The turn log must live under THIS instance's STATE_PREFIX. serve.py used to
+# hardcode /tmp/deskcrab-turn-<uuid>.log — the exact glob the LIVE crab-debug
+# follows for phone turns — so every run of this test painted its canaries
+# (thousands of "padding", a fake limit refusal) into the live debug view as
+# a phone turn. Seen live 2026-08-07 16:0x. One logpath per turn: under the
+# scratch prefix proves it is not under the live one.
+if ls "$T"/deskcrab-turn-*.log >/dev/null 2>&1; then
+    ok "the open turn's log lives under the scratch prefix, not the live viewer's glob"
+else
+    fail "the open turn's log lives under the scratch prefix, not the live viewer's glob" \
+         "no $T/deskcrab-turn-*.log while the turn is held open"
+fi
+
 # Release the turn and let it finish.
 rm -f "$HOLD_FILE"
 wait "$CURL_PID" 2>/dev/null
