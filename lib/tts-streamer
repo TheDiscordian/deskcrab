@@ -635,6 +635,9 @@ with open(LOG) as f:
                                          or cand.raw.startswith(text))
                                     and (b is None or len(cand.raw) > len(b.raw))):
                                 b = cand
+                        b = b or Block()
+                        b.close(text)
+                idx += 1
             # `blocks` is NOT reset here, and must never be. It is the very
             # dict `messages[mid]` holds, and `messages` is the whole of the
             # replay protection: a truncation re-read walks the same bytes
