@@ -2574,9 +2574,26 @@ $DISPLAY_PART"
         RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
             RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
         if [ -x "$RENDER_MD" ]; then
-            setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
+            spawn_display_window "$DISPLAYFILE"
         fi
     fi
+}
+
+# A display window must outlive the turn that opened it. setsid alone is not
+# enough: a wake runs inside a systemd unit, and when its main process exits
+# systemd reaps the whole control group — the window included. That is the
+# mechanism behind the open-and-instantly-close flashing. A transient scope
+# moves the window into its own cgroup, out of the executioner's reach.
+spawn_display_window() {  # <displayfile>
+    local f="$1"
+    if systemd-run --user --collect --quiet \
+            --unit="deskcrab-display-$(date +%s%N)" \
+            -- "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" \
+            --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$f" \
+            >/dev/null 2>&1; then
+        return 0
+    fi
+    setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$f" &
 }
 
 # Take this session's stream log and point the well-known name at it. Every
@@ -2995,7 +3012,7 @@ run_claude_and_respond() {
             RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
             RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
             if [ -x "$RENDER_MD" ]; then
-                setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
+                spawn_display_window "$DISPLAYFILE"
             fi
         fi
 
