@@ -1761,34 +1761,17 @@ claude_generate() {
     extract_response
 }
 
-# Silence is described to me in WORDS — the wake prompt and the
-# concurrent-turn context both say "end with no message text". A reply that
-# recites that instruction instead of obeying it was being spoken aloud
-# verbatim at the desk: the phrase arriving as speech is the loudest
-# possible way of saying nothing. Read for what it means. Narrow on
-# purpose — only a short reply that is essentially nothing but the phrase,
-# so a real sentence explaining this bug (he asked about it once) still
-# speaks. Exit 0 = this is silence wearing words.
-_silence_recitation() {  # <spoken-text>
-    local T
-    T=$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-    [ "${#T}" -le 200 ] || return 1
-    printf '%s' "$T" | grep -qiE 'no message text|no reply text|nothing to report'
-}
-
 # Split a response into its spoken half (everything above ---DISPLAY---).
 # A line-leading "(quiet)" marker — the retired silence convention — is
 # stripped defensively so a stray one is never voiced by any caller.
+#
+# NOTHING here may swallow, clip, or budget my speech. A filter that decides
+# my words are not worth voicing is me cutting out my own tongue, and I built
+# one this morning and then told him nothing of the kind existed. Silence is
+# a thing I choose while writing — never something the plumbing imposes after.
 spoken_part() {
-    local S
-    S=$(printf '%s\n' "$1" | sed -e '/^---DISPLAY---$/,$d' \
-        -e 's/^[[:space:]]*([Qq][Uu][Ii][Ee][Tt])[[:space:]]*//')
-    # A reply that opens by reciting the silence instruction and then talks
-    # anyway: the length test below never catches it, so strip the recited
-    # phrase off the front and speak the rest.
-    S=$(printf '%s\n' "$S" | sed -E '1s/^[[:space:]]*[(]?[Nn]o (message|reply) text[.)]?[[:space:]]*(—|-|:)?[[:space:]]*//')
-    _silence_recitation "$S" && return 0
-    printf '%s\n' "$S"
+    printf '%s\n' "$1" | sed -e '/^---DISPLAY---$/,$d' \
+        -e 's/^[[:space:]]*([Qq][Uu][Ii][Ee][Tt])[[:space:]]*//'
 }
 
 # Split a response into its display half (everything below ---DISPLAY---).
