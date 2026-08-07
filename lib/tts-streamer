@@ -16,10 +16,22 @@ signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
 # Speech mutex: hold the flock for the whole TTS stage of this turn, so no
 # other session (a wake's speak_once, another streamer) can talk over it.
 # Released automatically when this process exits — even via os._exit above.
+# Taken LAZILY, at the first thing worth saying — never at startup. Held at
+# startup it silently ate whole replies: a wake overlapping a desk turn owns
+# the lock, this streamer blocks before it ever reads the stream, and by the
+# time the lock frees its parent has gone, the ppid check below fires, and it
+# exits having spoken nothing. The reply appeared on screen and was never
+# heard. Blocking here instead means the words wait their turn; they are not
+# discarded.
 _SPEECHLOCK = os.environ.get("DESKCRAB_SPEECHLOCK", "").strip()
-if _SPEECHLOCK:
-    _lockfd = os.open(_SPEECHLOCK, os.O_CREAT | os.O_WRONLY, 0o644)
-    fcntl.flock(_lockfd, fcntl.LOCK_EX)
+_lockfd = None
+
+
+def hold_speech_lock():
+    global _lockfd
+    if _SPEECHLOCK and _lockfd is None:
+        _lockfd = os.open(_SPEECHLOCK, os.O_CREAT | os.O_WRONLY, 0o644)
+        fcntl.flock(_lockfd, fcntl.LOCK_EX)
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
@@ -48,6 +60,7 @@ def fix_pronunciation(text):
 
 
 def speak(text):
+    hold_speech_lock()
     try:
         cmd = ["piper-tts", "--model", PIPER, "--output-raw"]
         if LENGTH_SCALE:
