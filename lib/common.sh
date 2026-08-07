@@ -108,6 +108,17 @@ WAKE_MODEL="${WAKE_MODEL:-$CLAUDE_MODEL}"
 # writes stream events constantly, so this many seconds without any output means
 # it is hung, not thinking. Wall-clock limits would kill productive sessions.
 WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
+# The same reaping for an INTERACTIVE turn, at a desk-appropriate patience:
+# somebody asked this question out loud and is standing there waiting for the
+# answer. On 2026-08-07 a desk turn hit a limit, swapped accounts, and sat in
+# the second run for 680 s with nothing spoken and no error — the interactive
+# path had no watchdog at all while the wake path did.
+TURN_STALL_TIMEOUT="${TURN_STALL_TIMEOUT:-120}"
+# And a ceiling on the WHOLE account walk, which the stall watchdog by
+# construction cannot be: a session that keeps emitting output is never
+# silent, and the walk itself was unbounded — one live run measured
+# duration_ms 644964 on a fallback account nobody was told about. 0 disables.
+TURN_CHAIN_TIMEOUT="${TURN_CHAIN_TIMEOUT:-900}"
 # A wake that fires beside an interactive turn used to be muted outright
 # (the old WAKE_MUTE_AFTER_TURN echo window) — its reply swallowed wholesale.
 # That was rejected: a wake with something genuinely new deserves its voice.
@@ -2272,6 +2283,94 @@ print("; ".join(parts))
 PY
 }
 
+# A marker line in the stream log. It is the one place a human — or the debug
+# viewer, or she herself reading the log back — can see WHY a turn went quiet
+# for ten minutes. Deliberately a JSON line of an unknown type, which every
+# reader of this log already skips by construction (extract-response,
+# serve.py's tailer, crab-debug, the TTS streamer), and deliberately carrying
+# no refusal TEXT: claude_run_limited greps the WHOLE log for the limit
+# signature, so a marker quoting it would make a later network error read as
+# one more refusal.
+claude_stream_note() { # <note> <detail>
+    [ -n "${DEBUGLOG:-}" ] || return 0
+    printf '{"type":"deskcrab_note","note":"%s","detail":"%s","at":"%s"}\n' \
+        "$(printf '%s' "$1" | tr -d '"\\')" \
+        "$(printf '%s' "$2" | tr -d '"\\')" \
+        "$(date '+%H:%M:%S')" >> "$DEBUGLOG" 2>/dev/null
+    return 0
+}
+
+# Every account swap is announced. Ten minutes of silence under a stuck
+# "Thinking..." was the symptom; the swap being invisible was the defect —
+# she could not tell the user what had happened because nothing told her
+# either. The marker goes into the stream log on every path; the desktop
+# notification is for a turn somebody is waiting on, never for a wake (which
+# may well be firing at three in the morning).
+claude_swap_announce() { # <from token> <to token>
+    local from="$1" to="$2"
+    [ "$from" = "$CLAUDE_PRIMARY_TOKEN" ] && from="primary"
+    [ "$to" = "$CLAUDE_PRIMARY_TOKEN" ] && to="primary"
+    from="$(basename "$from")"; to="$(basename "$to")"
+    claude_stream_note "account-swap" "$from -> $to (limit refusal)"
+    [ "${SESSION_KIND:-}" = "autonomous wake" ] && return 0
+    notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab-account \
+        "$NOTIFY_NAME" "$from is over its limit — trying $to" 2>/dev/null
+    return 0
+}
+
+# Watch a backgrounded CLI run and reap it when it stops being alive. $1 is
+# the pid, $2 the stall timeout, $3 an absolute wall-clock deadline (0 = none).
+# Leaves the child's exit status in CLAUDE_WATCH_STATUS and, when it had to be
+# killed, the reason in CLAUDE_WATCH_REAPED.
+#
+# "Alive" is deliberately TWO signs, not one: new bytes in the stream log, or
+# CPU burned across the process tree. The log gets nothing during a single long
+# tool call (a compile delivers its output in one event at completion), so log
+# freshness alone would kill genuine work; a hung network call or a tool stuck
+# on stdin sits at ~zero CPU, so a real hang is still caught. The wall clock is
+# the backstop the stall test by construction cannot be — a session that keeps
+# emitting output is never silent — and is only ever set for a turn somebody
+# is waiting on.
+#
+# The poll ticks every second and only does the work every tenth, because the
+# loop's granularity is also the DELAY between the CLI finishing and the caller
+# noticing: a flat 10 s sleep put ten dead seconds on the end of every turn.
+_claude_watch() { # <pid> <stall seconds> <deadline epoch, 0 = none>
+    local CPID="$1" STALL="$2" DEADLINE="${3:-0}"
+    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M NOW TICK=0
+    CLAUDE_WATCH_REAPED=""
+    LAST_ACTIVE=$(date +%s)
+    PREV_CPU=$(_tree_cpu "$CPID")
+    while kill -0 "$CPID" 2>/dev/null; do
+        sleep 1
+        TICK=$(( TICK + 1 ))
+        [ $(( TICK % 10 )) -eq 0 ] || continue
+        CUR_CPU=$(_tree_cpu "$CPID")
+        LOG_M=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || echo 0)
+        NOW=$(date +%s)
+        # Alive = new log output, or >=10 jiffies (~0.1 s) of CPU since last check
+        if [ "$LOG_M" -gt "$LAST_ACTIVE" ] || [ $((CUR_CPU - PREV_CPU)) -ge 10 ]; then
+            LAST_ACTIVE=$NOW
+        fi
+        PREV_CPU=$CUR_CPU
+        if [ $(( NOW - LAST_ACTIVE )) -ge "$STALL" ]; then
+            CLAUDE_WATCH_REAPED="silent and idle for ${STALL}s"
+        elif [ "$DEADLINE" -gt 0 ] && [ "$NOW" -ge "$DEADLINE" ]; then
+            CLAUDE_WATCH_REAPED="past this turn's wall clock"
+        fi
+        if [ -n "$CLAUDE_WATCH_REAPED" ]; then
+            kill "$CPID" 2>/dev/null
+            sleep 2
+            kill -9 "$CPID" 2>/dev/null
+            break
+        fi
+    done
+    wait "$CPID" 2>/dev/null
+    CLAUDE_WATCH_STATUS=$?
+    [ -z "$CLAUDE_WATCH_REAPED" ] || claude_stream_note "reaped" "$CLAUDE_WATCH_REAPED"
+    return 0
+}
+
 # One CLI run for a wake, under the stall watchdog, APPENDING to $DEBUGLOG.
 # $1 is a CLAUDE_CONFIG_DIR override ("" = the primary login) — the fallback
 # retry runs through here too, so a hung fallback account is reaped exactly
@@ -2298,34 +2397,9 @@ _wake_claude_run() {
             --append-system-prompt "$SYSTEM_PROMPT" \
             "$PROMPT_TEXT" >> "$DEBUGLOG" 2>&1
     ) &
-    local CPID=$!
-    # Stall watchdog: no wall-clock limit — reap only a session that is BOTH
-    # silent and idle. The stream log gets nothing during a single long tool
-    # call (a compile delivers its output in one event at completion), so log
-    # freshness alone would kill genuine work; CPU burn across the process
-    # tree is the second life sign. A hung network call or a tool stuck on
-    # stdin sits at ~zero CPU, so real hangs are still caught.
-    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M
-    LAST_ACTIVE=$(date +%s)
-    PREV_CPU=$(_tree_cpu "$CPID")
-    while kill -0 "$CPID" 2>/dev/null; do
-        sleep 10
-        CUR_CPU=$(_tree_cpu "$CPID")
-        LOG_M=$(stat -c %Y "$DEBUGLOG" 2>/dev/null || echo 0)
-        # Alive = new log output, or >=10 jiffies (~0.1 s) of CPU since last check
-        if [ "$LOG_M" -gt "$LAST_ACTIVE" ] || [ $((CUR_CPU - PREV_CPU)) -ge 10 ]; then
-            LAST_ACTIVE=$(date +%s)
-        fi
-        PREV_CPU=$CUR_CPU
-        if [ $(( $(date +%s) - LAST_ACTIVE )) -ge "$WAKE_STALL_TIMEOUT" ]; then
-            kill "$CPID" 2>/dev/null
-            sleep 2
-            kill -9 "$CPID" 2>/dev/null
-            break
-        fi
-    done
-    wait "$CPID" 2>/dev/null
-    WAKE_CLAUDE_STATUS=$?
+    # No wall clock on a wake: nobody is waiting, and a long build is work.
+    _claude_watch $! "$WAKE_STALL_TIMEOUT" 0
+    WAKE_CLAUDE_STATUS=$CLAUDE_WATCH_STATUS
 }
 
 # The whole of a wake's CLI work: every account that is worth trying, in order,
@@ -2341,12 +2415,16 @@ _wake_claude_run() {
 # exactly once. Leaves the last run's exit status in WAKE_CLAUDE_STATUS, like
 # the single run it replaced.
 wake_claude_run_chain() {
-    local ACCT CONFDIR
+    local ACCT CONFDIR PREV=""
     for ACCT in $(claude_accounts); do
         CONFDIR="$(claude_account_confdir "$ACCT")"
+        # Marker only on this path — claude_swap_announce keeps the desktop
+        # notification for a turn somebody is waiting on.
+        [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
         _wake_claude_run "$CONFDIR"
         claude_run_limited || break
         claude_limit_record "$CONFDIR" "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | tail -n1)"
+        PREV="$ACCT"
     done
 }
 
@@ -2750,7 +2828,16 @@ _generate_claude_run() {
             --verbose --output-format stream-json --include-partial-messages \
             --append-system-prompt "$SYSTEM_PROMPT" \
             "$TEXT" >> "$DEBUGLOG" 2>&1
-    )
+    ) &
+    # Under the same watchdog the wake path has had all along. This was a
+    # plain foreground subshell — no watchdog, no timeout — and claude_generate
+    # looped it over every account with no bound either, so the only limit on
+    # an interactive turn sat DOWNSTREAM of an unbounded loop and was never
+    # reached: 680 s of silence at the desk on 2026-08-07, nothing spoken and
+    # no error. TURN_DEADLINE is read from claude_generate's scope (bash
+    # dynamic scoping, same as TEXT and SYSTEM_PROMPT above).
+    _claude_watch $! "$TURN_STALL_TIMEOUT" "${TURN_DEADLINE:-0}"
+    GENERATE_CLAUDE_STATUS=$CLAUDE_WATCH_STATUS
 }
 
 # One turn of generation: prompt in, response text out. No speech, no windows,
@@ -2774,12 +2861,25 @@ claude_generate() {
     # to come) and extract-response drops them whenever a genuine reply follows
     # in the same log.
     : > "$DEBUGLOG"
-    local ACCT CONFDIR
+    # One wall clock for the WHOLE walk, handed down to each run's watchdog.
+    # Per-account timeouts would still let a three-account chain run for three
+    # times as long as anyone is willing to stand there.
+    local TURN_DEADLINE=0
+    [ "${TURN_CHAIN_TIMEOUT:-0}" -gt 0 ] \
+        && TURN_DEADLINE=$(( $(date +%s) + TURN_CHAIN_TIMEOUT ))
+    local ACCT CONFDIR PREV=""
     for ACCT in $(claude_accounts); do
         CONFDIR="$(claude_account_confdir "$ACCT")"
+        [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
         _generate_claude_run "$CONFDIR"
         claude_run_limited || break
         claude_limit_record "$CONFDIR" "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | tail -n1)"
+        PREV="$ACCT"
+        # No time left for another whole CLI boot and refusal.
+        if [ "$TURN_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$TURN_DEADLINE" ]; then
+            claude_stream_note "chain-abandoned" "past this turn's wall clock"
+            break
+        fi
     done
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally
@@ -2992,6 +3092,22 @@ _run_claude_remote_locked() {
         "$SPOKEN" "$DISPLAY_MD" "$AUDIO" "$ERROR"
 }
 
+# The "Thinking..." toast, and its dismissal — paired, and idempotent so the
+# dismissal can be called from a trap AND on the straight line without a
+# second empty notification flashing past.
+_THINKING_SHOWN=0
+notify_thinking() {
+    _THINKING_SHOWN=1
+    notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Thinking..." 2>/dev/null
+    return 0
+}
+notify_thinking_clear() {
+    [ "${_THINKING_SHOWN:-0}" = 1 ] || return 0
+    _THINKING_SHOWN=0
+    notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "" 2>/dev/null
+    return 0
+}
+
 # Run claude, save response, handle display channel
 run_claude_and_respond() {
     session_register "desktop turn"
@@ -3008,13 +3124,20 @@ run_claude_and_respond() {
 
     start_tts_streamer
 
-    notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Thinking..."
+    notify_thinking
+    # The dismissal rides the trap as well as the straight line. "Thinking..."
+    # is a -t 0 notification — it stays up until something takes it down — and
+    # it was only ever dismissed after claude_generate RETURNED, so a turn that
+    # died anywhere in between left it hanging over the desktop indefinitely.
+    # That stuck toast over ten minutes of silence is exactly what the
+    # account-swap stall looked like from the outside. session_finish is
+    # chained in because session_register's trap is the one being replaced.
+    trap 'notify_thinking_clear; session_finish' EXIT INT TERM
 
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
 
-    # Dismiss thinking notification
-    notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "" 2>/dev/null
+    notify_thinking_clear
 
     if claude_run_limited; then
         # Every account refused over a limit. extract_response reports the
