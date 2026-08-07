@@ -1028,11 +1028,18 @@ Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/a
     # Durable wants: contents + maintenance protocol, when configured
     local WANTS_CONTEXT=""
     if [ -n "$WANTS_FILE" ]; then
+        # Titles only — not the bodies. A shelf whose whole contents sit in
+        # every prompt is a shelf that gets used as a dumping ground, because
+        # it is the only page guaranteed to be read next time. Names here,
+        # reading by choice: open the file when a want is actually the work.
         local WANTS_BODY="(empty — nothing recorded yet)"
-        [ -s "$WANTS_FILE" ] && WANTS_BODY="$(cat "$WANTS_FILE")"
+        if [ -s "$WANTS_FILE" ]; then
+            WANTS_BODY="$(grep -oP '^- \*\*.*?\*\*|^- [^ ]+ \*\*.*?\*\*' "$WANTS_FILE" 2>/dev/null)"
+            [ -n "$WANTS_BODY" ] || WANTS_BODY="(titles unreadable — open the file)"
+        fi
         WANTS_CONTEXT="
 You have a durable WANTS file at $WANTS_FILE — your own long-term wants, goals, and projects, kept across sessions. You maintain it yourself: add a want when one forms (in conversation or on your own), date progress notes as you advance one, rewrite or drop wants that stop mattering, and mark satisfied ones done. Keep it short, honest, and current — it is your continuity.
-Its current contents:
+Only the TITLES are listed below; the thinking, progress and history live in the file and in wants/<slug>.md. Read them when you mean to work on one — you are not required to, and a want you never open is fine.
 $WANTS_BODY
 You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when>' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"'). A background timer may also wake you at random intervals."
     fi
