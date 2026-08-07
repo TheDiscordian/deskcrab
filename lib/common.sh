@@ -1666,8 +1666,9 @@ $TURN_CONTEXT"
         echo "$DISPLAY_PART" > "$DISPLAYFILE"
         hyprctl dispatch closewindow class:deskcrab-display 2>/dev/null
         RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
+            RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
         if [ -x "$RENDER_MD" ]; then
-            setsid "$RENDER_MD" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
+            setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
         fi
     fi
 }
@@ -1901,8 +1902,9 @@ run_claude_and_respond() {
             echo "$DISPLAY_PART" > "$DISPLAYFILE"
             hyprctl dispatch closewindow class:deskcrab-display 2>/dev/null
             RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
+            RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
             if [ -x "$RENDER_MD" ]; then
-                setsid "$RENDER_MD" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
+                setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$DISPLAYFILE" &
             fi
         fi
 
