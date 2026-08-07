@@ -93,6 +93,12 @@ WAKE_QUIET_HOURS="${WAKE_QUIET_HOURS:-}"
 # Effort for autonomous wakes. Nobody is waiting on a wake, so it can afford
 # more thinking than the interactive default.
 WAKE_EFFORT="${WAKE_EFFORT:-$CLAUDE_EFFORT}"
+# Model for autonomous wakes, separately from the conversation. Most wakes are
+# a shelf-check that ends in silence; measured 2026-08-07, wakes were the bulk
+# of the day's token spend precisely because they ran the conversation's
+# top-tier model. Default stays the conversation model — the split is a knob,
+# not a policy.
+WAKE_MODEL="${WAKE_MODEL:-$CLAUDE_MODEL}"
 # Reap an autonomous wake only when it goes completely silent: an active session
 # writes stream events constantly, so this many seconds without any output means
 # it is hung, not thinking. Wall-clock limits would kill productive sessions.
@@ -1554,7 +1560,12 @@ $(cat "$f")"
 Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/alerts.txt — read these files only if the user asks about weather. When asked about weather, always check alerts.txt and mention any active alerts."
     fi
 
-    # Durable wants: contents + maintenance protocol, when configured
+    # Durable wants: shelf location, titles, and wake mechanics — data only.
+    # What wants ARE and how to keep them is explained exactly once, in
+    # CUSTOM_PROMPT (the wake prompt carries the dated-progress protocol for
+    # the sessions that actually do the maintaining). This block must never
+    # grow an explanation of its own, or the prompt ends up with two separate
+    # sections explaining wants.
     local WANTS_CONTEXT=""
     if [ -n "$WANTS_FILE" ]; then
         # Titles only — not the bodies. A shelf whose whole contents sit in
@@ -2257,7 +2268,7 @@ _wake_claude_run() {
         [ -n "$CONFDIR" ] && export CLAUDE_CONFIG_DIR="$CONFDIR"
         export "${CLAUDE_NO_AUTO_MEMORY?}"
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CLAUDE_MODEL" --effort "$WAKE_EFFORT" \
+            --model "$WAKE_MODEL" --effort "$WAKE_EFFORT" \
             --verbose --output-format stream-json \
             --append-system-prompt "$SYSTEM_PROMPT" \
             "$PROMPT_TEXT" >> "$DEBUGLOG" 2>&1
@@ -2458,8 +2469,6 @@ $TURN_CONTEXT"
             RESPONSE="$RESPONSE
 ---DISPLAY---
 $DISPLAY_PART"
-        else
-            DISPLAY_PART="(quiet) $THOUGHTS"
         fi
     fi
 
