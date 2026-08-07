@@ -9,7 +9,7 @@ state: running | finished | failed | stopped | died
     job-status new <dir> <id> <description> <unit>
     job-status set <file> key=value [key=value ...]
     job-status get <file> <key>
-    job-status report <dir> [show-finished] [keep-days]
+    job-status report <dir> [show-finished] [keep-days] [--live] [--failed-since EPOCH]
 
 `set` coerces digit values to ints, treats the value "now" as a timestamp
 (writing both <key> and <key>_epoch), and an empty value as "remove the key".
@@ -119,6 +119,24 @@ def cmd_get(argv):
 
 
 def cmd_report(argv):
+    # Flags may follow the positional args: --live (running work only, the
+    # prompt's copy) and --failed-since EPOCH (plus any job that ended badly
+    # after EPOCH, so a death that nobody has been told about yet still gets
+    # said once).
+    live = "--live" in argv
+    failed_since = None
+    if "--failed-since" in argv:
+        i = argv.index("--failed-since")
+        try:
+            failed_since = int(argv[i + 1])
+        except (IndexError, ValueError):
+            failed_since = None
+    positional = []
+    for a in argv:
+        if a.startswith("--"):
+            break
+        positional.append(a)
+    argv = positional
     d = argv[0]
     show = int(argv[1]) if len(argv) > 1 else 6
     keep_days = int(argv[2]) if len(argv) > 2 else 14
@@ -160,6 +178,30 @@ def cmd_report(argv):
     jobs.sort(key=lambda j: j.get("started_epoch", 0))
     running = [j for j in jobs if j.get("state") == "running"]
     done = [j for j in jobs if j.get("state") != "running"][-show:]
+
+    if live:
+        lines = ["  - running (%s so far)  %s — %s" % (
+            fmt_dur(now - j.get("started_epoch", now)),
+            j.get("id", "?"), one_line(j.get("description", ""), 100))
+            for j in running]
+        if not lines:
+            lines.append("  (none running)")
+        if failed_since is not None:
+            # News, once. Capped: a night in which five builders hit the same
+            # wall is one thing to look at, not five lines of prompt.
+            fresh = [j for j in jobs
+                     if j.get("state") in ("failed", "died", "blocked", "stopped")
+                     and j.get("finished_epoch", 0) >= failed_since]
+            for j in fresh[:3]:
+                state = j.get("state")
+                if state == "blocked":
+                    state = "blocked (never ran)"
+                elif state == "failed":
+                    state = "failed (exit %s)" % j.get("exit", "?")
+                lines.append("  - ENDED SINCE YOUR LAST TURN: %s  %s — %s" % (
+                    state, j.get("id", "?"), one_line(j.get("description", ""), 90)))
+        print("\n".join(lines))
+        return
 
     lines = []
     for j in running:

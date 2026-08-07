@@ -162,7 +162,12 @@ case "${1:-}" in
         # the life of this process, so it covers the whole session.
         exec 9>"${STATE_PREFIX}-wake.lock"
         if ! flock -n 9; then
-            [ -n "$WAKE_KIND" ] && "$SCRIPT_DIR/crab" wake-at 15min "$WAKE_KIND" "$WAKE_REASON" >/dev/null
+            # Push back to a moment nothing else has taken. A flat 15 minutes
+            # here is what produced three timers at the same second with
+            # sequential ids: every wake blocked in the same minute re-armed to
+            # the same minute, and the ones that lost the lock again marched on
+            # together. wake_free_slot spaces the retries so the queue drains.
+            [ -n "$WAKE_KIND" ] && "$SCRIPT_DIR/crab" wake-at "$(wake_free_slot)s" "$WAKE_KIND" "$WAKE_REASON" >/dev/null
             exit 0
         fi
 
@@ -337,6 +342,14 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         fi
         ;;
 
+    wake-tidy)
+        # Prune the wake queue: fired transient timers nothing remembers,
+        # repeated promises, and bookings sharing a second. Runs at the end of
+        # every wake too — this is the by-hand door onto the same thing.
+        wake_tidy
+        exit 0
+        ;;
+
     wake-restore)
         # Rebuild wake timers from their durable records: still-future ones at
         # their original moment, overdue ones once and promptly but staggered.
@@ -362,7 +375,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # Anything else is treated as a text query
         TEXT="$*"
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|serve [port]|remote <text>|notify <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
         fi
         stop_tts

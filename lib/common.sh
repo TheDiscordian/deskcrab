@@ -139,12 +139,28 @@ JOB_BLOCK_RETRY="${JOB_BLOCK_RETRY:-1800}"
 # rebuilds timers from the records at login. Deliberately NOT under
 # STATE_PREFIX: a promise for tomorrow morning must survive /tmp being cleared.
 WAKES_DIR="${WAKES_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes}"
+# How much of the wake queue reaches the PROMPT. `crab status` still lists every
+# pending timer; the prompt gets the near horizon and a count of the rest, because
+# a wake nine hours out changes nothing about the turn being answered now.
+WAKES_HORIZON_HOURS="${WAKES_HORIZON_HOURS:-12}"
+WAKES_SHOW="${WAKES_SHOW:-5}"
+# A blocked wake's retry must not land on top of the other blocked wakes. Base
+# push-back, and the minimum distance two bookings must keep from each other.
+WAKE_DEFER_DELAY="${WAKE_DEFER_DELAY:-900}"
+WAKE_SLOT_SPREAD="${WAKE_SLOT_SPREAD:-180}"
 SESSIONS_LOCK="${STATE_PREFIX}-sessions.lock"
 SESSIONS_LOG="${STATE_PREFIX}-sessions.log"
 # How far back the journal of finished sessions is read, and how many entries
 # of it reach the prompt.
 SESSIONS_LOG_HOURS="${SESSIONS_LOG_HOURS:-12}"
 SESSIONS_LOG_SHOW="${SESSIONS_LOG_SHOW:-8}"
+# The prompt's copy of that journal is a much shorter reach back: half an hour,
+# a few entries, each one a line rather than a paragraph. Twelve hours of full
+# turn text is a day's log, and reading it in a prompt is nothing like
+# remembering the last half hour — which is the only thing it is for.
+SESSIONS_RECENT_MINUTES="${SESSIONS_RECENT_MINUTES:-30}"
+SESSIONS_RECENT_SHOW="${SESSIONS_RECENT_SHOW:-4}"
+SESSIONS_RECENT_WIDTH="${SESSIONS_RECENT_WIDTH:-150}"
 SESSIONS_LOG_KEEP="${SESSIONS_LOG_KEEP:-400}"
 # The durable day record beneath the sessions log. The log above is the live
 # view — trimmed lines, capped, erased with /tmp at every reboot. This is the
@@ -692,19 +708,115 @@ session_reap() {
 
 # The journal of sessions that have already finished. This is the half a live
 # registry cannot cover: work done in a gap is invisible the moment it ends.
-session_history() {
+# --recent is the prompt's copy: the last half hour, a few entries, one line
+# each. Not a shorter version of the same thing — a different thing. Twelve
+# hours of full turn text is a day's log, and a day's log in a prompt is not
+# what remembering the last half hour feels like; it also cost more of the
+# state block than everything actually running put together.
+session_history() {  # [--recent]
     [ -s "$SESSIONS_LOG" ] || { echo "  (nothing recorded)"; return 0; }
-    local CUTOFF; CUTOFF=$(date -d "-${SESSIONS_LOG_HOURS} hours" '+%Y-%m-%d %H:%M:%S')
+    local CUTOFF SHOW WIDTH SPAN
+    if [ "${1:-}" = "--recent" ]; then
+        CUTOFF=$(date -d "-${SESSIONS_RECENT_MINUTES} minutes" '+%Y-%m-%d %H:%M:%S')
+        SHOW="$SESSIONS_RECENT_SHOW"; WIDTH="$SESSIONS_RECENT_WIDTH"
+        SPAN="${SESSIONS_RECENT_MINUTES} min"
+    else
+        CUTOFF=$(date -d "-${SESSIONS_LOG_HOURS} hours" '+%Y-%m-%d %H:%M:%S')
+        SHOW="$SESSIONS_LOG_SHOW"; WIDTH=0
+        SPAN="${SESSIONS_LOG_HOURS}h"
+    fi
     local OUT
     OUT="$(awk -F'\t' -v cut="$CUTOFF" '$1 >= cut' "$SESSIONS_LOG" \
-        | tail -n "$SESSIONS_LOG_SHOW" \
-        | awk -F'\t' '{ d = ($3 == "?") ? "?" : $3 "s"; \
-            printf "  - %s (%s, ran %s) %s\n", $1, $4, d, $5 }')"
-    if [ -n "$OUT" ]; then echo "$OUT"; else echo "  (nothing in the last ${SESSIONS_LOG_HOURS}h)"; fi
+        | tail -n "$SHOW" \
+        | awk -F'\t' -v w="$WIDTH" '{ d = ($3 == "?") ? "?" : $3 "s"; \
+            t = $5; \
+            if (w > 0 && length(t) > w) t = substr(t, 1, w - 1) "…"; \
+            printf "  - %s (%s, ran %s) %s\n", (w > 0 ? substr($1, 12) : $1), $4, d, t }')"
+    if [ -n "$OUT" ]; then echo "$OUT"; else echo "  (nothing in the last $SPAN)"; fi
 }
 
-# Human-readable state of self: live sessions and pending wakes.
+# One line, at most N characters, ellipsis only when something was actually cut.
+_ellipsis() {  # <text> <limit>
+    local s; s="$(printf '%s' "$1" | tr '\n\t' '  ')"
+    if [ "${#s}" -gt "$2" ]; then printf '%s…' "${s:0:$(( $2 - 1 ))}"; else printf '%s' "$s"; fi
+}
+
+# "12:53" for today, "Sat 03:35" for anything further out — a wake's moment,
+# said the way a person would say it.
+_wake_when() {  # <epoch>
+    if [ "$(date -d "@$1" +%F)" = "$(date +%F)" ]; then date -d "@$1" '+%H:%M'
+    else date -d "@$1" '+%a %H:%M'; fi
+}
+
+# Every pending deskcrab timer as "<epoch>\t<unit>\t<what it is>", soonest
+# first. The booking record is preferred over the unit name for the third
+# field: "event: a job finished" says what is coming, where an id says only
+# that something is.
+_wake_pending_rows() {
+    local u next epoch fire kind reason rec desc
+    for u in $(systemctl --user list-timers 'deskcrab-*' --no-pager --legend=false 2>/dev/null \
+                | grep -o 'deskcrab-[^ ]*\.timer'); do
+        # Calendar timers report realtime; transient --on-active ones report
+        # monotonic, so fall back to the list-timers row for those.
+        next="$(systemctl --user show "$u" -p NextElapseUSecRealtime --value 2>/dev/null)"
+        # Only accept a row that actually starts with a weekday — a timer whose
+        # moment has passed prints placeholder dashes, and stitching those into
+        # a sentence invents a wake that is not coming.
+        [ -z "$next" ] && next="$(systemctl --user list-timers "$u" --no-pager --legend=false 2>/dev/null \
+                                  | awk '$1 ~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/ {print $1" "$2" "$3" "$4}')"
+        [ -n "$next" ] || continue
+        epoch="$(date -d "$next" +%s 2>/dev/null)" || continue
+        [ -n "$epoch" ] || continue
+        desc=""
+        rec="$WAKES_DIR/${u%.timer}.wake"
+        if [ -s "$rec" ]; then
+            IFS=$'\t' read -r fire kind reason < "$rec"
+            desc="${kind:-scheduled}"
+            [ -n "$reason" ] && desc="$desc: $reason"
+        fi
+        printf '%s\t%s\t%s\n' "$epoch" "$u" "$desc"
+    done | sort -n
+}
+
+# The wake queue. --brief is the prompt copy: the near horizon only, capped,
+# with a count of everything further out. The full list is one command away,
+# and a wake nine hours from now has no bearing on the turn being answered.
+wakes_report() {  # [--brief]
+    local brief=0; [ "${1:-}" = "--brief" ] && brief=1
+    local rows epoch unit desc n=0 later=0 now horizon
+    rows="$(_wake_pending_rows)"
+    [ -n "$rows" ] || { echo "  (none scheduled)"; return 0; }
+    now=$(date +%s); horizon=$(( now + WAKES_HORIZON_HOURS * 3600 ))
+    while IFS=$'\t' read -r epoch unit desc; do
+        [ -n "$epoch" ] || continue
+        if [ "$brief" = 1 ]; then
+            if [ "$n" -ge "$WAKES_SHOW" ] || [ "$epoch" -gt "$horizon" ]; then
+                later=$(( later + 1 )); continue
+            fi
+            printf '  - %s  %s\n' "$(_wake_when "$epoch")" "$(_ellipsis "${desc:-${unit%.timer}}" 90)"
+        else
+            printf '  - %s fires %s%s\n' "${unit%.timer}" "$(date -d "@$epoch" '+%a %F %H:%M:%S')" \
+                "${desc:+ — $(_ellipsis "$desc" 120)}"
+        fi
+        n=$(( n + 1 ))
+    done <<< "$rows"
+    [ "$later" -gt 0 ] && printf '  +%d later (crab status for the rest)\n' "$later"
+    return 0
+}
+
+# Human-readable state of self. Two audiences, and deliberately not the same
+# report:
+#   self_state_report            — `crab status`, the whole dashboard
+#   self_state_report --prompt   — the CURRENT STATE OF YOURSELF block
+# The prompt copy answers one question — what is running RIGHT NOW and what is
+# about to happen — and nothing else. History under a heading that says "right
+# now" reads as live work: a job that failed at 02:06 sat in the block all day
+# beside four running ones, and finished sessions from twelve hours back cost
+# more prompt than everything live put together. All of it is still there in
+# `crab status` and `crab jobs`; none of it is needed to answer a turn.
 self_state_report() {
+    local brief=0
+    [ "${1:-}" = "--prompt" ] && brief=1
     session_reap
     local f kind pid started epoch startt n=0
     echo "Live sessions:"
@@ -722,29 +834,31 @@ self_state_report() {
         n=$((n+1))
     done
     [ "$n" -eq 0 ] && echo "  (none registered)"
-    echo "Detached background jobs (they outlive turns — launch: crab job <description>; list: crab jobs):"
-    jobs_report
-    echo "Interrupted mid-work (edits may be on disk — pick up or 'crab resolve'):"
-    interrupted_report
-    echo "Pending wakes:"
-    local timers u next
-    timers=""
-    for u in $(systemctl --user list-timers 'deskcrab-*' --no-pager --legend=false 2>/dev/null \
-                | grep -o 'deskcrab-[^ ]*\.timer'); do
-        # Calendar timers report realtime; transient --on-active ones report
-        # monotonic, so fall back to the list-timers row for those.
-        next="$(systemctl --user show "$u" -p NextElapseUSecRealtime --value 2>/dev/null)"
-        # Only accept a row that actually starts with a weekday — a timer whose
-        # moment has passed prints placeholder dashes, and stitching those into
-        # a sentence invents a wake that is not coming.
-        [ -z "$next" ] && next="$(systemctl --user list-timers "$u" --no-pager --legend=false 2>/dev/null \
-                                  | awk '$1 ~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/ {print $1" "$2" "$3" "$4}')"
-        [ -n "$next" ] && timers="$timers  - $u fires $next
-"
-    done
-    if [ -n "$timers" ]; then echo "$timers"; else echo "  (none scheduled)"; fi
-    echo "Recently finished (last ${SESSIONS_LOG_HOURS}h):"
-    session_history
+    if [ "$brief" = 1 ]; then
+        echo "Detached jobs running now (finished and failed ones: crab jobs):"
+        jobs_report --live
+        echo "Pending wakes (next ${WAKES_HORIZON_HOURS}h):"
+        wakes_report --brief
+        # Only when there is something to pick up: an empty "Interrupted" heading
+        # is two lines of prompt saying nothing happened.
+        local interrupted; interrupted="$(interrupted_report)"
+        case "$interrupted" in
+            *"(none)"*) : ;;
+            *) echo "Interrupted mid-work (edits may be on disk — pick up or 'crab resolve'):"
+               echo "$interrupted" ;;
+        esac
+        echo "Just finished (last ${SESSIONS_RECENT_MINUTES} min — older: crab status, crab journal):"
+        session_history --recent
+    else
+        echo "Detached background jobs (they outlive turns — launch: crab job <description>; list: crab jobs):"
+        jobs_report
+        echo "Interrupted mid-work (edits may be on disk — pick up or 'crab resolve'):"
+        interrupted_report
+        echo "Pending wakes:"
+        wakes_report
+        echo "Recently finished (last ${SESSIONS_LOG_HOURS}h):"
+        session_history
+    fi
 }
 
 # --- Durable wakes ---------------------------------------------------------
@@ -782,21 +896,31 @@ wake_state_clear() {
     rm -f -- "$WAKES_DIR/$1.wake"
 }
 
-# An equivalent pending booking, if one exists: scheduled kind, same reason,
-# firing within WAKE_COALESCE_WINDOW of the proposed moment. Prints its unit
-# name. Two "come back to the wants" promises minutes apart are one promise —
-# each fired wake re-reads the same wants and re-announces the same progress,
-# so the second booking adds noise, not coverage. Event wakes never coalesce:
-# each carries its own reason for existing.
+# An equivalent pending booking, if one exists: same kind, same reason, firing
+# within WAKE_COALESCE_WINDOW of the proposed moment. Prints its unit name. Two
+# "come back to the wants" promises minutes apart are one promise — each fired
+# wake re-reads the same wants and re-announces the same progress, so the second
+# booking adds noise, not coverage.
+#
+# An event booking coalesces only against a BYTE-IDENTICAL reason. Two different
+# events are two wakes and must both survive; but the same event booked twice is
+# one event — and that is not hypothetical, it is how a wake blocked on the wake
+# lock re-books itself, carrying the same kind and the same reason it arrived
+# with. The old rule ("event wakes never coalesce") let a blocked event wake
+# stack a fresh copy of itself on every retry.
 wake_pending_equivalent() {  # <fire-epoch> <kind> <reason>
     [ "${WAKE_COALESCE_WINDOW:-0}" -gt 0 ] || return 1
-    [ "$2" = "scheduled" ] || return 1
+    case "$2" in
+        scheduled) : ;;
+        event) [ -n "$3" ] || return 1 ;;
+        *) return 1 ;;
+    esac
     local f fire kind reason now diff
     now=$(date +%s)
     for f in "$WAKES_DIR"/*.wake; do
         [ -e "$f" ] || continue
         IFS=$'\t' read -r fire kind reason < "$f"
-        [ "$kind" = "scheduled" ] || continue
+        [ "$kind" = "$2" ] || continue
         [ "${fire:-0}" -gt "$now" ] || continue
         [ "$reason" = "$3" ] || continue
         diff=$(( fire - $1 )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
@@ -823,6 +947,145 @@ _wake_book() {  # <unit> <when> <kind> <reason>
         systemd-run --user --quiet --unit="$1" "${extra[@]}" --on-calendar="$2" \
             "$SCRIPT_DIR/crab" wake "$3" "$4" "$1"
     fi
+}
+
+# A unit name nothing else is using. Timestamp + pid was not enough: a single
+# process re-booking two wakes inside one second produced the same name twice,
+# and the second systemd-run silently lost to the first.
+_WAKE_UNIT_SEQ=0
+_wake_new_unit() {
+    _WAKE_UNIT_SEQ=$(( _WAKE_UNIT_SEQ + 1 ))
+    local u="deskcrab-wake-$(date +%s)-$$"
+    [ "$_WAKE_UNIT_SEQ" -gt 1 ] && u="$u-$_WAKE_UNIT_SEQ"
+    while [ -e "$WAKES_DIR/$u.wake" ]; do
+        _WAKE_UNIT_SEQ=$(( _WAKE_UNIT_SEQ + 1 ))
+        u="deskcrab-wake-$(date +%s)-$$-$_WAKE_UNIT_SEQ"
+    done
+    printf '%s\n' "$u"
+}
+
+# How long to wait before a retry, in seconds, avoiding moments that are already
+# taken. Prints a delay, not a moment.
+#
+# This is the fix for three timers at 12:09:15 with sequential ids. Only one wake
+# session runs at a time (the wake lock); a wake that finds the lock held pushes
+# itself back and tries again. That push-back was a FLAT 15 minutes, so three
+# wakes blocked within the same minute all re-armed to the same second, one of
+# them took the lock, and the other two were blocked again and marched on
+# together — for as long as anything kept feeding the queue. It was never a loop
+# and never a double booking: it was a convoy with no spacing. Retries now land
+# WAKE_SLOT_SPREAD apart, so the queue drains one at a time instead of marching.
+wake_free_slot() {  # [base-delay-seconds] -> delay in seconds
+    local base="${1:-$WAKE_DEFER_DELAY}" now cand f fire diff clash guard=0
+    now=$(date +%s); cand=$(( now + base ))
+    while [ "$guard" -lt 64 ]; do
+        clash=0
+        for f in "$WAKES_DIR"/*.wake; do
+            [ -e "$f" ] || continue
+            IFS=$'\t' read -r fire _ < "$f"
+            [ "${fire:-0}" -gt "$now" ] || continue
+            diff=$(( fire - cand )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
+            if [ "$diff" -lt "$WAKE_SLOT_SPREAD" ]; then clash=1; break; fi
+        done
+        [ "$clash" = 0 ] && break
+        cand=$(( cand + WAKE_SLOT_SPREAD )); guard=$(( guard + 1 ))
+    done
+    echo $(( cand - now ))
+}
+
+# Housekeeping for the wake queue, safe to run at any time and run at the end of
+# every wake. Three jobs, all of them things the queue cannot do for itself:
+#
+#  1. Purge transient timers that have ALREADY FIRED and have no booking record.
+#     A one-shot wake unit stays loaded after it fires, and a unit booked with a
+#     bare calendar spec ('09:45') even re-arms for TOMORROW — but its record was
+#     retired the moment it fired, so nothing remembers it and nothing intends
+#     it. Those are the ghosts: wakes that are coming with no reason left to say
+#     why they are coming. "Already fired" is the whole safety rule here, and it
+#     is load-bearing: a timer that has NEVER fired and has no record is not a
+#     ghost, it is a pending wake whose record some other hand removed, and
+#     killing it would cancel a wake nobody asked to cancel. Left alone, it fires
+#     and does its work. `crab wake-cancel` remains the way to call one off,
+#     because it takes down the timer AND the record together.
+#  2. Collapse bookings that are the same promise (same kind, same reason, within
+#     WAKE_COALESCE_WINDOW). The earliest survives.
+#  3. Spread bookings that landed on top of each other. Two wakes cannot run at
+#     once, so two bookings in the same second are one wake and one deferral.
+#
+# The record is the authority throughout; a timer is only ever the record's
+# shadow. A unit whose SERVICE is active is skipped everywhere — that is a wake
+# firing right now, and it cleared its own record first thing.
+wake_tidy() {
+    local u base purged=0 collapsed=0 spread=0
+    mkdir -p "$WAKES_DIR"
+    for u in $(systemctl --user list-units --all --no-pager --legend=false 'deskcrab-wake-*.timer' 2>/dev/null \
+               | grep -o 'deskcrab-wake-[0-9][^ ]*\.timer'); do
+        base="${u%.timer}"
+        systemctl --user is-active --quiet "$base.service" && continue
+        [ -s "$WAKES_DIR/$base.wake" ] && continue
+        # Never fired = never a ghost. LastTriggerUSec is empty until the
+        # timer has actually gone off at least once.
+        [ -n "$(systemctl --user show "$u" -p LastTriggerUSec --value 2>/dev/null)" ] || continue
+        systemctl --user stop "$u" >/dev/null 2>&1
+        systemctl --user reset-failed "$u" "$base.service" >/dev/null 2>&1
+        purged=$(( purged + 1 ))
+        echo "purged: $base (already fired — no booking record)"
+    done
+
+    local f unit fire kind reason now keptf keptk keptr newfire newunit
+    local -a kf=() kk=() kr=()
+    now=$(date +%s)
+    while IFS=$'\t' read -r fire f; do
+        [ -n "$f" ] && [ -e "$f" ] || continue
+        unit="${f##*/}"; unit="${unit%.wake}"
+        systemctl --user is-active --quiet "$unit.service" && continue
+        IFS=$'\t' read -r fire kind reason < "$f"
+        [ "${fire:-0}" -gt "$now" ] || continue
+        local i=0 dup="" near=0 diff
+        while [ "$i" -lt "${#kf[@]}" ]; do
+            keptf="${kf[$i]}"; keptk="${kk[$i]}"; keptr="${kr[$i]}"
+            diff=$(( fire - keptf )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
+            if [ "$keptk" = "$kind" ] && [ "$keptr" = "$reason" ] \
+               && [ "$diff" -le "${WAKE_COALESCE_WINDOW:-900}" ]; then
+                dup=1; break
+            fi
+            [ "$diff" -lt "$WAKE_SLOT_SPREAD" ] && near=1
+            i=$(( i + 1 ))
+        done
+        if [ -n "$dup" ]; then
+            systemctl --user stop "$unit.timer" >/dev/null 2>&1
+            systemctl --user reset-failed "$unit.timer" "$unit.service" >/dev/null 2>&1
+            wake_state_clear "$unit"
+            collapsed=$(( collapsed + 1 ))
+            echo "collapsed: $unit (same promise as one already pending)"
+            continue
+        fi
+        if [ "$near" = 1 ]; then
+            # Retire this booking BEFORE asking for a free slot, or its own
+            # record is the collision the search is trying to avoid.
+            systemctl --user stop "$unit.timer" >/dev/null 2>&1
+            systemctl --user reset-failed "$unit.timer" "$unit.service" >/dev/null 2>&1
+            wake_state_clear "$unit"
+            newfire=$(( now + $(wake_free_slot $(( fire - now ))) ))
+            newunit="$(_wake_new_unit)"
+            wake_state_write "$newunit" "$newfire" "$kind" "$reason"
+            if _wake_book "$newunit" "$(( newfire - now ))s" "$kind" "$reason"; then
+                spread=$(( spread + 1 ))
+                echo "spread: $unit -> $(date -d "@$newfire" '+%H:%M:%S') (was sharing a moment with another wake)"
+                fire="$newfire"
+            else
+                wake_state_clear "$newunit"
+                wake_state_write "$unit" "$fire" "$kind" "$reason"
+            fi
+        fi
+        kf+=("$fire"); kk+=("$kind"); kr+=("$reason")
+    done < <(for f in "$WAKES_DIR"/*.wake; do
+                 [ -e "$f" ] || continue
+                 IFS=$'\t' read -r fire _ < "$f"
+                 printf '%s\t%s\n' "${fire:-0}" "$f"
+             done | sort -n)
+    [ $(( purged + collapsed + spread )) -eq 0 ] && echo "wake queue is tidy (nothing purged, collapsed or spread)"
+    return 0
 }
 
 # Rebuild timers from the booking records. Run at login by
@@ -880,8 +1143,12 @@ ENSURE_WAKE_DELAY="${ENSURE_WAKE_DELAY:-45min}"
 ensure_next_wake() {
     [ -n "$WANTS_FILE" ] || return 0
     # Heal first: any booking whose timer died with a past user manager gets
-    # its timer back now, not only at next login.
+    # its timer back now, not only at next login. Then tidy: drop the fired
+    # timers nothing remembers, collapse repeated promises, and spread any that
+    # landed on the same second — the queue is only ever inspected by her, and
+    # a queue nobody prunes is a queue nobody can read.
     wake_restore >/dev/null 2>&1
+    wake_tidy >/dev/null 2>&1
     local f fire kind reason now
     now=$(date +%s)
     for f in "$WAKES_DIR"/*.wake; do
@@ -1208,9 +1475,9 @@ $MEMORY_CONTEXT
     local SELF_STATE
     SELF_STATE="
 CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
-$(self_state_report)
-Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; a recently finished session means work was DONE in the gap, by you, even though this conversation never saw it. Speak for the whole of yourself, not just this conversation.
-This is a snapshot taken when your turn began — sessions start and finish while you work. Run 'crab status' any time you need it live, and always before telling the user that nothing is happening.
+$(self_state_report --prompt)
+Read this before claiming what you are or are not doing. Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; a session under 'Just finished' did work in the last half hour that this conversation may never have seen. Speak for the whole of yourself, not just this conversation.
+This is a snapshot taken when your turn began, and it is deliberately only the near view — what is live, what is imminent, and the last half hour. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full. Run them rather than guessing, and always before telling the user that nothing is happening.
 When you start multi-step work, run 'crab checkpoint <intent, files touched, what is done, what is next>' and update it as you go — if this turn is cut off (network drop, kill), that checkpoint is the ONLY explanation the next session gets for edits left on disk. If 'Interrupted mid-work' above lists a trace, that is an earlier you cut off mid-task: read it, pick up or finish the work, then clear it with 'crab resolve <name>'.
 The files that constitute you — wants, conduct, engineering, journal, memory, your config, the deskcrab repo, your library — are watched (lib/notice-selfchange): an outside hand changing or deleting them wakes you. Your own writes through the usual tools are declared for you automatically, but before you DELETE or move any of those files, or write them from a command the stream cannot parse (git checkout/pull, a script), run 'crab touching <paths>' first — without that declaration your own hand is reported to you as an intruder's.
 Work that must outlive this turn — or that would keep the user waiting while you watch it — is a detached job, NEVER a subagent: a subagent dies the moment this turn ends, and while it lives it holds the turn open so the user cannot speak to you. Run 'crab job \"<full, self-contained description of the work>\"' (optionally 'crab job -C <workdir> ...'): it becomes its own claude session under systemd, independent of this turn, silent by contract, logging to $JOBS_DIR/<id>.log, and it wakes you with an event when it finishes. 'crab jobs' lists what is running and what finished; 'crab job log <id>' shows a job's output. Never tell the user an agent is working in the background unless it is a job in that list."
@@ -1819,7 +2086,9 @@ $TURN_CONTEXT"
     # its agenda survives to a retry after the outage clears.
     if wake_stream_failed; then
         session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(printf '%s' "$RESPONSE" | tr '\n\t' '  ' | head -c 160))"
-        [ -n "${WAKE_KIND:-}" ] && "$SCRIPT_DIR/crab" wake-at 30min "$WAKE_KIND" "${WAKE_REASON:-}" >/dev/null
+        # A free slot, not a flat half hour: an outage fails every wake it
+        # touches, and a fixed retry stacks all of them onto the same second.
+        [ -n "${WAKE_KIND:-}" ] && "$SCRIPT_DIR/crab" wake-at "$(wake_free_slot 1800)s" "$WAKE_KIND" "${WAKE_REASON:-}" >/dev/null
         # An error dressed as a reply must never be judged for memory use —
         # consume the recall sidecar without spawning the judge.
         rm -f "${STATE_PREFIX}-memory-injected-$$.json"
@@ -2331,7 +2600,26 @@ job_start() {
 # neither started nor waited for. The report also reaps: a job whose unit is
 # gone and whose recorded pid is dead is marked "died" instead of claiming
 # "running" forever — a SIGKILLed worker never writes its own outcome.
-jobs_report() {
-    "$LIB_DIR/job-status" report "$JOBS_DIR" "$JOBS_SHOW_FINISHED" "$JOBS_KEEP_DAYS" 2>/dev/null \
+#
+# --live is the prompt copy: work that is running RIGHT NOW, plus — once — any
+# job that ended badly since the last turn built this block. A failure is news
+# exactly once; after that it is history, and history under a "right now"
+# heading is how four running jobs came to be listed beside a build that died
+# at two in the morning. The marker below is what "since the last turn" means:
+# it is stamped every time the prompt copy is rendered, so the same corpse is
+# never reported twice. A missing marker means this is the first render on this
+# machine — nothing was missed, so nothing is owed, and the marker is stamped
+# with no back-catalogue dumped into the prompt.
+jobs_report() {  # [--live]
+    local marker="${STATE_PREFIX}-jobs-surfaced" since
+    local -a extra=()
+    if [ "${1:-}" = "--live" ]; then
+        since="$(cat "$marker" 2>/dev/null)"
+        case "$since" in ''|*[!0-9]*) since="$(date +%s)" ;; esac
+        extra=(--live --failed-since "$since")
+    fi
+    "$LIB_DIR/job-status" report "$JOBS_DIR" "$JOBS_SHOW_FINISHED" "$JOBS_KEEP_DAYS" "${extra[@]}" 2>/dev/null \
         || echo "  (job status unavailable)"
+    [ "${1:-}" = "--live" ] && date +%s > "$marker"
+    return 0
 }
