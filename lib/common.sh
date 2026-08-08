@@ -2821,6 +2821,27 @@ fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
     detach_turn_child promise-audit "$SCRIPT_DIR/lib/promise-audit" "$@"
 }
 
+# --- Claudism capture: the phrase-habit flag log ----------------------------
+# The listening half of the nightly claudism review: every path that delivers
+# a reply hands the response to lib/claudism-capture at the same out-of-band
+# moment as the promise audit. It greps the spoken half against the phrase
+# list and appends hits to the day's flag log for the night to judge —
+# detection only, never a gate (specs/turn-pipeline.md rules 30-32). Paths go
+# as arguments, not environment: a detached unit gets a bare environment, and
+# a forgotten --setenv here is how a scratch instance's child once wrote into
+# the live store.
+CLAUDISMS_FILE="${CLAUDISMS_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/claudisms.md}"
+CLAUDISM_FLAGS_DIR="${CLAUDISM_FLAGS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/claudism-flags}"
+
+fire_claudism_capture() {  # <journal-kind> <response>
+    [ "${CLAUDISM_CAPTURE:-1}" = "1" ] || return 0
+    [ -x "$SCRIPT_DIR/lib/claudism-capture" ] || return 0
+    [ -f "$CLAUDISMS_FILE" ] || return 0
+    detach_turn_child claudism-capture "$SCRIPT_DIR/lib/claudism-capture" \
+        "$CLAUDISMS_FILE" "$CLAUDISM_FLAGS_DIR" "$1" \
+        "${SESSION_START:-$(date +%s)}" "$$" "$2"
+}
+
 # --- Memory reinforcement: the turn-end genuinely-used judge ----------------
 # Retrieval must never reinforce — a record surfacing in a KNN query is not
 # evidence it mattered, and stamping it anyway teaches the store that whatever
@@ -3629,6 +3650,9 @@ $DISPLAY_PART"
         "$PROMISE_AUDIT_REASON_PREFIX"*) ;;
         *) fire_promise_audit --wake "${WAKE_REASON:-}" "$RESPONSE" ;;
     esac
+    # The claudism capture rides the same moment, and unconditionally: a
+    # wake spoken to nobody is still her voice, audit follow-ups included.
+    fire_claudism_capture wake "$RESPONSE"
     # Same moment for the memory judge: the wake's outcome is recorded, and a
     # silent completion below must not skip the judgement — a memory used by
     # a wake that chose to say nothing was still used.
@@ -4190,6 +4214,7 @@ _run_claude_remote_locked() {
     # memory judge rides the same moment — reply delivered, hot path over.
     fire_promise_audit "$TEXT" "$RESPONSE"
     fire_memory_judge "$TEXT" "$RESPONSE" "$WORK_TRACE"
+    fire_claudism_capture phone "$RESPONSE"
 
     # Text came back but neither half of it is anything the phone can render —
     # a reply that was nothing but a "---DISPLAY---" line, or nothing but the
@@ -4328,6 +4353,7 @@ run_claude_and_respond() {
         # something and fail to write it down? If so this fires an event wake
         # that hands the sentence back to me. Costs nothing on the hot path.
         fire_promise_audit "$TEXT" "$RESPONSE"
+        fire_claudism_capture desktop "$RESPONSE"
     else
         # He asked out loud and nothing came back. This branch used to do
         # NOTHING AT ALL — no speech, no notification, no journal line — so a

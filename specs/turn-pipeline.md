@@ -82,6 +82,26 @@ which share every stage except capture and delivery.
 29. Rotation MUST archive on inactivity, and the archived pair (transcript and summary) MUST move
     together.
 
+### Turn-close capture
+
+The listening half of the nightly claudism review ([nightly.md](nightly.md)): a cheap phrase-list
+pass over what was just said, so the night has a day's flag log to judge. Detection only, by
+design and by rule — the review exists to break a habit, never to gate a tongue.
+
+30. Every path that delivers a reply (desk, phone, wake) MUST hand the response to the claudism
+    capture at the same out-of-band moment as the promise audit: detached, after the user has
+    their answer, never on the hot path. The capture MUST NOT edit, hold, delay, or veto any part
+    of the turn, MUST scan only the spoken half of the reply, and MUST stay silent — no
+    notification, no wake, no mid-conversation surfacing. Its only output is the flag log and its
+    own one-line run trace.
+31. A flag record MUST carry enough to find the turn again: the session's start epoch and pid
+    (the day journal's identity), the journal kind, the sentence as spoken, and the pattern that
+    matched. The flag log is append-only, dated like the journal, and flocked like it; the
+    nightly review owns reading it.
+32. A missing phrase list is not an error: the capture simply does not fire. A capture that
+    cannot parse the list, or that crashes, MUST exit quietly without touching the turn — its
+    run-trace line is the only place that failure shows.
+
 ## DATA
 
 | Path | Owner | Format |
@@ -99,6 +119,9 @@ which share every stage except capture and delivery.
 | `~/.local/share/deskcrab/sessions/<pid>.ckpt` | `crab checkpoint` | append-only, one line per checkpoint |
 | `${STATE_PREFIX}-sessions.log` | `session_finish`, `session_reap` | append-only journal |
 | `~/.local/share/deskcrab/journal/<date>.jsonl` | `day_journal_append` | one JSON object per finished turn |
+| `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: one entry per claudism, its trigger pattern in the entry's first backtick span |
+| `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
+| `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |
 | `voice-claude-archive/` | rotation | archived transcript and summary pairs |
 

@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""claudism-capture — the listening half of the nightly claudism review.
+
+She has phrasing habits that are not hers — the assistant-brochure cadence the
+conduct sheet calls claudisms. The cure is a habit-breaking exercise, not a
+censor: this runs AFTER a reply is delivered, detached, out of band (same
+moment as the promise audit, specs/turn-pipeline.md rules 30-32), greps the
+spoken half against the phrase list, and appends every hit to the day's flag
+log. The nightly review reads that log and shows her each sentence next to a
+rewrite. Nothing here can edit, hold, or slow what she says, and nothing here
+speaks: the flag log and a one-line run trace are the only outputs.
+
+Usage: claudism-capture <phrase-file> <flags-dir> <kind> <epoch> <pid> <response>
+
+The phrase list is markdown, readable by her rather than a regex blob: an
+entry is a bullet or heading whose FIRST backtick span is the trigger,
+compiled as a case-insensitive regex; the prose around it is the why.
+Lines without a backtick span, and indented continuation notes, are prose.
+A missing or unparseable list means no flags, never a failed turn.
+
+Flag records key on (epoch, pid) — the day journal's identity — so the
+nightly judge can re-read the whole turn a sentence came from.
+"""
+
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+
+DELIM = "---DISPLAY---"
+
+
+def trace(line):
+    prefix = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
+    try:
+        with open(prefix + "-claudism-capture.log", "a", encoding="utf-8") as f:
+            f.write("%s\t%s\n" % (time.strftime("%F %T"), line))
+    except OSError:
+        pass
+
+
+def spoken_half(text):
+    # Mirror spoken_part() in lib/common.sh: everything above the first
+    # delimiter line. The display half is written, not spoken — a habit of
+    # the tongue is only evidenced by what the tongue was given.
+    lines = []
+    for ln in text.splitlines():
+        if ln.strip() == DELIM:
+            break
+        lines.append(ln)
+    return "\n".join(lines)
+
+
+def load_patterns(path):
+    entries, bad = [], 0
+    entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
+    span_re = re.compile(r"`([^`]+)`")
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            m = entry_re.match(raw.rstrip())
+            if not m:
+                continue
+            span = span_re.search(m.group(1))
+            if not span:
+                continue
+            pat = span.group(1).strip()
+            note = span_re.sub("", m.group(1)).strip(" —-–:,.")
+            try:
+                entries.append((re.compile(pat, re.IGNORECASE), pat, note))
+            except re.error:
+                bad += 1
+    return entries, bad
+
+
+def sentences(text):
+    # Rough on purpose: the judge re-reads the turn at night, so a clumsy
+    # boundary costs a little context, never a lost flag.
+    out = []
+    for para in text.splitlines():
+        para = para.strip()
+        if para:
+            out.extend(s.strip() for s in re.split(r"(?<=[.!?…])\s+", para) if s.strip())
+    return out
+
+
+def main(argv):
+    phrase_file, flags_dir, kind, epoch, pid, response = argv
+    try:
+        epoch = int(epoch)
+    except ValueError:
+        epoch = int(time.time())
+    spoken = spoken_half(response)
+    if not spoken.strip():
+        trace("%s pid=%s\tnothing spoken, nothing scanned" % (kind, pid))
+        return 0
+    patterns, bad = load_patterns(phrase_file)
+    if not patterns:
+        trace("%s pid=%s\tno usable patterns in %s (%d unparseable)"
+              % (kind, pid, phrase_file, bad))
+        return 0
+    hits = []
+    for sent in sentences(spoken):
+        for rx, pat, note in patterns:
+            if rx.search(sent):
+                rec = {
+                    "epoch": epoch,
+                    "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "kind": kind,
+                    "pid": int(pid) if pid.isdigit() else None,
+                    "sentence": sent,
+                    "pattern": pat,
+                }
+                if note:
+                    rec["note"] = note
+                hits.append(rec)
+    if hits:
+        os.makedirs(flags_dir, exist_ok=True)
+        day = time.strftime("%Y-%m-%d", time.localtime(epoch))
+        # Flocked like the day journal: turns finish together, and an
+        # interleaved partial line would poison the judge's whole night.
+        with open(os.path.join(flags_dir, day + ".jsonl"), "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            for rec in hits:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.flush()
+    trace("%s pid=%s\t%d pattern(s), %d hit(s)%s"
+          % (kind, pid, len(patterns), len(hits),
+             ", %d unparseable entr(ies) skipped" % bad if bad else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 7:
+        trace("bad invocation: %d arg(s)" % (len(sys.argv) - 1))
+        sys.exit(0)
+    try:
+        sys.exit(main(sys.argv[1:7]))
+    except Exception as e:  # never let a flag pass become a turn's problem
+        trace("error: %s" % e)
+        sys.exit(0)
