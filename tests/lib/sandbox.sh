@@ -46,6 +46,40 @@
 # reporting is uniform even where the control flow has to abort.
 
 # --------------------------------------------------------------------------
+# The two live paths that move under somebody else's hand.
+#
+# The leak check accuses whichever test was running when a live path moved, and
+# that is right for every path but these two: the phone server (a live
+# deskcrab-serve.service, running the whole time the suite runs) writes them on
+# its own schedule, driven by a phone somewhere polling it. Nothing a test does
+# can stop that, and nothing a test does causes it.
+#
+#   <live prefix>-phone-seen    serve.py touches it on EVERY authenticated
+#                               /watch poll from a wake-capable client
+#                               (lib/serve.py, `Path(PHONE_SEEN).touch()`), so
+#                               its mtime moves every few seconds all day.
+#   <live data>/webpush/        webpush.py rewrites the lock file whenever it
+#                               takes the lock and replaces subscriptions.json
+#                               atomically, which moves the directory's own
+#                               mtime with it.
+#
+# Excluded from BOTH photographs — the before and the after — because a path
+# dropped from only one side reads as a deletion. Defined above the phase-1
+# block on purpose: the file is re-entered under `env -i`, so a function
+# defined here is the same function on both sides of that boundary.
+#
+# NOTHING ELSE goes in here. Every other live path that moves during a test is
+# either the code under test writing where it should not, or another hand
+# writing at the same moment, and both are things the suite must keep shouting
+# about.
+_sandbox_drop_external() {  # <live prefix> <live data dir>: a path filter
+    awk -F'\t' -v seen="$1-phone-seen" -v push="$2/webpush" '
+        $1 == seen { next }
+        $1 == push || index($1, push "/") == 1 { next }
+        { print }'
+}
+
+# --------------------------------------------------------------------------
 # Phase 1: the real environment. Build the root, photograph what is live, and
 # hand the test to a clean environment.
 # --------------------------------------------------------------------------
@@ -83,7 +117,8 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
                 -name "$(basename "$_sb_live_prefix")*" \
                 ! -path "$_sb_root*" \
                 -printf '%p\t%s\t%T@\n' 2>/dev/null
-        } | LC_ALL=C sort > "$1"
+        } | _sandbox_drop_external "$_sb_live_prefix" "$_sb_live_data" \
+          | LC_ALL=C sort > "$1"
         cut -f1 "$1" > "$1.paths"
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
             2>/dev/null | LC_ALL=C sort > "$1.units"
@@ -265,7 +300,8 @@ _sandbox_photo_after() {
             -name "$(basename "$SANDBOX_LIVE_PREFIX")*" \
             ! -path "$SANDBOX*" \
             -printf '%p\t%s\t%T@\n' 2>/dev/null
-    } | LC_ALL=C sort > "$SANDBOX/leak/after.raw"
+    } | _sandbox_drop_external "$SANDBOX_LIVE_PREFIX" "$SANDBOX_LIVE_DATA" \
+      | LC_ALL=C sort > "$SANDBOX/leak/after.raw"
     # /tmp is shared ground. A live file that already existed being rewritten or
     # deleted is this test's doing and is a leak; something NEW appearing beside
     # it may be another test's scratch root or another process entirely, and is

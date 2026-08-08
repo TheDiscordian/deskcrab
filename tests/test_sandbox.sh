@@ -98,6 +98,37 @@ check_eq "the conversation is the sandbox's own" \
     "$out" "$DESKCRAB_STATE_PREFIX-convo.txt"
 
 echo
+echo "the leak photograph excludes the two paths another hand writes, and nothing else:"
+# A live deskcrab-serve.service touches its seen-file on every /watch poll and
+# rewrites the webpush store whenever it takes that lock. Neither is caused by
+# any test, and both moved often enough during a suite run to hand a LEAKED
+# verdict to whichever innocent test happened to be running. They are excluded
+# from both photographs by name. Everything else stays in, and this is where
+# "everything else" is held: the filter is fed a photograph by hand, so no live
+# path has to move to prove what it does.
+photo="$(printf '%s\t0\t1\n' \
+    "$SANDBOX_LIVE_PREFIX-phone-seen" \
+    "$SANDBOX_LIVE_PREFIX-phone-seen.bak" \
+    "$SANDBOX_LIVE_PREFIX-convo.txt" \
+    "$SANDBOX_LIVE_DATA/webpush" \
+    "$SANDBOX_LIVE_DATA/webpush/subscriptions.json" \
+    "$SANDBOX_LIVE_DATA/webpushed-elsewhere" \
+    "$SANDBOX_LIVE_DATA/wakes/deskcrab-wake-1.wake" \
+    | _sandbox_drop_external "$SANDBOX_LIVE_PREFIX" "$SANDBOX_LIVE_DATA" \
+    | cut -f1)"
+for gone in "$SANDBOX_LIVE_PREFIX-phone-seen" "$SANDBOX_LIVE_DATA/webpush" \
+            "$SANDBOX_LIVE_DATA/webpush/subscriptions.json"; do
+    check "dropped, because a live phone server writes it: ${gone##*/}" \
+        bash -c '! printf "%s\n" "$1" | grep -qxF "$2"' _ "$photo" "$gone"
+done
+for kept in "$SANDBOX_LIVE_PREFIX-phone-seen.bak" "$SANDBOX_LIVE_PREFIX-convo.txt" \
+            "$SANDBOX_LIVE_DATA/webpushed-elsewhere" \
+            "$SANDBOX_LIVE_DATA/wakes/deskcrab-wake-1.wake"; do
+    check "kept, because a leak is a leak: ${kept##*/}" \
+        bash -c 'printf "%s\n" "$1" | grep -qxF "$2"' _ "$photo" "$kept"
+done
+
+echo
 echo "a stub can be replaced without a second stub directory:"
 sandbox_stub claude <<'STUB'
 #!/bin/bash

@@ -33,6 +33,14 @@ during the very investigation that produced these specs.
 
 9. **Touch.** A test MUST NOT write to any live path. Every directory it writes is under its own
    temporary root.
+   - The proof is a photograph of live state before and after, and anything that moved fails the
+     test. A path may be excluded from that photograph only when a LIVE INSTANCE writes it on its
+     own schedule while the suite runs — today the phone server's seen-file and its webpush store,
+     which a phone polling from outside the house moves every few seconds. Each exclusion is named
+     individually, in the harness, with the writer that moves it. A pattern, a directory swept
+     wholesale, or an exclusion added to quieten a failure is forbidden: the accusation is the
+     point, and everything else that moves is either the code under test writing where it should
+     not or another hand writing at the same moment.
 10. **Spend.** A test MUST NOT start a real model session. The stub must be asserted as the **first**
     check of any test that dispatches work, so a configuration that overwrites the CLI path is caught
     before the money is spent.
