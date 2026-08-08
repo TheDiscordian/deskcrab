@@ -186,6 +186,17 @@ class Turn:
                 self.done = True
             self.cond.notify_all()
 
+    def give_up(self, error):
+        """The done event a wedged turn will never send — at most once, so
+        racing tails cannot double it, and never over a real completion."""
+        with self.cond:
+            if self.done:
+                return
+            self.events.append({"kind": "done", "spoken": "", "display_html": "",
+                                "audio": "", "error": error})
+            self.done = True
+            self.cond.notify_all()
+
 
 TURNS = {}
 TURNS_LOCK = threading.Lock()
@@ -240,7 +251,7 @@ def run_turn(turn, text):
             turn.emit("done", {
                 "spoken": reply.get("spoken", ""),
                 "display_html": render_markdown(reply.get("display", "")),
-                "audio": "",
+                "audio": audio,
                 "error": reply.get("error", ""),
             })
     except Exception as exc:  # noqa: BLE001 — the client must hear about it
@@ -303,7 +314,40 @@ def publish_local_images(html):
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, timeout=TURN_TIMEOUT, **kw)
+    """Captured subprocess that waits on the PROCESS — never on its pipes.
+
+    Two waits wedged here, and both were waits for EOF on a pipe rather than
+    for the child. The first: subprocess.run kills only the direct child at
+    the timeout, so a descendant still holding stdout kept the drain blocked
+    and the turn never emitted its done event — "thinking…" forever, the
+    wedge behind C10. The child gets its own process group now and the
+    timeout kills the whole group, so TimeoutExpired always reaches the
+    caller (spec: phone rule 6 — every turn ends in a completion event).
+
+    The second is subtler and loses a GOOD reply: communicate() returns at
+    EOF even when the child has already exited zero with its answer printed,
+    so one leaked `child &` anywhere under `crab remote` made a turn that
+    succeeded in seconds surface at the full timeout as a timeout error —
+    from the phone, Beatrice audibly finishes speaking and the page then
+    sits at "thinking…" until an error bubble replaces the reply she gave.
+    Capture goes to files instead: a file has no EOF to wait on, so the wait
+    ends the moment the child exits, whoever still holds the descriptor
+    (tests/test_phone_done_after_exit.sh drives exactly this shape).
+    """
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(cmd, stdout=out, stderr=err,
+                             start_new_session=True, **kw)
+        try:
+            p.wait(timeout=TURN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+            raise
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(cmd, p.returncode,
+                                           out.read(), err.read())
 
 
 STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
@@ -1184,12 +1228,23 @@ class Handler(BaseHTTPRequestHandler):
 
         i = max(0, start)
         while True:
+            # Every bound on a legitimate run is far inside this: the
+            # subprocess dies at TURN_TIMEOUT, the synthesiser join is shorter.
+            # A buffer this old with no done event is a turn thread that hung
+            # or died without reporting — and pinging it forever is exactly the
+            # permanent "thinking…" the client cannot be asked to survive.
+            # Rule 6: every turn ends in a completion event. give_up() takes
+            # the cond itself, so it is called outside the block below.
+            overdue = not turn.done and time.time() - turn.created > TURN_TIMEOUT + 180
             with turn.cond:
-                if i >= len(turn.events) and not turn.done:
+                if i >= len(turn.events) and not turn.done and not overdue:
                     turn.cond.wait(timeout=15)
                 events = turn.events[i:]
                 done = turn.done
             if not events and not done:
+                if overdue:
+                    turn.give_up("the turn stalled on the server and was given up on")
+                    continue
                 # Keepalive comment: without traffic a dead hotspot socket can
                 # sit in ESTABLISHED forever and this thread would tail nothing
                 # to nobody. The client ignores non-data frames.
