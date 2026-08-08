@@ -600,8 +600,10 @@ structural_checks() { # <case state dir> <case source dir>
 
     # The transcript format has to be able to say who authored a block.
     local unparsed
+    # Same shape as CONVO_BLOCK_RE in lib/common.sh: an optional stamp and an
+    # optional provenance marker, both loose about what sits inside them.
     unparsed="$(grep -nE '^(User|Assistant)' "$SRC/conversation.txt" 2>/dev/null \
-        | grep -vE '^[0-9]+:(User|Assistant)( \[[^]]*\])?: ' | head -n1)"
+        | grep -vE '^[0-9]+:(User|Assistant)( \[[^]]*\])?( \([^)]*\))?: ' | head -n1)"
     if [ -z "$unparsed" ]; then
         ok "transcript — every block header in the fixture parses as a block"
     else

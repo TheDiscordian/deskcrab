@@ -1221,7 +1221,8 @@ build_convo_context() {  # [byte cap, 0 = uncapped]
     [ -s "$CONVOFILE" ] || [ -s "$SUMMARYFILE" ] || return 0
 
     OUT="THE CONVERSATION SO FAR — the record of WHAT WAS SAID, and it is authoritative for what was said and promised. For that and nothing else: what is running, what is scheduled and what was dispatched belong to the state block above, and most of what is scheduled was never typed into this conversation at all. A command's output never overrides these words — a clean search does not mean a thing you can read yourself writing here never happened — and when a search and this record disagree, say that they disagree rather than quietly picking the search.
-Each block is headed with the local time it was said, 'User [2026-08-07 12:01]:'. Read them: they are how you tell a minute ago from this morning. Compare them against the time given above, and say 'a few minutes ago' or 'about two hours ago' rather than reading a stamp aloud. A block with no stamp is older than this record kept one — you know only that it came before the stamped ones."
+Each block is headed with the local time it was said, 'User [2026-08-07 12:01]:'. Read them: they are how you tell a minute ago from this morning. Compare them against the time given above, and say 'a few minutes ago' or 'about two hours ago' rather than reading a stamp aloud. A block with no stamp is older than this record kept one — you know only that it came before the stamped ones.
+A block marked '(autonomous wake)' in its header is one you wrote to yourself while nobody was talking to you. It is not something he has read and it is not part of what he said: never continue its subject, defend it, or treat it as a thing he is replying to, unless he raises it himself."
 
     if [ -s "$SUMMARYFILE" ]; then
         OUT="$OUT
@@ -1278,9 +1279,17 @@ _convo_tail_blocks() {  # <file> <bytes>
 # boundary never advances, and the whole conversation folds into the summary in
 # one pass instead of the oldest half.
 CONVO_STAMP_RE='( [[][^]]*[]])?'
-CONVO_USER_RE="^User${CONVO_STAMP_RE}: "
-CONVO_ASSISTANT_RE="^Assistant${CONVO_STAMP_RE}: "
-CONVO_BLOCK_RE="^(User|Assistant)${CONVO_STAMP_RE}: "
+# And who wrote it. A block she wrote to herself on an autonomous wake is
+# headed "Assistant [2026-08-07 12:38] (autonomous wake): ", because without
+# the marker a wake's words sit in the transcript looking exactly like
+# something she said TO him and he read — so the next turn defends a subject he
+# never raised, or picks up a thread that only ever existed inside her own
+# head. Optional in every pattern, same as the stamp: every conversation
+# written before this, and every archive of one, keeps parsing.
+CONVO_MARK_RE='( [(][^)]*[)])?'
+CONVO_USER_RE="^User${CONVO_STAMP_RE}${CONVO_MARK_RE}: "
+CONVO_ASSISTANT_RE="^Assistant${CONVO_STAMP_RE}${CONVO_MARK_RE}: "
+CONVO_BLOCK_RE="^(User|Assistant)${CONVO_STAMP_RE}${CONVO_MARK_RE}: "
 
 # The stamp itself. Local time to the minute: this is for telling a minute ago
 # from this morning, not for timing anything.
@@ -1290,7 +1299,14 @@ convo_stamp() { date '+%Y-%m-%d %H:%M'; }
 # spoken to — desktop turn, phone turn, autonomous wake — goes through these,
 # so the stamp cannot be added in one place and forgotten in another.
 convo_append_user() { convo_append 'User [%s]: %s\n' "$(convo_stamp)" "$1"; }
-convo_append_assistant() { convo_append 'Assistant [%s]: %s\n\n' "$(convo_stamp)" "$1"; }
+# --wake marks the block as one she wrote to herself, unprompted. Every wake
+# that delivers words goes through this, so the marker cannot be written on one
+# path and forgotten on another.
+convo_append_assistant() {  # [--wake] <text>
+    local mark=""
+    [ "${1:-}" = "--wake" ] && { mark=" (autonomous wake)"; shift; }
+    convo_append 'Assistant [%s]%s: %s\n\n' "$(convo_stamp)" "$mark" "$1"
+}
 
 # The span a stretch of conversation covers, from the stamps in it: "HH:MM to
 # HH:MM" on one day, full dates across days, empty when nothing in the file is
@@ -3010,8 +3026,12 @@ $DISPLAY_PART"
     # Delivered — and only now does it become part of the conversation. The
     # marker and the reply go in together, immediately before the voice, so
     # the phone's /watch sees the bubble and hears the clip in that order.
+    # The header line stays: the phone's transcript renderer and the memory
+    # ingester both read it. The marker on the block header is what the PROMPT
+    # reads — a header line can be torn off its reply, and the next turn then
+    # meets a wake's words wearing the face of something she said to him.
     convo_append '[Autonomous wake — %s]\n' "$(date '+%Y-%m-%d %H:%M')"
-    convo_append_assistant "$RESPONSE"
+    convo_append_assistant --wake "$RESPONSE"
     # Delivered: a job that ended badly has now been reported to somebody.
     jobs_news_delivered
     compact_convo
