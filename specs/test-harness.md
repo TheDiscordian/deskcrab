@@ -41,6 +41,11 @@ during the very investigation that produced these specs.
      wholesale, or an exclusion added to quieten a failure is forbidden: the accusation is the
      point, and everything else that moves is either the code under test writing where it should
      not or another hand writing at the same moment.
+   - A path that APPEARED counts as much as one that changed. The photograph dropped new paths
+     beside the live prefix until 2026-08-08, on the reasoning that a new file there might belong to
+     somebody else — and a state file re-hardcoded to a live path, the defect the harness's own
+     sweep exists for, creates a file rather than editing one. The gate was blind to the shape it
+     was written to catch.
 10. **Spend.** A test MUST NOT start a real model session. The stub must be asserted as the **first**
     check of any test that dispatches work, so a configuration that overwrites the CLI path is caught
     before the money is spent.
@@ -152,4 +157,10 @@ The harness tests itself:
 - `tests/test_sandbox.sh` — the helper pins every knob in the list; a test that tries to write a
   live path fails; a test that tries to book a real wake fails; a test that tries to start a real
   model session fails.
-- `tests/run.sh --list` — every test file is executable, is listed, and runs under the sandbox.
+- `tests/run.sh --list` — every test file is executable, is listed, and either sources the sandbox
+  helper or is one of the named exceptions. The roll call also runs before the suite does, so a file
+  that skips the helper stops the run rather than passing quietly inside it. Four files predate the
+  helper (`test_debug_view`, `test_limit_fallback`, `test_phone_client`, `test_prompt_cases`); each
+  pins its own scratch root and stubs the same tools, and what they are missing is the exit-time leak
+  check. They are named in `UNSANDBOXED` in the runner, the list can only shrink, and until it is
+  empty rule 1 is held by that list rather than by the code.

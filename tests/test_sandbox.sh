@@ -129,6 +129,31 @@ for kept in "$SANDBOX_LIVE_PREFIX-phone-seen.bak" "$SANDBOX_LIVE_PREFIX-convo.tx
 done
 
 echo
+echo "a live path that did not exist before is a leak too:"
+# The photograph used to drop every path under the live prefix it had not seen
+# in the BEFORE shot, on the reasoning that a new /tmp file might belong to
+# somebody else. The result was that an edit to a live file counted and an
+# addition beside it did not — and the defect class the sweep below it exists
+# for (a state file re-hardcoded to /tmp/deskcrab-something) CREATES a file.
+# The one shape the gate was written to catch was the one shape it could not
+# see. Proved against a fake live tree, so the real one is never written.
+FAKE="$SANDBOX/fakelive"
+mkdir -p "$FAKE/root/leak" "$FAKE/tmp" "$FAKE/data" "$FAKE/state" "$FAKE/conf"
+: > "$FAKE/tmp/deskcrab-something-hardcoded"
+(
+    # SANDBOX moves with the rest: the photograph excludes this run's own root
+    # by prefix, and the fake live tree has to sit outside whatever that is.
+    export SANDBOX="$FAKE/root"
+    export SANDBOX_LIVE_PREFIX="$FAKE/tmp/deskcrab"
+    export SANDBOX_LIVE_DATA="$FAKE/data"
+    export SANDBOX_LIVE_STATE="$FAKE/state"
+    export SANDBOX_LIVE_CONF="$FAKE/conf"
+    _sandbox_photo_after
+)
+check "a file that appeared beside the live prefix is in the photograph" \
+    grep -q 'deskcrab-something-hardcoded' "$FAKE/root/leak/after"
+
+echo
 echo "a stub can be replaced without a second stub directory:"
 sandbox_stub claude <<'STUB'
 #!/bin/bash

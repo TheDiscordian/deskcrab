@@ -136,7 +136,6 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
                 -printf '%p\t%s\t%T@\n' 2>/dev/null
         } | _sandbox_drop_external "$_sb_live_prefix" "$_sb_live_data" \
           | LC_ALL=C sort > "$1"
-        cut -f1 "$1" > "$1.paths"
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
             2>/dev/null | LC_ALL=C sort > "$1.units"
         _sandbox_timers_photo "$1.timers"
@@ -323,18 +322,22 @@ _sandbox_photo_after() {
             -printf '%p\t%s\t%T@\n' 2>/dev/null
     } | _sandbox_drop_external "$SANDBOX_LIVE_PREFIX" "$SANDBOX_LIVE_DATA" \
       | LC_ALL=C sort > "$SANDBOX/leak/after.raw"
-    # /tmp is shared ground. A live file that already existed being rewritten or
-    # deleted is this test's doing and is a leak; something NEW appearing beside
-    # it may be another test's scratch root or another process entirely, and is
-    # not attributable — the one new live path a test really does create is the
-    # phone audio, which the known-defect sweep below handles by name. Under the
-    # live data, state and config directories nothing is dropped: an addition
-    # there is as much a leak as an edit.
-    awk -F'\t' 'NR==FNR { seen[$0]=1; next }
-                 $1 ~ "^'"$(dirname "$SANDBOX_LIVE_PREFIX")"'/" && !($1 in seen) { next }
-                 { print }' \
-        "$SANDBOX/leak/before.paths" "$SANDBOX/leak/after.raw" \
-        > "$SANDBOX/leak/after"
+    # A NEW path under the live prefix is a leak like any other. This used to
+    # drop them — an edit to a live file counted, an addition beside it did
+    # not — on the reasoning that a new /tmp file might belong to another test
+    # or another process. It cannot belong to another test: the find above
+    # matches the live prefix by name and every scratch root is `crabtest-*`
+    # somewhere else, so the only two things that can put a `deskcrab*` file in
+    # /tmp are the live instance and the code under test writing a hardcoded
+    # path. Those are the same two candidates an EDIT already has, and the
+    # message below names both.
+    #
+    # It matters because the defect class the phone-audio sweep was written for
+    # — a state file re-hardcoded to /tmp/deskcrab-something — creates a file
+    # rather than editing one, so the gate was blind to precisely the shape it
+    # exists to catch. Under the live data, state and config directories
+    # nothing was ever dropped; the prefix is now read the same way.
+    cp "$SANDBOX/leak/after.raw" "$SANDBOX/leak/after"
     env XDG_RUNTIME_DIR="$SANDBOX_REAL_RUNTIME_DIR" \
         DBUS_SESSION_BUS_ADDRESS="$SANDBOX_REAL_DBUS" \
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
@@ -399,8 +402,13 @@ _sandbox_finish() {
     for _cmd in ${_SANDBOX_AT_EXIT[@]+"${_SANDBOX_AT_EXIT[@]}"}; do
         eval "$_cmd" >/dev/null 2>&1 || true
     done
-    PASS="$(grep -c . "$SANDBOX/witness/passes" 2>/dev/null || echo "$PASS")"
-    FAIL="$(grep -c . "$SANDBOX/witness/failures" 2>/dev/null || echo "$FAIL")"
+    # Through the helper, not `grep -c … || echo`: on zero matches grep prints
+    # its own 0 AND exits non-zero, so the fallback fires too and the count
+    # comes back as two lines. That is the exact defect sandbox_count_in was
+    # written to warn about, and it was reproduced here, one screen below the
+    # warning — with the summary line and every `-gt` test downstream of it.
+    PASS="$(sandbox_count_in . "$SANDBOX/witness/passes")"
+    FAIL="$(sandbox_count_in . "$SANDBOX/witness/failures")"
     [ "$FAIL" -gt 0 ] && [ "$rc" = 0 ] && rc=1
     _sandbox_leak_check || leaked=1
     echo

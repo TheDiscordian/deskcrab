@@ -6,11 +6,17 @@
 #   bash tests/run.sh -v           print the output of anything that is not green
 #   bash tests/run.sh test_wake    run the tests whose names match
 #
-# Every test runs inside tests/lib/sandbox.sh, which means: Beatrice can be
+# Every test runs inside tests/lib/sandbox.sh, which means: the assistant can be
 # offline, nothing beyond localhost is reached, no model session is started, no
 # audio is played, no window is opened, and no unit is created in the user
 # manager. A test that damages live state fails LOUDLY here — the sandbox's own
 # exit check reports it as a leak whatever its assertions said.
+#
+# The exceptions are named in UNSANDBOXED below: files that predate the helper
+# and pin their own scratch root. They hold the same four gates by hand and are
+# missing only the leak check. The roll call runs before the suite does and
+# fails on any OTHER file that skips the helper, so the set stays four and
+# shrinks as they are converted.
 #
 # Exit status: non-zero if anything failed. A skip is not a failure and a skip
 # is never silent — it says why on its own line.
@@ -40,6 +46,42 @@ matches() { # <name>
     return 1
 }
 
+# --- the sandbox roll call -------------------------------------------------
+# specs/test-harness.md rule 1: there is exactly one sandbox helper and it is
+# the only way a test sources the library. Nothing asserted it. Four files
+# predate the helper and carry a hand-rolled sandbox of their own — every knob
+# pinned into a scratch root, every desktop tool stubbed — but they run outside
+# `env -i` and outside the exit-time leak check, and a test added tomorrow
+# without the helper line was indistinguishable from them: green, unchecked,
+# and unmentioned.
+#
+# So the four are NAMED, and the roll call fails on anything else that does not
+# source the helper. It also fails on a name here that HAS since been
+# converted, so the list can only ever shrink. Their own gates are described in
+# each file's header; what they are missing is the leak check, and that is the
+# entry that comes off this list when one of them is converted.
+UNSANDBOXED="test_debug_view test_limit_fallback test_phone_client test_prompt_cases"
+
+sandbox_roll_call() { # -> 0 clean, 1 something is unaccounted for
+    local f name rc=0 listed
+    for f in "$TESTS_DIR"/test_*.sh; do
+        [ -e "$f" ] || continue
+        name="$(basename "$f" .sh)"
+        case " $UNSANDBOXED " in *" $name "*) listed=1 ;; *) listed=0 ;; esac
+        if grep -q 'lib/sandbox\.sh' "$f"; then
+            [ "$listed" = 1 ] || continue
+            printf '  %s  IS sandboxed — take it out of UNSANDBOXED in run.sh\n' \
+                "${f#"$REPO"/}"
+            rc=1
+        else
+            [ "$listed" = 1 ] && continue
+            printf '  %s  DOES NOT source tests/lib/sandbox.sh\n' "${f#"$REPO"/}"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
 # --- the roll call ---------------------------------------------------------
 declare -a SHELL_TESTS=()
 for f in "$TESTS_DIR"/test_*.sh; do
@@ -52,15 +94,31 @@ matches "$(basename "$PY_TEST")" || PY_TEST=""
 if [ "$LIST" = 1 ]; then
     rc=0
     for f in "${SHELL_TESTS[@]}"; do
+        name="$(basename "$f" .sh)"
+        case " $UNSANDBOXED " in
+            *" $name "*) note="  (its own sandbox — no leak check)" ;;
+            *) note="" ;;
+        esac
         if [ -x "$f" ]; then
-            printf '  %s\n' "${f#"$REPO"/}"
+            printf '  %s%s\n' "${f#"$REPO"/}" "$note"
         else
             printf '  %s  NOT EXECUTABLE\n' "${f#"$REPO"/}"
             rc=1
         fi
     done
     [ -n "$PY_TEST" ] && printf '  %s\n' "${PY_TEST#"$REPO"/}"
+    sandbox_roll_call || rc=1
     exit "$rc"
+fi
+
+# The roll call runs before anything else does: a file that reaches live state
+# has already done it by the time its assertions are counted.
+if ! sandbox_roll_call; then
+    echo
+    echo "Every test runs inside tests/lib/sandbox.sh. The exceptions are named"
+    echo "in UNSANDBOXED in this file, with what they do instead; nothing else"
+    echo "may skip it, and a name there that no longer needs to be comes out."
+    exit 1
 fi
 
 # --- the run ---------------------------------------------------------------
