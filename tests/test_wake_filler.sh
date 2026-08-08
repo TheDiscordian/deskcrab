@@ -32,10 +32,13 @@ set -euo pipefail
 REPO="$SANDBOX_REPO"
 WORK="$SANDBOX"
 
-# The stub claude: replies with whatever the case under test put in reply.txt.
+# The stub claude: replies with whatever the case under test put in reply.txt,
+# and records the argv it was handed — which is where the wake's AGENDA arrives,
+# and the only place a test can read what the wake was actually told.
 sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 cat > /dev/null
+printf '%s\n' "\$*" > "$WORK/argv.txt"
 python3 - "$WORK/reply.txt" <<'PYEOF'
 import json, sys
 text = open(sys.argv[1]).read()
@@ -225,9 +228,13 @@ ok "a genuine short reply about 'quiet' is spoken"
 # real silence in words — no message text at all — and name the filler sentence
 # it keeps producing, or the code spends every wake swallowing something the
 # prompt never told her not to write.
-grep -q "ZERO message text" "$REPO/crab" \
+# Read off the agenda the LAST wake was actually handed, not off the source of
+# `crab`. A grep of the shipping file passes just as well when the sentence
+# survives only in the comment beside the code that stopped emitting it — and it
+# would not notice the wording moving to a file the grep does not read.
+grep -q "ZERO message text" "$WORK/argv.txt" \
     || fail "the wake prompt no longer asks for zero message text"
-grep -q "Nothing to say" "$REPO/crab" \
+grep -q "Nothing to say" "$WORK/argv.txt" \
     || fail "the wake prompt no longer forbids the filler sentence by name"
 ok "the wake prompt asks for silence in words, not just in code"
 
