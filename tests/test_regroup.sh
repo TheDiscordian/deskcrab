@@ -156,16 +156,33 @@ mkdir -p "$(dirname "$DESKCRAB_STATE_PREFIX")"
     # Words that are already the last thing she said in the transcript are not
     # news to fold in — the prompt carries them one layer up, and a second copy
     # under "fold it in and carry it forward" is how a reply gets restated at
-    # somebody who has read it.
-    sleep 60 & SPEAKER3=$!
+    # somebody who has read it. That holds for a HANDED-OFF reply: the bubble is
+    # delivery, and the end time on the record is only an estimate about a clip
+    # on his phone.
     printf 'User [12:00]: how did the backup go\nAssistant [12:01]: %s\n\n' "$OTHER" > "$CONVO"
-    live_speech_begin desk "$OTHER" "$SPEAKER3"
+    live_speech_begin phone "$OTHER" 0 "$(( $(date +%s) + 120 ))"
     [ -z "$(regroup_context)" ] || fail "regrouped against her own last transcript block"
     # A voice saying something the transcript does NOT hold still regroups.
-    live_speech_begin desk "and the disk it landed on is nearly full" "$SPEAKER3"
+    live_speech_begin phone "and the disk it landed on is nearly full" 0 "$(( $(date +%s) + 120 ))"
     [ -n "$(regroup_context)" ] \
         || fail "a voice saying something new was silenced by the transcript check"
-    kill "$SPEAKER3" 2>/dev/null
+
+    # ...but a voice this machine can WATCH is a different thing entirely. A
+    # desk reply lands in the transcript while the streamer is still saying it,
+    # so the test above matched on every ordinary desk turn and stood the
+    # regroup down against a sentence that was audibly still coming out of the
+    # speakers. A live pid is a process making sound right now, and it keeps its
+    # regroup whatever the transcript already holds.
+    sleep 60 & SPEAKER3=$!
+    live_speech_begin desk "$OTHER" "$SPEAKER3"
+    [ -n "$(regroup_context)" ] \
+        || fail "a live desk voice was silenced by its own words landing in the transcript"
+    kill "$SPEAKER3" 2>/dev/null; wait "$SPEAKER3" 2>/dev/null || true
+    # And once that process is gone — REAPED, not merely signalled; `kill -0`
+    # answers yes for a zombie — the words are delivered like any others.
+    live_speech_begin desk "$OTHER" "$SPEAKER3" "$(( $(date +%s) + 120 ))"
+    [ -z "$(regroup_context)" ] \
+        || fail "a finished desk voice still regrouped against its own transcript block"
     rm -f "$CONVO"
 
     # A message from him is a receipt: it retires THAT device's notice, and
@@ -175,6 +192,22 @@ mkdir -p "$(dirname "$DESKCRAB_STATE_PREFIX")"
     [ -f "$LIVE_SPEECH_FILE" ] || fail "a desk message retired the phone's notice"
     live_speech_retire phone
     [ ! -f "$LIVE_SPEECH_FILE" ] || fail "a phone message did not retire the phone's notice"
+
+    # A receipt is not a receipt for words still coming out of the speakers. He
+    # typed at the desk while the desk was mid-sentence: that is talking OVER
+    # her, and retiring the notice hands the new turn a prompt saying nothing
+    # else of her is speaking — so she answers straight over the top of her own
+    # sentence, with no regroup and no idea it was happening.
+    sleep 60 & MIDWORD=$!
+    live_speech_begin desk "$OTHER" "$MIDWORD"
+    live_speech_retire desk
+    [ -f "$LIVE_SPEECH_FILE" ] \
+        || fail "a message arriving mid-utterance retired a voice that was still speaking"
+    kill "$MIDWORD" 2>/dev/null; wait "$MIDWORD" 2>/dev/null || true
+    # The moment that process is gone, the ordinary receipt applies again.
+    live_speech_retire desk
+    [ ! -f "$LIVE_SPEECH_FILE" ] \
+        || fail "a finished desk voice was never retired by his next message"
 
     # And the desk turn does the retiring where it counts: before its prompt is
     # built. The record here is pidless with time still on the clock, which is
