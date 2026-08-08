@@ -1,0 +1,9 @@
+#!/bin/bash
+# The synthesiser. Whatever reaches its stdin is what would have been HEARD,
+# so the witness log is the honest answer to "was this spoken?" — never a log
+# line claiming it was. Emits a little silence so the player has something.
+while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "${SANDBOX_SPOKEN_LOG:-/dev/null}"
+    head -c 2048 /dev/zero
+done
+exit 0

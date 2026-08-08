@@ -1,0 +1,3 @@
+#!/bin/bash
+# Window manager control. Never touches the live session.
+exit 0

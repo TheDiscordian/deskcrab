@@ -1,0 +1,27 @@
+#!/bin/bash
+# The schedule gate. On 2026-08-07 the suite left an ARMED transient wake timer
+# in the live user manager pointing at a /tmp checkout, plus two failed units,
+# one of them pointing at a checkout that had already been deleted. A test that
+# can start a real wake is not a test.
+#
+# Two shapes reach this program and they are not the same thing:
+#
+#   a timer  (--on-active / --on-calendar) is a WAKE, or a deferral of one. It
+#            is recorded and never armed. Exit status is the booking's answer:
+#            0 by default (accepted), or whatever sandbox_systemd_rc set, for
+#            the tests that need the caller's cannot-defer branch.
+#
+#   a run    (no --on-*) is a detached child — the memory judge, a builder, a
+#            display window. Refusing it makes the caller take its own setsid
+#            fallback, which is the shipped path and keeps the child inside
+#            this process tree, where the sandbox environment still applies.
+printf '%s\n' "$*" >> "${SANDBOX_SYSTEMD_LOG:-/dev/null}"
+case " $* " in
+    *" --on-active="*|*" --on-calendar="*|*--on-active=*|*--on-calendar=*)
+        rc=0
+        [ -f "${DESKCRAB_SANDBOX_ROOT:-}/witness/systemd-run.rc" ] &&
+            rc="$(cat "$DESKCRAB_SANDBOX_ROOT/witness/systemd-run.rc")"
+        exit "${rc:-0}"
+        ;;
+esac
+exit 1
