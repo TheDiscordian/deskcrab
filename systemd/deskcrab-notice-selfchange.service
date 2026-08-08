@@ -1,5 +1,15 @@
 [Unit]
 Description=DeskCrab: notice outside changes to the assistant's own files
+# The burst guard, and it belongs on THIS unit as well as on the .path that
+# triggers it — systemd rate-limits the SERVICE being started, so the guard on
+# the path alone leaves the default five-starts-in-ten-seconds limit standing
+# here. A git checkout touching several watched directories inside a second is
+# an ordinary event, and hitting the limit puts the unit in failed state where
+# nothing triggers it again: the watcher goes quiet with no word said, which is
+# the exact failure its canary exists to catch. The installed copy has carried
+# this line for a while; the repo's did not, so deploying the repo units would
+# have quietly taken it away.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

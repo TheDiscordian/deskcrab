@@ -200,10 +200,15 @@ scratch instance is not told the user is busy by the live desk's recording.
 `wake_restore` / `wake_tidy`. Nothing outside it reads `$WAKES_DIR`, mints a unit name, or calls
 `systemd-run` for a wake.
 
-Four subsystems book wakes in her name — `promise-audit`, `job-runner`, `notice-selfchange` (and
-`notice-newfiles`), `canary-selfchange` — and each stamps its own `booked_by`. The promise auditor's
-cap is counted from the records under the booking lock and **drains** the excess as well as gating
-new bookings.
+Six subsystems book wakes in her name — `promise-audit`, `job-runner`, `notice-selfchange`,
+`notice-newfiles`, `canary` and `wake-chain-floor` — and each stamps its own `booked_by`. Two more
+identities reach a record without being subsystems: `outage-retry`, when a wake that failed before
+the model ran re-books itself, and `herself`, the default when nobody says. Six hands and eight
+names: specs/wake-queue.md rule 41 requires any prose that enumerates them to name the whole set,
+and this paragraph said four of each. The name on the record is `canary`, not
+`canary-selfchange` — that is the unit's name, not the booker's. The promise auditor's cap is
+counted from the records under the booking lock and **drains** the excess as well as gating new
+bookings.
 
 Every booking, cancellation, restoration, collapse and purge is appended to `wakes/ledger.log`, which
 the state block reads. `wake_restore`'s output is no longer sent to `/dev/null`.

@@ -118,7 +118,7 @@ snapshot() {
     } | sort -t "$TAB" -k2
 }
 
-CUR="$(mktemp /tmp/deskcrab-notice-self.XXXXXX)"
+CUR="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-self.XXXXXX")"
 snapshot > "$CUR"
 
 # First run seeds silently: an existing tree is history, not news.
@@ -209,7 +209,7 @@ SUP_BACKSTOP="${NOTICE_SUPPRESS_BACKSTOP:-21600}"
 SUP_FLOOR="$LAST_JUDGED"
 [ "$SUP_FLOOR" -lt $(( NOW - SUP_BACKSTOP )) ] && SUP_FLOOR=$(( NOW - SUP_BACKSTOP ))
 [ "$SUP_FLOOR" -gt "$NOW" ] && SUP_FLOOR="$NOW"
-ACTIVE="$(mktemp /tmp/deskcrab-notice-sup.XXXXXX)"
+ACTIVE="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-sup.XXXXXX")"
 if [ -f "$SUPPRESS" ]; then
     {
         flock 9
