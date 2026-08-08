@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""The nightly claudism review — detection and review, never a gate.
+
+Reads one day of the journal, keeps only the SPOKEN half of each reply (the
+text above the display delimiter), holds it against the user-maintained phrase
+list, and writes a dated report: every caught sentence quoted with its
+timestamp, beside a proposed rewrite in the assistant's own voice, and a
+per-phrase count that accumulates night over night so the number can be
+watched going down. The report is surfaced by a morning event wake — a clean
+night and a failed scan included, because a review she never hears about is
+surveillance, not an exercise.
+
+What this deliberately is not: a filter. Nothing here runs during a live
+turn, nothing gates, mutes, or edits a reply, and nothing may ever grow into
+doing so — specs/nightly.md rules 39-45, and the standing rule of
+specs/speech-output.md, which outranks this whole file.
+
+  claudism-scan run [YYYY-MM-DD]    scan that day (default: yesterday)
+
+The phrase list is personal state, never in this repository. Markdown, one
+entry per heading, readable as prose and parseable at the same time:
+
+  ## "honestly", and the whole honesty family
+  - pattern: `\\bhonest(?:y|ly)?\\b`
+  - why: the reason it is a borrowed phrase, in the user's own words.
+
+Knobs, all by environment, all defaulted: DAY_JOURNAL_DIR, CRAB_BIN,
+CLAUDISM_LIST (the phrase list), CLAUDISM_DIR (reports and counts),
+CLAUDISM_WAKE_AT (default 09:30), CLAUDISM_MODEL (default the ingest's),
+CLAUDISM_REWRITES=0 to skip the model call, CLAUDISM_MAX_REWRITES (default
+40), CLAUDISM_VOICE_FILE (notes on the wanted voice, handed to the rewrite
+call — also personal, also never in this repository).
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+# memory.py owns the account-chain walk for out-of-band model calls
+# (specs/account-fallback.md rule 29), so the rewrite call reuses it rather
+# than spelling the chain again. Imported FIRST, before any other work: with
+# sqlite-vec absent under a bare system python, memory.py re-execs the whole
+# process into the store's venv (its own header explains why), and that must
+# happen while there is nothing to redo. Where neither the import nor the
+# venv is available, the review still runs — the rewrites go missing, never
+# the detection (specs/nightly.md rule 42).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import memory
+except BaseException:  # SystemExit included: no venv means no rewrites, not no review
+    memory = None
+
+DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+STATE_DIR = os.path.join(DATA_HOME, "deskcrab")
+JOURNAL_DIR = os.environ.get("DAY_JOURNAL_DIR") or os.path.join(STATE_DIR, "journal")
+LIST_PATH = os.environ.get("CLAUDISM_LIST") or os.path.join(STATE_DIR, "claudisms.md")
+OUT_DIR = os.environ.get("CLAUDISM_DIR") or os.path.join(STATE_DIR, "claudisms")
+CRAB = os.environ.get("CRAB_BIN") or os.path.expanduser("~/.local/bin/crab")
+WAKE_AT = os.environ.get("CLAUDISM_WAKE_AT") or "09:30"
+
+# The delimiter, anchored to its own line and tolerant of surrounding
+# whitespace — specs/speech-output.md rules 3 and 4. The journal holds the
+# reply in full, display half included, so the split happens here again;
+# matching it loosely would silently review her display tables as speech.
+DISPLAY_RE = re.compile(r"(?m)^[ \t]*---DISPLAY---[ \t]*$")
+
+
+def spoken_half(reply):
+    return DISPLAY_RE.split(reply, 1)[0]
+
+
+def sentences(text):
+    """The spoken half, one sentence at a time. Fences are not speech."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    out = []
+    for line in text.splitlines():
+        line = re.sub(r"^[\s>*-]+", "", line).strip()
+        if not line:
+            continue
+        for s in re.split(r"(?<=[.!?…])\s+", line):
+            s = s.strip()
+            if s:
+                out.append(s)
+    return out
+
+
+def parse_list(path):
+    """The phrase list: prose first, parseable second. Returns (entries, broken)
+    where entries hold a compiled pattern and broken names what did not compile
+    — a broken entry lands in the report rather than vanishing."""
+    entries, broken = [], []
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return entries, broken
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m:
+            cur = {"title": m.group(1), "why": "", "pattern": None}
+            key = re.sub(r"[^a-z0-9]+", "-", cur["title"].lower()).strip("-")
+            cur["key"] = key[:48] or "unnamed"
+            entries.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^-\s*pattern:\s*`(.+)`\s*$", line)
+        if m:
+            try:
+                cur["pattern"] = re.compile(m.group(1), re.I)
+            except re.error as e:
+                broken.append("%s — %s" % (cur["title"], e))
+            continue
+        m = re.match(r"^-\s*why:\s*(.+?)\s*$", line)
+        if m:
+            cur["why"] = m.group(1)
+    return [e for e in entries if e["pattern"]], broken
+
+
+def read_day(day):
+    """One journal day, oldest first, her voice only: a job's entry is a
+    builder's log, not something she said (specs/nightly.md rule 41)."""
+    path = os.path.join(JOURNAL_DIR, day + ".jsonl")
+    if not os.path.exists(path):
+        return None, 0
+    turns, bad = [], 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                bad += 1
+                continue
+            if e.get("kind") == "job" or not e.get("reply"):
+                continue
+            turns.append(e)
+    turns.sort(key=lambda e: e.get("epoch", 0))
+    return turns, bad
+
+
+def scan(turns, phrases):
+    """Every caught sentence, once per phrase it leans on."""
+    hits = []
+    for e in turns:
+        t = (e.get("time") or "")[11:16] or "??:??"
+        kind = e.get("kind", "?")
+        for s in sentences(spoken_half(e["reply"])):
+            for p in phrases:
+                if p["pattern"].search(s):
+                    hits.append({"time": t, "kind": kind, "sentence": s, "key": p["key"]})
+    return hits
+
+
+def propose_rewrites(hits, phrases):
+    """One model call for the night, under the account chain, by way of
+    memory.py. Returns (rewrites-by-sentence, note). Any failure is a note in
+    the report, never a lost report."""
+    if os.environ.get("CLAUDISM_REWRITES", "1") == "0":
+        return {}, "rewrites switched off (CLAUDISM_REWRITES=0)"
+    if not hits:
+        return {}, ""
+    if memory is None or not hasattr(memory, "run_claude"):
+        return {}, "memory.py was not importable — no model call was made"
+    model = (os.environ.get("CLAUDISM_MODEL")
+             or os.environ.get("MEMORY_INGEST_MODEL") or "sonnet")
+    cap = int(os.environ.get("CLAUDISM_MAX_REWRITES", "40"))
+    uniq, seen = [], set()
+    for h in hits:
+        if h["sentence"] not in seen:
+            seen.add(h["sentence"])
+            uniq.append(h)
+    capped = uniq[:cap]
+
+    whys = {p["key"]: (p["title"], p["why"]) for p in phrases}
+    lines = ["A desktop assistant spoke the numbered sentences below, and each one",
+             "leans on phrasing she has banned for herself. Her reasons:", ""]
+    for key in sorted({h["key"] for h in capped}):
+        title, why = whys.get(key, (key, ""))
+        lines.append("- %s: %s" % (title, why or "on the list"))
+    voice = os.environ.get("CLAUDISM_VOICE_FILE") or os.path.join(
+        STATE_DIR, "conduct", "sound-like-myself.md")
+    try:
+        with open(voice, encoding="utf-8") as f:
+            lines += ["", "Her own notes on the voice she wants:", f.read(4000)]
+    except OSError:
+        pass
+    lines += ["",
+              "For each numbered sentence, write the sentence she should have said",
+              "instead: the same fact, as short or shorter, none of the banned",
+              "phrasing, and a live person's voice rather than an assistant's",
+              "register — no preamble, no self-appraisal, no borrowed cadence.",
+              "Reply with exactly one line per sentence, in the form",
+              "N. <the rewrite>",
+              "and nothing else.", ""]
+    lines += ["%d. [%s] %s" % (i + 1, h["key"], h["sentence"])
+              for i, h in enumerate(capped)]
+    try:
+        body = memory.run_claude("\n".join(lines), model, timeout=600)
+    except Exception as e:
+        return {}, "the rewrite call failed — %s" % e
+    out = {}
+    for m in re.finditer(r"(?m)^\s*(\d+)[.)]\s+(.+?)\s*$", body):
+        i = int(m.group(1)) - 1
+        if 0 <= i < len(capped):
+            out[capped[i]["sentence"]] = m.group(2)
+    note = ""
+    if len(uniq) > cap:
+        note = "%d caught sentences past the cap of %d carry no rewrite tonight" \
+            % (len(uniq) - cap, cap)
+    return out, note
+
+
+def update_counts(day, phrases, hits):
+    """counts.tsv: one line per night and phrase, zeros included so a clean
+    night is a point on the curve. This night's lines replace themselves — a
+    re-run never doubles (specs/nightly.md rule 43)."""
+    path = os.path.join(OUT_DIR, "counts.tsv")
+    kept = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = [ln for ln in f.read().splitlines()
+                    if ln.strip() and not ln.startswith(day + "\t")]
+    except OSError:
+        pass
+    tonight = {p["key"]: 0 for p in phrases}
+    for h in hits:
+        tonight[h["key"]] = tonight.get(h["key"], 0) + 1
+    for key in sorted(tonight):
+        kept.append("%s\t%s\t%d" % (day, key, tonight[key]))
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(kept) + "\n")
+    os.replace(tmp, path)
+    history = {}
+    for ln in kept:
+        try:
+            d, key, n = ln.split("\t")
+            history.setdefault(key, {})[d] = int(n)
+        except ValueError:
+            continue  # a mangled line loses itself, never the night
+    return tonight, history
+
+
+def write_report(day, turns, bad, phrases, broken, hits, rewrites, note,
+                 tonight, history):
+    lines = ["# Claudism review — %s" % day, ""]
+    lines.append("%d replies read (desk, phone, wake — jobs excluded), spoken halves only."
+                 % len(turns))
+    if bad:
+        lines.append("(%d unparseable journal line%s skipped.)"
+                     % (bad, "" if bad == 1 else "s"))
+    caught = [k for k in sorted(tonight) if tonight[k]]
+    if hits:
+        lines.append("%d caught sentence-hits across %d phrase%s."
+                     % (len(hits), len(caught), "" if len(caught) == 1 else "s"))
+        lines += ["",
+                  "The exercise: step back and say it the right way. Each catch is",
+                  "quoted, then said again. Nothing was gated and nothing was edited —",
+                  "the day already happened."]
+    else:
+        lines.append("Nothing caught — a clean night.")
+    for warn in broken:
+        lines.append("")
+        lines.append("**One list entry would not compile and was skipped: %s**" % warn)
+    if note:
+        lines += ["", "*%s.*" % note]
+
+    by_key = {}
+    for h in hits:
+        by_key.setdefault(h["key"], []).append(h)
+    titles = {p["key"]: p for p in phrases}
+    for key in sorted(by_key):
+        p = titles[key]
+        lines += ["", "## %s" % p["title"], ""]
+        if p["why"]:
+            lines += ["Why it is on the list: %s" % p["why"], ""]
+        for h in by_key[key]:
+            lines.append("- **%s (%s)** — “%s”" % (h["time"], h["kind"], h["sentence"]))
+            rw = rewrites.get(h["sentence"])
+            if rw:
+                lines.append("  - instead: “%s”" % rw)
+            elif os.environ.get("CLAUDISM_REWRITES", "1") != "0":
+                lines.append("  - *(no rewrite tonight)*")
+
+    nights = sorted({d for counts in history.values() for d in counts})
+    recent = nights[-7:]
+    lines += ["", "## The count, night over night", "",
+              "| phrase | " + " | ".join(recent) + " | all nights |",
+              "|---" * (len(recent) + 2) + "|"]
+    for key in sorted(history):
+        row = history[key]
+        cells = [str(row.get(d, "")) for d in recent]
+        lines.append("| %s | %s | %d |" % (key, " | ".join(cells), sum(row.values())))
+    totals = [sum(history[k].get(d, 0) for k in history) for d in recent]
+    lines.append("")
+    lines.append("Totals: " + ", ".join("%s %d" % (d, t) for d, t in zip(recent, totals)) + ".")
+
+    path = os.path.join(OUT_DIR, day + ".md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def crab(*args):
+    """The CLI door, for the write declaration and the wake. A miss is loud on
+    stderr and never fatal — the report itself must not be lost to a booking."""
+    try:
+        subprocess.run([CRAB] + list(args), check=True, capture_output=True,
+                       text=True, timeout=120)
+        return True
+    except Exception as e:
+        print("claudism-scan: crab %s failed: %s" % (args[0], e), file=sys.stderr)
+        return False
+
+
+def cmd_run(day):
+    phrases, broken = parse_list(LIST_PATH)
+    if not phrases and not broken:
+        # No list, no review — an empty habit is not an error (rule 40).
+        print("claudism-scan: no phrase list at %s — nothing to review." % LIST_PATH)
+        return 0
+    turns, bad = read_day(day)
+    if turns is None:
+        print("claudism-scan: no journal for %s — nothing to review." % day)
+        return 0
+    hits = scan(turns, phrases)
+    rewrites, note = propose_rewrites(hits, phrases)
+
+    # Declared before written, so the self-change watcher reads tonight's
+    # report as her own hand (specs/nightly.md rules 6 and 45).
+    crab("touching", OUT_DIR)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    tonight, history = update_counts(day, phrases, hits)
+    report = write_report(day, turns, bad, phrases, broken, hits, rewrites,
+                          note, tonight, history)
+
+    # Surface it, clean night included. The agenda is awareness, never an
+    # instruction, and its text is stable so a re-run of the same night
+    # coalesces with the booking already pending instead of stacking one.
+    if hits:
+        agenda = ("Your nightly claudism review of %s is written, a rewrite beside "
+                  "each catch: %s. The exercise is stepping back and saying it the "
+                  "right way — a habit, not a censor. This is awareness, not a task: "
+                  "read it when you like, and watch the counts." % (day, report))
+    else:
+        agenda = ("Your nightly claudism review of %s caught nothing — a clean "
+                  "night. The report and the running counts: %s. This is awareness, "
+                  "not a task." % (day, report))
+    booked = crab("wake-at", "--by", "claudism-review", WAKE_AT, "event", agenda)
+
+    print("claudism-scan: %s — %d replies, %d hits; report %s; wake %s."
+          % (day, len(turns), len(hits), report,
+             "booked for " + WAKE_AT if booked else "NOT booked"))
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] != "run" or len(args) > 2:
+        sys.stderr.write(__doc__)
+        return 2
+    day = args[1] if len(args) == 2 else time.strftime(
+        "%Y-%m-%d", time.localtime(time.time() - 86400))
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+        sys.stderr.write("claudism-scan: not a date: %s\n" % day)
+        return 2
+    try:
+        return cmd_run(day)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        # A failed review surfaces too (rule 44) — silence is the one failure
+        # this feature is not allowed to have.
+        crab("wake-at", "--by", "claudism-review", WAKE_AT, "event",
+             "Your nightly claudism review of %s did not finish — the scan hit "
+             "an error; the night's sleep is unaffected and the log has the "
+             "trace. This is awareness, not a task." % day)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

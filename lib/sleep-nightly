@@ -19,6 +19,7 @@ STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
 STAMP="$STATE_DIR/last-slept"
 LOG_DIR="$STATE_DIR/sleep"
 CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
+LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Two nights is the threshold at which I should feel it rather than be told.
 ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
@@ -50,6 +51,16 @@ cmd_run() {
         "$(date -Iseconds)" \
         "added=${added:-0}" > "$STAMP"
     echo "sleep: stamped $STAMP (added=${added:-0})"
+
+    # The claudism review, over the day that just ended — detection and
+    # review only, never a gate (specs/nightly.md rules 39-45). Only after a
+    # night that happened, and never the night's verdict: it surfaces its own
+    # failures through its own wake, and the exit below stays the ingest's.
+    "$LIB_DIR/claudism-scan" run 2>&1 | tee -a "$log"
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        echo "sleep: the claudism review did not finish — the night still counts. See $log" >&2
+    fi
+    return 0
 }
 
 cmd_status() {

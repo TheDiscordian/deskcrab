@@ -41,6 +41,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/notice-selfchange` | emitter: another hand changed the files that constitute her |
 | `lib/canary-selfchange` | proves that watcher is still being triggered at all |
 | `lib/sleep-nightly` | the nightly memory ingest, and its rot check |
+| `lib/claudism-scan` | the nightly claudism review: one journal day in, a report with rewrites and counts out |
 | `lib/day-journal` | the durable per-day record of every finished turn |
 | `lib/empty-mcp.json` | the empty MCP config her sessions run against |
 | `systemd/` | user units: wake, restore, sleep, canary, watchers, server |

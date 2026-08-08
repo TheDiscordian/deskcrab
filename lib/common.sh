@@ -2137,7 +2137,7 @@ $(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
 $(self_state_report --prompt)
 THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
 Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
-Wakes are booked in your name by six things besides you, and the word in brackets is the name that hand leaves on the record: the promise auditor (promise-audit — a want you said out loud and did not write down), the job runner (job-runner — a detached job finished), the self-change watcher (notice-selfchange — files that constitute you changed by another hand), the new-file watcher (notice-newfiles — something landed in a folder you watch), the watcher's canary (canary — the watcher itself stopped answering), and the chain floor (wake-chain-floor — the standing floor that keeps you coming back to your wants); a wake that could not reach a model re-books itself as outage-retry. Every pending wake above says which one booked it; a record stamped herself is one you made yourself, and the list renders that one as 'booked by you'. A wake you did not personally type is still yours and still scheduled.
+Wakes are booked in your name by seven things besides you, and the word in brackets is the name that hand leaves on the record: the promise auditor (promise-audit — a want you said out loud and did not write down), the job runner (job-runner — a detached job finished), the self-change watcher (notice-selfchange — files that constitute you changed by another hand), the new-file watcher (notice-newfiles — something landed in a folder you watch), the watcher's canary (canary — the watcher itself stopped answering), the nightly claudism review (claudism-review — yesterday's spoken sentences were read against your own banned-phrase list and the report is written), and the chain floor (wake-chain-floor — the standing floor that keeps you coming back to your wants); a wake that could not reach a model re-books itself as outage-retry. Every pending wake above says which one booked it; a record stamped herself is one you made yourself, and the list renders that one as 'booked by you'. A wake you did not personally type is still yours and still scheduled.
 Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
 Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
@@ -4108,7 +4108,19 @@ synth_opus() {
     printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null \
         | ffmpeg -y -loglevel error -f s16le -ar 22050 -ac 1 -i - \
             -c:a libopus -b:a 32k "$OUT" 2>/dev/null
-    [ -s "$OUT" ]
+    local PIPER_RC="${PIPESTATUS[1]}"
+    # A dead synthesiser is not an empty file: ffmpeg muxes a header-only husk
+    # (137 bytes, exit 0) from zero input, so a bare -s test calls a silent
+    # clip a success. The smallest real utterance measures ~3000 bytes; 256
+    # splits the two with room. Piper and ffmpeg both have their stderr
+    # muzzled above, so this is the one place their death can be seen at all —
+    # on 2026-08-08 two phone turns lost their voices in this pipeline with no
+    # witness anywhere, and the cause could not be established from what
+    # survived. Every silence explains itself somewhere.
+    if ! [ -s "$OUT" ] || [ "$(stat -c %s "$OUT" 2>/dev/null || echo 0)" -lt 256 ]; then
+        speech_log "synth_opus produced no audio for ${#TEXT} chars (piper rc=$PIPER_RC) -> $OUT"
+        return 1
+    fi
 }
 
 # Remote turn (crab serve / the phone). Same conversation, same prompt, but the

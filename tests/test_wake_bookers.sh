@@ -2,10 +2,10 @@
 # The subsystems that book wakes in her name — specs/wake-queue.md rules 41 to
 # 44, specs/self-awareness.md rules 8 to 11. Run: bash tests/test_wake_bookers.sh
 #
-# Six things besides her own hand put wakes on the queue: the promise auditor,
-# the job runner, the self-change watcher, the new-file watcher, the watcher's
-# canary, and the chain floor inside the module itself (which the wake-queue
-# tests cover). Before they each stamped an identity, a booking record
+# Seven things besides her own hand put wakes on the queue: the promise
+# auditor, the job runner, the self-change watcher, the new-file watcher, the
+# watcher's canary, the nightly claudism review, and the chain floor inside
+# the module itself (which the wake-queue tests cover). Before they each stamped an identity, a booking record
 # carried no provenance at all — so "nothing scheduled by me" was literally
 # unanswerable, and on 2026-08-07 it was said out loud with twenty-five
 # bookings on disk.
@@ -32,7 +32,7 @@ mkdir -p "$W" "$T/repo/lib" "$T/watched"
 # A repo of her own: the real bookers, copied (not linked — each resolves
 # SCRIPT_DIR through readlink -f and would walk back to the real repo and its
 # real crab), beside a door onto the real module.
-for b in promise-audit job-runner notice-selfchange notice-newfiles canary-selfchange; do
+for b in promise-audit job-runner notice-selfchange notice-newfiles canary-selfchange claudism-scan; do
     cp "$REPO/lib/$b" "$T/repo/lib/$b"
     chmod +x "$T/repo/lib/$b"
 done
@@ -185,6 +185,38 @@ case "$(calls)" in
     *"wake-at --by canary 5s event The watcher over your own files is not answering"*)
         ok "canary: through wake-at, saying which watcher and what it means" ;;
     *) fail "canary routes through the module's door" "$(calls)" ;;
+esac
+
+echo
+echo "the claudism review books in its own name:"
+reset
+# Copied beside the others, so lib/memory.py is not next to it and the rewrite
+# path stays cold; CLAUDISM_REWRITES=0 says so out loud as well. The scan
+# books for a morning clock time, not a delay — the report is a breakfast
+# read, not a 03:10 one.
+mkdir -p "$T/claud-journal"
+cat > "$T/claudisms.md" <<'LIST'
+## the honesty family
+- pattern: `\bhonest(?:y|ly)?\b`
+- why: assumed of her anyway, so the word carries nothing.
+LIST
+cat > "$T/claud-journal/2026-01-15.jsonl" <<'DAY'
+{"epoch": 1700000000, "time": "2026-01-15T10:00:00-0500", "kind": "phone", "user": "did it land?", "reply": "Honestly, it landed."}
+DAY
+CRAB_BIN="$T/repo/crab" DAY_JOURNAL_DIR="$T/claud-journal" \
+    CLAUDISM_LIST="$T/claudisms.md" CLAUDISM_DIR="$T/claudisms-out" \
+    CLAUDISM_REWRITES=0 \
+    "$T/repo/lib/claudism-scan" run 2026-01-15 >/dev/null 2>&1
+booked_one claudism-review event
+case "$(calls)" in
+    *"wake-at --by claudism-review 09:30 event Your nightly claudism review of 2026-01-15"*)
+        ok "claudism-review: through wake-at, for the morning, naming the report" ;;
+    *) fail "claudism-review routes through the module's door" "$(calls)" ;;
+esac
+case "$(calls)" in
+    *"touching $T/claudisms-out"*)
+        ok "claudism-review: its writes were declared before they were made" ;;
+    *) fail "the review must declare its writes or wake her as an intruder" "$(calls)" ;;
 esac
 
 echo
