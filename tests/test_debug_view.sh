@@ -186,6 +186,37 @@ awaits TURN-A-STILL-TALKING \
     || fail "stream dropped on symlink claim" "TURN-A-STILL-TALKING not in $OUT"
 
 echo
+echo "== a plain file at the well-known name is followed, once =="
+# specs/debug-view.md rule 2: the well-known name is listed alongside the glob
+# it points into. The suffixed glob does not match `<prefix>-debug.log`, so an
+# instance writing a PLAIN file there — an older build, a session run by hand —
+# is reachable through that entry and no other. What makes following both names
+# safe is rule 3: identity is device and inode, so the symlink and its target
+# are ONE stream, not two. Both halves are asserted here, because dropping the
+# entry makes the file invisible and weakening the key prints it twice.
+rm -f "$LATEST"
+say "$LATEST" "PLAIN-WELL-KNOWN-CANARY"
+awaits PLAIN-WELL-KNOWN-CANARY \
+    && ok "an instance writing a plain file at the well-known name is visible" \
+    || fail "the well-known name is followed nowhere" "PLAIN-WELL-KNOWN-CANARY not in $OUT"
+barrier
+[ "$(count PLAIN-WELL-KNOWN-CANARY)" = 1 ] \
+    && ok "and it is not printed twice" \
+    || fail "the well-known name is followed twice" \
+            "PLAIN-WELL-KNOWN-CANARY printed $(count PLAIN-WELL-KNOWN-CANARY) times"
+# Back to the shipped topology: the name is a symlink to the live session, and
+# the same bytes now arrive under two names at once.
+ln -sfn "$DESK_B" "$LATEST"
+say "$DESK_B" "TWO-NAMES-ONE-STREAM-CANARY"
+awaits TWO-NAMES-ONE-STREAM-CANARY \
+    || fail "the claimed stream stopped" "TWO-NAMES-ONE-STREAM-CANARY not in $OUT"
+barrier
+[ "$(count TWO-NAMES-ONE-STREAM-CANARY)" = 1 ] \
+    && ok "the symlink and the file it points at are one stream, not two" \
+    || fail "the same stream is followed under both names" \
+            "printed $(count TWO-NAMES-ONE-STREAM-CANARY) times"
+
+echo
 echo "== a wake is labelled a wake =="
 claim 900005 "autonomous wake"
 say "$PREFIX-debug-900005.log" "WAKE-REPLY-CANARY"

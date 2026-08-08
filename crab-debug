@@ -75,9 +75,12 @@ SESSIONS_DIR = f"{PREFIX}-sessions"
 
 # (glob, label) — every stream a reply can be produced into. The label is the
 # fallback; the session registry gives the real one when it can. LOG is a
-# symlink to the newest desk/wake session and is globbed anyway: a legacy
-# instance still writing a plain file there must not be invisible, and the
-# inode keying below makes following both names harmless.
+# symlink to the newest desk/wake session and is listed alongside the glob it
+# points into: an instance still writing a PLAIN file at the well-known name —
+# an older build, a session run by hand — would otherwise be invisible, and the
+# inode keying below collapses the two names to one stream so the duplicate
+# cannot happen. That is the exception in specs/debug-view.md rule 2, and the
+# rule now carries the reasoning rather than this comment arguing against it.
 SOURCES = [
     (LOG, "desk"),
     (f"{PREFIX}-debug-*.log", "desk"),

@@ -13,11 +13,17 @@ it must never do — print something twice, or drop something silently.
 
 1. The viewer MUST follow every stream a reply can be produced into: the per-session desk and wake
    logs, the phone server's per-turn logs, and the serverless remote logs.
-2. The viewer MUST NOT follow both a symlink and the files it points at. The suffixed glob already
-   covers every desk and wake session; following the well-known symlink as well is what strands a
-   stream and replays it.
+2. The viewer MUST NOT follow the same stream twice. Following a symlink AND the files it points at
+   is how a stream gets stranded and replayed, and it is forbidden **unless rule 3 collapses the two
+   names to one stream**, which is what identity by device and inode does. The well-known name is
+   therefore listed alongside the suffixed glob on purpose: an instance still writing a plain file at
+   that name — an older build, a hand-run session — would otherwise be invisible, and invisibility is
+   worse than a duplicate the keying already prevents. This rule read as a flat prohibition until
+   2026-08-08, and the code carried the argument for the exception in a comment instead; the argument
+   belongs here.
 3. Stream identity MUST be the file's device and inode, never a resolved path that is freed when the
    handle closes. When the symlink is repointed, the old stream must not be reopened as a new one.
+   Rule 2's exception rests entirely on this one, so weakening the key re-opens it.
 4. A stream that already existed when the viewer started MUST be opened at its end. Only streams
    that appear afterwards are read from the beginning.
 5. New streams MUST be picked up mid-run, on every poll.
