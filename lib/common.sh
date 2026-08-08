@@ -1214,25 +1214,96 @@ shutup_now() {
     stop_tts
 }
 
+# A rotation that fails must be impossible to miss. Losing a transcript looks
+# like nothing at all from the outside — every path keeps working and the record
+# simply stops growing — so the failure is said in the three places anyone
+# looks: the speech log, standard error (which is what `journalctl --user -u
+# deskcrab-serve` shows for a phone turn), and the desktop.
+rotate_failed() {  # <why>
+    speech_log "conversation rotation FAILED: $1 (the transcript was left in place)"
+    notify-send -t 10000 -h string:x-dunst-stack-tag:deskcrab-rotate \
+        "${NOTIFY_NAME:-DeskCrab}" \
+        "Conversation rotation failed — the transcript is still here, unarchived. $1" 2>/dev/null
+    return 0
+}
+
+# Copy one file into the archive so the destination never exists half-written
+# and the source is never removed on the strength of a copy nobody checked.
+# Writes beside the destination, compares the byte count against the source,
+# and only then gives it its name — a rename inside one directory, which is
+# atomic. Any failure leaves both files exactly where they were.
+_archive_verified() {  # <src> <dest>
+    local SRC="$1" DEST="$2" PART="$2.part.$$" WANT HAVE
+    WANT=$(wc -c < "$SRC" 2>/dev/null) || WANT=""
+    if [ -z "$WANT" ]; then
+        rotate_failed "could not measure $SRC"
+        return 1
+    fi
+    if ! cp "$SRC" "$PART" 2>/dev/null; then
+        rm -f "$PART" 2>/dev/null
+        rotate_failed "could not write into $(dirname "$DEST")"
+        return 1
+    fi
+    HAVE=$(wc -c < "$PART" 2>/dev/null) || HAVE="-"
+    if [ "$HAVE" != "$WANT" ]; then
+        rm -f "$PART" 2>/dev/null
+        rotate_failed "the archived copy of $SRC came out $HAVE bytes, not $WANT"
+        return 1
+    fi
+    if ! mv "$PART" "$DEST" 2>/dev/null; then
+        rm -f "$PART" 2>/dev/null
+        rotate_failed "could not name the archive $DEST"
+        return 1
+    fi
+    return 0
+}
+
 # Archive stale conversation (default: >5 min idle). Under the convo lock like
-# every other writer: the mv would otherwise be able to carry off a turn another
-# client appended a microsecond earlier.
+# every other writer: the move would otherwise be able to carry off a turn
+# another client appended a microsecond earlier.
+#
+# The conversation lives on tmpfs and the archive lives on disk, so `mv` between
+# them is a copy followed by an unlink, not a rename — and a copy that runs out
+# of room leaves a SHORT archive and unlinks the original anyway. This used to
+# be exactly that mv, with nothing checked and nothing said. So now the archive
+# is written under a partial name, checked byte for byte against the source, and
+# only given its real name once it matches; the conversation is deleted only
+# after the archive demonstrably exists at full length. On any failure the
+# conversation stays where it is — the next turn simply continues it — and the
+# failure is announced. A conversation that keeps going is a nuisance; one that
+# is quietly eaten is not recoverable.
 rotate_convo() {
     { flock -w 60 9; _rotate_convo_locked; } 9>"$CONVOLOCK"
 }
 
 _rotate_convo_locked() {
-    if [ -f "$CONVOFILE" ]; then
-        LAST_MOD=$(stat -c %Y "$CONVOFILE")
-        NOW=$(date +%s)
-        if (( NOW - LAST_MOD >= CONVO_TIMEOUT )); then
-            mkdir -p "$ARCHIVE_DIR"
-            local STAMP
-            STAMP="$(date -d "@$LAST_MOD" '+%Y%m%d-%H%M%S')"
-            [ -f "$SUMMARYFILE" ] && mv "$SUMMARYFILE" "$ARCHIVE_DIR/$STAMP-summary.txt"
-            mv "$CONVOFILE" "$ARCHIVE_DIR/$STAMP.txt"
-        fi
+    [ -f "$CONVOFILE" ] || return 0
+    local LAST_MOD NOW STAMP DEST N
+    LAST_MOD=$(stat -c %Y "$CONVOFILE" 2>/dev/null) || return 0
+    NOW=$(date +%s)
+    (( NOW - LAST_MOD >= CONVO_TIMEOUT )) || return 0
+
+    if ! mkdir -p "$ARCHIVE_DIR" 2>/dev/null; then
+        rotate_failed "the archive directory could not be made: $ARCHIVE_DIR"
+        return 1
     fi
+
+    STAMP="$(date -d "@$LAST_MOD" '+%Y%m%d-%H%M%S')"
+    DEST="$ARCHIVE_DIR/$STAMP.txt"
+    # Two conversations can fall idle in the same second, and the second must
+    # not land on top of the first.
+    N=2
+    while [ -e "$DEST" ]; do DEST="$ARCHIVE_DIR/$STAMP-$N.txt"; N=$((N + 1)); done
+
+    # The summary goes first, and keeps the transcript's name so the pair stays
+    # together. If it cannot be archived, the transcript is still here to try
+    # again with, which is the half that matters.
+    if [ -f "$SUMMARYFILE" ]; then
+        _archive_verified "$SUMMARYFILE" "${DEST%.txt}-summary.txt" || return 1
+        rm -f "$SUMMARYFILE"
+    fi
+    _archive_verified "$CONVOFILE" "$DEST" || return 1
+    rm -f "$CONVOFILE"
 }
 
 # L6 of the prompt: the conversation, summary first, live blocks after, under a
@@ -1443,8 +1514,19 @@ $(cat "$OLDFILE")"
     done
 
     if [ "$SUMRC" -eq 0 ] && [ -n "$NEWSUM" ]; then
-        printf '%s\n' "$NEWSUM" > "$SUMMARYFILE"
-        { flock -w 60 9; _compact_drop "$LINES"; } 9>"$CONVOLOCK"
+        # Write the summary whole, then move it into place. A redirect onto
+        # $SUMMARYFILE truncates it first, so a write that dies halfway would
+        # destroy the old summary AND leave a torn new one — and _compact_drop
+        # would then drop the turns it was supposed to be standing in for.
+        # Nothing is dropped unless the summary that replaces it is fully on
+        # disk.
+        local SUMTMP="$SUMMARYFILE.new.$$"
+        if printf '%s\n' "$NEWSUM" > "$SUMTMP" && mv "$SUMTMP" "$SUMMARYFILE"; then
+            { flock -w 60 9; _compact_drop "$LINES"; } 9>"$CONVOLOCK"
+        else
+            rm -f "$SUMTMP" 2>/dev/null
+            rotate_failed "the summary could not be written, so no turns were folded away"
+        fi
     fi
     # Summarization failed — leave history untouched rather than lose turns.
     rm -f "$OLDFILE"
@@ -1492,10 +1574,28 @@ _compact_split() {
 
 # Pass two, under the lock: drop the first $1 lines, keeping everything that
 # has been appended since — including turns from another client.
+# The remainder is counted before it is allowed to replace the conversation.
+# This is the same rule the archive follows: a swap is only safe when the thing
+# swapped in has been shown to hold what it should. A tail that stops short
+# would otherwise hand back a conversation missing turns that were never
+# summarised, and say nothing.
 _compact_drop() {
-    local NEWFILE="/tmp/deskcrab-convo-new.$$"
-    tail -n "+$(( $1 + 1 ))" "$CONVOFILE" > "$NEWFILE" && mv "$NEWFILE" "$CONVOFILE"
-    rm -f "$NEWFILE"
+    local NEWFILE="/tmp/deskcrab-convo-new.$$" HAD WANT HAVE
+    HAD=$(wc -l < "$CONVOFILE" 2>/dev/null) || HAD=""
+    [ -n "$HAD" ] || return 1
+    WANT=$(( HAD - $1 ))
+    if ! tail -n "+$(( $1 + 1 ))" "$CONVOFILE" > "$NEWFILE" 2>/dev/null; then
+        rm -f "$NEWFILE" 2>/dev/null
+        rotate_failed "the compacted conversation could not be written; no turns were folded away"
+        return 1
+    fi
+    HAVE=$(wc -l < "$NEWFILE" 2>/dev/null) || HAVE="-"
+    if [ "$HAVE" != "$WANT" ]; then
+        rm -f "$NEWFILE" 2>/dev/null
+        rotate_failed "compaction would have left $HAVE lines where $WANT were expected"
+        return 1
+    fi
+    mv "$NEWFILE" "$CONVOFILE" 2>/dev/null || { rm -f "$NEWFILE" 2>/dev/null; return 1; }
 }
 
 # The titles on the wants shelf, one per line — the ONE reading of that file's
