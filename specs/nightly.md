@@ -3,8 +3,9 @@
 ## PURPOSE
 
 Four scheduled processes that keep her from rotting: sleep, which ingests the day into long-term
-memory; tidy, which maintains the shelves; the self-change watcher, which tells her when a hand that
-was not hers changed the files that constitute her; and the canary, which proves the watcher is
+memory and then holds the day's spoken sentences up against her own banned-phrase list; tidy, which
+maintains the shelves; the self-change watcher, which tells her when a hand that was not hers
+changed the files that constitute her; and the canary, which proves the watcher is
 still alive. This spec owns their schedules, their guarantees, and the rule that a scheduled process
 which fails silently is worse than one that does not exist.
 
@@ -96,6 +97,35 @@ which fails silently is worse than one that does not exist.
     the durable repair.
 38. One line per check MUST land in the canary log.
 
+### The claudism review — part of sleep
+
+39. After a night that happened — ingest succeeded, stamp written — sleep runs the claudism review
+    over the day that just ended. It reads the day's journal and nothing else. It MUST NOT run
+    inside a live turn, and it MUST NOT gate, mute, or rewrite anything she says or has said:
+    detection and review after the fact, only. The standing rule of
+    [speech-output.md](speech-output.md) outranks this whole feature — the moment the review grows
+    a hand on the speech path, it is the mechanism that rule forbids, and it is deleted.
+40. The phrase list is hers: personal state beside the shelves, never in this repository. Each
+    entry carries the reason the phrase is borrowed, so the list reads as prose and not as a regex
+    blob. No list means no review, silently, one log line — an empty habit is not an error.
+41. The review reads only the SPOKEN half of each reply — the text above the display delimiter,
+    split the anchored, whitespace-tolerant way of [speech-output.md](speech-output.md) rules 3
+    and 4 — and never the user's words, the display half, or a job's entry. A job's journal entry
+    is a builder's log, not her voice.
+42. Every hit is quoted as its whole sentence with its turn's timestamp, beside a proposed rewrite
+    in her own voice. The rewrite is the point: step back and say it the right way — a
+    habit-breaking exercise, never a censor. The rewrite call runs under the account chain (rule
+    13 applies); a night when every login refuses still writes the report, hits included, with the
+    rewrites marked missing. Detection MUST never depend on the model.
+43. A per-phrase count accumulates night over night, so the number can be watched going down.
+    Re-running a night replaces that night's counts; it never doubles them.
+44. The review MUST surface. It books a morning event wake naming the report — on a night with
+    hits, on a clean night, and on a scan that failed. A review she never hears about is
+    surveillance, not an exercise; the wake's agenda offers awareness, never an instruction.
+45. The review declares its writes (rule 6), books through the queue's one door under its own
+    identity (`claudism-review` — [wake-queue.md](wake-queue.md) rule 41), and its failure MUST
+    NOT unstamp or fail the night: the stamp and the exit stay the ingest's own (rules 8 and 10).
+
 ## DATA
 
 | Path | Owner | Role |
@@ -111,6 +141,9 @@ which fails silently is worse than one that does not exist.
 | `~/.local/state/deskcrab/streams/<epoch>-<pid>.jsonl` | the watcher | archived stream, evidence only |
 | `~/.local/state/deskcrab/notice-self.heartbeat` | the emitter | the number the canary watches |
 | `~/.local/state/deskcrab/canary-self.log` | the canary | one line per check |
+| `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
+| `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
+| `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
 service, the self-change path and service, the transcription path and service, the canary timer and
@@ -160,7 +193,10 @@ reaches her through an event wake or through a record she reads.
 ## TESTS
 
 **Existing:** `tests/test_notice_selfchange.sh` — 37 assertions in the most hermetic sandbox in the
-suite, and the model for every other test.
+suite, and the model for every other test. `tests/test_claudism_scan.sh` — the review reads the
+spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
+skip; the wake is booked through the door in the review's own name; a dead model still writes the
+report with the rewrites marked missing.
 
 **To be written:**
 

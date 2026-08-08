@@ -139,13 +139,14 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 ### The autonomous bookers
 
 41. The promise auditor (`promise-audit`), the job runner (`job-runner`), the self-change watcher
-    (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary (`canary`)
-    and the chain floor (`wake-chain-floor`) all book wakes in her name. Each MUST pass its own
+    (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary
+    (`canary`), the nightly claudism review (`claudism-review`) and the chain floor
+    (`wake-chain-floor`) all book wakes in her name. Each MUST pass its own
     identity as `booked_by`. Two further identities reach a record without being subsystems:
     `outage-retry`, when a wake that failed before the model ran re-books itself and cannot name its
     original booker, and `herself`, the default when nobody says. Any prose that enumerates the
-    bookers — here, in the other specs, or in the prompt — MUST name the whole set, and it is six
-    hands and eight names, not four of either.
+    bookers — here, in the other specs, or in the prompt — MUST name the whole set, and it is seven
+    hands and nine names, not four of either.
 42. Each MUST route through `book()`, and therefore through the coalescing, spacing, and locking
     rules.
 43. The promise auditor MUST use the shared shelf reader. An auditor handed an empty list and told
