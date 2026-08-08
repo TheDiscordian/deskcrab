@@ -202,6 +202,16 @@ case "${1:-}" in
 What happened: $WAKE_REASON
 That is this session's agenda — look into it first. Only fall back to your
 wants shelf if it turns out to need nothing from you."
+        elif [ "$WAKE_KIND" = "scheduled" ] && [ -n "$WAKE_REASON" ]; then
+            # A scheduled wake booked WITH a reason carries its own agenda the
+            # same way an event wake does. This branch was missing: the reason
+            # was recovered into the record, normalised through the queue, and
+            # then never shown to the one session it was written for — she
+            # woke to her own appointment with no idea why she had made it.
+            WAKE_NOTE="
+What you booked this wake for: $WAKE_REASON
+That is this session's agenda — pick it up first. The wants shelf is there
+if it turns out to be already done."
         fi
         in_quiet_hours && WAKE_NOTE="$WAKE_NOTE
 Quiet hours are in effect: speaking and windows are suppressed — work silently."

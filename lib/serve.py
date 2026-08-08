@@ -66,8 +66,11 @@ MAX_UPLOAD = 25 * 1024 * 1024
 # The header opening a block in the conversation file, with the local-time
 # stamp common.sh now writes: "User [2026-08-07 12:01]: …". The stamp group is
 # optional on purpose — conversations written before stamping, and every
-# archive of one, must keep parsing here unchanged.
-BLOCK_HDR = re.compile(r"^(User|Assistant)( \[[^\]]*\])?: ")
+# archive of one, must keep parsing here unchanged. So is the parenthesised
+# mark ("Assistant [stamp] (autonomous wake): …") — same shape as
+# CONVO_MARK_RE in common.sh; a header pattern narrower than the writer's
+# drops every wake reply from the phone without an error anywhere.
+BLOCK_HDR = re.compile(r"^(User|Assistant)( \[[^\]]*\])?( \([^)]*\))?: ")
 
 # How many turns are being answered right now. Restarting the server kills the
 # claude process mid-answer and drops whoever is on the wire, so anything that

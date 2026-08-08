@@ -558,7 +558,7 @@ DISPLAY_DELIM = "---DISPLAY---"
 # pattern that silently stops matching those would compose an empty query and
 # look exactly like a quiet conversation. Same shape as CONVO_BLOCK_RE in
 # common.sh and BLOCK_HDR in serve.py.
-CONVO_HDR_RE = re.compile(r"^(User|Assistant)(?: \[[^\]]*\])?: ", re.M)
+CONVO_HDR_RE = re.compile(r"^(User|Assistant)(?: \[[^\]]*\])?(?: \([^)]*\))?: ", re.M)
 # Lines that are nothing but a bracketed marker — "[Autonomous wake — ...]" —
 # sit between blocks and belong to neither speaker.
 CONVO_MARKER_RE = re.compile(r"^\[[^\]]*\]\s*$", re.M)
