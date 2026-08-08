@@ -1320,8 +1320,13 @@ compact_convo() {
     local RANGE
     RANGE="$(convo_time_range "$OLDFILE")"
 
-    local SUMPROMPT NEWSUM
-    SUMPROMPT="You are condensing the older part of a conversation between ${ASSISTANT_NAME:-the assistant} and the user, to save context.
+    # A classifier's shape, not a desktop's: the instructions are the system
+    # prompt, the material is the question, and the run carries no tools, no
+    # skills and no MCP servers (claude_classify). Condensing ten blocks of
+    # text needs none of them, and paying a full CLI boot for it cost about
+    # 35 KB of listings every time the live conversation passed its ceiling.
+    local SUMSYS SUMMATERIAL NEWSUM
+    SUMSYS="You are condensing the older part of a conversation between ${ASSISTANT_NAME:-the assistant} and the user, to save context.
 Produce a concise summary (a short paragraph or a few bullet points) that preserves facts, decisions,
 names, preferences, and any unresolved threads. Merge the prior summary with the new excerpt into one
 coherent summary. Output ONLY the summary text, no preamble.
@@ -1335,9 +1340,9 @@ in the excerpt where it matters (when something was decided, promised, or finish
 
 Naming rule, strictly: the assistant's name is ${ASSISTANT_NAME:-the assistant}. Refer to her by that name
 only. Never call her 'deskcrab', 'crab', 'the voice assistant', 'the model', or 'the assistant' — 'deskcrab'
-is only ever a file path, a systemd unit, or a repo name, never a person.
+is only ever a file path, a systemd unit, or a repo name, never a person."
 
-=== Prior summary ===
+    SUMMATERIAL="=== Prior summary ===
 ${PRIOR:-(none)}
 
 === New excerpt to fold in ===
@@ -1356,10 +1361,10 @@ $(cat "$OLDFILE")"
     for ACCT in $(claude_accounts); do
         SUMCONF="$(claude_account_confdir "$ACCT")"
         SUMRC=0
-        NEWSUM=$(cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
-            ${SUMCONF:+CLAUDE_CONFIG_DIR="$SUMCONF"} \
-            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CONVO_SUMMARY_MODEL" "$SUMPROMPT" 2>/dev/null) || SUMRC=$?
+        NEWSUM=$( { if [ -n "$SUMCONF" ]; then export CLAUDE_CONFIG_DIR="$SUMCONF"
+                    else unset CLAUDE_CONFIG_DIR; fi
+                    printf '%s' "$SUMMATERIAL" \
+                        | claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS"; } 2>/dev/null ) || SUMRC=$?
         [ "$SUMRC" -ne 0 ] || break
         printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE" || break
         claude_limit_record "$SUMCONF" \
@@ -2044,6 +2049,116 @@ claude_fallback_dirs() {
         | grep -v '^[[:space:]]*$' || true
 }
 
+# --- Per-path CLI profiles -------------------------------------------------
+# What each kind of run asks the CLI to put in front of her, measured against
+# the real CLI in tools/context-probe-results.md. Every number below is from
+# that file; re-run its probe after a CLI upgrade, because they are all
+# version-specific.
+#
+#   baseline, no flags .................. 40,229 tokens
+#   turn / wake profile ................. 14,412 with three tools (-64%)
+#   classify profile .................... 181 (-99.6%)
+#
+# THE TRAP, and the reason these flags are built in ONE function and never
+# spelled out at a call site: `--tools` WITHOUT `--strict-mcp-config` makes the
+# context nearly three times BIGGER, not smaller. Restricting the tool set
+# removes ToolSearch, which is what makes plugin and MCP schemas deferrable, so
+# every one of them gets inlined instead — measured at 116,735 tokens for one
+# "OK", against 40,229 with no flags at all. The empty MCP config is what
+# removes the servers so there is nothing left to inline. The two are one
+# lever; they are emitted together or not at all.
+#
+# `--bare` is not available on any of her paths. It refuses OAuth outright
+# ("Not logged in · Please run /login"), and the whole account chain is OAuth
+# subscriptions. It costs nothing to confirm — the failure is instant, before
+# any API call — and it is confirmed in the probe results.
+CLAUDE_EMPTY_MCP="${CLAUDE_EMPTY_MCP:-$LIB_DIR/empty-mcp.json}"
+
+# Her tool set, as a comma-separated list. Budget ~1,900 tokens per built-in
+# tool: this is the single biggest line item in a session, over half the
+# unflagged baseline. ToolSearch is deliberately absent — with no MCP servers
+# there is nothing left for it to search — and so is Agent, which the identity
+# layer forbids anyway because a subagent holds the turn open while the user
+# waits.
+CLAUDE_TOOLS_TURN="${CLAUDE_TOOLS_TURN:-Bash,Read,Write,Edit,WebFetch,WebSearch}"
+CLAUDE_TOOLS_WAKE="${CLAUDE_TOOLS_WAKE:-$CLAUDE_TOOLS_TURN}"
+# A builder arrives to work in a project and needs whatever that work needs, so
+# the job profile does not restrict the tool set. Empty means "do not pass
+# --tools at all", which also means --strict-mcp-config carries no risk there.
+CLAUDE_TOOLS_JOB="${CLAUDE_TOOLS_JOB:-}"
+
+# Skills cost 6,690 tokens for the whole catalogue and she used one of them:
+# /screenshot. The recipe for that is two lines, and the identity layer carries
+# them, so the catalogue stays off. Set CLAUDE_SKILLS=1 to buy it back.
+CLAUDE_SKILLS="${CLAUDE_SKILLS:-0}"
+
+# The flags for one profile, left in CLAUDE_PROFILE_FLAGS. Callers splice the
+# array into their exec line: "${CLAUDE_PROFILE_FLAGS[@]}".
+claude_profile_flags() {  # <turn|wake|job|classify>
+    CLAUDE_PROFILE_FLAGS=()
+    local tools=""
+    case "${1:-turn}" in
+        turn)     tools="$CLAUDE_TOOLS_TURN" ;;
+        wake)     tools="$CLAUDE_TOOLS_WAKE" ;;
+        job)      tools="$CLAUDE_TOOLS_JOB" ;;
+        classify) tools="" ;;
+        *) return 1 ;;
+    esac
+
+    # The precondition, always first, and the only thing that makes --tools
+    # safe. Skipped when the file is missing rather than emitted half — half
+    # of this lever is the 116k-token shape.
+    if [ -r "$CLAUDE_EMPTY_MCP" ]; then
+        CLAUDE_PROFILE_FLAGS+=(--strict-mcp-config --mcp-config "$CLAUDE_EMPTY_MCP")
+        case "$1" in
+            classify) CLAUDE_PROFILE_FLAGS+=(--tools "") ;;
+            *) [ -n "$tools" ] && CLAUDE_PROFILE_FLAGS+=(--tools "$tools") ;;
+        esac
+    fi
+
+    [ "$CLAUDE_SKILLS" = "1" ] || CLAUDE_PROFILE_FLAGS+=(--disable-slash-commands)
+    return 0
+}
+
+# Which profile this run is. SESSION_KIND is what the rest of lib/ goes by —
+# session_register sets it on all three interactive paths before any prompt is
+# built — so the profile is derived from it rather than tracked separately.
+claude_session_profile() {
+    case "${SESSION_KIND:-}" in
+        "autonomous wake") printf 'wake' ;;
+        *) printf 'turn' ;;
+    esac
+}
+
+# A cwd with nothing in it and no repository above it. A classifier answers one
+# question and has no use for a project's instruction file, its git status, or
+# anything else the CLI discovers from the directory it is standing in — and
+# every one of those is charged on the way in. Under XDG_RUNTIME_DIR when there
+# is one, so it dies with the login rather than accumulating in /tmp.
+claude_sterile_cwd() {
+    local d="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/deskcrab-classify"
+    mkdir -p "$d" 2>/dev/null || { printf '/'; return 0; }
+    printf '%s' "$d"
+}
+
+# One question, one text answer, no tools: the 181-token shape. Reads the
+# question on stdin and prints the answer. $1 is the model, $2 the system
+# prompt. Every classifier-shaped call belongs here — a memory judge, a
+# conversation summariser, a promise audit and a wake triage each used to pay
+# a whole desktop's worth of listings to answer one question, and there are
+# more of those runs in a day than there are turns.
+claude_classify() {  # <model> <system prompt>  [question on stdin]
+    local model="$1" sys="$2"
+    CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    claude_profile_flags classify
+    ( cd "$(claude_sterile_cwd)" 2>/dev/null || cd /
+      export "${CLAUDE_NO_AUTO_MEMORY?}"
+      exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+          --model "$model" \
+          "${CLAUDE_PROFILE_FLAGS[@]}" \
+          --system-prompt "$sys" )
+}
+
 # Did the run that just wrote $DEBUGLOG refuse over a usage/session limit —
 # that is, did the CLI fail before any genuine model output (wake_stream_failed's
 # shape) with limit-flavoured text? An auth or network failure fails every other
@@ -2307,9 +2422,11 @@ _wake_claude_run() {
         if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
         else unset CLAUDE_CONFIG_DIR; fi
         export "${CLAUDE_NO_AUTO_MEMORY?}"
+        claude_profile_flags wake
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$WAKE_MODEL" --effort "$WAKE_EFFORT" \
             --verbose --output-format stream-json \
+            "${CLAUDE_PROFILE_FLAGS[@]}" \
             --append-system-prompt "$SYSTEM_PROMPT" \
             "$PROMPT_TEXT" >> "$DEBUGLOG" 2>&1
     ) &
@@ -2759,9 +2876,11 @@ _generate_claude_run() {
         # never whatever the environment happened to arrive holding.
         if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
         else unset CLAUDE_CONFIG_DIR; fi
+        claude_profile_flags turn
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$CLAUDE_MODEL" --effort "$EFFORT" \
             --verbose --output-format stream-json --include-partial-messages \
+            "${CLAUDE_PROFILE_FLAGS[@]}" \
             --append-system-prompt "$SYSTEM_PROMPT" \
             "$TEXT" >> "$DEBUGLOG" 2>&1
     ) &

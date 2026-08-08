@@ -115,9 +115,15 @@ for ACCT in $(claude_accounts); do
         # that had just refused and the true primary was never tried.
         if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
         else unset CLAUDE_CONFIG_DIR; fi
+        # The job profile: no MCP servers and no skills catalogue, and
+        # deliberately no --tools restriction — a builder needs whatever the
+        # work needs. See claude_profile_flags; --tools without the empty MCP
+        # config is the shape that TRIPLES the context.
+        claude_profile_flags job
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
             --verbose --output-format stream-json \
+            "${CLAUDE_PROFILE_FLAGS[@]}" \
             --append-system-prompt "$SYS" \
             "$TASK" >> "$STREAMLOG" 2>&1
     )
