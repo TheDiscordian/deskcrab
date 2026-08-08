@@ -48,6 +48,15 @@ back to her.
     tried.
 15. A real build failure MUST NEVER match the blocked signature. Misreading one as "never ran" hides
     a broken builder.
+    - The judgement MUST read the stream's **events**, never its raw bytes, and MUST consider only
+      text the CLI itself produced: a result event, a synthetic (api-error) assistant message, or a
+      line that is not JSON at all. A stream carries every byte of every tool result, so a raw
+      signature match says "blocked" for a builder that merely READ a file containing the wording —
+      and one such file is `lib/common.sh`, which holds the signature's own patterns. The
+      consequence is not local: a false block rotates the durable account default and holds every
+      further dispatch for the retry window.
+    - A slice containing genuine model output is NEVER blocked, whatever words passed through it. A
+      run that produced output is a run that happened.
 16. While the block marker is younger than the retry window, dispatch MUST refuse. The standing
     policy of dispatching a builder the moment work is noticed otherwise fires builder after builder
     into the same wall.
@@ -64,7 +73,12 @@ back to her.
     file loaded by default. See prompt-assembly rule 15.
 21. The suppression of project auto-memory MUST stay per invocation. It MUST NEVER be exported, or
     it reaches the builder — the one session that should have the project's rules.
-22. A job's output MUST be visible to the live viewer. See [debug-view.md](debug-view.md).
+22. A job's output MUST be visible to the live viewer. See [debug-view.md](debug-view.md). Its
+    stream log MUST NOT be reaped by the turn-side sweep of stale session logs: a turn is over in
+    seconds, so three quiet hours means a dead session, while a builder can spend longer than that
+    inside one command without writing a byte. Unlinking a running builder's stream empties the
+    attempt slice, blinds the blocked judgement, and leaves a blocked run with nothing to record. A
+    job's stream is reaped when the JOB has ended, by the side that can ask.
 
 ### Reporting
 

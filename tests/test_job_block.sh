@@ -213,3 +213,92 @@ check_eq "with a login in hand, it is forwarded exactly once" \
 CLAUDE_CONFIG_DIR="" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
 check_eq "an empty login is passed no more than a missing one" \
     "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
+
+echo
+echo "a refusal is judged from the CLI's own events, never from the stream's bytes:"
+# specs/jobs.md rule 15's sub-bullets. A stream log carries every byte of every
+# tool result, so a signature match over the raw file says "blocked" for a
+# builder that merely READ a file containing the wording — and lib/common.sh,
+# which holds the signature's own patterns, is exactly such a file. The cost of
+# the false positive is not local: it rotates the durable account default and
+# holds every further dispatch for the retry window.
+S="$T/stream.jsonl"
+refusal() { run 'claude_stream_refusal "'"$S"'" "'"${2:-0}"'" || echo NONE'; }
+
+# The builder opened a file whose text contains the wording, then died without
+# ever producing a reply. Nothing the CLI said refused anything.
+python3 - "$S" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result",
+         "content": "CLAUDE_LIMIT_RE=\"out of usage credits|usage limit reached\""}]}}) + "\n")
+    f.write(json.dumps({"type": "result", "is_error": True, "result": "exit 1"}) + "\n")
+PYEOF
+check "the raw bytes DO carry the wording — that is the trap" \
+    grep -qi "out of usage credits" "$S"
+check_eq "reading a file that contains the wording is not a refusal" "$(refusal)" "NONE"
+
+# The CLI's own result event. No model output anywhere: nothing was attempted.
+python3 - "$S" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"type": "result", "is_error": True,
+                        "result": "You're out of usage credits. Run /usage-credits"}) + "\n")
+PYEOF
+check_eq "the CLI's own result event is" "$(refusal)" "out of usage credits"
+
+# A synthetic assistant message is the CLI speaking, not the model.
+python3 - "$S" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"type": "assistant", "is_api_error_message": True,
+                        "message": {"model": "<synthetic>", "content": [
+                            {"type": "text", "text": "session limit reached for this account"}]}}) + "\n")
+PYEOF
+check_eq "and so is a synthetic api-error message" "$(refusal)" "session limit reached"
+
+# A run that PRODUCED something is a run that happened, whatever words went
+# through it. Rule 15: a real failure must never wear the blocked signature.
+python3 - "$S" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"type": "assistant", "message": {"model": "fable", "content": [
+        {"type": "text", "text": "I hit a usage limit in the docs I was reading."}]}}) + "\n")
+    f.write(json.dumps({"type": "result", "is_error": True,
+                        "result": "usage limit reached"}) + "\n")
+PYEOF
+check_eq "a run with genuine model output is never a refusal" "$(refusal)" "NONE"
+
+# The offset is what makes an attempt answerable on its own bytes (rule 14).
+python3 - "$S" <<'PYEOF'
+import json, sys
+first = json.dumps({"type": "result", "is_error": True,
+                    "result": "usage limit reached"}) + "\n"
+with open(sys.argv[1], "w") as f:
+    f.write(first)
+    f.write(json.dumps({"type": "result", "is_error": True,
+                        "result": "getaddrinfo ENOTFOUND api.anthropic.com"}) + "\n")
+with open(sys.argv[1] + ".off", "w") as f:
+    f.write(str(len(first.encode())))
+PYEOF
+OFF="$(cat "$S.off")"
+check_eq "an earlier attempt's refusal is not the later attempt's outcome" \
+    "$(run 'claude_stream_refusal "'"$S"'" "'"$OFF"'" || echo NONE')" "NONE"
+check_eq "and read from the top, the chain has still refused" \
+    "$(run 'claude_stream_refusal "'"$S"'" 0 || echo NONE')" "usage limit reached"
+
+echo
+echo "a running builder's stream survives the turn-side sweep:"
+# specs/jobs.md rule 22's sub-bullet. claim_debuglog reaps session logs that
+# have been quiet for three hours, which is true of a turn and false of a
+# builder: a job can sit inside one compile for longer than that without
+# writing a byte. Unlinking its live stream empties the attempt slice, blinds
+# the judgement above, and leaves a blocked run with nothing to record.
+P="$DESKCRAB_STATE_PREFIX"
+: > "$P-debug-job-lives.log"
+: > "$P-debug-someturn.log"
+touch -d '5 hours ago' "$P-debug-job-lives.log" "$P-debug-someturn.log"
+run 'claim_debuglog' >/dev/null 2>&1
+check "a quiet job stream is left alone" [ -f "$P-debug-job-lives.log" ]
+check "a quiet turn stream is still reaped" [ ! -f "$P-debug-someturn.log" ]

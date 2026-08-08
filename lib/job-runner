@@ -36,6 +36,24 @@ STATUS="$JOBS_DIR/$ID.json"
 # day journal keeps.
 STREAMLOG="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-debug-job-$ID.log"
 : > "$STREAMLOG"
+# ...and the job streams are reaped HERE rather than by claim_debuglog's
+# three-hour sweep, which is what a desk turn runs. That sweep's rule — three
+# quiet hours means a dead session — is true of turns and false of builders: a
+# job can sit inside one compile for longer than that without writing a byte,
+# and having its live stream unlinked underneath it emptied the attempt slice,
+# blinded the limit test, and left a blocked run with nothing to record. A job
+# stream is dropped when its JOB has ended, which is a question only this side
+# can ask.
+for _s in "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}"-debug-job-*.log; do
+    [ -e "$_s" ] || continue
+    [ "$_s" = "$STREAMLOG" ] && continue
+    _sid="${_s##*-debug-job-}"; _sid="${_sid%.log}"
+    case "$("$LIB_DIR/job-status" get "$JOBS_DIR/$_sid.json" state 2>/dev/null)" in
+        running) continue ;;
+    esac
+    find "$_s" -mmin +180 -delete 2>/dev/null
+done
+unset _s _sid
 TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 [ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
 
@@ -138,9 +156,16 @@ for ACCT in $(claude_accounts); do
     DESKCRAB_DEBUGLOG="$ATTSLICE" "$LIB_DIR/extract-response" >> "$LOG" 2>/dev/null
     rm -f "$ATTSLICE"
     [ "$RC" -ne 0 ] || break
-    tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -qiE "$CLAUDE_LIMIT_RE" || break
-    claude_limit_record "$CONFDIR" \
-        "$(tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
+    # Judged on the CLI's OWN events in this attempt's slice, never on its raw
+    # bytes. A stream carries every byte of every tool result, so grepping it
+    # for the limit signature made a builder that merely READ a file
+    # containing the wording — lib/common.sh, which holds the signature's own
+    # patterns — and then exited non-zero for any reason look like an account
+    # refusal: the durable default rotated and every further dispatch was held
+    # for half an hour, on the strength of a file the builder opened.
+    # claude_stream_refusal is the same judgement the turn and wake chains use.
+    REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" || break
+    claude_limit_record "$CONFDIR" "$REFUSAL"
 done
 trap - TERM
 
@@ -157,10 +182,16 @@ STATE=finished
 # holding nothing but a refusal — and leaves the standing dispatch policy free
 # to send the next builder into the same wall.
 BLOCKED=""
-if [ "$RC" -ne 0 ] && tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -qiE "$CLAUDE_LIMIT_RE"; then
-    STATE=blocked
-    BLOCKED="$(tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -ihoE "$CLAUDE_LIMIT_RE" | head -n1)"
-    job_block_record "${BLOCKED:-the CLI refused to run}"
+if [ "$RC" -ne 0 ]; then
+    # The same event-level judgement as the retry decision above, on the same
+    # slice: blocked means the CLI's own words refused and no model output
+    # exists. A build that ran and failed has model output, so it can never
+    # land here (specs/jobs.md rule 15).
+    BLOCKED="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" || BLOCKED=""
+    if [ -n "$BLOCKED" ]; then
+        STATE=blocked
+        job_block_record "$BLOCKED"
+    fi
 fi
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
 
