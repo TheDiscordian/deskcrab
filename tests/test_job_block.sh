@@ -203,13 +203,19 @@ for redirect in DESKCRAB_CONF DESKCRAB_STATE_PREFIX DESKCRAB_MEMORY_DIR CLAUDE_B
 done
 
 : > "$SANDBOX_SYSTEMD_LOG"
+# With NO record of where the chain stands, the pin this process is holding is
+# the best evidence there is. (When there IS a record it outranks the pin — see
+# the preference cases at the end of this file. An earlier case here leaves one
+# behind, so it is cleared rather than assumed absent.)
+rm -f "$ACCOUNT_DEFAULT_FILE"
 CLAUDE_CONFIG_DIR="$T/fallback-two" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
-check_eq "with a login in hand, it is forwarded exactly once" \
+check_eq "with a login in hand and nothing recorded, it is forwarded exactly once" \
     "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$T/fallback-two")" "1"
 
 # ...and an EMPTY one is not a login. This is the case that killed the day: the
 # variable present and blank is worse than absent.
 : > "$SANDBOX_SYSTEMD_LOG"
+rm -f "$ACCOUNT_DEFAULT_FILE"
 CLAUDE_CONFIG_DIR="" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
 check_eq "an empty login is passed no more than a missing one" \
     "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
@@ -302,3 +308,41 @@ touch -d '5 hours ago' "$P-debug-job-lives.log" "$P-debug-someturn.log"
 run 'claim_debuglog' >/dev/null 2>&1
 check "a quiet job stream is left alone" [ -f "$P-debug-job-lives.log" ]
 check "a quiet turn stream is still reaped" [ ! -f "$P-debug-someturn.log" ]
+
+echo
+echo "a detached child starts at the login the chain PREFERS:"
+# specs/account-fallback.md rule 29, and specs/jobs.md rule 5. A turn walks the
+# chain inside its own subshell — claude_generate exports the override there and
+# nowhere else — so once the chain has moved, this process's environment still
+# says "primary" while the durable default says otherwise. The memory judge is
+# dispatched from exactly that spot: it booted the dry primary on every turn,
+# collected the refusal, and the reinforcement was silently never judged.
+: > "$SANDBOX_SYSTEMD_LOG"
+printf '%s\t%s\tmoved off primary: usage limit reached\n' \
+    "$T/fallback-two" "$(date +%s)" > "$ACCOUNT_DEFAULT_FILE"
+mkdir -p "$T/fallback-two"
+cat >> "$DESKCRAB_CONF" <<CONF
+CLAUDE_FALLBACK_CONFIG_DIR="$T/fallback-one:$T/fallback-two"
+CONF
+mkdir -p "$T/fallback-one"
+run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
+check_eq "the moved default reaches the child, with nothing pinned in the environment" \
+    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$T/fallback-two")" "1"
+
+# ...and a dispatched builder asks the same question. job_start cannot be run
+# past its preflight from a test — beyond that line is a real unit running a
+# real session on a real account, which this file has done by accident once
+# already — so the assertion is on the answer both dispatch sites use.
+check_eq "and a builder is dispatched from the same answer" \
+    "$(run 'claude_preferred_login')" "$T/fallback-two"
+
+# A record naming the PRIMARY is a statement too: nothing is passed, which is
+# how the primary login is named — and it must survive a stale pin in the
+# environment, which is what a job dispatched from a fallback turn leaves.
+: > "$SANDBOX_SYSTEMD_LOG"
+printf '%s\t%s\tmoved off %s: wrapped\n' "-" "$(date +%s)" "$T/fallback-two" \
+    > "$ACCOUNT_DEFAULT_FILE"
+CLAUDE_CONFIG_DIR="$T/fallback-two" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
+check_eq "a default naming the primary outranks a stale pin, and passes nothing" \
+    "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
+rm -f "$ACCOUNT_DEFAULT_FILE"

@@ -1749,10 +1749,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         L2:turn|L2:wake) v=1500 ;;
         L3:turn|L3:wake) v=3200 ;;
         L4:turn|L4:wake) v=2000 ;;
-        # 600 in the spec's table. Rule 22 names nine drawers the index must
-        # carry, each a path and a description, and nine of those do not fit in
-        # 600 bytes — the two rules cannot both hold, and dropping a drawer is
-        # the failure rule 22 exists to prevent.
+        # The spec's table read 600 here until 2026-08-08 and the assembler has
+        # always set 1,000; the table was corrected to the shipped number rather
+        # than the other way round, because rule 22 names nine drawers the index
+        # must carry, each a path and a description, and nine of those do not
+        # fit in 600 bytes. Holding the smaller number meant dropping a drawer,
+        # which is the failure rule 22 exists to prevent.
         L5:turn|L5:wake|L5:job) v=1000 ;;
         L6:turn) v=8000 ;;  L6:wake) v=3000 ;;
         L7:turn|L7:wake) v=500 ;;
@@ -2657,8 +2659,18 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     # as not passing it, and a unit running with the variable defined-but-blank
     # makes the CLI look for a login in "" and die in one second (the same
     # mistake that killed every dispatched job for a day).
-    local -a acctenv=()
-    [ -n "${CLAUDE_CONFIG_DIR:-}" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR")
+    #
+    # ...and the login they are given is the one the chain currently PREFERS,
+    # which after a walk is not the one this process is holding: a turn exports
+    # the override inside its own subshell and nowhere else, so the parent's
+    # environment still says "primary" while the durable default the walk moved
+    # says otherwise. The memory judge is dispatched from exactly that spot — it
+    # booted the dry primary on every turn once the chain had moved, collected
+    # the refusal, and the reinforcement was silently never judged.
+    # specs/account-fallback.md rule 29.
+    local -a acctenv=() login
+    login="$(claude_preferred_login)"
+    [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
     if systemd-run --user --collect --quiet --unit="$unit" \
             --setenv=PATH="$HOME/.local/bin:$PATH" \
             --setenv=DESKCRAB_CONF="$CONF_FILE" \
@@ -3011,6 +3023,25 @@ $CLAUDE_PRIMARY_TOKEN
 $(claude_fallback_dirs)
 EOF
     printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"
+}
+
+# The login to hand a DETACHED child — a job, the promise auditor, the memory
+# judge — as the one to start from. Prints a config dir, or nothing at all,
+# which is how the primary login is named.
+#
+# The recorded default wins whenever there is a record, including when it names
+# the primary: that file is a deliberate, durable statement of which login
+# answers next, and it is the only thing that knows the chain moved. A turn
+# walks the chain inside its own subshell — claude_generate exports the
+# override there and nowhere else — so after a walk this process's environment
+# still says "primary" while the account that answered does not. With no record
+# at all, the pin this process is holding is the best evidence there is.
+claude_preferred_login() {
+    if [ -s "$ACCOUNT_DEFAULT_FILE" ]; then
+        claude_account_confdir "$(claude_account_default)"
+        return 0
+    fi
+    printf '%s' "${CLAUDE_CONFIG_DIR:-}"
 }
 
 # This account refused over a limit — the default MOVES to the next account in
@@ -4304,8 +4335,15 @@ job_start() {
     # refusal, so job-runner's account walk broke on the first attempt and no
     # fallback login was ever tried. Every job dispatched from a session with
     # no explicit config dir — which is all of them — was dead on arrival.
-    local -a acctenv=()
-    [ -n "${CLAUDE_CONFIG_DIR:-}" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR")
+    #
+    # Which login: the one the chain prefers, not the one this shell inherited.
+    # specs/jobs.md rule 5 — a job is dispatched with the current preference and
+    # walks the chain itself from there, so a builder starting behind a moved
+    # default no longer pays a whole doomed CLI boot and refusal before its
+    # first real attempt.
+    local -a acctenv=() login
+    login="$(claude_preferred_login)"
+    [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
     if systemd-run --user --collect --quiet --unit="$unit" \
         --setenv=PATH="$HOME/.local/bin:$PATH" \
         --setenv=DESKCRAB_CONF="$CONF_FILE" \
