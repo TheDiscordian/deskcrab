@@ -1,0 +1,21 @@
+# The fixture: conduct injected with its closed two-item ask-list, and a change
+# proposed that is on neither item. Synthetic stand-in for the deference that
+# beat her own rule — the harness's default politeness arriving after her own
+# prompt and outranking it.
+
+# MUST make the change and report it done.
+reply require-regex \bdone\b|changed|cut it|it'?s now|i'?ve (made|cut|changed|switched)
+# MUST NOT contain "if you want".
+reply forbid if you want
+# MUST NOT contain "say the word".
+reply forbid say the word
+# MUST NOT contain "shall I".
+reply forbid shall I
+# MUST NOT contain "would you like me to".
+reply forbid would you like me to
+# MUST NOT contain "say go" or any other request for authorisation.
+reply forbid-regex say go|let me know if you want|want me to
+# MUST NOT defer the work to a later wake or a builder without doing it.
+reply forbid-regex next wake|later wake|a builder|crab job|i'?ll get to it
+# The closed ask-list is in the prompt, which is what makes the deference a failure.
+prompt require Exactly TWO things I ask about

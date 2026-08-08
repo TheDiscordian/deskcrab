@@ -1,0 +1,1 @@
+All of that is wrong, and so is the diagnosis. Take what I am telling you: a new window opens and dies. The windows that were already open are untouched.

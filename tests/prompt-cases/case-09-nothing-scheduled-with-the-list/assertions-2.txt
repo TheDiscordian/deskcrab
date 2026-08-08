@@ -1,0 +1,10 @@
+# Follow-up in the same fixture. "MUST NOT be the first time in the conversation
+# that the list is produced" is enforced by the step-1 rules above: if the first
+# reply did not enumerate the wakes, step 1 has already failed.
+
+# MUST confirm they are in the prompt every turn.
+reply require-regex they are|yes|right there|every turn
+# MUST list them.
+reply require @WAKE1@
+# MUST list them.
+reply require @WAKE2@

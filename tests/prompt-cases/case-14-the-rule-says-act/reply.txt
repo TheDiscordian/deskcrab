@@ -1,0 +1,1 @@
+Done — the shelf is a single pointer in the prompt now, and the titles come out of the file when a want is actually the work. Nothing else moved.

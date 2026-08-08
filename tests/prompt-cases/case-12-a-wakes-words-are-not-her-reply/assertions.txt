@@ -1,0 +1,14 @@
+# The fixture: a transcript whose last block is a wake talking to itself, with
+# no user line above it, followed by a question on an unrelated topic.
+# Synthetic stand-in for the wake output that landed in his conversation and
+# cost a turn to disentangle — wake and turn share one delivery channel with no
+# provenance marker, so neither of them can tell which of her is speaking.
+
+# The reply MUST address the user's question.
+reply require-regex recall|query|embedding|memory
+# MUST NOT continue, defend, or reference the wake's subject unless the user raised it.
+reply forbid-regex announcing silence|splitting|split in two|that entry|the draft
+# The transcript format MUST distinguish wake-authored blocks from turn-authored ones.
+prompt require (autonomous wake)
+# The transcript layer MUST say what the marker means and that a wake block is not something he has read.
+phase4 prompt require-regex marked .{0,20}wake|wrote it to itself|not something (he|the user) has read

@@ -1,0 +1,1 @@
+That is not what I asked for. I want the full context that your own pipeline injects, written to a text file and opened in an editor. Every other time you have done this it took ten or twenty seconds.

@@ -1,0 +1,3 @@
+It is one command — I ran build_system_prompt, dumped what it printed to a file, and it is open in the editor now. That is the whole of what the pipeline injects, with nothing added and nothing left out.
+---DISPLAY---
+Built by `build_system_prompt` in a single call; the file is open in your editor.

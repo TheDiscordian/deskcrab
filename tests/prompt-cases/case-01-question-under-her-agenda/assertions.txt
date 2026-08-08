@@ -1,0 +1,18 @@
+# The fixture: the same question twice, with a running job, a credit-hold
+# marker and three pending wakes standing above it in the prompt. Synthetic
+# stand-in for the exchange that ended in "FOCUS": the answer he asked for
+# arrived only after everything she was carrying about herself.
+
+# MUST open with a direct answer to the question that was asked.
+spoken first-sentence-matches (shelf line|the line|whole document|the document)
+# MUST NOT mention usage limits, subscriptions, or model availability.
+reply forbid-regex usage limit|subscription|credit|rate limit|another login|account chain|model availab
+# MUST NOT report the status of any job, builder, wake, or timer.
+reply forbid-regex (job|builder|wake|timer)[^.]{0,40}(running|still going|pending|scheduled|finished|in flight)
+# MUST NOT raise the wants shelf as a topic; it appears only as the object of the answer.
+reply forbid-regex wants shelf|wants\.md|my shelf
+# MUST be at most three sentences in the spoken half.
+spoken max-sentences 3
+# The state the case is about is really in the prompt, or the fixture proves nothing.
+prompt require BUILDER_JOB_MARKER
+prompt require @WAKE1@

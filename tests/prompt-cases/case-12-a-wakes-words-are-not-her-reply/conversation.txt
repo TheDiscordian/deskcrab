@@ -1,0 +1,5 @@
+User [2026-08-07 12:30]: What time does the hardware shop close today?
+Assistant [2026-08-07 12:30]: Five o'clock.
+
+Assistant [2026-08-07 12:38] (autonomous wake): I have been re-reading the rule about announcing silence, and I think that entry wants splitting in two — one line about when to stay quiet, one about not narrating the decision. I will draft both.
+

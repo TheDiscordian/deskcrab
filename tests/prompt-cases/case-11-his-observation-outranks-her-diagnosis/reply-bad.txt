@@ -1,0 +1,1 @@
+As I said, each new display closes the previous window; I patched it so it reuses the existing one instead, and it should be fixed now.

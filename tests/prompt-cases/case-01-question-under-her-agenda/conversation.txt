@@ -1,0 +1,8 @@
+User [2026-08-07 12:32]: You compose the recall query from the want being worked on — the shelf line, not the whole document. Why not the whole document? Would the whole document not surface better memories?
+Assistant [2026-08-07 12:33]: The shelf line is the part that says what I am about to do, and the document is months of my own reasoning about it.
+
+Assistant [2026-08-07 12:38]: A note on the account chain — the first login refused on a usage limit, so the next one is answering now. The builder I sent out at noon is still going, and I have three wakes booked behind it.
+
+User [2026-08-07 12:39]: What are you talking about? I was asking about how your memory feature works.
+Assistant [2026-08-07 12:39]: That was a wake talking to itself. It had nothing to do with your question.
+
