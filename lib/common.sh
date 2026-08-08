@@ -1553,29 +1553,61 @@ ${PRIOR:-(none)}
 $(cat "$OLDFILE")"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-    # In plain -p mode a limit refusal arrives as ordinary stdout, so gate on
-    # the exit code — an error line must never be written over the summary of
-    # real turns — and walk the accounts like every other run. Each attempt is
-    # judged on ITS OWN output: the previous account's refusal is replaced by
-    # this one's, so a refusal kept as history can never send the loop round
-    # again after a genuine failure of another kind. ${SUMCONF:+...} hands env a
-    # CLAUDE_CONFIG_DIR override only for a fallback account; empty (the login
-    # in hand), it expands away.
-    local SUMRC=0 SUMCONF="" ACCT
+    # The accounts are walked like every other run, and each attempt is judged
+    # the way every other run judges one: claude_stream_refusal, over the bytes
+    # of THIS attempt, which asks two structural questions — did the CLI's own
+    # synthetic marker carry the limit signature, and was there any genuine
+    # model output at all.
+    #
+    # It could not be asked here before, because this run had no stream to ask
+    # it of: `-p` in its default text mode returns one undifferentiated blob, so
+    # the judgement was `grep "$CLAUDE_LIMIT_RE"` over the summariser's own
+    # ANSWER. The material being summarised is a conversation with her, and the
+    # conversations that reach this threshold are frequently about accounts
+    # running dry — so a faithful summary of an afternoon reads "the session
+    # limit was reached at 14:20 and the chain moved on", every phrase of it in
+    # the signature. That summary was read as a refusal: the account that wrote
+    # it was stamped dry, the durable default moved off it, the next login was
+    # made to write the same summary again, and when the chain ran out the
+    # compaction was abandoned with the turns still unfolded.
+    # specs/account-fallback.md rule 15, rule 30 (capture what the CLI says on
+    # its own channel), and rule 31 (a refusal is never committed as a summary).
+    #
+    # So the run gets the same stream shape as a wake — one file of its own,
+    # never $DEBUGLOG, which the viewer is tailing — and the answer is read out
+    # of the events rather than off the pipe. A CLI that answers in plain text
+    # anyway (a stub, or a future default) leaves a log with no events in it,
+    # and its whole text is the answer: degrading to the old shape is right, and
+    # a refusal on that path still reads as one, because a stream with nothing
+    # but the CLI's own words in it is exactly what rule 12 describes.
+    local SUMRC=0 SUMCONF="" ACCT REFUSAL
+    local SUMLOG="${STATE_PREFIX}-convo-sum-stream.$$"
+    NEWSUM=""
     for ACCT in $(claude_accounts); do
         SUMCONF="$(claude_account_confdir "$ACCT")"
         SUMRC=0
-        NEWSUM=$( { if [ -n "$SUMCONF" ]; then export CLAUDE_CONFIG_DIR="$SUMCONF"
-                    else unset CLAUDE_CONFIG_DIR; fi
-                    printf '%s' "$SUMMATERIAL" \
-                        | claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS"; } 2>/dev/null ) || SUMRC=$?
-        [ "$SUMRC" -ne 0 ] || break
-        printf '%s' "$NEWSUM" | grep -qiE "$CLAUDE_LIMIT_RE" || break
-        claude_limit_record "$SUMCONF" \
-            "$(printf '%s' "$NEWSUM" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
+        : > "$SUMLOG"
+        { if [ -n "$SUMCONF" ]; then export CLAUDE_CONFIG_DIR="$SUMCONF"
+          else unset CLAUDE_CONFIG_DIR; fi
+          printf '%s' "$SUMMATERIAL" \
+              | CLAUDE_CLASSIFY_STREAM=1 claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS"
+        } >>"$SUMLOG" 2>&1 || SUMRC=$?
+        if REFUSAL="$(claude_stream_refusal "$SUMLOG")"; then
+            claude_limit_record "$SUMCONF" "$REFUSAL"
+            continue
+        fi
+        # Not a refusal. Anything else that went wrong goes wrong on the next
+        # login too, so it ends the walk rather than spending the chain.
+        [ "$SUMRC" -eq 0 ] || break
+        NEWSUM="$(DESKCRAB_DEBUGLOG="$SUMLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+        if [ -z "$NEWSUM" ] && ! grep -q '"type":' "$SUMLOG" 2>/dev/null; then
+            NEWSUM="$(cat "$SUMLOG" 2>/dev/null)"
+        fi
+        break
     done
+    rm -f "$SUMLOG"
 
-    if [ "$SUMRC" -eq 0 ] && [ -n "$NEWSUM" ]; then
+    if [ -n "$NEWSUM" ]; then
         # Write the summary whole, then move it into place. A redirect onto
         # $SUMMARYFILE truncates it first, so a write that dies halfway would
         # destroy the old summary AND leave a torn new one — and _compact_drop
@@ -2677,6 +2709,8 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
             --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
             --setenv=DESKCRAB_MEMORY_DIR="${DESKCRAB_MEMORY_DIR:-}" \
             --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+            --setenv=CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}" \
+            --setenv=DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
             "${acctenv[@]}" \
             "$@" >/dev/null 2>&1; then
         return 0
@@ -2684,7 +2718,9 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     # Close fds 8 and 9: the phone turn holds its serialising lock on 8 and a
     # wake holds the wake lock on 9. A child that lives for a whole claude
     # call would keep either lock held long after its turn had finished.
-    setsid "$@" >/dev/null 2>&1 8>&- 9>&- &
+    CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}" \
+    DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
+        setsid "$@" >/dev/null 2>&1 8>&- 9>&- &
 }
 
 # --- Promise audit: the unkept-want catcher ---------------------------------
@@ -2888,18 +2924,28 @@ claude_sterile_cwd() {
 # summariser has always been; the caller that wants a ceiling asks for one, and
 # it goes HERE rather than around the call, because `timeout` cannot wrap a
 # shell function.
+# CLAUDE_CLASSIFY_STREAM=1 asks for the same event stream a turn and a wake
+# emit, in place of the default text blob. Nothing about the PROMPT changes —
+# the measured 181-token shape is the input side, and this is the output side —
+# but the answer arrives as events, which is the only form in which a refusal
+# can be told from an answer that happens to talk about refusals
+# (claude_stream_refusal, specs/account-fallback.md rule 12). The flags are the
+# turn path's own, so this combination is the one running live all day.
 claude_classify() {  # <model> <system prompt>  [question on stdin]
     local model="$1" sys="$2"
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     claude_profile_flags classify
-    local -a bound=()
+    local -a bound=() shape=()
     [ "${CLAUDE_CLASSIFY_TIMEOUT:-0}" -gt 0 ] 2>/dev/null \
         && command -v timeout >/dev/null 2>&1 \
         && bound=(timeout "$CLAUDE_CLASSIFY_TIMEOUT")
+    [ "${CLAUDE_CLASSIFY_STREAM:-0}" = "1" ] \
+        && shape=(--verbose --output-format stream-json)
     ( cd "$(claude_sterile_cwd)" 2>/dev/null || cd /
       export "${CLAUDE_NO_AUTO_MEMORY?}"
       exec ${bound[@]+"${bound[@]}"} "$CLAUDE_BIN" -p --dangerously-skip-permissions \
           --model "$model" \
+          ${shape[@]+"${shape[@]}"} \
           "${CLAUDE_PROFILE_FLAGS[@]}" \
           --system-prompt "$sys" )
 }

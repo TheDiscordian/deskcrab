@@ -144,7 +144,7 @@ refusal to audio.
 | `H3` / `RC-4` | Nothing she can read records any of it: no account line, refusals held off the speakers and written only to the speech log, dropped by the extractor, absent from the session outcome. |
 | `H3` / `RC-5` | The streaming paths judge the whole accumulated log rather than the attempt's own bytes, so a later failure with no output is misread as a refusal and moves the default onto an innocent account. |
 | `H3` / `RC-6` | Out-of-band children have no chain and no login, and fail quietly. |
-| `MAJ-10` | A refusal can be committed as the conversation summary, dropping the folded blocks permanently. |
+| `MAJ-10` | A refusal can be committed as the conversation summary, dropping the folded blocks permanently. Closed 2026-08-08: the summariser runs as an event stream and is judged by `claude_stream_refusal` like every other path, so a refusal is recognised structurally and a summary that merely talks about limits is a summary. |
 | Recommendation §4.2 | A swap is invisible: no marker, no notification, and a stuck thinking notification. |
 | Recommendation §4.3 | The test suite strips the variable the shipping code fails to strip. |
 
@@ -152,6 +152,15 @@ refusal to audio.
 
 **Existing:** `tests/test_limit_fallback.sh` — 61 assertions, green, and green partly because the
 harness removes an environment variable the code should remove itself.
+`tests/test_convo_compaction.sh` — the summariser's own judgement, at both exit codes: a summary
+whose text is full of the signature's words is committed and folds its blocks away and stamps nobody
+dry, while a stream carrying the CLI's synthetic refusal and no genuine output skips the compaction,
+keeps every turn, and moves the durable default.
+`tests/test_memory.py` — the turn-end judge walks the chain: a refused login moves to the next and
+the judgement lands, an entirely dry chain skips the judgement and names it in the judge log, and a
+failure that is not a refusal spends no second login.
+`tests/test_job_block.sh` — a detached child inherits the chain and the signature, not only the
+login, so it can walk past an account that went dry between dispatch and run.
 
 **Required changes and additions:**
 

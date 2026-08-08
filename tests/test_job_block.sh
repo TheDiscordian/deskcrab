@@ -195,7 +195,12 @@ case "$argv" in
     *"--collect"*) ok "the child's unit is collected on exit, like a job's" ;;
     *) fail "a detached child's unit carries --collect" "$argv" ;;
 esac
-for redirect in DESKCRAB_CONF DESKCRAB_STATE_PREFIX DESKCRAB_MEMORY_DIR CLAUDE_BIN; do
+# CLAUDE_FALLBACK_CONFIG_DIR and the signature travel too: the memory judge
+# walks the chain itself (lib/memory.py run_claude), and a child that is handed
+# a login but not the list of logins after it has one shot at an account that
+# may already be dry. specs/account-fallback.md rules 13 and 29.
+for redirect in DESKCRAB_CONF DESKCRAB_STATE_PREFIX DESKCRAB_MEMORY_DIR CLAUDE_BIN \
+                CLAUDE_FALLBACK_CONFIG_DIR DESKCRAB_CLAUDE_LIMIT_RE; do
     case "$argv" in
         *"--setenv=$redirect="*) ok "$redirect travels into the child" ;;
         *) fail "every state redirect must reach a detached child" "$redirect: $argv" ;;

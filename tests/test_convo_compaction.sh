@@ -194,3 +194,81 @@ build_convo 3 10
 check_eq "[$FMT] no warnings from the split" "$(compact_convo 2>&1 >/dev/null)" ""
 
 done
+
+# --- 7. a refusal is the CLI's own verdict, never the summary's words ---------
+# specs/account-fallback.md rules 15, 30 and 31. The summariser is handed the
+# older half of a conversation with her, and the conversations long enough to
+# reach this threshold are frequently ABOUT the chain running dry — so a
+# faithful summary says "the session limit was reached at 14:20", every phrase
+# of it in the limit signature. Judged on its own text, that summary is a
+# refusal: the account that wrote it is stamped dry, the durable default moves
+# off it, and the compaction is abandoned with the turns still unfolded.
+#
+# Both halves are exercised at both exit codes, because which one a refusal
+# carries is the CLI's business and not something this code may depend on.
+echo
+echo "=== the refusal judgement ==="
+CONVO_MAX_TURNS=10 CONVO_SUMMARIZE_TURNS=5
+STAMP=1
+
+# The CLI answering properly: real events, a real model, and a summary whose
+# text is full of the signature's words.
+LIMIT_WORDS='Between 14:05 and 14:40 the usage limit reached on the primary login, so the session limit was discussed and the chain moved on.'
+stub_answer() { # <exit code>
+    sandbox_stub claude <<EOF
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet","content":[{"type":"text","text":"$LIMIT_WORDS"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"$LIMIT_WORDS"}'
+exit $1
+EOF
+}
+
+# The CLI refusing: its own synthetic marker, and no genuine model output
+# anywhere in the stream. This is the shape claude_stream_refusal recognises,
+# and it is the shape the wake and job paths already judge against.
+REFUSAL_TEXT='Claude AI usage limit reached|1754640000'
+stub_refusal() { # <exit code>
+    sandbox_stub claude <<EOF
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"$REFUSAL_TEXT"}]}}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"$REFUSAL_TEXT"}'
+exit $1
+EOF
+}
+
+for RC in 0 1; do
+    echo "a summary that talks about limits is a summary (cli exit $RC):"
+    reset
+    rm -f "$ACCOUNT_DEFAULT_FILE"
+    stub_answer "$RC"
+    build_convo 2 12
+    BEFORE="$(md5sum < "$CONVOFILE")"
+    compact_convo
+    if [ "$RC" = 0 ]; then
+        check_eq "[exit $RC] the summary that reached disk is the model's words" \
+            "$(cat "$SUMMARYFILE" 2>/dev/null)" "$LIMIT_WORDS"
+        check_eq "[exit $RC] the folded blocks were dropped" "$(blocks)" "11"
+    else
+        # A failure is a failure whatever it printed: nothing is folded away,
+        # and — the point of the case — nothing is stamped dry either.
+        check_eq "[exit $RC] a failed run folds nothing" "$(md5sum < "$CONVOFILE")" "$BEFORE"
+    fi
+    check_eq "[exit $RC] no account was stamped dry over the summary's words" \
+        "$([ -s "$ACCOUNT_DEFAULT_FILE" ] && cat "$ACCOUNT_DEFAULT_FILE" || echo "unmoved")" \
+        "unmoved"
+
+    echo "a genuine refusal skips the compaction and keeps the turns (cli exit $RC):"
+    reset
+    rm -f "$ACCOUNT_DEFAULT_FILE"
+    stub_refusal "$RC"
+    build_convo 2 12
+    BEFORE="$(md5sum < "$CONVOFILE")"
+    compact_convo
+    check_eq "[exit $RC] the conversation is whole" "$(md5sum < "$CONVOFILE")" "$BEFORE"
+    check_eq "[exit $RC] no refusal was committed as the summary" \
+        "$([ -f "$SUMMARYFILE" ] && echo written || echo none)" "none"
+    check "[exit $RC] the refusal moved the durable default" \
+        test -s "$ACCOUNT_DEFAULT_FILE"
+done

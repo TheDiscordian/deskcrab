@@ -1014,5 +1014,137 @@ class TestJudgeTurn(StoreCase):
         self.assertGreater(score(), before)
 
 
+class TestJudgeLoginChain(StoreCase):
+    """The judge walks the account chain, and never raises into its caller.
+
+    It had one shot at whichever login it was handed. A judgement fired at an
+    account that had just gone dry lost the whole turn's reinforcement, and lost
+    it silently: the caller writes a line and returns 0 by design, so the
+    records that turn genuinely used carried on decaying as though they had been
+    surfaced and ignored. specs/account-fallback.md rule 29 — every out-of-band
+    model call routes through the chain.
+    """
+
+    LIMIT_RE = ("out of usage credits|usage limit reached|session limit reached"
+                "|not logged in|please run /login")
+
+    def setUp(self):
+        super().setUp()
+        vec = [0.1] * memory.EMBED_DIM
+        self.used = self.store.insert("His character Xena is a Paladin.", vec=vec)
+        self.log = os.path.join(self.dir, "judge.log")
+        self.calls = os.path.join(self.dir, "logins.txt")
+        self.second = os.path.join(self.dir, "fallback-two")
+        os.makedirs(self.second, exist_ok=True)
+
+    def stub_claude(self, refuse):
+        """A CLI that refuses for the logins named in `refuse` and answers for
+        the rest, recording which login each attempt ran under. The refusal is
+        the CLI's own line on its own channel with a non-zero exit, which is
+        what run_claude already reports when it raises."""
+        path = os.path.join(self.dir, "claude-stub")
+        with open(path, "w") as f:
+            f.write(
+                "#!/bin/sh\n"
+                "cat > /dev/null\n"
+                f'printf "%s\\n" "${{CLAUDE_CONFIG_DIR:-primary}}" >> "{self.calls}"\n'
+                f'case "${{CLAUDE_CONFIG_DIR:-primary}}" in\n'
+                f'  {"|".join(refuse)})\n'
+                '    echo "Claude AI usage limit reached|1754640000" >&2\n'
+                "    exit 1 ;;\n"
+                "esac\n"
+                f'printf "%s\\n" "[{self.used}]"\n')
+        os.chmod(path, 0o755)
+        return path
+
+    def judge(self, refuse, chain=None):
+        ids_file = os.path.join(self.dir, "injected.json")
+        with open(ids_file, "w") as f:
+            json.dump([{"id": self.used, "kind": "note", "text": "t"}], f)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   XDG_RUNTIME_DIR=self.dir,
+                   DESKCRAB_CLAUDE_LIMIT_RE=self.LIMIT_RE,
+                   CLAUDE_FALLBACK_CONFIG_DIR=(self.second if chain is None else chain),
+                   CLAUDE_BIN=self.stub_claude(refuse))
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "judge-turn", "--ids-file", ids_file, "--user", "who do I play",
+             "--reply", "Xena is your Paladin.", "--actions", "",
+             "--log", self.log],
+            capture_output=True, text=True, env=env)
+        # The fail-safe contract at the head of the module: a judgement that
+        # cannot be made is skipped, never raised.
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return ids_file
+
+    def logins(self):
+        with open(self.calls) as f:
+            return [l.strip() for l in f if l.strip()]
+
+    def usage(self, rec_id):
+        return self.store.db.execute(
+            "SELECT use_count, last_used_at FROM memories WHERE id=?",
+            (rec_id,)).fetchone()
+
+    def test_a_refused_login_moves_to_the_next_and_the_judgement_lands(self):
+        self.judge(refuse=["primary"])
+        self.assertEqual(self.logins(), ["primary", self.second])
+        self.assertEqual(self.usage(self.used)[0], 1)
+        with open(self.log) as f:
+            log = f.read()
+        # One line naming the account that answered, so a chain walking itself
+        # dry is readable afterwards rather than inferred from a missing
+        # judgement.
+        self.assertIn(os.path.basename(self.second), log)
+        self.assertIn("answered after 1 login(s) refused", log)
+        self.assertIn(f"used=[{self.used}]", log)
+
+    def test_every_login_refusing_skips_the_judgement_and_says_so(self):
+        ids_file = self.judge(refuse=["primary", self.second])
+        self.assertEqual(self.logins(), ["primary", self.second])
+        # Nothing reinforced on a judgement that never happened — crediting a
+        # record here would teach the store that a refusal is evidence of use.
+        self.assertEqual(self.usage(self.used), (0, None))
+        # The sidecar still describes one turn and is still consumed.
+        self.assertFalse(os.path.exists(ids_file))
+        with open(self.log) as f:
+            self.assertIn("every login refused (2 tried)", f.read())
+
+    def test_a_failure_that_is_not_a_refusal_spends_no_second_login(self):
+        # An authentication or network failure fails on the next account too.
+        # Walking the chain for it burns every login and moves the durable
+        # default onto accounts that never refused anything.
+        path = os.path.join(self.dir, "claude-stub")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\ncat > /dev/null\n"
+                    f'printf "%s\\n" "${{CLAUDE_CONFIG_DIR:-primary}}" >> "{self.calls}"\n'
+                    'echo "connect ETIMEDOUT" >&2\nexit 1\n')
+        os.chmod(path, 0o755)
+        ids_file = os.path.join(self.dir, "injected.json")
+        with open(ids_file, "w") as f:
+            json.dump([{"id": self.used, "kind": "note", "text": "t"}], f)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   XDG_RUNTIME_DIR=self.dir,
+                   DESKCRAB_CLAUDE_LIMIT_RE=self.LIMIT_RE,
+                   CLAUDE_FALLBACK_CONFIG_DIR=self.second, CLAUDE_BIN=path)
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "judge-turn", "--ids-file", ids_file, "--user", "u",
+             "--reply", "r", "--actions", "", "--log", self.log],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.logins(), ["primary"])
+        self.assertEqual(self.usage(self.used), (0, None))
+
+    def test_with_no_chain_configured_nothing_changes(self):
+        # One login, one attempt, the same skip as before this walk existed.
+        ids_file = self.judge(refuse=["primary"], chain="")
+        self.assertEqual(self.logins(), ["primary"])
+        self.assertEqual(self.usage(self.used), (0, None))
+        self.assertFalse(os.path.exists(ids_file))
+
+
 if __name__ == "__main__":
     unittest.main()

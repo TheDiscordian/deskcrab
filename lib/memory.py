@@ -983,7 +983,59 @@ def sterile_cwd():
         return "/"
 
 
-def run_claude(prompt, model, timeout=600):
+def fallback_dirs():
+    """The configured fallback logins, in order.
+
+    Same parse as claude_fallback_dirs in lib/common.sh, and read from the same
+    variable: the name is singular by history but the value is a CHAIN,
+    separated by whitespace or colons. Read rather than re-declared, so adding a
+    subscription stays a config edit and nothing else.
+    """
+    return [d for d in re.split(r"[:\s]+",
+                                os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", ""))
+            if d]
+
+
+def claude_chain():
+    """Every login this run may use, in order, starting with the one in hand.
+
+    Mirrors claude_accounts in lib/common.sh. The primary login is the ABSENCE
+    of CLAUDE_CONFIG_DIR — never whatever the environment happens to hold
+    (specs/account-fallback.md rule 2) — so it is the empty string here and the
+    variable is unset for it, not set to "". Duplicates are dropped (rule 5),
+    and the chain is rotated to start where this process was pointed, which for
+    a detached child is the login the chain currently prefers.
+    """
+    ordered = []
+    for d in [""] + fallback_dirs():
+        if d not in ordered:
+            ordered.append(d)
+    here = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    if here in ordered:
+        i = ordered.index(here)
+        return ordered[i:] + ordered[:i]
+    # A login nobody configured: try it, then the chain that IS configured.
+    return [here] + ordered
+
+
+def account_name(confdir):
+    return os.path.basename(confdir) if confdir else "primary"
+
+
+def limit_signature():
+    """The limit signature, from lib/common.sh by way of the environment.
+
+    specs/account-fallback.md rule 13: ONE signature, shared, so the retry
+    decision and the blocked-job judgement cannot drift. Spelling the wordings
+    again in this file would be a second copy that ages on its own. With no
+    signature in the environment this module behaves exactly as it did before
+    the walk existed — one attempt, no retry — which is the fail-safe direction.
+    """
+    raw = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
+    return re.compile(raw, re.I) if raw else None
+
+
+def run_claude(prompt, model, timeout=600, log=None):
     # Both callers here — the ingest distiller and the turn-end judge — are
     # classifiers: one question, one answer, no tools. They used to boot the
     # full interactive desktop for it, measured at 40,229 tokens of listings
@@ -998,15 +1050,47 @@ def run_claude(prompt, model, timeout=600):
     # knob and same reasoning as CLAUDE_NO_AUTO_MEMORY in lib/common.sh,
     # applied here because nothing shell-side wraps these runs. The sterile cwd
     # is the same rule from the other side: nothing to read there either.
-    env = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
-    proc = subprocess.run(
-        [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"]
-        + classify_flags(),
-        input=prompt, capture_output=True, text=True, timeout=timeout, env=env,
-        cwd=sterile_cwd())
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}")
-    return proc.stdout.strip()
+    #
+    # And it walks the chain. It had ONE shot at whichever login was handed to
+    # it, so a judgement fired at an account that had just gone dry lost the
+    # whole turn's reinforcement — silently, because the caller's except clause
+    # writes a line and returns 0 by design. The records that turn genuinely
+    # used kept decaying as though they had been surfaced and ignored, which is
+    # the opposite of what the judgement is for. specs/account-fallback.md rule
+    # 29: every out-of-band model call routes through the chain.
+    #
+    # A refusal is judged from the CLI's own channels and only ever on a run
+    # that FAILED. A successful answer is never pattern-matched, whatever it
+    # says: a verdict about a turn that discussed usage limits is still a
+    # verdict. On a failed run there is no genuine answer to protect, so both
+    # channels are read — the CLI puts its refusal on whichever it likes.
+    env_base = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
+    signature = limit_signature()
+    chain = claude_chain()
+    refused = 0
+    last = ""
+    for confdir in chain:
+        env = dict(env_base)
+        if confdir:
+            env["CLAUDE_CONFIG_DIR"] = confdir
+        else:
+            env.pop("CLAUDE_CONFIG_DIR", None)
+        proc = subprocess.run(
+            [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"]
+            + classify_flags(),
+            input=prompt, capture_output=True, text=True, timeout=timeout,
+            env=env, cwd=sterile_cwd())
+        if proc.returncode == 0:
+            if refused and log:
+                log(f"{account_name(confdir)} answered after "
+                    f"{refused} login(s) refused")
+            return proc.stdout.strip()
+        last = f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}"
+        said = f"{proc.stderr}\n{proc.stdout}"
+        if not (signature and signature.search(said)):
+            raise RuntimeError(last)
+        refused += 1
+    raise RuntimeError(f"every login refused ({refused} tried) — {last}")
 
 
 def extract_candidates(material, model):
@@ -1136,7 +1220,7 @@ def cmd_judge_turn(store, args):
             body = run_claude(
                 JUDGE_PROMPT + "\n=== INJECTED RECORDS ===\n" + records
                 + "\n\n=== THE TURN ===\n" + exchange,
-                args.model, timeout=120)
+                args.model, timeout=120, log=jlog)
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             jlog(f"judge failed ({e})")
             return 0

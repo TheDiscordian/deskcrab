@@ -78,7 +78,10 @@ rule: degradation must never be as quiet as working.
     left readable and excluded from retrieval; anything below simply adds.
 29. **Ingest MUST NOT tail-clamp its input.** A day's journal larger than the input cap means the
     day's earliest material is never ingested at all. Chunk it.
-30. The ingest session MUST run under the account chain, like every other model call.
+30. The ingest session and the turn-end judge MUST run under the account chain, like every other
+    model call. Both reach the CLI through this module's own runner, so the chain is walked there;
+    one shot at the login handed in loses a whole turn's reinforcement the moment that account goes
+    dry, and loses it silently, because a judgement that cannot be made is skipped by design.
 
 ### Isolation
 
@@ -149,11 +152,13 @@ judge), `crab memory`, and the nightly sleep.
 | `MAJ-32` | Ingest tail-clamps a single prompt, and the cap is saturated against the current journal, so the day's earliest material is never ingested. |
 | `MIN-27` | Block truncation pops from the tail, so a pinned record is the first thing dropped. |
 | `MIN-28` | The block's fail-safe does not catch a malformed embedder response, and the caller discards the warning. The prompt loses both. |
-| `H3` / `RC-6` | The store's model calls do not walk the account chain and have no limit detection. |
+| `H3` / `RC-6` | The store's model calls do not walk the account chain and have no limit detection. Closed for the judge and the ingest distiller on 2026-08-08: both go through one runner, which walks the chain on a limit-shaped refusal and logs which login answered. The embedder is a different daemon and has no chain. |
 
 ## TESTS
 
-**Existing:** `tests/test_memory.py` (65 cases, run under the venv interpreter),
+**Existing:** `tests/test_memory.py` (74 cases, run under the venv interpreter, including the judge's
+walk of the account chain — a refused login moves to the next, a chain that is entirely dry skips the
+judgement and says so in the judge log, and a failure that is not a refusal spends no second login),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).
