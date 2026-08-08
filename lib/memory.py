@@ -262,6 +262,45 @@ def embed(texts, query=False, timeout=30):
     return out
 
 
+def _live_memory_dirs():
+    """The store paths that belong to the live instance. Both spellings, so a
+    live store is never mistaken for a scratch one: default_dir derives from
+    ~ and lib/common.sh derives its neighbours from XDG_DATA_HOME."""
+    dirs = [os.path.expanduser("~/.local/share/deskcrab/memory")]
+    data = os.environ.get("XDG_DATA_HOME")
+    if data:
+        dirs.append(os.path.join(data, "deskcrab", "memory"))
+    return [os.path.abspath(d) for d in dirs]
+
+
+def _notice_suppress_file(directory):
+    """Where this store's write declaration belongs.
+
+    A declaration is only worth anything to the watcher that reads it, and
+    lib/notice-selfchange reads ONE file: the live state directory's. A store
+    that is not the live store — every test store, every scratch instance —
+    has no business in that file. On 2026-08-07 five `/tmp/memtest-*` records
+    written by the test suite were sitting in the live one. This is the same
+    rule lib/job-runner already applies to the wake it fires: a run that is not
+    the live one does not get to reach the live me.
+
+    The explicit knobs win over both, so a caller that has already decided
+    where its declarations go (lib/common.sh sets NOTICE_STATE_DIR and
+    NOTICE_SUPPRESS) is obeyed rather than second-guessed.
+    """
+    explicit = os.environ.get("NOTICE_SUPPRESS")
+    if explicit:
+        return explicit
+    state_dir = os.environ.get("NOTICE_STATE_DIR")
+    if not state_dir:
+        if os.path.abspath(directory) not in _live_memory_dirs():
+            return os.path.join(directory, "notice-self.suppress")
+        state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser(
+            "~/.local/state")
+        state_dir = os.path.join(state, "deskcrab")
+    return os.path.join(state_dir, "notice-self.suppress")
+
+
 def _notice_touch(directory, window=900):
     """Declare an imminent write for lib/notice-selfchange (crab touching).
 
@@ -270,8 +309,7 @@ def _notice_touch(directory, window=900):
     so the declaration happens here rather than at each call site. Same
     record format and lock as touch_suppress in lib/common.sh.
     """
-    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    sup = os.path.join(state, "deskcrab", "notice-self.suppress")
+    sup = _notice_suppress_file(directory)
     try:
         import fcntl
         os.makedirs(os.path.dirname(sup), exist_ok=True)

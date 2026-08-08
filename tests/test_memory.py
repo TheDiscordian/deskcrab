@@ -58,6 +58,69 @@ class TestBasics(StoreCase):
         self.assertEqual(len(self.store.pinned_rows()), 1)
 
 
+class TestStoreIsolation(StoreCase):
+    """A store that is not the live store has no business in the live state.
+
+    lib/notice-selfchange reads ONE suppression file, the live one, and every
+    opener of a store declares its imminent write there so the watcher does not
+    report her own plumbing as an intruder. A scratch store's declaration means
+    nothing to that watcher and everything to whoever reads the file later: on
+    2026-08-07 five /tmp/memtest-* records from this very file were sitting in
+    it. Same rule the job runner already applies to the wake it fires."""
+
+    def test_scratch_store_declares_beside_itself(self):
+        declared = os.path.join(self.dir, "notice-self.suppress")
+        self.assertTrue(os.path.exists(declared),
+                        "a scratch store left no declaration of its own")
+        with open(declared) as f:
+            self.assertIn(self.dir, f.read())
+
+    def test_scratch_store_never_touches_the_live_file(self):
+        state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser(
+            "~/.local/state")
+        live = os.path.join(state, "deskcrab", "notice-self.suppress")
+        before = ""
+        if os.path.exists(live):
+            with open(live) as f:
+                before = f.read()
+        other = tempfile.mkdtemp(prefix="memtest-isolation-")
+        try:
+            store = memory.Store(other)
+            store.db.close()
+            after = ""
+            if os.path.exists(live):
+                with open(live) as f:
+                    after = f.read()
+            self.assertEqual(before, after,
+                             "a scratch store wrote into the live suppression file")
+            self.assertNotIn(other, after)
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_the_live_store_still_declares_where_the_watcher_looks(self):
+        """...and the fix must not silence the real thing: the live store's
+        declaration still goes to the one file lib/notice-selfchange reads."""
+        data = os.path.join(self.dir, "data")
+        state = os.path.join(self.dir, "state")
+        live_store = os.path.join(data, "deskcrab", "memory")
+        os.makedirs(live_store)
+        # DESKCRAB_MEMORY_DIR names the store, XDG_DATA_HOME is what makes
+        # that store the LIVE one as far as the module is concerned. Without
+        # the first, this case would open his real store to make its point.
+        env = dict(os.environ, XDG_DATA_HOME=data, XDG_STATE_HOME=state,
+                   DESKCRAB_MEMORY_DIR=live_store)
+        env.pop("NOTICE_SUPPRESS", None)
+        env.pop("NOTICE_STATE_DIR", None)
+        subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"), "list"],
+            env=env, check=True, capture_output=True)
+        declared = os.path.join(state, "deskcrab", "notice-self.suppress")
+        self.assertTrue(os.path.exists(declared),
+                        "the live store stopped declaring its writes")
+        with open(declared) as f:
+            self.assertIn(live_store, f.read())
+
+
 class TestSearch(StoreCase):
     def setUp(self):
         super().setUp()
@@ -210,21 +273,29 @@ class TestQueryBudget(StoreCase):
                 f.write(f"User: line {i} " + ("chatter " * 200) + "\n")
         return wants, convo
 
+    def _log(self):
+        """Every case here truncates, and truncation is LOGGED. Without a sink
+        of its own that line lands in the live recall log, which is not a
+        tidiness problem: all thirteen lines in the live log were this file's
+        50 000 x's, and an investigation read them as real wakes and concluded
+        that every autonomous wake retrieved nothing."""
+        return os.path.join(self.dir, "recall.log")
+
     def test_wake_query_stays_within_budget(self):
         wants, convo = self._fat_files()
-        q = memory.recall_query("", wants, convo, wake=True)
+        q = memory.recall_query("", wants, convo, wake=True, log=self._log())
         self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
         self.assertIn("want 0", q)        # the shelf is still represented
 
     def test_conversation_query_stays_within_budget(self):
         _, convo = self._fat_files()
-        q = memory.recall_query("", None, convo)
+        q = memory.recall_query("", None, convo, log=self._log())
         self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
         self.assertIn("line 199", q)      # the newest turn, not the oldest
 
     def test_reason_query_stays_within_budget(self):
         _, convo = self._fat_files()
-        q = memory.recall_query("x" * 50000, None, convo)
+        q = memory.recall_query("x" * 50000, None, convo, log=self._log())
         self.assertLessEqual(len(q), memory.RECALL_QUERY_CHARS)
 
     def test_no_empty_or_whitespace_segments(self):
