@@ -205,3 +205,28 @@ rm -f "$W"/*.wake
 out="$(delta)"
 check "an empty span says so in words" \
     has "nothing fired, nothing was booked, no job was dispatched, and the queue did not change" "$out"
+
+echo
+echo "a wake that got past the gates IS a reply, even without a voice:"
+# specs/self-awareness.md rule 12: a session reached him when it DELIVERED —
+# including a wake that got past the delivery gates. The convention that makes
+# that readable is a parenthesised outcome for a session that reached nobody,
+# and a quiet bubble is delivery: it appears in his chat, on the phone and at
+# the desk. Journalled as "(silent — …)" it wore the not-delivered spelling, so
+# the anchor stepped over it to an earlier turn and the delta re-reported work
+# he had already been shown.
+{
+    logline 90 60  "desktop turn"    "an exchange an hour and a half ago"
+    logline 40 120 "autonomous wake" "shown without speech (a quiet bubble): I sat with the second movement."
+} > "$LOG"
+check_eq "the delivered bubble is the last reply, so the anchor is its finish" \
+    "$(anchor)" "$(( $(date -d '-40 minutes' +%s) + 120 ))"
+
+# ...and the distinction still holds in the other direction, which is what
+# makes it mean anything: a wake the night HELD reached nobody.
+{
+    logline 90 60  "desktop turn"    "an exchange an hour and a half ago"
+    logline 40 120 "autonomous wake" "(quiet hours — held, nothing spoken and nothing shown) a display section was built and held"
+} > "$LOG"
+check_eq "a wake the night held does not set the anchor" \
+    "$(anchor)" "$(( $(date -d '-90 minutes' +%s) + 60 ))"

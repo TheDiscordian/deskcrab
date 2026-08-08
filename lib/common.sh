@@ -338,7 +338,16 @@ session_register() {
     printf '%s\t%s\t%s\t%s\t%s\n' "$SESSION_KIND" "$$" \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$SESSION_START" "$(_proc_starttime $$)" \
         > "$SESSION_FILE"
-    trap session_finish EXIT INT TERM
+    # A signal handler that does not exit is not a signal handler: the shell
+    # RESUMES where it was interrupted once the trap returns. So a TERM used to
+    # deregister a live session — dropping its registration, its claim, its
+    # checkpoint and its job-news stamp, and journalling it with an empty reply
+    # — and then let it carry on generating and speaking, invisible to every
+    # other session for the rest of its life. INT and TERM finish the session
+    # and END it; the EXIT trap stays as it was, and session_finish is
+    # idempotent, so the exit path costs nothing.
+    trap session_finish EXIT
+    trap 'session_finish; exit 143' INT TERM
 }
 
 # What this session actually accomplished, in one line. Recorded so the NEXT
@@ -524,10 +533,14 @@ day_journal_append() {  # <kind> <start-epoch> <duration|-> <pid> <user> <reply>
 # always surfaces unless its deleter said so" stays true by construction.
 touch_suppress() {
     local win="$TOUCH_WINDOW" tier="" p
-    while :; do
-        case "${1:-}" in
-            -w) win="$2"; shift 2 ;;
-            -t) tier="$2"; shift 2 ;;
+    # `shift 2` with only one argument left is a NO-OP that returns 1, so the
+    # loop re-tested the same unconsumed flag forever: `crab touching -w` pinned
+    # a core until it was noticed. Every option loop here consumes its own flag
+    # first, so a missing value ends the loop instead of spinning on it.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -w) win="${2:-$TOUCH_WINDOW}"; shift; [ $# -gt 0 ] && shift ;;
+            -t) tier="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
             *)  break ;;
         esac
     done
@@ -908,18 +921,38 @@ _wake_when() {  # <epoch>
 # and its reason — "the 5:34 one, about the job that finished" — never by its
 # unit id: a unit name is a digit-timestamp, and those belong on the display
 # channel or nowhere.
+# REASON FIRST, machinery after. A row read "scheduled: <reason> [booked by
+# herself]" — the kind, a piece of queue vocabulary that answers nothing, in
+# front of the only part that says what the appointment is FOR. Now it reads
+#
+#   - 13:00 — Kassandra bar 14: write the blind prediction (booked by you)
+#
+# so the sentence she can speak is the first thing on the line and the
+# bookkeeping trails it in brackets, where it belongs. A booking with no reason
+# says what a reason-less booking of that kind actually is, rather than
+# printing the kind and stopping.
 _wake_row_line() {  # <fire> <unit> <kind> <reason> <booked-at> <booked-by> <state> <width>
     local fire="$1" unit="$2" kind="$3" reason="$4" by="$6" state="$7" width="${8:-90}"
-    local when what
+    local when what who note=""
     if [ "${fire:-0}" -gt 0 ]; then when="$(_wake_when "$fire")"; else when="moment unknown"; fi
     case "$state" in
-        orphan) printf '  - %s  a timer with no booking record (another instance, or a record that was lost)\n' "$when"; return 0 ;;
-        background) printf '  - %s  %s\n' "$when" "$reason"; return 0 ;;
+        orphan) printf '  - %s — a timer with no booking record (another instance, or a record that was lost)\n' "$when"; return 0 ;;
+        background) printf '  - %s — %s\n' "$when" "$reason"; return 0 ;;
     esac
-    what="${kind:-scheduled}"
-    [ -n "$reason" ] && what="$what: $reason"
-    printf '  - %s  %s  [booked by %s%s]\n' "$when" "$(_ellipsis "$what" "$width")" "$by" \
-        "$([ "$state" = unarmed ] && printf ', RECORDED BUT NOT ARMED')$([ "$state" = firing ] && printf ', firing now')"
+    what="$reason"
+    if [ -z "$what" ]; then
+        case "${kind:-scheduled}" in
+            event) what="something on this machine you asked to be told about" ;;
+            *)     what="coming back to your wants (no agenda written down)" ;;
+        esac
+    fi
+    # "booked by you" rather than "booked by herself": the record's word is
+    # herself, and the reader of this line IS herself.
+    who="$by"
+    [ "$who" = herself ] && who="you"
+    [ "$state" = unarmed ] && note=", RECORDED BUT NOT ARMED"
+    [ "$state" = firing ] && note=", firing now"
+    printf '  - %s — %s (booked by %s%s)\n' "$when" "$(_ellipsis "$what" "$width")" "$who" "$note"
 }
 
 # The wake queue, records first. See lib/wake-queue.sh: wake_list enumerates the
@@ -1176,6 +1209,35 @@ self_state_report() {
             "$(printf '%s\n' "$recent" | grep -c '^  - ')"
         printf '%s\n' "$recent"
     fi
+}
+
+# --- Append-only records that are read, not archived ------------------------
+# One line in, and a trim when the file has grown to twice what it keeps. Both
+# halves under the file's own lock, because these are written by hands that do
+# not know about each other — the wake ledger by every booker, the account log
+# by every path that meets a refusal.
+#
+# `tail -n K F > F.tmp && mv F.tmp F` is not a safe trim on its own: a line
+# appended between the read and the rename is thrown away with the old file,
+# and two rotations racing each other through one fixed temp name leave
+# whichever finished second. The lock closes the first hole and the pid in the
+# temp name closes the second.
+log_append_bounded() {  # <file> <keep> <line>
+    local f="$1" keep="$2" line="$3" n
+    mkdir -p "$(dirname "$f")" 2>/dev/null
+    {
+        flock -w 10 5
+        printf '%s\n' "$line" >> "$f" 2>/dev/null
+        n="$(wc -l < "$f" 2>/dev/null || echo 0)"
+        case "$n" in ''|*[!0-9]*) n=0 ;; esac
+        if [ "$n" -gt $(( keep * 2 )) ]; then
+            if tail -n "$keep" "$f" > "$f.tmp.$$" 2>/dev/null; then
+                mv -f "$f.tmp.$$" "$f" 2>/dev/null
+            fi
+            rm -f "$f.tmp.$$" 2>/dev/null
+        fi
+    } 5>>"$f.lock"
+    return 0
 }
 
 # --- Durable wakes ---------------------------------------------------------
@@ -1694,7 +1756,14 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         L5:turn|L5:wake|L5:job) v=1000 ;;
         L6:turn) v=8000 ;;  L6:wake) v=3000 ;;
         L7:turn|L7:wake) v=500 ;;
-        L8:turn|L8:wake) v=300 ;;  L8:job|L8:classify) v=200 ;;
+        # 300 in the spec's table, and 300 was the size of the frame BEFORE it
+        # carried the register rule — the standing instruction that the state
+        # block is how she sees and not how she speaks (specs/self-awareness.md
+        # rules 33 and 34). It belongs in the last layer or nowhere: an
+        # instruction about how to say the answer has to be next to the thing
+        # being answered. specs/prompt-assembly.md §11's L8 row and its profile
+        # totals need the same number.
+        L8:turn|L8:wake) v=900 ;;  L8:job|L8:classify) v=200 ;;
         regroup:turn|regroup:wake) v=1300 ;;
         *) v=0 ;;
     esac
@@ -1842,10 +1911,28 @@ EOF
 
 # L8 — the turn frame. The last thing in the system prompt, and the only layer
 # whose whole job is to say what this turn is about.
+#
+# The register rule lives HERE, in the last layer before the thing she is
+# answering, because that is where an instruction is actually in force. The
+# state block is a set of SENSES: it is how she knows what is running and what
+# is coming, and it is not a script. Read out, its vocabulary turns a plan into
+# an operations report — "a scheduled wake is booked for 13:00" for what a
+# person says as "I'll come back to the arrangement at one" — and its
+# bookkeeping (which subsystem booked a thing, what owns it, unit names) is
+# machinery he did not ask about. The rule is not a filter on what she has
+# written: nothing downstream inspects a reply. It is a fact placed in front of
+# her while she writes, which is the only place this project puts one.
+_prompt_layer_register() {
+    cat <<'EOF'
+YOUR OWN WORDS. The state block above is how you SEE — an instrument panel, not a script, and reading one out is not answering. Speak your plans as a person does: "I'll come back to the arrangement at one", never "a scheduled wake is booked". The block's vocabulary (wake, session, job, timer, unit) and its bookkeeping (who booked a thing, what owns it, unit names) are said ONLY when they are the answer to what was actually asked.
+EOF
+}
+
 _prompt_layer_frame() {
     local dev; dev="$(last_origin 2>/dev/null)"
     case "$PROMPT_PROFILE" in
         wake)
+            _prompt_layer_register
             cat <<'EOF'
 THIS WAKE IS ABOUT THE AGENDA BELOW. Everything above is background you may draw on; the text that follows is the subject, and it is what you spend this wake on. A topic that appears only above is not this wake's subject.
 EOF
@@ -1856,6 +1943,7 @@ THIS RUN IS ABOUT THE TASK BELOW. Everything above is background; the text that 
 EOF
             ;;
         *)
+            _prompt_layer_register
             printf '%s\n' "THIS TURN IS ABOUT THE MESSAGE BELOW. Everything above is background; the text that follows is the subject and it is what you answer. A topic that appears only above is not this turn's topic."
             if [ "$dev" = "phone" ]; then
                 printf '%s\n' "This turn came from the phone — anything to look at goes in the display channel, where he can see it."
@@ -1868,10 +1956,13 @@ EOF
 
 build_system_prompt() {
     local PROMPT_PROFILE="" MANIFEST_FILE="" LAYERS_ONLY=0
+    # Same rule as touch_suppress: the flag is consumed first and its value
+    # only if there is one, because `shift 2` on a lone trailing flag shifts
+    # nothing and returns 1 — `crab context --profile` spun on it at 100% CPU.
     while [ $# -gt 0 ]; do
         case "$1" in
-            --profile) PROMPT_PROFILE="$2"; shift 2 ;;
-            --manifest) MANIFEST_FILE="$2"; shift 2 ;;
+            --profile) PROMPT_PROFILE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+            --manifest) MANIFEST_FILE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
             --layers) LAYERS_ONLY=1; shift ;;
             *) shift ;;
         esac
@@ -1931,7 +2022,7 @@ $(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
 $(self_state_report --prompt)
 THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
 Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
-Wakes are booked in your name by six things besides you, and the word in brackets is the name that hand leaves on the record: the promise auditor (promise-audit — a want you said out loud and did not write down), the job runner (job-runner — a detached job finished), the self-change watcher (notice-selfchange — files that constitute you changed by another hand), the new-file watcher (notice-newfiles — something landed in a folder you watch), the watcher's canary (canary — the watcher itself stopped answering), and the chain floor (wake-chain-floor — the standing floor that keeps you coming back to your wants); a wake that could not reach a model re-books itself as outage-retry. Every pending wake above says which one booked it, and 'booked by herself' means you. A wake you did not personally type is still yours and still scheduled.
+Wakes are booked in your name by six things besides you, and the word in brackets is the name that hand leaves on the record: the promise auditor (promise-audit — a want you said out loud and did not write down), the job runner (job-runner — a detached job finished), the self-change watcher (notice-selfchange — files that constitute you changed by another hand), the new-file watcher (notice-newfiles — something landed in a folder you watch), the watcher's canary (canary — the watcher itself stopped answering), and the chain floor (wake-chain-floor — the standing floor that keeps you coming back to your wants); a wake that could not reach a model re-books itself as outage-retry. Every pending wake above says which one booked it; a record stamped herself is one you made yourself, and the list renders that one as 'booked by you'. A wake you did not personally type is still yours and still scheduled.
 Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
 Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
@@ -2094,9 +2185,13 @@ user_busy() {
 # then pipe through piper exactly like the streamer does.
 speak_once() {
     local TEXT="$1"
-    TEXT=$(echo "$TEXT" | sed -E 's/\*+//g; s/`[^`]*`//g')
-    [ -n "$TTS_FIXES" ] && TEXT=$(echo "$TEXT" | sed -E "$TTS_FIXES")
-    [ -z "$(echo "$TEXT" | tr -d '[:space:]')" ] && return 0
+    # printf, never echo. A reply whose whole text is a bash echo option — "-n",
+    # "-e" — is swallowed by echo entirely, and a reply carrying backslashes is
+    # at the mercy of whichever echo semantics the shell was built with. This is
+    # the never-silent path: the one place a lost word cannot be recovered from.
+    TEXT=$(printf '%s\n' "$TEXT" | sed -E 's/\*+//g; s/`[^`]*`//g')
+    [ -n "$TTS_FIXES" ] && TEXT=$(printf '%s\n' "$TEXT" | sed -E "$TTS_FIXES")
+    [ -z "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ] && return 0
     speech_log "speak_once: ${TEXT:0:90}"
     local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
@@ -2255,6 +2350,47 @@ live_speech_end() {
     return 0
 }
 
+# Is the record on disk a voice that is SPEAKING RIGHT NOW? The liveness half
+# of live_speech_now, on its own, because more than one caller needs the
+# question without the window, the self-checks or the text.
+#
+# NOTHING below pid 2 is a speaker, and `kill -0 0` is not a question about
+# one: pid 0 means THIS PROCESS GROUP, so the probe always succeeds. Every
+# reply handed to the phone is published pidless, and that always-true probe
+# made each of them read as a living voice for the whole LIVE_SPEECH_WINDOW —
+# 180 seconds — no matter what the end time said. For a pidless record,
+# liveness is the end time and nothing else.
+_live_speech_speaking() {
+    [ -f "$LIVE_SPEECH_FILE" ] || return 1
+    local TS DEV PID UNTIL
+    IFS=$'\t' read -r TS DEV PID UNTIL < "$LIVE_SPEECH_FILE"
+    case "$PID" in ''|*[!0-9]*) PID=0 ;; esac
+    case "$UNTIL" in ''|*[!0-9]*) UNTIL=0 ;; esac
+    [ "$PID" -gt 1 ] && kill -0 "$PID" 2>/dev/null && return 0
+    [ "$UNTIL" -gt "$(date +%s)" ]
+}
+
+# The stricter question, and the one that outranks a receipt: is there a
+# PROCESS of mine making sound at this instant — a voice this machine can
+# watch, rather than a clip handed to another device with a clock attached?
+#
+# The two are not interchangeable, and which one a caller wants is the whole
+# design here. A live pid is a sentence coming out of the speakers on this
+# desk: a message arriving mid-word is him talking OVER it, not answering it,
+# and both the retirement and the transcript check must stand down for it. A
+# pidless record's end time is an ESTIMATE about a clip on his phone — this
+# machine cannot see whether it played, whether he muted it, or whether he read
+# the bubble and typed instead. Against that, a message from him is the better
+# evidence, and treating the estimate as a living voice is what told her she
+# was still speaking to somebody who had already answered.
+_live_speech_watched() {
+    [ -f "$LIVE_SPEECH_FILE" ] || return 1
+    local TS DEV PID
+    IFS=$'\t' read -r TS DEV PID _ < "$LIVE_SPEECH_FILE"
+    case "$PID" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$PID" -gt 1 ] && kill -0 "$PID" 2>/dev/null
+}
+
 # A message from the user RETIRES that device's notice. His reply is the
 # receipt: those words reached him, he read or heard them, and he has answered
 # — whatever the clock still says about when the audio stops. Without this the
@@ -2267,11 +2403,21 @@ live_speech_end() {
 # ONLY that device's record. A voice on the OTHER device is a voice he has not
 # answered, and it is still owed a regroup — that is the whole design and this
 # must never widen into clearing the file.
+#
+# And only a voice this machine can WATCH is exempt. A desk voice with a live
+# pid is a sentence coming out of the speakers right now: he typed while she was
+# still talking, which is talking over her, not answering her — and clearing the
+# record hands the new turn a prompt saying nothing else of her is speaking, so
+# she answers straight over the top of her own sentence. A handed-off clip is
+# the other case and keeps the old behaviour: its end time is an estimate about
+# another device, and against an estimate his message is the better evidence.
 live_speech_retire() {  # <device>
     [ -f "$LIVE_SPEECH_FILE" ] || return 0
     local TS DEV
     IFS=$'\t' read -r TS DEV _ < "$LIVE_SPEECH_FILE"
-    [ "$DEV" = "$1" ] && rm -f "$LIVE_SPEECH_FILE"
+    [ "$DEV" = "$1" ] || return 0
+    _live_speech_watched && return 0
+    rm -f "$LIVE_SPEECH_FILE"
     return 0
 }
 
@@ -2295,18 +2441,13 @@ live_speech_now() {
     # inside its measured play time. A speaker killed mid-word (crab shutup)
     # leaves its record behind — the dead pid is what catches that.
     [ $(( NOW - TS )) -lt "$LIVE_SPEECH_WINDOW" ] || return 1
-    # NOTHING below pid 2 is a speaker, and `kill -0 0` is not a question about
-    # one: pid 0 means THIS PROCESS GROUP, so the probe always succeeds. Every
-    # reply handed to the phone is published pidless, and that always-true
-    # probe made each of them read as a living voice for the whole
-    # LIVE_SPEECH_WINDOW — 180 seconds — no matter what UNTIL said. Two phone
-    # messages 46 seconds apart was all it took: the second turn was handed her
-    # own delivered reply as words still being spoken, told to fold them in and
+    # Liveness itself is _live_speech_speaking, one answer for every caller:
+    # two phone messages 46 seconds apart was all it took for a pidless record
+    # to be read as a living voice, and the second turn was handed her own
+    # delivered reply as words still being spoken, told to fold them in and
     # carry them forward, and restated them at a user who had already read and
-    # answered them. For a pidless record, liveness is UNTIL and nothing else.
-    if [ "$PID" -le 1 ] || ! kill -0 "$PID" 2>/dev/null; then
-        [ "$UNTIL" -gt "$NOW" ] || return 1
-    fi
+    # answered them.
+    _live_speech_speaking || return 1
     TEXT="$(tail -n +2 "$LIVE_SPEECH_FILE")"
     [ -n "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ] || return 1
     printf '%s\n%s\n' "${DEV:-desk}" "$TEXT"
@@ -2366,7 +2507,17 @@ regroup_context() {
     DEV="$(printf '%s\n' "$RAW" | head -n 1)"
     SAYING="$(printf '%s\n' "$RAW" | tail -n +2)"
     [ -n "$(printf '%s' "$SAYING" | tr -d '[:space:]')" ] || return 0
-    _regroup_already_in_transcript "$SAYING" && return 0
+    # The transcript copy only proves those words were DELIVERED — it says
+    # nothing about whether they are still being said. A desk reply is appended
+    # to the conversation while the streamer is mid-sentence, so against a
+    # genuinely live desk voice this test matched every time and stood the
+    # regroup down on a voice that was audibly still talking. It applies only
+    # where the words are not coming out of a process this machine can watch:
+    # a handed-off clip is delivered the moment the bubble appears, and a copy
+    # of it in the transcript is exactly the second copy this test exists for.
+    if ! _live_speech_watched; then
+        _regroup_already_in_transcript "$SAYING" && return 0
+    fi
     cat <<EOF
 ANOTHER OF YOU IS SPEAKING RIGHT NOW — a second session of you (on the ${DEV:-desk}) is mid-utterance as you begin. These are its exact words, already reaching the user or about to:
 --- being said now ---
@@ -2719,28 +2870,117 @@ claude_sterile_cwd() {
 # conversation summariser, a promise audit and a wake triage each used to pay
 # a whole desktop's worth of listings to answer one question, and there are
 # more of those runs in a day than there are turns.
+# CLAUDE_CLASSIFY_TIMEOUT bounds the run when the caller wants one — a detached
+# classifier with nobody waiting on it can otherwise hang for as long as the CLI
+# does. Zero (the default) leaves it unbounded, which is what the conversation
+# summariser has always been; the caller that wants a ceiling asks for one, and
+# it goes HERE rather than around the call, because `timeout` cannot wrap a
+# shell function.
 claude_classify() {  # <model> <system prompt>  [question on stdin]
     local model="$1" sys="$2"
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     claude_profile_flags classify
+    local -a bound=()
+    [ "${CLAUDE_CLASSIFY_TIMEOUT:-0}" -gt 0 ] 2>/dev/null \
+        && command -v timeout >/dev/null 2>&1 \
+        && bound=(timeout "$CLAUDE_CLASSIFY_TIMEOUT")
     ( cd "$(claude_sterile_cwd)" 2>/dev/null || cd /
       export "${CLAUDE_NO_AUTO_MEMORY?}"
-      exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+      exec ${bound[@]+"${bound[@]}"} "$CLAUDE_BIN" -p --dangerously-skip-permissions \
           --model "$model" \
           "${CLAUDE_PROFILE_FLAGS[@]}" \
           --system-prompt "$sys" )
 }
 
+# The CLI's own refusal, if this slice of a stream holds one — and NOTHING but
+# the CLI's own words is read to decide it.
+#
+#   claude_stream_refusal <stream file> [byte offset]
+#
+# Prints the matched refusal text and returns 0; prints nothing and returns 1
+# otherwise. The offset is where this attempt's output begins, so an earlier
+# attempt's refusal kept as history can never be read as the latest one's
+# outcome (specs/account-fallback.md rule 14, specs/jobs.md rule 14).
+#
+# A stream log carries every byte of every tool result, so a raw
+# `grep -qiE "$CLAUDE_LIMIT_RE"` over it answers yes for a session that merely
+# READ a file containing the words — and lib/common.sh, three lines from here,
+# is a file containing every one of them. A builder that opened this file and
+# then exited non-zero for any reason at all was recorded as blocked, which
+# rotates the durable account default and holds every further dispatch for half
+# an hour. specs/jobs.md rule 15: a real failure MUST NEVER match the blocked
+# signature.
+#
+# So two things make a slice a refusal, and both are structural:
+#   * the limit signature appears in text the CLI ITSELF produced — a result
+#     event, a synthetic (api-error) assistant message, or a line that is not
+#     JSON at all, which on this stream is the CLI's own stderr; and
+#   * no genuine model output appears anywhere in the slice. A run that
+#     produced real output is a run that HAPPENED, whatever words went through
+#     it.
+claude_stream_refusal() {  # <stream file> [byte offset]
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "${2:-0}" "$CLAUDE_LIMIT_RE" <<'PY'
+import json, re, sys
+path, off, pattern = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3]
+rx = re.compile(pattern, re.I)
+own, real = [], False
+try:
+    fh = open(path, "rb")
+except OSError:
+    sys.exit(1)
+with fh:
+    try:
+        fh.seek(off)
+    except OSError:
+        pass
+    for raw in fh:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            own.append(line)          # not JSON: the CLI's own stderr
+            continue
+        if not isinstance(d, dict):
+            continue
+        kind = d.get("type")
+        if kind == "assistant":
+            msg = d.get("message") or {}
+            if d.get("is_api_error_message") or msg.get("model") == "<synthetic>":
+                for b in msg.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        own.append(b.get("text") or "")
+            else:
+                real = True
+        elif kind == "result":
+            for k in ("result", "error", "message"):
+                v = d.get(k)
+                if isinstance(v, str):
+                    own.append(v)
+if real:
+    sys.exit(1)
+for text in own:
+    m = rx.search(text)
+    if m:
+        print(m.group(0))
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # Did the run that just wrote $DEBUGLOG refuse over a usage/session limit —
-# that is, did the CLI fail before any genuine model output (wake_stream_failed's
-# shape) with limit-flavoured text? An auth or network failure fails every other
-# account too and must surface as itself, never as a retry. Asked again after
-# each attempt: the stream accumulates, so the answer stays yes for as long as
-# every account tried so far has refused, and turns to no the moment one of them
-# produces genuine output.
-claude_run_limited() {
-    wake_stream_failed || return 1
-    grep -qiE "$CLAUDE_LIMIT_RE" "$DEBUGLOG"
+# that is, did the CLI fail before any genuine model output with
+# limit-flavoured text of its own? An auth or network failure fails every other
+# account too and must surface as itself, never as a retry.
+#
+# The offset names which attempt is being judged. Called with none — the shape
+# every post-walk caller wants — it judges the whole of this turn's log, which
+# is the question "did EVERY account refuse": genuine output from any of them
+# makes the answer no.
+claude_run_limited() {  # [byte offset]
+    claude_stream_refusal "$DEBUGLOG" "${1:-0}" >/dev/null
 }
 
 # The same question, plus "and there is somewhere else to go". Kept because it
@@ -2799,14 +3039,10 @@ claude_limit_record() {
     [ "$from" = "$CLAUDE_PRIMARY_TOKEN" ] && from="primary"
     local to="$next"
     [ "$to" = "$CLAUDE_PRIMARY_TOKEN" ] && to="primary"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(basename "$from")" "$(basename "$to")" \
-        "$(printf '%s' "${2:-limit refusal}" | tr '\n\t' '  ' | head -c 120)" \
-        "${SESSION_KIND:-session}" >> "$ACCOUNT_LOG" 2>/dev/null
-    local n; n="$(wc -l < "$ACCOUNT_LOG" 2>/dev/null || echo 0)"
-    if [ "$n" -gt $(( ACCOUNT_LOG_KEEP * 2 )) ]; then
-        tail -n "$ACCOUNT_LOG_KEEP" "$ACCOUNT_LOG" > "$ACCOUNT_LOG.tmp" 2>/dev/null \
-            && mv "$ACCOUNT_LOG.tmp" "$ACCOUNT_LOG" 2>/dev/null
-    fi
+    log_append_bounded "$ACCOUNT_LOG" "$ACCOUNT_LOG_KEEP" \
+        "$(printf '%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$(basename "$from")" "$(basename "$to")" \
+            "$(printf '%s' "${2:-limit refusal}" | tr '\n\t' '  ' | head -c 120)" \
+            "${SESSION_KIND:-session}")"
     return 0
 }
 
@@ -3020,15 +3256,21 @@ _wake_claude_run() {
 # exactly once. Leaves the last run's exit status in WAKE_CLAUDE_STATUS, like
 # the single run it replaced.
 wake_claude_run_chain() {
-    local ACCT CONFDIR PREV=""
+    local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     for ACCT in $(claude_accounts); do
         CONFDIR="$(claude_account_confdir "$ACCT")"
         # Marker only on this path — claude_swap_announce keeps the desktop
         # notification for a turn somebody is waiting on.
         [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
+        # Where THIS attempt's output begins. Every account appends to one
+        # stream, so without the mark a later account's silent network failure
+        # is judged against the refusal an earlier one left behind, and the
+        # default moves onto an account that never refused anything.
+        ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+        case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         _wake_claude_run "$CONFDIR"
-        claude_run_limited || break
-        claude_limit_record "$CONFDIR" "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | tail -n1)"
+        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" || break
+        claude_limit_record "$CONFDIR" "$REFUSAL"
         PREV="$ACCT"
     done
 }
@@ -3273,20 +3515,28 @@ $DISPLAY_PART"
     # The next session reads this journal, and so does the since-your-last-reply
     # anchor, which counts a parenthesised outcome as a session that reached
     # nobody.
+    #
+    # Said in those words whatever shape the output took. The line used to be
+    # written only when there were SPOKEN words, so a wake that built a chart
+    # and a wake that left a (quiet) thought were both journalled as ordinary
+    # silence — "(silent — ran 4 commands, wrote …)" — which is exactly the
+    # reading rule 27 forbids: the next session, and the anchor that reads the
+    # same journal, see an hour in which she had nothing to say rather than an
+    # hour the night held.
     if in_quiet_hours; then
-        [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && \
-            session_outcome "(quiet hours — held, nothing spoken and nothing shown) $SPOKEN"
+        session_outcome "(quiet hours — held, nothing spoken and nothing shown) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         return 0
     fi
     # The user is mid-something a wake must not interrupt: a recording, speech
     # in flight, or a meeting holding the mic. Same treatment, same reason — a
     # window over the meeting he is in is an interruption too. Checked here, at
     # the last moment before delivery, because a wake that started in a quiet
-    # room may end mid-meeting. A display-only wake keeps its silent outcome —
-    # the trace is worth more than the mute notice.
+    # room may end mid-meeting. Said in those words for every shape of output,
+    # for the same reason the night's line is: a display-only wake held here did
+    # not have nothing to say, and its journal line is the only place that can
+    # say so.
     if user_busy; then
-        [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && \
-            session_outcome "(muted — user was mid-interaction) $SPOKEN"
+        session_outcome "(muted — user was mid-interaction) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         return 0
     fi
 
@@ -3312,18 +3562,29 @@ $DISPLAY_PART"
     # meets a wake's words wearing the face of something she said to him.
     convo_append '[Autonomous wake — %s]\n' "$(date '+%Y-%m-%d %H:%M')"
     convo_append_assistant --wake "$RESPONSE"
+    # This wake REACHED him — specs/self-awareness.md rule 12 counts a wake
+    # that got past the delivery gates as a session that delivered, and the
+    # anchor reads that off the journal by one convention: a parenthesised
+    # outcome means it reached nobody. A wake delivering a (quiet) bubble or a
+    # display section has an empty SPOKEN, so its line was written up there as
+    # "(silent — …)" — the not-delivered spelling — and the delta then skipped
+    # straight past it to some earlier turn and re-reported work he had already
+    # been shown. Restamped here, where delivery is a fact rather than a plan.
+    if [ -z "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
+        session_outcome "shown without speech${QUIET_BUBBLE:+ (a quiet bubble)}${DISPLAY_PART:+ (a window)}: ${SILENT_NOTE:-${TRACE:-ran no tools, touched nothing}}"
+    fi
     # Delivered: a job that ended badly has now been reported to somebody.
     jobs_news_delivered
     compact_convo
 
-    if [ -n "$(echo "$SPOKEN" | tr -d '[:space:]')" ]; then
-        notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(echo "$SPOKEN" | head -c 140)" 2>/dev/null
+    if [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
+        notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "$(_notify_body "$SPOKEN")" 2>/dev/null
         wake_speak_to_phone "$SPOKEN" || speak_once "$SPOKEN"
     fi
     if [ -n "$DISPLAY_PART" ]; then
         local DISPLAYFILE
-        DISPLAYFILE=$(mktemp /tmp/deskcrab-display-XXXXXX.md)
-        echo "$DISPLAY_PART" > "$DISPLAYFILE"
+        DISPLAYFILE=$(mktemp "${STATE_PREFIX}-display-XXXXXX.md")
+        printf '%s\n' "$DISPLAY_PART" > "$DISPLAYFILE"
         RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
             RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
         if [ -x "$RENDER_MD" ]; then
@@ -3346,7 +3607,12 @@ spawn_display_window() {  # <displayfile>
             >/dev/null 2>&1; then
         return 0
     fi
-    setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$f" &
+    # The fallback closes fds 8 and 9 like every other long-lived child here.
+    # A wake holds the wake lock open on fd 9 for the life of its process, and
+    # render-md is a window that lives until he closes it: inherit that fd and
+    # the window holds the lock the whole time, so the next wake finds it taken
+    # and defers itself — for as long as the window is on screen.
+    setsid "$RENDER_MD" --theme "${RENDER_MD_THEME:-beatrice}" --icon "$RENDER_MD_ICON" --title "$NOTIFY_NAME" "$f" 8>&- 9>&- &
 }
 
 # Take this session's stream log and point the well-known name at it. Every
@@ -3369,8 +3635,20 @@ claim_debuglog() {
         "${SESSION_KIND:-session}" "$$" "$(date '+%H:%M:%S')" >> "$DEBUGLOG" 2>/dev/null
     ln -sfn "$DEBUGLOG" "$DEBUGLOG_LATEST" 2>/dev/null || true
     # A session's own log is small; the leftovers of dead ones still add up.
+    #
+    # A JOB's stream is excluded, and the exclusion is load-bearing. A turn is
+    # over in seconds, so three quiet hours means a dead session; a detached
+    # builder can spend longer than that inside ONE Bash tool call, writing
+    # nothing, and its stream log is live the whole time. It sits under the
+    # same -debug-*.log prefix (that is how crab-debug follows it), so this
+    # sweep was unlinking the running builder's own stream out from under it:
+    # the attempt slice went empty, the limit test read nothing, and a blocked
+    # run could not record what blocked it. lib/job-runner reaps the streams of
+    # jobs that have actually ended, where the question can be asked properly.
     find "$(dirname "$DEBUGLOG")" -maxdepth 1 \
-        -name "$(basename "$STATE_PREFIX")-debug-*.log" -mmin +180 -delete 2>/dev/null
+        -name "$(basename "$STATE_PREFIX")-debug-*.log" \
+        ! -name "$(basename "$STATE_PREFIX")-debug-job-*.log" \
+        -mmin +180 -delete 2>/dev/null
 }
 
 # Start background TTS streamer that reads from DEBUGLOG.
@@ -3521,13 +3799,19 @@ claude_generate() {
     local TURN_DEADLINE=0
     [ "${TURN_CHAIN_TIMEOUT:-0}" -gt 0 ] \
         && TURN_DEADLINE=$(( $(date +%s) + TURN_CHAIN_TIMEOUT ))
-    local ACCT CONFDIR PREV=""
+    local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     for ACCT in $(claude_accounts); do
         CONFDIR="$(claude_account_confdir "$ACCT")"
         [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
+        # This attempt's own bytes begin here. Judging the whole accumulated
+        # log instead let one account's refusal condemn the next account's
+        # ordinary network failure and move the durable default onto a login
+        # that had refused nothing.
+        ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+        case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         _generate_claude_run "$CONFDIR"
-        claude_run_limited || break
-        claude_limit_record "$CONFDIR" "$(grep -ioE "$CLAUDE_LIMIT_RE" "$DEBUGLOG" | tail -n1)"
+        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" || break
+        claude_limit_record "$CONFDIR" "$REFUSAL"
         PREV="$ACCT"
         # No time left for another whole CLI boot and refusal.
         if [ "$TURN_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$TURN_DEADLINE" ]; then
@@ -3725,8 +4009,15 @@ _run_claude_remote_locked() {
             "$(_speech_until "$AUDIO" "$SPOKEN")"
         # Let the desktop see that the phone is talking to it.
         notify-send -t 6000 -h string:x-dunst-stack-tag:deskcrab \
-            "$NOTIFY_NAME (remote)" "$(printf '%s' "$SPOKEN" | head -c 140)" 2>/dev/null
+            "$NOTIFY_NAME (remote)" "$(_notify_body "$SPOKEN")" 2>/dev/null
     fi
+
+    # What this turn's tools actually did, read BEFORE the stream log goes.
+    # wake_work_trace opens $DEBUGLOG, and the removal below used to happen
+    # twelve lines above the call: every phone turn handed the memory judge an
+    # empty work trace, so a turn that edited a want document and dispatched a
+    # job was judged as if it had done nothing but talk.
+    local WORK_TRACE; WORK_TRACE="$(wake_work_trace)"
 
     rm -f "$DEBUGLOG"
     # Reply audio the client has had time to fetch. Scoped to THIS instance's
@@ -3740,7 +4031,7 @@ _run_claude_remote_locked() {
     # the phone dies with the turn exactly like one stated at the desk. The
     # memory judge rides the same moment — reply delivered, hot path over.
     fire_promise_audit "$TEXT" "$RESPONSE"
-    fire_memory_judge "$TEXT" "$RESPONSE" "$(wake_work_trace)"
+    fire_memory_judge "$TEXT" "$RESPONSE" "$WORK_TRACE"
 
     # Text came back but neither half of it is anything the phone can render —
     # a reply that was nothing but a "---DISPLAY---" line, or nothing but the
@@ -3759,6 +4050,22 @@ _run_claude_remote_locked() {
 # The "Thinking..." toast, and its dismissal — paired, and idempotent so the
 # dismissal can be called from a trap AND on the straight line without a
 # second empty notification flashing past.
+# A notification body, cut to fit without splitting a character in half.
+# `head -c 140` counts BYTES: an em dash whose three bytes straddle the
+# boundary leaves a fragment behind, glib refuses to marshal invalid UTF-8 over
+# D-Bus, and the notification is dropped whole — with its error swallowed by
+# the `2>/dev/null` every caller has, so the desk simply goes quiet. iconv -c
+# drops whatever the cut broke; without iconv the byte cut is still better than
+# nothing.
+_notify_body() {  # <text> [max bytes]
+    local t; t="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c "${2:-140}")"
+    if command -v iconv >/dev/null 2>&1; then
+        printf '%s' "$t" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null
+    else
+        printf '%s' "$t"
+    fi
+}
+
 _THINKING_SHOWN=0
 notify_thinking() {
     _THINKING_SHOWN=1
@@ -3800,8 +4107,13 @@ run_claude_and_respond() {
     # died anywhere in between left it hanging over the desktop indefinitely.
     # That stuck toast over ten minutes of silence is exactly what the
     # account-swap stall looked like from the outside. session_finish is
-    # chained in because session_register's trap is the one being replaced.
-    trap 'notify_thinking_clear; session_finish' EXIT INT TERM
+    # chained in because session_register's trap is the one being replaced —
+    # and so is its rule that a signal handler must END the process. Without
+    # the exit, a TERM cleared the toast, finished the session record, and then
+    # let the turn resume generating and speaking with no registration behind
+    # it.
+    trap 'notify_thinking_clear; session_finish' EXIT
+    trap 'notify_thinking_clear; session_finish; exit 143' INT TERM
 
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
@@ -3838,8 +4150,8 @@ run_claude_and_respond() {
 
         if [ -n "$DISPLAY_PART" ]; then
             local DISPLAYFILE
-            DISPLAYFILE=$(mktemp /tmp/deskcrab-display-XXXXXX.md)
-            echo "$DISPLAY_PART" > "$DISPLAYFILE"
+            DISPLAYFILE=$(mktemp "${STATE_PREFIX}-display-XXXXXX.md")
+            printf '%s\n' "$DISPLAY_PART" > "$DISPLAYFILE"
             RENDER_MD="${RENDER_MD:-$(command -v render-md 2>/dev/null || echo "$HOME/.local/bin/render-md")}"
             RENDER_MD_ICON="${RENDER_MD_ICON:-$HOME/Beatrice/face/icons/beatrice-icon-512.png}"
             if [ -x "$RENDER_MD" ]; then
@@ -4057,9 +4369,21 @@ jobs_report() {  # [--live] [--defer]
 
 # The news reached somebody. Called from the three delivery points — the desk
 # turn, the phone turn, and a wake that got past every gate — and nowhere else.
+#
+# The marker only ever moves FORWARD. The stamp is per-process and the marker
+# is one global file, so two sessions that render in one order and deliver in
+# another used to set it backwards: a wake rendering at 14:01 and delivering at
+# 14:01:30 moved it to 14:01, then a desk turn that had rendered at 14:00 and
+# spent two minutes answering moved it back to 14:00 — and every job that ended
+# in between was news all over again, to the same person who had just been told.
 jobs_news_delivered() {
-    local marker="${STATE_PREFIX}-jobs-surfaced"
-    [ -s "$marker.pending-$$" ] && mv "$marker.pending-$$" "$marker" 2>/dev/null
+    local marker="${STATE_PREFIX}-jobs-surfaced" mine cur
+    mine="$(cat "$marker.pending-$$" 2>/dev/null)"
+    rm -f "$marker.pending-$$"
+    case "$mine" in ''|*[!0-9]*) return 0 ;; esac
+    cur="$(cat "$marker" 2>/dev/null)"
+    case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    [ "$mine" -gt "$cur" ] && printf '%s\n' "$mine" > "$marker" 2>/dev/null
     return 0
 }
 

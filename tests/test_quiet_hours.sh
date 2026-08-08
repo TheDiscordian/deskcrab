@@ -30,19 +30,25 @@ SPEECH="The hallway lantern is rewired and the equinox lights work again."
 SHOWN="## What the wiring looked like"
 
 # The stub CLI: one reply, with a display section under it, so both delivery
-# channels have something to carry.
-sandbox_stub claude <<EOF
+# channels have something to carry. It also records the argv it was handed,
+# which is where the wake's AGENDA arrives — the only place a test can read
+# what the wake was actually told.
+stub_reply() {  # <reply text, \n for newlines>
+    sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 cat > /dev/null
+printf '%s\n' "\$*" > "$WORK/argv.txt"
 python3 - <<'PYEOF'
 import json
-text = "$SPEECH\n---DISPLAY---\n$SHOWN\n"
+text = "$1"
 print(json.dumps({"type": "assistant",
                   "message": {"model": "stub",
                               "content": [{"type": "text", "text": text}]}}))
 print(json.dumps({"type": "result", "result": text}))
 PYEOF
 EOF
+}
+stub_reply "$SPEECH\n---DISPLAY---\n$SHOWN\n"
 
 # The three witnesses, each at the boundary that matters: piper-tts stdin is
 # the only thing on this machine that turns text into sound, render-md is the
@@ -139,9 +145,38 @@ check "a notification was raised" [ -f "$WORK/notified.txt" ]
 check "and the reply is in the conversation" grep -qF "$SPEECH" "$CONVO"
 
 echo
+echo "a wake the night held says so even when it had no words to hold:"
+# specs/wake-queue.md rule 27's sub-bullet, and the half that was missing: the
+# line was written only when there were SPOKEN words, so a wake that built a
+# chart and a wake that left a (quiet) thought both journalled as ordinary
+# silence — "(silent — ran no tools, touched nothing)" — which reads to the
+# next session, and to the delta anchored on this same journal, as an hour in
+# which she had nothing to say. It was the night, and the record has to say so.
+write_conf "$NOW_WINDOW"
+stub_reply "---DISPLAY---\n$SHOWN\n"
+run_wake
+check "the display-only wake reached no renderer" [ ! -f "$WORK/displayed.txt" ]
+check "and its journal line names the night, not silence" \
+    bash -c 'tail -n1 "$1" | grep -q "quiet hours"' _ "$JOURNAL"
+
+stub_reply "(quiet) I sat with the second movement for a while.\n"
+run_wake
+check "a held (quiet) bubble is journalled as the night too" \
+    bash -c 'tail -n1 "$1" | grep -q "quiet hours"' _ "$JOURNAL"
+check "and the thought it was holding survives into the record" \
+    bash -c 'tail -n1 "$1" | grep -q "second movement"' _ "$JOURNAL"
+stub_reply "$SPEECH\n---DISPLAY---\n$SHOWN\n"
+
+echo
 echo "the wake is told, in words, what quiet hours will do to it:"
 # The suppression is silent by design, so the only way she can account for a
 # night that produced no windows is to have been told on the way in.
-grep -q "speaking and windows are suppressed" "$REPO/crab" \
-    || fail "the wake agenda no longer tells her windows are suppressed too"
-ok "the agenda says speaking and windows are both suppressed"
+#
+# Asserted on what the wake was HANDED, not on the source of `crab`. A grep of
+# the shipping file passes just as well when the sentence survives only in the
+# comment beside the code that no longer emits it — and it would not notice the
+# line moving to a file the grep does not read.
+write_conf "$NOW_WINDOW"
+run_wake
+check "the agenda the wake actually received says speaking and windows are both suppressed" \
+    grep -q "speaking and windows are suppressed" "$WORK/argv.txt"

@@ -141,6 +141,18 @@ grep -q "(quiet) $THOUGHT" "$CONVOFILE" \
 grep -q "Autonomous wake" "$CONVOFILE" \
     || die "the quiet bubble arrived without its wake marker"
 
+# ...and a delivered bubble is a session that REACHED HIM, so its journal line
+# must not wear the not-delivered spelling. specs/self-awareness.md rule 12
+# reads delivery off this log by one convention: a parenthesised outcome means
+# it reached nobody. A quiet bubble was journalled "(silent — …)" up in the
+# work-record section, before any gate had run, and the since-your-last-reply
+# anchor therefore stepped straight over a wake that was sitting in his chat —
+# and re-reported work he had already been shown.
+tail -n1 "$SESSIONS_LOG" | cut -f5 | grep -q '^(' \
+    && die "the delivered quiet bubble is journalled as a session that reached nobody: $(tail -n1 "$SESSIONS_LOG")"
+tail -n1 "$SESSIONS_LOG" | grep -q "$THOUGHT" \
+    || die "the delivered bubble's journal line lost the thought it delivered"
+
 # A bare marker with no thought is plain silence — no bubble.
 sandbox_stub claude <<'EOF'
 #!/usr/bin/env bash
