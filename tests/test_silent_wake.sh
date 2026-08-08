@@ -16,53 +16,35 @@
 #      he had asked out loud — and whichever session read the file second read
 #      both streams and spoke the other one's words.
 #
-# Everything here is stubbed, silent, and confined to a mktemp dir.
+# Everything here is stubbed, silent, and confined to the sandbox.
 # run_claude_wake is called directly rather than through `crab wake` so the
 # test books no systemd timers; PIDFILE is therefore set by hand, exactly as
 # the `crab` script sets it, since that is what user_busy consults.
 # No `set -u`: lib/common.sh is sourced here rather than run through `crab`,
 # and it reads plenty of optional config (TTS_FIXES, PIPER_SPEAKER…) that
 # nounset turns into a silent mid-function exit. Failures here are explicit.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -o pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/deskcrab-silent-wake-test-XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
-
-export DESKCRAB_STATE_PREFIX="$WORK/state"
-export DESKCRAB_CONF="$WORK/conf"
-export CLAUDE_BIN="$WORK/bin/claude"
+REPO="$SANDBOX_REPO"
+WORK="$SANDBOX"
 
 REPLY="The lantern in the hallway needs rewiring before the equinox festival begins."
 
-mkdir -p "$WORK/bin"
 # The stub claude: one assistant text block, then the result event. This is a
 # wake that HAS something to say — the whole question is who gets to hear it.
-cat > "$WORK/bin/claude" <<EOF
+sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 cat > /dev/null
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"$REPLY"}]}}'
 printf '%s\n' '{"type":"result"}'
 EOF
-chmod +x "$WORK/bin/claude"
-# A test must never reach the desktop: no notifications, no synthesis, no windows.
-for tool in notify-send piper-tts hyprctl aplay render-md ffmpeg; do
-    printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$tool"
-    chmod +x "$WORK/bin/$tool"
-done
-export PATH="$WORK/bin:$PATH"
 
-cat > "$WORK/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=0
 MEMORY_JUDGE=0
 PROMISE_AUDIT=0
-CLAUDE_BIN="$WORK/bin/claude"
-ARCHIVE_DIR="$WORK/archive"
-JOBS_DIR="$WORK/jobs"
-WAKES_DIR="$WORK/wakes"
-DAY_JOURNAL_DIR="$WORK/journal"
-NOTICE_STATE_DIR="$WORK/notice"
-LAST_ORIGIN_FILE="$WORK/last-origin"
+CLAUDE_BIN="$SANDBOX_BIN/claude"
 WANTS_FILE="$WORK/wants.md"
 WAKE_QUIET_HOURS=""
 EOF
@@ -88,7 +70,7 @@ wake() { # <reason>
 source "$REPO/lib/common.sh"          # for CONVOFILE, DEBUGLOG, SESSIONS_LOG
 PIDFILE="$WORK/rec.pid"
 
-fail() { echo "FAIL: $*"; exit 1; }
+fail() { die "$*"; }
 
 # --- 1. suppressed wake: the user is mid-recording -------------------------
 touch "$PIDFILE"
@@ -135,4 +117,4 @@ grep -q "$REPLY" "$CONVOFILE" \
 grep -q "desk turn was mid-sentence" "$CONVOFILE" \
     && fail "the wake read the desktop turn's stream back as its own words"
 
-echo "OK: suppressed wake leaves nothing, delivered wake lands, stream logs are private"
+ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private"

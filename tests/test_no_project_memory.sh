@@ -16,18 +16,14 @@
 # visibly breaks when it goes: the prompt just quietly grows a stranger's
 # memory again. So each case runs the REAL invocation path with a stub in place
 # of claude that records the environment it was handed.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-nopm.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
-
-mkdir -p "$T/project" "$T/jobs"
-cat > "$T/conf" <<EOF
+mkdir -p "$T/project"
+cat > "$DESKCRAB_CONF" <<EOF
 PIPER_VOICE=/nonexistent.onnx
 WHISPER_MODEL=/nonexistent.bin
 PROJECT_DIR="$T/project"
@@ -46,31 +42,25 @@ printf '%s\n' \
 STUB
 chmod +x "$T/claude-stub"
 
-run() { # <shell body> — sources common.sh in a scratch instance with the stub.
+run() { # <shell body> — sources common.sh in the sandbox instance with the stub.
     # CLAUDE_BIN is passed in the environment on purpose: common.sh snapshots
     # an inherited CLAUDE_BIN and hands it back after sourcing the config,
     # which is the only way a test can keep a real builder from being started.
-    # NOTICE_STATE_DIR and ACCOUNT_DEFAULT_FILE are pinned because
-    # claude_generate ends in notice_own_writes, which copies the stream into
-    # ~/.local/state/deskcrab/streams and PRUNES that directory to
-    # NOTICE_STREAM_KEEP — a test run would delete real forensic streams and
-    # append to her live declaration log.
-    DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
-        DESKCRAB_STREAMLOG="$T/state-debug.log" \
-        NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
-        ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
-        JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" \
-        CLAUDE_BIN="$T/claude-stub" WITNESS="$T/witness" \
-        env -u CLAUDE_CONFIG_DIR \
-        bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
-        _ "$REPO_DIR" "$1" > /dev/null 2>&1
+    # The state directory the harvest prunes (notice_own_writes copies each
+    # stream into it and trims it to NOTICE_STREAM_KEEP) is the sandbox's, so a
+    # run of this file can no longer delete her real forensic streams or append
+    # to her live declaration log. Nothing here unsets CLAUDE_CONFIG_DIR: the
+    # sandbox starts from an empty environment, so there is nothing to unset.
+    DESKCRAB_STREAMLOG="$T/state-debug.log" \
+        CLAUDE_BIN="$T/claude-stub" WITNESS="$T/witness-file" \
+        sandbox_bash "$1" > /dev/null 2>&1
 }
 
-witness() { cat "$T/witness" 2>/dev/null || echo "(stub never ran)"; }
+witness() { cat "$T/witness-file" 2>/dev/null || echo "(stub never ran)"; }
 
 echo "her own sessions run with auto-memory off:"
 
-rm -f "$T/witness"
+rm -f "$T/witness-file"
 run 'claude_generate "hello" low'
 out="$(witness)"
 [ "$out" = "AUTOMEM=[1]" ] && ok "desk/phone turn (claude_generate)" \
@@ -78,7 +68,7 @@ out="$(witness)"
 
 # _wake_claude_run reads SYSTEM_PROMPT / PROMPT_TEXT / CLAUDE_BIN out of the
 # caller's scope, so the body sets them exactly as run_claude_wake does.
-rm -f "$T/witness"
+rm -f "$T/witness-file"
 run 'SYSTEM_PROMPT=p; PROMPT_TEXT=t; DEBUGLOG="'"$T"'/wake.log"; _wake_claude_run ""'
 out="$(witness)"
 [ "$out" = "AUTOMEM=[1]" ] && ok "autonomous wake (_wake_claude_run)" \
@@ -87,7 +77,7 @@ out="$(witness)"
 # The fallback login is a second full session on the same prompt; it must be
 # no more porous than the first. Drive it by leaving a limit refusal in the
 # stream log, which is the condition claude_limit_fallback_due tests.
-rm -f "$T/witness"
+rm -f "$T/witness-file"
 printf '%s\n' \
     '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"You have hit your usage limit reached"}]}}' \
     '{"type":"result","is_error":true,"result":"usage limit reached"}' > "$T/fb-seed"
@@ -117,9 +107,7 @@ echo "the knob is per-invocation, never machine-wide:"
 # An export would reach lib/job-runner (it sources common.sh) and would also be
 # inherited by anything else she launches. Sourcing must leave the process
 # environment untouched.
-out="$(DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
-    bash -c 'source "'"$REPO_DIR"'/lib/common.sh" >/dev/null 2>&1
-             printf "%s\n" "env=[${CLAUDE_CODE_DISABLE_AUTO_MEMORY:-<unset>}] var=[${CLAUDE_NO_AUTO_MEMORY:-<unset>}]"' 2>&1)"
+out="$(sandbox_bash 'printf "%s\n" "env=[${CLAUDE_CODE_DISABLE_AUTO_MEMORY:-<unset>}] var=[${CLAUDE_NO_AUTO_MEMORY:-<unset>}]"' 2>&1)"
 [ "$out" = "env=[<unset>] var=[CLAUDE_CODE_DISABLE_AUTO_MEMORY=1]" ] \
     && ok "sourcing common.sh defines the prefix but exports nothing" \
     || fail "the knob must not be exported" "$out"
@@ -144,7 +132,3 @@ grep -n 'CLAUDE_NO_AUTO_MEMORY\|CLAUDE_CODE_DISABLE_AUTO_MEMORY' "$REPO_DIR/lib/
     | grep -qv '^[0-9]*:#' \
     && fail "job-runner must not disable auto-memory" "$(grep -n 'AUTO_MEMORY' "$REPO_DIR/lib/job-runner")" \
     || ok "lib/job-runner runs claude without the switch"
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]

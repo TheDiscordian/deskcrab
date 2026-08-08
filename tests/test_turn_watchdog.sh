@@ -11,21 +11,21 @@
 # foreground subshell, and claude_generate looped it over every account with no
 # bound at all. The only limit on an interactive turn (TTS_WAIT_TIMEOUT) sat
 # downstream of that unbounded loop and was never reached.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-watchdog.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
+mkdir -p "$T/fb"
+# The notifier the desk would see. The sandbox's own stub already keeps it off
+# the screen; this one is the witness these cases read.
+sandbox_stub notify-send <<STUB
+#!/bin/bash
+printf 'NOTIFY:%s\n' "\$*" >> "$T/notifies"
+STUB
 
-mkdir -p "$T/bin" "$T/fb"
-printf '#!/bin/bash\nprintf "NOTIFY:%%s\\n" "$*" >> "%s/notifies"\n' "$T" > "$T/bin/notify-send"
-chmod +x "$T/bin/notify-send"
-
-cat > "$T/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=0
 PROMISE_AUDIT=0
 MEMORY_JUDGE=0
@@ -41,17 +41,15 @@ PIPER_VOICE=/nonexistent.onnx
 WHISPER_MODEL=/nonexistent.bin
 EOF
 
-run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance.
+run() { # [ENV=val ...] <shell body> — sources common.sh in the sandbox instance.
     local -a envs=()
     while [ $# -gt 1 ]; do envs+=("$1"); shift; done
-    PATH="$T/bin:$PATH" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
-        DESKCRAB_STREAMLOG="$T/state-debug.log" \
-        ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
-        NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
-        JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
+    local body="$1"
+    DESKCRAB_STREAMLOG="$T/state-debug.log" \
+        DESKCRAB_NO_DISPATCH=1 \
         env ${envs[@]+"${envs[@]}"} \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
-        _ "$REPO_DIR" "$1" 2>&1
+        _ "$SANDBOX_REPO" "$body" 2>&1
 }
 
 REFUSAL="You're out of usage credits. Run /usage-credits to keep using Fable 5"
@@ -91,7 +89,7 @@ chmod +x "$T/claude-hang"
 
 echo "a hung interactive turn is reaped, not waited on forever:"
 
-rm -f "$T/calls" "$T/state-account-default"
+rm -f "$T/calls" "$ACCOUNT_DEFAULT_FILE"
 start=$(date +%s)
 out="$(run TURN_STALL_TIMEOUT=1 CLAUDE_BIN="$T/claude-hang" 'claude_generate "hello" low')"
 elapsed=$(( $(date +%s) - start ))
@@ -107,7 +105,7 @@ pgrep -f "$T/claude-hang" >/dev/null 2>&1 \
 echo
 echo "a healthy turn pays nothing for the watchdog:"
 
-rm -f "$T/calls" "$T/state-account-default"
+rm -f "$T/calls" "$ACCOUNT_DEFAULT_FILE"
 start=$(date +%s)
 out="$(run STUB_OK_DIR= CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low')"
 elapsed=$(( $(date +%s) - start ))
@@ -120,7 +118,7 @@ elapsed=$(( $(date +%s) - start ))
 echo
 echo "every account swap is announced:"
 
-rm -f "$T/calls" "$T/notifies" "$T/state-account-default"
+rm -f "$T/calls" "$T/notifies" "$ACCOUNT_DEFAULT_FILE"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" \
     'claude_generate "hello" low')"
 [ "$out" = "CHAIN REPLY" ] && ok "the fallback answers as before" || fail "the chain must still walk" "$out"
@@ -137,7 +135,7 @@ grep '"type":"deskcrab_note"' "$T/state-debug.log" | grep -qi "usage credits" \
     && fail "the marker must not repeat the refusal text" "$(grep '"type":"deskcrab_note"' "$T/state-debug.log")" \
     || ok "the marker carries no limit wording of its own"
 
-rm -f "$T/calls" "$T/notifies" "$T/state-account-default"
+rm -f "$T/calls" "$T/notifies" "$ACCOUNT_DEFAULT_FILE"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SESSION_KIND="autonomous wake" SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
@@ -154,7 +152,7 @@ grep -q '"note":"account-swap"' "$T/state-debug.log" 2>/dev/null \
 echo
 echo "the whole chain has a wall clock, not just each run:"
 
-rm -f "$T/calls" "$T/state-account-default"
+rm -f "$T/calls" "$ACCOUNT_DEFAULT_FILE"
 run TURN_CHAIN_TIMEOUT=1 CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_OK_DIR=/never \
     CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low' >/dev/null
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
@@ -195,7 +193,3 @@ print(", ".join(bad) if bad else "all parse")
 ' "$T/state-debug.log" 2>&1)"
 [ "$out" = "all parse" ] && ok "a real turn's log, markers and all, parses line by line" \
     || fail "every line the turn wrote must be parseable JSON" "$out"
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]

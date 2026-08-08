@@ -16,11 +16,11 @@
 # the query exactly as recall-block would, and writes it out. So a green run
 # is a statement about the shipped composer, not about the stub. Deterministic
 # and offline: nothing here embeds anything.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/deskcrab-recall-composition-test-XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+REPO="$SANDBOX_REPO"
+WORK="$SANDBOX"
 
 # A private copy of the tree, so the stub memory.py cannot be picked up by
 # anything running against the real repo.
@@ -50,19 +50,14 @@ with open("$WORK/composed.txt", "w") as f:
 EOF
 chmod +x "$WORK/repo/lib/memory.py"
 
-export DESKCRAB_STATE_PREFIX="$WORK/state"
-export DESKCRAB_CONF="$WORK/conf"
-# CLAUDE_BIN must be EXPORTED, not merely written into the conf: common.sh
-# captures the inherited value before sourcing the config and restores it
-# afterwards on purpose (a builder must be able to override it), so a conf
-# line alone loses to whatever the caller's environment holds. Getting this
-# wrong does not fail the test — it runs a REAL autonomous wake session
-# against the scratch instance and blocks for as long as the model takes.
-export CLAUDE_BIN="$WORK/bin/claude"
-
-mkdir -p "$WORK/bin"
+# CLAUDE_BIN is exported by the sandbox, not merely written into the conf:
+# common.sh captures the inherited value before sourcing the config and
+# restores it afterwards on purpose (a builder must be able to override it), so
+# a conf line alone loses to whatever the caller's environment holds. Getting
+# this wrong does not fail the test — it runs a REAL autonomous wake session
+# and blocks for as long as the model takes.
 # The stub claude answers every generation with one plain line.
-cat > "$WORK/bin/claude" <<'EOF'
+sandbox_stub claude <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     *--output-format*)
@@ -73,23 +68,12 @@ case "$*" in
     *) cat > /dev/null; printf 'ok\n' ;;
 esac
 EOF
-chmod +x "$WORK/bin/claude"
-# A test must never reach the desktop.
-for tool in notify-send piper-tts hyprctl aplay render-md ffmpeg; do
-    printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$tool"
-    chmod +x "$WORK/bin/$tool"
-done
-export PATH="$WORK/bin:$PATH"
 
-cat > "$WORK/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=1
 PROMISE_AUDIT=0
 MEMORY_JUDGE=0
-CLAUDE_BIN="$WORK/bin/claude"
-ARCHIVE_DIR="$WORK/archive"
-JOBS_DIR="$WORK/jobs"
-WAKES_DIR="$WORK/wakes"
-DAY_JOURNAL_DIR="$WORK/journal"
+CLAUDE_BIN="$SANDBOX_BIN/claude"
 LAST_ORIGIN_FILE="$WORK/last-origin"
 WANTS_FILE="$WORK/wants.md"
 WAKE_QUIET_HOURS=""
@@ -123,7 +107,7 @@ printf '# Semaphore\n\n## 2026-08-01 — old\n\nx\n' > "$WORK/wants/semaphore.md
 # Not the want in hand: last written days ago.
 touch -d '2026-08-01' "$WORK/wants/semaphore.md"
 
-fail() { echo "FAIL: $1"; [ -f "$WORK/composed.txt" ] && cat "$WORK/composed.txt"; exit 1; }
+fail() { [ -f "$WORK/composed.txt" ] && cat "$WORK/composed.txt"; die "$1"; }
 
 # --- (a) a turn with a user in it composes from the conversation ------------
 rm -f "$WORK/composed.txt"
@@ -159,4 +143,4 @@ grep -q "ANCIENT_HISTORY_MARKER" <<<"$QUERY" \
 grep -q "SEMAPHORE_OTHER_WANT" <<<"$QUERY" \
     && fail "a want that is not being worked reached the focused wake query"
 
-echo "OK: conversation asks about the conversation, a wake asks about the want in hand"
+ok "conversation asks about the conversation, a wake asks about the want in hand"

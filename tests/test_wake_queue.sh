@@ -13,28 +13,21 @@
 # The same status block also called four-hour-old failed jobs "live" and spent
 # more prompt on sessions that had finished twelve hours ago than on everything
 # actually running. Both halves are asserted here.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-wakequeue.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
-
-# Every case runs in a scratch instance, and every case stubs the two calls that
-# would reach outside it: systemd (no unit is ever created by this file) and the
-# booker. A test that can start a real wake is not a test.
+# Every case stubs the two calls that would reach outside the sandbox: systemd
+# (no unit is ever created by this file) and the booker. A test that can start a
+# real wake is not a test — the sandbox holds that gate for every file now, and
+# these overrides let the cases watch what WOULD have been booked.
 run() { # <shell body>
-    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" DESKCRAB_STATE_PREFIX="$T/state" \
-        bash -c '
-            source "$1/lib/common.sh" >/dev/null 2>&1
-            shift
-            systemctl() { return 1; }
-            _wake_book() { printf "BOOKED %s %s %s\n" "$1" "$2" "$3" >> "'"$T"'/booked"; return 0; }
-            eval "$1"
-        ' _ "$REPO_DIR" "$*" 2>&1
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" sandbox_bash '
+        systemctl() { return 1; }
+        _wake_book() { printf "BOOKED %s %s %s\n" "$1" "$2" "$3" >> "'"$T"'/booked"; return 0; }
+        '"$*" 2>&1
 }
 
 NOW="$(date +%s)"
@@ -111,15 +104,8 @@ echo "crab wake-at — a NEW booking is spaced too, not only a retry:"
 # the front. This runs the real `crab wake-at` twice, with systemd-run stubbed
 # so no unit is ever created.
 rm -f "$T"/wakes/*.wake
-mkdir -p "$T/bin"
-cat > "$T/bin/systemd-run" <<'STUB'
-#!/bin/bash
-exit 0
-STUB
-chmod +x "$T/bin/systemd-run"
 book() {
-    PATH="$T/bin:$PATH" WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" \
-        DESKCRAB_STATE_PREFIX="$T/state" WANTS_FILE="$T/wants.md" \
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" WANTS_FILE="$T/wants.md" \
         "$REPO_DIR/crab" wake-at "$@" 2>&1
 }
 : > "$T/wants.md"
@@ -147,10 +133,7 @@ echo "wake_tidy — a timer that never fired is not a ghost:"
 # coming, and cancelling it would call off a wake nobody asked to call off.
 rm -f "$T"/wakes/*.wake "$T/stopped"
 run_sysd() {
-    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" DESKCRAB_STATE_PREFIX="$T/state" \
-        bash -c '
-            source "$1/lib/common.sh" >/dev/null 2>&1
-            shift
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" sandbox_bash '
             systemctl() {
                 case "$*" in
                     *list-units*) echo "  deskcrab-wake-111-1.timer loaded active waiting"
@@ -164,8 +147,7 @@ run_sysd() {
                 return 0
             }
             _wake_book() { return 0; }
-            eval "$1"
-        ' _ "$REPO_DIR" "$*" 2>&1
+            '"$*" 2>&1
 }
 out="$(run_sysd 'wake_tidy')"
 case "$out" in
@@ -194,7 +176,7 @@ cat > "$T/jobs/live.json" <<EOF
 {"id":"live","description":"work happening right now","state":"running",
  "started_epoch":$(( NOW - 120 )),"pid":$$,"pidstart":$(awk '{print $22}' "/proc/$$/stat")}
 EOF
-printf '%s' $(( NOW - 600 )) > "$T/state-jobs-surfaced"
+printf '%s' $(( NOW - 600 )) > "$DESKCRAB_STATE_PREFIX-jobs-surfaced"
 
 out="$(run 'jobs_report --live')"
 case "$out" in
@@ -221,10 +203,10 @@ esac
 # "cut it to the last thirty minutes ... so it matches what I actually remember".
 printf '%s\t%s\t20\tdesktop turn\t%s\n' \
     "$(date -d '-4 hours' '+%Y-%m-%d %H:%M:%S')" "$(date -d '-4 hours' '+%H:%M:%S')" \
-    "a turn from four hours ago nobody remembers" > "$T/state-sessions.log"
+    "a turn from four hours ago nobody remembers" > "$DESKCRAB_STATE_PREFIX-sessions.log"
 printf '%s\t%s\t20\tautonomous wake\t%s\n' \
     "$(date -d '-5 minutes' '+%Y-%m-%d %H:%M:%S')" "$(date -d '-5 minutes' '+%H:%M:%S')" \
-    "$(head -c 400 /dev/zero | tr '\0' 'x') a wake five minutes ago" >> "$T/state-sessions.log"
+    "$(head -c 400 /dev/zero | tr '\0' 'x') a wake five minutes ago" >> "$DESKCRAB_STATE_PREFIX-sessions.log"
 
 out="$(run 'session_history --recent')"
 case "$out" in
@@ -264,7 +246,3 @@ case "$out" in
     *"died at two in the morning"*) ok "crab status still shows old failures" ;;
     *) fail "crab status keeps failed jobs" "$out" ;;
 esac
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]

@@ -19,18 +19,17 @@
 # the stub writes its stream-json log the way the CLI does — in pieces, with a
 # line still half-written when the reader reaches it — and the test asserts the
 # progress events arrive on the SSE stream BEFORE the done event, not with it.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-phonelive.XXXXXX)"
-
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — $2"; }
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
 SERVER_PID=""
-cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$T"; }
-trap cleanup EXIT
+# The exit trap belongs to the sandbox — it is what proves the run left the live
+# instance alone — so the server is stopped through its hook rather than by
+# installing a second one over the top.
+sandbox_at_exit '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null'
 
 SECRET="testsecret"
 # A port nobody else is on; the live instance sits on 8723.
@@ -108,8 +107,7 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 if ! curl -fsS -m 2 "http://127.0.0.1:$PORT/health?k=$SECRET" >/dev/null 2>&1; then
-    echo "  FAIL: server never came up — $(cat "$T/server.log")"
-    exit 1
+    die "the server never came up" "$(cat "$T/server.log")"
 fi
 
 # --- one turn, tailed live -------------------------------------------------
@@ -217,7 +215,3 @@ for line in open(sys.argv[1], errors="replace"):
         bad += 1
 sys.exit(1 if bad else 0)
 PY
-
-echo
-echo "passed: $PASS   failed: $FAIL"
-[ "$FAIL" -eq 0 ]

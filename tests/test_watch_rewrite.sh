@@ -25,18 +25,17 @@
 # archive. A poll whose gen no longer matches is answered IMMEDIATELY with
 # `reset` and the full current list; the client reseeds from /context exactly
 # as a manual refresh would, without the hand.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-watchrw.XXXXXX)"
-
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — $2"; }
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
 SERVER_PID=""
-cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$T"; }
-trap cleanup EXIT
+# The exit trap belongs to the sandbox — it is what proves the run left the live
+# instance alone — so the server is stopped through its hook rather than by
+# installing a second one over the top.
+sandbox_at_exit '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null'
 
 SECRET="testsecret"
 # A port nobody else is on; the live instance sits on 8723, test_phone_live on 18723.
@@ -58,8 +57,7 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 if ! curl -fsS -m 2 "http://127.0.0.1:$PORT/health?k=$SECRET" >/dev/null 2>&1; then
-    echo "  FAIL: server never came up — $(cat "$T/server.log")"
-    exit 1
+    die "the server never came up" "$(cat "$T/server.log")"
 fi
 
 AUTH=(-H "X-Crab-Key: $SECRET")
@@ -216,7 +214,3 @@ curl -fsS -m 30 "${AUTH[@]}" \
 [ "$(jq_ "$OUT" 'doc.get("reset", False) is False' 2>/dev/null)" = True ] \
     && ok "no gen sent, no reset forced" \
     || fail "no gen sent, no reset forced" "$(head -c 200 "$OUT")"
-
-echo
-echo "passed: $PASS   failed: $FAIL"
-[ "$FAIL" -eq 0 ]

@@ -11,24 +11,19 @@
 # that trace reached the judge and the credited record was stamped.
 #
 # Needs the local ollama embedder (like tests/test_memory.py); everything else
-# is stubbed, silent, and confined to a mktemp dir.
+# is stubbed, silent, and confined to the sandbox.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/deskcrab-wake-reinforce-test-XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+REPO="$SANDBOX_REPO"
+WORK="$SANDBOX"
 
-export DESKCRAB_STATE_PREFIX="$WORK/state"
-export DESKCRAB_MEMORY_DIR="$WORK/memory"
-export DESKCRAB_CONF="$WORK/conf"
-export CLAUDE_BIN="$WORK/bin/claude"
-
-mkdir -p "$WORK/bin"
+sandbox_need_ollama
 # The stub claude: the wake call gets a stream holding ONE tool_use block and
 # no assistant text — the shape of a wake that worked and said nothing. The
 # judge's plain `-p` call gets the verdict, and records its prompt so the test
 # can assert the work trace was actually shown to it.
-cat > "$WORK/bin/claude" <<EOF
+sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 case "\$*" in
     *--output-format*)
@@ -42,22 +37,11 @@ case "\$*" in
         ;;
 esac
 EOF
-chmod +x "$WORK/bin/claude"
-# A test must never reach the desktop: no notifications, no synthesis.
-for tool in notify-send piper-tts hyprctl aplay render-md; do
-    printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$tool"
-    chmod +x "$WORK/bin/$tool"
-done
-export PATH="$WORK/bin:$PATH"
 
-cat > "$WORK/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=1
 PROMISE_AUDIT=0
-CLAUDE_BIN="$WORK/bin/claude"
-ARCHIVE_DIR="$WORK/archive"
-JOBS_DIR="$WORK/jobs"
-WAKES_DIR="$WORK/wakes"
-DAY_JOURNAL_DIR="$WORK/journal"
+CLAUDE_BIN="$SANDBOX_BIN/claude"
 LAST_ORIGIN_FILE="$WORK/last-origin"
 WANTS_FILE="$WORK/wants.md"
 WAKE_QUIET_HOURS=""
@@ -69,7 +53,7 @@ printf '# Wants\n\n- a want, so the wake path is enabled at all\n' > "$WORK/want
 
 WAKE_REASON="a file that constitutes you changed" "$REPO/crab" wake >/dev/null 2>&1 || true
 
-DB="$WORK/memory/memory.db"
+DB="$DESKCRAB_MEMORY_DIR/memory.db"
 # The judge is detached on purpose — give it a bounded moment to land.
 for _ in $(seq 60); do
     [ "$(sqlite3 "$DB" 'SELECT use_count FROM memories WHERE id=1')" = "1" ] && break
@@ -77,16 +61,14 @@ for _ in $(seq 60); do
 done
 
 [ -f "$WORK/judge-prompt.txt" ] \
-    || { echo "FAIL: wordless wake never fired the judge"; \
-         cat "$WORK/state-memory-judge.log" 2>/dev/null; exit 1; }
+    || { cat "${DESKCRAB_STATE_PREFIX}-memory-judge.log" 2>/dev/null; die "wordless wake never fired the judge"; }
 grep -q "What she DID this turn" "$WORK/judge-prompt.txt" \
-    || { echo "FAIL: the work trace never reached the judge prompt"; exit 1; }
+    || die "the work trace never reached the judge prompt"
 grep -q "proof-of-work.md" "$WORK/judge-prompt.txt" \
-    || { echo "FAIL: the trace reached the judge but named no work"; exit 1; }
+    || die "the trace reached the judge but named no work"
 [ "$(sqlite3 "$DB" 'SELECT use_count FROM memories WHERE id=1')" = "1" ] \
-    || { echo "FAIL: credited record was never reinforced"; \
-         cat "$WORK/state-memory-judge.log" 2>/dev/null; exit 1; }
-ls "$WORK"/state-memory-injected-*.json 2>/dev/null \
-    && { echo "FAIL: injected-ids sidecar not consumed"; exit 1; }
+    || { cat "${DESKCRAB_STATE_PREFIX}-memory-judge.log" 2>/dev/null; die "credited record was never reinforced"; }
+ls "${DESKCRAB_STATE_PREFIX}"-memory-injected-*.json 2>/dev/null \
+    && die "injected-ids sidecar not consumed"
 
-echo "OK: wordless wake -> work trace -> judge -> reinforce"
+ok "wordless wake -> work trace -> judge -> reinforce"

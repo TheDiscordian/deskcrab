@@ -24,27 +24,16 @@
 # filler and nothing else; a mute that ate "Nothing in the log explains the
 # crash." would be a worse bug than the one being fixed.
 #
-# Everything is stubbed and confined to a mktemp dir: no claude, no speakers,
+# Everything is stubbed and confined to the sandbox: no claude, no speakers,
 # no notifications, no timers, no memory, no network.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/deskcrab-wake-filler-test-XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
-
-export DESKCRAB_STATE_PREFIX="$WORK/state"
-export DESKCRAB_CONF="$WORK/conf"
-export CLAUDE_BIN="$WORK/bin/claude"
-# user_busy reads the recording pidfile, which otherwise defaults to a fixed
-# /tmp path shared with the LIVE desk — without this the suite is muted at
-# random by someone holding push-to-talk on the real machine, and the mute
-# would read as this gate working when it had not run at all.
-export DESKCRAB_PIDFILE="$WORK/whisper.pid"
-
-mkdir -p "$WORK/bin"
+REPO="$SANDBOX_REPO"
+WORK="$SANDBOX"
 
 # The stub claude: replies with whatever the case under test put in reply.txt.
-cat > "$WORK/bin/claude" <<EOF
+sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 cat > /dev/null
 python3 - "$WORK/reply.txt" <<'PYEOF'
@@ -56,51 +45,33 @@ print(json.dumps({"type": "assistant",
 print(json.dumps({"type": "result", "result": text}))
 PYEOF
 EOF
-chmod +x "$WORK/bin/claude"
 
 # piper-tts is the ONLY thing that turns text into sound on this machine, so
 # its stdin is the honest answer to "was this spoken?" — not a log line
-# claiming it was.
-cat > "$WORK/bin/piper-tts" <<EOF
+# claiming it was. These three witnesses are per-case (each run_wake clears
+# them), which is why they are named here rather than read from the sandbox's
+# own cumulative logs.
+sandbox_stub piper-tts <<EOF
 #!/usr/bin/env bash
 cat >> "$WORK/spoken.txt"
 EOF
-chmod +x "$WORK/bin/piper-tts"
 
-# Same for the notification: record the fact, produce nothing.
-cat > "$WORK/bin/notify-send" <<EOF
+sandbox_stub notify-send <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$WORK/notified.txt"
 EOF
-chmod +x "$WORK/bin/notify-send"
 
-cat > "$WORK/bin/render-md" <<EOF
+sandbox_stub render-md <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$WORK/displayed.txt"
 EOF
-chmod +x "$WORK/bin/render-md"
 
-# A test must never reach the desktop, the speakers, or the user manager.
-# pactl is stubbed on purpose: user_busy asks it whether anything holds the
-# microphone, and a real app recording while the suite runs would mute the
-# wake for a legitimate reason and make this read as a regression.
-for tool in aplay hyprctl ffmpeg systemd-run systemctl pactl; do
-    printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$tool"
-    chmod +x "$WORK/bin/$tool"
-done
-export PATH="$WORK/bin:$PATH"
-
-cat > "$WORK/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=0
 MEMORY_JUDGE=0
 PROMISE_AUDIT=0
-CLAUDE_BIN="$WORK/bin/claude"
+CLAUDE_BIN="$SANDBOX_BIN/claude"
 PROJECT_DIR="$WORK"
-ARCHIVE_DIR="$WORK/archive"
-JOBS_DIR="$WORK/jobs"
-WAKES_DIR="$WORK/wakes"
-DAY_JOURNAL_DIR="$WORK/journal"
-NOTICE_STATE_DIR="$WORK/notice"
 LAST_ORIGIN_FILE="$WORK/last-origin"
 WANTS_FILE="$WORK/wants.md"
 WAKE_QUIET_HOURS=""
@@ -108,7 +79,7 @@ PIPER_VOICE="$WORK/voice.onnx"
 EOF
 printf '# Wants\n\n- **a want**, so the wake path is enabled at all\n' > "$WORK/wants.md"
 
-fail() { echo "FAIL: $*"; exit 1; }
+fail() { die "$*"; }
 
 # --- 1: the corpus, at unit level -------------------------------------------
 # Sourced rather than driven, so every shape is covered cheaply. common.sh is
@@ -180,7 +151,7 @@ fail() { echo "FAIL: $*"; exit 1; }
     for t in "${REAL[@]}"; do
         wake_reply_is_filler "$t" && fail "real speech would be swallowed: $t"
     done
-    echo "  ok: ${#FILLER[@]} filler shapes mute, ${#REAL[@]} real replies speak"
+    ok "${#FILLER[@]} filler shapes mute, ${#REAL[@]} real replies speak"
 ) || exit 1
 
 # --- 2 & 3: the real wake path ----------------------------------------------
@@ -194,8 +165,8 @@ run_wake() {  # <reply-text>
         "$REPO/crab" wake event "a scheduled look at the wants" >/dev/null 2>&1 || true
 }
 
-CONVO="$WORK/state-convo.txt"
-JOURNAL="$WORK/state-sessions.log"
+CONVO="${DESKCRAB_STATE_PREFIX}-convo.txt"
+JOURNAL="${DESKCRAB_STATE_PREFIX}-sessions.log"
 
 for t in "Nothing to say." "Nothing to report." "No update." "Quiet here." \
          "Nothing new." "No message." "Silence." "Nothing." ; do
@@ -212,7 +183,7 @@ for t in "Nothing to say." "Nothing to report." "No update." "Quiet here." \
         fail "filler was appended to the conversation as a bubble: $t"
     fi
 done
-echo "  ok: 8 fillers through the real wake path — nothing spoken, no bubble"
+ok "8 fillers through the real wake path — nothing spoken, no bubble"
 
 # The words are muted, not lost: the journal is where a wake nobody heard has
 # always belonged, and losing the trace would make the mute unauditable.
@@ -222,7 +193,7 @@ grep -q "filler" "$JOURNAL" \
          fail "the journal does not record what the mute swallowed"; }
 grep -qF "Nothing to say." "$JOURNAL" \
     || fail "the swallowed words themselves are not in the journal"
-echo "  ok: the muted words survive in the session journal"
+ok "the muted words survive in the session journal"
 
 # --- 3: a genuine reply must still be spoken, bubbled and shown -------------
 # The word "nothing" is in it on purpose. This is the case he has been burned
@@ -238,7 +209,7 @@ grep -qF "Nothing in the log explains the crash" "$WORK/spoken.txt" \
 [ -f "$CONVO" ] && grep -qF "Nothing in the log explains the crash" "$CONVO" \
     || { echo "--- conversation ---"; cat "$CONVO" 2>/dev/null; \
          fail "a genuine reply left no bubble in the conversation"; }
-echo "  ok: a genuine reply containing 'nothing' is spoken and bubbled"
+ok "a genuine reply containing 'nothing' is spoken and bubbled"
 
 # And one more, whose entire content is a short sentence about quiet — the
 # shape closest to the filler corpus that is still real speech.
@@ -247,7 +218,7 @@ run_wake "$REAL_TWO"
 [ -f "$WORK/spoken.txt" ] || fail "a genuine reply about quiet was swallowed"
 grep -qF "Quiet hours start at ten" "$WORK/spoken.txt" \
     || fail "the second genuine reply was not the text spoken"
-echo "  ok: a genuine short reply about 'quiet' is spoken"
+ok "a genuine short reply about 'quiet' is spoken"
 
 # --- 4: the prompt says it too ----------------------------------------------
 # The gate is the backstop, not the instruction. The wake prompt has to ask for
@@ -258,6 +229,6 @@ grep -q "ZERO message text" "$REPO/crab" \
     || fail "the wake prompt no longer asks for zero message text"
 grep -q "Nothing to say" "$REPO/crab" \
     || fail "the wake prompt no longer forbids the filler sentence by name"
-echo "  ok: the wake prompt asks for silence in words, not just in code"
+ok "the wake prompt asks for silence in words, not just in code"
 
-echo "OK: silence is silent — filler muted whole, real speech untouched"
+ok "silence is silent — filler muted whole, real speech untouched"

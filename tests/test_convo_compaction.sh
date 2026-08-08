@@ -13,37 +13,21 @@
 # Everything here is confined to a mktemp dir with its own DESKCRAB_STATE_PREFIX
 # and a stub claude — no real summarizer call, no live conversation touched.
 # Run: bash tests/test_convo_compaction.sh
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-compaction-test.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1"; }
-check() { # <desc> <got> <want>
-    if [ "$2" = "$3" ]; then ok "$1"; else fail "$1 — got [$2] want [$3]"; fi
-}
-
-mkdir -p "$T/bin"
 # The stub summarizer: records the prompt it was handed (so a test can prove the
 # folded blocks actually reached it) and answers with a fixed summary.
-cat > "$T/bin/claude" <<EOF
+sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 printf '%s' "\${!#}" > "$T/summary-prompt.txt"
 printf 'CONDENSED SUMMARY\n'
 EOF
-chmod +x "$T/bin/claude"
-export PATH="$T/bin:$PATH"
-export CLAUDE_BIN="$T/bin/claude"
-export DESKCRAB_STATE_PREFIX="$T/state"
-export DESKCRAB_CONF="$T/conf"
-cat > "$T/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 PROJECT_DIR="$T"
-ARCHIVE_DIR="$T/archive"
-JOBS_DIR="$T/jobs"
-WAKES_DIR="$T/wakes"
 SESSIONS_LOG="$T/sessions.log"
 WANTS_FILE=""
 PROMISE_AUDIT=0
@@ -107,9 +91,9 @@ echo "wake blocks count toward the window:"
 reset
 CONVO_MAX_TURNS=20 CONVO_SUMMARIZE_TURNS=10
 build_convo 6 16          # 6 user + 6 assistant + 16 wake assistant = 28 blocks
-check "[$FMT] fixture stays under the OLD user-only threshold" \
+check_eq "[$FMT] fixture stays under the OLD user-only threshold" \
     "$(( $(grep -cE '^User( \[[^]]*\])?: ' "$CONVOFILE") <= CONVO_MAX_TURNS ? 1 : 0 ))" "1"
-check "[$FMT] fixture is over the real block threshold" "$(blocks)" "28"
+check_eq "[$FMT] fixture is over the real block threshold" "$(blocks)" "28"
 
 compact_convo
 
@@ -118,20 +102,20 @@ if [ -s "$SUMMARYFILE" ]; then
 else
     fail "[$FMT] compaction never fired — the counter still ignores wake blocks"
 fi
-check "[$FMT] summary holds the summarizer output" \
+check_eq "[$FMT] summary holds the summarizer output" \
     "$(cat "$SUMMARYFILE" 2>/dev/null)" "CONDENSED SUMMARY"
-check "[$FMT] oldest CONVO_SUMMARIZE_TURNS blocks were dropped" "$(blocks)" "18"
+check_eq "[$FMT] oldest CONVO_SUMMARIZE_TURNS blocks were dropped" "$(blocks)" "18"
 
 # The 10 folded blocks are the 6 exchanges' first 10 blocks: U1 A1 .. U5 A5.
-check "[$FMT] folded block reached the summarizer" \
+check_eq "[$FMT] folded block reached the summarizer" \
     "$(grep -c 'answer 5$' "$T/summary-prompt.txt")" "1"
-check "[$FMT] kept block was NOT folded" \
+check_eq "[$FMT] kept block was NOT folded" \
     "$(grep -c 'answer 6$' "$T/summary-prompt.txt")" "0"
-check "[$FMT] first surviving block is the 11th" \
+check_eq "[$FMT] first surviving block is the 11th" \
     "$(head -1 "$CONVOFILE" | body)" "question 6"
-check "[$FMT] first surviving block is still a user block" \
+check_eq "[$FMT] first surviving block is still a user block" \
     "$(head -1 "$CONVOFILE" | cut -c1-4)" "User"
-check "[$FMT] last block survived untouched" \
+check_eq "[$FMT] last block survived untouched" \
     "$(grep -c 'wake thought 16$' "$CONVOFILE")" "1"
 
 # --- 2. a wake header stays with the reply it introduces ----------------------
@@ -143,12 +127,12 @@ reset
 CONVO_MAX_TURNS=6 CONVO_SUMMARIZE_TURNS=4
 build_convo 2 6           # 2 user + 2 assistant + 6 wake assistant = 10 blocks
 compact_convo
-check "[$FMT] trimmed to the remaining blocks" "$(blocks)" "6"
-check "[$FMT] surviving convo opens with its wake header" \
+check_eq "[$FMT] trimmed to the remaining blocks" "$(blocks)" "6"
+check_eq "[$FMT] surviving convo opens with its wake header" \
     "$(head -1 "$CONVOFILE" | cut -c1-16)" "[Autonomous wake"
-check "[$FMT] every surviving wake block still has a header" \
+check_eq "[$FMT] every surviving wake block still has a header" \
     "$(grep -c '^\[Autonomous wake' "$CONVOFILE")" "6"
-check "[$FMT] no header was orphaned into the summary" \
+check_eq "[$FMT] no header was orphaned into the summary" \
     "$(grep -c '^\[Autonomous wake' "$T/summary-prompt.txt")" "0"
 
 # --- 3. an all-wake conversation compacts too ---------------------------------
@@ -158,14 +142,14 @@ echo "a conversation of nothing but wakes:"
 reset
 CONVO_MAX_TURNS=10 CONVO_SUMMARIZE_TURNS=5
 build_convo 0 14
-check "[$FMT] no user blocks at all" \
+check_eq "[$FMT] no user blocks at all" \
     "$(grep -cE '^User( \[[^]]*\])?: ' "$CONVOFILE")" "0"
 compact_convo
-check "[$FMT] compaction still fired" \
+check_eq "[$FMT] compaction still fired" \
     "$(cat "$SUMMARYFILE" 2>/dev/null)" "CONDENSED SUMMARY"
-check "[$FMT] oldest 5 wake blocks folded away" "$(blocks)" "9"
-check "[$FMT] wake 5 was folded" "$(grep -c 'wake thought 5$' "$CONVOFILE")" "0"
-check "[$FMT] wake 6 was kept" "$(grep -c 'wake thought 6$' "$CONVOFILE")" "1"
+check_eq "[$FMT] oldest 5 wake blocks folded away" "$(blocks)" "9"
+check_eq "[$FMT] wake 5 was folded" "$(grep -c 'wake thought 5$' "$CONVOFILE")" "0"
+check_eq "[$FMT] wake 6 was kept" "$(grep -c 'wake thought 6$' "$CONVOFILE")" "1"
 
 # --- 4. under the threshold, nothing happens ----------------------------------
 # The counter got looser; it must not have got trigger-happy. A conversation at
@@ -174,13 +158,13 @@ echo "at or under the threshold nothing is trimmed:"
 reset
 CONVO_MAX_TURNS=20 CONVO_SUMMARIZE_TURNS=10
 build_convo 4 12          # exactly 20 blocks
-check "[$FMT] fixture sits exactly on the threshold" "$(blocks)" "20"
+check_eq "[$FMT] fixture sits exactly on the threshold" "$(blocks)" "20"
 BEFORE="$(md5sum < "$CONVOFILE")"
 compact_convo
-check "[$FMT] convo untouched" "$(md5sum < "$CONVOFILE")" "$BEFORE"
-check "[$FMT] no summary written" \
+check_eq "[$FMT] convo untouched" "$(md5sum < "$CONVOFILE")" "$BEFORE"
+check_eq "[$FMT] no summary written" \
     "$([ -f "$SUMMARYFILE" ] && echo yes || echo no)" "no"
-check "[$FMT] summarizer never called" \
+check_eq "[$FMT] summarizer never called" \
     "$([ -f "$T/summary-prompt.txt" ] && echo yes || echo no)" "no"
 
 # --- 5. a failed summarization loses nothing ----------------------------------
@@ -195,7 +179,7 @@ CONVO_MAX_TURNS=10 CONVO_SUMMARIZE_TURNS=5
 build_convo 2 12
 BEFORE="$(md5sum < "$CONVOFILE")"
 compact_convo
-check "[$FMT] convo intact after a failed summary" "$(md5sum < "$CONVOFILE")" "$BEFORE"
+check_eq "[$FMT] convo intact after a failed summary" "$(md5sum < "$CONVOFILE")" "$BEFORE"
 mv "$T/bin/claude.ok" "$T/bin/claude"
 
 # --- 6. the compaction must be quiet ------------------------------------------
@@ -207,10 +191,6 @@ echo "compaction writes nothing to stderr:"
 reset
 CONVO_MAX_TURNS=10 CONVO_SUMMARIZE_TURNS=5
 build_convo 3 10
-check "[$FMT] no warnings from the split" "$(compact_convo 2>&1 >/dev/null)" ""
+check_eq "[$FMT] no warnings from the split" "$(compact_convo 2>&1 >/dev/null)" ""
 
 done
-
-echo
-echo "passed: $PASS   failed: $FAIL"
-[ "$FAIL" -eq 0 ]

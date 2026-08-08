@@ -9,15 +9,11 @@
 # her own edit. Under-detection means a false alarm; over-detection is worse —
 # it would silence a real outside change — so the "must NOT match" cases below
 # carry as much weight as the positive ones.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-attrtest.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
-
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
 # Build a one-line stream log holding a single Bash tool_use, then ask
 # common.sh what it thinks was written.
@@ -31,9 +27,7 @@ open(sys.argv[2], "w").write(json.dumps({
 }) + "\n")
 PY
     # DEBUGLOG must be set AFTER sourcing — common.sh assigns its own.
-    bash -c \
-        'source "$1/lib/common.sh" >/dev/null 2>&1; DEBUGLOG="$2" stream_written_files' \
-        _ "$REPO_DIR" "$T/stream.jsonl" \
+    sandbox_bash 'DEBUGLOG="'"$T"'/stream.jsonl" stream_written_files' \
         | tr '\n' ' ' | sed 's/ *$//'
 }
 
@@ -83,9 +77,8 @@ open(sys.argv[2], "w").write(json.dumps({
         {"type": "tool_use", "name": "Bash", "input": {"command": sys.argv[1]}}]},
 }) + "\n")
 PY
-    bash -c \
-        'source "$1/lib/common.sh" >/dev/null 2>&1; DEBUGLOG="$2" stream_mentioned_files' \
-        _ "$REPO_DIR" "$T/stream.jsonl" | sort | tr '\n' ' ' | sed 's/ *$//'
+    sandbox_bash 'DEBUGLOG="'"$T"'/stream.jsonl" stream_mentioned_files' \
+        | sort | tr '\n' ' ' | sed 's/ *$//'
 }
 has_weak() { # <desc> <command> <path that must appear>
     local got; got="$(parse_weak "$2")"
@@ -127,13 +120,12 @@ print(json.dumps({"type": "assistant", "message": {"model": "m", "content": [
 PY2
 
 run_harvest() {
-    bash -c '
-      source "$1/lib/common.sh" >/dev/null 2>&1
-      DEBUGLOG="$2"
-      NOTICE_STATE_DIR="$3"; NOTICE_SUPPRESS="$3/sup"
-      NOTICE_STREAM_DIR="$3/streams"; NOTICE_DECLARED_LOG="$3/declared.log"
-      NOTICE_STREAM_KEEP="${4:-20}"
-      notice_own_writes' _ "$REPO_DIR" "$T/fstream.jsonl" "$FT" "${1:-20}"
+    sandbox_bash '
+      DEBUGLOG="'"$T"'/fstream.jsonl"
+      NOTICE_STATE_DIR="'"$FT"'"; NOTICE_SUPPRESS="'"$FT"'/sup"
+      NOTICE_STREAM_DIR="'"$FT"'/streams"; NOTICE_DECLARED_LOG="'"$FT"'/declared.log"
+      NOTICE_STREAM_KEEP="'"${1:-20}"'"
+      notice_own_writes'
 }
 
 run_harvest
@@ -160,7 +152,3 @@ for i in 1 2 3; do sleep 1; run_harvest 2; done
 n=$(ls -1 "$FT/streams"/*.jsonl 2>/dev/null | wc -l)
 [ "$n" -le 2 ] && ok "the archive is pruned to the keep count" \
                 || fail "the archive is pruned to the keep count" "$n"
-
-echo
-echo "passed $PASS, failed $FAIL"
-[ "$FAIL" -eq 0 ]

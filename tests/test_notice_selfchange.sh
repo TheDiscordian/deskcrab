@@ -1,32 +1,22 @@
 #!/bin/bash
-# Tests for lib/notice-selfchange — the self-change watcher — in a sandbox:
-# every path the emitter reads (data dir, conf, state, sessions, jobs, repo,
-# extra dirs) is redirected into a temp tree, and `crab` is a stub that
-# records what wake it was asked to fire. Run: bash tests/test_notice_selfchange.sh
+# Tests for lib/notice-selfchange — the self-change watcher. Every path the
+# emitter reads (data dir, conf, state, sessions, jobs, repo, extra dirs) is
+# the sandbox's, and `crab` is a stub that records what wake it was asked to
+# fire. Run: bash tests/test_notice_selfchange.sh
 #
 # The emitter is always invoked with attempt=99 — past MAX_DEFERRALS — so it
 # judges immediately instead of booking systemd timers from inside a test.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-selftest.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1"; }
-check() { # <desc> <cmd...>
-    local desc="$1"; shift
-    if "$@"; then ok "$desc"; else fail "$desc"; fi
-}
-contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
-
-# --- sandbox ----------------------------------------------------------------
+# --- fixture ----------------------------------------------------------------
 # A stub repo holding the real emitter and a crab stub that logs its argv.
 mkdir -p "$T/repo/lib" "$T/data/deskcrab/wants" "$T/data/deskcrab/conduct" \
     "$T/data/deskcrab/engineering" "$T/data/deskcrab/journal" \
-    "$T/data/deskcrab/memory" "$T/data/deskcrab/jobs" \
-    "$T/conf" "$T/state" "$T/library" "$T/sessions-prefix"
+    "$T/data/deskcrab/memory" "$T/data/deskcrab/jobs" "$T/library"
 cp "$REPO_DIR/lib/notice-selfchange" "$T/repo/lib/"
 cat > "$T/repo/crab" <<STUB
 #!/bin/bash
@@ -39,32 +29,25 @@ git -C "$T/repo" init -q -b test
 git -C "$T/repo" -c user.email=t@t -c user.name=t add -- crab lib .gitignore tracked.txt
 git -C "$T/repo" -c user.email=t@t -c user.name=t commit -qm seed
 
-: > "$T/conf/deskcrab.conf"
-echo "SELF_WATCH_EXTRA=$T/library" >> "$T/conf/deskcrab.conf"
+: > "$DESKCRAB_CONF"
+echo "SELF_WATCH_EXTRA=$T/library" >> "$DESKCRAB_CONF"
 
-# systemd-run must FAIL in the sandbox: a real deferral would book a transient
-# timer on the live user manager that re-runs the emitter without the sandbox
-# environment. The emitter treats a failed deferral as "judge now" — which is
-# also exactly what the attempt-0 test wants to observe.
-mkdir -p "$T/bin"
-printf '#!/bin/bash\nexit 1\n' > "$T/bin/systemd-run"
-chmod +x "$T/bin/systemd-run"
+# A deferral must FAIL here: a real one would book a transient timer on the
+# live user manager that re-runs the emitter without the sandbox environment.
+# The emitter treats a failed deferral as "judge now" — which is also exactly
+# what the attempt-0 case below wants to observe.
+sandbox_systemd_rc 1
 
 run() {  # [attempt]
-    env -i HOME="$T" PATH="$T/bin:$PATH" \
-        XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state" \
-        DESKCRAB_CONF="$T/conf/deskcrab.conf" \
-        DESKCRAB_STATE_PREFIX="$T/sessions-prefix/deskcrab" \
-        JOBS_DIR="$T/data/deskcrab/jobs" \
-        "$T/repo/lib/notice-selfchange" "${1:-99}"
+    "$T/repo/lib/notice-selfchange" "${1:-99}"
 }
 wakes() { wc -l < "$T/wake-calls" 2>/dev/null || echo 0; }
 last_wake() { tail -1 "$T/wake-calls" 2>/dev/null; }
-STATE="$T/state/deskcrab"
+STATE="$NOTICE_STATE_DIR"
 
 echo "== seed run is silent =="
 echo "keep me" > "$T/data/deskcrab/wants/first-want.md"
-echo "conf" > "$T/conf/deskcrab.conf.aside"
+echo "conf" > "$DESKCRAB_CONF.aside"
 run
 check "snapshot created" test -f "$STATE/notice-self.snap"
 check "no wake on seed" test ! -f "$T/wake-calls"
@@ -81,7 +64,8 @@ echo "a change" >> "$T/repo/tracked.txt"                         # modified, git
 echo "in the library" > "$T/library/new-thing.md"                # created (extra dir)
 run
 check "exactly one wake for the burst" [ "$(wakes)" = 1 ]
-check "wake is an event wake" contains "$(last_wake)" "wake event Files that are part of you"
+check "wake is an event wake, booked in the emitter's own name" \
+    contains "$(last_wake)" "wake-at --by notice-selfchange 5s event Files that are part of you"
 check "wake names the created want" contains "$(last_wake)" "new-want.md"
 check "wake does not prescribe" contains "$(last_wake)" "not a task"
 REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
@@ -141,9 +125,9 @@ run
 check "an ancient declaration cannot silence a stalled watcher" [ "$(wakes)" = 5 ]
 
 echo "== a live session's claim suppresses modifications =="
-mkdir -p "$T/sessions-prefix/deskcrab-sessions"
-echo "live" > "$T/sessions-prefix/deskcrab-sessions/$$"          # our own pid: live
-echo "working on engineering/OPEN.md right now" > "$T/sessions-prefix/deskcrab-sessions/$$.claim"
+mkdir -p "$DESKCRAB_STATE_PREFIX-sessions"
+echo "live" > "${DESKCRAB_STATE_PREFIX}-sessions/$$"          # our own pid: live
+echo "working on engineering/OPEN.md right now" > "${DESKCRAB_STATE_PREFIX}-sessions/$$.claim"
 echo "open list" > "$T/data/deskcrab/engineering/OPEN.md"
 run
 check "claimed modification stays quiet" [ "$(wakes)" = 5 ]
@@ -153,16 +137,16 @@ echo "== but a claim never excuses a deletion =="
 rm "$T/data/deskcrab/engineering/OPEN.md"
 run
 check "claimed deletion still fires" [ "$(wakes)" = 6 ]
-rm -f "$T/sessions-prefix/deskcrab-sessions/$$" "$T/sessions-prefix/deskcrab-sessions/$$.claim"
+rm -f "${DESKCRAB_STATE_PREFIX}-sessions/$$" "${DESKCRAB_STATE_PREFIX}-sessions/$$.claim"
 
 echo "== memory.db churn beside a recent session is her own plumbing =="
 echo "sqlite bytes" > "$T/data/deskcrab/memory/memory.db"
 run   # consume the creation as a burst of its own (fires; wake 6)
-touch "$T/sessions-prefix/deskcrab-sessions.log"                 # fresh activity
+touch "$DESKCRAB_STATE_PREFIX-sessions.log"                 # fresh activity
 echo "more sqlite bytes" >> "$T/data/deskcrab/memory/memory.db"
 run
 check "memory.db + recent session stays quiet" [ "$(wakes)" = 7 ]
-touch -d '30 min ago' "$T/sessions-prefix/deskcrab-sessions.log"
+touch -d '30 min ago' "$DESKCRAB_STATE_PREFIX-sessions.log"
 echo "even more bytes" >> "$T/data/deskcrab/memory/memory.db"
 run
 check "memory.db with no recent session fires" [ "$(wakes)" = 8 ]
@@ -217,7 +201,3 @@ mkdir -p "$T/repo/ignored-stuff"
 echo "scratch" > "$T/repo/ignored-stuff/scratch.txt"
 run
 check "ignored file fires nothing" [ "$(wakes)" = 13 ]
-
-echo
-echo "passed $PASS, failed $FAIL"
-[ "$FAIL" -eq 0 ]

@@ -12,15 +12,11 @@
 # everything she had already written down read as unrecorded: 172 UNSAVED
 # verdicts in 309 audits, an event wake booked for each. That is the wake
 # storm, and it is one grep.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-wants.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
-
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
 # The shelf in the shape it actually has on disk: an emoji between the bullet
 # and the bold title, a trailing sentence, a pointer to the want's document.
@@ -38,7 +34,7 @@ Some prose that is not a bullet at all.
 - a bullet with no title, which is not a want headline
 EOF
 
-cat > "$T/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=0
 PROMISE_AUDIT=0
 MEMORY_JUDGE=0
@@ -55,12 +51,8 @@ PIPER_VOICE=/nonexistent.onnx
 WHISPER_MODEL=/nonexistent.bin
 EOF
 
-run() { # <shell body> — sources common.sh in a scratch instance.
-    DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
-        ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
-        NOTICE_STATE_DIR="$T/notice" DESKCRAB_NO_DISPATCH=1 \
-        bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
-        _ "$REPO_DIR" "$1" 2>/dev/null
+run() { # <shell body> — sources common.sh in the sandbox instance.
+    DESKCRAB_NO_DISPATCH=1 sandbox_bash "$1" 2>/dev/null
 }
 
 echo "wants_titles — one reading of the shelf:"
@@ -106,9 +98,7 @@ echo NONE
 EOF
 chmod +x "$T/claude-stub"
 
-DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
-    ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
-    NOTICE_STATE_DIR="$T/notice" CLAUDE_BIN="$T/claude-stub" \
+CLAUDE_BIN="$T/claude-stub" \
     "$T/repo/lib/promise-audit" "how is the shelf" "All quiet." >/dev/null 2>&1
 
 listed="$(sed -n '/EVERY WANT CURRENTLY IN HER FILE/,/=== THE EXCHANGE ===/p' \
@@ -132,7 +122,3 @@ hits="$(grep -rn "grep -E '\^- \\\\\*\\\\\*'" "$REPO_DIR/lib" "$REPO_DIR/crab" 2
 n="$(grep -c "grep -oP '\^- " "$REPO_DIR/lib/common.sh")"
 [ "$n" = 1 ] && ok "wants_titles is the only implementation" \
     || fail "one implementation, one function" "$n copies in common.sh"
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]

@@ -22,40 +22,32 @@
 #   8. build_convo_context ships the stamps and says how to read them
 #   9. serve.py's phone parser: stamp out of the text, into its own field
 #
-# Everything is stubbed and confined to a mktemp dir.
+# Everything is stubbed and confined to the sandbox.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/deskcrab-stamp-test-XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+REPO="$SANDBOX_REPO"
+WORK="$SANDBOX"
 
-export DESKCRAB_STATE_PREFIX="$WORK/state"
-export DESKCRAB_CONF="$WORK/conf"
+# The stub summariser answers nothing at all: what these cases read is the
+# prompt it was handed, not a reply.
+sandbox_stub claude <<'STUB'
+#!/bin/sh
+exit 0
+STUB
 
-mkdir -p "$WORK/bin"
-for tool in notify-send piper-tts aplay hyprctl render-md ffmpeg systemd-run systemctl pactl claude; do
-    printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$tool"
-    chmod +x "$WORK/bin/$tool"
-done
-export PATH="$WORK/bin:$PATH"
-
-cat > "$WORK/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=0
 PROMISE_AUDIT=0
 MEMORY_JUDGE=0
-CLAUDE_BIN="$WORK/bin/claude"
+CLAUDE_BIN="$SANDBOX_BIN/claude"
 PROJECT_DIR="$WORK"
-ARCHIVE_DIR="$WORK/archive"
-JOBS_DIR="$WORK/jobs"
-WAKES_DIR="$WORK/wakes"
-DAY_JOURNAL_DIR="$WORK/journal"
-NOTICE_STATE_DIR="$WORK/notice"
 LAST_ORIGIN_FILE="$WORK/last-origin"
 WANTS_FILE=""
 PIPER_VOICE="$WORK/voice.onnx"
 EOF
 
-fail() { echo "FAIL: $*"; exit 1; }
+fail() { die "$*"; }
 
 # --- 2: no path writes a block header without a stamp -----------------------
 # A source-level guard, deliberately: the two writers can only be the single
@@ -146,17 +138,16 @@ fi
     # 6. The summariser is told the span, so the condensed half keeps a clock.
     # The stub claude prints nothing, so compact_convo leaves history alone —
     # what is under test is the prompt, captured from the argument it is given.
-    cat > "$WORK/bin/claude" <<'STUB'
+    sandbox_stub claude <<'STUB'
 #!/usr/bin/env bash
 for a in "$@"; do printf '%s\n' "$a"; done > "$SUMPROMPT_OUT"
 STUB
-    chmod +x "$WORK/bin/claude"
     {
         printf 'User [%s 09:12]: q1\nAssistant [%s 09:13]: a1\n\n' "$TODAY" "$TODAY"
         printf 'User [%s 10:00]: q2\nAssistant [%s 10:01]: a2\n\n' "$TODAY" "$TODAY"
         printf 'User [%s 11:40]: q3\nAssistant [%s 11:41]: a3\n\n' "$TODAY" "$TODAY"
     } > "$CONVOFILE"
-    CLAUDE_BIN="$WORK/bin/claude" SUMPROMPT_OUT="$WORK/sumprompt.txt" compact_convo
+    CLAUDE_BIN="$SANDBOX_BIN/claude" SUMPROMPT_OUT="$WORK/sumprompt.txt" compact_convo
     grep -q "Keep time in the summary" "$WORK/sumprompt.txt" \
         || fail "the summariser was not asked to keep time"
     # However many blocks the window folds away, the excerpt starts at the
@@ -165,7 +156,7 @@ STUB
         || { cat "$WORK/sumprompt.txt"; fail "the excerpt's span never reached the summariser"; }
     # And an unstamped excerpt must make the summariser say so, not guess.
     printf 'User: q1\nAssistant: a1\n\nUser: q2\nAssistant: a2\n\n' > "$CONVOFILE"
-    CLAUDE_BIN="$WORK/bin/claude" SUMPROMPT_OUT="$WORK/sumprompt-bare.txt" compact_convo
+    CLAUDE_BIN="$SANDBOX_BIN/claude" SUMPROMPT_OUT="$WORK/sumprompt-bare.txt" compact_convo
     grep -q "the excerpt is unstamped" "$WORK/sumprompt-bare.txt" \
         || fail "an unstamped excerpt did not tell the summariser its span is unknown"
 
@@ -188,7 +179,7 @@ TODAY="$(date '+%Y-%m-%d')"
     printf 'User: an old question\nAssistant: an old answer\n\n'
     printf 'User [%s 12:01]: a new question\n' "$TODAY"
     printf 'Assistant [%s 12:03]: a new answer\ncontinued on a second line\n\n' "$TODAY"
-} > "$WORK/state-convo.txt"
+} > "$DESKCRAB_STATE_PREFIX-convo.txt"
 
 # serve.py refuses to load unauthenticated; it is being imported for its parser,
 # not served, and it binds nothing at import.
@@ -214,4 +205,4 @@ if t[3]["text"] != "a new answer\ncontinued on a second line":
     fail("a stamped multi-line reply lost its continuation")
 PY
 
-echo "PASS: conversation stamps"
+ok "conversation stamps: written, counted, split, ranged, prompted and parsed"

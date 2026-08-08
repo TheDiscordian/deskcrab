@@ -9,25 +9,17 @@
 # one fired a wake saying "read the log and verify its claims" — for a log with
 # no claims in it. A build that never started is its own outcome, and it must
 # hold off the next dispatch instead of inviting it.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-jobblock.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
-
-# Every case runs in a scratch instance: its own JOBS_DIR and state prefix, so
-# nothing here can touch the live jobs directory or the live block marker.
-# No case in this file wants a real builder, so the guard belongs here rather
-# than on the two lines that happen to reach dispatch today — a preflight that
-# regresses must fail the assertion, not start a session on my account.
+# No case in this file wants a real builder, so the guard belongs on every case
+# rather than on the two lines that happen to reach dispatch today — a preflight
+# that regresses must fail the assertion, not start a session on my account.
 run() { # <shell body>
-    JOBS_DIR="$T/jobs" DESKCRAB_STATE_PREFIX="$T/state" DESKCRAB_NO_DISPATCH=1 \
-        bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
-        _ "$REPO_DIR" "$*" 2>&1
+    JOBS_DIR="$T/jobs" DESKCRAB_NO_DISPATCH=1 sandbox_bash "$*" 2>&1
 }
 
 echo "job_output_blocked — the CLI's own refusals, and nothing else:"
@@ -126,14 +118,14 @@ chmod +x "$T/claude-stub"
 # "do a thing" job entries straight into my real day journal, where sleep would
 # have read them at 03:10 as work I had actually done.
 run_runner() { # <jobs-dir> <id>  -> emits nothing; side effects land in $T/wakes
-    # JOBS_BLOCKED_FILE is pinned to scratch explicitly: the live-jobs-dir case
-    # below otherwise derives it from the LIVE dir, and the stub's refusal then
-    # stamps the REAL block marker — on 2026-08-07 a builder running this suite
-    # held every live dispatch for 30 min with "out of usage credits" that no
-    # account had actually said. DESKCRAB_CONF is pinned for the same reason:
-    # the live config's fallback settings must not reach a stub runner.
-    JOBS_DIR="$1" DESKCRAB_STATE_PREFIX="$T/state" WANTS_FILE="$T/wants.md" \
-        DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-stub" \
+    # JOBS_BLOCKED_FILE is named explicitly because the guard case below derives
+    # it from whichever jobs directory it is handed, and a refusal recorded by a
+    # stub builder must never stamp a block marker anyone else reads: on
+    # 2026-08-07 a builder running this suite held every live dispatch for 30 min
+    # with "out of usage credits" that no account had actually said. Everything
+    # else — the config, the state prefix, the account default, the journal — is
+    # the sandbox's, which is the point of there being one.
+    JOBS_DIR="$1" WANTS_FILE="$T/wants.md" CLAUDE_BIN="$T/claude-stub" \
         JOBS_BLOCKED_FILE="$T/blocked-marker" \
         "$T/repo/lib/job-runner" "$2" "$T" >/dev/null 2>&1
 }
@@ -159,22 +151,18 @@ case "$(cat "$T/jobs2/jobtest.log" 2>/dev/null)" in
     *) fail "suppressing a wake must leave a trace" "$(tail -n1 "$T/jobs2/jobtest.log" 2>/dev/null)" ;;
 esac
 
-# ...and the guard must not silence the live path. Same runner, same fake crab,
-# but JOBS_DIR is the real one — so the wake attempt has to happen. Nothing is
-# written to the live directory: only the sidecar this test made is read.
-LIVE="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
-if [ -d "$LIVE" ]; then
-    cp "$T/jobs2/jobtest.json" "$LIVE/deskcrab-selftest-jobtest.json"
-    rm -f "$T/wakes"
-    run_runner "$LIVE" deskcrab-selftest-jobtest
-    grep -q "^WAKE: wake-at 5s event" "$T/wakes" 2>/dev/null \
-        && ok "the live jobs directory still fires its wake" \
-        || fail "the guard must not silence a real job" "$(cat "$T/wakes" 2>/dev/null)"
-    rm -f "$LIVE"/deskcrab-selftest-jobtest.*
-else
-    echo "  skip: no live jobs directory on this box"
-fi
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+# ...and the guard must not silence the instance's OWN jobs directory. Same
+# runner, same fake crab, but JOBS_DIR is now the one this instance calls its
+# own — the guard compares against ${XDG_DATA_HOME}/deskcrab/jobs — so the wake
+# attempt has to happen. Until 2026-08-07 this case copied its sidecar into the
+# REAL jobs directory and ran the stub builder against it, which is how a
+# refusal no account had ever said came to stamp the live block marker.
+LIVE="$XDG_DATA_HOME/deskcrab/jobs"
+mkdir -p "$LIVE"
+cp "$T/jobs2/jobtest.json" "$LIVE/deskcrab-selftest-jobtest.json"
+rm -f "$T/wakes"
+run_runner "$LIVE" deskcrab-selftest-jobtest
+grep -q "^WAKE: wake-at --by job-runner 5s event" "$T/wakes" 2>/dev/null \
+    && ok "the instance's own jobs directory still fires its wake" \
+    || fail "the guard must not silence a real job" "$(cat "$T/wakes" 2>/dev/null)"
+rm -f "$LIVE"/deskcrab-selftest-jobtest.*

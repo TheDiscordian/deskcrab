@@ -17,19 +17,18 @@
 #    once a WHOLE text block is generated, so the first word was spoken when
 #    the answer finished, not when it started. With --include-partial-messages
 #    the streamer speaks each sentence as it completes.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-speech.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
-
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
 # --- stub voice: records each utterance with the moment it was handed over --
-mkdir -p "$T/bin"
-cat > "$T/bin/piper-tts" <<'EOF'
+# The sandbox already keeps every one of these off the desk; what these two add
+# is the TIMING, which is the whole subject of this file. The trace is written
+# from OUTSIDE the streamer, so no assertion here trusts the pipeline's own
+# receipt or logs for what was said or when.
+sandbox_stub piper-tts <<'EOF'
 #!/usr/bin/env bash
 printf '%s\tSTART\n' "$(date +%s.%N)" >> "$TRACE"
 while IFS= read -r line || [ -n "$line" ]; do   # last line may be unterminated
@@ -37,17 +36,11 @@ while IFS= read -r line || [ -n "$line" ]; do   # last line may be unterminated
     head -c 2048 /dev/zero
 done
 EOF
-cat > "$T/bin/aplay" <<'EOF'
+sandbox_stub aplay <<'EOF'
 #!/usr/bin/env bash
 cat > /dev/null
 printf '%s\tPLAYED\n' "$(date +%s.%N)" >> "$TRACE"
 EOF
-# notify-send too: tts_verify_spoken announces a failed speech path, and an
-# unstubbed notify-send pops that announcement on the LIVE desktop every time
-# this suite runs — a test that cries wolf on his screen.
-printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/notify-send"
-chmod +x "$T/bin/piper-tts" "$T/bin/aplay" "$T/bin/notify-send"
-export PATH="$T/bin:$PATH"
 
 # --- run the streamer against a feeder, return the trace -------------------
 # stream <case> <feeder-body>. Sets START/TRACE/LOG for the case.
@@ -253,15 +246,13 @@ grep -q '^chars=0' "$RECEIPT" && ok "a silent turn leaves chars=0, not a missing
 
 echo
 echo "one stream log per session — nobody can truncate anybody:"
-cat > "$T/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 PIPER_VOICE=/dev/null
 WHISPER_MODEL=/nonexistent.bin
 PROJECT_DIR="$T"
 EOF
-run() { DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/st" JOBS_DIR="$T/jobs" \
-        DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 SPEECH_LOG="$T/st-speech.log" \
-        bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
-        _ "$REPO_DIR" "$1" 2>&1; }
+run() { DESKCRAB_NO_DISPATCH=1 SPEECH_LOG="$T/st-speech.log" \
+        sandbox_bash "$1" 2>&1; }
 L1=$(run 'echo "$DEBUGLOG"'); L2=$(run 'echo "$DEBUGLOG"')
 [ "$L1" != "$L2" ] && ok "two sessions get two different stream logs" \
     || fail "the stream log is still shared" "$L1"
@@ -306,7 +297,3 @@ out=$(TRACE="$TRACE" run '
     || fail "shutup was overruled" "$(cat "$TRACE")"
 out=$(run 'start_tts_streamer >/dev/null 2>&1; kill "$_TTS_STREAMER_PID" 2>/dev/null; [ -f "$SHUTUP_MARKER" ] && echo STALE || echo CLEARED')
 [ "$out" = CLEARED ] && ok "a new turn clears the shutup marker" || fail "stale shutup marker" "$out"
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]

@@ -24,34 +24,22 @@
 #
 # The stub piper/aplay below count utterances from OUTSIDE the streamer — the
 # assertions never trust the pipeline's own receipt or logs for the counts.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
-REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-dup.XXXXXX)"
-trap 'rm -rf "$T"' EXIT
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
 
-PASS=0 FAIL=0
-ok()   { PASS=$(( PASS + 1 )); echo "  ok: $1"; }
-fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $1 — got [$2]"; }
-
-# --- stub voice: records each utterance handed to piper ---------------------
-mkdir -p "$T/bin"
-cat > "$T/bin/piper-tts" <<'EOF'
+# --- stub voice: counts each utterance handed to piper ----------------------
+# From OUTSIDE the streamer, deliberately: every count below is a count of what
+# reached the synthesiser, never of what the pipeline said it sent.
+sandbox_stub piper-tts <<'EOF'
 #!/usr/bin/env bash
 while IFS= read -r line || [ -n "$line" ]; do
     printf 'SAY\t%s\n' "$line" >> "$TRACE"
     head -c 2048 /dev/zero
 done
 EOF
-cat > "$T/bin/aplay" <<'EOF'
-#!/usr/bin/env bash
-cat > /dev/null
-EOF
-# notify-send too: tts_verify_spoken announces a failed speech path, and an
-# unstubbed notify-send pops that announcement on the LIVE desktop.
-printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/notify-send"
-chmod +x "$T/bin/piper-tts" "$T/bin/aplay" "$T/bin/notify-send"
-export PATH="$T/bin:$PATH"
 
 start_streamer() { # <name>
     LOG="$T/$1.log"; TRACE="$T/$1.trace"; RECEIPT="$T/$1.receipt"
@@ -149,14 +137,13 @@ CHARS=$(sed -n 's/^chars=//p' "$RECEIPT" 2>/dev/null | head -1)
 
 echo
 echo "end to end: the verify guard does not replay a reply the dead streamer spoke:"
-cat > "$T/conf" <<EOF
+cat > "$DESKCRAB_CONF" <<EOF
 PIPER_VOICE=/dev/null
 WHISPER_MODEL=/nonexistent.bin
 PROJECT_DIR="$T"
 EOF
 TRACE="$T/e2e.trace"; : > "$TRACE"
-out=$(TRACE="$TRACE" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/st" \
-    JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
+out=$(TRACE="$TRACE" DESKCRAB_NO_DISPATCH=1 \
     SPEECH_LOG="$T/st-speech.log" bash -c '
     source "$1/lib/common.sh" >/dev/null 2>&1
     start_tts_streamer >/dev/null 2>&1
@@ -247,7 +234,3 @@ N=$(grep -c "truncated under me" "$SPEECHLOG" 2>/dev/null)
     || fail "the read counter must not be set from the file's size" "$N truncation lines"
 N=$(said_count "Filler 1.")
 [ "$N" = 1 ] && ok "and nothing in it is spoken twice" || fail "a growing log must speak once" "spoken $N times"
-
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
