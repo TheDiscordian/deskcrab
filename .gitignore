@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+.benchmarks/
+.pytest_cache/
