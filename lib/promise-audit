@@ -84,13 +84,42 @@ $(wants_titles "$WANTS_FILE")
 === THE EXCHANGE ===
 $EXCHANGE"
 
-# env "$CLAUDE_NO_AUTO_MEMORY": PROJECT_DIR's auto-memory belongs to the user's
-# own coding agent, and a one-question classifier has no use for it at all.
-# See the comment on CLAUDE_NO_AUTO_MEMORY in lib/common.sh.
-VERDICT="$(cd "$PROJECT_DIR" 2>/dev/null || cd /; printf '%s' "$PROMPT" \
-    | timeout 120 env "$CLAUDE_NO_AUTO_MEMORY" \
-      "$CLAUDE_BIN" -p --model "$AUDIT_MODEL" --dangerously-skip-permissions 2>/dev/null \
-    | tr -d '\r' | grep -m1 '^UNSAVED:')"
+# Through claude_classify, and through the ACCOUNT CHAIN.
+#
+# Two things were wrong with the run this replaces. It booted a whole desktop
+# session — MCP servers, the skills catalogue, the project's own listings, some
+# forty thousand tokens — to answer one question with one line, and there are
+# more audits in a day than there are turns. And it invoked the CLI with no
+# CLAUDE_CONFIG_DIR at all, so when the chain had moved off a dry primary this
+# auditor went straight back to it, collected the refusal, and exited 0 with
+# `2>/dev/null` swallowing the evidence: the want he had just stated was
+# silently never flagged. specs/account-fallback.md rules 17 and 29;
+# specs/prompt-assembly.md's classify profile.
+#
+# Each account is tried in the chain's own order and a refusal moves the
+# durable default exactly as it does everywhere else, so the auditor pays its
+# share of finding the login that answers instead of riding on other paths.
+VERDICT=""
+for ACCT in $(claude_accounts); do
+    CONFDIR="$(claude_account_confdir "$ACCT")"
+    OUT="$(printf '%s' "$PROMPT" | (
+        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
+        else unset CLAUDE_CONFIG_DIR; fi
+        CLAUDE_CLASSIFY_TIMEOUT="${PROMISE_AUDIT_TIMEOUT:-120}" \
+            claude_classify "$AUDIT_MODEL" \
+                "Answer with exactly one line and nothing else." 2>/dev/null
+    ) | tr -d '\r')"
+    VERDICT="$(printf '%s\n' "$OUT" | grep -m1 '^UNSAVED:')"
+    [ -n "$VERDICT" ] && break
+    # A refusal is not a verdict of NONE. Judged on the CLI's own words, the
+    # same way every other caller judges one, and it moves to the next login
+    # rather than reporting an audit that never happened as an audit that found
+    # nothing.
+    printf '%s' "$OUT" | grep -qiE "$CLAUDE_LIMIT_RE" || break
+    audit_log "refused by ${CONFDIR:-primary} — trying the next login"
+    claude_limit_record "$CONFDIR" \
+        "$(printf '%s' "$OUT" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
+done
 
 if [ -z "$VERDICT" ]; then
     audit_log "NONE"
