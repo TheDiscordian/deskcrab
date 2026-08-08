@@ -1905,12 +1905,23 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     local suffix="$1"; shift
     local unit="deskcrab-${suffix}-$(date +%s)-$$"
     systemctl --user reset-failed "$unit.service" 2>/dev/null
+    # The login goes with them. These children — the promise auditor and the
+    # memory judge — invoke the CLI themselves, and a unit gets a bare
+    # environment, so every one of them fired at whatever login the manager
+    # happened to have and failed silently when that account was the dry one.
+    # Forwarded ONLY when it is actually set: passing it empty is not the same
+    # as not passing it, and a unit running with the variable defined-but-blank
+    # makes the CLI look for a login in "" and die in one second (the same
+    # mistake that killed every dispatched job for a day).
+    local -a acctenv=()
+    [ -n "${CLAUDE_CONFIG_DIR:-}" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR")
     if systemd-run --user --collect --quiet --unit="$unit" \
             --setenv=PATH="$HOME/.local/bin:$PATH" \
             --setenv=DESKCRAB_CONF="$CONF_FILE" \
             --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
             --setenv=DESKCRAB_MEMORY_DIR="${DESKCRAB_MEMORY_DIR:-}" \
             --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+            "${acctenv[@]}" \
             "$@" >/dev/null 2>&1; then
         return 0
     fi
@@ -2613,6 +2624,17 @@ spawn_display_window() {  # <displayfile>
 # is talking now.
 claim_debuglog() {
     : > "$DEBUGLOG"
+    # First line of every stream: which session this is, written before a
+    # single model byte. The viewer keys a stream by its inode and labels it
+    # from the session registry, and a stream that starts by naming itself
+    # survives the registry entry going away when the session ends — a log
+    # still being drained after its session exited would otherwise fall back to
+    # the class label ("desk") shared by every other stream on screen.
+    # Deliberately the same deskcrab_note shape claude_stream_note uses, which
+    # every reader of this log already skips by construction, and deliberately
+    # carrying no refusal text.
+    printf '{"type":"deskcrab_note","note":"session","detail":"%s pid %s","at":"%s"}\n' \
+        "${SESSION_KIND:-session}" "$$" "$(date '+%H:%M:%S')" >> "$DEBUGLOG" 2>/dev/null
     ln -sfn "$DEBUGLOG" "$DEBUGLOG_LATEST" 2>/dev/null || true
     # A session's own log is small; the leftovers of dead ones still add up.
     find "$(dirname "$DEBUGLOG")" -maxdepth 1 \

@@ -27,12 +27,21 @@ source "$SCRIPT_DIR/lib/common.sh"
 mkdir -p "$JOBS_DIR"
 LOG="$JOBS_DIR/$ID.log"
 STATUS="$JOBS_DIR/$ID.json"
+# The stream the live viewer follows. A job used to run with no stream format at
+# all, writing plain text to a log outside every glob the viewer looks at, so
+# the longest-running and least supervised work in the system was the one piece
+# of it nobody could watch. It writes here in the stream format, under the
+# prefix crab-debug globs, and $LOG stays exactly what it has always been: the
+# human report, which is what the completion wake tells her to read and what the
+# day journal keeps.
+STREAMLOG="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-debug-job-$ID.log"
+: > "$STREAMLOG"
 TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 [ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
 
 # The pid and its start time let `crab jobs` tell a hard-killed job from a
 # running one — a SIGKILLed worker never gets to write its own outcome.
-"$LIB_DIR/job-status" set "$STATUS" pid=$$ pidstart="$(_proc_starttime $$)"
+"$LIB_DIR/job-status" set "$STATUS" pid=$$ pidstart="$(_proc_starttime $$)" stream="$STREAMLOG"
 # systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
 # Without it a deliberately stopped job would look identical to a crashed one.
 # The day journal gets the stop too, with whatever log the job managed to write.
@@ -82,9 +91,9 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 # starts past it too.
 #
 # ATT_OFF marks where the current attempt's output begins: every judgement below
-# reads only the final attempt's slice of the log, so an earlier attempt's
+# reads only the final attempt's slice of the STREAM, so an earlier attempt's
 # refusal kept as history can never masquerade as the last one's outcome.
-ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
 RC=0
 ATTEMPT=0
 for ACCT in $(claude_accounts); do
@@ -97,7 +106,7 @@ for ACCT in $(claude_accounts); do
             echo "job-runner: login refused (limit) — retrying via CLAUDE_CONFIG_DIR=$CONFDIR" >> "$LOG"
         fi
     fi
-    ATT_OFF=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+    ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
     (
         # "The primary login" is the ABSENCE of the variable, not whatever the
         # environment arrived holding — and a job dispatched from a turn that
@@ -108,14 +117,24 @@ for ACCT in $(claude_accounts); do
         else unset CLAUDE_CONFIG_DIR; fi
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
+            --verbose --output-format stream-json \
             --append-system-prompt "$SYS" \
-            "$TASK" >> "$LOG" 2>&1
+            "$TASK" >> "$STREAMLOG" 2>&1
     )
     RC=$?
+    # This attempt, turned back into prose for $LOG. A line that is not JSON is
+    # standard error or the CLI's own usage complaint, and a turn that died on a
+    # bad flag must not read as a turn that said nothing — those lines are kept
+    # verbatim, ahead of whatever the model actually wrote.
+    ATTSLICE="$(mktemp "${TMPDIR:-/tmp}/deskcrab-jobatt-XXXXXX")"
+    tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" > "$ATTSLICE" 2>/dev/null
+    grep -vE '^[[:space:]]*(\{|$)' "$ATTSLICE" >> "$LOG" 2>/dev/null
+    DESKCRAB_DEBUGLOG="$ATTSLICE" "$LIB_DIR/extract-response" >> "$LOG" 2>/dev/null
+    rm -f "$ATTSLICE"
     [ "$RC" -ne 0 ] || break
-    tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -qiE "$CLAUDE_LIMIT_RE" || break
+    tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -qiE "$CLAUDE_LIMIT_RE" || break
     claude_limit_record "$CONFDIR" \
-        "$(tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
+        "$(tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
 done
 trap - TERM
 
@@ -132,9 +151,9 @@ STATE=finished
 # holding nothing but a refusal — and leaves the standing dispatch policy free
 # to send the next builder into the same wall.
 BLOCKED=""
-if [ "$RC" -ne 0 ] && tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -qiE "$CLAUDE_LIMIT_RE"; then
+if [ "$RC" -ne 0 ] && tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -qiE "$CLAUDE_LIMIT_RE"; then
     STATE=blocked
-    BLOCKED="$(tail -c +$(( ATT_OFF + 1 )) "$LOG" | grep -ihoE "$CLAUDE_LIMIT_RE" | head -n1)"
+    BLOCKED="$(tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" | grep -ihoE "$CLAUDE_LIMIT_RE" | head -n1)"
     job_block_record "${BLOCKED:-the CLI refused to run}"
 fi
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
