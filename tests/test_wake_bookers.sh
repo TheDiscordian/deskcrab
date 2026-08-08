@@ -211,6 +211,17 @@ case "$out" in
 esac
 check_eq "the excess was drained, not merely gated" \
     "$(awk -F'\t' 'FNR == 1 && $5 == "promise-audit"' "$W"/*.wake 2>/dev/null | wc -l)" "3"
+# WHICH three, and it is the whole point of draining. The ones to let go are
+# the ones that would have come back LAST: a queue over its cap loses its far
+# end, never its near end. Drained the other way round, the cap cancels the
+# work about to happen and keeps five hours of stale promises — the exact
+# inversion of what a cap is for.
+survivors() {
+    awk -F'\t' 'FNR == 1 && $5 == "promise-audit" { print $3 }' "$W"/*.wake 2>/dev/null \
+        | sort | tr '\n' ' ' | sed 's/ $//'
+}
+check_eq "the three that survive are the NEAREST, at one, two and three hours" \
+    "$(survivors)" "promise number 1 promise number 2 promise number 3"
 check_eq "another booker's wake is untouched by that cap" \
     "$(ls "$W/deskcrab-wake-other.wake" 2>/dev/null | wc -l)" "1"
 check_eq "every drained booking is on the ledger" "$(led_count cancelled)" "2"

@@ -414,10 +414,15 @@ _wake_cap_admits() {  # <booked-by> <cap>
     local by="$1" cap="$2" now f u n=0 _line
     case "$cap" in ''|*[!0-9]*) return 0 ;; esac
     now=$(date +%s)
-    # Furthest-out first: if the queue is over its cap, the ones to let go are
-    # the ones that would have come back last. The verdict that booked each of
-    # them is already in the auditor's own log, so a drained booking loses the
-    # alarm clock and nothing else.
+    # SOONEST FIRST, so that the ones past the cap — the tail of this list —
+    # are the ones that would have come back LAST. A queue over its cap loses
+    # its far end and keeps the work about to happen. The verdict that booked
+    # each of them is already in the auditor's own log, so a drained booking
+    # loses the alarm clock and nothing else.
+    #
+    # The sort was descending here, which drained the queue from exactly the
+    # wrong end: the wake five hours out survived and the one due in an hour
+    # was cancelled, over and over, for as long as the auditor kept booking.
     local -a doomed=()
     while IFS= read -r _line; do
         _split_tabs "$_line"; unit="${_TF[1]:-}"
@@ -431,7 +436,7 @@ _wake_cap_admits() {  # <booked-by> <cap>
                  [ "$WK_FIRE" -gt "$now" ] || continue
                  u="${f##*/}"
                  printf '%s\t%s\n' "$WK_FIRE" "${u%.wake}"
-             done | sort -rn)
+             done | sort -n)
     local u
     for u in ${doomed[@]+"${doomed[@]}"}; do
         _wake_cancel_one "$u" "$by cap drain"

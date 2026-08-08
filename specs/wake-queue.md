@@ -117,7 +117,9 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     the list is complete flags everything.
 44. Any cap on the number of pending wakes a booker may hold MUST be counted from the records under
     the booking lock, and MUST **drain** as well as gate. A cap that only gates new bookings lets a
-    queue five times its own size stand for hours.
+    queue five times its own size stand for hours. The drain MUST let go of the **furthest-out**
+    bookings and keep the nearest: draining from the near end cancels the work about to happen and
+    keeps hours of stale promises, which is the inversion of what a cap is for.
 
 ## DATA
 
