@@ -236,9 +236,19 @@ sandbox_bash() {
         _ "$SANDBOX_REPO" "$*"
 }
 
+# Matching lines, as ONE number. `grep -c ... || echo 0` is not that: on zero
+# matches grep prints its own 0 AND exits 1, so the fallback fires as well and
+# the answer comes back as the two lines "0" and "0" — which no comparison,
+# no -eq and no reader survives. Absence is asserted by counting, so a count
+# has to be a number whether the file is missing, empty, or simply has no
+# match. Two test files had already written this helper for themselves.
+sandbox_count_in() {  # <pattern> <file>
+    local n; n="$(grep -c -- "$1" "$2" 2>/dev/null)"; printf '%s' "${n:-0}"
+}
+
 # What the schedule gate saw. A booking attempt is recorded, never armed.
 sandbox_systemd_calls() { cat "$SANDBOX_SYSTEMD_LOG" 2>/dev/null; }
-sandbox_systemd_count() { grep -c . "$SANDBOX_SYSTEMD_LOG" 2>/dev/null || echo 0; }
+sandbox_systemd_count() { sandbox_count_in . "$SANDBOX_SYSTEMD_LOG"; }
 # What a booking attempt returns. 0 (a timer was accepted) by default; a test
 # that needs the caller's cannot-defer branch sets 1.
 sandbox_systemd_rc() { printf '%s' "$1" > "$SANDBOX/witness/systemd-run.rc"; }
@@ -278,14 +288,13 @@ _sandbox_photo_after() {
         2>/dev/null | LC_ALL=C sort > "$SANDBOX/leak/after.timers"
 }
 
-# One live path is written by SHIPPING CODE, not by any test: synth_opus writes
-# the phone's audio to a hardcoded /tmp/deskcrab-remote-*.opus (lib/common.sh
-# :1684, :2768) and the hourly sweep at :2784 deletes every one of them older
-# than an hour, live instance's included. No knob redirects it, so any test that
-# drives a phone turn lands there. The sweep below removes what this run created
-# — live state ends the run as it started it — and says so out loud every time,
-# because a quietly tolerated leak is how the last one lived for a month. It
-# only ever removes files that did not exist before the test ran.
+# A backstop, and no longer a known defect: the phone's reply audio used to go
+# to a hardcoded /tmp/deskcrab-remote-*.opus with no knob to redirect it, so any
+# test that drove a phone turn wrote a live path. It hangs off STATE_PREFIX now,
+# and a scratch instance writes its clips inside its own root, so this sweep
+# should find nothing. It stays because finding nothing is cheap and because it
+# only ever removes files that did not exist before the test ran — live state
+# ends the run as it started it, whatever a future path does.
 _sandbox_sweep_known_defect() {
     local path rest
     while IFS=$'\t' read -r path rest; do
@@ -297,9 +306,9 @@ _sandbox_sweep_known_defect() {
         rm -f "$path" 2>/dev/null && cat <<NOTE
 
   NOTE: shipping code wrote a live path — $path
-        synth_opus hardcodes /tmp/deskcrab-remote-*.opus (lib/common.sh:2768)
-        and no environment knob redirects it. Removed, so this run leaves live
-        state as it found it. That is a defect in the code, not in this test.
+        The phone's reply audio is supposed to hang off STATE_PREFIX. Removed,
+        so this run leaves live state as it found it, but something has put a
+        hardcoded path back and that is a defect in the code, not in this test.
 NOTE
     done < <(comm -13 "$SANDBOX/leak/before" "$SANDBOX/leak/after.raw" 2>/dev/null)
 }

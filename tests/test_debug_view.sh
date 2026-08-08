@@ -32,7 +32,10 @@ set -u
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 VIEWER="${DESKCRAB_DEBUG_BIN:-$REPO_DIR/crab-debug}"
-T="$(mktemp -d /tmp/deskcrab-dbgview.XXXXXX)"
+# NOT /tmp/deskcrab-*: that is the live instance's prefix, which the sandbox
+# leak check photographs, so a scratch root there reads as a live path moving
+# under some innocent test running beside this one.
+T="$(mktemp -d "${TMPDIR:-/tmp}/crabdbgview-XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 PASS=0 FAIL=0

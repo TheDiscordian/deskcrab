@@ -30,7 +30,6 @@ crab() { WAKES_DIR="$W" "$REPO/crab" "$@" 2>&1; }
 records() { ls "$W"/*.wake 2>/dev/null | wc -l; }
 field() { [ -s "$W/$1.wake" ] || return 0; awk -F'\t' -v n="$2" 'NR == 1 { print $n }' "$W/$1.wake"; }
 nfields() { [ -s "$W/$1.wake" ] || return 0; awk -F'\t' 'NR == 1 { print NF }' "$W/$1.wake"; }
-count_in() { local n; n="$(grep -c -- "$1" "$2" 2>/dev/null)"; printf '%s' "${n:-0}"; }
 led_count() { awk -F'\t' -v a="$1" '$2 == a { n++ } END { print n + 0 }' "$W/ledger.log" 2>/dev/null || echo 0; }
 unit_of() { local f; f="$(ls -1 "$W"/*.wake 2>/dev/null | head -1)"; f="${f##*/}"; printf '%s' "${f%.wake}"; }
 
@@ -136,7 +135,7 @@ check_eq "and the deferral keeps the provenance it arrived with" \
 check_eq "the deferral is on the ledger like any other booking" \
     "$(led_count booked)" "1"
 check_eq "no model session was started by a deferred wake" \
-    "$(count_in . "$SANDBOX_CLAUDE_LOG")" "0"
+    "$(sandbox_count_in . "$SANDBOX_CLAUDE_LOG")" "0"
 
 echo
 echo "...and the deferred wake satisfies the floor, so nothing books on top of it:"

@@ -103,7 +103,10 @@ set -u
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 CASES_DIR="$REPO_DIR/tests/prompt-cases"
-T="$(mktemp -d /tmp/deskcrab-promptcases.XXXXXX)"
+# NOT /tmp/deskcrab-*: that is the live instance's prefix, which the sandbox
+# leak check photographs, so a scratch root there reads as a live path moving
+# under some innocent test running beside this one.
+T="$(mktemp -d "${TMPDIR:-/tmp}/crabpromptcases-XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 MODE="${PROMPT_CASES_MODE:-assembly}"

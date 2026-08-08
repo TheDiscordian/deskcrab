@@ -47,17 +47,12 @@ records() { ls "$W"/*.wake 2>/dev/null | wc -l; }
 # Ledger line: epoch, action, unit, kind, reason, actor.
 led_count() { awk -F'\t' -v a="$1" '$2 == a { n++ } END { print n + 0 }' "$W/ledger.log" 2>/dev/null || echo 0; }
 led_actor() { awk -F'\t' -v a="$1" -v u="$2" '$2 == a && $3 == u { print $6; exit }' "$W/ledger.log" 2>/dev/null; }
-# Matching lines, as ONE number. `grep -c || echo 0` is not that: grep prints
-# its own 0 and exits 1, so the fallback fires as well and the answer is two
-# lines. Every absence assertion in this file is a count, so the count has to
-# be a number whether the file is missing, empty, or simply has no match.
-count_in() { # <pattern> <file>
-    local n; n="$(grep -c -- "$1" "$2" 2>/dev/null)"; printf '%s' "${n:-0}"
-}
 # What the schedule gate saw, per unit. Counted, never grep -q: "it booked
-# something" and "it booked exactly this one thing" are different claims.
-armed() { count_in "$1" "$SANDBOX_SYSTEMD_LOG"; }
-attempts() { count_in . "$SANDBOX_SYSTEMD_LOG"; }
+# something" and "it booked exactly this one thing" are different claims. The
+# counting itself is the harness's (sandbox_count_in) — this file wrote its own
+# because the harness's own count was the two-line one.
+armed() { sandbox_count_in "$1" "$SANDBOX_SYSTEMD_LOG"; }
+attempts() { sandbox_systemd_count; }
 clean() { rm -f "$W"/*.wake "$W/ledger.log"; : > "$SANDBOX_SYSTEMD_LOG"; }
 
 NOW="$(date +%s)"
