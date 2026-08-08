@@ -76,10 +76,10 @@ case "${1:-}" in
         # The default login leads the report: which account answers next is
         # exactly the state that used to be invisible while builders walked a
         # dry chain and every explanation was a guess.
-        ACCT_DEFAULT="$(claude_account_default)"
-        [ "$ACCT_DEFAULT" = "$CLAUDE_PRIMARY_TOKEN" ] && ACCT_DEFAULT="primary"
-        ACCT_WHY="$(head -n1 "$ACCOUNT_DEFAULT_FILE" 2>/dev/null | cut -f3)"
-        echo "Account default: $ACCT_DEFAULT${ACCT_WHY:+ ($ACCT_WHY)}"
+        # One implementation of the account line, shared with the prompt block.
+        # `crab status` having its own copy while the prompt had none is how
+        # she came to be the last one to know which login was answering.
+        account_state_line
         self_state_report
         exit 0
         ;;

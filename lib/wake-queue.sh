@@ -89,14 +89,36 @@ _wake_norm() {  # <kind> <reason>  -> WK_N_KIND, WK_N_REASON
     WK_N_KIND="$k"; WK_N_REASON="$r"
 }
 
+# Split a tab-separated line WITHOUT losing empty fields.
+#
+# `IFS=$'\t' read -r a b c d e` cannot do this: a tab is IFS *whitespace*, and
+# bash collapses runs of IFS whitespace into one delimiter. A record with an
+# empty reason — every "come back to the wants" booking has one — therefore
+# read back with the booked-at in the reason column and the provenance in the
+# booked-at column. It never showed before because the reason used to be the
+# LAST field, where `read` hands over the remainder untouched.
+_split_tabs() {  # <line>  -> _TF[]
+    local line="$1"
+    _TF=()
+    while :; do
+        case "$line" in
+            *$'\t'*) _TF+=("${line%%$'\t'*}"); line="${line#*$'\t'}" ;;
+            *) _TF+=("$line"); break ;;
+        esac
+    done
+}
+
 # Read one record into WK_FIRE / WK_KIND / WK_REASON / WK_BOOKED_AT /
 # WK_BOOKED_BY. Tolerant of the three-field shape: the missing fields become
 # "unknown", never a shift of the fields that ARE there.
 wake_record_read() {  # <record path>
     WK_FIRE=""; WK_KIND=""; WK_REASON=""; WK_BOOKED_AT=""; WK_BOOKED_BY=""
     [ -s "$1" ] || return 1
-    local fire kind reason at by
-    IFS=$'\t' read -r fire kind reason at by < "$1"
+    local line fire kind reason at by
+    IFS= read -r line < "$1"
+    _split_tabs "$line"
+    fire="${_TF[0]:-}"; kind="${_TF[1]:-}"; reason="${_TF[2]:-}"
+    at="${_TF[3]:-}"; by="${_TF[4]:-}"
     case "${fire:-}" in ''|*[!0-9]*) return 1 ;; esac
     _wake_norm "$kind" "$reason"
     WK_FIRE="$fire"; WK_KIND="$WK_N_KIND"; WK_REASON="$WK_N_REASON"
@@ -389,7 +411,7 @@ _wake_book_locked() {  # <by> <cap> <when> [kind] [reason]
 # The cap, counted from the records under the booking lock, draining first.
 # Returns 0 when there is room for one more.
 _wake_cap_admits() {  # <booked-by> <cap>
-    local by="$1" cap="$2" now f n=0
+    local by="$1" cap="$2" now f u n=0 _line
     case "$cap" in ''|*[!0-9]*) return 0 ;; esac
     now=$(date +%s)
     # Furthest-out first: if the queue is over its cap, the ones to let go are
@@ -397,7 +419,8 @@ _wake_cap_admits() {  # <booked-by> <cap>
     # them is already in the auditor's own log, so a drained booking loses the
     # alarm clock and nothing else.
     local -a doomed=()
-    while IFS=$'\t' read -r _ unit _; do
+    while IFS= read -r _line; do
+        _split_tabs "$_line"; unit="${_TF[1]:-}"
         [ -n "$unit" ] || continue
         n=$(( n + 1 ))
         [ "$n" -gt "$cap" ] && doomed+=("$unit")
@@ -407,7 +430,7 @@ _wake_cap_admits() {  # <booked-by> <cap>
                  [ "$WK_BOOKED_BY" = "$by" ] || continue
                  [ "$WK_FIRE" -gt "$now" ] || continue
                  u="${f##*/}"
-                 printf '%s\t%s\t\n' "$WK_FIRE" "${u%.wake}"
+                 printf '%s\t%s\n' "$WK_FIRE" "${u%.wake}"
              done | sort -rn)
     local u
     for u in ${doomed[@]+"${doomed[@]}"}; do
@@ -440,6 +463,7 @@ wake_list() {
     _wake_load_unit_states
     local f unit st u base nexts=""
     {
+        # The records, soonest first.
         for f in "$WAKES_DIR"/*.wake; do
             [ -e "$f" ] || continue
             wake_record_read "$f" || continue
@@ -454,7 +478,7 @@ wake_list() {
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "$WK_FIRE" "$unit" "${WK_KIND:-scheduled}" "$WK_REASON" \
                 "$WK_BOOKED_AT" "$WK_BOOKED_BY" "$st"
-        done
+        done | sort -n
         # Timers nothing remembers, and the standing background timer. Both
         # only ever need the next-elapse table, so it is built at most once.
         for u in "${!_WAKE_UNIT_STATE[@]}"; do
@@ -473,7 +497,7 @@ wake_list() {
                     "$(_wake_next_epoch deskcrab-wake.timer "$nexts")" \
                     "the standing random-interval wake" ;;
         esac
-    } | sort -n
+    }
 }
 
 # The moment a record-less timer fires, from the next-elapse table. 0 when

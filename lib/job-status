@@ -4,15 +4,24 @@
 Each job is one small JSON file <id>.json beside its log <id>.log:
     {id, description, started, started_epoch, unit, state,
      pid, pidstart, finished, finished_epoch, exit}
-state: running | finished | failed | stopped | died
+state: running | finished | failed | stopped | died | blocked
+       blocked is a run that never began — the CLI refused before any work was
+       attempted — and it is deliberately not the same outcome as failed.
 
     job-status new <dir> <id> <description> <unit>
     job-status set <file> key=value [key=value ...]
     job-status get <file> <key>
     job-status report <dir> [show-finished] [keep-days] [--live] [--failed-since EPOCH]
+    job-status since <dir> <epoch>
 
 `set` coerces digit values to ints, treats the value "now" as a timestamp
 (writing both <key> and <key>_epoch), and an empty value as "remove the key".
+
+`since` is the state block's delta: how many jobs were dispatched after an
+epoch and how many of them ended badly, as one phrase, printing nothing at all
+when neither happened. The block leads every list with a count, and a job
+dispatched between two turns is exactly the work a later turn must be able to
+report without having started it.
 
 `report` prints one line per job — running first, recent finishes last — and
 reaps on the way: a file still claiming "running" whose unit is inactive and
@@ -224,8 +233,40 @@ def cmd_report(argv):
     print("\n".join(lines) if lines else "  (none)")
 
 
+def cmd_since(argv):
+    """Dispatched and badly-ended counts since an epoch, as one phrase."""
+    d = argv[0]
+    try:
+        cut = int(argv[1])
+    except (IndexError, ValueError):
+        return
+    started = ended = 0
+    if os.path.isdir(d):
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, name)) as f:
+                    job = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if job.get("started_epoch", 0) >= cut:
+                started += 1
+            if (job.get("state") in ("failed", "died", "blocked", "stopped")
+                    and job.get("finished_epoch", 0) >= cut):
+                ended += 1
+    parts = []
+    if started:
+        parts.append("%d job%s dispatched" % (started, "" if started == 1 else "s"))
+    if ended:
+        parts.append("%d ended badly" % ended)
+    if parts:
+        print(", ".join(parts))
+
+
 def main():
-    cmds = {"new": cmd_new, "set": cmd_set, "get": cmd_get, "report": cmd_report}
+    cmds = {"new": cmd_new, "set": cmd_set, "get": cmd_get,
+            "report": cmd_report, "since": cmd_since}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         sys.exit(__doc__.strip())
     try:
