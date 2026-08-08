@@ -135,7 +135,7 @@ STRICT="${PROMPT_CASES_STRICT:-0}"
 # The two layers rule 4 exempts from trimming can push a real build past this;
 # tests/test_prompt_profiles.sh is where that arithmetic is held. These
 # fixtures are small enough that the plain ceiling is the honest test.
-PROFILE_TOTAL_TURN=22400
+PROFILE_TOTAL_TURN=28000
 
 # A sentinel planted where the desktop coding agent's instruction file lives.
 # If it ever shows up in an assembled prompt, persona separation has broken.

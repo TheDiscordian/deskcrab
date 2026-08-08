@@ -177,6 +177,15 @@ REMOTE_AUDIO_PREFIX="${REMOTE_AUDIO_PREFIX:-${STATE_PREFIX}-remote-}"
 CONVOFILE="${STATE_PREFIX}-convo.txt"
 CONVOLOCK="${STATE_PREFIX}-convo.lock"
 SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
+# The rotation seam. A rotation archives the transcript and deletes it, and the
+# next prompt used to open on an empty conversation layer that read exactly
+# like nothing had ever been said. This marker is the difference: written only
+# at the end of a rotation that verifiably succeeded, it holds when the
+# archived record ended and whether a summary went with it, and the layer
+# renders it as one line. Replaced only by the next rotation, deleted by
+# nothing — a new conversation starting does not erase the fact an old one
+# ended.
+SEAMFILE="${STATE_PREFIX}-convo-seam.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
 # of the worst silence in this thing. A wake firing beside a desktop turn ran
@@ -1344,7 +1353,7 @@ rotate_convo() {
 
 _rotate_convo_locked() {
     [ -f "$CONVOFILE" ] || return 0
-    local LAST_MOD NOW STAMP DEST N
+    local LAST_MOD NOW STAMP DEST N HAD_SUMMARY=no
     LAST_MOD=$(stat -c %Y "$CONVOFILE" 2>/dev/null) || return 0
     NOW=$(date +%s)
     (( NOW - LAST_MOD >= CONVO_TIMEOUT )) || return 0
@@ -1367,9 +1376,25 @@ _rotate_convo_locked() {
     if [ -f "$SUMMARYFILE" ]; then
         _archive_verified "$SUMMARYFILE" "${DEST%.txt}-summary.txt" || return 1
         rm -f "$SUMMARYFILE"
+        HAD_SUMMARY=yes
     fi
     _archive_verified "$CONVOFILE" "$DEST" || return 1
     rm -f "$CONVOFILE"
+
+    # Only now, with the archive proven and the originals gone, mark the seam:
+    # the next prompt says the record restarted and when the old one ended,
+    # instead of opening on an emptiness indistinguishable from nothing ever
+    # having been said. Written under a temporary name and renamed, so a prompt
+    # assembling mid-rotation never reads it half-written. Every failure path
+    # above returned before reaching this line, so a rotation that failed
+    # leaves whatever marker the last successful one wrote.
+    if printf 'ended=%s\nsummary=%s\n' "$LAST_MOD" "$HAD_SUMMARY" \
+            > "$SEAMFILE.tmp.$$" 2>/dev/null; then
+        mv "$SEAMFILE.tmp.$$" "$SEAMFILE" 2>/dev/null || rm -f "$SEAMFILE.tmp.$$"
+    else
+        rm -f "$SEAMFILE.tmp.$$"
+    fi
+    return 0
 }
 
 # L6 of the prompt: the conversation, summary first, live blocks after, under a
@@ -1385,12 +1410,47 @@ _rotate_convo_locked() {
 # summary at CONVO_MAX_TURNS, and this is only what gets rendered into one
 # prompt.
 build_convo_context() {  # [byte cap, 0 = uncapped]
-    local CAP="${1:-0}" OUT="" BODY="" NOTE=""
-    [ -s "$CONVOFILE" ] || [ -s "$SUMMARYFILE" ] || return 0
+    local CAP="${1:-0}" OUT="" BODY="" NOTE="" SEAM="" SEAM_END="" SEAM_SUM="" SEAM_STAMP=""
+    # The rotation seam, read tolerantly. The marker is only ever written whole
+    # by a rotation that succeeded, but a prompt build must survive anything on
+    # disk: a marker this cannot parse costs the line and nothing else. The end
+    # stamp is rendered in the block headers' own format, with no relative
+    # wording — she does the arithmetic against the clock herself, exactly as
+    # she does for block stamps.
+    if [ -f "$SEAMFILE" ]; then
+        SEAM_END="$(sed -n 's/^ended=//p' "$SEAMFILE" 2>/dev/null | head -n1)"
+        SEAM_SUM="$(sed -n 's/^summary=//p' "$SEAMFILE" 2>/dev/null | head -n1)"
+        case "$SEAM_END" in
+            ''|*[!0-9]*) ;;
+            *)
+                SEAM_STAMP="$(date -d "@$SEAM_END" '+%Y-%m-%d %H:%M' 2>/dev/null)" || SEAM_STAMP=""
+                if [ -n "$SEAM_STAMP" ]; then
+                    SEAM="This record starts fresh: the previous conversation ended at $SEAM_STAMP and was archived"
+                    if [ "$SEAM_SUM" = "yes" ]; then
+                        SEAM="$SEAM; its earlier turns had already been condensed before it was archived."
+                    else
+                        SEAM="$SEAM."
+                    fi
+                fi
+                ;;
+        esac
+    fi
+    # A seam with nothing after it is still a layer: right after a rotation,
+    # before anything new is said, the preamble and the seam line are exactly
+    # what stops an empty record reading as "nothing has ever been said".
+    [ -s "$CONVOFILE" ] || [ -s "$SUMMARYFILE" ] || [ -n "$SEAM" ] || return 0
 
     OUT="THE CONVERSATION SO FAR — the record of WHAT WAS SAID, and it is authoritative for what was said and promised. For that and nothing else: what is running, what is scheduled and what was dispatched belong to the state block above, and most of what is scheduled was never typed into this conversation at all. A command's output never overrides these words — a clean search does not mean a thing you can read yourself writing here never happened — and when a search and this record disagree, say that they disagree rather than quietly picking the search.
 Each block is headed with the local time it was said, 'User [2026-08-07 12:01]:'. Read them: they are how you tell a minute ago from this morning. Compare them against the time given above, and say 'a few minutes ago' or 'about two hours ago' rather than reading a stamp aloud. A block with no stamp is older than this record kept one — you know only that it came before the stamped ones.
 A block marked '(autonomous wake)' in its header is one you wrote to yourself while nobody was talking to you. It is not something he has read and it is not part of what he said: never continue its subject, defend it, or treat it as a thing he is replying to, unless he raises it himself."
+
+    # The seam sits directly under the preamble, above the condensed summary
+    # and the blocks: one line, never two.
+    if [ -n "$SEAM" ]; then
+        OUT="$OUT
+
+$SEAM"
+    fi
 
     if [ -s "$SUMMARYFILE" ]; then
         OUT="$OUT
@@ -1781,7 +1841,15 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
     v="${!ovr:-}"
     if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
     case "$k:$p" in
-        L1:turn) v=4000 ;;  L1:wake) v=3500 ;;  L1:job) v=800 ;;
+        # L1 fits the WHOLE persona sheet on both her speaking paths. The
+        # earlier 4,000/3,500 were sized before the sheet was measured, and
+        # _persona_fit answered by dropping whole sections — a wake ran with
+        # no tsundere, no mannerisms, two mentions of her own name, and every
+        # (quiet) note and moment it wrote came out in nobody's voice. Wakes
+        # are not work sessions to slim: they are her private life, and their
+        # output is what the nightly sleep ingests into who she becomes. The
+        # tokens this buys back are the cheapest personality on the machine.
+        L1:turn) v=9600 ;;  L1:wake) v=9600 ;;  L1:job) v=800 ;;
         L2:turn|L2:wake) v=1500 ;;
         L3:turn|L3:wake) v=3200 ;;
         L4:turn|L4:wake) v=2000 ;;

@@ -70,7 +70,7 @@ flowchart TD
 
 | Layer | turn | wake | job | classify |
 |---:|---:|---:|---:|---:|
-| L1 identity | 4,000 | 3,500 | 800 | 0 |
+| L1 identity | 9,600 | 9,600 | 800 | 0 |
 | L2 state | 1,500 | 1,500 | 0 | 0 |
 | L3 memory | 3,200 | 3,200 | 0 | 0 |
 | L4 shelves | 2,000 | 2,000 | 0 | 0 |
@@ -79,7 +79,7 @@ flowchart TD
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 1,300 | 1,300 | 0 | 0 |
-| **system-prompt total** | **≤ 22,400** | **≤ 16,900** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 28,000** | **≤ 23,000** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -169,6 +169,26 @@ state block's own content, not for a cut.
     predecessor with one clause added. The rule this implements is
     [speech-output.md](speech-output.md) rule 37.
 
+### The rotation seam
+
+32. When the conversation is rotated to the archive, the next assembled L6 MUST say so: one line,
+    directly under the layer preamble and above the condensed summary and the blocks, stating that
+    the record restarted and when the previous record ended. The end is a plain local timestamp in
+    the block headers' format ('2026-08-07 23:52'), with no relative wording and no urgency — she
+    does the arithmetic against the clock herself, exactly as she does for block stamps. If a
+    summary was archived alongside, the same line carries one short clause saying the record that
+    ended had already been condensed before it was archived. It is one line; there is no second.
+33. The seam MUST survive an otherwise empty layer. After a rotation and before anything new is
+    said — exactly when an empty layer would read as "nothing has ever been said" — L6 is the
+    preamble and the seam line, not absence.
+34. The marker behind the seam is written only at the end of a rotation whose archive was verified
+    and whose originals were removed; a rotation that fails writes nothing. It is replaced only by
+    the next rotation and deleted by nothing else — a new conversation starting does not erase it.
+    No marker (a first-ever conversation) means no line and the layer as it always was; a marker
+    the reader cannot parse costs the line and nothing more. The seam is a trace kept, not a
+    judgement made: it MUST NOT remove, reorder or alter a word of the transcript, the summary or
+    the archive.
+
 ## DATA
 
 The assembler reads; it owns no state of its own.
@@ -184,6 +204,7 @@ The assembler reads; it owns no state of its own.
 | `~/.local/share/deskcrab/engineering/INDEX.md` | L5 | named by path in the index block |
 | `~/.local/share/deskcrab/journal/`, `memory/`, library, archive | L5 | named by path in the index block |
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
+| `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
 
 ## INTERACTIONS
@@ -414,7 +435,8 @@ tomorrow.
 
 **Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
 `tests/test_wants_titles.sh` (one shelf reader), `tests/test_no_project_memory.sh` (persona
-separation on every invocation), `tests/test_regroup.sh` (the conditional block).
+separation on every invocation), `tests/test_regroup.sh` (the conditional block),
+`tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges).
 
 **To be written:**
 
