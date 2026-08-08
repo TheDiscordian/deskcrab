@@ -3042,12 +3042,34 @@ $DISPLAY_PART"
         return 0
     fi
 
-    in_quiet_hours && return 0
-    # User busy (recording, speech in flight, or a meeting holding the mic):
-    # the wake still did its work — busyness suppresses OUTPUT only. Checked
-    # here, at the last moment before speaking, because a wake that started
-    # in a quiet room may end mid-meeting. A display-only wake keeps its
-    # silent outcome — the trace is worth more than the mute notice.
+    # Quiet hours suppress the SPEAKERS AND THE SCREEN, and that is the
+    # intent, not an oversight. A window is quieter than a voice but it is not
+    # nothing: it takes focus, it lights a dark room, and a night of them is a
+    # desk covered in windows by morning. Every other statement of the knob
+    # already says so — its own definition at the top of this file ("fully
+    # silent — no speech, no windows") and the agenda the wake is handed on the
+    # way in ("speaking and windows are suppressed — work silently") — so the
+    # code has never been the odd one out; only the comment that used to sit
+    # here was, and it is gone.
+    #
+    # What is NOT suppressed is the work. By the time this line runs the wake
+    # has finished, journalled what it did, and fired the audit and the memory
+    # judge. Only the delivery is held — and the record says so in those words,
+    # because a wake the night silenced is not a wake that had nothing to say.
+    # The next session reads this journal, and so does the since-your-last-reply
+    # anchor, which counts a parenthesised outcome as a session that reached
+    # nobody.
+    if in_quiet_hours; then
+        [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && \
+            session_outcome "(quiet hours — held, nothing spoken and nothing shown) $SPOKEN"
+        return 0
+    fi
+    # The user is mid-something a wake must not interrupt: a recording, speech
+    # in flight, or a meeting holding the mic. Same treatment, same reason — a
+    # window over the meeting he is in is an interruption too. Checked here, at
+    # the last moment before delivery, because a wake that started in a quiet
+    # room may end mid-meeting. A display-only wake keeps its silent outcome —
+    # the trace is worth more than the mute notice.
     if user_busy; then
         [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && \
             session_outcome "(muted — user was mid-interaction) $SPOKEN"

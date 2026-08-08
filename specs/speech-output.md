@@ -107,9 +107,9 @@ built twice and removed twice. Silence is chosen while writing, or not at all.
 32. On the desk path the window opens before the utterance finishes. The wake path MUST match that
     order; a window that appears only after the speech has ended is a window that arrives after the
     moment it explained.
-33. When quiet hours or a busy user suppress speech, the intended treatment of the display window
-    MUST be stated in one place and implemented once. A window is not a noise, and the current
-    comment and the current code disagree.
+33. When quiet hours or a busy user suppress speech, the display window is suppressed with it. The
+    rule is [wake-queue.md](wake-queue.md) rule 27 and it is stated there, once; nothing here may
+    restate it or contradict it.
 
 ## DATA
 
@@ -177,7 +177,7 @@ book a wake, or dispatch a job.
 | `MIN-13` | The no-reply branch orphans the streamer and leaves the receipt behind. |
 | `MIN-14` | A wake's display window opens only after the whole utterance finishes; the desk path has the opposite order. |
 | `MIN-15` | The phone-speech helper leaks its last command's status, so the desk can speak a reply that was already delivered to the phone. |
-| `MIN-16` | Quiet hours and the busy-user check suppress the display window as well, contradicting the comment beside them. |
+| `MIN-16` | Quiet hours and the busy-user check suppress the display window as well, contradicting the comment beside them. **Resolved:** suppressing it is the intent; the comment was wrong and is gone, and the suppression is stated in wake-queue.md rule 27 and held by `tests/test_quiet_hours.sh`. |
 | `MIN-18` | The speech log doubles lines in some runs, making it an unreliable witness for a doubling bug. |
 
 ## TESTS

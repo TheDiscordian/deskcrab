@@ -86,7 +86,8 @@ during the very investigation that produced these specs.
       the new-files emitter;
     - twelve entry-script subcommands, including status, claim, checkpoint, resolve, notify, serve,
       journal, memory, restore, cancel, and help;
-    - quiet hours, which is set to empty in every scratch configuration that mentions it;
+    - ~~quiet hours, which is set to empty in every scratch configuration that mentions it~~ —
+      covered by `tests/test_quiet_hours.sh`, which sets a window around the hour it runs in;
     - wake scheduling: the random interval, the floor's choice of moment, and every unit file;
     - the restore loop, which is the heart of the headline self-awareness bug;
     - memory ingest through the real distiller;

@@ -76,8 +76,16 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 
 26. The wake's words enter the conversation only if they were delivered. The append happens past
     every gate, immediately before the voice.
-27. Quiet hours and the user-busy check suppress speech. They MUST NOT suppress the display window
-    as well unless that is stated as the intent — a window is not a noise.
+27. Quiet hours and the user-busy check suppress **the speakers, the screen, the notification and
+    the bubble** — every channel, not the voice alone. It is stated here once and implemented once,
+    and every other statement of it defers to this rule. A window is quieter than a voice and it is
+    not nothing: it takes focus, it lights a dark room, and a night of them is a desk covered in
+    windows by morning.
+    - What is suppressed is the DELIVERY, never the work. By the time either gate is reached the
+      wake has finished, journalled what it did, and fired the audit and the memory judge.
+    - A wake the night held MUST say so in its journal line, in those words. Journalled as ordinary
+      silence, the held words read to the next session — and to the since-your-last-reply anchor,
+      which reads the same journal — as an hour in which she had nothing to say.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence.
 29. No mechanism may judge a wake's written reply after the fact and decide it is not worth voicing.
@@ -247,7 +255,9 @@ voice), `tests/test_wake_filler.sh` (measured from the speaker side), `tests/tes
   and on read; a kind-less wake is deferred, re-booked, and satisfies the floor.
 - `tests/test_wake_queue.sh` — extend with the record-versus-timer divergence, provenance round-trip,
   the collect option, the runtime ceiling, and a three-field legacy record.
-- `tests/test_quiet_hours.sh` — a wake inside quiet hours goes silent, and its display behaviour
-  matches rule 27. Every scratch config currently sets quiet hours to empty, so nothing proves this.
+- `tests/test_quiet_hours.sh` — **written.** A wake inside quiet hours reaches no speaker, no
+  renderer, no notifier and no conversation, and says in its journal line that the night held it;
+  the same wake outside quiet hours is heard and shown, which is what makes the silence mean
+  something. The window arithmetic is covered at unit level, wrap included.
 - `tests/test_wake_bookers.sh` — each autonomous booker routes through `book()` and
   stamps its own identity.
