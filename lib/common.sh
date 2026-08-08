@@ -1860,7 +1860,10 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
         L2:turn|L2:wake) v=1500 ;;
         L3:turn|L3:wake) v=3200 ;;
-        L4:turn|L4:wake) v=2000 ;;
+        # 2,400 since 2026-08-08: the recent-catches block (prompt-assembly
+        # rule 35) is sized inside the layer, and inside the old 2,000 it
+        # could only be paid for by wants titles coming off the shelf.
+        L4:turn|L4:wake) v=2400 ;;
         # The spec's table read 600 here until 2026-08-08 and the assembler has
         # always set 1,000; the table was corrected to the shipped number rather
         # than the other way round, because rule 22 names nine drawers the index
@@ -2186,13 +2189,23 @@ This is a snapshot taken when your turn began, and it is deliberately only the n
 $BINDING}
 $TITLES"
         fi
-        # Conduct is sized FIRST and the shelf gets what is left. When the layer
-        # will not hold both, the titles that come off are wants, never rules:
-        # a want is chosen and its shelf is one open away, and a rule is owed —
-        # dropping the last five rules off the end of the layer is how a
-        # correction he gave silently stops applying.
+        # The recent-catches block, prompt-assembly rule 35: her freshest
+        # flags, read from the capture's log so she sees the habit before she
+        # writes. A broken reader costs the block and never the prompt.
+        local CATCHES=""
+        CATCHES="$(CLAUDISM_FLAGS_DIR="$CLAUDISM_FLAGS_DIR" \
+                   CLAUDISM_LIST="$CLAUDISMS_FILE" \
+                   DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
+                   "$LIB_DIR/claudism-feedforward" 2>/dev/null)" || CATCHES=""
+        # Conduct is sized FIRST, then the catches, and the shelf gets what is
+        # left. When the layer will not hold everything, the titles that come
+        # off are wants, never rules and never catches: a want is chosen and
+        # its shelf is one open away, a rule is owed — dropping the last five
+        # rules off the end of the layer is how a correction he gave silently
+        # stops applying — and a catch is a correction being re-learned.
         local ROOM=$(( $(_prompt_budget L4 "$PROMPT_PROFILE") \
-                       - $(printf '%s' "$CONDUCT_BLOCK" | wc -c) - 280 ))
+                       - $(printf '%s' "$CONDUCT_BLOCK" | wc -c) \
+                       - $(printf '%s' "$CATCHES" | wc -c) - 280 ))
         if [ -n "$WANTS_TITLES" ]; then
             local SHOWN="$WANTS_TITLES" HELD=0 TOTAL
             TOTAL=$(printf '%s\n' "$WANTS_TITLES" | grep -c .)
@@ -2210,6 +2223,10 @@ ${SHOWN:-(the shelf did not fit this turn — it is at $WANTS_FILE)}"
         [ -n "$CONDUCT_BLOCK" ] && SHELVES="${SHELVES:+$SHELVES
 
 }$CONDUCT_BLOCK"
+        # The catches close the layer, beside the conduct they belong with.
+        [ -n "$CATCHES" ] && SHELVES="${SHELVES:+$SHELVES
+
+}$CATCHES"
     fi
     _prompt_layer L4 "$H/conduct/ and wants/" "$SHELVES"
 

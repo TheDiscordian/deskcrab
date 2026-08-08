@@ -86,3 +86,21 @@ rm -f "$LIST"
 OUT="$("$FF")"
 check "with no list the flag still shows, quoted as said" \
     contains "$OUT" "Honestly, once more."
+
+echo
+echo "the assembled layer carries the block (prompt-assembly rule 35):"
+run() { sandbox_bash "source '$SANDBOX_REPO/lib/common.sh' >/dev/null 2>&1; $1"; }
+cat > "$LIST" <<'EOF'
+## the honesty family
+- pattern: `\bhonest(?:y|ly)?\b`
+- why: he assumes it.
+EOF
+TURN="$(run 'build_system_prompt --profile turn')"
+check "a turn's L4 closes with the catches" contains "$TURN" "RECENT CLAUDISM CATCHES"
+check "named by the list heading" contains "$TURN" "the honesty family"
+JOBP="$(run 'build_system_prompt --profile job')"
+refute "a job profile carries no catches" contains "$JOBP" "RECENT CLAUDISM CATCHES"
+rm -rf "$FLAGS"
+TURN="$(run 'build_system_prompt --profile turn')"
+refute "no flags, no block — the layer just assembles without it" \
+    contains "$TURN" "RECENT CLAUDISM CATCHES"
