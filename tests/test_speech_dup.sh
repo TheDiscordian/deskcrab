@@ -127,9 +127,21 @@ echo "the crash replay — a dead streamer must still leave a receipt:"
 
 start_streamer crash
 j "$MSTART"; j "$TBLOCK"; j "$DELTA1"
-sleep 0.8                      # sentence reaches the stub piper
+# WAIT for the precondition rather than sleeping at it. The case is "a streamer
+# that had already spoken was killed before it could write its receipt", and it
+# only tests that if the sentence really did reach the stub piper first. A flat
+# 0.8 s that elapses early on a loaded box left the receipt legitimately empty
+# and failed the NEXT assertion instead — a receipt bug that does not exist,
+# with an uncounted note above it as the only clue. A missed barrier is this
+# case's own failure and says so.
+for _ in $(seq 100); do
+    [ "$(said_count "One two three.")" -ge 1 ] && break
+    sleep 0.05
+done
+[ "$(said_count "One two three.")" = 1 ] \
+    || fail "the sentence never reached the synthesiser, so there was nothing to kill mid-speech" \
+            "said $(said_count "One two three.") times in 5s — this case proved nothing about the receipt"
 kill -9 "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
-[ "$(said_count "One two three.")" = 1 ] || echo "  (setup: sentence was not spoken before the kill)"
 CHARS=$(sed -n 's/^chars=//p' "$RECEIPT" 2>/dev/null | head -1)
 [ "${CHARS:-0}" -gt 0 ] 2>/dev/null \
     && ok "receipt written as speech happens — a SIGKILLed streamer leaves chars=$CHARS" \

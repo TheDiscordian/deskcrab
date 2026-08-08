@@ -7,6 +7,12 @@
 # and the client is one HTML file — so this SKIPS rather than fails when node
 # is absent. A skip is reported loudly; a suite that quietly runs nothing is
 # the thing this repo keeps having to relearn.
+#
+# The skip exits 77, which the runner reports as a skip. It exited 0 until
+# 2026-08-08, and the runner reads 0 as a pass — so on a box where node is off
+# the non-interactive PATH (a systemd unit, any nvm setup) the only coverage
+# the phone client's two loops have did not run, and the summary said one more
+# test passed rather than one more test skipped.
 set -u
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -18,9 +24,9 @@ if [ -z "$NODE" ]; then
              "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | tail -n1)"
 fi
 if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
-    echo "SKIPPED: no node found — the phone client's loops were not exercised."
-    echo "(set NODE=/path/to/node to run them)"
-    exit 0
+    echo "  skip: no node found — the phone client's loops were not exercised."
+    echo "  (set NODE=/path/to/node to run them)"
+    exit 77
 fi
 
 exec "$NODE" "$REPO_DIR/tests/phone_client_test.js"

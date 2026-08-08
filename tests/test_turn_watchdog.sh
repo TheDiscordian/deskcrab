@@ -81,9 +81,17 @@ chmod +x "$T/claude-stream"
 
 # A stub that hangs: no output, no CPU, forever. Exactly the shape the desk
 # turn sat in for eleven minutes.
-cat > "$T/claude-hang" <<'EOF'
+#
+# `exec -a`, not a bare `exec`: exec replaces the command line as well as the
+# image, so a plain `exec sleep 600` leaves a process called `sleep 600` and
+# the "it is actually gone" assertion below — which pgreps for THIS path —
+# matched nothing whether the child had been reaped or not. It took the ok
+# branch either way. Keeping the stub's own name in argv[0] is what makes that
+# assertion capable of failing, and it is still one process, so the reap has
+# nothing to leave behind.
+cat > "$T/claude-hang" <<EOF
 #!/bin/bash
-exec sleep 600
+exec -a "$T/claude-hang (hung)" sleep 600
 EOF
 chmod +x "$T/claude-hang"
 

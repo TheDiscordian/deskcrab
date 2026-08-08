@@ -231,6 +231,13 @@ tts "$T/tts2.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
 [ "${n:-0}" = 0 ] && ok "both logins refusing is still not voiced" \
     || fail "no number of refusals may be spoken" "spoken $n times"
+# Counting to zero proves nothing on its own: a streamer that never started
+# says nothing either, and ${n:-0} turns a missing file into the same 0. The
+# speech log is the positive half — the words were seen and held.
+grep -q "out of usage credits" "$T/speechlog" 2>/dev/null \
+    && ok "…and the streamer really ran: both are in the speech log" \
+    || fail "the streamer produced nothing at all — silence proves nothing here" \
+            "$(cat "$T/speechlog" 2>/dev/null || echo empty)"
 
 # However long the chain runs, refusals mid-file are never voiced and the
 # reply that finally arrives is.
@@ -252,6 +259,10 @@ tts "$T/tts4.log"
 n="$(grep -c "out of usage credits" "$T/spoken" 2>/dev/null)"
 [ "${n:-0}" = 0 ] && ok "a spent chain is never voiced" \
     || fail "a spent chain must stay out of her voice" "spoken $n times"
+grep -q "out of usage credits" "$T/speechlog" 2>/dev/null \
+    && ok "…and the whole spent chain is in the speech log" \
+    || fail "the streamer produced nothing at all — silence proves nothing here" \
+            "$(cat "$T/speechlog" 2>/dev/null || echo empty)"
 
 # Her OWN words are never pattern-matched against the limit signature: a
 # genuine reply that QUOTES a limit phrase is not a refusal, and gagging it
