@@ -214,3 +214,37 @@ curl -fsS -m 30 "${AUTH[@]}" \
 [ "$(jq_ "$OUT" 'doc.get("reset", False) is False' 2>/dev/null)" = True ] \
     && ok "no gen sent, no reset forced" \
     || fail "no gen sent, no reset forced" "$(head -c 200 "$OUT")"
+
+echo "== a wake's reply is a block the phone can read =="
+
+# The writer marks an autonomous wake's block "Assistant [stamp] (autonomous
+# wake): …". BLOCK_HDR was written before the mark existed and did not allow
+# for it, so a wake's reply stopped matching a header, was welded onto the
+# previous turn as a continuation, and never appeared as a bubble of its own —
+# she spoke on his phone with nothing to read. Nothing errored; the turn simply
+# was not there. The pattern must be at least as wide as the writer's.
+mkconvo 1 marked
+printf '[Autonomous wake — 2026-08-07 13:20]\n' >> "$CONVO"
+printf 'Assistant [2026-08-07 13:20] (autonomous wake): WAKE-MARK-CANARY\n' >> "$CONVO"
+CTX="$T/ctx6.json"
+curl -fsS -m 5 "${AUTH[@]}" "http://127.0.0.1:$PORT/context" > "$CTX"
+check_eq "the marked block is a turn of its own" \
+    "$(jq_ "$CTX" 'doc["turns"][-1]["text"]')" "WAKE-MARK-CANARY"
+check_eq "and it is hers" \
+    "$(jq_ "$CTX" 'doc["turns"][-1]["role"]')" "assistant"
+check_eq "the mark does not leak into the bubble's text" \
+    "$(jq_ "$CTX" '"autonomous wake" in doc["turns"][-1]["text"]')" "False"
+check_eq "the turn before it is untouched — the wake is not a continuation" \
+    "$(jq_ "$CTX" '"WAKE-MARK-CANARY" in doc["turns"][-2]["text"]')" "False"
+
+echo "== the shared secret is never written to the log =="
+
+# specs/phone.md rule 24. Every request above carried ?k= or the header form,
+# and the access log writes the request line verbatim — a hundred and one
+# copies of the secret in a journal any process on the box can read, still
+# there after the secret is rotated.
+check_eq "the secret appears in the server log zero times" \
+    "$(sandbox_count_in "$SECRET" "$T/server.log")" "0"
+# Redacted, not merely absent: the requests really were logged.
+check "the query key is logged redacted, so the log is still a log" \
+    grep -q 'k=<redacted>' "$T/server.log"

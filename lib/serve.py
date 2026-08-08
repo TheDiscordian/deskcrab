@@ -63,6 +63,26 @@ KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
 TURN_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_TIMEOUT", "600"))
 MAX_UPLOAD = 25 * 1024 * 1024
 
+# specs/phone.md rule 24: the secret MUST NEVER be written to a log. It rides
+# in the query string of the installed start URL, so every PWA launch puts it
+# on the request line — and the request line is what the access log is. The
+# journal this server writes to is readable by anything on the box and keeps
+# the line long after the secret is rotated.
+#
+# Two passes, because there are two ways it can arrive. The pattern catches the
+# query form even when the value is not the secret in hand (a wrong key logged
+# is still a credential somebody typed); the literal replacement catches it
+# anywhere else a line can carry it — a header echo, a cookie, an exception
+# rendering a URL.
+_QUERY_KEY_RE = re.compile(r"([?&]k=)[^&\s\"']*")
+
+
+def redact_secret(line):
+    line = _QUERY_KEY_RE.sub(r"\1<redacted>", line)
+    if SECRET:
+        line = line.replace(SECRET, "<redacted>")
+    return line
+
 # The header opening a block in the conversation file, with the local-time
 # stamp common.sh now writes: "User [2026-08-07 12:01]: …". The stamp group is
 # optional on purpose — conversations written before stamping, and every
@@ -844,7 +864,8 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("%s  %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
+        sys.stderr.write("%s  %s\n" % (time.strftime("%H:%M:%S"),
+                                       redact_secret(fmt % args)))
 
     # --- plumbing ---
 
