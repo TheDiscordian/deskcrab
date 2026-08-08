@@ -26,6 +26,14 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 6. Booking MUST hold the single booking lock for the whole check-then-act sequence. Several sessions
    book at once, and two wakes finishing in the same second each found no pending floor and each
    booked one.
+   - **Every operation that writes the queue takes that lock**, not booking alone: cancel, restore
+     and tidy all mutate records and systemd units. A cancellation racing a restore re-arms the
+     record the cancellation is about to delete, leaving an armed timer with no booking record —
+     which tidy will not purge, because it has never fired — and it fires a wake that was called
+     off.
+   - The lock's own **exit status is the answer**. A `flock -w` whose timeout is discarded runs the
+     entire check-then-act unlocked, which is the one thing this rule forbids. An operation that
+     could not take the lock MUST report that and change nothing.
 7. Unit names MUST be minted by the module's own collision-avoiding namer. No caller may build a
    unit name inline.
 8. Every booking MUST be made as a **delay**, never by passing a calendar specification through to
@@ -36,7 +44,14 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 10. A near-duplicate booking MUST NOT be stacked: a scheduled booking with the same reason firing
     within the coalescing window of a pending one is not added. Event wakes coalesce only against a
     byte-identical reason — two different events are two wakes, while the same event re-booked by
-    its own deferral is one.
+    its own deferral is one. The comparison MUST be made against the reason **as the record holds
+    it**: the store squashes newlines and tabs, so a raw multi-line reason — every builder's task
+    description — can never equal its own stored copy, and an event re-booked by its own deferral
+    stacks a fresh wake every time.
+10a. A record MUST be written atomically — a temp file and a rename, never a truncate in place.
+    Readers hold no lock and a zero-length record does not exist as far as any of them is
+    concerned, so an in-place write makes the booking vanish from the state block, the spacing
+    search and the coalescing test for as long as it takes.
 11. Every wake unit MUST be booked with the collect option, so a failed unit does not leak into the
     user manager.
 12. Every wake unit MUST carry a runtime ceiling. The in-process stall watchdog cannot by
@@ -98,6 +113,12 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 31. `restore()` MUST log every restoration to the durable ledger. Its output MUST NOT go to
     `/dev/null`. A bulk restore means a cancellation was undone or the machine rebooted, and that is
     a fact she has to be able to read.
+    - A re-arm that FAILS MUST roll the record back to the moment it held, ledger the failure, and
+      say so. A pass that armed nothing MUST NOT end on the sentence that says every booking has its
+      timer.
+    - `restore()` MUST skip a unit whose **service** is active, exactly as tidy does (rule 36). A
+      one-shot timer goes inactive the instant it fires, so a timer-only check reads a wake that is
+      running right now as an overdue booking and re-arms it underneath itself.
 32. Overdue collapsing MUST cover event wakes as well as scheduled ones, so a queue of identical
     overdue promises does not come back in full.
 33. `cancel()` MUST be the only real cancellation, and MUST clear the record as well as stopping the
@@ -161,7 +182,7 @@ flowchart TD
   B4 -->|yes| B5["not booked — say which one covers it"]
   B4 -->|no| B6["snap to a free slot"]
   B6 --> B7["write the record<br/>fire, kind, reason, booked_at, booked_by"]
-  B7 --> B8["book the transient timer<br/>--collect + RuntimeMaxSec"]
+  B7 --> B8["book the transient timer<br/>--collect + TimeoutStartSec"]
   B8 -->|failed| B9["roll the record back"]
   B8 -->|armed| B10["ledger: booked"]
   T1["background timer<br/>3h + jitter"] --> W

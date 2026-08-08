@@ -17,6 +17,14 @@
 #   wake_restore  rebuild timers from records after a reboot or a cancellation
 #   wake_tidy     purge the fired ghosts, collapse the repeats, spread the piles
 #
+# EVERY ONE OF THEM THAT WRITES TAKES THE BOOKING LOCK. Four of the five do,
+# and for a while only two did: cancel and restore mutated records and systemd
+# units with no lock at all, so `wake-cancel --all` running beside a finishing
+# wake's restore could have the restore re-arm a unit the cancel was about to
+# forget — an armed timer with no booking record, which nothing purges (it has
+# never fired) and which fires a wake the user explicitly called off.
+# specs/wake-queue.md rule 6.
+#
 # THE RECORD IS THE AUTHORITY. A timer is only ever the record's shadow: it
 # lives inside one running user manager and dies with it, while the record is a
 # file. Everything here reads records first and asks systemd second.
@@ -47,18 +55,15 @@ WAKE_RUNTIME_MAX="${WAKE_RUNTIME_MAX:-7200}"
 WAKE_LIVE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes"
 
 # --- The ledger ------------------------------------------------------------
+# Appended and trimmed through log_append_bounded (lib/common.sh): several
+# unsynchronised hands write this file, and the old `tail > ledger.tmp && mv`
+# lost every line appended between the read and the rename while two
+# rotations raced each other through the one fixed temp name.
 wake_ledger() {  # <action> <unit> <kind> <reason> <actor>
     mkdir -p "$WAKES_DIR" 2>/dev/null
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "${2:-}" "${3:-}" \
-        "$(printf '%s' "${4:-}" | tr '\n\t' '  ' | head -c 200)" "${5:-unknown}" \
-        >> "$WAKE_LEDGER" 2>/dev/null
-    # Bounded like the sessions log: it is a record she reads, not an archive.
-    local n
-    n="$(wc -l < "$WAKE_LEDGER" 2>/dev/null || echo 0)"
-    if [ "$n" -gt $(( WAKE_LEDGER_KEEP * 2 )) ]; then
-        tail -n "$WAKE_LEDGER_KEEP" "$WAKE_LEDGER" > "$WAKE_LEDGER.tmp" 2>/dev/null \
-            && mv "$WAKE_LEDGER.tmp" "$WAKE_LEDGER" 2>/dev/null
-    fi
+    log_append_bounded "$WAKE_LEDGER" "$WAKE_LEDGER_KEEP" \
+        "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$1" "${2:-}" "${3:-}" \
+            "$(printf '%s' "${4:-}" | tr '\n\t' '  ' | head -c 200)" "${5:-unknown}")"
     return 0
 }
 
@@ -128,17 +133,41 @@ wake_record_read() {  # <record path>
     return 0
 }
 
+# The reason as the RECORD will hold it. Newlines and tabs are squashed on the
+# way in, so any comparison against a stored reason has to squash its own side
+# too — wake_pending_equivalent compared a caller's raw multi-line reason
+# against the sanitised copy on disk, and a byte-identical event could
+# therefore never coalesce with itself.
+_wake_reason_norm() {  # <reason>
+    printf '%s' "${1:-}" | tr '\n\t' '  '
+}
+
 # The durable half of a booking: one small file per pending wake. The timer is
 # what fires; this record is what survives the timer's death. Always written in
 # the five-field shape, always normalised, so a record read back is a record
 # that still knows its own agenda.
+#
+# Written through a temp file and renamed, because a record is read by hands
+# that hold no lock — the state block, the coalescing scan, the spacing scan,
+# tidy's own enumeration. An in-place truncate makes the file zero-length for
+# an instant, wake_record_read rejects a zero-length file, and the booking
+# vanishes from the queue for exactly as long as the write takes: it is not in
+# the block, not in the spacing search, and not in the coalescing test. A
+# rename is atomic and has no such window. The temp name is dot-prefixed and
+# carries this pid, so it matches no reader's `*.wake` glob and no two writers
+# share it.
 wake_state_write() {  # <unit> <fire-epoch> <kind> <reason> [booked-at] [booked-by]
     mkdir -p "$WAKES_DIR"
     _wake_norm "${3:-}" "${4:-}"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$WK_N_KIND" \
-        "$(printf '%s' "$WK_N_REASON" | tr '\n\t' '  ')" \
-        "${5:-$(date +%s)}" "${6:-${DESKCRAB_WAKE_ORIGIN:-herself}}" \
-        > "$WAKES_DIR/$1.wake"
+    local tmp="$WAKES_DIR/.$1.$$.wtmp"
+    if printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$WK_N_KIND" \
+        "$(_wake_reason_norm "$WK_N_REASON")" \
+        "${5:-$(date +%s)}" "${6:-${DESKCRAB_WAKE_ORIGIN:-herself}}" > "$tmp"; then
+        mv -f "$tmp" "$WAKES_DIR/$1.wake"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
 }
 
 wake_state_clear() {
@@ -149,6 +178,11 @@ wake_state_clear() {
 # One call, not two per record. The state block is built on the hot path of
 # every turn, and `systemctl is-active` twice over twenty-five records is fifty
 # process spawns in front of a spoken reply.
+# 'deskcrab-wake*', not 'deskcrab-wake-*': the standing background timer is
+# named deskcrab-wake.timer with no suffix at all, so the narrower pattern
+# never matched it and the "background" row this table exists to render could
+# not be built. Widening it brings in the permanent units, which the fixture
+# guard in wake_list keeps out of the orphan count.
 declare -A _WAKE_UNIT_STATE
 _wake_load_unit_states() {
     _WAKE_UNIT_STATE=()
@@ -157,8 +191,20 @@ _wake_load_unit_states() {
         [ -n "$u" ] || continue
         _WAKE_UNIT_STATE["$u"]="$s"
     done < <(systemctl --user list-units --all --no-pager --legend=false --plain \
-                 'deskcrab-wake-*' 2>/dev/null | awk 'NF >= 4 { print $1, $3 }')
+                 'deskcrab-wake*' 2>/dev/null | awk 'NF >= 4 { print $1, $3 }')
     return 0
+}
+
+# The permanent wake units, which are FIXTURES of the installation and never
+# bookings: the standing random-interval timer and the login reconciler. Each
+# is installed by hand, has never had a booking record, and is not missing one
+# — reporting either as "a timer with no booking record" is how a third timer
+# nobody had booked appeared in the block beside two real wakes.
+_wake_unit_is_fixture() {  # <unit base name>
+    case "$1" in
+        deskcrab-wake|deskcrab-wake-restore) return 0 ;;
+    esac
+    return 1
 }
 
 # "<unit>\t<next-elapse string>" for every deskcrab timer systemd will admit to.
@@ -190,6 +236,32 @@ _wake_manager_is_live() {
     [ "$WAKES_DIR" = "$WAKE_LIVE_DIR" ] && return 0
     [ -n "${DESKCRAB_ALLOW_SCRATCH_BOOKING:-}" ] && return 0
     return 1
+}
+
+# --- The booking lock ------------------------------------------------------
+# ONE door for every writer of the queue, and flock's own exit status is the
+# answer. `{ flock -w 30 6; work; } 6>lock` discards that status, so a timeout
+# ran the entire check-then-act with no lock at all — the single thing rule 6
+# exists to forbid, and the failure mode it hides is silent: a booking made
+# against a queue another hand is rewriting lands on a taken second, or counts
+# a cap that is mid-drain. A lock that could not be taken is reported and the
+# operation does NOT happen; a booking that did not happen says so to its
+# caller, which is a fact, where a booking made unlocked is a lie the queue
+# tells itself.
+WAKE_BOOK_LOCK_WAIT="${WAKE_BOOK_LOCK_WAIT:-30}"
+_wake_under_lock() {  # <name for the message> <function> [args…]
+    local what="$1" rc=0
+    shift
+    {
+        if flock -w "$WAKE_BOOK_LOCK_WAIT" 6; then
+            "$@"
+            rc=$?
+        else
+            echo "$what: the booking lock is still held after ${WAKE_BOOK_LOCK_WAIT}s — the queue was not touched." >&2
+            rc=75
+        fi
+    } 6>"$WAKE_BOOK_LOCK"
+    return "$rc"
 }
 
 # --- Booking ---------------------------------------------------------------
@@ -235,14 +307,19 @@ wake_pending_equivalent() {  # <fire-epoch> <kind> <reason>
         event) [ -n "$3" ] || return 1 ;;
         *) return 1 ;;
     esac
-    local f now diff
+    local f now diff want
     now=$(date +%s)
+    # Compared as the record HOLDS it. The caller's reason is raw and a record's
+    # is squashed, so a reason carrying a newline — every builder's task
+    # description does — could never match itself and an event re-booked by its
+    # own deferral stacked a fresh copy every time.
+    want="$(_wake_reason_norm "$3")"
     for f in "$WAKES_DIR"/*.wake; do
         [ -e "$f" ] || continue
         wake_record_read "$f" || continue
         [ "$WK_KIND" = "$2" ] || continue
         [ "$WK_FIRE" -gt "$now" ] || continue
-        [ "$WK_REASON" = "$3" ] || continue
+        [ "$WK_REASON" = "$want" ] || continue
         diff=$(( WK_FIRE - $1 )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
         if [ "$diff" -le "$WAKE_COALESCE_WINDOW" ]; then
             f="${f##*/}"; printf '%s\n' "${f%.wake}"
@@ -360,7 +437,7 @@ wake_book() {
     [ -n "$by" ] || by="${DESKCRAB_WAKE_ORIGIN:-herself}"
     # One booker at a time, for the WHOLE check-then-act. Two wakes finishing
     # in the same second each found no pending floor and each booked one.
-    { flock -w 30 6; _wake_book_locked "$by" "$cap" "$@"; } 6>"$WAKE_BOOK_LOCK"
+    _wake_under_lock "wake_book" _wake_book_locked "$by" "$cap" "$@"
 }
 
 _wake_book_locked() {  # <by> <cap> <when> [kind] [reason]
@@ -491,6 +568,7 @@ wake_list() {
         for u in "${!_WAKE_UNIT_STATE[@]}"; do
             case "$u" in *.timer) ;; *) continue ;; esac
             base="${u%.timer}"
+            _wake_unit_is_fixture "$base" && continue
             case "$base" in deskcrab-wake-[0-9]*) ;; *) continue ;; esac
             [ -s "$WAKES_DIR/$base.wake" ] && continue
             [ -n "$nexts" ] || nexts="$(_wake_timer_nexts)"$'\n'
@@ -533,7 +611,18 @@ _wake_cancel_one() {  # <unit> <actor>
     wake_ledger cancelled "$unit" "$WK_KIND" "$WK_REASON" "${2:-by hand}"
 }
 
+# Under the booking lock, like every writer of the queue. Without it a
+# `wake-cancel --all` walking the records could be overtaken by a finishing
+# wake's restore: the restore sees a record the cancel has not reached yet,
+# finds no live timer, and arms a fresh one — and the cancel then deletes the
+# record underneath it. What is left is an armed timer with no booking record,
+# which tidy refuses to purge (it has never fired) and which goes off with the
+# wake the user explicitly called off.
 wake_cancel() {  # <unit> | --all
+    _wake_under_lock "wake_cancel" _wake_cancel_locked "$@"
+}
+
+_wake_cancel_locked() {
     if [ "${1:-}" = "--all" ]; then
         local f unit n=0
         for f in "$WAKES_DIR"/*.wake; do
@@ -566,8 +655,20 @@ wake_cancel() {  # <unit> | --all
 # to /dev/null from ensure_next_wake, which is how a bulk resurrection became
 # invisible; a bulk restore means a cancellation was undone or the machine
 # rebooted, and that is a fact she has to be able to read.
+#
+# Under the booking lock, like every other writer. Two restores running at once
+# each wrote a different fire time onto the same overdue record and then each
+# called systemd-run for the same unit name; and a restore running beside a
+# cancellation re-armed the record the cancellation was about to delete. The
+# lock is taken by the public name; _wake_restore_locked is what runs inside
+# it, and the internal name is what the cap drain and tidy already use for the
+# same reason.
 wake_restore() {
-    local now f unit overdue=0 delay key restored=0
+    _wake_under_lock "wake_restore" _wake_restore_locked
+}
+
+_wake_restore_locked() {
+    local now f unit overdue=0 delay key restored=0 failed=0
     now=$(date +%s)
     local -a seen=()
     while IFS=$'\t' read -r _ f; do
@@ -576,6 +677,14 @@ wake_restore() {
         # A live timer needs nothing from us; a dead one may linger as failed
         # and would block systemd-run reusing its name.
         if _wake_manager_is_live; then
+            # A wake FIRING RIGHT NOW is not an unarmed booking, and its timer
+            # is the wrong thing to ask: a one-shot timer goes inactive the
+            # instant it fires, so between the timer going quiet and the wake
+            # reaching its own record-retiring line, this loop would see an
+            # overdue record with no timer and re-arm the wake underneath
+            # itself. tidy has skipped an active service since it was written
+            # (rule 36); restore skipped only the timer.
+            systemctl --user is-active --quiet "$unit.service" && continue
             systemctl --user is-active --quiet "$unit.timer" && continue
             systemctl --user reset-failed "$unit.timer" "$unit.service" 2>/dev/null
         fi
@@ -585,6 +694,10 @@ wake_restore() {
                 wake_ledger restored "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
                 restored=$(( restored + 1 ))
                 echo "restored: $unit fires $(date -d "@$WK_FIRE" '+%F %H:%M') (${WK_KIND:-scheduled}${WK_REASON:+ — $WK_REASON}, booked by $WK_BOOKED_BY)"
+            else
+                failed=$(( failed + 1 ))
+                wake_ledger restore-failed "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
+                echo "could not re-arm: $unit (still recorded, still without a timer)"
             fi
             continue
         fi
@@ -604,19 +717,38 @@ wake_restore() {
         fi
         seen+=("$key")
         delay=$(( 90 + overdue * 300 )); overdue=$(( overdue + 1 ))
-        wake_state_write "$unit" "$(( now + delay ))" "$WK_KIND" "$WK_REASON" \
-            "$WK_BOOKED_AT" "$WK_BOOKED_BY"
-        if _wake_book "$unit" "${delay}s" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"; then
-            wake_ledger overdue "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
+        # Record first, timer second — rule 4 — and the record goes BACK if the
+        # timer will not arm. Without the rollback a failed re-arm left the
+        # booking claiming a moment that will never come: still overdue, but now
+        # dated ninety seconds from a restore that did not happen, so the next
+        # pass computes its stagger from a fiction.
+        local WAS_FIRE="$WK_FIRE" WAS_KIND="$WK_KIND" WAS_REASON="$WK_REASON"
+        local WAS_AT="$WK_BOOKED_AT" WAS_BY="$WK_BOOKED_BY"
+        wake_state_write "$unit" "$(( now + delay ))" "$WAS_KIND" "$WAS_REASON" \
+            "$WAS_AT" "$WAS_BY"
+        if _wake_book "$unit" "${delay}s" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"; then
+            wake_ledger overdue "$unit" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"
             restored=$(( restored + 1 ))
-            echo "overdue: $unit (was due $(date -d "@$WK_FIRE" '+%F %H:%M')) fires in ${delay}s"
+            echo "overdue: $unit (was due $(date -d "@$WAS_FIRE" '+%F %H:%M')) fires in ${delay}s"
+        else
+            wake_state_write "$unit" "$WAS_FIRE" "$WAS_KIND" "$WAS_REASON" "$WAS_AT" "$WAS_BY"
+            wake_ledger restore-failed "$unit" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"
+            failed=$(( failed + 1 ))
+            echo "could not re-arm: $unit (still recorded, still overdue)"
         fi
     done < <(for f in "$WAKES_DIR"/*.wake; do
                  [ -e "$f" ] || continue
                  wake_record_read "$f" || continue
                  printf '%s\t%s\n' "$WK_FIRE" "$f"
              done | sort -n)
-    [ "$restored" -eq 0 ] && echo "wake queue needs no restoring (every booking already has its timer)"
+    # "Nothing needed restoring" is a claim about the queue, and it may only be
+    # made when nothing FAILED to restore. A pass that could not arm a single
+    # timer used to end on the sentence that says every booking has one.
+    if [ "$failed" -gt 0 ]; then
+        echo "wake queue: $failed booking$([ "$failed" = 1 ] || echo s) could not be re-armed — still recorded, still without a timer"
+    elif [ "$restored" -eq 0 ]; then
+        echo "wake queue needs no restoring (every booking already has its timer)"
+    fi
     return 0
 }
 
@@ -642,7 +774,7 @@ wake_restore() {
 # like every writer of the queue: two tidies running at once would each judge
 # the other's fresh booking a duplicate.
 wake_tidy() {
-    { flock -w 30 6; _wake_tidy_locked; } 6>"$WAKE_BOOK_LOCK"
+    _wake_under_lock "wake_tidy" _wake_tidy_locked
 }
 
 _wake_tidy_locked() {

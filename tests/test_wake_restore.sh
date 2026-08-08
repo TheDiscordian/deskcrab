@@ -174,3 +174,74 @@ case "$out" in
     *"needs no restoring"*) ok "restore says the queue was already whole" ;;
     *) fail "an already-armed queue restores to a stated nothing" "$out" ;;
 esac
+
+echo
+echo "a wake that is FIRING right now is not an overdue booking:"
+# specs/wake-queue.md rule 31's sub-bullet. A one-shot timer goes inactive the
+# instant it fires, and the fired wake clears its own record a few lines into
+# `crab wake` — so between those two moments a restore that only asks about the
+# TIMER sees an overdue record with nothing armed, and re-arms the wake
+# underneath itself. tidy has skipped an active service since it was written;
+# restore did not.
+clean
+record deskcrab-wake-firing $(( NOW - 600 )) scheduled "the one going off right now" herself
+out="$(run '
+    systemctl() {
+        case "$*" in
+            *"is-active"*".service"*) return 0 ;;
+            *"is-active"*) return 1 ;;
+        esac
+        return 0
+    }
+    wake_restore')"
+check_eq "the running wake is not re-armed" "$(attempts)" "0"
+check_eq "and its record is left exactly where it was" \
+    "$(awk -F'\t' '{ print $1 }' "$W/deskcrab-wake-firing.wake")" "$(( NOW - 600 ))"
+check_eq "nothing about it reaches the ledger" "$(led_count overdue)" "0"
+
+echo
+echo "a re-arm that fails puts the record back and says so:"
+# Rule 5 for the overdue branch: the new fire time was written to the durable
+# record BEFORE the timer was asked for, and a refusal left it there. The
+# booking then claimed a moment that will never come — still overdue, but dated
+# from a restore that did not happen — and the pass ended on the sentence that
+# says every booking has its timer.
+clean
+record deskcrab-wake-norearm $(( NOW - 900 )) event "a job that finished" job-runner
+sandbox_systemd_rc 1
+out="$(run 'wake_restore')"
+sandbox_systemd_rc 0
+check_eq "the record keeps the moment it had" \
+    "$(awk -F'\t' '{ print $1 }' "$W/deskcrab-wake-norearm.wake")" "$(( NOW - 900 ))"
+check_eq "and its agenda with it" \
+    "$(awk -F'\t' '{ print $3 }' "$W/deskcrab-wake-norearm.wake")" "a job that finished"
+check_eq "the failure is on the ledger" "$(led_count restore-failed)" "1"
+case "$out" in
+    *"needs no restoring"*) fail "a pass that armed nothing must not claim the queue is whole" "$out" ;;
+    *"could not be re-armed"*) ok "and the pass says what it could not do" ;;
+    *) fail "a failed re-arm must be reported" "$out" ;;
+esac
+
+echo
+echo "cancel and restore write the queue under the booking lock:"
+# specs/wake-queue.md rule 6's sub-bullet, and the race it is for: a
+# `wake-cancel --all` walking the records, overtaken by a finishing wake's
+# restore, which re-arms a record the cancel has not reached yet and then loses
+# that record to the cancel — an armed timer with no booking record, which tidy
+# will not purge because it has never fired, going off with a wake the user
+# called off. Held here by another process, which is the only way to prove the
+# operation waits for it rather than proceeding without it.
+clean
+record deskcrab-wake-locked $(( NOW + 3600 )) scheduled "" herself
+LOCKFILE="${DESKCRAB_STATE_PREFIX}-wake-book.lock"
+flock -x "$LOCKFILE" -c 'sleep 4' &
+HOLDER=$!
+sleep 0.4
+out="$(WAKE_BOOK_LOCK_WAIT=1 run 'wake_cancel --all'; WAKE_BOOK_LOCK_WAIT=1 run 'wake_restore')"
+wait "$HOLDER" 2>/dev/null
+check_eq "the record survives an operation that could not take the lock" \
+    "$(records)" "1"
+case "$out" in
+    *"booking lock is still held"*) ok "and both say the lock was not theirs to take" ;;
+    *) fail "an operation that cannot lock must say so and change nothing" "$out" ;;
+esac
