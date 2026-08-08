@@ -147,3 +147,26 @@ check_eq "and the durable stamp still has not moved" "$(stamp)" "$(( NOW - 600 )
 out="$(sandbox_bash 'jobs_report --live --defer >/dev/null; jobs_news_delivered; cat "$STATE_PREFIX-jobs-surfaced"' 2>/dev/null)"
 check "delivery promotes the pending stamp to the durable one" \
     [ "${out:-0}" -gt "$(( NOW - 600 ))" ]
+
+echo
+echo "a stamp whose renderer is dead is swept, and a live one is left alone:"
+# session_finish drops the stamp of the session that rendered the block, but a
+# renderer that never registered a session has no finish to run: `crab status`,
+# a bare block render, anything that builds the near view outside a turn. Its
+# stamp then sits in the state directory forever, and the news it is holding is
+# owed to somebody who will never be told. The reaper sweeps by pid, which is
+# what the stamp is keyed to.
+printf '%s' "$(( NOW - 600 ))" > "$MARKER"
+clear_pendings
+sandbox_bash 'jobs_report --live --defer >/dev/null'          # renderer exits here
+check_eq "the dead renderer left its stamp behind" "$(pendings)" "1"
+touch "$MARKER.pending-$$"                                    # this test is alive
+check_eq "two stamps on disk, one live renderer and one gone" "$(pendings)" "2"
+sandbox_bash 'session_reap' >/dev/null 2>&1
+check_eq "the reap swept the orphan and kept the live one" "$(pendings)" "1"
+check "and the one it kept is the live renderer's" [ -f "$MARKER.pending-$$" ]
+check_eq "sweeping a stamp is not delivering it — the news is still owed" \
+    "$(stamp)" "$(( NOW - 600 ))"
+OUT="$(block)"
+check "so the next session that can speak still gets it" has "ENDED SINCE YOUR LAST TURN" "$OUT"
+clear_pendings

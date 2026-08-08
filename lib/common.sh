@@ -794,6 +794,11 @@ session_finish() {
 # A session killed with SIGKILL never ran its trap, so it also never journalled;
 # reaping notes it as interrupted rather than letting it vanish silently.
 session_reap() {
+    # Everything a dead process left behind, and a registration is not the only
+    # thing: an unregistered renderer of the state block leaves a job-news stamp
+    # that no session_finish will ever drop. Before the early return, because a
+    # machine with no sessions directory still renders blocks.
+    jobs_news_sweep
     [ -d "$SESSIONS_DIR" ] || return 0
     local f pid kind started epoch startt
     for f in "$SESSIONS_DIR"/*; do
@@ -3809,5 +3814,30 @@ jobs_report() {  # [--live] [--defer]
 jobs_news_delivered() {
     local marker="${STATE_PREFIX}-jobs-surfaced"
     [ -s "$marker.pending-$$" ] && mv "$marker.pending-$$" "$marker" 2>/dev/null
+    return 0
+}
+
+# The pending stamps of processes that are gone. A stamp belongs to the process
+# that rendered the block, and session_finish drops it — but only a REGISTERED
+# session has a finish to run. `crab status`, or anything else that builds the
+# near view outside a turn, renders the block, leaves a stamp keyed to its own
+# pid, and exits with nothing to clear it. The stamp then sits in the state
+# directory forever.
+#
+# Sweeping it is not spending it: the durable marker is untouched, so the news
+# it was holding is still owed and the next session that can actually say
+# something still gets it. Called from session_reap, which is where everything
+# a dead process left behind is cleared, and which runs on every render of the
+# block. The stamp stays owned here, beside the two functions that write it.
+jobs_news_sweep() {
+    local marker="${STATE_PREFIX}-jobs-surfaced" s pid
+    for s in "$marker".pending-*; do
+        [ -e "$s" ] || continue
+        pid="${s##*.pending-}"
+        case "$pid" in
+            ''|*[!0-9]*) rm -f -- "$s"; continue ;;
+        esac
+        kill -0 "$pid" 2>/dev/null || rm -f -- "$s"
+    done
     return 0
 }

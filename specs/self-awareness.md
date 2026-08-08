@@ -153,10 +153,15 @@ queue's list operation, the account chain's default reader.
 **Self-awareness may be called by:** `crab status`, prompt assembly (as layer L2), and nothing else.
 
 **Self-awareness must never:** book a wake, cancel a wake, stop a job, or write any state other than
-its own ledger and stamps. Reading the state must not change it — with one exception, rule 31.
+its own ledger and stamps. Reading the state must not change it — with two exceptions, rules 31
+and 32.
 
 31. The one-time surfacing stamp for a job that ended badly MUST be written only when the block is
     actually delivered to a session that will be heard. A silent wake MUST NOT consume that news.
+32. A pending stamp whose process is gone MUST be swept. Only a registered session has a finish to
+    drop its own; a renderer of the block that never registered one — `crab status`, or anything
+    else building the near view outside a turn — leaves a stamp nothing will ever clear. Sweeping is
+    not spending: the durable stamp is untouched, so the news stays owed.
 
 ## VERIFIED-CORRECT RULES
 

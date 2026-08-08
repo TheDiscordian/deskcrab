@@ -71,8 +71,9 @@ back to her.
 23. Running and finished jobs MUST appear in the state block. A later turn must be able to report on
     work it neither started nor waited for.
 24. A job that ended badly since the last turn is surfaced once, capped, stamped. The stamp MUST NOT
-    be written by a session whose output is suppressed. See [self-awareness.md](self-awareness.md)
-    rule 31.
+    be written by a session whose output is suppressed, and a pending stamp left by a renderer that
+    has since exited MUST be swept without spending it. See
+    [self-awareness.md](self-awareness.md) rules 31 and 32.
 25. `crab jobs` MUST list running, finished, and failed jobs. `crab job log <id>` MUST show a job's
     output.
 
