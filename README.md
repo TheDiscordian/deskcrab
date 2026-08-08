@@ -178,7 +178,8 @@ systemctl --user daemon-reload
 systemctl --user enable deskcrab-wake-restore.service
 ```
 
-  Cancel a pending wake with `crab wake-cancel <unit>` — stopping just the timer is not enough, the record would bring it back at next login.
+  Cancel a pending wake with `crab wake-cancel <unit>`, or the whole queue with `crab wake-cancel --all` — stopping just the timer is not enough, the record would bring it back at next login.
+  Every change to the queue (booked, cancelled, restored, collapsed, purged) is appended to `~/.local/share/deskcrab/wakes/ledger.log`, and `crab status` lists the records rather than the timers, warning about any booking whose timer is missing.
 - **Random background wakes** — install the provided timer for wakes every 3–6 hours:
 
 ```bash
