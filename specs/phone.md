@@ -20,7 +20,10 @@ with the page closed.
 5. While a turn is in flight the client refuses to record. That refusal MUST end when the turn ends,
    by any route including abort.
 6. A turn's completion payload MUST carry the spoken text, the display content, the audio pointer,
-   and an error field.
+   and an error field. The audio pointer is the never-silent fallback: it MUST carry the turn's own
+   reply clip when and only when no streaming voice clip was emitted for the turn, so a client that
+   heard the clips is not made to hear the reply again and a client that heard nothing still hears
+   the reply once.
 7. A turn whose every account refused MUST return the refusal in the error field. It MUST NEVER be
    voiced, never synthesised, never entered into the conversation, and MUST be shown beside the
    reply rather than over it.
@@ -49,6 +52,11 @@ with the page closed.
 
 17. Streaming voice MUST be emitted per completed block while the turn runs, and MUST NOT emit after
     the completion event. The synthesiser join deadline MUST be at least the per-synthesis timeout.
+    A synthesis that produces nothing MUST leave a line in the server log, and the synthesiser MUST
+    log its own it-never-ran failure too — the standing rule of
+    [speech-output.md](speech-output.md) holds on this path as well. A skipped voice event with no
+    witness anywhere is how two phone turns went silent on 2026-08-08 and the cause could no longer
+    be established from what survived.
 18. Audio and image routes MUST honour range requests. Some browsers issue them for audio elements
     and will not play without.
 19. A wake's audio goes to the phone only when the last turn came from the phone and the phone's
@@ -194,3 +202,6 @@ over a real socket. Keep that — it caught the cursor bug end to end.
   the say route is driven today.
 - `tests/test_webpush.py` — the crypto against the published test vector, subscription idempotency,
   pruning of dead endpoints, and the degraded status when the optional dependency is missing.
+- `tests/test_phone_voice_fallback.sh` — a turn whose streaming synthesis failed still carries the
+  reply clip in its completion payload and leaves a failure line in the log; a turn whose streaming
+  synthesis worked carries an empty completion audio, so the reply is never played twice.

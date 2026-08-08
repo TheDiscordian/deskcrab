@@ -224,6 +224,19 @@ def run_turn(turn, text):
             reply = ask(text,
                         on_event=lambda kind, msg: turn.emit(kind, {"text": msg}),
                         speaker=speaker)
+            # The reply clip the turn itself synthesised is the never-silent
+            # fallback: offered when and only when no streaming clip was
+            # voiced, so a client that heard the clips is not made to hear
+            # the reply again and a client that heard nothing still hears it
+            # once. Emptying this field unconditionally was how a failed
+            # streaming synthesis became total silence with a good clip
+            # already sitting on disk.
+            audio = ""
+            if speaker.voiced == 0 and reply.get("audio"):
+                audio = "/audio/" + os.path.basename(reply["audio"])
+                print("speech: no streaming clip was voiced — the completion "
+                      "event carries the turn's own reply clip",
+                      file=sys.stderr, flush=True)
             turn.emit("done", {
                 "spoken": reply.get("spoken", ""),
                 "display_html": render_markdown(reply.get("display", "")),
@@ -699,6 +712,8 @@ class Speaker:
     def __init__(self, emit):
         self.emit = emit
         self.queue = queue.Queue()
+        self.voiced = 0  # clips actually emitted; the completion event offers
+                         # the turn's own reply clip only when this stayed zero
         self.thread = threading.Thread(target=self._work, daemon=True)
         self.thread.start()
 
@@ -712,10 +727,26 @@ class Speaker:
                 return
             out = os.path.join(
                 tempfile.gettempdir(), f"deskcrab-remote-{uuid.uuid4().hex}.opus")
-            r = run([CRAB_BIN, "synth", out, text])
+            # A failure below used to vanish whole: the synth's stderr was
+            # captured and discarded, the voice event was skipped, and the
+            # turn stayed silent with no witness anywhere — two turns on
+            # 2026-08-08 went that way and the cause could no longer be
+            # established afterwards. A speech failure always leaves a line.
+            try:
+                r = run([CRAB_BIN, "synth", out, text])
+            except Exception as exc:  # noqa: BLE001 — a dead worker is silence
+                print("speech: crab synth did not run for %d chars: %s"
+                      % (len(text), exc), file=sys.stderr, flush=True)
+                continue
             if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out):
+                self.voiced += 1
                 self.emit("voice", {"text": text,
                                     "audio": "/audio/" + os.path.basename(out)})
+            else:
+                err = r.stderr.decode("utf-8", "replace").strip()[-300:]
+                print("speech: synthesis produced nothing for %d chars (rc=%d)%s"
+                      % (len(text), r.returncode, " — " + err if err else ""),
+                      file=sys.stderr, flush=True)
 
     def finish(self):
         self.queue.put(None)
