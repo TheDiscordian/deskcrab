@@ -204,10 +204,213 @@ async function testWatchReset() {
   else bad("the flag must clear", "needReseed still set");
 }
 
+// --- 4: a rewrite of the record never wipes what is already on screen ------
+//
+// THE BLANKING, measured live 2026-08-07 23:40. The conversation had been idle
+// since 22:18, so the next turn rotated the whole file to the archive and
+// started a fresh one holding that turn alone. /watch reported the gen change
+// as `reset`, reseed called logEl.replaceChildren() and redrew from the new
+// file — and the phone's entire visible conversation went with it, leaving the
+// one sentence just spoken. Nothing was lost from disk. It was lost from in
+// front of him, which is the only copy he was reading.
+//
+// A compaction does the same thing more gently (the new file still holds most
+// of the conversation), which is why this went unnoticed until a rotation made
+// the new file nearly empty.
+
+// Enough DOM to run the render path: append/prepend/replaceChildren, a class
+// selector, and text. No browser, and no jsdom dependency for a page that is
+// deliberately one file of stdlib-shaped code.
+function domStub() {
+  const mk = tag => ({
+    tag, id: "", className: "", textContent: "", children: [],
+    append(...n) { this.children.push(...n); },
+    prepend(...n) { this.children.unshift(...n); },
+    replaceChildren(...n) { this.children = n.slice(); },
+    scrollIntoView() {},
+    querySelectorAll(sel) {
+      const want = sel.split(",").map(s => s.trim().replace(/^\./, ""));
+      const out = [];
+      (function walk(node) {
+        for (const c of node.children) {
+          if (want.some(w => (" " + c.className + " ").indexOf(" " + w + " ") >= 0))
+            out.push(c);
+          walk(c);
+        }
+      })(this);
+      return out;
+    },
+  });
+  return { document: { createElement: mk }, logEl: mk("div") };
+}
+
+// The page as he sees it, top to bottom.
+function shownOn(logEl) {
+  const out = [];
+  (function walk(node) {
+    for (const c of node.children) {
+      const cls = " " + c.className + " ";
+      if (cls.indexOf(" you ") >= 0) out.push("user:" + c.textContent);
+      else if (cls.indexOf(" reply ") >= 0) out.push("asst:" + c.textContent);
+      else if (cls.indexOf(" rewound ") >= 0) out.push("<rule>");
+      walk(c);
+    }
+  })(logEl);
+  return out;
+}
+
+function clientFor(served) {
+  const dom = domStub();
+  const ctx = {
+    document: dom.document,
+    logEl: dom.logEl,
+    attachDisplay: () => {},
+    pendingUser: null, pendingReply: null,
+    cursor: 12, gen: "OLD",
+    fetch: async () => ({ json: async () => served() }),
+  };
+  const api = build([
+    "function norm", "function turnKey", "function appendTurns",
+    "function renderSeed", "function renderedKeys", "function renderCarried",
+    "async function reseed",
+  ], ctx);
+  return { api, ctx, dom };
+}
+
+const U = t => ({ role: "user", text: t });
+const A = t => ({ role: "assistant", text: t });
+
+async function testReseedKeepsScrollback() {
+  console.log("");
+  console.log("/context redraw — a rewritten record keeps the conversation on screen:");
+
+  // What he had been reading all evening.
+  const evening = [U("how did the backup go"), A("it finished clean"),
+                   U("and the disk"), A("nearly full, in fact")];
+  // What the file holds after the rotation: one exchange, said at the laptop
+  // while the phone sat idle. None of it has ever been on this page.
+  let served = { n: 2, gen: "NEW", turns: [U("you awake"), A("evidently")] };
+
+  const { api, ctx } = clientFor(() => served);
+  api.renderSeed({ summary: "", turns: evening });
+  const before = shownOn(ctx.logEl);
+  if (before.length !== 4) bad("the harness must start with four bubbles", before.join(" | "));
+
+  await api.reseed();
+  const after = shownOn(ctx.logEl);
+
+  const kept = before.every(b => after.indexOf(b) >= 0);
+  if (kept) ok("every turn he could already read is still on the page");
+  else bad("a reset must not wipe the visible conversation", after.join(" | "));
+
+  if (after.indexOf("<rule>") === 4) ok("a divider marks where the record was rewritten");
+  else bad("the carried-over turns need a divider under them", after.join(" | "));
+
+  if (after.slice(5).join(" | ") === "user:you awake | asst:evidently")
+    ok("and the new file's turns are drawn under it, in order");
+  else bad("the rewritten file's turns must follow the divider", after.slice(5).join(" | "));
+
+  if (ctx.gen === "NEW" && ctx.cursor === 2) ok("the new incarnation is adopted");
+  else bad("cursor and gen must follow the rewrite", ctx.cursor + "/" + ctx.gen);
+}
+
+async function testReseedDedupes() {
+  console.log("");
+  console.log("/context redraw — an overlapping payload draws nothing twice:");
+
+  // Compaction: the two oldest turns are folded into a summary, the rest of
+  // the file is exactly what the page is already showing, and one new exchange
+  // arrived with the rewrite.
+  const shown = [U("q1"), A("a1"), U("q2"), A("a2")];
+  const served = { n: 9, gen: "NEW", summary: "they talked about q1",
+                   turns: [U("q2"), A("a2"), U("q3"), A("a3")] };
+
+  const { api, ctx } = clientFor(() => served);
+  api.renderSeed({ summary: "", turns: shown });
+  await api.reseed();
+  const after = shownOn(ctx.logEl);
+
+  const q2 = after.filter(b => b === "user:q2").length;
+  const a2 = after.filter(b => b === "asst:a2").length;
+  if (q2 === 1 && a2 === 1) ok("a turn on both sides of the rewrite appears once");
+  else bad("the overlap must be deduped, not re-drawn", "q2 x" + q2 + ", a2 x" + a2);
+
+  if (after.join(" | ") === "user:q1 | asst:a1 | user:q2 | asst:a2 | <rule> | user:q3 | asst:a3")
+    ok("the page reads as one conversation, oldest first");
+  else bad("the carried and the fresh must not interleave", after.join(" | "));
+
+  const sum = after.filter(b => /they talked about/.test(b)).length;
+  if (sum === 0) ok("the summary is not drawn over turns that are still visible");
+  else bad("a condensation of visible turns is noise", sum + " summaries");
+}
+
+async function testReseedQuietWhenNothingNew() {
+  console.log("");
+  console.log("/context redraw — a rotation with nothing new is invisible:");
+
+  // The archival case as it usually lands: the fresh file holds only the
+  // exchange this phone just had, which is already drawn.
+  const shown = [U("hello beatrice"), A("like myself, obviously")];
+  const served = { n: 2, gen: "NEW", turns: [U("hello beatrice"), A("like myself, obviously")] };
+
+  const { api, ctx } = clientFor(() => served);
+  api.renderSeed({ summary: "", turns: shown });
+  const before = shownOn(ctx.logEl).join(" | ");
+  await api.reseed();
+  const after = shownOn(ctx.logEl).join(" | ");
+
+  if (after === before) ok("the page is untouched — no wipe, and no divider either");
+  else bad("a rotation that shows him nothing new must change nothing", after);
+}
+
+async function testReseedRepeatedTurns() {
+  console.log("");
+  console.log("/context redraw — the same sentence said twice stays twice:");
+
+  const shown = [U("help"), A("here it is"), U("help"), A("here it is")];
+  // He asked a third time; the first two are the ones already on the page.
+  const served = { n: 6, gen: "NEW",
+                   turns: [U("help"), A("here it is"), U("help"), A("here it is"),
+                           U("help"), A("here it is")] };
+
+  const { api, ctx } = clientFor(() => served);
+  api.renderSeed({ summary: "", turns: shown });
+  await api.reseed();
+  const after = shownOn(ctx.logEl);
+
+  const n = after.filter(b => b === "user:help").length;
+  if (n === 3) ok("identity is counted, not merely matched");
+  else bad("a repeated sentence must not collapse into one", n + " copies of it");
+}
+
+async function testReseedEmptyPage() {
+  console.log("");
+  console.log("/context redraw — with nothing on screen it is the plain redraw:");
+
+  const served = { n: 4, gen: "NEW", summary: "earlier: the backup",
+                   turns: [U("and now"), A("all clear")] };
+  const { api, ctx } = clientFor(() => served);
+  await api.reseed();
+  const after = shownOn(ctx.logEl);
+
+  if (after.join(" | ") === "user:and now | asst:all clear")
+    ok("the fresh context is drawn");
+  else bad("an empty page must still be seeded by a reset", after.join(" | "));
+
+  const seeded = ctx.logEl.children.some(c => c.id === "seed");
+  if (seeded) ok("as a seed block, summary and all — there was no scrollback to keep");
+  else bad("the empty case keeps the summary", "no seed block");
+}
+
 (async () => {
   await testStreamTurn();
   await testDeadline();
   await testWatchReset();
+  await testReseedKeepsScrollback();
+  await testReseedDedupes();
+  await testReseedQuietWhenNothingNew();
+  await testReseedRepeatedTurns();
+  await testReseedEmptyPage();
   console.log("");
   console.log(PASS + " passed, " + FAIL + " failed");
   process.exit(FAIL === 0 ? 0 : 1);

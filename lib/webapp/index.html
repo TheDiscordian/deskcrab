@@ -50,6 +50,14 @@
   .seed-summary { color: var(--dim); font-size: 13px; line-height: 1.5;
                   white-space: pre-wrap; margin-bottom: 16px;
                   padding-left: 10px; border-left: 2px solid var(--border); }
+  /* The conversation file was rewritten under this page — compacted, or rotated
+     to the archive so a fresh one starts. Everything above the rule was said
+     before that happened, and it stays on screen. */
+  .rewound { display: flex; align-items: center; gap: 10px;
+             color: var(--dim); font-size: 11px; text-transform: uppercase;
+             letter-spacing: .08em; margin: 4px 0 20px; }
+  .rewound::before, .rewound::after { content: ""; flex: 1;
+             border-top: 1px dashed var(--border); }
   /* Said at the laptop, not here — marked so it never reads as this phone's
      own turn arriving. */
   .turn.elsewhere { border-left: 2px solid var(--border); padding-left: 10px; }
@@ -614,35 +622,22 @@ fetch("/health").then(r => r.json()).then(h => {
 // under the cursor (compaction, archival), the page redraws from a fresh
 // /context exactly as a manual refresh would — that refresh used to be his
 // hand's job.
-function renderSeed(ctx) {
-  const turns = ctx.turns || [];
-  if (!ctx.summary && !turns.length) return;
-
-  const seed = document.createElement("div");
-  seed.id = "seed";
-  const label = document.createElement("div");
-  label.className = "seed-label";
-  label.textContent = "where we were";
-  seed.append(label);
-
-  if (ctx.summary) {
-    const s = document.createElement("div");
-    s.className = "seed-summary";
-    s.textContent = ctx.summary;
-    seed.append(s);
-  }
-
-  // The convo file stores one line per turn, so a user turn and the reply that
-  // follows it are paired back up here into the same shape a live turn takes.
-  // An assistant turn with no user turn before it — an autonomous wake — is
-  // rendered on its own: skipping non-user turns here silently erased every
-  // wake exchange from a reloaded page.
+// Turns into bubbles, in one place, for all three callers (the page-load seed,
+// the watcher, and the redraw after a rewrite). The convo file stores one line
+// per turn, so a user turn and the reply that follows it are paired back up
+// here into the same shape a live turn takes. An assistant turn with no user
+// turn before it — an autonomous wake — is rendered on its own: skipping
+// non-user turns here silently erased every wake exchange from a reloaded page.
+// `skip` is consulted per turn before anything is built; `after` is handed each
+// finished block.
+function appendTurns(parent, turns, cls, skip, after) {
   for (let i = 0; i < turns.length; i++) {
     // A turn holding nothing is not drawn. The server filters these too; this
     // is the second belt, for a page cached against an older one.
     if (!norm(turns[i].text) && !turns[i].display_html) continue;
+    if (skip && skip(turns[i])) continue;
     const t = document.createElement("div");
-    t.className = "turn";
+    t.className = cls;
     if (turns[i].role === "user") {
       const y = document.createElement("div");
       y.className = "you"; y.textContent = turns[i].text;
@@ -661,8 +656,30 @@ function renderSeed(ctx) {
       t.append(r);
       if (turns[i].display_html) attachDisplay(r, turns[i].display_html);
     }
-    seed.append(t);
+    parent.append(t);
+    if (after) after(t);
   }
+}
+
+function renderSeed(ctx) {
+  const turns = ctx.turns || [];
+  if (!ctx.summary && !turns.length) return;
+
+  const seed = document.createElement("div");
+  seed.id = "seed";
+  const label = document.createElement("div");
+  label.className = "seed-label";
+  label.textContent = "where we were";
+  seed.append(label);
+
+  if (ctx.summary) {
+    const s = document.createElement("div");
+    s.className = "seed-summary";
+    s.textContent = ctx.summary;
+    seed.append(s);
+  }
+
+  appendTurns(seed, turns, "turn");
 
   logEl.prepend(seed);
   seed.scrollIntoView({ block: "end" });
@@ -677,16 +694,88 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
   renderSeed(ctx);
 }).then(startWatch).catch(startWatch);
 
-// The conversation file was rewritten under our cursor: redraw the whole page
-// from a fresh /context, the automatic form of the manual refresh. A reload
-// would do the same but would also cut off any clip mid-voice.
+// Two turns are the same turn when the same speaker said the same words. The
+// record carries no turn ids, so this is the whole of identity here — and it is
+// already what the own-turn filter matches on, so the two agree by
+// construction.
+function turnKey(role, text) {
+  return role + " " + norm(text);
+}
+
+// What the page is showing right now, counted by identity. The DOM is
+// deliberately the source of truth: it is exactly what he can see, and a
+// parallel list of "what we drew" could only drift away from it. Counting
+// rather than set membership keeps a sentence said twice from collapsing into
+// one when the file is re-read.
+function renderedKeys() {
+  const m = new Map();
+  const bubbles = logEl.querySelectorAll(".you, .reply");
+  for (let i = 0; i < bubbles.length; i++) {
+    const el = bubbles[i];
+    const role = /(^|\s)you(\s|$)/.test(el.className) ? "user" : "assistant";
+    const k = turnKey(role, el.textContent);
+    m.set(k, (m.get(k) || 0) + 1);
+  }
+  return m;
+}
+
+// Draw what the rewritten file holds that is NOT already on the page, under a
+// rule saying the record was rewritten here. The summary is deliberately not
+// drawn: it condenses turns that are still sitting above the rule, in full.
+function renderCarried(ctx, shown) {
+  const fresh = [];
+  const turns = ctx.turns || [];
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    if (!norm(t.text) && !t.display_html) continue;
+    const k = turnKey(t.role, t.text);
+    const n = shown.get(k) || 0;
+    if (n > 0) { shown.set(k, n - 1); continue; }
+    fresh.push(t);
+  }
+  // Nothing arrived that he cannot already see: no rule, no noise. This is the
+  // common case for an archival rotation, where the fresh file holds only the
+  // exchange that has just been drawn live.
+  if (!fresh.length) return;
+  const rule = document.createElement("div");
+  rule.className = "rewound";
+  rule.textContent = "earlier conversation";
+  logEl.append(rule);
+  appendTurns(logEl, fresh, "turn", null, t => t.scrollIntoView({ block: "end" }));
+}
+
+// The conversation file was rewritten under our cursor (compaction, or the
+// archival rotation that starts a fresh one). The cursor means nothing against
+// the new file, so the page re-reads /context — but WHAT IS ALREADY ON SCREEN
+// IS NOT THROWN AWAY.
+//
+// It used to be. This called logEl.replaceChildren() and redrew from the new
+// file alone, which is survivable after a compaction (the file still holds most
+// of the conversation) and ruinous after a rotation (it holds none of it).
+// Live, 2026-08-07: the conversation had been idle since 22:18, the turn at
+// 23:40 rotated it to the archive and started a fresh file, /watch said reset,
+// and the phone's whole visible conversation vanished mid-session — leaving the
+// one sentence just spoken. Nothing was lost from disk; it was lost from in
+// front of him, which is the only place he was reading it.
+//
+// So: the rendered turns stay, a divider marks where the record was rewritten,
+// and only the parts of the new context not already on the page are drawn under
+// it. A deliberate reload still starts clean — that is the escape hatch, and
+// the reason this only has to hold within one session.
 async function reseed() {
   const ctx = await (await fetch("/context", { credentials: "same-origin" })).json();
-  logEl.replaceChildren();
   // The rewrite folded whatever the pending filters were guarding into the
   // file itself; a match against some future identical turn would eat it.
   pendingUser = pendingReply = null;
-  renderSeed(ctx);
+  const shown = renderedKeys();
+  if (shown.size) {
+    renderCarried(ctx, shown);
+  } else {
+    // An empty page has no scrollback to protect, so this is the plain redraw,
+    // summary and all — the same thing a fresh load does.
+    logEl.replaceChildren();
+    renderSeed(ctx);
+  }
   cursor = ctx.n;
   gen = ctx.gen || "";
 }
@@ -722,43 +811,20 @@ let pendingReply = null;
 let needReseed = false;
 
 function renderRemote(turns) {
-  for (let i = 0; i < turns.length; i++) {
-    // Same rule as the seed: an empty block is not a bubble. A wake that was
-    // suppressed no longer writes to the conversation at all, so this should
-    // now be unreachable for wakes — it stays because "there is nothing to
-    // draw" must never again resolve to "draw an empty thing".
-    if (!norm(turns[i].text) && !turns[i].display_html) continue;
-    if (pendingUser && turns[i].role === "user" && norm(turns[i].text) === pendingUser) {
+  // Same rule as the seed: an empty block is not a bubble — appendTurns holds
+  // that line. What is extra here is the own-turn filter: this phone's own
+  // exchange comes back around through the file and must not be drawn twice.
+  appendTurns(logEl, turns, "turn elsewhere", t => {
+    if (pendingUser && t.role === "user" && norm(t.text) === pendingUser) {
       pendingUser = null;
-      continue;
+      return true;
     }
-    if (pendingReply && turns[i].role === "assistant" && norm(turns[i].text) === pendingReply) {
+    if (pendingReply && t.role === "assistant" && norm(t.text) === pendingReply) {
       pendingReply = null;
-      continue;
+      return true;
     }
-    const t = document.createElement("div");
-    t.className = "turn elsewhere";
-    if (turns[i].role === "user") {
-      const y = document.createElement("div");
-      y.className = "you"; y.textContent = turns[i].text;
-      t.append(y);
-      const next = turns[i + 1];
-      if (next && next.role === "assistant") {
-        const r = document.createElement("div");
-        r.className = "reply"; r.textContent = next.text;
-        t.append(r);
-        if (next.display_html) attachDisplay(r, next.display_html);
-        i++;
-      }
-    } else {
-      const r = document.createElement("div");
-      r.className = "reply"; r.textContent = turns[i].text;
-      t.append(r);
-      if (turns[i].display_html) attachDisplay(r, turns[i].display_html);
-    }
-    logEl.append(t);
-    t.scrollIntoView({ block: "end" });
-  }
+    return false;
+  }, t => t.scrollIntoView({ block: "end" }));
 }
 
 async function startWatch() {
