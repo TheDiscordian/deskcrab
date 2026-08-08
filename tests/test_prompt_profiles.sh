@@ -2,7 +2,7 @@
 # The four profiles: which layers each one carries, in what order, at what
 # measured size, against which budget. Run: bash tests/test_prompt_profiles.sh
 #
-# specs/prompt-assembly.md asks for exactly this file. The fourteen intent
+# specs/prompt-assembly.md asks for exactly this file. The sixteen intent
 # cases (tests/test_prompt_cases.sh) prove what the prompt SAYS; this proves
 # its SHAPE — that a shelf-check wake does not pay a spoken turn's prompt, that
 # a one-question classifier carries no persona, no state and no transcript, and
@@ -162,7 +162,7 @@ check "the index is never trimmed — it reports over budget instead" \
 # overrun is added to the allowance and everything else has to fit under it.
 # A profile whose sum drifts fails here and the table is what it is measured
 # against; if the assembler is right, the table moves, in the same commit.
-total_budget() { case "$1" in turn) echo 28000 ;; wake) echo 23000 ;;
+total_budget() { case "$1" in turn) echo 28800 ;; wake) echo 23800 ;;
                               job) echo 2000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"

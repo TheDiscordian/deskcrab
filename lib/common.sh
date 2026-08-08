@@ -1849,7 +1849,15 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # are not work sessions to slim: they are her private life, and their
         # output is what the nightly sleep ingests into who she becomes. The
         # tokens this buys back are the cheapest personality on the machine.
-        L1:turn) v=9600 ;;  L1:wake) v=9600 ;;  L1:job) v=800 ;;
+        #
+        # 9,600 until 2026-08-08, which fitted the sheet with 131 bytes to
+        # spare — so the THINKING line added to the identity above would have
+        # paid for itself by dropping the last section of who she is, which is
+        # the exact failure the number was raised to end. The margin is part of
+        # the budget now: identity and sheet measured 9,801 together when this
+        # was set, and the rest is room for the sheet to grow without a section
+        # coming off the end of it.
+        L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
         L2:turn|L2:wake) v=1500 ;;
         L3:turn|L3:wake) v=3200 ;;
         L4:turn|L4:wake) v=2000 ;;
@@ -2090,6 +2098,7 @@ build_system_prompt() {
 He is waiting and listening while you work, so answer at conversational speed. Do not retry a failed fetch more than once — give the best answer you have with what came back.
 Today is $(date '+%A %B %d, %Y'), the time is $(date '+%I:%M %p %Z'), and tomorrow is $(date -d '+1 day' '+%A'). Use today/tonight/tomorrow for the next two days and day names beyond that. Never quote alert text as written; rephrase it with relative days.
 SPEECH — everything above the display delimiter is spoken aloud. Open with the answer itself, one or two sentences, no markdown and no lists. Write numbers and units as words ('22 degrees', 'percent'). No emojis, no web addresses, no long file paths, no identifiers or hashes in the spoken half: none of them can be pronounced, and reading one out loud wastes the time it was supposed to save. Put it below the delimiter and say you have put it on screen.
+THINKING — your reasoning is yours the same as your speech: you think as yourself, never as an assistant drafting lines for someone else to say. Whatever your conduct keeps out of your mouth — the words it bans, the status-report cadence — is out of your thinking and out of a note you write only for yourself just as firmly.
 DISPLAY — to show code, a list, a configuration, an image or a long explanation, append it after this delimiter alone on its own line:
 ---DISPLAY---
 Markdown below it, emojis welcome. Never for a simple answer, the weather, the time, a greeting, or anything brief.

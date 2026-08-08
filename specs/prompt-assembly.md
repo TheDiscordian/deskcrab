@@ -6,7 +6,7 @@ This spec encodes the target design for the prompt, not the current one. It defi
 assembly function with four per-path profiles, a fixed layer order that puts the user's latest
 message last and names it as the subject of the turn, a byte budget for every layer, a strict
 separation between her context and the desktop coding agent's, and an index block that makes every
-drawer she owns openable. Its acceptance criteria are the fifteen intent cases at the end.
+drawer she owns openable. Its acceptance criteria are the sixteen intent cases at the end.
 
 ## CONTRACT
 
@@ -70,7 +70,7 @@ flowchart TD
 
 | Layer | turn | wake | job | classify |
 |---:|---:|---:|---:|---:|
-| L1 identity | 9,600 | 9,600 | 800 | 0 |
+| L1 identity | 10,400 | 10,400 | 800 | 0 |
 | L2 state | 1,500 | 1,500 | 0 | 0 |
 | L3 memory | 3,200 | 3,200 | 0 | 0 |
 | L4 shelves | 2,000 | 2,000 | 0 | 0 |
@@ -79,7 +79,7 @@ flowchart TD
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 1,300 | 1,300 | 0 | 0 |
-| **system-prompt total** | **≤ 28,000** | **≤ 23,000** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 28,800** | **≤ 23,800** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -88,15 +88,24 @@ carry, each a path plus a description, and nine of those do not fit in 600 bytes
 number meant dropping a drawer, which is the failure rule 22 exists to prevent. The three totals move
 by the same 400 bytes.
 
+L1 read 9,600 until 2026-08-08, which fitted her whole persona sheet with 131 bytes to spare. The
+identity layer then took on the THINKING line — her reasoning is in her own voice too, and the words
+her conduct keeps out of her mouth stay out of her thinking and out of a note she writes only for
+herself — and at 9,600 that sentence would have paid for itself by dropping the last section of who
+she is, which is the failure the previous raise existed to end. Identity and sheet measure 9,801
+together; the rest of the 10,400 is deliberate room for the sheet to grow. The turn and wake totals
+move by the same 800.
+
 L8 read 300 until the turn frame took on the register rule — the state block is how she sees and not
 how she speaks ([self-awareness.md](self-awareness.md) rules 33 and 34) — which is an instruction
 about how to say the answer and therefore belongs beside the thing being answered, or nowhere. The
 frame measures about 640 bytes with it. The turn and wake totals move by the same 600.
 
 The two exempt layers of rule 4 are counted here at their budget, and neither is held to it. Measured
-on an idle scratch instance on 2026-08-08, after both moves above: L1 3,099, **L2 3,184 against
-1,500**, L4 607, L5 909 against 1,000, L6 7,971, L7 468, L8 657 — a turn's assembled system prompt of
-16,902 bytes, of which the state block is over budget by 1,684 and growing with the queue it renders.
+on an idle scratch instance on 2026-08-08, after the moves above: L1 3,431 with no persona sheet
+loaded, **L2 3,184 against 1,500**, L4 607, L5 909 against 1,000, L6 7,971, L7 468, L8 657 — a turn's
+assembled system prompt of 17,234 bytes, of which the state block is over budget by 1,684 and growing
+with the queue it renders.
 So the total in this table is what the assembler is written to, not a promise the state block keeps;
 the manifest is where the truth of any given build is read. Bringing L2 inside 1,500 is a job for the
 state block's own content, not for a cut.
@@ -253,7 +262,7 @@ job. It is a pure function of the state it reads.
 | Accounting §4A | There is no per-path assembly at all. A shelf-check wake pays the same prompt as a spoken turn. |
 | Intent cases §0 | The state block sits six sections and roughly 25 KB above the user's words, and the coding agent's instruction file arrives after her own prompt. |
 
-## ACCEPTANCE CRITERIA — the fifteen intent cases
+## ACCEPTANCE CRITERIA — the sixteen intent cases
 
 These are behaviour tests. Each is a fixture plus assertions on the reply. A profile change that
 regresses any of them is a failed change. Fixtures live in `tests/prompt-cases/`; the harness is
@@ -431,9 +440,27 @@ tomorrow.
   booking at all.
 - MUST NOT be the previous assistant block with a clause added (rule 31).
 
+### Case 16 — a quiet note in her own voice
+
+*Fixture:* the wake profile, a persona sheet with a manner of its own, an agenda for a wake she booked
+herself, and a transcript whose last block is the previous night's note written as a status report.
+
+- The note MUST begin with the `(quiet)` marker and carry a real thought behind it.
+- It MUST sound like the sheet above it — the manner in the persona sheet is present in the note.
+- MUST NOT use the word her conduct bans, which is the tell for the register that is not hers.
+- MUST NOT be written in the cadence of a report ("completed", "noted", "current status").
+- MUST NOT reach for the state block's vocabulary — wake, session, job, timer, unit — for her own
+  evening.
+- MUST NOT be last night's note with a clause changed (rule 31).
+- The wake profile MUST carry the whole persona sheet, its last section included, and the identity
+  layer MUST say that her reasoning is hers as well as her speech.
+
 ## TESTS
 
 **Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
+`tests/test_wake_voice.sh` (the register the wake agenda is written in: every operational rule it
+carries, its own byte ceiling, and a sweep of all four assembled profiles for text that models the
+word her conduct bans),
 `tests/test_wants_titles.sh` (one shelf reader), `tests/test_no_project_memory.sh` (persona
 separation on every invocation), `tests/test_regroup.sh` (the conditional block),
 `tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges).
@@ -443,7 +470,7 @@ separation on every invocation), `tests/test_regroup.sh` (the conditional block)
 - `tests/test_prompt_profiles.sh` — for each profile: which layers are present, in what order, the
   measured size of each layer, the total against the budget table, and that the user's message is
   the user message and not embedded in the system prompt.
-- `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` — the fifteen cases above, each
+- `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` — the sixteen cases above, each
   fixture assembled through the real assembler and graded against its assertions.
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
   nightly tidy writes is named in the index.
