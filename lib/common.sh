@@ -205,7 +205,14 @@ ACCOUNT_DEFAULT_FILE="${ACCOUNT_DEFAULT_FILE:-${XDG_DATA_HOME:-$HOME/.local/shar
 # ever made goes here, append-only. Without it "the chain moved" is a state
 # with no history, and a turn that went quiet for ten minutes has no record
 # anywhere she can read saying why.
-ACCOUNT_LOG="${ACCOUNT_LOG:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/account-log}"
+#
+# Derived from ACCOUNT_DEFAULT_FILE rather than from XDG on its own, so pinning
+# one pins BOTH. This file was independent for about ten minutes, and in that
+# time tests/test_limit_fallback.sh — which does pin the default file — wrote
+# forty-four fabricated swaps into the LIVE log, which the state block would
+# then have read back to her as real. A second knob a test has to know about is
+# a knob a test will not know about.
+ACCOUNT_LOG="${ACCOUNT_LOG:-$(dirname "$ACCOUNT_DEFAULT_FILE")/account-log}"
 ACCOUNT_LOG_KEEP="${ACCOUNT_LOG_KEEP:-500}"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
