@@ -75,6 +75,34 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Example: TTS_FIXES='s/\bhmph\b/humph/gi'
 # TTS_FIXES=''
 
+# What the CLI puts in front of her, per run. Measured numbers and the
+# reasoning are in tools/context-probe-results.md; the defaults are the point
+# of that measurement, so change them knowing what each one costs.
+#
+# Every built-in tool is worth roughly 1,900 tokens on every session, so this
+# list is the biggest single lever in the whole prompt. ToolSearch and Agent
+# are deliberately absent: with no MCP servers there is nothing for ToolSearch
+# to search, and a subagent holds the turn open while the user waits.
+# CLAUDE_TOOLS_TURN="Bash,Read,Write,Edit,WebFetch,WebSearch"
+# CLAUDE_TOOLS_WAKE="$CLAUDE_TOOLS_TURN"
+# CLAUDE_TOOLS_JOB=""          # empty = no restriction; a builder needs its tools
+#
+# The skills catalogue is 6,690 tokens on every session and she used one skill.
+# Set to 1 to buy it back.
+# CLAUDE_SKILLS=0
+
+# Prompt layer budgets, in bytes, PROMPT_BUDGET_<layer>_<profile>. Defaults are
+# the table in specs/prompt-assembly.md §11. `crab context --layers` prints
+# what each layer actually measured and whether it fitted.
+#
+# The one to know about: L1 is identity plus the persona sheet, and its budget
+# is 4,000. A persona sheet larger than that has whole markdown sections left
+# off the end — the prompt names them and says where they are, but they are not
+# in front of her. Either slim the sheet against the identity layer and conduct
+# (it is meant to hold what those two do NOT say), or raise the budget here.
+# PROMPT_BUDGET_L1_TURN=4000
+# PROMPT_BUDGET_L6_TURN=8000
+
 # CONTEXT_FILES is gone. It appended whole files to the assistant's prompt, and
 # the example it shipped with was a project's CLAUDE.md — instructions written
 # for a coding agent, in a different voice, addressed to a different reader,
