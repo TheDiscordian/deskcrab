@@ -163,7 +163,7 @@ LIVE_JOBS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
 if [ -n "${DESKCRAB_NO_DISPATCH:-}" ] || [ "$JOBS_DIR" != "$LIVE_JOBS_DIR" ]; then
     echo "job-runner: scratch run ($JOBS_DIR) — event wake suppressed: $WAKE_REASON" >> "$LOG"
 elif [ -n "$WANTS_FILE" ]; then
-    "$SCRIPT_DIR/crab" wake-at 5s event "$WAKE_REASON" >/dev/null 2>&1
+    "$SCRIPT_DIR/crab" wake-at --by job-runner 5s event "$WAKE_REASON" >/dev/null 2>&1
 fi
 
 exit "$RC"

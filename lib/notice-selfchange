@@ -397,4 +397,9 @@ for k in deleted created modified; do
 done
 
 log "waking: $SUMMARY (report: $REPORT)"
-exec "$CRAB" wake event "Files that are part of you changed on disk, and not by your own hand — $SUMMARY. What, when, and diffs where git knows them: $REPORT. This is awareness, not a task: inquire, examine, or quietly take note, as you see fit."
+# Through book(), with this watcher's name on the record: it is one of the
+# four subsystems that book wakes in her name, and until each of them stamped
+# its own identity, "nothing scheduled by me" was unanswerable. Booking rather
+# than firing also gets the session out of THIS unit, where it used to run as
+# a child of the very watcher it might be reporting on.
+exec "$CRAB" wake-at --by notice-selfchange 5s event "Files that are part of you changed on disk, and not by your own hand — $SUMMARY. What, when, and diffs where git knows them: $REPORT. This is awareness, not a task: inquire, examine, or quietly take note, as you see fit."

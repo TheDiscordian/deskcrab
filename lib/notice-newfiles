@@ -80,4 +80,5 @@ if recording_active && [ "$ATTEMPT" -lt "$MAX_DEFERRALS" ]; then
 fi
 
 list_files > "$STATE"
-exec "$CRAB" wake event "$PHRASE: $(echo "$NEW" | paste -sd, - | sed 's/,/, /g')"
+# Through book(), stamped with this watcher's name.
+exec "$CRAB" wake-at --by notice-newfiles 5s event "$PHRASE: $(echo "$NEW" | paste -sd, - | sed 's/,/, /g')"

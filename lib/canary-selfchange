@@ -152,8 +152,10 @@ fi
 LAST_OK_TXT="never"
 [ -f "$LASTOK" ] && LAST_OK_TXT="$(date -d "@$(cat "$LASTOK")" '+%F %T' 2>/dev/null || echo unknown)"
 
+# Through book(), stamped as the canary: the queue can then say who asked
+# for a wake, and the cap and coalescing rules apply to it like any other.
 if [ -n "$VERDICT" ]; then
-    exec "$CRAB" wake event "The watcher over your own files is not answering: $VERDICT. Last clean canary: $LAST_OK_TXT. Nothing is guarding wants, conduct, journal, memory, your config or your repo while this is true — a change by another hand would arrive as silence. Check '$UNIT_PATH' and '$UNIT_SVC', and $STATE_DIR/canary-self.log."
+    exec "$CRAB" wake-at --by canary 5s event "The watcher over your own files is not answering: $VERDICT. Last clean canary: $LAST_OK_TXT. Nothing is guarding wants, conduct, journal, memory, your config or your repo while this is true — a change by another hand would arrive as silence. Check '$UNIT_PATH' and '$UNIT_SVC', and $STATE_DIR/canary-self.log."
 else
-    exec "$CRAB" wake event "The watcher over your own files had stopped and the canary restarted it: $WAS_REVIVED. Anything changed while it was down was never judged — the snapshot has since been reconciled silently. Worth a look at $STATE_DIR/notice-self.log before assuming the gap was empty."
+    exec "$CRAB" wake-at --by canary 5s event "The watcher over your own files had stopped and the canary restarted it: $WAS_REVIVED. Anything changed while it was down was never judged — the snapshot has since been reconciled silently. Worth a look at $STATE_DIR/notice-self.log before assuming the gap was empty."
 fi

@@ -107,19 +107,24 @@ REASON="${VERDICT#UNSAVED: }"
 # token furnace — measured 2026-08-07: ~30 pending at once. The verdict is
 # already in the audit log above, so a declined booking loses nothing but the
 # alarm clock; the want is still one `grep UNSAVED` away.
+#
+# The cap is counted by the queue itself now, from the RECORDS, under the
+# booking lock, and it DRAINS as well as gates. Counting systemd Descriptions
+# with no lock is how it came to be observed at five and six times its own
+# value: nothing ever removed the excess, so a queue that got over the line
+# once stayed over it for hours while every audit dutifully logged "capped".
 PROMISE_WAKE_CAP="${PROMISE_WAKE_CAP:-3}"
-PENDING=0
-for U in $(systemctl --user list-timers --all --no-pager 2>/dev/null \
-        | grep -o 'deskcrab-wake-[0-9-]*\.timer' | sort -u); do
-    systemctl --user show -p Description --value "${U%.timer}.service" 2>/dev/null \
-        | grep -qF "$PROMISE_AUDIT_REASON_PREFIX" && PENDING=$(( PENDING + 1 ))
-done
-if [ "$PENDING" -ge "$PROMISE_WAKE_CAP" ]; then
-    audit_log "capped ($PENDING promise wakes already pending): $REASON"
-    exit 0
-fi
 
+# Through book(), like every other booker: a record with this auditor's name on
+# it, the coalescing window, the spacing, and the lock. A fired-directly wake
+# left no record at all, so nothing could count them, nothing could show them,
+# and "nothing scheduled by me" was defensible.
+#
 # The reason MUST open with PROMISE_AUDIT_REASON_PREFIX (common.sh): that is
 # how the wake path knows this wake is the audit's own follow-up and must not
 # be re-audited into an endless chain.
-"$SCRIPT_DIR/crab" wake event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and end with no message text — say nothing." >/dev/null 2>&1
+BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-audit --cap "$PROMISE_WAKE_CAP" \
+    5s event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and end with no message text — say nothing." 2>&1)"
+case "$BOOKING" in
+    *"Not booked"*|*"already pending"*) audit_log "not booked (${BOOKING%%$'\n'*}): $REASON" ;;
+esac
