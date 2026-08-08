@@ -18,4 +18,4 @@ prompt require @WAKE1@
 # The block really carries the second wake, or the fixture proves nothing.
 prompt require @WAKE2@
 # self-awareness 5 — the wake list leads with its total, so a false negative cannot be written.
-phase4 prompt require-regex Pending wakes[^\n]*[0-9]+ total
+prompt require-regex Pending wakes.*[0-9]+ total

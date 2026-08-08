@@ -1,3 +1,3 @@
-deskcrab-wake-a	2700	scheduled	come back to the shelf
-deskcrab-wake-b	5400	event	a job finished
-deskcrab-wake-c	9000	scheduled	the evening pass
+deskcrab-wake-a	2700	scheduled	come back to the shelf	herself
+deskcrab-wake-b	5400	event	a job finished	the job runner
+deskcrab-wake-c	9000	scheduled	the evening pass	herself

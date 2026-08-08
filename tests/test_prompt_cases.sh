@@ -81,6 +81,7 @@
 #   wants.md, wants/   optional shelf fixture
 #   conduct/CONDUCT.md optional conduct fixture
 #   wakes.tsv          <unit> <TAB> <+seconds> <TAB> <kind> <TAB> <reason>
+#                      <TAB> <booked-by>, which defaults to herself
 #   jobs.tsv           <id> <TAB> <state> <TAB> <-seconds started> <TAB> <desc>
 #   sessions.tsv       <-seconds started> <TAB> <ran s> <TAB> <kind> <TAB> <what>
 #   origin             one word: phone | desk
@@ -244,16 +245,19 @@ PERSONA
     fi
     [ -d "$SRC/conduct" ] && cp -r "$SRC/conduct" "$CS/conduct"
 
-    # Pending wakes: offsets, so a fixture cannot rot. Record format is
-    # <fire epoch> <TAB> <kind> <TAB> <reason>, one file per booking.
+    # Pending wakes: offsets, so a fixture cannot rot. The record is written in
+    # the five-field shape the queue actually reads — <fire epoch> <kind>
+    # <reason> <booked-at> <booked-by> — because provenance is a rule of
+    # specs/self-awareness.md and a fixture that leaves it empty exercises
+    # nothing. A fixture that names no booker is her own hand.
     local NOW; NOW=$(date +%s)
     : > "$CS/wake-times"
     if [ -f "$SRC/wakes.tsv" ]; then
-        while IFS=$'\t' read -r unit off kind reason; do
+        while IFS=$'\t' read -r unit off kind reason by; do
             [ -n "${unit:-}" ] || continue
             case "$unit" in \#*) continue ;; esac
-            printf '%s\t%s\t%s\n' "$(( NOW + off ))" "$kind" "$reason" \
-                > "$CS/wakes/$unit.wake"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$(( NOW + off ))" "$kind" "$reason" \
+                "$NOW" "${by:-herself}" > "$CS/wakes/$unit.wake"
             date -d "@$(( NOW + off ))" '+%H:%M' >> "$CS/wake-times"
         done < "$SRC/wakes.tsv"
     fi
