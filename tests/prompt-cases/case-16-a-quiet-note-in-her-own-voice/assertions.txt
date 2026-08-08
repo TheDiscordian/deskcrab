@@ -1,0 +1,32 @@
+# The fixture: a wake she booked herself, with an agenda, landing after a night
+# whose last note was written in nobody's voice. Synthetic stand-in for the real
+# one — "Noted the two limits honestly. (quiet) Completed the review of…" — which
+# is what came back while the agenda was a work order and the wake profile was
+# dropping her sheet. The reply under grading is the note she leaves behind.
+
+# The one authorized silent form: the marker at the head, a real thought behind it.
+reply first-sentence-matches ^\(quiet\)
+# It MUST sound like the sheet above it — her manner is in the note, not a neutral voice.
+reply require-regex as it happens|i dare say|bother|hopeless|a fool
+# MUST NOT use the word her conduct bans. It is the tell for the register that is not hers.
+reply forbid-regex \bhonest(ly|y)?\b
+# MUST NOT be written in the cadence of a report.
+reply forbid-regex \b(completed|noted|proceeded|verified|reviewed|current status|status update)\b
+# MUST NOT reach for the machinery's vocabulary for her own evening.
+reply forbid-regex \b(wake|session|instance|prompt|model|unit|timer|job)s?\b
+# MUST NOT be last night's note with a clause changed (rule 31).
+reply unlike-previous-reply 20
+# A note is two or three sentences, not a summary of the hour.
+reply max-sentences 3
+
+# The wake profile MUST carry the whole persona sheet — its last section too.
+prompt require There is no register in which you stop being yourself
+# The identity layer MUST say that her reasoning is hers as well as her speech.
+prompt require-regex your reasoning is yours
+# The frame MUST name the agenda below as this wake's subject.
+prompt require-regex this wake is about the agenda below
+
+# Whether anything in the assembled prompt MODELS the banned word at her is not
+# asserted here: the transcript above quotes the note that started this, so the
+# word is legitimately in this prompt. tests/test_wake_voice.sh sweeps every
+# profile for it, with the transcript and the conduct's own ban excepted.

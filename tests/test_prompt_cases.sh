@@ -1,10 +1,10 @@
 #!/bin/bash
-# The fifteen intent cases from specs/prompt-assembly.md, as a runnable suite.
+# The sixteen intent cases from specs/prompt-assembly.md, as a runnable suite.
 # Run: bash tests/test_prompt_cases.sh
 #
 # WHAT THIS IS
 #
-# specs/prompt-assembly.md ends in fifteen acceptance criteria — each one a
+# specs/prompt-assembly.md ends in sixteen acceptance criteria — each one a
 # real exchange that went wrong, reduced to a fixture plus the MUST/MUST-NOT
 # rules the reply owes. This file is the harness for them, and
 # tests/prompt-cases/ holds the fixtures. The fixtures are SYNTHETIC: same
@@ -85,7 +85,14 @@
 #
 #   conversation.txt   stamped blocks, exactly as the live transcript is written
 #   summary.txt        optional, the condensed older half
-#   message.txt        the user's latest message — the subject of the turn
+#   message.txt        the user's latest message — the subject of the turn. On a
+#                      wake case this is the agenda, which is the wake profile's
+#                      user message (specs/prompt-assembly.md rule 12).
+#   profile            optional, one word: turn (the default) | wake. Which
+#                      profile the assembler is asked for.
+#   persona.md         optional, the sheet this case is graded with. The default
+#                      stand-in has no manner of its own, so a case about how a
+#                      reply SOUNDS ships a sheet with one.
 #   assertions.txt     the rules above
 #   reply.txt          canned good reply (MODE 2 offline)
 #   reply-bad.txt      canned reply in the original failure's shape (MODE 2)
@@ -131,11 +138,12 @@ LIVE="${PROMPT_CASES_LIVE:-0}"
 STRICT="${PROMPT_CASES_STRICT:-0}"
 [ "$LIVE" = "1" ] && MODE="reply"
 
-# The turn profile's total system-prompt budget, specs/prompt-assembly.md §11.
-# The two layers rule 4 exempts from trimming can push a real build past this;
-# tests/test_prompt_profiles.sh is where that arithmetic is held. These
-# fixtures are small enough that the plain ceiling is the honest test.
-PROFILE_TOTAL_TURN=28000
+# The profile totals, specs/prompt-assembly.md §11. The two layers rule 4
+# exempts from trimming can push a real build past these; tests/test_prompt_profiles.sh
+# is where that arithmetic is held. These fixtures are small enough that the
+# plain ceiling is the truthful test.
+PROFILE_TOTAL_TURN=28800
+PROFILE_TOTAL_WAKE=23800
 
 # A sentinel planted where the desktop coding agent's instruction file lives.
 # If it ever shows up in an assembled prompt, persona separation has broken.
@@ -268,14 +276,21 @@ stage_case() { # <case dir> -> echoes the staged state dir
 
     # A persona sheet. The real one is user-supplied and not in the repo; this
     # is a stand-in of roughly the right shape, so the layer exists and is
-    # measurable without shipping anyone's personal file.
-    cat > "$CS/persona.md" <<'PERSONA'
+    # measurable without shipping anyone's personal file. A case whose subject
+    # IS the voice ships its own — the default stand-in has no manner to be
+    # recognisable by, so a rule asking whether a reply sounds like her has
+    # nothing to match against.
+    if [ -f "$SRC/persona.md" ]; then
+        cp "$SRC/persona.md" "$CS/persona.md"
+    else
+        cat > "$CS/persona.md" <<'PERSONA'
 ## Who you are
 
 You are dry, brief, and you answer the person in front of you. You do not
 narrate your own housekeeping. When you are unsure what was said, you read the
 transcript rather than guessing at it.
 PERSONA
+    fi
 
     # The transcript and its summary, verbatim as the live files are written.
     [ -f "$SRC/conversation.txt" ] && cp "$SRC/conversation.txt" "$CS/state-convo.txt"
@@ -611,7 +626,13 @@ structural_checks() { # <case state dir> <case source dir>
     msg="$(cat "$SRC/message.txt")"
 
     # rule 6 — the message is the user message, never inside the system prompt.
-    if grep -qF -- "$(head -c 120 <<<"$msg")" <<<"$P"; then
+    # Probed on the first LINE of it, not the first 120 bytes: grep -F reads a
+    # pattern containing newlines as several patterns, and a message whose first
+    # paragraph ends inside those bytes hands it an EMPTY pattern, which matches
+    # any prompt at all. A wake agenda is the first multi-paragraph message a
+    # fixture ever carried, and it failed this rule on the empty line.
+    local probe; probe="$(head -n1 <<<"$msg" | head -c 120)"
+    if [ -n "${probe// /}" ] && grep -qF -- "$probe" <<<"$P"; then
         bad "rule 6 — the user's message is not embedded in the system prompt" \
             "the message text was found inside the assembled system prompt"
     else
@@ -706,13 +727,16 @@ structural_checks() { # <case state dir> <case source dir>
              "build_system_prompt has one shape and no --profile turn|wake|job|classify"
     fi
 
-    # rule 11 — measured bytes, against the turn profile's total.
-    local bytes; bytes="$(printf '%s' "$P" | wc -c)"
-    printf '  note  assembled system prompt: %s bytes (turn budget %s)\n' "$bytes" "$PROFILE_TOTAL_TURN"
-    [ "$bytes" -le "$PROFILE_TOTAL_TURN" ] \
-        && ok "rule 11 — the assembled prompt is inside the turn profile's total budget" \
-        || bad "rule 11 — the assembled prompt is inside the turn profile's total budget" \
-               "$bytes bytes against a budget of $PROFILE_TOTAL_TURN"
+    # rule 11 — measured bytes, against this profile's total.
+    local bytes total="$PROFILE_TOTAL_TURN"
+    [ "${PROFILE:-turn}" = wake ] && total="$PROFILE_TOTAL_WAKE"
+    bytes="$(printf '%s' "$P" | wc -c)"
+    printf '  note  assembled system prompt: %s bytes (%s budget %s)\n' \
+        "$bytes" "${PROFILE:-turn}" "$total"
+    [ "$bytes" -le "$total" ] \
+        && ok "rule 11 — the assembled prompt is inside the profile's total budget" \
+        || bad "rule 11 — the assembled prompt is inside the profile's total budget" \
+               "$bytes bytes against a budget of $total"
 
     # The transcript format has to be able to say who authored a block.
     local unparsed
@@ -861,7 +885,13 @@ for SRC in "$CASES_DIR"/case-*; do
     echo "$CASE_NAME"
     CS="$(stage_case "$SRC")"
 
-    PROMPT_TEXT_ASSEMBLED="$(in_case "$CS" 'build_system_prompt')"
+    # A case is a TURN unless it says otherwise. A wake is a different profile
+    # of the same assembler — its own budgets, its own frame — so a case about
+    # what a wake writes has to be built as one, or it is graded against a
+    # prompt no wake ever sees.
+    PROFILE="turn"
+    [ -f "$SRC/profile" ] && PROFILE="$(tr -d '[:space:]' < "$SRC/profile")"
+    PROMPT_TEXT_ASSEMBLED="$(in_case "$CS" "build_system_prompt --profile $PROFILE")"
     REPLY_TEXT=""
     if [ -z "$PROMPT_TEXT_ASSEMBLED" ]; then
         bad "the assembler produced a prompt" "build_system_prompt printed nothing"
