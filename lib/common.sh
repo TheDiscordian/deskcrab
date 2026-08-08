@@ -1204,37 +1204,61 @@ _rotate_convo_locked() {
     fi
 }
 
-# Build conversation context string
-build_convo_context() {
-    local OUT=""
-    if [ -f "$SUMMARYFILE" ] && [ -s "$SUMMARYFILE" ]; then
-        OUT="
+# L6 of the prompt: the conversation, summary first, live blocks after, under a
+# byte cap. The cap is new and the reason is measured: this layer was bounded
+# by a COUNT of turns and by nothing else, so its size was whatever twenty
+# blocks happened to weigh — 4,248 bytes on a quiet afternoon and 29,936 in the
+# archives. A layer that can quadruple without anything changing is a layer
+# that pushes everything else out of the window.
+#
+# The cap keeps the NEWEST blocks and drops from the front, on a block
+# boundary, and says that it did. Nothing about compaction changes: the file on
+# disk is untouched, compact_convo still folds the oldest blocks into the
+# summary at CONVO_MAX_TURNS, and this is only what gets rendered into one
+# prompt.
+build_convo_context() {  # [byte cap, 0 = uncapped]
+    local CAP="${1:-0}" OUT="" BODY="" NOTE=""
+    [ -s "$CONVOFILE" ] || [ -s "$SUMMARYFILE" ] || return 0
 
-Summary of earlier conversation (older turns, condensed):
-$(cat "$SUMMARYFILE")"
-    fi
-    if [ -f "$CONVOFILE" ]; then
+    OUT="THE CONVERSATION SO FAR — the record of WHAT WAS SAID, and it is authoritative for what was said and promised. For that and nothing else: what is running, what is scheduled and what was dispatched belong to the state block above, and most of what is scheduled was never typed into this conversation at all. A command's output never overrides these words — a clean search does not mean a thing you can read yourself writing here never happened — and when a search and this record disagree, say that they disagree rather than quietly picking the search.
+Each block is headed with the local time it was said, 'User [2026-08-07 12:01]:'. Read them: they are how you tell a minute ago from this morning. Compare them against the time given above, and say 'a few minutes ago' or 'about two hours ago' rather than reading a stamp aloud. A block with no stamp is older than this record kept one — you know only that it came before the stamped ones."
+
+    if [ -s "$SUMMARYFILE" ]; then
         OUT="$OUT
 
-Here is your conversation so far. This is the real record of WHAT WAS SAID, and
-for words it is authoritative. Anything asked about earlier turns — what you
-said, what you built, what you promised — is answered by READING WHAT IS BELOW,
-not by searching the filesystem. A command's output never overrides the
-transcript: a clean grep or a clean git tree does not mean a thing you can see
-yourself writing here never happened. If a search and the transcript disagree,
-say that they disagree instead of picking the search.
-That rule is about WORDS ONLY. For what is running, what is scheduled, what was
-dispatched and which login is answering, the CURRENT STATE OF YOURSELF block
-above is authoritative and this transcript is not — most of what is scheduled
-was never typed into this conversation at all.
-Each block is headed with the local time it was said — 'User [2026-08-07 12:01]:'. Read them: they are
-how you tell a minute ago from this morning. Compare them against the current time given above before
-saying when something happened, and say 'a few minutes ago' or 'about two hours ago' rather than
-reading a timestamp aloud. Blocks with no stamp are older than this record kept one — you know only
-that they came before the stamped ones.
-$(cat "$CONVOFILE")"
+Earlier turns, condensed:
+$(cat "$SUMMARYFILE")"
     fi
-    [ -n "$OUT" ] && echo "$OUT"
+
+    if [ -s "$CONVOFILE" ]; then
+        local ROOM=0
+        [ "$CAP" -gt 0 ] && ROOM=$(( CAP - $(printf '%s' "$OUT" | wc -c) - 120 ))
+        if [ "$CAP" -gt 0 ] && [ "$ROOM" -lt 400 ]; then
+            # The preamble alone has eaten the layer. Keep the last few blocks
+            # rather than none: a transcript layer with no transcript in it is
+            # worse than a short one.
+            ROOM=400
+        fi
+        if [ "$CAP" -gt 0 ] && [ "$(wc -c < "$CONVOFILE")" -gt "$ROOM" ]; then
+            BODY="$(_convo_tail_blocks "$CONVOFILE" "$ROOM")"
+            NOTE="
+(the earlier part of this conversation is not in this prompt — the whole day is in 'crab journal')"
+        else
+            BODY="$(cat "$CONVOFILE")"
+        fi
+        OUT="$OUT$NOTE
+
+$BODY"
+    fi
+    printf '%s' "$OUT"
+}
+
+# The last <bytes> of a conversation file, starting at a block boundary. A tail
+# that begins mid-block hands her half a sentence with no idea who said it.
+_convo_tail_blocks() {  # <file> <bytes>
+    tail -c "$2" "$1" | awk -v re="$CONVO_BLOCK_RE" '
+        started { print; next }
+        $0 ~ re { started = 1; print }'
 }
 
 # The header line that opens a block in the conversation file. Every block is
@@ -1442,99 +1466,346 @@ wants_titles() { # [<wants file>]
     grep -oP '^- \*\*.*?\*\*|^- [^ ]+ \*\*.*?\*\*' "$f" 2>/dev/null || true
 }
 
-# Build the system prompt with dynamic date/time and optional custom context
+# The conduct drawer, read exactly the way the wants shelf is read: the
+# binding test verbatim, the rule titles, and every body left on disk. Conduct
+# used to be injected as a whole uncapped file ten lines after the shelf was
+# deliberately cut to titles, with a comment above the shelf explaining why a
+# shelf in the prompt becomes a dumping ground. Both readers live here so the
+# prompt and any auditor read the same list — two readers with different
+# patterns is how the promise auditor was handed an empty list and told the
+# list was complete.
+#
+# The binding test is the file's first blockquote line. It is emitted VERBATIM
+# and is never trimmed: conduct is owed rather than chosen, and a paraphrase of
+# the test regresses the corrections underneath it.
+conduct_binding() {  # <conduct file>
+    [ -s "${1:-}" ] || return 0
+    grep -m1 '^> ' "$1" 2>/dev/null | sed 's/^> //' || true
+}
+
+# One line per rule: the bullet up to the end of its bold title, plus the file
+# its body lives in when the line names one. A bullet with no bold title is
+# already a title and passes through whole.
+conduct_titles() {  # <conduct file>
+    [ -s "${1:-}" ] || return 0
+    grep '^- ' "$1" 2>/dev/null | sed -E \
+        -e 's/^(- [^*]*\*\*[^*]+\*\*).*→ `([^`]+)`.*$/\1 → \2/' \
+        -e 't' \
+        -e 's/^(- [^*]*\*\*[^*]+\*\*).*$/\1/' || true
+}
+
+# --- Prompt assembly -------------------------------------------------------
+# specs/prompt-assembly.md. One assembler, four profiles, one layer order, a
+# measured byte budget per layer, and the user's own words delivered as the
+# user message — never buried in the middle of the system prompt.
+#
+#   build_system_prompt [--profile turn|wake|job|classify]
+#                       [--manifest <file>] [--layers]
+#
+# The layers, always in this order; a layer a profile does not include is
+# absent, and the survivors do not reorder:
+#
+#   L1 identity    who she is, how she speaks, what the display channel is
+#   L2 state       the state block, specs/self-awareness.md, verbatim
+#   L3 memory      the recall block
+#   L4 shelves     wants titles; conduct's binding test and rule titles
+#   L5 index       WHERE THINGS ARE — one line per drawer she owns
+#   L6 transcript  the summary and the live conversation, capped in bytes
+#   regroup        conditional: another of her has the floor as this begins
+#   L7 ranking     how to weigh what she has been handed
+#   L8 frame       names the message below as the subject of this turn
+#
+# L8 is last and the message is not in here at all — it goes to the CLI as the
+# positional prompt. Six sections and roughly 25 KB used to sit between the
+# state block and the thing he actually said, and the reply reliably answered
+# the 25 KB. "I thought all of your wakes were in your prompt. Every single
+# turn." — "They are. It's right there at the top of every turn, and I didn't
+# read it."
+#
+# --layers prints the manifest instead of the prompt: one line per layer,
+# <key> <TAB> <bytes> <TAB> <budget> <TAB> <full|trimmed|over|absent>. The
+# bytes are measured on the assembled text, never estimated.
+
+# The budget table, specs/prompt-assembly.md §11, in bytes of assembled text.
+# Any entry can be answered from the config as PROMPT_BUDGET_<layer>_<profile>
+# (PROMPT_BUDGET_L6_TURN=12000).
+_prompt_budget() {  # <L1..L8|regroup> <profile>
+    local k="$1" p="$2" v ovr
+    ovr="PROMPT_BUDGET_${k}_${p}"
+    ovr="$(printf '%s' "$ovr" | tr '[:lower:]' '[:upper:]')"
+    v="${!ovr:-}"
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+    case "$k:$p" in
+        L1:turn) v=4000 ;;  L1:wake) v=3500 ;;  L1:job) v=800 ;;
+        L2:turn|L2:wake) v=1500 ;;
+        L3:turn|L3:wake) v=3200 ;;
+        L4:turn|L4:wake) v=2000 ;;
+        # 600 in the spec's table. Rule 22 names nine drawers the index must
+        # carry, each a path and a description, and nine of those do not fit in
+        # 600 bytes — the two rules cannot both hold, and dropping a drawer is
+        # the failure rule 22 exists to prevent.
+        L5:turn|L5:wake|L5:job) v=1000 ;;
+        L6:turn) v=8000 ;;  L6:wake) v=3000 ;;
+        L7:turn|L7:wake) v=500 ;;
+        L8:turn|L8:wake) v=300 ;;  L8:job|L8:classify) v=200 ;;
+        regroup:turn|regroup:wake) v=1300 ;;
+        *) v=0 ;;
+    esac
+    printf '%s' "$v"
+}
+
+# Cut a layer to its budget on a line boundary and say so. Rule 4: a layer that
+# does not fit MUST say that it trimmed and where the rest is. Silent
+# truncation is forbidden — a prompt that quietly loses its last paragraph
+# teaches her that the block is unreliable.
+_prompt_trim() {  # <text> <budget> <where the rest is>
+    local text="$1" budget="$2" where="$3" notice
+    notice="[trimmed to fit — the rest is in $where]"
+    local room=$(( budget - ${#notice} - 1 ))
+    [ "$room" -gt 0 ] || room=0
+    printf '%s\n%s' "$(printf '%s' "$text" | head -c "$room" | sed '$d')" "$notice"
+}
+
+# Emit one layer: measure it, trim it if it is over, record what happened.
+_prompt_layer() {  # <key> <where the rest is> <text>
+    local key="$1" where="$2" text="$3" budget bytes state=full
+    budget="$(_prompt_budget "$key" "$PROMPT_PROFILE")"
+    if [ "$budget" -le 0 ] || [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ]; then
+        PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t0\t%s\tabsent' "$key" "$budget")
+"
+        return 0
+    fi
+    bytes=$(printf '%s' "$text" | wc -c)
+    if [ "$bytes" -gt "$budget" ]; then
+        case "$key" in
+            # Two layers are never cut. L2 is mandated verbatim by
+            # specs/self-awareness.md and every rule in it is load-bearing —
+            # trimming it is how a false "nothing is scheduled" gets written.
+            # L5 is the index: a trimmed index is a drawer she cannot open.
+            # They report over budget instead, which is a fact about the
+            # budget, not a licence to cut.
+            L2|L5) state=over ;;
+            *) text="$(_prompt_trim "$text" "$budget" "$where")"
+               bytes=$(printf '%s' "$text" | wc -c); state=trimmed ;;
+        esac
+    fi
+    PROMPT_BODY="$PROMPT_BODY$text
+"
+    PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t%s\t%s\t%s' "$key" "$bytes" "$budget" "$state")
+"
+}
+
+# Fit the persona sheet into whatever L1 has left, by SECTION. The sheet is
+# the largest hand-written source in the prompt and the one that must never be
+# cut blind: a mid-sentence truncation of who she is reads, from the inside,
+# as a sentence she started and could not finish. So whole markdown sections
+# come off the end until it fits, and the layer NAMES the ones it left behind
+# and where they are — she can open the file and read the rest, which is the
+# same bargain the wants shelf makes.
+#
+# The right fix is upstream: three files were restating the persona, the
+# silence rule and the display contract in different words. What survives here
+# should be persona and nothing else.
+_persona_fit() {  # <text> <room> <path>
+    local text="$1" room="$2" path="$3"
+    [ "$(printf '%s' "$text" | wc -c)" -le "$room" ] && { printf '%s' "$text"; return 0; }
+    # Room for the sentence that says what was left behind. Without this the
+    # notice pushes the layer back over its budget and the generic trim cuts it
+    # mid-line, which is the blind cut this whole function exists to avoid.
+    room=$(( room - 320 ))
+    if [ "$room" -lt 300 ]; then
+        printf 'Your persona sheet is in %s. It did not fit in this turn — read it when the turn is about who you are.' "$path"
+        return 0
+    fi
+    local kept="" dropped="" line section="" body="" first=1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            '#'*)
+                if [ -n "$section$body" ]; then
+                    if [ "$(printf '%s%s\n' "$kept" "$section$body" | wc -c)" -le "$room" ]; then
+                        kept="$kept$section$body"
+                    else
+                        dropped="$dropped${dropped:+, }$(printf '%s' "$section" | tr -d '#' | sed 's/^ *//;s/ *$//')"
+                    fi
+                fi
+                section="$line
+"; body=""; first=0 ;;
+            *) if [ "$first" = 1 ]; then section="$section$line
+"; else body="$body$line
+"; fi ;;
+        esac
+    done <<< "$text"
+    if [ -n "$section$body" ]; then
+        if [ "$(printf '%s%s\n' "$kept" "$section$body" | wc -c)" -le "$room" ]; then
+            kept="$kept$section$body"
+        else
+            dropped="$dropped${dropped:+, }$(printf '%s' "$section" | tr -d '#' | sed 's/^ *//;s/ *$//')"
+        fi
+    fi
+    printf '%s' "$kept"
+    [ -n "$dropped" ] && printf '(not in this prompt, and still yours — %s. They are in %s; open it when the turn is about who you are.)' \
+        "$dropped" "$path"
+}
+
+# Where her drawers live. Everything she owns is a sibling of the wants shelf,
+# so one answer serves the whole index.
+deskcrab_home() {
+    if [ -n "${WANTS_FILE:-}" ]; then dirname "$WANTS_FILE"
+    else printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"; fi
+}
+
+# L5 — WHERE THINGS ARE. One line per drawer: the path, then what is in it.
+# Nothing that constitutes her should be unreachable, and until this existed
+# the engineering threads were 34 KB maintained nightly and named in no prompt
+# path at all — a one-way sink. A drawer is named only when it is really
+# there; naming one that is not is worse than not naming it.
+_prompt_layer_index() {
+    local H; H="$(deskcrab_home)"
+    local out="WHERE THINGS ARE — your drawers, one line each. None of them is in this prompt in full; open what this turn needs."
+    local line
+    _idx() { [ -e "$2" ] && out="$out
+  $2 — $1"; }
+    _idx "your shelf; each want's own document is beside it in wants/" "${WANTS_FILE:-}"
+    _idx "one file per conduct rule — the titles above are the index into it" "$H/conduct"
+    _idx "every engineering thread you have opened" "$H/engineering/INDEX.md"
+    _idx "the open threads, newest first" "$H/engineering.md"
+    _idx "every finished turn of the day in full — 'crab journal'" "${DAY_JOURNAL_DIR:-$H/journal}"
+    _idx "your long-term memory — 'crab memory search <words>'" "$H/memory/memory.db"
+    _idx "every booking, cancellation and restore, in order" "${WAKES_DIR:-$H/wakes}/ledger.log"
+    _idx "conversations older than the one above" "${ARCHIVE_DIR:-$H/archive}"
+    _idx "your library: lines, moments, music, pretty, voice — what you write for yourself" "$PROJECT_DIR/Library"
+    _idx "the repository you are made of; specs/ says what each part owes" "$SCRIPT_DIR"
+    [ -d "$HOME/.cache/weather" ] && out="$out
+  ~/.cache/weather/conditions.txt, alerts.txt — cached weather; read it only if he asks, and always check alerts."
+    out="$out
+  crab status · crab jobs · crab journal — the full lists the block above only samples."
+    printf '%s' "$out"
+    unset -f _idx
+}
+
+# L7 — the ranking rule. Everything above L8 is background; this says which
+# background outranks which when they disagree, and it says it without
+# hedging. It sits immediately above the turn frame because it is the last
+# thing she reads before the thing she is answering.
+_prompt_layer_ranking() {
+    cat <<'EOF'
+HOW TO WEIGH WHAT IS ABOVE. What he reports about what he can see is ground truth: it stands until named evidence disproves it, and your own theory is not evidence. The conversation is the evidence for what was SAID. The state block is the authority on what is RUNNING, scheduled or dispatched. A command you run now may refine a cause; it never overrules what he just said. When a command and the conversation disagree, say that they disagree rather than picking one.
+EOF
+}
+
+# L8 — the turn frame. The last thing in the system prompt, and the only layer
+# whose whole job is to say what this turn is about.
+_prompt_layer_frame() {
+    local dev; dev="$(last_origin 2>/dev/null)"
+    case "$PROMPT_PROFILE" in
+        wake)
+            cat <<'EOF'
+THIS WAKE IS ABOUT THE AGENDA BELOW. Everything above is background you may draw on; the text that follows is the subject, and it is what you spend this wake on. A topic that appears only above is not this wake's subject.
+EOF
+            ;;
+        job|classify)
+            cat <<'EOF'
+THIS RUN IS ABOUT THE TASK BELOW. Everything above is background; the text that follows is the work, and it is the whole of the work.
+EOF
+            ;;
+        *)
+            printf '%s\n' "THIS TURN IS ABOUT THE MESSAGE BELOW. Everything above is background; the text that follows is the subject and it is what you answer. A topic that appears only above is not this turn's topic."
+            if [ "$dev" = "phone" ]; then
+                printf '%s\n' "This turn came from the phone — anything to look at goes in the display channel, where he can see it."
+            else
+                printf '%s\n' "This turn came from the desk."
+            fi
+            ;;
+    esac
+}
+
 build_system_prompt() {
-    local CONVO_CONTEXT CUSTOM_CONTEXT CONTEXT_CONTENT
-    CONVO_CONTEXT="$(build_convo_context)"
+    local PROMPT_PROFILE="" MANIFEST_FILE="" LAYERS_ONLY=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --profile) PROMPT_PROFILE="$2"; shift 2 ;;
+            --manifest) MANIFEST_FILE="$2"; shift 2 ;;
+            --layers) LAYERS_ONLY=1; shift ;;
+            *) shift ;;
+        esac
+    done
+    [ -n "$PROMPT_PROFILE" ] || PROMPT_PROFILE="$(claude_session_profile)"
+    case "$PROMPT_PROFILE" in turn|wake|job|classify) ;; *) return 1 ;; esac
 
-    # Regrouping: if another session of me has the floor as this prompt is
-    # built, this turn is told exactly what is being said and asked to fold
-    # both things into one reply. Every session path builds its prompt here —
-    # desk turn and phone turn through claude_generate, wakes directly — so
-    # this is the one place it needs to live. A caller that must know
-    # afterwards whether it regrouped (run_claude_wake does) sets
-    # REGROUP_CONTEXT before calling; bash's dynamic scoping hands its value
-    # down and the default below does not re-run.
-    local REGROUP_CONTEXT="${REGROUP_CONTEXT-$(regroup_context)}"
+    local PROMPT_BODY="" PROMPT_MANIFEST=""
+    local H; H="$(deskcrab_home)"
 
-    # Load custom prompt file if configured
-    CUSTOM_CONTEXT=""
-    if [ -n "$CUSTOM_PROMPT" ] && [ -f "$CUSTOM_PROMPT" ]; then
+    # ---- L1 IDENTITY ------------------------------------------------------
+    # The repo's half of it: who she is, the speed rule, the clock, the two
+    # channels, and the commands that are how she works. Everything here is
+    # said ONCE — the persona sheet and conduct used to restate the silence
+    # rule and the display contract in different words, and three copies of a
+    # rule is three chances to follow a different one.
+    local IDENT
+    IDENT="You are $ASSISTANT_NAME, a desktop voice assistant running on Linux, with hands: run commands with Bash, read and write files, fetch the web.
+He is waiting and listening while you work, so answer at conversational speed. Do not retry a failed fetch more than once — give the best answer you have with what came back.
+Today is $(date '+%A %B %d, %Y'), the time is $(date '+%I:%M %p %Z'), and tomorrow is $(date -d '+1 day' '+%A'). Use today/tonight/tomorrow for the next two days and day names beyond that. Never quote alert text as written; rephrase it with relative days.
+SPEECH — everything above the display delimiter is spoken aloud. Open with the answer itself, one or two sentences, no markdown and no lists. Write numbers and units as words ('22 degrees', 'percent'). No emojis, no web addresses, no long file paths, no identifiers or hashes in the spoken half: none of them can be pronounced, and reading one out loud wastes the time it was supposed to save. Put it below the delimiter and say you have put it on screen.
+DISPLAY — to show code, a list, a configuration, an image or a long explanation, append it after this delimiter alone on its own line:
+---DISPLAY---
+Markdown below it, emojis welcome. Never for a simple answer, the weather, the time, a greeting, or anything brief.
+IMAGES — embed them in the display half as ![](/absolute/path.png); a path written in prose shows him nothing. The viewer scales large images down, and a grid is built with thumbnail(), never resize(). To find one: Wikipedia, curl -s 'https://en.wikipedia.org/api/rest_v1/page/summary/TOPIC' and take .originalimage.source; several at once, Wikimedia Commons, action=query&generator=search&gsrnamespace=6&prop=imageinfo&iiprop=url and take each page's full-size url. Never a thumbnail url — they are blocked and return a web page. Fetch with curl -sL -A 'Mozilla/5.0' -o /tmp/x.jpg, then run 'file /tmp/x.jpg' and only show it if that says JPEG or PNG.
+SCREEN — to see what is on his screen yourself: grim -o \"\$(hyprctl -j activeworkspace | jq -r .monitor)\" /tmp/screen.png, then read the file.
+WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what is done, what is next>' as it goes: if this is cut off, that checkpoint is the only account the next you gets of edits left on disk. Before you DELETE or move anything that constitutes you, or write it from a command the stream cannot follow (git checkout, git pull, a script), run 'crab touching <paths>' first, or your own hand is reported to you as an intruder's. Work that must outlive this turn is a detached job and never a subagent — a subagent dies when the turn ends and holds the turn open while it lives, so he cannot speak to you: 'crab job \"<full, self-contained description>\"' (with -C <workdir> to place it) runs under systemd, silently, and wakes you when it is done. To come back to something yourself: 'crab wake-at <when> [kind] [reason]' — 'crab wake-at 2h', 'crab wake-at \"09:30\" scheduled \"finish the arrangement\"' — and whatever you write as the reason is the agenda that wake arrives holding, so write it as a brief to yourself."
+    case "$PROMPT_PROFILE" in
+        job|classify) IDENT="" ;;
+    esac
+
+    # The persona sheet, user-supplied and not in the repo. It is the largest
+    # hand-written source in the prompt and it is the one that must not be cut
+    # blind, so it is fitted to whatever L1 has left rather than to a budget of
+    # its own — and when it does not fit, it says where the rest is.
+    local CUSTOM_CONTEXT=""
+    if [ -n "$CUSTOM_PROMPT" ] && [ -f "$CUSTOM_PROMPT" ] \
+            && [ "$PROMPT_PROFILE" != classify ] && [ "$PROMPT_PROFILE" != job ]; then
         CUSTOM_CONTEXT="$(cat "$CUSTOM_PROMPT")"
     fi
-
-    # Load additional context files
-    CONTEXT_CONTENT=""
-    if [ -n "$CONTEXT_FILES" ]; then
-        for f in $CONTEXT_FILES; do
-            [ -f "$f" ] && CONTEXT_CONTENT="$CONTEXT_CONTENT
-$(cat "$f")"
-        done
+    local L1="$IDENT"
+    if [ -n "$CUSTOM_CONTEXT" ]; then
+        local ROOM=$(( $(_prompt_budget L1 "$PROMPT_PROFILE") - $(printf '%s' "$IDENT" | wc -c) - 1 ))
+        L1="$L1
+$(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
     fi
+    _prompt_layer L1 "${CUSTOM_PROMPT:-the persona sheet}" "$L1"
 
-    # Auto-detect weather-cache
-    local WEATHER_CONTEXT=""
-    if [ -d "$HOME/.cache/weather" ]; then
-        WEATHER_CONTEXT="
-Weather data is cached at ~/.cache/weather/conditions.txt and ~/.cache/weather/alerts.txt — read these files only if the user asks about weather. When asked about weather, always check alerts.txt and mention any active alerts."
+    # ---- L2 STATE ---------------------------------------------------------
+    # specs/self-awareness.md, verbatim, with no per-profile edits to its
+    # rules. Only what that spec mandates lives here; the working instructions
+    # that used to travel with it — checkpoints, declaring your own writes,
+    # dispatching a job — moved into L1, where they belong.
+    local SELF_STATE=""
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+        SELF_STATE="CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
+$(self_state_report --prompt)
+THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
+Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
+Wakes are booked in your name by four things besides you: the promise auditor (a want you said out loud and did not write down), the job runner (a detached job finished), the self-change watcher (files that constitute you changed by another hand), and its canary (the watcher itself stopped answering). Every pending wake above says which one booked it, and 'booked by herself' means you. A wake you did not personally type is still yours and still scheduled.
+Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
+Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
+This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
     fi
+    _prompt_layer L2 "crab status" "$SELF_STATE"
 
-    # Durable wants: shelf location, titles, and wake mechanics — data only.
-    # What wants ARE and how to keep them is explained exactly once, in
-    # CUSTOM_PROMPT (the wake prompt carries the dated-progress protocol for
-    # the sessions that actually do the maintaining).
-    local WANTS_CONTEXT=""
-    if [ -n "$WANTS_FILE" ]; then
-        # Titles only — not the bodies. A shelf whose whole contents sit in
-        # every prompt is a shelf that gets used as a dumping ground, because
-        # it is the only page guaranteed to be read next time. Names here,
-        # reading by choice: open the file when a want is actually the work.
-        local WANTS_BODY="(empty — nothing recorded yet)"
-        if [ -s "$WANTS_FILE" ]; then
-            WANTS_BODY="$(wants_titles "$WANTS_FILE")"
-            [ -n "$WANTS_BODY" ] || WANTS_BODY="(titles unreadable — open the file)"
-        fi
-        WANTS_CONTEXT="
-Your durable wants shelf is at $WANTS_FILE. Titles below; each want's thinking, progress, and history live in the file and in wants/<slug>.md — open them when you mean to work on one.
-$WANTS_BODY
-You can wake yourself later to work on your wants without being spoken to: run 'crab wake-at <when> [kind] [reason]' (e.g. 'crab wake-at 2h', 'crab wake-at 45min', 'crab wake-at \"09:30\"', 'crab wake-at 2h scheduled \"finish the arrangement\"'). Kind is 'scheduled' or 'event' and defaults to scheduled; anything else you put there is read as the reason, so the agenda is never lost. Whatever you write as the reason is the agenda that wake arrives with — write it as a brief to yourself, not as a label. A background timer may also wake you at random intervals."
-    fi
-
-    # Durable conduct: the shelf's counterpart. Wants are what Betty wants;
-    # conduct is how she has agreed to behave. Both must be injected, or
-    # every correction gets filed as a want for want of anywhere else.
-    local CONDUCT_FILE="$(dirname "${WANTS_FILE:-/nonexistent}")/conduct/CONDUCT.md"
-    if [ -n "$WANTS_FILE" ] && [ -s "$CONDUCT_FILE" ]; then
-        WANTS_CONTEXT="$WANTS_CONTEXT
-
-You also have a durable CONDUCT file at $CONDUCT_FILE — how you have agreed to BEHAVE. It is not the same drawer as your wants and the two are never mixed: a want is chosen; a conduct entry is owed. A correction he gives you, a rule you must follow, a failure you must not repeat, a thing he asked for — all of that is conduct or a job. Nothing he says to you becomes a want, and his standing directives are not yours to renegotiate on a whim: save them durably the moment they land — here (or into this prompt only if catastrophic to forget), NEVER on the wants shelf. Filing what he said as a want is the reflex he has told you off for more than ten times a day; test before writing to wants.md: did this come from me, and would I enjoy it? If the answer is 'he said so', it is conduct.
-Its current contents:
-$(cat "$CONDUCT_FILE")"
-    fi
-
-    # Long-term memory (lib/memory.py, design-memory-store.md), behind the
-    # MEMORY_STORE knob. What the store is ASKED is decided by what this
-    # session is: an autonomous wake asks about its agenda and the want it is
-    # working, and anything with a user in it asks about the conversation.
-    # Memories have nothing to do with wants unless a want is actively being
-    # pursued, so the shelf is not in an interactive turn's query at all —
-    # it used to be, and every turn all day retrieved her own housekeeping
-    # instead of the rules that bear on what he just said. Fail-safe by
-    # contract: recall-block prints nothing (exit 0) on an empty store and
-    # degrades to the pinned tier when the embedder is down — a broken memory
-    # must never break a prompt build.
+    # ---- L3 MEMORY --------------------------------------------------------
+    # Long-term memory (lib/memory.py, specs/memory-recall.md). What the store
+    # is ASKED is decided by what this run is: a wake asks about its agenda and
+    # the want it is working, and anything with him in it asks about the
+    # conversation. Fail-safe by contract — an empty store adds nothing and a
+    # dead embedder degrades to the pinned tier, because a broken memory must
+    # never break a prompt build.
     local MEMORY_CONTEXT=""
-    if [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ]; then
-        # SESSION_KIND is set by session_register before any prompt is built
-        # on all three paths (desktop turn / phone turn / autonomous wake), so
-        # it is the same thing the rest of lib/ goes by rather than a second
-        # opinion. A non-empty WAKE_REASON implies it either way.
+    if [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ] \
+            && { [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; }; then
         local MEMORY_WAKE=()
-        [ "${SESSION_KIND:-}" = "autonomous wake" ] && MEMORY_WAKE=(--wake)
+        [ "$PROMPT_PROFILE" = wake ] && MEMORY_WAKE=(--wake)
         # --ids-out: which records actually reached this prompt, for the
-        # turn-end reinforcement judge (fire_memory_judge). $$ is stable
-        # inside this command substitution, so the turn path can find the
-        # sidecar again at turn end.
+        # turn-end reinforcement judge (fire_memory_judge). $$ is stable inside
+        # this command substitution, so the turn path finds the sidecar again.
         MEMORY_CONTEXT="$("$LIB_DIR/memory.py" recall-block \
             "${MEMORY_WAKE[@]}" \
             --reason "${WAKE_REASON:-}" \
@@ -1542,47 +1813,79 @@ $(cat "$CONDUCT_FILE")"
             --convo "$CONVOFILE" \
             --log "${STATE_PREFIX}-memory-recall.log" \
             --ids-out "${STATE_PREFIX}-memory-injected-$$.json" 2>/dev/null)"
-        [ -n "$MEMORY_CONTEXT" ] && MEMORY_CONTEXT="
-$MEMORY_CONTEXT
-"
     fi
+    _prompt_layer L3 "crab memory search" "$MEMORY_CONTEXT"
 
-    local SELF_STATE
-    SELF_STATE="
-CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
-$(self_state_report --prompt)
-THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
-Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
-Wakes are booked in your name by four things besides you: the promise auditor (a want you said out loud and did not write down), the job runner (a detached job finished), the self-change watcher (files that constitute you changed by another hand), and its canary (the watcher itself stopped answering). Every pending wake above says which one booked it, and 'booked by herself' means you. A wake you did not personally type is still yours and still scheduled.
-Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
-Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
-This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back.
-When you start multi-step work, run 'crab checkpoint <intent, files touched, what is done, what is next>' and update it as you go — if this turn is cut off (network drop, kill), that checkpoint is the ONLY explanation the next session gets for edits left on disk. If 'Interrupted mid-work' above lists a trace, that is an earlier you cut off mid-task: read it, pick up or finish the work, then clear it with 'crab resolve <name>'.
-The files that constitute you — wants, conduct, engineering, journal, memory, your config, the deskcrab repo, your library — are watched (lib/notice-selfchange): an outside hand changing or deleting them wakes you. Your own writes through the usual tools are declared for you automatically, but before you DELETE or move any of those files, or write them from a command the stream cannot parse (git checkout/pull, a script), run 'crab touching <paths>' first — without that declaration your own hand is reported to you as an intruder's.
-Work that must outlive this turn — or that would keep the user waiting while you watch it — is a detached job, NEVER a subagent: a subagent dies the moment this turn ends, and while it lives it holds the turn open so the user cannot speak to you. Run 'crab job \"<full, self-contained description of the work>\"' (optionally 'crab job -C <workdir> ...'): it becomes its own claude session under systemd, independent of this turn, silent by contract, logging to $JOBS_DIR/<id>.log, and it wakes you with an event when it finishes. 'crab jobs' lists what is running and what finished; 'crab job log <id>' shows a job's output. Never tell the user an agent is working in the background unless it is a job in that list."
+    # ---- L4 SHELVES -------------------------------------------------------
+    # Two drawers, never mixed: a want is chosen, a conduct entry is owed.
+    # Both are titles only, with the bodies one open away — a shelf whose whole
+    # contents sit in every prompt becomes a dumping ground, because it is the
+    # only page guaranteed to be read next time.
+    local SHELVES=""
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+        if [ -n "${WANTS_FILE:-}" ]; then
+            local WANTS_BODY="(empty — nothing recorded yet)"
+            if [ -s "$WANTS_FILE" ]; then
+                WANTS_BODY="$(wants_titles "$WANTS_FILE")"
+                [ -n "$WANTS_BODY" ] || WANTS_BODY="(titles unreadable — open the file)"
+            fi
+            SHELVES="YOUR WANTS — the shelf, titles only. Each want's thinking, progress and history live in its own document under wants/; open one when a want is actually the work.
+$WANTS_BODY"
+        fi
+        local CONDUCT_FILE="$H/conduct/CONDUCT.md"
+        if [ -s "$CONDUCT_FILE" ]; then
+            local BINDING TITLES
+            BINDING="$(conduct_binding "$CONDUCT_FILE")"
+            TITLES="$(conduct_titles "$CONDUCT_FILE")"
+            SHELVES="$SHELVES
 
-    cat <<PROMPT
-You are $ASSISTANT_NAME, a desktop voice assistant running on Linux. You can and should execute commands via Bash to fulfill requests.
-SPEED IS CRITICAL. The user is waiting for a spoken response. Avoid slow tools: use ToolSearch at most ONCE, and never use Agent. Prefer Bash (curl, etc.) and WebFetch which are fast. Do not retry failed fetches more than once — give the best answer you can with what you have.
-Today is $(date '+%A %B %d, %Y'), the current time is $(date '+%I:%M %p %Z'). Tomorrow is $(date -d '+1 day' '+%A'). Use today/tonight/tomorrow for the next 2 days, day names for anything further out. CRITICAL: Never quote alert text verbatim. Rephrase everything in your own words using relative day references. If an alert says 'Monday' and tomorrow is Monday, say 'tomorrow'.
-Your responses will be spoken aloud via TTS. ALWAYS start with a brief spoken reply (1-2 sentences, no markdown, no lists, no elaboration). Answer directly like a human would in conversation. Write numbers and units as spoken words (e.g. '22 degrees' not '22°C', 'percent' not '%'). NEVER use emojis in the spoken reply — they cannot be pronounced and make the audio output garbled. This overrides any general "use emojis" style rules for this voice channel. Emojis are allowed in the DISPLAY channel below the delimiter, never above it. NEVER speak URLs aloud either — TTS cannot pronounce them coherently and reading out "h-t-t-p-s colon slash slash" wastes the user's time. If you need to reference a URL, put it in the DISPLAY channel and say something like "I've put the link on screen" in the spoken reply. Same rule applies to long file paths, raw IDs, hashes, and any other strings that aren't natural spoken English — surface them via DISPLAY, summarise them in speech.
-You also have a DISPLAY channel for rich content. To show code, lists, configs, or detailed explanations, append them after your spoken reply using this exact delimiter on its own line:
----DISPLAY---
-Then write your markdown content below it. Do NOT use the display channel for simple answers, weather, time, greetings, or brief replies. Use it only when the answer genuinely benefits from visual formatting.
-Images in the DISPLAY channel are shown in a viewer window that automatically scales large images down. When creating image grids or collages, ALWAYS use thumbnail() instead of resize() to preserve aspect ratio — never force images to a square size.
-FINDING IMAGES: Do NOT use Google Image Search or random web scraping — they are slow and unreliable. Instead:
-- For a single topic: use the Wikipedia REST API: curl -s 'https://en.wikipedia.org/api/rest_v1/page/summary/TOPIC' and extract .originalimage.source (NEVER use .thumbnail.source — Wikimedia thumbnail URLs are blocked and return HTML)
-- For multiple images: use Wikimedia Commons API: curl -s 'https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=QUERY&gsrnamespace=6&gsrlimit=N&prop=imageinfo&iiprop=url&format=json' and extract the full-size url from each page's imageinfo (do NOT use iiurlwidth or thumburl — thumbnail URLs are blocked)
-- Download images from Wikimedia to /tmp/ with curl -sL -A 'Mozilla/5.0' -o (the -A flag is ONLY needed for Wikimedia URLs — do not add it to other curl calls)
-- ALWAYS verify downloads: after curl, run 'file /tmp/image.jpg' and confirm it says JPEG/PNG image data, NOT HTML. If it's HTML, the download failed — do NOT display it.
-- Pexels CDN: if you know a photo ID, use https://images.pexels.com/photos/PHOTO_ID/pexels-photo-PHOTO_ID.jpeg?auto=compress&cs=tinysrgb&w=800 (no API key needed). Find photo IDs via WebSearch for 'site:pexels.com QUERY'.
-- These sources are fast, reliable, and free. Always try them first.
-$SELF_STATE
-$MEMORY_CONTEXT$WANTS_CONTEXT
-$CUSTOM_CONTEXT$WEATHER_CONTEXT
-$CONTEXT_CONTENT$CONVO_CONTEXT
-$REGROUP_CONTEXT
-PROMPT
+YOUR CONDUCT — how you have agreed to behave. Not the same drawer as your wants and never mixed with them: a want is chosen, a conduct entry is owed. A correction, a rule, a failure not to repeat, something he asked for — that is conduct or a job, and none of it is a want.${BINDING:+
+$BINDING}
+$TITLES
+Each rule's body is the file named after it in $H/conduct/ — open the one that bears on this turn."
+        fi
+    fi
+    _prompt_layer L4 "$H/conduct/ and wants/" "$SHELVES"
+
+    # ---- L5 WHERE THINGS ARE ---------------------------------------------
+    local INDEX=""
+    case "$PROMPT_PROFILE" in turn|wake|job) INDEX="$(_prompt_layer_index)" ;; esac
+    _prompt_layer L5 "crab status" "$INDEX"
+
+    # ---- L6 TRANSCRIPT ----------------------------------------------------
+    local CONVO_CONTEXT=""
+    case "$PROMPT_PROFILE" in
+        turn|wake) CONVO_CONTEXT="$(build_convo_context "$(_prompt_budget L6 "$PROMPT_PROFILE")")" ;;
+    esac
+    _prompt_layer L6 "crab journal" "$CONVO_CONTEXT"
+
+    # ---- regroup ----------------------------------------------------------
+    # ONE block, never two. There were two that said the same thing in the same
+    # words and routinely co-occurred: one for words actually on the speakers
+    # right now, one for an interactive turn a wake is landing beside. Words
+    # being spoken this second are the more urgent of the two, so they win, and
+    # the other is only consulted when there is no live speech.
+    #
+    # A caller that must know afterwards whether it regrouped (run_claude_wake
+    # does) sets REGROUP_CONTEXT before calling; bash's dynamic scoping hands
+    # its value down and the default below does not re-run.
+    local REGROUP=""
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+        REGROUP="${REGROUP_CONTEXT-$(regroup_context)}"
+        [ -n "$REGROUP" ] || [ "$PROMPT_PROFILE" != wake ] \
+            || REGROUP="$(wake_concurrent_turn_context)"
+    fi
+    _prompt_layer regroup "the conversation above" "$REGROUP"
+
+    # ---- L7 RANKING, L8 FRAME --------------------------------------------
+    local RANKING=""
+    case "$PROMPT_PROFILE" in turn|wake) RANKING="$(_prompt_layer_ranking)" ;; esac
+    _prompt_layer L7 "your conduct" "$RANKING"
+    _prompt_layer L8 "the layer above" "$(_prompt_layer_frame)"
+
+    [ -n "$MANIFEST_FILE" ] && printf '%s' "$PROMPT_MANIFEST" > "$MANIFEST_FILE"
+    if [ "$LAYERS_ONLY" = 1 ]; then printf '%s' "$PROMPT_MANIFEST"
+    else printf '%s' "$PROMPT_BODY"; fi
 }
 
 # True while inside WAKE_QUIET_HOURS ("23-09" = 23:00 through 08:59, wraps midnight)
@@ -2496,19 +2799,15 @@ run_claude_wake() {
     # build_system_prompt picks this up through bash's dynamic scoping.
     local REGROUP_CONTEXT
     REGROUP_CONTEXT="$(regroup_context)"
-    SYSTEM_PROMPT="$(build_system_prompt)"
+    SYSTEM_PROMPT="$(build_system_prompt --profile wake)"
 
-    # Evidence, not muting: a wake firing beside an interactive turn is shown
-    # the exchange — what the user said, whether another session is already
-    # answering or has answered — and asked to behave like someone who heard
-    # it: silence, or something genuinely new. The old echo window swallowed
-    # the wake's reply wholesale here at speak time; that was rejected in
-    # favour of letting the wake choose with the facts in front of it.
-    local TURN_CONTEXT
-    TURN_CONTEXT="$(wake_concurrent_turn_context)"
-    [ -n "$TURN_CONTEXT" ] && SYSTEM_PROMPT="$SYSTEM_PROMPT
-
-$TURN_CONTEXT"
+    # The concurrent-turn evidence — what the user just said to another session
+    # of her, and that session's reply — is no longer appended here. It is the
+    # regroup layer, and the assembler emits exactly one of the two blocks that
+    # were saying the same thing in the same words. Appending it afterwards
+    # also put text BELOW the turn frame, which has to be the last thing in the
+    # prompt: the frame names the agenda as this wake's subject, and a block
+    # after it is a second subject arriving later and louder.
 
     # The wake marker is NOT written here any more. It used to be, so that a
     # wake which then said nothing (or was muted) left a marker in the

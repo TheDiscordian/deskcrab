@@ -93,13 +93,20 @@ out="$(witness)"
 
 # compact_convo only reaches the CLI when the live conversation has grown past
 # its threshold, which is a lot of fixture for one env prefix — assert on the
-# source instead. There is now ONE invocation, inside the loop that walks the
-# account chain, so every login it tries carries the prefix by construction: the
-# check is that the loop still has exactly one CLI call in it, because a second
-# one is how the primary and the fallback drifted apart the first time.
-n_sum=$(grep -c 'NEWSUM=\$(cd "\$PROJECT_DIR" && env "\$CLAUDE_NO_AUTO_MEMORY"' "$REPO_DIR/lib/common.sh")
-[ "$n_sum" -eq 1 ] && ok "conversation compaction, every login (compact_convo)" \
-    || fail "compact_convo must run the CLI in one prefixed place" "$n_sum of 1 prefixed"
+# source instead. It no longer spells out a CLI line of its own: it goes through
+# claude_classify, the one place the classifier shape is built, which exports
+# the prefix itself and runs from a directory with nothing in it. So the check
+# is that compact_convo has no hand-rolled invocation left and that the shared
+# helper carries the prefix — a second CLI line here is how the primary and the
+# fallback drifted apart the first time.
+n_sum=$(grep -c 'claude_classify "\$CONVO_SUMMARY_MODEL"' "$REPO_DIR/lib/common.sh")
+n_raw=$(grep -c 'NEWSUM=\$(cd "\$PROJECT_DIR"' "$REPO_DIR/lib/common.sh")
+n_helper=$(sed -n '/^claude_classify()/,/^}/p' "$REPO_DIR/lib/common.sh" \
+    | grep -c 'export "\${CLAUDE_NO_AUTO_MEMORY?}"')
+[ "$n_sum" -eq 1 ] && [ "$n_raw" -eq 0 ] && [ "$n_helper" -eq 1 ] \
+    && ok "conversation compaction, every login (compact_convo)" \
+    || fail "compact_convo must run the CLI in one prefixed place" \
+            "$n_sum via the helper, $n_raw hand-rolled, $n_helper prefixed helpers"
 
 echo
 echo "the knob is per-invocation, never machine-wide:"

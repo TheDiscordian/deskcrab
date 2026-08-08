@@ -75,9 +75,15 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Example: TTS_FIXES='s/\bhmph\b/humph/gi'
 # TTS_FIXES=''
 
-# Optional: additional files to include in system prompt context
-# Space-separated list of file paths. Their contents are appended to the prompt.
-# CONTEXT_FILES="$HOME/project/CLAUDE.md $HOME/project/notes.md"
+# CONTEXT_FILES is gone. It appended whole files to the assistant's prompt, and
+# the example it shipped with was a project's CLAUDE.md — instructions written
+# for a coding agent, in a different voice, addressed to a different reader,
+# arriving on every turn including one-word answers. Nothing that belongs to
+# the desktop coding agent may enter her sessions (specs/prompt-assembly.md
+# §16), and a knob whose documented use was exactly that had to go rather than
+# be left as a loaded gun in the example config. A file she should be able to
+# reach is named in the WHERE THINGS ARE index instead, which costs one line
+# and lets her open it when the turn needs it.
 
 # Optional: durable "wants" file — the assistant's own long-term goals, which it
 # maintains itself and pursues during autonomous wakes (crab wake / crab wake-at,

@@ -126,7 +126,9 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `CUSTOM_PROMPT` | No | Path to a markdown file appended to Crab's core system prompt |
 | `WHISPER_FIXES` | No | `sed` expressions to fix common whisper mistranscriptions |
 | `TTS_FIXES` | No | `sed` expressions to fix TTS pronunciation (spoken text only) |
-| `CONTEXT_FILES` | No | Space-separated list of files to include in the prompt |
+| `CLAUDE_TOOLS_TURN` | No | Tools a turn or wake may use (default: `Bash,Read,Write,Edit,WebFetch,WebSearch`) |
+| `CLAUDE_SKILLS` | No | `1` to give her sessions the skills catalogue back (default: off, worth ~6,700 tokens a session) |
+| `PROMPT_BUDGET_<layer>_<profile>` | No | Override one prompt layer's byte budget, e.g. `PROMPT_BUDGET_L6_TURN=12000` |
 | `ASSISTANT_NAME` | No | Persona name the assistant sees in its system prompt (default: `Crab`) |
 | `NOTIFY_NAME` | No | Name shown in notifications (default: `ASSISTANT_NAME` if set, else `DeskCrab`) |
 | `WANTS_FILE` | No | Durable goals file the assistant maintains and pursues during autonomous wakes |

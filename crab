@@ -313,6 +313,20 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         exit $?
         ;;
 
+    context)
+        # The prompt itself, exactly as a live session receives it. Producing
+        # it is a local operation and it stays ONE command: when he asks to see
+        # the context, this is the answer, and the failure it replaces is a
+        # turn spent reconstructing the prompt from memory, or proposing to put
+        # a proxy in front of the API to capture it.
+        #   crab context                  the turn profile
+        #   crab context --profile wake   any of turn|wake|job|classify
+        #   crab context --layers         the per-layer manifest and budgets
+        shift
+        build_system_prompt "$@"
+        exit $?
+        ;;
+
     memory)
         # Long-term vector memory (lib/memory.py, design-memory-store.md):
         # add / search / list / dump / forget / ingest / recall-block.
@@ -373,7 +387,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
         exit 0
         ;;
 
@@ -385,7 +399,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
         fi
         stop_tts

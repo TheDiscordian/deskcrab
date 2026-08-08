@@ -23,7 +23,7 @@ T="$SANDBOX"
 # folded blocks actually reached it) and answers with a fixed summary.
 sandbox_stub claude <<EOF
 #!/usr/bin/env bash
-printf '%s' "\${!#}" > "$T/summary-prompt.txt"
+{ printf '%s\n' "\${!#}"; cat; } > "$T/summary-prompt.txt"
 printf 'CONDENSED SUMMARY\n'
 EOF
 cat > "$DESKCRAB_CONF" <<EOF
