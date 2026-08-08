@@ -166,6 +166,14 @@ TLS_DIR="${TLS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/tls}"
 # Runtime state. Overridable from the environment so a test run can be pointed
 # at a scratch conversation instead of stomping the live one.
 STATE_PREFIX="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}"
+# Reply audio for the phone, and the ONE glob the hourly sweep deletes by. It
+# hangs off STATE_PREFIX rather than a hardcoded /tmp/deskcrab-remote-*.opus
+# because the sweep is a pattern delete: a scratch instance running with its
+# own state prefix used to reap the LIVE instance's clips, since both matched
+# the same pattern in the same directory. On the live prefix this resolves to
+# exactly the path it always had, so serve.py's /audio/ handler — which serves
+# `deskcrab-remote-*.opus` and nothing else — is unaffected.
+REMOTE_AUDIO_PREFIX="${REMOTE_AUDIO_PREFIX:-${STATE_PREFIX}-remote-}"
 CONVOFILE="${STATE_PREFIX}-convo.txt"
 CONVOLOCK="${STATE_PREFIX}-convo.lock"
 SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
@@ -1854,9 +1862,10 @@ wake_speak_to_phone() {
     phone_connected || return 1
     local ID OUT PTR="${STATE_PREFIX}-wake-audio"
     ID="$(date +%s%N)"
-    # deskcrab-remote- prefix: the only pattern /audio/ serves, and the hourly
-    # cleanup in the remote turn path sweeps it like any reply clip.
-    OUT="/tmp/deskcrab-remote-wake-$ID.opus"
+    # REMOTE_AUDIO_PREFIX: on the live prefix this is the `deskcrab-remote-`
+    # basename /audio/ serves, and the hourly cleanup in the remote turn path
+    # sweeps it like any reply clip — but only within this instance's own glob.
+    OUT="${REMOTE_AUDIO_PREFIX}wake-$ID.opus"
     synth_opus "$1" "$OUT" || return 1
     python3 -c 'import json,sys; print(json.dumps({"id":sys.argv[1],"audio":"/audio/"+sys.argv[2],"spoken":sys.argv[3]}))' \
         "$ID" "$(basename "$OUT")" "$1" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR" || return 1
@@ -2983,7 +2992,7 @@ _run_claude_remote_locked() {
     DISPLAY_MD=$(display_part "$RESPONSE")
 
     if [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
-        local CANDIDATE="/tmp/deskcrab-remote-$(date +%s%N).opus"
+        local CANDIDATE="${REMOTE_AUDIO_PREFIX}$(date +%s%N).opus"
         synth_opus "$SPOKEN" "$CANDIDATE" && AUDIO="$CANDIDATE"
         # The phone is about to play this. Same hand-off as a wake's phone
         # audio: no pid to watch, so publish the words with an estimated end
@@ -2997,9 +3006,12 @@ _run_claude_remote_locked() {
     fi
 
     rm -f "$DEBUGLOG"
-    # Reply audio the client has had time to fetch. Scoped to this server's own
-    # generated files and to clips older than an hour.
-    find /tmp -maxdepth 1 -name 'deskcrab-remote-*.opus' -mmin +60 -delete 2>/dev/null
+    # Reply audio the client has had time to fetch. Scoped to THIS instance's
+    # own prefix and to clips older than an hour — a pattern delete that only
+    # said /tmp/deskcrab-remote-*.opus reaped the live instance's clips
+    # whenever a scratch instance ran beside it.
+    find "$(dirname "$REMOTE_AUDIO_PREFIX")" -maxdepth 1 \
+        -name "$(basename "$REMOTE_AUDIO_PREFIX")*.opus" -mmin +60 -delete 2>/dev/null
 
     # Out of band, with the reply audio already synthesised: a want stated on
     # the phone dies with the turn exactly like one stated at the desk. The
