@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | status | shutup | job <desc> | jobs | memory <verb> | wake | wake-at <when> | serve | remote <text> | <text>
+# Usage: crab start | stop | status | shutup | job <desc> | jobs | memory <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -135,10 +135,17 @@ case "${1:-}" in
         # machine happened), or empty (the background timer came round).
         # A wake with a KIND had a purpose, so a blocked one is pushed back
         # rather than dropped — and an event wake carries its reason along.
-        WAKE_KIND="${2:-}"
-        WAKE_REASON="${3:-}"
+        # Arity normalised on READ as well as on write: a record whose agenda
+        # ended up in the kind column used to have that agenda BLANKED here,
+        # and the wake then fired with nothing to do. If the kind is not one
+        # this path knows, it is the reason and the kind takes its default.
+        _wake_norm "${2:-}" "${3:-}"
+        WAKE_KIND="$WK_N_KIND"
+        WAKE_REASON="$WK_N_REASON"
         WAKE_ID="${4:-}"
-        [ "$WAKE_KIND" = "scheduled" ] || [ "$WAKE_KIND" = "event" ] || WAKE_KIND=""
+        # Which subsystem booked this wake, carried through so a deferral keeps
+        # its provenance instead of re-booking as an anonymous one.
+        WAKE_BOOKED_BY="${5:-unknown}"
 
         # This booking has fired: retire its durable record before anything can
         # exit early, or wake-restore would resurrect a wake that already ran.
@@ -173,8 +180,15 @@ case "${1:-}" in
             # here is what produced three timers at the same second with
             # sequential ids: every wake blocked in the same minute re-armed to
             # the same minute, and the ones that lost the lock again marched on
-            # together. wake_free_slot spaces the retries so the queue drains.
-            [ -n "$WAKE_KIND" ] && "$SCRIPT_DIR/crab" wake-at "$(wake_free_slot)s" "$WAKE_KIND" "$WAKE_REASON" >/dev/null
+            # together. wake_book snaps every booking to a free slot under the
+            # booking lock, so the queue drains one at a time.
+            #
+            # NO kind gate. A wake that lost the lock is DEFERRED, never
+            # destroyed — and a kind-less wake (the background timer's) is
+            # still a wake somebody meant to happen. Gating this on a kind is
+            # how a blanked record became a wake that simply never came back.
+            "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
+                "${WAKE_DEFER_DELAY}s" "${WAKE_KIND:-scheduled}" "$WAKE_REASON" >/dev/null
             exit 0
         fi
 
@@ -314,69 +328,19 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # recorded durably in $WAKES_DIR first and rebuilt from there by
         # `crab wake-restore` — what survives a reboot is the record, not the
         # timer.
-        WHEN="${2:-}"
-        if [ -z "$WHEN" ]; then
-            echo "Usage: crab wake-at <when> [kind] [reason]   (e.g. 2h, 45min, \"09:30\", \"Sat 14:00\")"
+        #
+        # All of it — the lock, the coalescing, the spacing, the record, the
+        # rollback and the ledger — lives in wake_book (lib/wake-queue.sh).
+        # This is a door onto the module, not a second implementation of it.
+        shift
+        if [ -z "${1:-}" ]; then
+            echo "Usage: crab wake-at [--by <who>] [--cap <n>] <when> [kind] [reason]"
+            echo "       (when: 2h, 45min, \"09:30\", \"Sat 14:00\"; kind: scheduled|event)"
+            echo "       Anything unrecognised in the kind slot is read as the reason."
             exit 1
         fi
-        # A deferred wake keeps whatever kind and reason it started with, so an
-        # event wake pushed back past a recording still arrives knowing why.
-        KIND="${3:-scheduled}"
-        REASON="${4:-}"
-        # One booker at a time. Everything from here to the timer being booked
-        # is check-then-act, and several sessions book at once: two wakes
-        # finishing in the same second each found no pending floor and each
-        # booked one. The lock is released when this process exits.
-        exec 6>"$WAKE_BOOK_LOCK"
-        flock -w 30 6 || true
-        # $$ as well as the timestamp: two deferrals in the same second would
-        # otherwise collide on the unit name and the second one would vanish.
-        UNIT="deskcrab-wake-$(date +%s)-$$"
-        FIRE="$(wake_when_to_epoch "$WHEN")"
-        if [ -z "$FIRE" ]; then
-            echo "Cannot make sense of '$WHEN' — nothing scheduled."
-            exit 1
-        fi
-        # One promise, not a stack. Sessions overlap and each books its own
-        # "come back later"; without this the timers land minutes apart and
-        # every fired wake re-reads the same wants and re-announces the same
-        # progress. A scheduled booking equivalent to a pending one (same
-        # reason, firing within WAKE_COALESCE_WINDOW) is already covered.
-        if EXISTING="$(wake_pending_equivalent "$FIRE" "$KIND" "$REASON")"; then
-            echo "Wake already pending as $EXISTING (fires within $((WAKE_COALESCE_WINDOW / 60))min of '$WHEN') — not booking another."
-            exit 0
-        fi
-        # Two wakes cannot run at once, so two bookings on one second are one
-        # wake and one deferral. Spacing the retries was not enough on its own:
-        # concurrent sessions each booking a DIFFERENT wake for the same instant
-        # rebuild the collision from the front, and within a minute of the
-        # deferral fix two fresh bookings had already landed together at
-        # 13:05:54. Every booking now snaps to a moment nothing else holds. A
-        # nudge of a few minutes costs a promise to herself nothing; landing on
-        # another wake's second costs it a quarter of an hour.
-        # Booking as a delay rather than passing $WHEN through also retires the
-        # accidental daily repetition: a bare calendar spec ('09:45') made a
-        # timer that came back every morning, while the record covered only the
-        # next firing. A wake-at is one-shot, and now it is one-shot in systemd
-        # too.
-        DELAY=$(( FIRE - $(date +%s) )); [ "$DELAY" -lt 1 ] && DELAY=1
-        SLOT="$(wake_free_slot "$DELAY")"
-        NEWFIRE=$(( $(date +%s) + SLOT ))
-        if [ "$NEWFIRE" -ne "$FIRE" ]; then
-            echo "Moved off a moment another wake already holds: $(date -d "@$FIRE" '+%H:%M:%S') -> $(date -d "@$NEWFIRE" '+%H:%M:%S')"
-            FIRE="$NEWFIRE"
-        fi
-        # Record first, book second: a crash between the two leaves a record
-        # the reconciler will honor, where the other order leaves a timer
-        # nothing remembers.
-        wake_state_write "$UNIT" "$FIRE" "$KIND" "$REASON"
-        if _wake_book "$UNIT" "${SLOT}s" "$KIND" "$REASON"; then
-            echo "Wake scheduled ($WHEN — $(date -d "@$FIRE" '+%H:%M:%S')) as $UNIT"
-        else
-            wake_state_clear "$UNIT"
-            echo "Failed to schedule wake ($WHEN)."
-            exit 1
-        fi
+        wake_book "$@"
+        exit $?
         ;;
 
     wake-tidy)
@@ -395,17 +359,13 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         ;;
 
     wake-cancel)
-        # The only real cancellation. Stopping just the timer is not one any
-        # more — the record survives and wake-restore would bring it back.
-        UNIT="${2:-}"
-        if [ -z "$UNIT" ]; then
-            echo "Usage: crab wake-cancel <unit>   (pending wakes: crab status)"
-            exit 1
-        fi
-        UNIT="${UNIT%.timer}"
-        systemctl --user stop "$UNIT.timer" 2>/dev/null
-        wake_state_clear "$UNIT"
-        echo "Cancelled $UNIT"
+        # The only real cancellation. Stopping just the timer is not one — the
+        # record survives and wake-restore brings it back, which is exactly how
+        # a backlog called off by hand came back verbatim an hour later.
+        # --all calls off the whole queue in one command, and every cancellation
+        # is written to the ledger so an undone one can be seen.
+        wake_cancel "${2:-}"
+        exit $?
         ;;
 
     help|--help|-h|usage|commands)
@@ -413,7 +373,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
         exit 0
         ;;
 
@@ -425,7 +385,7 @@ Quiet hours are in effect: speaking and windows are suppressed — work silently
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when>|wake-cancel <unit>|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
             exit 1
         fi
         stop_tts

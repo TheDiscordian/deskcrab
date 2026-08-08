@@ -7,4 +7,8 @@ ExecStart=%h/.local/lib/deskcrab/sleep-nightly run
 # User units get a bare PATH, and the ingest shells out to claude (and the
 # venv python re-exec) in ~/.local/bin — same reason deskcrab-serve sets it.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-RuntimeMaxSec=1h
+# TimeoutStartSec, not RuntimeMaxSec: this is a Type=oneshot service, and the
+# journal has been answering RuntimeMaxSec with "has no effect in combination
+# with Type=oneshot. Ignoring." A oneshot spends its whole life ACTIVATING, so
+# the start timeout is the runtime bound that actually applies.
+TimeoutStartSec=3600

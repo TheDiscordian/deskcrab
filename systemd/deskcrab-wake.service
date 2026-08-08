@@ -8,4 +8,8 @@ ExecStart=%h/.local/bin/crab wake
 # crab's own stall watchdog (WAKE_STALL_TIMEOUT — silence, not wall-clock);
 # this ceiling exists solely for a runaway session the watchdog can't see
 # (still producing output, never finishing).
-RuntimeMaxSec=2h
+# TimeoutStartSec, not RuntimeMaxSec: this is a Type=oneshot service, and the
+# journal has been answering RuntimeMaxSec with "has no effect in combination
+# with Type=oneshot. Ignoring." A oneshot spends its whole life ACTIVATING, so
+# the start timeout is the runtime bound that actually applies.
+TimeoutStartSec=7200

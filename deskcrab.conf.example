@@ -134,6 +134,21 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # duplicate timers that each re-announce the same progress.
 # WAKE_COALESCE_WINDOW=900
 
+# Optional: the ceiling on a self-scheduled wake session, seconds (default
+# 7200). Every transient wake unit is booked with it as TimeoutStartSec — the
+# absolute backstop for a runaway session, since the in-process stall watchdog
+# cannot by construction reap one that keeps emitting output. Before this,
+# only the standing random-interval timer had any ceiling at all.
+# WAKE_RUNTIME_MAX=7200
+
+# Optional: where the queue's own change ledger lives, and how many lines of it
+# are kept. Every booking, cancellation, restoration, collapse and purge is
+# written here, and the state block reads it to say what changed while she was
+# away — a bulk restore means a cancellation was undone or the machine
+# rebooted, and that used to go to /dev/null.
+# WAKE_LEDGER="$HOME/.local/share/deskcrab/wakes/ledger.log"
+# WAKE_LEDGER_KEEP=2000
+
 # Optional: detached background jobs — `crab job "<description>"` runs work as
 # its own headless claude session under a transient systemd user unit
 # (deskcrab-job-<id>), so it survives the turn that launched it and never

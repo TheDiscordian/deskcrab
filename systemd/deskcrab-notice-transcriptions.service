@@ -6,4 +6,8 @@ Type=oneshot
 ExecStart=%h/.local/lib/deskcrab/notice-newfiles transcriptions %h/Documents/Transcriptions "a new meeting transcript was just saved"
 # The wake session runs inside this unit. Same last-resort ceiling as
 # deskcrab-wake.service; the stall watchdog does the real reaping.
-RuntimeMaxSec=2h
+# TimeoutStartSec, not RuntimeMaxSec: this is a Type=oneshot service, and the
+# journal has been answering RuntimeMaxSec with "has no effect in combination
+# with Type=oneshot. Ignoring." A oneshot spends its whole life ACTIVATING, so
+# the start timeout is the runtime bound that actually applies.
+TimeoutStartSec=7200
