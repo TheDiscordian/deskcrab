@@ -146,11 +146,138 @@ async function testDeadline() {
     api.streamTurn("hello", {}),
     sleep(5000).then(() => ({ error: "HARNESS TIMEOUT" })),
   ]);
-  if (res && /gave up reconnecting/.test(res.error || ""))
+  if (res && /gave up/.test(res.error || "") && !/HARNESS/.test(res.error))
     ok("a turn that is alive but going nowhere ends at the ceiling");
   else
     bad("the deadline must be checked on the loop, not only after a throw",
         (res && (res.error || JSON.stringify(res))) || "never returned");
+}
+
+// --- 2b: keepalives alone do not hold the client past the deadline ---------
+//
+// THE SURVIVING HALF OF C10. The idle timer is reset by ANY bytes, and the
+// server pings every ~15 s exactly so a healthy link always carries bytes. A
+// turn whose done event will never come (the turn thread wedged server-side)
+// therefore never throws, never EOFs, and never returns: no timer fires, the
+// outer loop is never re-entered, and the deadline — checked only there —
+// might as well not exist. `busy` holds until a hand reload, with the status
+// stuck on the last thing shown: "thinking…".
+
+async function testPingsAreNotProgress() {
+  console.log("");
+  console.log("streamTurn — a stream of nothing but pings ends at the ceiling:");
+  const enc = new TextEncoder();
+  const ctx = {
+    IDLE_MS: 60000,                    // far above the ceiling: the idle abort
+    randomHex: () => "abc123",         // must NOT be what saves this
+    setStatus: () => {},
+    showThought: () => {},
+    enqueueVoice: () => {},
+    turnCtl: null, lastTurnProgress: 0,
+    // Pings forever: bytes keep arriving, no frame ever parses to an event.
+    fetch: async () => ({
+      ok: true, status: 200,
+      body: { getReader: () => ({
+        read: () => new Promise(res => setTimeout(
+          () => res({ value: enc.encode(": ping\n\n"), done: false }), 40)),
+      }) },
+    }),
+  };
+  const body = lift("async function streamTurn")
+      .replace("15 * 60 * 1000", "500")   // the give-up, reachable in a test
+      .replace(/STREAM_IDLE_MS/g, "IDLE_MS");
+  const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {streamTurn};\n}")(ctx);
+  const started = Date.now();
+  const res = await Promise.race([
+    api.streamTurn("hello", {}),
+    sleep(4000).then(() => ({ error: "HARNESS TIMEOUT" })),
+  ]);
+  const took = Date.now() - started;
+  if (res && /gave up/.test(res.error || "") && !/HARNESS/.test(res.error))
+    ok("a doneless turn on a healthy link is given up on (" + took + "ms)");
+  else
+    bad("pings must reset the idle timer but never the deadline",
+        (res && (res.error || JSON.stringify(res))) || "never returned");
+}
+
+// --- 2c: real events DO push the deadline — a long turn is never cut off ---
+
+async function testProgressExtendsDeadline() {
+  console.log("");
+  console.log("streamTurn — a turn still sending events outlives the original ceiling:");
+  const enc = new TextEncoder();
+  let sent = 0;
+  const ctx = {
+    IDLE_MS: 60000,
+    randomHex: () => "abc123",
+    setStatus: () => {},
+    showThought: () => {},
+    enqueueVoice: () => {},
+    turnCtl: null, lastTurnProgress: 0,
+    // Eight thinking events 100 ms apart — 800 ms of turn against a 400 ms
+    // ceiling — then the reply. Only a deadline measured from the LAST event
+    // lets this finish.
+    fetch: async () => ({
+      ok: true, status: 200,
+      body: { getReader: () => ({
+        read: () => new Promise(res => setTimeout(() => {
+          sent++;
+          const frame = sent <= 8
+            ? 'data: {"kind":"thinking","text":"step ' + sent + '"}\n\n'
+            : 'data: {"kind":"done","spoken":"the long haul"}\n\n';
+          res({ value: enc.encode(frame), done: false });
+        }, 100)),
+      }) },
+    }),
+  };
+  const body = lift("async function streamTurn")
+      .replace("15 * 60 * 1000", "400")
+      .replace(/STREAM_IDLE_MS/g, "IDLE_MS");
+  const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {streamTurn};\n}")(ctx);
+  const res = await Promise.race([
+    api.streamTurn("hello", {}),
+    sleep(4000).then(() => ({ error: "HARNESS TIMEOUT" })),
+  ]);
+  if (res && res.spoken === "the long haul")
+    ok("every event pushed the deadline; the working turn was never cut");
+  else
+    bad("a wall-clock deadline cuts off long turns that are visibly working",
+        (res && (res.error || JSON.stringify(res))) || "never returned");
+}
+
+// --- 2d: the watchdog returns the page to idle when nothing else does ------
+
+async function testWatchdog() {
+  console.log("");
+  console.log("the watchdog — busy with no progress is forced back to idle:");
+  let aborted = 0;
+  const statuses = [];
+  const ctx = {
+    busy: true,
+    turnSeq: 1,
+    lastTurnProgress: Date.now(),
+    turnCtl: { abort: () => { aborted++; } },
+    talk: { classList: { remove: () => {} } },
+    updateTalkBtn: () => {},
+    setStatus: s => statuses.push(s),
+  };
+  const body = lift("function armTurnWatchdog")
+      .replace("17 * 60 * 1000", "250")   // the stall ceiling
+      .replace("30 * 1000", "50");        // the poll
+  const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {armTurnWatchdog};\n}")(ctx);
+  api.armTurnWatchdog(1);
+
+  await sleep(150);
+  if (ctx.busy) ok("fresh progress keeps it quiet — no reset under a working turn");
+  else bad("the watchdog must not fire while progress is fresh", "busy cleared early");
+
+  await sleep(400);
+  if (!ctx.busy) ok("past the ceiling the page is returned to idle");
+  else bad("busy must not survive the stall ceiling", "busy still set");
+  if (aborted > 0) ok("and the in-flight stream is aborted, not orphaned");
+  else bad("the stalled fetch must be aborted", aborted);
+  if (statuses.some(s => /stalled/.test(s))) ok("with a status that says what happened");
+  else bad("the reset must be announced", statuses.join(" | ") || "no status");
 }
 
 // --- 3: a /watch reset while busy adopts the new incarnation ---------------
@@ -405,6 +532,9 @@ async function testReseedEmptyPage() {
 (async () => {
   await testStreamTurn();
   await testDeadline();
+  await testPingsAreNotProgress();
+  await testProgressExtendsDeadline();
+  await testWatchdog();
   await testWatchReset();
   await testReseedKeepsScrollback();
   await testReseedDedupes();

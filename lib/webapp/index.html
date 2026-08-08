@@ -315,7 +315,14 @@ const STREAM_IDLE_MS = 45000;
 async function streamTurn(text, turn) {
   const tid = randomHex(32);
   let seen = 0, delay = 1000;
-  const deadline = Date.now() + 15 * 60 * 1000;
+  // Progress, not wall clock: every event pushes the deadline forward, so a
+  // long turn that is visibly working is never cut off, while a turn that has
+  // gone silent on a link healthy enough to carry keepalives forever still
+  // ends here. Pings reset the idle timer below (the link is alive) but never
+  // this (the turn is not).
+  const GIVE_UP_MS = 15 * 60 * 1000;
+  let deadline = Date.now() + GIVE_UP_MS;
+  const giveUp = { error: "gave up: no progress in 15 minutes" };
   for (;;) {
     // Checked HERE as well as in the catch. It used to be consulted only
     // after a throw, so a fetch that never threw and never delivered another
@@ -323,8 +330,9 @@ async function streamTurn(text, turn) {
     // and nothing short of a manual reload got the page back. There were 74
     // hand reloads in 28 hours.
     if (Date.now() > deadline)
-      return { error: "gave up reconnecting after 15 minutes" };
+      return giveUp;
     const ctl = new AbortController();
+    turnCtl = ctl;
     let idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
     const alive = () => {
       clearTimeout(idle);
@@ -360,10 +368,19 @@ async function streamTurn(text, turn) {
           if (!frame.startsWith("data:")) continue;
           let ev; try { ev = JSON.parse(frame.slice(5).trim()); } catch (e) { continue; }
           seen++; delay = 1000;
+          lastTurnProgress = Date.now();
+          deadline = lastTurnProgress + GIVE_UP_MS;
           if (ev.kind === "done") return ev;
           if (ev.kind === "voice") { enqueueVoice(ev.audio); continue; }
           showThought(turn, ev);
         }
+        // Pings land here as bytes that parse to nothing. A turn whose done
+        // event will never come, on a healthy link, therefore never throws,
+        // never EOFs, and never returns — the surviving half of C10: the
+        // permanent "thinking…", ended by a hand reload. So the deadline is
+        // consulted on every read as well, which also holds where a
+        // backgrounded tab throttles every timer.
+        if (Date.now() > deadline) return giveUp;
       }
       // Stream ended without a done event: the connection was cut, not the
       // turn. Fall through to reconnect.
@@ -377,6 +394,7 @@ async function streamTurn(text, turn) {
       delay = Math.min(delay * 2, 30000);
     } finally {
       clearTimeout(idle);
+      if (turnCtl === ctl) turnCtl = null;
     }
   }
 }
@@ -471,6 +489,9 @@ async function runTurn(blob, ctype, typed) {
   // reply's clips play while the turn is still running — tap-to-stop must
   // keep working exactly then. startRec's own busy guard blocks recording.
   busy = true; talk.classList.add("busy");
+  lastTurnProgress = Date.now();
+  const seq = ++turnSeq;
+  const disarmWatchdog = armTurnWatchdog(seq);
   // Asking again means wanting the answer aloud again.
   voiceMuted = false;
   const turn = addTurn(typed || "🎤 …");
@@ -502,6 +523,9 @@ async function runTurn(blob, ctype, typed) {
     // laptop turn landing mid-flight still renders instead of vanishing.
     pendingUser = norm(text);
     pendingReply = null;
+    // Transcription may have taken a while; the watchdog measures the stream
+    // from here, not from the press of the button.
+    lastTurnProgress = Date.now();
     const res = await streamTurn(text, turn);
     foldThoughts(turn);
     if (res && res.spoken) pendingReply = norm(res.spoken);
@@ -510,9 +534,40 @@ async function runTurn(blob, ctype, typed) {
     setStatus(String(e.message || e), "err");
     turn.reply.textContent = "(failed)";
   } finally {
-    busy = false; talk.classList.remove("busy");
-    updateTalkBtn();
+    disarmWatchdog();
+    // If the watchdog fired, the page is already idle and a NEW turn may be
+    // running — that turn's state is not this one's to clear.
+    if (turnSeq === seq) {
+      busy = false; talk.classList.remove("busy");
+      updateTalkBtn();
+    }
   }
+}
+
+// The last line of defence against C10: if `busy` is still set long after
+// anything last happened — the stream given up on and some later await never
+// settling, or a path nobody has imagined yet — the page is returned to idle
+// by force. It should never fire while streamTurn's own deadline works; it
+// exists so no single missed path can cost a hand reload again. Deliberately
+// longer than the stream's give-up, so the polite path always gets to answer
+// first.
+let lastTurnProgress = 0;
+let turnCtl = null;
+let turnSeq = 0;
+
+function armTurnWatchdog(seq) {
+  const limit = 17 * 60 * 1000, poll = 30 * 1000;
+  const timer = setInterval(() => {
+    if (!busy || turnSeq !== seq) { clearInterval(timer); return; }
+    if (Date.now() - lastTurnProgress < limit) return;
+    clearInterval(timer);
+    if (turnCtl) turnCtl.abort();
+    busy = false;
+    talk.classList.remove("busy");
+    updateTalkBtn();
+    setStatus("the turn stalled — ready again", "err");
+  }, poll);
+  return () => clearInterval(timer);
 }
 
 // Set on press (past the hold threshold), cleared on release. getUserMedia can

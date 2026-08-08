@@ -16,7 +16,11 @@ with the page closed.
 2. Phone turns MUST be serialised by a lock with a bounded wait.
 3. A phone turn MUST build the same prompt shape as a desk turn, with the origin recorded as phone.
 4. A stalled turn MUST NOT wedge the client. The client MUST wrap the streaming fetch in an abort
-   controller with an idle-byte timer, and MUST check its deadline outside the error handler.
+   controller with an idle-byte timer, and MUST check its deadline outside the error handler. The
+   deadline measures progress — time since the last event received, not since the turn began — and
+   MUST be enforced while the socket is still delivering: keepalive pings prove the link, not the
+   turn, and a stream carrying nothing but pings past the deadline MUST be given up on. A watchdog
+   MUST return the page to idle even when the turn path fails to.
 5. While a turn is in flight the client refuses to record. That refusal MUST end when the turn ends,
    by any route including abort.
 6. A turn's completion payload MUST carry the spoken text, the display content, the audio pointer,
@@ -24,6 +28,11 @@ with the page closed.
    reply clip when and only when no streaming voice clip was emitted for the turn, so a client that
    heard the clips is not made to hear the reply again and a client that heard nothing still hears
    the reply once.
+   Every turn MUST end in exactly one such completion event, whatever became of
+   the run: the turn's timeout MUST kill the whole process tree (killing only the direct child
+   leaves a grandchild holding the pipe, and a wait on that pipe is a turn that never ends), and a
+   tail on a turn that has outlived every bound on a legitimate run MUST be answered with a failed
+   completion rather than kept on keepalives forever.
 7. A turn whose every account refused MUST return the refusal in the error field. It MUST NEVER be
    voiced, never synthesised, never entered into the conversation, and MUST be shown beside the
    reply rather than over it.
@@ -169,7 +178,6 @@ block itself. The turn it spawns does that.
 
 | Id | What implementation must fix |
 |---|---|
-| `C10` | The client's streaming fetch has no abort controller and no idle timer, and the deadline is consulted only inside the error handler. A stalled socket wedges the client in busy until a manual reload. Seventy-four hand reloads in about twenty-eight hours. |
 | `C11` | A reset arriving while busy spins forever at two seconds and renders nothing, because the cursor and generation are updated after the continue. The trigger is structural: compaction runs inside every phone turn. |
 | `MAJ-18` | The shared secret is written verbatim into a world-readable log, a hundred and one times. |
 | `MAJ-19` | No cache headers on any static route, and the service worker is a bare pass-through, so an old client keeps running against a new server and degrades silently. |
@@ -184,15 +192,18 @@ block itself. The turn it spawns does that.
 
 ## TESTS
 
-**Existing:** `tests/test_phone_live.sh` and `tests/test_watch_rewrite.sh` both drive the real server
-over a real socket. Keep that — it caught the cursor bug end to end.
+**Existing:** `tests/test_phone_live.sh`, `tests/test_watch_rewrite.sh` and `tests/test_phone_wedge.sh`
+drive the real server over a real socket. Keep that — it caught the cursor bug end to end, and the
+wedge test is what proves a timed-out turn still ends in a completion event.
+`tests/test_phone_client.sh` (via `tests/phone_client_test.js`) drives the client's two loops against
+stubs: the idle abort, the progress deadline — including a stream that delivers nothing but
+keepalives, and one whose events outlive the original deadline — and the watchdog that returns the
+page to idle when the turn path fails to.
 
 **To be written:**
 
 - `tests/test_watch_rewrite.sh` — extend with the busy-reset case: a reset arriving mid-turn updates
   the cursor and generation, queues the redraw, and runs it when the turn ends.
-- `tests/test_phone_client.sh` — the client's abort controller and idle timer, driven against a
-  server that accepts the turn and then stops sending.
 - `tests/test_serve_auth.sh` — a wrong secret is refused on both request methods; the right secret
   is accepted in every form the client sends; the secret never appears in the log; the cookie is
   marked secure under TLS.
