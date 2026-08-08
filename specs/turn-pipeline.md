@@ -119,7 +119,7 @@ design and by rule — the review exists to break a habit, never to gate a tongu
 | `~/.local/share/deskcrab/sessions/<pid>.ckpt` | `crab checkpoint` | append-only, one line per checkpoint |
 | `${STATE_PREFIX}-sessions.log` | `session_finish`, `session_reap` | append-only journal |
 | `~/.local/share/deskcrab/journal/<date>.jsonl` | `day_journal_append` | one JSON object per finished turn |
-| `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: one entry per claudism, its trigger pattern in the entry's first backtick span |
+| `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |

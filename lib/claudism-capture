@@ -12,11 +12,14 @@ speaks: the flag log and a one-line run trace are the only outputs.
 
 Usage: claudism-capture <phrase-file> <flags-dir> <kind> <epoch> <pid> <response>
 
-The phrase list is markdown, readable by her rather than a regex blob: an
-entry is a bullet or heading whose FIRST backtick span is the trigger,
-compiled as a case-insensitive regex; the prose around it is the why.
-Lines without a backtick span, and indented continuation notes, are prose.
-A missing or unparseable list means no flags, never a failed turn.
+The phrase list is markdown, readable by her rather than a regex blob. Its
+declared shape (the list says so itself): a `## heading` names each claudism,
+and a `- pattern:` line beneath it carries the trigger in a backtick span,
+compiled as a case-insensitive regex — every other line on the page is hers
+to write, `- why:` lines included. A list with no `- pattern:` lines falls
+back to the liberal reading: the first backtick span of any bullet or
+heading entry is the trigger. A missing or unparseable list means no flags,
+never a failed turn.
 
 Flag records key on (epoch, pid) — the day journal's identity — so the
 nightly judge can re-read the whole turn a sentence came from.
@@ -55,10 +58,36 @@ def spoken_half(text):
 
 def load_patterns(path):
     entries, bad = [], 0
+    head_re = re.compile(r"^#{1,6}\s+(.*)")
+    pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
     with open(path, encoding="utf-8") as f:
-        for raw in f:
+        lines = f.read().splitlines()
+    if any(pat_re.match(ln) for ln in lines):
+        # The declared shape. Only pattern: lines are triggers, so a why
+        # line quoting code can never become one; the heading above names
+        # the claudism in the flag record.
+        head = ""
+        for raw in lines:
+            hm = head_re.match(raw)
+            if hm:
+                head = hm.group(1).strip()
+                continue
+            pm = pat_re.match(raw)
+            if not pm:
+                continue
+            span = span_re.search(pm.group(1))
+            if not span:
+                bad += 1
+                continue
+            try:
+                entries.append((re.compile(span.group(1).strip(), re.IGNORECASE),
+                                span.group(1).strip(), head))
+            except re.error:
+                bad += 1
+    else:
+        for raw in lines:
             m = entry_re.match(raw.rstrip())
             if not m:
                 continue
