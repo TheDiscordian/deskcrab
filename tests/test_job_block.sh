@@ -166,3 +166,50 @@ grep -q "^WAKE: wake-at --by job-runner 5s event" "$T/wakes" 2>/dev/null \
     && ok "the instance's own jobs directory still fires its wake" \
     || fail "the guard must not silence a real job" "$(cat "$T/wakes" 2>/dev/null)"
 rm -f "$LIVE"/deskcrab-selftest-jobtest.*
+
+echo
+echo "detach_turn_child — the login goes with the child, but only when there is one:"
+# The promise auditor and the memory judge invoke the CLI themselves, out of
+# band, in a transient unit of their own. A user unit gets a BARE environment,
+# so the one variable that says which account to use was the one variable not
+# forwarded: both always fired at whatever login the manager happened to hold,
+# and failed silently whenever that was the dry one.
+#
+# And it is forwarded ONLY when it is set. Passing it empty is not the same as
+# not passing it: a unit running with CLAUDE_CONFIG_DIR defined-but-blank makes
+# the CLI look for a login in "" and die in about a second — the mistake that
+# killed every dispatched job for a day.
+#
+# The systemd-run stub records the argv and refuses the run (no --on-*), which
+# is the shipped fallback path: the caller then takes its own setsid, so the
+# child stays inside this sandbox. /bin/true is that child.
+count_arg() { local n; n="$(grep -c -- "$1" "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"; printf '%s' "${n:-0}"; }
+
+: > "$SANDBOX_SYSTEMD_LOG"
+run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
+check_eq "one unit was asked for" "$(count_arg 'deskcrab-probe-')" "1"
+check_eq "with CLAUDE_CONFIG_DIR unset, the variable is not passed AT ALL" \
+    "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
+argv="$(grep -m1 'deskcrab-probe-' "$SANDBOX_SYSTEMD_LOG")"
+case "$argv" in
+    *"--collect"*) ok "the child's unit is collected on exit, like a job's" ;;
+    *) fail "a detached child's unit carries --collect" "$argv" ;;
+esac
+for redirect in DESKCRAB_CONF DESKCRAB_STATE_PREFIX DESKCRAB_MEMORY_DIR CLAUDE_BIN; do
+    case "$argv" in
+        *"--setenv=$redirect="*) ok "$redirect travels into the child" ;;
+        *) fail "every state redirect must reach a detached child" "$redirect: $argv" ;;
+    esac
+done
+
+: > "$SANDBOX_SYSTEMD_LOG"
+CLAUDE_CONFIG_DIR="$T/fallback-two" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
+check_eq "with a login in hand, it is forwarded exactly once" \
+    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$T/fallback-two")" "1"
+
+# ...and an EMPTY one is not a login. This is the case that killed the day: the
+# variable present and blank is worse than absent.
+: > "$SANDBOX_SYSTEMD_LOG"
+CLAUDE_CONFIG_DIR="" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
+check_eq "an empty login is passed no more than a missing one" \
+    "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
