@@ -47,11 +47,23 @@ below is a fact placed before her, never a gate placed behind her.
 
 ### The since-last-reply delta
 
-12. The block MUST carry a delta anchored to **the previous session's finish time**, not to a fixed
-    window. A fixed thirty-minute window is filled entirely by desk turns during a fast exchange,
-    and the wake that fired between them is pushed out of the list.
+12. The block MUST carry a delta anchored to **the finish of the last session that reached him**, not
+    to a fixed window. A fixed thirty-minute window is filled entirely by desk turns during a fast
+    exchange, and the wake that fired between them is pushed out of the list.
+    - A session reached him when it DELIVERED: a desk turn, a phone turn, or a wake that got past
+      the delivery gates. A session that delivered nothing — silent, muted, suppressed by quiet
+      hours, killed, or failed before the model ran — MUST NOT set the anchor. Anchored to the last
+      session of ANY kind, the delta cannot report a wake at all: a wake is a session, so it sets
+      the anchor itself, is then measured against its own finishing time, and counts as nothing.
+    - Whether a session delivered MUST be readable from the journal it already writes. A session
+      that delivered nothing writes its outcome as a parenthesised note; a session that spoke writes
+      the words.
+    - With no delivering session on record, the anchor MUST fall back to the same thirty-minute
+      window the recently-finished list uses, stated rather than assumed.
 13. The delta MUST report, since that anchor: wakes fired, jobs dispatched, jobs that ended badly,
-    wakes booked and by whom, and net queue changes.
+    wakes booked and by whom, and net queue changes. Wakes fired and jobs that ended badly are
+    counted by the moment they ENDED, matching the anchor — a wake that began before her last reply
+    and worked for half an hour afterwards is the whole of what happened while she was away.
 14. **Queue changes MUST be logged to a durable ledger, and the block MUST read it.** A bulk restore
     means a cancellation was undone or the machine rebooted, and today that output goes to
     `/dev/null`. It must become a line she reads.

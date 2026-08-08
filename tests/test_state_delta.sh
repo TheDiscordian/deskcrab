@@ -13,6 +13,12 @@
 # cut on the start field drops a forty-minute wake that finished five minutes
 # ago — the longest work of the half hour and the entry most worth having.
 #
+# And "her last reply" means a session that REACHED HIM. Anchored to the last
+# session of any kind, the line could not report a wake at all: a wake is a
+# session, so the wake set the anchor and was then measured against its own
+# finishing time and counted as nothing. The one line written to say what
+# happened while he was away was structurally incapable of saying it.
+#
 # And queue changes come from the durable ledger, which is the whole reason the
 # ledger exists: a bulk restore means a cancellation was undone or the machine
 # rebooted, and that used to go to /dev/null.
@@ -45,19 +51,20 @@ logline() { # <minutes ago> <duration secs> <kind> <text>
 }
 NOW="$(date +%s)"
 
-echo "the anchor is the previous session's FINISH, not its start:"
-# A forty-minute wake that began three quarters of an hour ago and ended five
-# minutes ago, and a short desk turn that began and ended in between. The
-# latest FINISH belongs to the wake; the latest START belongs to the turn.
+echo "the anchor is the last reply's FINISH, not its start:"
+# A forty-minute phone turn that began three quarters of an hour ago and ended
+# five minutes ago, and a short desk turn that began and ended in between. The
+# latest FINISH belongs to the phone turn; the latest START belongs to the desk
+# turn. Both reached him, so the anchor is the later of the two finishes.
 {
-    logline 45 2400 "autonomous wake" "forty minutes of work that ended five minutes ago"
-    logline 20   60  "desktop turn"   "a short exchange in the middle of it"
+    logline 45 2400 "phone turn"    "forty minutes of work that ended five minutes ago"
+    logline 20   60  "desktop turn" "a short exchange in the middle of it"
 } > "$LOG"
-WAKE_START="$(date -d '-45 minutes' +%s)"
+LONG_START="$(date -d '-45 minutes' +%s)"
 A="$(anchor)"
-check_eq "the anchor is the wake's finish, to the second" "$A" "$(( WAKE_START + 2400 ))"
+check_eq "the anchor is that turn's finish, to the second" "$A" "$(( LONG_START + 2400 ))"
 check "and not its start — the entry would be forty minutes stale" \
-    [ "$A" -gt "$(( WAKE_START + 60 ))" ]
+    [ "$A" -gt "$(( LONG_START + 60 ))" ]
 check "and not the finish of the turn that started later" \
     [ "$A" -gt "$(date -d '-19 minutes' +%s)" ]
 out="$(delta)"
@@ -69,12 +76,12 @@ check "it is not headed as though it were live work" \
     bash -c '! printf "%s" "'"$out"'" | grep -qi "right now"'
 
 echo
-echo "...and that forty-minute wake is IN the recently-finished list:"
+echo "...and that forty-minute session is IN the recently-finished list:"
 # The cut is on the finish, so a session that started outside the window and
 # ended inside it is kept. Cut on the start and it vanishes — and it is the
 # longest work of the half hour.
 out="$(recent)"
-check "the wake that ended five minutes ago is listed" \
+check "the session that ended five minutes ago is listed" \
     has "forty minutes of work that ended five minutes ago" "$out"
 check "the turn that ended inside the window is listed too" \
     has "a short exchange in the middle of it" "$out"
@@ -124,6 +131,37 @@ check "the promise auditor's two are attributed to it" has "promise-audit 2" "$o
 check "and the job runner's one to it" has "job-runner 1" "$out"
 
 echo
+echo "a wake that fired between two turns is REPORTED, not swallowed:"
+# The shape the line existed for and could not report. A wake is a session, so
+# an anchor taken from the last session of any kind was the wake's OWN finish —
+# and the wake, measured against the moment it stopped, counted as nothing.
+# Every wake that worked while he was away was reported as an empty span.
+{
+    logline 20 60  "desktop turn"    "the last thing she actually said to him"
+    logline 15 600 "autonomous wake" "(silent — wrote a dated note into a want)"
+} > "$LOG"
+A3="$(anchor)"
+check_eq "the anchor stays on the turn that reached him" \
+    "$A3" "$(( $(date -d '-20 minutes' +%s) + 60 ))"
+check "and not on the wake, which said nothing to anybody" \
+    [ "$A3" -lt "$(date -d '-6 minutes' +%s)" ]
+out="$(delta)"
+check "so the wake that fired since then is counted" has "1 wake fired" "$out"
+
+echo
+echo "a wake that DID reach him is a reply; a silent one is not:"
+# Which wakes count as replies is readable from the log itself: a session that
+# delivered nothing writes its outcome as a parenthesised note, where a session
+# that spoke writes the words it said.
+{
+    logline 60 60  "desktop turn"    "an exchange an hour ago"
+    logline 30 120 "autonomous wake" "The kettle in the east wing has finally been descaled."
+    logline 10 120 "autonomous wake" "(silent — ran no tools, touched nothing)"
+} > "$LOG"
+check_eq "the spoken wake is the last reply, so the anchor is its finish" \
+    "$(anchor)" "$(( $(date -d '-30 minutes' +%s) + 120 ))"
+
+echo
 echo "a wake that fired since the anchor is counted as one:"
 # The reachable shape of rule 13's "wakes fired": a wake reaped without its own
 # outcome line is journalled with an unknown duration, so its finish IS its
@@ -152,6 +190,13 @@ rm -f "$LOG"
 check "the anchor is half an hour ago, within a second or two" near_half_hour "$(anchor)"
 : > "$LOG"
 check "an empty log falls back the same way as a missing one" near_half_hour "$(anchor)"
+# A night of wakes nobody heard is the same case: sessions ran, but not one of
+# them was a reply, so there is no last reply to anchor to.
+{
+    logline 300 900 "autonomous wake" "(silent — read for an hour)"
+    logline 180 600 "autonomous wake" "(silent — ran no tools, touched nothing)"
+} > "$LOG"
+check "a log with nothing but silent wakes in it falls back too" near_half_hour "$(anchor)"
 
 echo
 echo "nothing happening is stated as a measurement, not left blank:"

@@ -993,15 +993,32 @@ wakes_report() {  # [--brief]
     return 0
 }
 
-# Where "since your last reply" begins: the moment the previous session
-# FINISHED. A fixed thirty-minute window is filled entirely by desk turns
-# during a fast exchange, and the wake that fired between them is pushed out of
-# the list — which is the shape of the afternoon that produced "nothing
-# running, nothing scheduled".
+# Where "since your last reply" begins: the moment she last SAID something to
+# him and finished saying it. A fixed thirty-minute window is filled entirely by
+# desk turns during a fast exchange, and the wake that fired between them is
+# pushed out of the list — which is the shape of the afternoon that produced
+# "nothing running, nothing scheduled".
+#
+# "The previous session's finish" is not the same thing, and taking it literally
+# made this line structurally incapable of reporting a wake. A wake IS a
+# session, so the last wake to finish set the anchor, and the wake was then
+# measured against its own finishing time and counted as nothing. Every wake
+# that fired between two turns was invisible in the one line written to say so.
+#
+# So the anchor is the last session that reached him: a desk turn, a phone turn,
+# or a wake that got past the delivery gates. Which one that is comes off the
+# log itself — field 4 is the kind and field 5 is the outcome, and a session
+# that delivered NOTHING writes its outcome as a parenthesised note ("(silent
+# — ...", "(muted — ...", "(quiet hours — ...", "(killed — no summary)", "(no
+# reply — ...", "(wake failed before the model ran ..."), where a session that
+# spoke writes the words. That convention is what makes a delivered wake
+# distinguishable from a silent one, and it is held by every writer of the log.
 _state_delta_anchor() {
     local a=0
     if [ -s "$SESSIONS_LOG" ]; then
         a="$(awk -F'\t' '
+            $4 != "desktop turn" && $4 != "phone turn" && $4 != "autonomous wake" { next }
+            $5 ~ /^[[:space:]]*\(/ { next }
             { s = $1; gsub(/[-:]/, " ", s); st = mktime(s)
               if (st < 0) next
               fin = st + (($3 == "?") ? 0 : $3 + 0)
@@ -1009,6 +1026,9 @@ _state_delta_anchor() {
             END { printf "%d", max + 0 }' "$SESSIONS_LOG" 2>/dev/null)"
     fi
     case "${a:-}" in ''|*[!0-9]*) a=0 ;; esac
+    # Nothing has ever reached him on this machine — a fresh state directory, or
+    # a log just rotated away. Then the anchor is the same half hour the
+    # recently-finished list uses, stated rather than assumed.
     [ "$a" -gt 0 ] || a=$(( $(date +%s) - SESSIONS_RECENT_MINUTES * 60 ))
     echo "$a"
 }
@@ -1022,10 +1042,16 @@ _state_delta_line() {  # <anchor epoch>
     local anchor="$1" now mins parts="" fired booked jobline changes
     now=$(date +%s); mins=$(( (now - anchor) / 60 ))
     fired=0
+    # Counted by the moment each one ENDED, matching the anchor. A wake is the
+    # long thing in the gap between two turns: counted by its start, a wake that
+    # began before her last reply and worked for half an hour afterwards is not
+    # in the span at all — and it is the whole of what happened while she was
+    # away. A reaped wake has no duration, so its finish is its start.
     [ -s "$SESSIONS_LOG" ] && fired="$(awk -F'\t' -v cut="$anchor" '
         $4 == "autonomous wake" {
             s = $1; gsub(/[-:]/, " ", s); st = mktime(s)
-            if (st >= cut) n++ }
+            if (st < 0) next
+            if (st + (($3 == "?") ? 0 : $3 + 0) >= cut) n++ }
         END { printf "%d", n + 0 }' "$SESSIONS_LOG" 2>/dev/null)"
     [ "${fired:-0}" -gt 0 ] && parts="$parts; $fired wake$([ "$fired" = 1 ] || echo s) fired"
 
