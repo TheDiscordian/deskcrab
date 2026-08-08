@@ -413,6 +413,27 @@ class TestQuerySubstance(StoreCase):
         self.assertIn("the newest ask", q)
         self.assertIn("earlier words", q)
 
+    def test_conversation_reads_a_marked_wake_block_as_a_block(self):
+        """A wake's reply is written "Assistant [stamp] (autonomous wake): …".
+        A header pattern narrower than the writer's does not error — it welds
+        the wake onto the block before it, so the preceding reply this query
+        carries is two replies with a raw header line between them, and the
+        thing she actually said last is not identifiable as hers."""
+        convo = self._convo(
+            "User [2026-08-07 12:00]: is the knee thing still on\n"
+            "Assistant [2026-08-07 12:01]: the appointment is Thursday.\n"
+            "[Autonomous wake — 2026-08-07 12:40]\n"
+            "Assistant [2026-08-07 12:40] (autonomous wake): "
+            "I moved the reading chair under the window.\n"
+            "User [2026-08-07 12:45]: and what time\n")
+        user, prev = memory.convo_last_exchange(convo)
+        self.assertEqual(user, "and what time")
+        self.assertEqual(prev, "I moved the reading chair under the window.")
+        q = memory.recall_query("", None, convo)
+        self.assertIn("I moved the reading chair", q)
+        self.assertNotIn("the appointment is Thursday", q)
+        self.assertNotIn("autonomous wake", q)
+
     def test_conversation_drops_inter_block_markers(self):
         convo = self._convo("User: a real question\n\n"
                             "[Autonomous wake — 2026-08-07 12:40]\n")
@@ -861,11 +882,17 @@ class TestJudgeTurn(StoreCase):
 
     def stub_claude(self, verdict):
         # The prompt the judge builds is kept, so a test can assert what the
-        # model was actually shown rather than only what it answered.
+        # model was actually shown rather than only what it answered. So are
+        # the flags it was invoked with and the directory it was started in:
+        # both are charged to every judgement's token bill.
         path = os.path.join(self.dir, "claude-stub")
         self.seen_prompt = os.path.join(self.dir, "judge-prompt.txt")
+        self.seen_argv = os.path.join(self.dir, "judge-argv.txt")
+        self.seen_cwd = os.path.join(self.dir, "judge-cwd.txt")
         with open(path, "w") as f:
-            f.write(f"#!/bin/sh\ncat >'{self.seen_prompt}'\n"
+            f.write(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >'{self.seen_argv}'\n"
+                    f"pwd >'{self.seen_cwd}'\n"
+                    f"cat >'{self.seen_prompt}'\n"
                     f"printf '%s\\n' '{verdict}'\n")
         os.chmod(path, 0o755)
         return path
@@ -878,6 +905,7 @@ class TestJudgeTurn(StoreCase):
         with open(ids_file, "w") as f:
             json.dump([{"id": i, "kind": k, "text": "t"} for i, k in rows], f)
         env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   XDG_RUNTIME_DIR=self.dir,
                    CLAUDE_BIN=self.stub_claude(verdict))
         proc = subprocess.run(
             [sys.executable, os.path.join(REPO, "lib", "memory.py"),
@@ -942,6 +970,29 @@ class TestJudgeTurn(StoreCase):
                    actions="wrote ~/canary-marker.md; ran 9 commands")
         with open(self.seen_prompt) as f:
             self.assertIn("wrote ~/canary-marker.md; ran 9 commands", f.read())
+
+    def test_the_judge_runs_as_a_classifier_not_a_desktop(self):
+        """specs/prompt-assembly.md rules 13 and 14. This judgement fires after
+        every desk turn, phone turn and wake; booting the interactive profile
+        for it bought 40,229 tokens of tool and skill listings to answer one
+        question, on a box already running accounts dry."""
+        self.judge("[]")
+        with open(self.seen_argv) as f:
+            argv = f.read().splitlines()
+        self.assertIn("--strict-mcp-config", argv)
+        # Both halves of the lever or neither: --tools without the strict MCP
+        # config leaves every configured server's tools inlined.
+        self.assertIn("--mcp-config", argv)
+        self.assertIn("--tools", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertIn("--disable-slash-commands", argv)
+        with open(self.seen_cwd) as f:
+            cwd = os.path.realpath(f.read().strip())
+        # A sterile directory: no instruction file, no repository, nothing for
+        # the CLI to read into the prompt on the way in.
+        self.assertEqual(cwd, os.path.realpath(
+            os.path.join(self.dir, "deskcrab-classify")))
+        self.assertEqual(os.listdir(cwd), [])
 
     def test_reinforcement_lands_in_the_score(self):
         # End state of the whole path: the judged record now outranks its

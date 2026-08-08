@@ -948,17 +948,62 @@ def claude_bin():
     return claude
 
 
+def classify_flags():
+    """The classify profile, specs/prompt-assembly.md rules 13 and 14: one
+    question, one text answer, no tools.
+
+    This is claude_profile_flags(classify) in lib/common.sh, spelled again here
+    because nothing shell-side wraps these two runs. Both halves of the MCP
+    lever are emitted together or not at all — `--tools` without
+    `--strict-mcp-config` leaves every configured server's tools inlined, which
+    is the shape the lever exists to avoid — so the empty config file being
+    unreadable drops both.
+    """
+    flags = []
+    empty_mcp = os.environ.get("CLAUDE_EMPTY_MCP") or \
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "empty-mcp.json")
+    if os.access(empty_mcp, os.R_OK):
+        flags += ["--strict-mcp-config", "--mcp-config", empty_mcp, "--tools", ""]
+    if os.environ.get("CLAUDE_SKILLS", "0") != "1":
+        flags.append("--disable-slash-commands")
+    return flags
+
+
+def sterile_cwd():
+    """A directory with nothing in it and no repository above it. The CLI reads
+    the directory it is standing in — its instruction file, its git status, its
+    auto-memory — and charges all of it to the prompt. A judgement about which
+    memories a turn used has no use for any of that."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("TMPDIR") or "/tmp"
+    d = os.path.join(base, "deskcrab-classify")
+    try:
+        os.makedirs(d, exist_ok=True)
+        return d
+    except OSError:
+        return "/"
+
+
 def run_claude(prompt, model, timeout=600):
-    # CLAUDE_CODE_DISABLE_AUTO_MEMORY: the ingest distiller and the turn judge
-    # inherit whatever directory their caller was in, and `claude` reads that
-    # directory's auto-memory index into the system prompt. That index is the
-    # USER's coding agent's memory; this store is hers, and the two must not
-    # seed each other. Same knob and same reasoning as CLAUDE_NO_AUTO_MEMORY in
-    # lib/common.sh, applied here because nothing shell-side wraps these runs.
+    # Both callers here — the ingest distiller and the turn-end judge — are
+    # classifiers: one question, one answer, no tools. They used to boot the
+    # full interactive desktop for it, measured at 40,229 tokens of listings
+    # per run, and the judge fires after EVERY desk turn, phone turn and wake
+    # while MEMORY_STORE=1. specs/prompt-assembly.md rule 14: a classify call
+    # MUST NOT boot a full interactive tool profile.
+    #
+    # CLAUDE_CODE_DISABLE_AUTO_MEMORY: these runs inherit whatever directory
+    # their caller was in, and `claude` reads that directory's auto-memory
+    # index into the system prompt. That index is the USER's coding agent's
+    # memory; this store is hers, and the two must not seed each other. Same
+    # knob and same reasoning as CLAUDE_NO_AUTO_MEMORY in lib/common.sh,
+    # applied here because nothing shell-side wraps these runs. The sterile cwd
+    # is the same rule from the other side: nothing to read there either.
     env = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
     proc = subprocess.run(
-        [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"],
-        input=prompt, capture_output=True, text=True, timeout=timeout, env=env)
+        [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"]
+        + classify_flags(),
+        input=prompt, capture_output=True, text=True, timeout=timeout, env=env,
+        cwd=sterile_cwd())
     if proc.returncode != 0:
         raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}")
     return proc.stdout.strip()
