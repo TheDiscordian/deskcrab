@@ -320,6 +320,105 @@ case "$out" in
 esac
 
 echo
+echo "the permanent timers are fixtures, never an orphan:"
+# specs/self-awareness.md rule 3. deskcrab-wake.timer is the standing
+# random-interval timer and deskcrab-wake-restore is the login reconciler:
+# neither has ever had a booking record and neither is missing one. Reported as
+# "a timer with no booking record" they become a wake she never booked, sitting
+# in the block beside the real ones — which is what she saw, and reported, as a
+# phantom third timer.
+# This stub HONOURS the unit pattern it is given, unlike the one above, because
+# the pattern is half of what is under test: `deskcrab-wake-*` does not match
+# `deskcrab-wake.timer` — there is no hyphen before the dot — so the narrower
+# glob never saw the standing timer at all and the background row it renders
+# could not be built.
+run_fixtures() { # <shell body>
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" sandbox_bash '
+        systemctl() {
+            local pat u
+            case "$*" in
+                *list-units*)
+                    pat="${!#}"
+                    for u in deskcrab-wake-armed.timer deskcrab-wake.timer \
+                             deskcrab-wake.service deskcrab-wake-restore.service; do
+                        case "$u" in $pat) echo "$u loaded active waiting" ;; esac
+                    done
+                    return 0 ;;
+                *list-timers*) return 0 ;;
+                *is-active*) return 1 ;;
+            esac
+            return 0
+        }
+        '"$*" 2>&1
+}
+rm -f "$T"/wakes/*.wake
+printf '%s\tscheduled\t\t%s\therself\n' $(( NOW + 1800 )) "$NOW" > "$T/wakes/deskcrab-wake-armed.wake"
+rows="$(run_fixtures 'wake_list')"
+check_eq "the standing background timer is not an orphan" \
+    "$(printf '%s\n' "$rows" | awk -F'\t' '$7 == "orphan"' | grep -c '^')" "0"
+check_eq "it renders as the background timer it is" \
+    "$(printf '%s\n' "$rows" | awk -F'\t' '$7 == "background" { print $2 }')" "deskcrab-wake"
+out="$(run_fixtures 'wakes_report --brief')"
+case "$out" in
+    *"no booking record"*) fail "a permanent timer was reported as a lost booking" "$out" ;;
+    *) ok "and the report raises no missing-record warning about it" ;;
+esac
+
+echo
+echo "a reason with a newline in it coalesces with itself:"
+# The record squashes newlines and tabs on the way in, and the coalescing test
+# compared the caller's RAW reason against the stored copy — so a multi-line
+# reason (every builder's task description is one) could never equal itself,
+# and an event re-booked by its own deferral stacked a fresh wake every time.
+rm -f "$T"/wakes/*.wake
+MULTI="Detached job 42 finished.
+Task was: rebuild the index
+and verify it."
+run_multi() { WAKES_DIR="$T/wakes" WANTS_FILE="$T/wants.md" sandbox_bash "$*" 2>&1; }
+run_multi 'wake_book --by job-runner 2h event "'"$MULTI"'"' > /dev/null
+first="$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)"
+out="$(run_multi 'wake_book --by job-runner 2h event "'"$MULTI"'"')"
+check_eq "the same multi-line event does not stack a second booking" \
+    "$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)" "$first"
+case "$out" in
+    *"already pending"*) ok "and it says which booking already covers it" ;;
+    *) fail "the second booking should coalesce" "$out" ;;
+esac
+
+echo
+echo "a record is written by rename, never by truncating in place:"
+# Readers hold no lock and wake_record_read rejects a zero-length file, so an
+# in-place write makes the booking invisible to the state block, the spacing
+# scan and the coalescing test for as long as the write takes.
+rm -f "$T"/wakes/*.wake
+run_multi 'wake_state_write deskcrab-wake-atomic 99999999 scheduled "a reason"' > /dev/null
+check_eq "the record is complete" \
+    "$(awk -F'\t' 'NR == 1 { print NF }' "$T/wakes/deskcrab-wake-atomic.wake")" "5"
+check_eq "and no temp file is left where a reader could glob it" \
+    "$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)" "1"
+check_eq "the temp name is hidden from every reader's glob" \
+    "$(ls -a "$T"/wakes/ | grep -c 'wtmp')" "0"
+
+echo
+echo "a pending wake reads reason first and machinery after:"
+# specs/self-awareness.md rule 35. The row used to open with the kind —
+# "scheduled: <reason>" — putting a piece of queue vocabulary that answers
+# nothing in front of the only part of the line she can actually say.
+rm -f "$T"/wakes/*.wake
+printf '%s\tscheduled\tKassandra bar 14: write the blind prediction\t%s\therself\n' \
+    $(( NOW + 1800 )) "$NOW" > "$T/wakes/deskcrab-wake-reason.wake"
+out="$(run 'wakes_report --brief')"
+case "$out" in
+    *"— Kassandra bar 14: write the blind prediction (booked by you"*)
+        ok "the reason leads and the provenance trails it" ;;
+    *) fail "the row should read '<time> — <reason> (booked by you)'" "$out" ;;
+esac
+case "$out" in
+    *"scheduled: Kassandra"*) fail "the kind is still leading the row" "$out" ;;
+    *) ok "and the kind is no longer in front of it" ;;
+esac
+
+echo
 echo "provenance survives the round trip — booked by X, read back as X:"
 rm -f "$T"/wakes/*.wake
 book_by() { WAKES_DIR="$T/wakes" WANTS_FILE="$T/wants.md" "$REPO_DIR/crab" wake-at "$@" 2>&1; }
@@ -329,7 +428,7 @@ check_eq "the record names the subsystem that booked it" \
     "$(printf '%s\n' "$rows" | awk -F'\t' 'NR == 1 { print $6 }')" "promise-audit"
 out="$(run 'wakes_report')"
 case "$out" in
-    *"[booked by promise-audit"*) ok "and the block renders it, so 'scheduled by me' is answerable" ;;
+    *"(booked by promise-audit"*) ok "and the block renders it, so 'scheduled by me' is answerable" ;;
     *) fail "the block renders provenance" "$out" ;;
 esac
 check_eq "booked-at is recorded too, as an epoch" \

@@ -77,9 +77,9 @@ flowchart TD
 | L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
-| L8 turn frame | 300 | 300 | 200 | 200 |
+| L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 1,300 | 1,300 | 0 | 0 |
-| **system-prompt total** | **≤ 21,800** | **≤ 16,300** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 22,400** | **≤ 16,900** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -88,13 +88,18 @@ carry, each a path plus a description, and nine of those do not fit in 600 bytes
 number meant dropping a drawer, which is the failure rule 22 exists to prevent. The three totals move
 by the same 400 bytes.
 
+L8 read 300 until the turn frame took on the register rule — the state block is how she sees and not
+how she speaks ([self-awareness.md](self-awareness.md) rules 33 and 34) — which is an instruction
+about how to say the answer and therefore belongs beside the thing being answered, or nowhere. The
+frame measures about 640 bytes with it. The turn and wake totals move by the same 600.
+
 The two exempt layers of rule 4 are counted here at their budget, and neither is held to it. Measured
-on an idle scratch instance on 2026-08-08: L1 3,099, **L2 3,118 against 1,500**, L4 607, L5 909
-against 1,000, L6 7,971, L7 468, L8 221 — a turn's assembled system prompt of 16,400 bytes, of which
-the state block is over budget by 1,618 and growing with the queue it renders. So the total in this
-table is what the assembler is written to, not a promise the state block keeps; the manifest is where
-the truth of any given build is read. Bringing L2 inside 1,500 is a job for the state block's own
-content, not for a cut.
+on an idle scratch instance on 2026-08-08, after both moves above: L1 3,099, **L2 3,184 against
+1,500**, L4 607, L5 909 against 1,000, L6 7,971, L7 468, L8 657 — a turn's assembled system prompt of
+16,902 bytes, of which the state block is over budget by 1,684 and growing with the queue it renders.
+So the total in this table is what the assembler is written to, not a promise the state block keeps;
+the manifest is where the truth of any given build is read. Bringing L2 inside 1,500 is a job for the
+state block's own content, not for a cut.
 
 12. The wake agenda MUST be the wake profile's user message. It is what this session is about, and
     it MUST obey rule 6 like any other message.

@@ -122,7 +122,7 @@ check "and the fix for that is named, not merely diagnosed" \
 check_eq "five are shown, and the rest are counted rather than dropped" \
     "$(lines_matching '^  - .*booked by promise-audit' "$OUT")" "5"
 check "the twenty not shown are stated as a number" has "+20 further out" "$OUT"
-check "provenance is rendered on every wake shown" has "[booked by promise-audit" "$OUT"
+check "provenance is rendered on every wake shown" has "(booked by promise-audit" "$OUT"
 check "an empty queue would be a measurement, not a claim about the world" \
     bash -c '! printf "%s" "'"$(printf '%s' "$OUT" | tr '\n' ' ')"'" | grep -q "none scheduled"'
 
@@ -237,3 +237,34 @@ check "crab status still lists the job that failed hours ago" \
 check "and states its own totals" has "Detached background jobs: 2 listed" "$BOARD"
 check "the dashboard's wake list is uncapped and says so with a plain total" \
     has "Pending wakes: 1 total" "$BOARD"
+
+echo
+echo "the block is how she SEES, and the prompt says so where it counts:"
+# specs/self-awareness.md rules 33 and 34, and the standing instruction behind
+# them: the block's vocabulary is her senses, never her mouth. Read out, it
+# turns a plan into an operations report — "a scheduled wake is booked for
+# 13:00" where a person says "I'll come back to the arrangement at one".
+#
+# It has to be in the LAST layer. An instruction about how to say the answer,
+# emitted six sections above the thing being answered, is background; emitted
+# beside it, it is in force. So the assertion is not "the sentence is in the
+# prompt somewhere" — it is "the sentence is below the state block and above
+# nothing".
+P2="$(prompt)"
+check "the prompt carries the register rule" has "YOUR OWN WORDS" "$P2"
+check "it names the vocabulary that belongs to the instrument, not to her" \
+    has "wake, session, job, timer, unit" "$P2"
+check "and the bookkeeping that is not hers to recite" \
+    has "who booked a thing, what owns it, unit names" "$P2"
+REG_LINE="$(printf '%s\n' "$P2" | grep -n "^YOUR OWN WORDS" | head -1 | cut -d: -f1)"
+BLK_LINE="$(printf '%s\n' "$P2" | grep -n "^CURRENT STATE OF YOURSELF" | head -1 | cut -d: -f1)"
+FRAME_LINE="$(printf '%s\n' "$P2" | grep -n "^THIS TURN IS ABOUT THE MESSAGE BELOW" | head -1 | cut -d: -f1)"
+check "it sits below the block it is about" \
+    bash -c "[ '$REG_LINE' -gt '$BLK_LINE' ]"
+check "and in the turn frame, the last layer before the message itself" \
+    bash -c "[ '$FRAME_LINE' -gt '$REG_LINE' ]"
+# A rule that arrived trimmed is a rule with its second half missing.
+MAN="$T/manifest.txt"
+sandbox_bash 'build_system_prompt --manifest "'"$MAN"'" >/dev/null' 2>/dev/null
+check_eq "and the frame still fits its budget whole" \
+    "$(awk -F'\t' '$1 == "L8" { print $4 }' "$MAN")" "full"

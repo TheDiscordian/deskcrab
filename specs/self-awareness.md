@@ -22,7 +22,10 @@ below is a fact placed before her, never a gate placed behind her.
    not armed. It is a booking whose timer died with a user manager, and it is exactly the case the
    restore pass exists to heal.
 3. A timer with no record MUST render as its own distinct line. It is either a booking whose record
-   was lost or a unit from another instance, and both are worth seeing.
+   was lost or a unit from another instance, and both are worth seeing. The **permanent** wake units
+   are excluded by name: the standing random-interval timer and the login reconciler are fixtures of
+   the installation, have never had a booking record, and are not missing one. Reporting one as "a
+   timer with no booking record" puts a wake nobody booked in front of her.
 4. `crab status` MUST warn when a record has no timer.
 
 ### Totals before samples
@@ -127,6 +130,24 @@ below is a fact placed before her, never a gate placed behind her.
     recently finished with the delta anchor, the account line, and the arithmetic rule.
 29. The near view MUST NOT print history under a heading that reads as live work.
 30. Anything the near view omits MUST be named as one command away, with the command.
+
+### The block is how she sees, not how she speaks
+
+33. The block's vocabulary is her **senses, never her mouth**. The prompt MUST carry that rule, in
+    the layer nearest generation — the turn frame, where an instruction about how to say a thing
+    sits beside the thing being answered. She speaks a plan as a person does ("I'll come back to the
+    arrangement at one"), not as an operations report ("a scheduled wake is booked"). The block's
+    words — wake, session, job, timer, unit — and its bookkeeping — which subsystem booked a thing,
+    what owns it, unit names — are spoken ONLY when they answer what was actually asked.
+34. This is a fact placed before her while she writes, never a filter behind her. Nothing may
+    inspect a written reply for the block's vocabulary and mute, rewrite or grade it; rule 21 and
+    [wake-queue.md](wake-queue.md) rule 29 forbid exactly that, and they are not weakened here.
+35. Every rendered pending wake MUST lead with its **reason** and trail its machinery:
+    `13:00 — Kassandra bar 14: write the blind prediction (booked by you)`. The kind is queue
+    vocabulary and answers nothing; leading with it puts the one part of the row she can actually
+    say last. A booking with no reason says what a reason-less booking of that kind is, rather than
+    printing the kind and stopping. Provenance still appears on every row (rule 11), and a record
+    whose booker is `herself` renders as **you** — she is the reader.
 
 ## DATA
 
