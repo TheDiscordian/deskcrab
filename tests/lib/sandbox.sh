@@ -79,6 +79,23 @@ _sandbox_drop_external() {  # <live prefix> <live data dir>: a path filter
         { print }'
 }
 
+# The live timers, photographed so that only what a TEST could change shows up
+# as a difference. `list-timers` renders two columns that move on their own —
+# LEFT counts down and PASSED counts up — so a pending live timer made every
+# run of every test longer than a second report a leak it had not caused. The
+# zone matters for the same reason: the before photograph is taken out here in
+# the real environment and the after one inside the sandbox, where TZ is
+# whatever the caller had, so an unset TZ rendered the two halves in different
+# zones and diffed every line. Both are pinned, and the durations are struck
+# out; an absolute time, a unit appearing, and a unit going away all still read
+# as the differences they are.
+_sandbox_timers_photo() {  # <out file>
+    env TZ=UTC LC_ALL=C /usr/bin/systemctl --user list-timers 'deskcrab-*' \
+        --all --no-legend 2>/dev/null \
+        | sed -E 's/\b[0-9]+(y|month|w|d|h|min|ms|us|s)\b//g; s/ +/ /g' \
+        | LC_ALL=C sort > "$1"
+}
+
 # --------------------------------------------------------------------------
 # Phase 1: the real environment. Build the root, photograph what is live, and
 # hand the test to a clean environment.
@@ -122,8 +139,7 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
         cut -f1 "$1" > "$1.paths"
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
             2>/dev/null | LC_ALL=C sort > "$1.units"
-        /usr/bin/systemctl --user list-timers 'deskcrab-*' --all --no-legend \
-            2>/dev/null | LC_ALL=C sort > "$1.timers"
+        _sandbox_timers_photo "$1.timers"
     }
     _sb_photo "$_sb_root/leak/before"
 
@@ -323,10 +339,9 @@ _sandbox_photo_after() {
         DBUS_SESSION_BUS_ADDRESS="$SANDBOX_REAL_DBUS" \
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
         2>/dev/null | LC_ALL=C sort > "$SANDBOX/leak/after.units"
-    env XDG_RUNTIME_DIR="$SANDBOX_REAL_RUNTIME_DIR" \
+    XDG_RUNTIME_DIR="$SANDBOX_REAL_RUNTIME_DIR" \
         DBUS_SESSION_BUS_ADDRESS="$SANDBOX_REAL_DBUS" \
-        /usr/bin/systemctl --user list-timers 'deskcrab-*' --all --no-legend \
-        2>/dev/null | LC_ALL=C sort > "$SANDBOX/leak/after.timers"
+        _sandbox_timers_photo "$SANDBOX/leak/after.timers"
 }
 
 # A backstop, and no longer a known defect: the phone's reply audio used to go
