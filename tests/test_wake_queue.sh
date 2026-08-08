@@ -246,3 +246,160 @@ case "$out" in
     *"died at two in the morning"*) ok "crab status still shows old failures" ;;
     *) fail "crab status keeps failed jobs" "$out" ;;
 esac
+
+echo
+echo "the record and the timer disagree — and the block says which way:"
+# specs/self-awareness.md rules 1 to 4. The whole headline failure of
+# 2026-08-07 lives in this gap: the report enumerated `systemctl list-timers`
+# and consulted the records only to decorate a row it had already found, so
+# twenty-five records with no timers rendered as "(none scheduled)". Records
+# are the authority; timers are joined onto them; and each of the three ways
+# they can disagree gets its own line.
+rm -f "$T"/wakes/*.wake
+NOW="$(date +%s)"
+printf '%s\tscheduled\t\t%s\therself\n'                 $(( NOW + 1800 )) "$NOW" > "$T/wakes/deskcrab-wake-armed.wake"
+printf '%s\tevent\ta booking whose timer died\t%s\tjob-runner\n' $(( NOW + 2400 )) "$NOW" > "$T/wakes/deskcrab-wake-unarmed.wake"
+printf '%s\tscheduled\ta wake firing right now\t%s\therself\n'   $(( NOW + 3000 )) "$NOW" > "$T/wakes/deskcrab-wake-firing.wake"
+
+# One user manager, three units: an armed timer for the first record, nothing
+# at all for the second, an ACTIVE SERVICE for the third (a wake that is
+# running, which cleared its own record first thing), and one transient timer
+# that no record remembers.
+run_units() { # <shell body>
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" sandbox_bash '
+        systemctl() {
+            case "$*" in
+                *list-units*)
+                    echo "deskcrab-wake-armed.timer loaded active waiting"
+                    echo "deskcrab-wake-firing.service loaded active running"
+                    echo "deskcrab-wake-990-1.timer loaded active waiting"
+                    return 0 ;;
+                *list-timers*) return 0 ;;
+                *is-active*) return 1 ;;
+            esac
+            return 0
+        }
+        '"$*" 2>&1
+}
+
+rows="$(run_units 'wake_list')"
+state_of() { printf '%s\n' "$rows" | awk -F'\t' -v u="$1" '$2 == u { print $7; exit }'; }
+check_eq "a record with a live timer reads armed" "$(state_of deskcrab-wake-armed)" "armed"
+check_eq "a record with NO live timer reads unarmed" "$(state_of deskcrab-wake-unarmed)" "unarmed"
+check_eq "a record whose service is running reads firing" "$(state_of deskcrab-wake-firing)" "firing"
+check_eq "a timer no record remembers reads orphan" "$(state_of deskcrab-wake-990-1)" "orphan"
+check_eq "four rows, and the records led all three of theirs" \
+    "$(printf '%s\n' "$rows" | grep -c '^')" "4"
+
+out="$(run_units 'wakes_report --brief')"
+case "$out" in
+    *"a booking whose timer died"*"RECORDED BUT NOT ARMED"*) ok "the unarmed booking says so on its own line" ;;
+    *) fail "an unarmed record renders as RECORDED BUT NOT ARMED" "$out" ;;
+esac
+case "$out" in
+    *"a timer with no booking record"*) ok "the orphan timer gets its own line" ;;
+    *) fail "a record-less timer renders as an orphan" "$out" ;;
+esac
+case "$out" in
+    *"! 1 of these is RECORDED WITH NO LIVE TIMER"*) ok "and the divergence is counted, not just decorated" ;;
+    *) fail "the unarmed count is stated" "$out" ;;
+esac
+case "$out" in
+    *"! 1 live timer has no booking record"*) ok "so is the orphan count" ;;
+    *) fail "the orphan count is stated" "$out" ;;
+esac
+case "$out" in
+    *"firing now"*) ok "the wake running right now is marked as running, not as pending work" ;;
+    *) fail "a firing wake is marked firing" "$out" ;;
+esac
+# The count is the whole point: three records exist, one timer is armed, and
+# the number that leads the list is three.
+case "$out" in
+    *"4 total"*) ok "the total counts records first — three records and one orphan, not one timer" ;;
+    *) fail "the total is built from the records" "$out" ;;
+esac
+
+echo
+echo "provenance survives the round trip — booked by X, read back as X:"
+rm -f "$T"/wakes/*.wake
+book_by() { WAKES_DIR="$T/wakes" WANTS_FILE="$T/wants.md" "$REPO_DIR/crab" wake-at "$@" 2>&1; }
+book_by --by promise-audit 2h event "a want you said and did not write down" > /dev/null
+rows="$(run 'wake_list')"
+check_eq "the record names the subsystem that booked it" \
+    "$(printf '%s\n' "$rows" | awk -F'\t' 'NR == 1 { print $6 }')" "promise-audit"
+out="$(run 'wakes_report')"
+case "$out" in
+    *"[booked by promise-audit"*) ok "and the block renders it, so 'scheduled by me' is answerable" ;;
+    *) fail "the block renders provenance" "$out" ;;
+esac
+check_eq "booked-at is recorded too, as an epoch" \
+    "$(printf '%s\n' "$rows" | awk -F'\t' 'NR == 1 { print ($5 ~ /^[0-9]+$/) }')" "1"
+
+echo
+echo "the unit a booking asks for carries --collect and a runtime ceiling:"
+# MAJ-13 and MAJ-14. A wake unit without --collect leaks into the user manager
+# when it fails (two were sitting failed when this was written, one of them
+# pointing at a checkout that had been deleted), and a wake with no unit-level
+# ceiling has only the in-process stall watchdog — which by construction cannot
+# reap a session that keeps emitting output. TimeoutStartSec, not RuntimeMaxSec:
+# a transient systemd-run service is Type=oneshot and the journal has been
+# saying RuntimeMaxSec has no effect on one for as long as it has been set.
+rm -f "$T"/wakes/*.wake
+: > "$SANDBOX_SYSTEMD_LOG"
+book_by --by wake-chain-floor 90min scheduled "" > /dev/null
+argv="$(grep -m1 'on-active' "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"
+count_arg() { local n; n="$(grep -c -- "$1" "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"; printf '%s' "${n:-0}"; }
+check_eq "exactly one unit was asked for" "$(count_arg 'on-active')" "1"
+case "$argv" in
+    *"--collect"*) ok "it is booked with --collect, so a failed unit does not leak" ;;
+    *) fail "every wake unit carries --collect" "$argv" ;;
+esac
+case "$argv" in
+    *"-p TimeoutStartSec="*) ok "and with a start timeout, which is the ceiling that applies to a oneshot" ;;
+    *) fail "every wake unit carries a runtime ceiling" "$argv" ;;
+esac
+check_eq "no RuntimeMaxSec, which systemd ignores on a oneshot" "$(count_arg 'RuntimeMaxSec')" "0"
+case "$argv" in
+    *"--on-active="*) ok "booked as a delay, never as a calendar spec that would repeat daily" ;;
+    *) fail "a booking is a delay" "$argv" ;;
+esac
+case "$argv" in
+    *"--setenv=DESKCRAB_CONF=$DESKCRAB_CONF"*) ok "the instance's config travels into the unit" ;;
+    *) fail "a scratch instance's wakes must fire back into the scratch instance" "$argv" ;;
+esac
+case "$argv" in
+    *"--setenv=DESKCRAB_STATE_PREFIX=$DESKCRAB_STATE_PREFIX"*) ok "and so does its state prefix" ;;
+    *) fail "the state prefix travels into the unit" "$argv" ;;
+esac
+
+echo
+echo "the fourth gate — a scratch queue records a booking and arms nothing:"
+# MAJ-34. Isolating what a test may TOUCH says nothing about what it may ARM:
+# a /tmp checkout once held a live armed timer in the real user manager. The
+# module refuses to create a unit when WAKES_DIR is not the live one, and
+# DESKCRAB_ALLOW_SCRATCH_BOOKING is the documented opt-in for a harness that
+# HAS stubbed systemd-run — which is why every case above could assert on argv
+# at all. With the opt-in withdrawn, the record must still be written (a
+# scratch instance with records and no timers is a state the queue is supposed
+# to be able to describe) and NOTHING may reach systemd-run.
+rm -f "$T"/wakes/*.wake "$T/wakes/ledger.log"
+: > "$SANDBOX_SYSTEMD_LOG"
+out="$(env -u DESKCRAB_ALLOW_SCRATCH_BOOKING \
+    WAKES_DIR="$T/wakes" WANTS_FILE="$T/wants.md" \
+    "$REPO_DIR/crab" wake-at 3h scheduled "" 2>&1)"
+check_eq "the booking record is still written" "$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)" "1"
+check_eq "and not one line reached systemd-run" \
+    "$(count_arg .)" "0"
+case "$out" in
+    *"scratch instance"*"no timer armed"*) ok "the refusal says what it did and why" ;;
+    *) fail "a scratch booking explains itself" "$out" ;;
+esac
+check_eq "the booking is still on the ledger — a record is a promise either way" \
+    "$(awk -F'\t' '$2 == "booked" { n++ } END { print n + 0 }' "$T/wakes/ledger.log" 2>/dev/null || echo 0)" "1"
+
+# The control. Without it, "zero units" proves only that the code path is dead.
+rm -f "$T"/wakes/*.wake "$T/wakes/ledger.log"
+: > "$SANDBOX_SYSTEMD_LOG"
+book_by 3h scheduled "" > /dev/null
+check_eq "with the opt-in back, the same booking does reach the stub" \
+    "$(count_arg 'on-active')" "1"
