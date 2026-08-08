@@ -2091,13 +2091,47 @@ live_turn_end() {  # <device> <user-text> <spoken-reply>
 # spoken, only to decide what the next reply should SAY.
 LIVE_SPEECH_FILE="${LIVE_SPEECH_FILE:-${STATE_PREFIX}-live-speech}"
 
-# Rough spoken duration of a text, seconds — used only for voices this machine
-# hands off and cannot watch finish (a reply played on the phone). Piper runs
-# about two and a half words a second; a few seconds of grace on top.
+# How long a handed-off voice goes on for. Only voices this machine cannot
+# watch finish need this — a reply played on the phone, where there is no pid
+# to signal — and the answer becomes the record's UNTIL, which is the ONLY
+# thing keeping a pidless record alive.
+#
+# So it has to be honest in both directions. Too short and a genuinely
+# concurrent voice stops counting mid-word; too long and the next session is
+# told to fold its reply into words the user finished hearing minutes ago,
+# which is an instruction to restate. Padding "to be safe" is not safe: every
+# second of it is a second of restatement pressure.
+#
+# _audio_seconds is the truth — the clip's own duration, read from the file the
+# phone is about to play. _speech_seconds is an ESTIMATE and is named as one:
+# it is the fallback for a clip that cannot be measured (no ffprobe, or a
+# synthesiser that wrote nothing), at piper's rough two and a half words a
+# second plus three seconds for the hand-off itself.
 _speech_seconds() {
     local W
     W=$(printf '%s' "$1" | wc -w)
     echo $(( 3 + W * 2 / 5 ))
+}
+
+# The real playing length of a synthesised clip, whole seconds, rounded up.
+# Non-zero when the file cannot be measured, which is the caller's cue to
+# estimate instead.
+_audio_seconds() {  # <audio-file>
+    local D
+    [ -s "$1" ] || return 1
+    command -v ffprobe >/dev/null 2>&1 || return 1
+    D=$(ffprobe -v error -show_entries format=duration \
+        -of default=noprint_wrappers=1:nokey=1 "$1" 2>/dev/null)
+    case "$D" in ''|*[!0-9.]*) return 1 ;; esac
+    awk -v d="$D" 'BEGIN { s = int(d); if (d > s) s++; if (s < 1) s = 1; print s }'
+}
+
+# The epoch at which a handed-off clip stops playing: measured if it can be,
+# estimated from the words if it cannot.
+_speech_until() {  # <audio-file> <spoken-text>
+    local SECS
+    SECS=$(_audio_seconds "$1") || SECS=$(_speech_seconds "$2")
+    echo $(( $(date +%s) + SECS ))
 }
 
 # <device> <text> [pid] [until-epoch]
@@ -2121,6 +2155,26 @@ live_speech_end() {
     return 0
 }
 
+# A message from the user RETIRES that device's notice. His reply is the
+# receipt: those words reached him, he read or heard them, and he has answered
+# — whatever the clock still says about when the audio stops. Without this the
+# next turn from the same device was handed her own already-delivered reply as
+# a voice still speaking, under instructions to fold it in and carry it
+# forward, which against something he has read AND answered is an instruction
+# to restate. Measured live: two phone messages 46 seconds apart, the second
+# reply a near-verbatim restatement of the first with one clause added.
+#
+# ONLY that device's record. A voice on the OTHER device is a voice he has not
+# answered, and it is still owed a regroup — that is the whole design and this
+# must never widen into clearing the file.
+live_speech_retire() {  # <device>
+    [ -f "$LIVE_SPEECH_FILE" ] || return 0
+    local TS DEV
+    IFS=$'\t' read -r TS DEV _ < "$LIVE_SPEECH_FILE"
+    [ "$DEV" = "$1" ] && rm -f "$LIVE_SPEECH_FILE"
+    return 0
+}
+
 # Is another session of me speaking right now, and what is it saying? Prints
 # the device on line 1 and the spoken text from line 2 on (one stream, so a
 # caller in a command substitution gets both — a variable set here would die
@@ -2138,15 +2192,67 @@ live_speech_now() {
     [ "$PID" = "$$" ] && return 1
     [ -n "${_TTS_STREAMER_PID:-}" ] && [ "$PID" = "$_TTS_STREAMER_PID" ] && return 1
     # Sanity cap, then liveness: a living speaker, or handed-off audio still
-    # inside its estimated play time. A speaker killed mid-word (crab shutup)
+    # inside its measured play time. A speaker killed mid-word (crab shutup)
     # leaves its record behind — the dead pid is what catches that.
     [ $(( NOW - TS )) -lt "$LIVE_SPEECH_WINDOW" ] || return 1
-    if ! kill -0 "$PID" 2>/dev/null && [ "$UNTIL" -le "$NOW" ]; then
-        return 1
+    # NOTHING below pid 2 is a speaker, and `kill -0 0` is not a question about
+    # one: pid 0 means THIS PROCESS GROUP, so the probe always succeeds. Every
+    # reply handed to the phone is published pidless, and that always-true
+    # probe made each of them read as a living voice for the whole
+    # LIVE_SPEECH_WINDOW — 180 seconds — no matter what UNTIL said. Two phone
+    # messages 46 seconds apart was all it took: the second turn was handed her
+    # own delivered reply as words still being spoken, told to fold them in and
+    # carry them forward, and restated them at a user who had already read and
+    # answered them. For a pidless record, liveness is UNTIL and nothing else.
+    if [ "$PID" -le 1 ] || ! kill -0 "$PID" 2>/dev/null; then
+        [ "$UNTIL" -gt "$NOW" ] || return 1
     fi
     TEXT="$(tail -n +2 "$LIVE_SPEECH_FILE")"
     [ -n "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ] || return 1
     printf '%s\n%s\n' "${DEV:-desk}" "$TEXT"
+}
+
+# Text reduced to what it MEANS for a comparison: case-folded, stripped of
+# punctuation and markdown, whitespace collapsed. The same sentence written to
+# the speakers and written to the conversation differs in exactly those ways.
+_regroup_normalise() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' ' ' \
+        | tr -s ' ' | sed -e 's/^ //' -e 's/ $//'
+}
+
+# The most recent thing SHE said in the live conversation, header stripped.
+# Empty when the file holds no assistant block at all.
+_convo_last_assistant_block() {
+    [ -f "$CONVOFILE" ] || return 0
+    awk -v bre="$CONVO_BLOCK_RE" -v are="$CONVO_ASSISTANT_RE" '
+        $0 ~ bre {
+            if ($0 ~ are) { line = $0; sub(are, "", line); buf = line; keep = 1 }
+            else { keep = 0; buf = "" }
+            next
+        }
+        keep { buf = buf "\n" $0 }
+        END { if (length(buf)) print buf }
+    ' "$CONVOFILE" 2>/dev/null
+}
+
+# Is this voice saying something the prompt is ALREADY carrying as her last
+# reply? Then it is not a second voice to fold in. The transcript layer
+# delivers those words two layers up, in the one place they belong — something
+# she said, at a time, with his answer under it — and a second copy of them
+# down here arrives wearing "fold it in… and carry it forward", which against
+# a reply he has already read and answered is an instruction to say it again.
+# That is precisely how a phone turn came back as its own predecessor with one
+# clause added.
+_regroup_already_in_transcript() {  # <spoken text>
+    local SAY LAST
+    SAY="$(_regroup_normalise "$1")"
+    [ -n "$SAY" ] || return 1
+    LAST="$(_regroup_normalise "$(_convo_last_assistant_block)")"
+    [ -n "$LAST" ] || return 1
+    # Containment, not equality: the streamer publishes the sentence it is
+    # putting on the speakers, while the conversation holds the whole reply.
+    case "$LAST" in *"$SAY"*) return 0 ;; esac
+    return 1
 }
 
 # The REGROUP block: spliced into any session's prompt — desk turn, phone
@@ -2160,6 +2266,7 @@ regroup_context() {
     DEV="$(printf '%s\n' "$RAW" | head -n 1)"
     SAYING="$(printf '%s\n' "$RAW" | tail -n +2)"
     [ -n "$(printf '%s' "$SAYING" | tr -d '[:space:]')" ] || return 0
+    _regroup_already_in_transcript "$SAYING" && return 0
     cat <<EOF
 ANOTHER OF YOU IS SPEAKING RIGHT NOW — a second session of you (on the ${DEV:-desk}) is mid-utterance as you begin. These are its exact words, already reaching the user or about to:
 --- being said now ---
@@ -2238,10 +2345,12 @@ wake_speak_to_phone() {
     python3 -c 'import json,sys; print(json.dumps({"id":sys.argv[1],"audio":"/audio/"+sys.argv[2],"spoken":sys.argv[3]}))' \
         "$ID" "$(basename "$OUT")" "$1" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR" || return 1
     # Handed off: the phone plays this, and this process is about to exit, so
-    # there is no pid for the next session to watch. Publish the words with an
-    # estimated end time instead — a voice on the phone is still a voice, and
-    # a wake starting behind it must regroup with it, not talk past it.
-    live_speech_begin "phone" "$1" 0 $(( $(date +%s) + $(_speech_seconds "$1") ))
+    # there is no pid for the next session to watch. Publish the words with the
+    # clip's own length as the end time instead — a voice on the phone is still
+    # a voice, and a wake starting behind it must regroup with it, not talk
+    # past it. That end time is the only thing keeping this record alive, so it
+    # is measured (see _speech_until) rather than guessed generously.
+    live_speech_begin "phone" "$1" 0 "$(_speech_until "$OUT" "$1")"
 }
 
 # Total utime+stime jiffies for a PID and all its descendants. Field extraction
@@ -3451,6 +3560,11 @@ _run_claude_remote_locked() {
     record_origin phone
     local TEXT="$1"
     SESSION_USER_TEXT="$TEXT"
+    # He has answered whatever was last said to this phone, so nothing said to
+    # it is still in flight. Retired HERE, before a word of the prompt is
+    # built, so the regroup layer below cannot be handed her own delivered
+    # reply as a voice to fold in.
+    live_speech_retire phone
     # Mark the exchange in flight: a wake firing beside this turn reads it
     # and is told the message is already being answered.
     live_turn_begin phone "$TEXT"
@@ -3504,11 +3618,11 @@ _run_claude_remote_locked() {
         local CANDIDATE="${REMOTE_AUDIO_PREFIX}$(date +%s%N).opus"
         synth_opus "$SPOKEN" "$CANDIDATE" && AUDIO="$CANDIDATE"
         # The phone is about to play this. Same hand-off as a wake's phone
-        # audio: no pid to watch, so publish the words with an estimated end
-        # time, and a session starting behind it regroups rather than
-        # answering into the middle of it.
+        # audio: no pid to watch, so publish the words with the clip's own
+        # length as the end time, and a session starting behind it regroups
+        # rather than answering into the middle of it.
         [ -n "$AUDIO" ] && live_speech_begin "phone" "$SPOKEN" 0 \
-            $(( $(date +%s) + $(_speech_seconds "$SPOKEN") ))
+            "$(_speech_until "$AUDIO" "$SPOKEN")"
         # Let the desktop see that the phone is talking to it.
         notify-send -t 6000 -h string:x-dunst-stack-tag:deskcrab \
             "$NOTIFY_NAME (remote)" "$(printf '%s' "$SPOKEN" | head -c 140)" 2>/dev/null
@@ -3566,6 +3680,11 @@ run_claude_and_respond() {
     # Recorded before generation: even a turn that dies mid-reply leaves the
     # user's words in the day journal.
     SESSION_USER_TEXT="$TEXT"
+    # Same receipt as the phone turn: he is speaking to this desk, so whatever
+    # was last said at it has been delivered and answered. Retired before the
+    # prompt is built — a voice on the PHONE is untouched by this and is still
+    # owed a regroup.
+    live_speech_retire desk
     # Mark the exchange in flight: a wake firing beside this turn reads it
     # and is told the message is already being answered.
     live_turn_begin desk "$TEXT"

@@ -1,21 +1,38 @@
 #!/usr/bin/env bash
-# Proof that a second voice REGROUPS instead of being queued away or muted.
+# Proof that a second voice REGROUPS instead of being queued away or muted —
+# and that a voice he has ALREADY ANSWERED is not a second voice at all.
 #
 # The old answer to "another of me is already speaking" was a speech mutex plus
 # a user_busy mute: the second session's words either waited behind a lock or
 # were swallowed whole, and the second thing never got said. The design is the
-# human one — stop, fold both things into ONE reply, say that. This test holds
-# the new path to it:
+# human one — stop, fold both things into ONE reply, say that. The other half
+# of the design is knowing when there is no second voice: a record left behind
+# by a reply that has been delivered, read and answered is a record about the
+# past, and regrouping against it is an instruction to say it all again. This
+# test holds both halves:
 #
-#   1. no live speech            -> no block at all
-#   2. another session speaking   -> the block, with its words VERBATIM
-#   3. my own turn's voice        -> not another of me; no block
-#   4. a speaker killed mid-word  -> stale record, no block
-#   5. audio handed to the phone  -> no pid to watch, the estimate covers it
-#   6. live_speech_end            -> clears only its OWN notice
-#   7. build_system_prompt        -> the block actually reaches a real prompt
-#   8. a whole wake beside a live voice -> the regrouped reply is SPOKEN, and
-#      the nothing-new backstop does not eat it for overlapping by design
+#    1. no live speech             -> no block at all
+#    2. another session speaking    -> the block, with its words VERBATIM
+#    3. my own turn's voice         -> not another of me; no block
+#    4. a speaker killed mid-word   -> stale record, no block
+#    5. audio handed to the phone   -> no pid to watch, the estimate covers it
+#    6. a pidless record past its estimate -> NOT a voice. `kill -0 0` is not a
+#       liveness test: it signals the whole process group and always succeeds,
+#       so every pidless record read as a living speaker for the full window
+#    7. the end time a hand-off publishes is the CLIP's own length
+#    8. words already standing as her last transcript block -> no block: the
+#       transcript delivers them once, and a second copy carrying "fold it in
+#       and carry it forward" is an instruction to restate what he has read
+#    9. a message from a device retires THAT device's notice, and only that one
+#   10. a desk turn retires the desk notice before its prompt is built
+#   11. live_speech_end             -> clears only its OWN notice
+#   12. build_system_prompt         -> the block actually reaches a real prompt
+#   13. a whole wake beside a live voice -> the regrouped reply is SPOKEN, and
+#       the nothing-new backstop does not eat it for overlapping by design
+#   14. the desk streamer publishes as it speaks, and retracts when done
+#   15. an interactive turn regroups against the OTHER device's voice
+#   16. the live regression, end to end: two phone messages in a row, and the
+#       second turn is never handed her own delivered reply to fold in
 #
 # Everything is stubbed and confined to the sandbox: no claude, no speakers,
 # no notifications, no timers.
@@ -44,6 +61,14 @@ cat > /dev/null
 for a in "$@"; do out="$a"; done
 printf 'opus' > "$out"
 EOF
+# ffprobe answers the only question the hand-off has: how long does this clip
+# play for. 12.4 seconds of audio, whatever the stub ffmpeg actually wrote.
+sandbox_stub ffprobe <<'EOF'
+#!/bin/sh
+for a in "$@"; do f="$a"; done
+[ -s "$f" ] || exit 1
+printf '12.400000\n'
+EOF
 
 cat > "$DESKCRAB_CONF" <<EOF
 MEMORY_STORE=0
@@ -61,8 +86,10 @@ printf '# Wants\n\n- **a want**, so the wake path is enabled at all\n' > "$WORK/
 fail() { die "$*"; }
 
 OTHER="Beatrice, the backup finished and the archive verified clean."
+CONVO="${DESKCRAB_STATE_PREFIX}-convo.txt"
+mkdir -p "$(dirname "$DESKCRAB_STATE_PREFIX")"
 
-# --- 1-7: the record and the block, unit level ------------------------------
+# --- 1-12: the record and the block, unit level -----------------------------
 (
     # common.sh is not written for -u (optional config vars are read bare), so
     # drop it for the sourced half; the assertions below do their own checking.
@@ -101,9 +128,63 @@ OTHER="Beatrice, the backup finished and the archive verified clean."
     [ -z "$(regroup_context)" ] || fail "regrouped against a dead speaker's stale record"
 
     # Audio handed to the phone: no pid to watch, an estimated end time instead.
-    live_speech_begin phone "$OTHER" "$SPEAKER" "$(( $(date +%s) + 30 ))"
+    live_speech_begin phone "$OTHER" 0 "$(( $(date +%s) + 30 ))"
     printf '%s' "$(regroup_context)" | grep -q "on the phone" \
         || fail "handed-off phone audio did not count as a live voice"
+
+    # …and the same record once that end time has passed is NOT a voice. This
+    # is the hole the whole regression came through: the pid is 0, `kill -0 0`
+    # signals the caller's own process group and always succeeds, so the record
+    # read as a living speaker for the full LIVE_SPEECH_WINDOW no matter how
+    # long ago the audio actually stopped.
+    live_speech_begin phone "$OTHER" 0 "$(( $(date +%s) - 5 ))"
+    [ -z "$(regroup_context)" ] \
+        || fail "a pidless record whose estimate has run out still counted as a voice"
+    live_speech_begin phone "$OTHER" 1 "$(( $(date +%s) - 5 ))"
+    [ -z "$(regroup_context)" ] || fail "pid 1 counted as a living speaker"
+
+    # The end time a hand-off publishes comes from the clip, not from a guess
+    # about how fast piper talks.
+    printf 'opus' > "$WORK/clip.opus"
+    LEFT=$(( $(_speech_until "$WORK/clip.opus" "$OTHER") - $(date +%s) ))
+    [ "$LEFT" -ge 12 ] && [ "$LEFT" -le 14 ] \
+        || fail "the handed-off end time is not the clip's own length (got ${LEFT}s)"
+    # No clip to measure: an estimate, and it is documented as one.
+    LEFT=$(( $(_speech_until "$WORK/nothing-here.opus" "$OTHER") - $(date +%s) ))
+    [ "$LEFT" -gt 0 ] || fail "an unmeasurable clip published no end time at all"
+
+    # Words that are already the last thing she said in the transcript are not
+    # news to fold in — the prompt carries them one layer up, and a second copy
+    # under "fold it in and carry it forward" is how a reply gets restated at
+    # somebody who has read it.
+    sleep 60 & SPEAKER3=$!
+    printf 'User [12:00]: how did the backup go\nAssistant [12:01]: %s\n\n' "$OTHER" > "$CONVO"
+    live_speech_begin desk "$OTHER" "$SPEAKER3"
+    [ -z "$(regroup_context)" ] || fail "regrouped against her own last transcript block"
+    # A voice saying something the transcript does NOT hold still regroups.
+    live_speech_begin desk "and the disk it landed on is nearly full" "$SPEAKER3"
+    [ -n "$(regroup_context)" ] \
+        || fail "a voice saying something new was silenced by the transcript check"
+    kill "$SPEAKER3" 2>/dev/null
+    rm -f "$CONVO"
+
+    # A message from him is a receipt: it retires THAT device's notice, and
+    # leaves the other device's alone.
+    live_speech_begin phone "$OTHER" 0 "$(( $(date +%s) + 30 ))"
+    live_speech_retire desk
+    [ -f "$LIVE_SPEECH_FILE" ] || fail "a desk message retired the phone's notice"
+    live_speech_retire phone
+    [ ! -f "$LIVE_SPEECH_FILE" ] || fail "a phone message did not retire the phone's notice"
+
+    # And the desk turn does the retiring where it counts: before its prompt is
+    # built. The record here is pidless with time still on the clock, which is
+    # exactly what a reply just delivered to this desk leaves behind.
+    rm -f "$WORK/claude-args.txt"
+    live_speech_begin desk "$OTHER" 0 "$(( $(date +%s) + 120 ))"
+    run_claude_and_respond "how did that go" >/dev/null 2>&1
+    grep -q "ANOTHER OF YOU IS SPEAKING RIGHT NOW" "$WORK/claude-args.txt" \
+        && fail "the desk turn regrouped against a notice the user had just answered"
+    rm -f "$CONVO" "$LIVE_SPEECH_FILE"
 
     # A notice belongs to whoever wrote it.
     sleep 60 & OTHERPID=$!
@@ -124,12 +205,14 @@ OTHER="Beatrice, the backup finished and the archive verified clean."
     exit 0
 ) || exit 1
 
-# --- 8: a whole wake beside a voice, end to end -----------------------------
-# The conversation already holds that sentence as an assistant message, so a
-# reply echoing it is exactly what wake_says_nothing_new mutes. Regrouping was
-# ASKED for here, so the overlap is the point and the reply must survive.
-mkdir -p "$(dirname "$DESKCRAB_STATE_PREFIX")"
-printf 'User: how did the backup go\n\nAssistant: %s\n\n' "$OTHER" > "${DESKCRAB_STATE_PREFIX}-convo.txt"
+# --- 13: a whole wake beside a voice, end to end ----------------------------
+# The other session is still MID-UTTERANCE: its reply is on the speakers and has
+# not landed in the transcript yet, so this is a genuinely concurrent voice and
+# the block is owed. (Once those words ARE her last transcript block the rule is
+# the opposite one, held by case 8 above.) The stub reply echoes them almost
+# whole, which is what a regrouped reply looks like — the overlap is the point
+# and nothing downstream may swallow the reply for it.
+printf 'User [%s]: how did the backup go\n\n' "$(date '+%Y-%m-%d %H:%M')" > "$CONVO"
 
 sleep 60 & SPEAKER=$!
 printf '%s\tdesk\t%s\t0\n%s\n' "$(date +%s)" "$SPEAKER" "$OTHER" > "${DESKCRAB_STATE_PREFIX}-live-speech"
@@ -160,7 +243,7 @@ grep -q "muted — said nothing" "$LOG" \
 grep -q "muted — user was mid-interaction" "$LOG" \
     && fail "another of my own voices counted as the user being busy"
 
-# --- 9: the desk streamer publishes as it speaks, and retracts when done ----
+# --- 14: the desk streamer publishes as it speaks, and retracts when done ---
 # The wake above was handed a record written by hand. This is the real writer:
 # lib/tts-streamer, mid-stream, with the words it is putting on the speakers.
 STREAMLOG="$WORK/stream.log"
@@ -185,14 +268,14 @@ printf '%s\n' '{"type":"result"}' >> "$STREAMLOG"
 wait "$STREAMER" 2>/dev/null || true
 [ -f "${DESKCRAB_STATE_PREFIX}-live-speech" ] && fail "the streamer kept the floor after it finished speaking"
 
-# --- 10: an interactive turn regroups too, not just a wake ------------------
+# --- 15: an interactive turn regroups too, not just a wake ------------------
 # Driven through the phone turn, which shares claude_generate — and therefore
-# build_system_prompt — with the desk turn. The desk turn is deliberately NOT
-# driven here: start_tts_streamer pkills every tts-streamer on the machine by
-# path, which would cut the LIVE desk off mid-word to run a test.
-rm -f "$WORK/claude-args.txt"
+# build_system_prompt — with the desk turn. The voice it regroups against is on
+# the DESK: a message from the phone retires the phone's own notice (case 16),
+# and the other device's voice is one he has not answered.
+rm -f "$WORK/claude-args.txt" "$CONVO"
 sleep 60 & SPEAKER=$!
-printf '%s\tphone\t%s\t0\n%s\n' "$(date +%s)" "$SPEAKER" "$OTHER" > "${DESKCRAB_STATE_PREFIX}-live-speech"
+printf '%s\tdesk\t%s\t0\n%s\n' "$(date +%s)" "$SPEAKER" "$OTHER" > "${DESKCRAB_STATE_PREFIX}-live-speech"
 "$REPO/crab" remote "and what about the disk" >/dev/null 2>&1 || true
 kill "$SPEAKER" 2>/dev/null || true
 
@@ -205,4 +288,32 @@ grep -qF "nearly full" "${DESKCRAB_STATE_PREFIX}-live-speech" \
     || fail "the phone turn's reply was never published for the next session"
 rm -f "${DESKCRAB_STATE_PREFIX}-live-speech"
 
+# --- 16: the live regression, end to end ------------------------------------
+# Two phone messages in a row, which is all it took: her first reply was handed
+# to the phone and published with no pid, the pidless record read as a living
+# voice, and the second turn was told to fold in — "carry it forward", "do not
+# restate" — a reply he had already read and answered. It came back as the
+# first reply again, near verbatim, with one clause added. The second turn's
+# prompt must carry those words exactly once: in the transcript, where they are
+# something she said, not in a block telling her they are still being said.
+rm -f "$WORK/claude-args.txt" "$CONVO" "${DESKCRAB_STATE_PREFIX}-live-speech"
+"$REPO/crab" remote "how did the backup go" >/dev/null 2>&1 || true
+
+[ -f "${DESKCRAB_STATE_PREFIX}-live-speech" ] \
+    || fail "the first phone turn published nothing for the next session"
+UNTIL="$(head -n 1 "${DESKCRAB_STATE_PREFIX}-live-speech" | cut -f4)"
+LEFT=$(( UNTIL - $(date +%s) ))
+[ "$LEFT" -ge 11 ] && [ "$LEFT" -le 14 ] \
+    || fail "the phone turn's end time is not the clip's own length (got ${LEFT}s)"
+
+"$REPO/crab" remote "and what about the disk" >/dev/null 2>&1 || true
+grep -q "ANOTHER OF YOU IS SPEAKING RIGHT NOW" "$WORK/claude-args.txt" \
+    && fail "his own answer left her being told she was still speaking to him"
+grep -qi "fold it in" "$WORK/claude-args.txt" \
+    && fail "the next turn was told to fold in a reply he had already answered"
+grep -qF "nearly full" "$WORK/claude-args.txt" \
+    || fail "the transcript stopped carrying the reply it is supposed to deliver"
+rm -f "${DESKCRAB_STATE_PREFIX}-live-speech"
+
 ok "another voice -> regroup block -> one folded reply, nothing dropped"
+ok "a voice he has answered is not another voice — no restatement pressure"

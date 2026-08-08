@@ -111,6 +111,31 @@ built twice and removed twice. Silence is chosen while writing, or not at all.
     rule is [wake-queue.md](wake-queue.md) rule 27 and it is stated there, once; nothing here may
     restate it or contradict it.
 
+### The live-speech record
+
+The record exists so the NEXT session can regroup with a voice that is genuinely still going. Every
+rule below is about the same failure from a different side: a record that outlives the voice it
+describes, which turns a notice into pressure to say something again.
+
+34. A process id of 0 or 1 MUST NEVER count as a living speaker. `kill -0 0` signals the caller's
+    own process group and always succeeds, so a pidless record — which is every reply handed to the
+    phone — read as a living voice for the entire window whatever its end time said. For a record
+    with no pid to watch, liveness is the end time and nothing else.
+35. The end time published for handed-off audio MUST be derived from the clip that will be played —
+    its real duration — and MUST NOT be padded. Where the clip cannot be measured, the fallback is
+    an estimate from the word count and MUST be documented as an estimate. Every second of slack in
+    that number is a second in which the next session is told to fold its reply into words the user
+    finished hearing.
+36. A message arriving from a device MUST retire that device's record before the turn's prompt is
+    built. His reply is the receipt: the words reached him and he answered them. It MUST retire only
+    that device's record — a voice on the other device is one he has not answered, and it is still
+    owed a regroup.
+37. The regroup block MUST NOT carry text that is already the most recent assistant block of the
+    conversation the same prompt is carrying. The transcript delivers those words once, as something
+    she said; a second copy under "fold it in and carry it forward" is an instruction to restate a
+    reply he has read and answered. Compared on normalised text, because the streamer publishes the
+    sentence it is speaking while the conversation holds the whole reply.
+
 ## DATA
 
 | Path | Owner | Purpose |
@@ -119,7 +144,7 @@ built twice and removed twice. Silence is chosen while writing, or not at all.
 | `${STATE_PREFIX}-speech.lock` | the speakers | one voice at a time |
 | `${STATE_PREFIX}-speech-receipt-<pid>.txt` | the streamer | `chars=`, `lines=`, `error=` |
 | `${STATE_PREFIX}-speech.log` | every speech path | the record of what was spoken, held, or failed |
-| `${STATE_PREFIX}-live-speech` | the streamer, `speak_once`, the phone paths | `epoch \t device \t pid \t until` then the text |
+| `${STATE_PREFIX}-live-speech` | the streamer, `speak_once`, the phone paths | `epoch \t device \t pid \t until` then the text. `pid` 0 means nothing to watch, and then `until` — the clip's measured length — is the only liveness there is. Retired by the next message from that device. |
 | `${STATE_PREFIX}-shutup` | `crab shutup` | the asked-for-silence marker, cleared at turn start |
 | `/tmp/deskcrab-display-*.md` | the turn | one file per display window |
 
@@ -153,6 +178,10 @@ book a wake, or dispatch a job.
   spoken, only to decide what the next reply should say. Staleness is liveness, not age: a speaker
   killed mid-word leaves a record whose process is dead, and a session never regroups against its
   own voice.
+- **Regrouping is for a voice he has not heard the end of.** A record he has already answered is
+  about the past, and the block written for it — his own delivered reply, handed back with "fold it
+  in and carry it forward" — is a machine for restating. Rules 34 to 37 are four sides of that one
+  failure; none of them narrows what regrouping does when a voice really is concurrent.
 - **The post-hoc nothing-new check was removed and must not come back.** No mechanism compares a
   written reply against recent messages and swallows it.
 - **The word-budget truncator was removed and must not come back.** Length is a writing choice, not
@@ -184,7 +213,9 @@ book a wake, or dispatch a job.
 
 ## TESTS
 
-**Existing:** `tests/test_speech_path.sh` (timing: first speech well before block completion),
+**Existing:** `tests/test_regroup.sh` (the live-speech record and the block it produces: rules 34–37,
+including the live regression of 2026-08-07 driven end to end through two phone turns),
+`tests/test_speech_path.sh` (timing: first speech well before block completion),
 `tests/test_speech_dup.sh` (a shrinking log; a reply behind a thinking block),
 `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_silent_wake.sh`.
 

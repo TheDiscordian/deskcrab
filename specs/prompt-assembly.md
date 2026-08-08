@@ -138,6 +138,12 @@ flowchart TD
 29. Every heading the prompt tells her to look for MUST exist in the text that is emitted. A prompt
     that points at a heading which does not exist teaches her the block is unreliable.
 30. Vocabulary the prompt forbids MUST NOT be used by the prompt's own blocks.
+31. No layer may carry the same words as another layer under different instructions. The regroup
+    block MUST NOT restate what the transcript layer is already delivering as her most recent reply:
+    one copy is a thing she said, two copies — the second of them asking her to fold it in and carry
+    it forward — is an instruction to say it again, and it produced a phone reply that was its own
+    predecessor with one clause added. The rule this implements is
+    [speech-output.md](speech-output.md) rule 37.
 
 ## DATA
 
