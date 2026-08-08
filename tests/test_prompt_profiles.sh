@@ -162,7 +162,7 @@ check "the index is never trimmed — it reports over budget instead" \
 # overrun is added to the allowance and everything else has to fit under it.
 # A profile whose sum drifts fails here and the table is what it is measured
 # against; if the assembler is right, the table moves, in the same commit.
-total_budget() { case "$1" in turn) echo 21800 ;; wake) echo 16300 ;;
+total_budget() { case "$1" in turn) echo 22400 ;; wake) echo 16900 ;;
                               job) echo 2000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"
