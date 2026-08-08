@@ -1837,29 +1837,42 @@ This is a snapshot taken when your turn began, and it is deliberately only the n
     # Both are titles only, with the bodies one open away — a shelf whose whole
     # contents sit in every prompt becomes a dumping ground, because it is the
     # only page guaranteed to be read next time.
-    local SHELVES=""
+    local SHELVES="" CONDUCT_BLOCK="" WANTS_TITLES=""
     if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
-        if [ -n "${WANTS_FILE:-}" ]; then
-            local WANTS_BODY="(empty — nothing recorded yet)"
-            if [ -s "$WANTS_FILE" ]; then
-                WANTS_BODY="$(wants_titles "$WANTS_FILE")"
-                [ -n "$WANTS_BODY" ] || WANTS_BODY="(titles unreadable — open the file)"
-            fi
-            SHELVES="YOUR WANTS — the shelf, titles only. Each want's thinking, progress and history live in its own document under wants/; open one when a want is actually the work.
-$WANTS_BODY"
-        fi
+        [ -s "${WANTS_FILE:-}" ] && WANTS_TITLES="$(wants_titles "$WANTS_FILE")"
         local CONDUCT_FILE="$H/conduct/CONDUCT.md"
         if [ -s "$CONDUCT_FILE" ]; then
             local BINDING TITLES
             BINDING="$(conduct_binding "$CONDUCT_FILE")"
             TITLES="$(conduct_titles "$CONDUCT_FILE")"
-            SHELVES="$SHELVES
-
-YOUR CONDUCT — how you have agreed to behave. Not the same drawer as your wants and never mixed with them: a want is chosen, a conduct entry is owed. A correction, a rule, a failure not to repeat, something he asked for — that is conduct or a job, and none of it is a want.${BINDING:+
+            CONDUCT_BLOCK="YOUR CONDUCT — how you have agreed to behave. Not the drawer your wants are in and never mixed with it: a want is chosen, a conduct entry is owed. A correction, a rule, a failure not to repeat, something he asked for — that is conduct or a job, and none of it is a want. Each rule's body is the file named beside it, in $H/conduct/.${BINDING:+
 $BINDING}
-$TITLES
-Each rule's body is the file named after it in $H/conduct/ — open the one that bears on this turn."
+$TITLES"
         fi
+        # Conduct is sized FIRST and the shelf gets what is left. When the layer
+        # will not hold both, the titles that come off are wants, never rules:
+        # a want is chosen and its shelf is one open away, and a rule is owed —
+        # dropping the last five rules off the end of the layer is how a
+        # correction he gave silently stops applying.
+        local ROOM=$(( $(_prompt_budget L4 "$PROMPT_PROFILE") \
+                       - $(printf '%s' "$CONDUCT_BLOCK" | wc -c) - 280 ))
+        if [ -n "$WANTS_TITLES" ]; then
+            local SHOWN="$WANTS_TITLES" HELD=0 TOTAL
+            TOTAL=$(printf '%s\n' "$WANTS_TITLES" | grep -c .)
+            while [ "$(printf '%s' "$SHOWN" | wc -c)" -gt "$ROOM" ] && [ -n "$SHOWN" ]; do
+                SHOWN="$(printf '%s\n' "$SHOWN" | head -n -1)"
+                HELD=$(( HELD + 1 ))
+            done
+            SHELVES="YOUR WANTS — the shelf, titles only. Each want's thinking, progress and history are in its own document under wants/; open one when a want is actually the work.
+${SHOWN:-(the shelf did not fit this turn — it is at $WANTS_FILE)}"
+            [ "$HELD" -gt 0 ] && SHELVES="$SHELVES
+(+$HELD of $TOTAL more on the shelf, at $WANTS_FILE)"
+        elif [ -n "${WANTS_FILE:-}" ]; then
+            SHELVES="YOUR WANTS — the shelf at $WANTS_FILE is empty; nothing is recorded yet."
+        fi
+        [ -n "$CONDUCT_BLOCK" ] && SHELVES="${SHELVES:+$SHELVES
+
+}$CONDUCT_BLOCK"
     fi
     _prompt_layer L4 "$H/conduct/ and wants/" "$SHELVES"
 
