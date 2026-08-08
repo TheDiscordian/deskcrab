@@ -44,18 +44,18 @@ mkdir -p ~/.local/share/piper
 
 ## Install
 
-```bash
-git clone https://github.com/TheDiscordian/deskcrab.git
-cd deskcrab
+`crab` finds `lib/` beside itself, resolving symlinks first — so link the entry points at the
+checkout rather than copying them, and an update is a `git pull`:
 
-# Copy scripts
-cp crab crab-debug ~/.local/bin/
-cp -r lib ~/.local/lib/deskcrab/
-chmod +x ~/.local/bin/crab ~/.local/bin/crab-debug
+```bash
+git clone https://github.com/TheDiscordian/deskcrab.git ~/src/deskcrab
+
+ln -s ~/src/deskcrab/crab ~/.local/bin/crab
+ln -s ~/src/deskcrab/crab-debug ~/.local/bin/crab-debug
 
 # Create config
 mkdir -p ~/.config/deskcrab
-cp deskcrab.conf.example ~/.config/deskcrab/deskcrab.conf
+cp ~/src/deskcrab/deskcrab.conf.example ~/.config/deskcrab/deskcrab.conf
 $EDITOR ~/.config/deskcrab/deskcrab.conf
 ```
 
@@ -72,6 +72,9 @@ Bind these to a key in your compositor:
 | Stop TTS playback | `crab shutup` |
 | Open debug viewer | `crab-debug` |
 | Serve the phone client | `crab serve` |
+| What is running, scheduled, and which login answers | `crab status` |
+| Print the prompt a live session receives | `crab context` |
+| Every subcommand | `crab help` |
 
 **Hyprland** example (SUPER+A as push-to-talk):
 
@@ -98,7 +101,9 @@ crab "what time is it in Tokyo?"
 crab "summarize this file: ~/notes.md"
 ```
 
-Any argument that isn't a subcommand (`start`, `stop`, `shutup`) is treated as a text query.
+Any argument that isn't a subcommand is treated as a text query. `crab help` prints the full list of
+subcommands; a leading dash is rejected as a mistyped flag rather than spoken, and `help` itself
+prints usage rather than becoming a turn.
 
 ### Debug viewer
 
@@ -144,6 +149,8 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 
 Crab has a built-in system prompt that handles core behavior (TTS formatting, display channel, speed optimization). Your custom prompt is **appended** to this, so use it for project-specific context or personal preferences — not for overriding Crab's core instructions.
 
+The identity layer has a byte budget, and a custom prompt that overruns it is fitted by whole markdown sections, with the ones left behind named in the prompt rather than silently dropped. `crab context --layers` shows each layer's measured size against its budget; `PROMPT_BUDGET_L1_TURN` raises it.
+
 ```bash
 cp custom-prompt.md.example ~/.config/deskcrab/custom-prompt.md
 ```
@@ -170,9 +177,11 @@ TTS_FIXES='s/\bhmph\b/humph/gi'
 
 Give the assistant its own durable goals and let it work on them unprompted. Set `WANTS_FILE` in your config and the assistant gains:
 
-- **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. The file is injected into every prompt, so wants persist across sessions.
-- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it says nothing at all — an empty reply — and the wake is invisible, its work still journaled from the stream's own tool calls. Wakes are skipped (or rescheduled) if a recording or speech is in progress, and unattended sessions are told to take no destructive or outward-facing actions. Sessions have **no wall-clock limit** — the assistant controls its own duration and can chain longer work across wakes; only a session showing no life signs (no output *and* no process-tree CPU activity, so long compiles count as alive) for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped.
-- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`. Bookings are durable: the timer itself is transient, but each booking is also recorded under `~/.local/share/deskcrab/wakes/`, and `crab wake-restore` rebuilds timers from those records — still-future wakes at their original moment, wakes that came due while the machine was off fired once, promptly, staggered rather than all at once. Install the login reconciler so this happens automatically after a reboot:
+- **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. Each want's body lives in its own document under `wants/`; the prompt carries the shelf's **titles**, one line per want, with the bodies one open away. A shelf whose whole contents sit in every prompt becomes a dumping ground, because it is the only page guaranteed to be read next time.
+- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it says nothing at all — an empty reply — and the wake is invisible, its work still journaled from the stream's own tool calls. A reply opening with `(quiet)` is the other form: it is shown as a bubble and never touches the speakers. Unattended sessions are told to take no destructive or outward-facing actions. The assistant controls its own duration and can chain longer work across wakes: a session showing no life signs (no output *and* no process-tree CPU activity, so long compiles count as alive) for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped, and the unit carries a backstop ceiling of `WAKE_RUNTIME_MAX` seconds (default 2 h).
+
+  **Being mid-conversation does not skip a wake.** It used to, which meant a wake arriving during any conversation did no reading and no want work at all. The session now runs regardless; if you are recording or on a call when it finishes, its output is held back — speech, window, and phone alike — and what it swallowed goes to the session journal.
+- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`, `crab wake-at "Sat 14:00"`. A calendar time is resolved to the next matching moment and booked as a **delay**, so the timer fires once and never re-arms for tomorrow. A near-duplicate is refused rather than stacked — a booking with the same reason landing within `WAKE_COALESCE_WINDOW` (default 15 min) of a pending one is not added, and every booking is nudged off any second another booking already holds. Bookings are durable: the timer itself is transient, but each booking is also recorded under `~/.local/share/deskcrab/wakes/`, and `crab wake-restore` rebuilds timers from those records — still-future wakes at their original moment, wakes that came due while the machine was off fired once, promptly, staggered rather than all at once. Install the login reconciler so this happens automatically after a reboot:
 
 ```bash
 cp systemd/deskcrab-wake-restore.service ~/.config/systemd/user/
@@ -192,7 +201,9 @@ systemctl --user enable --now deskcrab-wake.timer
 
 Set `WAKE_QUIET_HOURS="23-09"` to keep night wakes fully silent (they still run and can work — they just never speak or open windows).
 
-Only one wake runs at a time. A wake that arrives while another is thinking — or while you are talking to the assistant — is re-armed for a few minutes later with its reason intact, never dropped.
+Only one wake runs at a time. A wake that arrives while another is thinking is re-armed about fifteen minutes later with its kind and reason intact, never dropped, and spaced off any moment another booking already holds. Talking to the assistant does not defer a wake — only another wake does.
+
+`crab wake-tidy` prunes the queue by hand: fired timers nothing remembers, repeated promises, and bookings sharing a second. It also runs at the end of every wake.
 
 ### Event wakes
 
@@ -246,7 +257,9 @@ crab memory forget 12       # retire a record by id
 crab memory ingest          # distil new journal turns + transcripts into records
 ```
 
-Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short "What I remember" block: a wake queries by its reason, an idle wake by the wants shelf and conversation tail. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
+Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short recollection block.
+
+What the store is asked depends on what the session is. **In conversation** the subject is the conversation — your last message, with the assistant's preceding reply behind it as context, and no wants at all. **On a wake** the subject is that wake's agenda: its reason, plus the one want being worked if the reason names one, and only that want's most recent dated section. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
 
 `crab memory ingest` reads what is new in the day journal and the transcriptions directory (tracked by a cursor file), asks a cheap Claude session what actually earns a permanent record, and writes the survivors through a dedup pass: a near-identical record just refreshes the existing one, and a conflicting one supersedes it — the newer voice wins, the older stays readable in `--all`.
 
