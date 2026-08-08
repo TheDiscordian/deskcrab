@@ -18,9 +18,14 @@ drawer she owns openable. Its acceptance criteria are the fourteen intent cases 
    each, not a post-hoc trim of one shape.
 3. The assembler MUST emit the layers in the order below, always, for every profile. A layer a
    profile does not include is absent; the surviving layers do not reorder.
-4. The assembler MUST NOT exceed a profile's total budget. When a layer would exceed its own budget,
-   the assembler MUST trim that layer and MUST say in the layer that it trimmed and where the rest
-   is. Silent truncation is forbidden.
+4. When a layer would exceed its own budget, the assembler MUST trim that layer and MUST say in the
+   layer that it trimmed and where the rest is. Silent truncation is forbidden. **Two layers are
+   exempt and MUST NOT be trimmed**: L2, which [self-awareness.md](self-awareness.md) mandates
+   verbatim — cutting the state block is how a false "nothing is scheduled" gets written — and L5,
+   the index, where a cut line is a drawer she cannot open. An exempt layer over its budget MUST
+   report `over` in the manifest instead of cutting, so the excess is stated rather than silent.
+   A profile's total therefore bounds the layers that CAN be trimmed; the two exempt layers are
+   bounded by their own content, and the manifest is the record of when they exceeded it.
 5. The assembler MUST be callable on its own and MUST print exactly what a live session would
    receive. Producing the prompt is a local operation and MUST stay one command. When the user asks
    to see the context, that command is the answer.
@@ -69,13 +74,27 @@ flowchart TD
 | L2 state | 1,500 | 1,500 | 0 | 0 |
 | L3 memory | 3,200 | 3,200 | 0 | 0 |
 | L4 shelves | 2,000 | 2,000 | 0 | 0 |
-| L5 where things are | 600 | 600 | 600 | 0 |
+| L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 300 | 300 | 200 | 200 |
 | conditional regroup | 1,300 | 1,300 | 0 | 0 |
-| **system-prompt total** | **≤ 21,400** | **≤ 15,900** | **≤ 1,600** | **≤ 200** |
+| **system-prompt total** | **≤ 21,800** | **≤ 16,300** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
+
+L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
+the shipped number rather than the other way round, because rule 22 names nine drawers the index must
+carry, each a path plus a description, and nine of those do not fit in 600 bytes: holding the smaller
+number meant dropping a drawer, which is the failure rule 22 exists to prevent. The three totals move
+by the same 400 bytes.
+
+The two exempt layers of rule 4 are counted here at their budget, and neither is held to it. Measured
+on an idle scratch instance on 2026-08-08: L1 3,099, **L2 3,118 against 1,500**, L4 607, L5 909
+against 1,000, L6 7,971, L7 468, L8 221 — a turn's assembled system prompt of 16,400 bytes, of which
+the state block is over budget by 1,618 and growing with the queue it renders. So the total in this
+table is what the assembler is written to, not a promise the state block keeps; the manifest is where
+the truth of any given build is read. Bringing L2 inside 1,500 is a job for the state block's own
+content, not for a cut.
 
 12. The wake agenda MUST be the wake profile's user message. It is what this session is about, and
     it MUST obey rule 6 like any other message.

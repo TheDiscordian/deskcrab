@@ -154,6 +154,27 @@ state="$(run 'build_system_prompt --profile turn --layers' \
 check "the index is never trimmed — it reports over budget instead" \
     [ "$state" = full ] || [ "$state" = over ]
 
+# The profile TOTALS of specs/prompt-assembly.md §11. Nothing compared a
+# profile's sum to the table until now: the per-layer loop above skips the two
+# exempt layers, so a layer budget could be raised, or a tenth layer added,
+# without any assertion noticing what it did to the whole prompt. Rule 4 says
+# the total bounds the layers that can be trimmed — so an exempt layer's
+# overrun is added to the allowance and everything else has to fit under it.
+# A profile whose sum drifts fails here and the table is what it is measured
+# against; if the assembler is right, the table moves, in the same commit.
+total_budget() { case "$1" in turn) echo 21800 ;; wake) echo 16300 ;;
+                              job) echo 2000 ;; classify) echo 200 ;; esac; }
+for p in turn wake job classify; do
+    man="$(run "build_system_prompt --profile $p --layers")"
+    bytes="$(run "build_system_prompt --profile $p" | wc -c)"
+    slack="$(printf '%s\n' "$man" \
+             | awk -F'\t' '($1 == "L2" || $1 == "L5") && $2 > $3 { n += $2 - $3 }
+                           END { print n + 0 }')"
+    allowed=$(( $(total_budget "$p") + slack ))
+    check "$p: the assembled prompt is inside the table's total ($bytes of $allowed)" \
+        [ "$bytes" -le "$allowed" ]
+done
+
 echo
 echo "a classifier does not carry a desktop:"
 CLS="$(run 'build_system_prompt --profile classify')"
@@ -213,3 +234,42 @@ done
 check "a classifier is given no tools at all" \
     contains "$(run "claude_profile_flags classify; printf '[%s]' \"\${CLAUDE_PROFILE_FLAGS[@]}\"")" \
              "[--tools][]"
+
+echo
+echo "the wake's user message is the wake's agenda:"
+
+# Rule 12. The agenda reaches the model as the USER message and nowhere else,
+# so this reads what the CLI was actually handed rather than what the shell
+# assembled — the stub records its whole argv, and the message is the
+# positional prompt. The defect this covers: `crab wake` injected the reason
+# only when the kind was `event`, so a scheduled appointment booked WITH a
+# reason ("crab wake-at 09:30 'finish the arrangement'") woke her on generic
+# wants boilerplate, under a frame telling her the agenda was below it. The
+# reason survived the queue, the record and the normaliser, and was then shown
+# to nobody.
+mkdir -p "$XDG_DATA_HOME/deskcrab/wakes"
+# The stub records its whole argv, prompt and all, and the argv spans lines —
+# so this reads the file rather than a line of it. Truncated first, so what
+# comes back belongs to this wake and no other.
+wake_msg() {  # <kind> <reason> — everything crab handed the CLI
+    : > "$SANDBOX_CLAUDE_LOG"
+    WAKES_DIR="$XDG_DATA_HOME/deskcrab/wakes" \
+        "$SANDBOX_REPO/crab" wake "$1" "$2" >/dev/null 2>&1 || true
+    cat "$SANDBOX_CLAUDE_LOG" 2>/dev/null
+}
+
+AGENDA="finish the arrangement for the second movement"
+MSG="$(wake_msg scheduled "$AGENDA")"
+check "a scheduled wake booked with a reason carries it" contains "$MSG" "$AGENDA"
+check "and names it as this session's agenda" \
+    contains "$MSG" "That is this session's agenda"
+
+MSG="$(wake_msg event "$AGENDA")"
+check "an event wake still carries its reason" contains "$MSG" "$AGENDA"
+
+# The timer's own wake has no agenda and must not invent one.
+MSG="$(wake_msg scheduled "")"
+refute "a reasonless wake says nothing about an agenda it does not have" \
+    contains "$MSG" "That is this session's agenda"
+check "and it still knows where it came from" \
+    contains "$MSG" "from a wake you scheduled yourself"
