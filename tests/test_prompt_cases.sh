@@ -552,12 +552,12 @@ structural_checks() { # <case state dir> <case source dir>
              "the block asks her to run a command instead of stating the comparison"
     fi
 
-    # self-awareness 10 — the four subsystems that book wakes in her name.
+    # self-awareness 10 — the hands that book wakes in her name.
     if grep -qiE 'promise audit' <<<"$P" && grep -qiE 'canary' <<<"$P"; then
         ok "self-awareness 10 — the prompt names the subsystems that book wakes as her"
     else
         skip "self-awareness 10 — the prompt names the subsystems that book wakes as her" \
-             "nothing tells her that four other subsystems book wakes in her name"
+             "nothing tells her that other subsystems book wakes in her name"
     fi
 
     # rules 16 and 19 — nothing belonging to the desktop coding agent.

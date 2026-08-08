@@ -2,9 +2,10 @@
 # The subsystems that book wakes in her name — specs/wake-queue.md rules 41 to
 # 44, specs/self-awareness.md rules 8 to 11. Run: bash tests/test_wake_bookers.sh
 #
-# Five things besides her own hand put wakes on the queue: the promise auditor,
-# the job runner, the self-change watcher, the new-file watcher, and the
-# watcher's canary. Before they each stamped an identity, a booking record
+# Six things besides her own hand put wakes on the queue: the promise auditor,
+# the job runner, the self-change watcher, the new-file watcher, the watcher's
+# canary, and the chain floor inside the module itself (which the wake-queue
+# tests cover). Before they each stamped an identity, a booking record
 # carried no provenance at all — so "nothing scheduled by me" was literally
 # unanswerable, and on 2026-08-07 it was said out loud with twenty-five
 # bookings on disk.

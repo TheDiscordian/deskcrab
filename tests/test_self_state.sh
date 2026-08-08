@@ -187,8 +187,45 @@ check_eq "it follows the counts immediately, with nothing between" \
 HEAD_LINE="$(printf '%s\n' "$P" | grep -n "^CURRENT STATE OF YOURSELF" | head -1 | cut -d: -f1)"
 check "the whole block sits under the heading the prompt announces" \
     bash -c "[ '$HEAD_LINE' -gt 0 ] && [ '$HEAD_LINE' -lt '$ACCT_LINE' ]"
-check "the four subsystems that book in her name are named in the prompt" \
-    has "the promise auditor" "$P"
+
+echo
+echo "every identity the queue can stamp on a record is named in the prompt:"
+# Rules 9 and 10, enumerated instead of recited. A provenance value the prompt
+# does not carry is a record she reads as somebody else's work, and that is
+# what made "nothing scheduled by me" defensible under her own model of
+# authorship. The prompt said "four things besides you" and listed four while
+# the queue was already stamping six other names on records: the new-file
+# watcher and the chain floor were booking wakes nothing in the prompt
+# mentioned. So the list is taken from the shipping source rather than from
+# this file's memory — a booker added tomorrow turns this red instead of
+# quietly going unnamed.
+booked_by_values() {
+    {
+        grep -rhE -- '--by ' "$REPO/lib" "$REPO/crab" | grep -v '^[[:space:]]*#' \
+            | grep -oE -- '--by [a-z][a-z0-9-]*' | awk '{ print $2 }'
+        # `--by "${WAKE_BOOKED_BY:-outage-retry}"`: the default is the identity
+        # when the wake being re-booked cannot name its own booker.
+        grep -rhE -- '--by ' "$REPO/lib" "$REPO/crab" | grep -v '^[[:space:]]*#' \
+            | grep -oE -- '--by "\$\{[A-Z_]+:-[a-z0-9-]+\}"' \
+            | sed -E 's/.*:-([a-z0-9-]+)\}"/\1/'
+        # ...and what the module writes when nobody says at all.
+        sed -nE 's/.*by="\$\{DESKCRAB_WAKE_ORIGIN:-([a-z]+)\}".*/\1/p' "$REPO/lib/wake-queue.sh"
+    } | sort -u
+}
+VALUES="$(booked_by_values)"
+# The roster sentence itself, not the whole prompt: the state block is IN the
+# prompt, so a fixture record that happens to carry an identity would answer
+# for the sentence that is supposed to explain it.
+ROSTER="$(printf '%s\n' "$P" | grep -F 'Wakes are booked in your name')"
+check "the source stamps more identities than the four the prompt used to list" \
+    [ "$(printf '%s\n' "$VALUES" | grep -c .)" -ge 8 ]
+check "the prompt has a roster sentence at all" [ -n "$ROSTER" ]
+while read -r who; do
+    [ -n "$who" ] || continue
+    check "the roster names the booker the record will say: $who" has "$who" "$ROSTER"
+done <<< "$VALUES"
+check "and each one still has a plain-language gloss beside its record name" \
+    has "the promise auditor" "$ROSTER"
 
 echo
 echo "the near view is the near view, and the dashboard is not:"

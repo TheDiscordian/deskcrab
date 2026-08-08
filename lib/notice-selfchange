@@ -398,7 +398,7 @@ done
 
 log "waking: $SUMMARY (report: $REPORT)"
 # Through book(), with this watcher's name on the record: it is one of the
-# four subsystems that book wakes in her name, and until each of them stamped
+# hands that book wakes in her name, and until each of them stamped
 # its own identity, "nothing scheduled by me" was unanswerable. Booking rather
 # than firing also gets the session out of THIS unit, where it used to run as
 # a child of the very watcher it might be reporting on.

@@ -339,9 +339,11 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by]
 #
 #   wake_book [--by <origin>] [--cap <n>] <when> [kind] [reason]
 #
-# --by names the subsystem doing the booking, and it is not decoration: four
-# non-conversational subsystems book wakes in her name, and with no provenance
-# on the record "nothing scheduled by me" was literally unanswerable.
+# --by names the subsystem doing the booking, and it is not decoration: six
+# non-conversational hands book wakes in her name — the promise auditor, the job
+# runner, the two watchers, the canary and this module's own chain floor — and
+# with no provenance on the record "nothing scheduled by me" was literally
+# unanswerable. specs/wake-queue.md rule 41 holds the whole roster.
 # --cap bounds how many pending wakes one booker may hold — counted from the
 # RECORDS, under this lock, and it drains as well as gates. A cap that only
 # refused new bookings let a queue five to six times its own size stand for

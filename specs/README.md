@@ -20,6 +20,13 @@ A spec **dictates** behaviour. The code and the tests conform to it, never the o
   so the work is bounded and nothing is quietly dropped. A defect leaves this section when a test
   proves it is gone.
 
+### Where the reasoning lives
+
+A spec says what must be true. It does not say what went wrong on the day the rule was written.
+That is [`../docs/history.md`](../docs/history.md) — the dated incidents, the measurements, and the
+designs that were tried and rejected. Read it before deleting a mechanism that looks strange, and
+treat it as memory rather than contract: where it and a spec disagree, the spec is right.
+
 ### Defect identifiers
 
 The specs cite the defect dossier with these identifiers:
@@ -38,7 +45,7 @@ The specs cite the defect dossier with these identifiers:
 | [turn-pipeline.md](turn-pipeline.md) | One interactive turn end to end: capture, conversation store, generation, delivery, session records |
 | [prompt-assembly.md](prompt-assembly.md) | The target prompt design: per-path profiles, layer order, byte budgets, the index block, and the intent-case acceptance criteria |
 | [self-awareness.md](self-awareness.md) | The state block: what she is running, what is scheduled, which account answers, and the rules that make a false negative unwriteable |
-| [wake-queue.md](wake-queue.md) | Autonomous wakes: booking, records, restore, tidy, provenance, and the four subsystems that book in her name |
+| [wake-queue.md](wake-queue.md) | Autonomous wakes: booking, records, restore, tidy, provenance, and the hands that book in her name |
 | [jobs.md](jobs.md) | Detached builder jobs: dispatch, state sidecars, blocked-versus-failed, the completion wake |
 | [speech-output.md](speech-output.md) | Response extraction, the display split, the TTS streamer, the speech mutex, and the never-silent guarantee |
 | [debug-view.md](debug-view.md) | The live stream viewer: which logs it follows, what it renders, and what it must never duplicate or drop |

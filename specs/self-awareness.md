@@ -38,11 +38,17 @@ below is a fact placed before her, never a gate placed behind her.
 
 8. A booking record MUST carry, at minimum: fire epoch, kind, reason, booked-at epoch, and
    **booked-by**.
-9. Booked-by MUST name the subsystem that booked it. Four subsystems book wakes in her name: the
-   promise auditor, the job runner, the self-change watcher, and the watcher's canary.
-10. **The prompt MUST name those four subsystems.** Until it does, "nothing scheduled by me" is
-    defensible under her own model of authorship, because nothing has told her that anything else
-    books wakes as her.
+9. Booked-by MUST name the subsystem that booked it. Six hands book wakes in her name: the promise
+   auditor (`promise-audit`), the job runner (`job-runner`), the self-change watcher
+   (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary (`canary`),
+   and the chain floor (`wake-chain-floor`). Two more identities reach a record without being
+   subsystems: `outage-retry`, when a wake that failed before the model ran re-books itself and
+   cannot name its original booker, and `herself`, the default when nobody says.
+10. **The prompt MUST name every identity the queue can stamp**, by the word the record will carry,
+    and a test MUST enumerate them from the source rather than from a list written down here. Until
+    it does, "nothing scheduled by me" is defensible under her own model of authorship, because
+    nothing has told her that anything else books wakes as her — and a roster that names four of
+    eight is the same failure with a smaller hole.
 11. The state block MUST render provenance for each pending wake it shows.
 
 ### The since-last-reply delta
@@ -187,7 +193,7 @@ its own ledger and stamps. Reading the state must not change it — with one exc
 | `MAJ-12` | A failed job's one-time news can be consumed by a wake that ends silently, because the stamp is written on every render. |
 | `MIN-3` | The prompt names a heading the block does not emit. |
 | `H3` / `RC-4` | No account line anywhere she reads. |
-| Recommendation §3 | No total on capped lists, no provenance on records, no since-last-reply delta, no queue-change ledger, and no naming of the four autonomous bookers. |
+| Recommendation §3 | No total on capped lists, no provenance on records, no since-last-reply delta, no queue-change ledger, and no naming of the autonomous bookers. |
 
 ## TESTS
 
