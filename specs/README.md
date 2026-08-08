@@ -36,7 +36,7 @@ The specs cite the defect dossier with these identifiers:
 | `H1a`, `H1b`, `H1c`, `H2`, `H3` | the headline bugs; `H3` has sub-causes `RC-1` to `RC-6` |
 | `C4` to `C13` | the remaining criticals |
 | `MAJ-1` to `MAJ-35` | Part C, majors, numbered top to bottom |
-| `MIN-1` to `MIN-33` | Part D, minors, numbered top to bottom |
+| `MIN-1` to `MIN-34` | Part D, minors, numbered top to bottom |
 
 ### The specs
 

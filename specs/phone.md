@@ -199,6 +199,11 @@ wedge test is what proves a timed-out turn still ends in a completion event.
 stubs: the idle abort, the progress deadline — including a stream that delivers nothing but
 keepalives, and one whose events outlive the original deadline — and the watchdog that returns the
 page to idle when the turn path fails to.
+`tests/test_phone_voice_fallback.sh` drives two real turns through one real server, switching a stub
+synthesiser between them: a turn whose streaming synthesis died carries its own reply clip in the
+completion payload — fetched back down the audio route, not merely pointed at — and names the
+failure in the log; a turn that voiced its blocks carries an empty completion audio, so nothing is
+heard twice. It was written against the silence of 2026-08-08 and fails on the code that caused it.
 
 **To be written:**
 
@@ -213,6 +218,3 @@ page to idle when the turn path fails to.
   the say route is driven today.
 - `tests/test_webpush.py` — the crypto against the published test vector, subscription idempotency,
   pruning of dead endpoints, and the degraded status when the optional dependency is missing.
-- `tests/test_phone_voice_fallback.sh` — a turn whose streaming synthesis failed still carries the
-  reply clip in its completion payload and leaves a failure line in the log; a turn whose streaming
-  synthesis worked carries an empty completion audio, so the reply is never played twice.
