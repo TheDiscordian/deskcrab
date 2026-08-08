@@ -213,9 +213,10 @@ state block's own content, not for a cut.
     what seeing it first did not prevent. Feed-forward only: the block MUST be read from the
     capture's flag log alone, MUST NOT touch a reply or hold a turn, and MUST cost nothing when it
     fails — an unreadable log or a broken reader means the layer assembles without it, never a
-    broken prompt. Conduct is still sized first (rule 21's protection holds); the catches come
-    before the wants titles, because a correction being re-learned outranks a shelf that is one
-    open away.
+    broken prompt. Conduct is still sized first (rule 21's protection holds) and the catches are
+    sized ahead of the wants titles — a correction being re-learned outranks a shelf that is one
+    open away — while in the emitted layer the catches close it, beside the conduct they belong
+    with.
 
 ## DATA
 
