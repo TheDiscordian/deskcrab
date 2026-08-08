@@ -189,6 +189,7 @@ reaches her through an event wake or through a record she reads.
 | `MIN-30` | A stray file duplicates the engineering namespace: unreachable by every reader, and inside the watcher's glob. |
 | `MIN-31` | The tidy prompt asks for a dated prose line in a machine-written record, where the journal reader skips it and the ingest drops it. Tidy's own record never survives. |
 | `MIN-32` | The canary reports the path unit disabled and only revives it in-session, so it will not come back after a reboot. |
+| `MIN-34` | Two claudism detectors, one reader. The turn-close capture ([turn-pipeline.md](turn-pipeline.md) rules 30-32) writes a day flag log naming the nightly review as its reader, but the review judges from the journal directly (rule 39) and nothing reads the flag log. Built by two hands in the same hour; either the review corroborates its journal scan against the flag log, or the log is retired — two detectors with no reconciliation will drift. |
 
 ## TESTS
 

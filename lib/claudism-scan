@@ -102,7 +102,10 @@ def parse_list(path):
         m = re.match(r"^##\s+(.+?)\s*$", line)
         if m:
             cur = {"title": m.group(1), "why": "", "pattern": None}
-            key = re.sub(r"[^a-z0-9]+", "-", cur["title"].lower()).strip("-")
+            # The count key is read in the trend table for years: the short
+            # name before the em-dash, not the whole heading with its examples.
+            key = re.split(r"\s+—\s+", cur["title"])[0]
+            key = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
             cur["key"] = key[:48] or "unnamed"
             entries.append(cur)
             continue

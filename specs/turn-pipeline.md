@@ -96,8 +96,10 @@ design and by rule — the review exists to break a habit, never to gate a tongu
     own one-line run trace.
 31. A flag record MUST carry enough to find the turn again: the session's start epoch and pid
     (the day journal's identity), the journal kind, the sentence as spoken, and the pattern that
-    matched. The flag log is append-only, dated like the journal, and flocked like it; the
-    nightly review owns reading it.
+    matched. The flag log is append-only, dated like the journal, and flocked like it. The
+    nightly review is its intended reader, but that reading is not yet built — today the review
+    judges from the journal directly, and [nightly.md](nightly.md) `MIN-34` tracks the
+    reconciliation owed.
 32. A missing phrase list is not an error: the capture simply does not fire. A capture that
     cannot parse the list, or that crashes, MUST exit quietly without touching the turn — its
     run-trace line is the only place that failure shows.
