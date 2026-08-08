@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""claudism-feedforward — her recent catches, in front of her before she writes.
+
+The flag log alone is a record read at night, after the words are a day old.
+The habit is cured while WRITING, so the freshest flags are placed in the
+prompt at the start of a turn: the pattern that fired, and the line as she
+actually said it. She sees her own rot before she opens her mouth, and most
+lines are cured there — the pre-speech check and the nightly review pick up
+what this misses. Feed-forward only: nothing here touches a reply, holds a
+turn, or writes a word of hers.
+
+Prints the prompt block on stdout; prints NOTHING when there are no recent
+flags, so the assembler's emptiness test marks the layer absent. Any failure
+is an empty stdout and a line in its own trace log, never a broken prompt —
+a turn must assemble whether or not this ever ran.
+
+Knobs, all by environment, all defaulted: CLAUDISM_FLAGS_DIR (the capture's
+flag log), CLAUDISM_LIST (the phrase list, for naming a pattern by its
+heading), CLAUDISM_FEEDFORWARD_N (patterns shown, newest first, default 3),
+CLAUDISM_FEEDFORWARD_HOURS (how far back a flag is still fresh, default 48).
+"""
+
+import json
+import os
+import re
+import sys
+import time
+
+DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+STATE_DIR = os.path.join(DATA_HOME, "deskcrab")
+FLAGS_DIR = os.environ.get("CLAUDISM_FLAGS_DIR") or os.path.join(STATE_DIR, "claudism-flags")
+LIST_PATH = os.environ.get("CLAUDISM_LIST") or os.path.join(STATE_DIR, "claudisms.md")
+SHOW_N = int(os.environ.get("CLAUDISM_FEEDFORWARD_N", "3") or 3)
+FRESH_HOURS = float(os.environ.get("CLAUDISM_FEEDFORWARD_HOURS", "48") or 48)
+
+
+def trace(line):
+    prefix = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
+    try:
+        with open(prefix + "-claudism-feedforward.log", "a", encoding="utf-8") as f:
+            f.write("%s\t%s\n" % (time.strftime("%F %T"), line))
+    except OSError:
+        pass
+
+
+def pattern_titles(path):
+    """The phrase list's own headings, keyed by the pattern string — so a flag
+    is named the way she named it, not by its regex. A list that cannot be
+    read just means flags fall back to their own record."""
+    titles = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return titles
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m:
+            cur = m.group(1)
+            continue
+        m = re.match(r"^-\s*pattern:\s*`(.+)`\s*$", line)
+        if m and cur:
+            titles[m.group(1).strip()] = cur
+    return titles
+
+
+def recent_flags():
+    """Flag records younger than the freshness window, newest first. Only the
+    files that can hold them are opened: today's and yesterday's."""
+    now = time.time()
+    days = {time.strftime("%Y-%m-%d", time.localtime(now)),
+            time.strftime("%Y-%m-%d", time.localtime(now - 86400))}
+    recs = []
+    for day in sorted(days):
+        path = os.path.join(FLAGS_DIR, day + ".jsonl")
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    epoch = rec.get("epoch")
+                    if not isinstance(epoch, (int, float)):
+                        continue
+                    if now - epoch <= FRESH_HOURS * 3600 and rec.get("sentence"):
+                        recs.append(rec)
+        except OSError:
+            continue
+    recs.sort(key=lambda r: r["epoch"], reverse=True)
+    return recs
+
+
+def when(rec):
+    day = time.strftime("%Y-%m-%d", time.localtime(rec["epoch"]))
+    clock = time.strftime("%H:%M", time.localtime(rec["epoch"]))
+    if day == time.strftime("%Y-%m-%d"):
+        return "today %s" % clock
+    return "yesterday %s" % clock
+
+
+def main():
+    recs = recent_flags()
+    if not recs:
+        return 0
+    titles = pattern_titles(LIST_PATH)
+    shown, seen = [], set()
+    for rec in recs:
+        pat = rec.get("pattern") or ""
+        if pat in seen:
+            continue
+        seen.add(pat)
+        name = rec.get("title") or titles.get(pat) or rec.get("note") or pat
+        sent = " ".join(str(rec["sentence"]).split())
+        if len(sent) > 120:
+            sent = sent[:119].rstrip() + "…"
+        shown.append("- %s: \"%s\" (%s)" % (name, sent, when(rec)))
+        if len(shown) >= SHOW_N:
+            break
+    if not shown:
+        return 0
+    held = len(seen) + sum(1 for r in recs if (r.get("pattern") or "") not in seen) - len(shown)
+    print("RECENT CLAUDISM CATCHES — phrasings of yours that fired your own "
+          "banned-phrase list in the last turns: the pattern's name, then the "
+          "line as you said it. The habit is cured while writing, not after — "
+          "the full log is in %s." % FLAGS_DIR)
+    print("\n".join(shown))
+    if held > 0:
+        print("(+%d more pattern(s) in the log)" % held)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # a broken feed-forward must never cost a prompt
+        trace("error: %s" % e)
+        sys.exit(0)

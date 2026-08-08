@@ -37,7 +37,7 @@ flowchart TD
   L1["L1 IDENTITY<br/>who she is, voice and display contract"]
   L2["L2 STATE<br/>current state of yourself"]
   L3["L3 MEMORY<br/>recall block"]
-  L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles"]
+  L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles, recent claudism catches"]
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
@@ -73,13 +73,13 @@ flowchart TD
 | L1 identity | 10,400 | 10,400 | 800 | 0 |
 | L2 state | 1,500 | 1,500 | 0 | 0 |
 | L3 memory | 3,200 | 3,200 | 0 | 0 |
-| L4 shelves | 2,000 | 2,000 | 0 | 0 |
+| L4 shelves | 2,400 | 2,400 | 0 | 0 |
 | L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 1,300 | 1,300 | 0 | 0 |
-| **system-prompt total** | **≤ 28,800** | **≤ 23,800** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 29,200** | **≤ 24,200** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -87,6 +87,11 @@ the shipped number rather than the other way round, because rule 22 names nine d
 carry, each a path plus a description, and nine of those do not fit in 600 bytes: holding the smaller
 number meant dropping a drawer, which is the failure rule 22 exists to prevent. The three totals move
 by the same 400 bytes.
+
+L4 read 2,000 until 2026-08-08, sized for the shelf and the conduct block alone. The recent-catches
+block (rule 35) joined the layer that day and is small — a header and at most a few quoted lines —
+but inside the old number it could only be paid for by wants titles coming off the shelf. The 400
+added here is the block's ceiling, and the two speaking totals move with it.
 
 L1 read 9,600 until 2026-08-08, which fitted her whole persona sheet with 131 bytes to spare. The
 identity layer then took on the THINKING line — her reasoning is in her own voice too, and the words
@@ -198,6 +203,20 @@ state block's own content, not for a cut.
     judgement made: it MUST NOT remove, reorder or alter a word of the transcript, the summary or
     the archive.
 
+### The recent-catches block
+
+35. The shelves layer MAY close with the recent-catches block: her freshest claudism flags — the
+    last few patterns, deduped, newest first — each named by its own heading in the phrase list and
+    quoted as she said it, with the flag log named as where the rest is. It exists so she sees her
+    own habit before she writes, which is where the habit is actually cured; the pre-speech check
+    and the nightly review ([speech-output.md](speech-output.md), [nightly.md](nightly.md)) pick up
+    what seeing it first did not prevent. Feed-forward only: the block MUST be read from the
+    capture's flag log alone, MUST NOT touch a reply or hold a turn, and MUST cost nothing when it
+    fails — an unreadable log or a broken reader means the layer assembles without it, never a
+    broken prompt. Conduct is still sized first (rule 21's protection holds); the catches come
+    before the wants titles, because a correction being re-learned outranks a shelf that is one
+    open away.
+
 ## DATA
 
 The assembler reads; it owns no state of its own.
@@ -210,6 +229,7 @@ The assembler reads; it owns no state of its own.
 | recall block (`memory.py recall-block`) | L3 | see memory-recall.md |
 | `~/.local/share/deskcrab/wants.md` + `wants/` | L4 | titles injected, bodies on disk |
 | `~/.local/share/deskcrab/conduct/CONDUCT.md` + `conduct/` | L4 | binding test verbatim, titles, index |
+| `~/.local/share/deskcrab/claudism-flags/` via `lib/claudism-feedforward` | L4 | the recent-catches block, rule 35; see turn-pipeline.md |
 | `~/.local/share/deskcrab/engineering/INDEX.md` | L5 | named by path in the index block |
 | `~/.local/share/deskcrab/journal/`, `memory/`, library, archive | L5 | named by path in the index block |
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
@@ -219,7 +239,8 @@ The assembler reads; it owns no state of its own.
 ## INTERACTIONS
 
 **Prompt assembly may call:** the state block, the recall block, the shelf reader, the conduct
-reader, the conversation context builder, the regroup context builder.
+reader, the recent-catches reader (`lib/claudism-feedforward`), the conversation context builder,
+the regroup context builder.
 
 **Prompt assembly may be called by:** the turn pipeline, the wake path, the job runner, and any
 classifier. It MUST also be callable directly from a shell for inspection.
@@ -476,3 +497,6 @@ separation on every invocation), `tests/test_regroup.sh` (the conditional block)
   nightly tidy writes is named in the index.
 - `tests/test_conduct_index.sh` — the binding test line is present verbatim, the titles are
   injected, and every title resolves to a file through the index.
+- `tests/test_claudism_feedforward.sh` — the recent-catches block: fresh flags named by their list
+  headings and quoted, stale flags aged out, dedup by pattern, and an unreadable log costing the
+  block and nothing else.
