@@ -100,26 +100,36 @@ $EXCHANGE"
 # durable default exactly as it does everywhere else, so the auditor pays its
 # share of finding the login that answers instead of riding on other paths.
 VERDICT=""
+AUDLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-audit-stream-XXXXXX")"
 for ACCT in $(claude_accounts); do
     CONFDIR="$(claude_account_confdir "$ACCT")"
-    OUT="$(printf '%s' "$PROMPT" | (
+    : > "$AUDLOG"
+    printf '%s' "$PROMPT" | (
         if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
         else unset CLAUDE_CONFIG_DIR; fi
         CLAUDE_CLASSIFY_TIMEOUT="${PROMISE_AUDIT_TIMEOUT:-120}" \
+        CLAUDE_CLASSIFY_STREAM=1 \
             claude_classify "$AUDIT_MODEL" \
-                "Answer with exactly one line and nothing else." 2>/dev/null
-    ) | tr -d '\r')"
-    VERDICT="$(printf '%s\n' "$OUT" | grep -m1 '^UNSAVED:')"
-    [ -n "$VERDICT" ] && break
-    # A refusal is not a verdict of NONE. Judged on the CLI's own words, the
-    # same way every other caller judges one, and it moves to the next login
-    # rather than reporting an audit that never happened as an audit that found
-    # nothing.
-    printf '%s' "$OUT" | grep -qiE "$CLAUDE_LIMIT_RE" || break
-    audit_log "refused by ${CONFDIR:-primary} — trying the next login"
-    claude_limit_record "$CONFDIR" \
-        "$(printf '%s' "$OUT" | grep -ioE "$CLAUDE_LIMIT_RE" | head -n1)"
+                "Answer with exactly one line and nothing else."
+    ) >"$AUDLOG" 2>&1
+    # A refusal is not a verdict of NONE — and it is judged from the CLI's own
+    # result events, never by pattern-matching the answer's text. A verdict
+    # about a reply that QUOTES a limit phrase is a verdict, not an outage;
+    # the old grep here rotated the durable default off exactly that.
+    if REFUSAL="$(claude_stream_refusal "$AUDLOG")"; then
+        audit_log "refused by ${CONFDIR:-primary} — trying the next login"
+        claude_limit_record "$CONFDIR" "$REFUSAL"
+        continue
+    fi
+    OUT="$(DESKCRAB_DEBUGLOG="$AUDLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
+    if [ -z "$OUT" ] && ! grep -q '"type":' "$AUDLOG" 2>/dev/null; then
+        OUT="$(cat "$AUDLOG" 2>/dev/null)"
+    fi
+    VERDICT="$(printf '%s\n' "$OUT" | tr -d '\r' | grep -m1 '^UNSAVED:')"
+    # Verdict or none, a login that answered ends the walk.
+    break
 done
+rm -f "$AUDLOG"
 
 if [ -z "$VERDICT" ]; then
     audit_log "NONE"

@@ -984,7 +984,11 @@ wakes_report() {  # [--brief]
             orphan) orphans=$(( orphans + 1 )) ;;
             unarmed) unarmed=$(( unarmed + 1 )) ;;
         esac
-        [ "$state" = background ] || total=$(( total + 1 ))
+        # The standing background row counts in the total because it is IN
+        # the list below it — a header reading "1 total" above two bullets is
+        # the numbers-don't-match failure rule 5 exists to prevent. Its row
+        # already says what it is.
+        total=$(( total + 1 ))
         if [ "$brief" = 1 ]; then
             if [ "$shown" -ge "$WAKES_SHOW" ] || { [ "${fire:-0}" -gt "$horizon" ] && [ "$state" != unarmed ]; }; then
                 later=$(( later + 1 )); continue
