@@ -1,5 +1,6 @@
 [Unit]
 Description=DeskCrab: notice outside changes to the assistant's own files
+StartLimitIntervalSec=0
 Documentation=man:systemd.path(5)
 
 [Path]
