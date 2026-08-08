@@ -135,9 +135,11 @@ book a wake, or dispatch a job.
 
 ## VERIFIED-CORRECT RULES
 
-- **Silence is an empty reply, never a marker.** No prompt authors a silence marker. A marker
-  written anyway is handled defensively — the wake completes invisibly and the words are kept for
-  the journal — and the marker is stripped so no path can voice it.
+- **Silence is an empty reply; `(quiet)` is the one authorized held-thought form.** (Corrected
+  2026-08-07: the earlier "never a marker" statement predated the user reinstating the marker.)
+  `spoken_part` strips the marker so no path can voice it; the reply is delivered as a shown
+  "(quiet) …" bubble — never the speakers — including when the reply has no display section. A
+  bare marker with no thought is plain silence and completes invisibly, words kept for the journal.
 - **A refusal is never voiced, on any path, even when the whole chain is spent.** An outage read
   aloud in her own voice is how a session-limit message once reached the user's ears as her words.
 - **Every retry appends to the same stream log and never truncates it**, because the streamer is

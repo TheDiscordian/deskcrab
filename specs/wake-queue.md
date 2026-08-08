@@ -220,8 +220,12 @@ change it.
   resurrects a wake that already ran.
 - **A busy user is a reason to hold the tongue, not the mind.** The session runs regardless; the
   output decision is made at the end.
-- **Silence is an empty reply, never a marker.** No prompt authors a silence marker. A stray marker
-  is still handled defensively, and the words are kept for the journal.
+- **Silence is an empty reply; `(quiet)` is the one authorized held-thought form.** (Corrected
+  2026-08-07: the earlier "never a marker" statement predated the user reinstating the marker.) A
+  wake with nothing to say writes nothing. A wake with a thought worth leaving but not voicing
+  opens with `(quiet)` — the reply is SHOWN as a "(quiet) …" bubble in the conversation, never
+  spoken, even when it has no display section. A bare marker with no thought is plain silence.
+  The square-bracket spelling is normalised, and no path may voice the marker.
 - **The floor counts only scheduled-kind bookings, judged from the records.** Counting any wake
   timer let one unrelated long-dated booking end the chain.
 

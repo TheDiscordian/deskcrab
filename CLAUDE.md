@@ -60,7 +60,7 @@ work here, the defect identifiers, the data-flow graph, and the lock table.
 | [turn-pipeline](specs/turn-pipeline.md) | one turn: capture, ordering, delivery, the conversation store |
 | [prompt-assembly](specs/prompt-assembly.md) | one assembler, four profiles, layer order, budgets, intent cases |
 | [self-awareness](specs/self-awareness.md) | the state block: totals, provenance, the arithmetic rule |
-| [wake-queue](specs/wake-queue.md) | booking, records, restore, tidy, the four autonomous bookers |
+| [wake-queue](specs/wake-queue.md) | booking, records, restore, tidy, the roster of autonomous bookers |
 | [jobs](specs/jobs.md) | detached builders: dispatch, sidecars, blocked versus failed |
 | [speech-output](specs/speech-output.md) | extraction, display split, the streamer, the mutex, never-silent |
 | [debug-view](specs/debug-view.md) | which logs the viewer follows, and what it may never drop |
