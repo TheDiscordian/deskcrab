@@ -11,27 +11,32 @@
 # conversation shape, same state, same pressure, neutral subject matter. The
 # originals are the user's own words and stay off a public repo.
 #
-# The suite runs in two modes.
+# The suite has two passes, and a default run does BOTH.
 #
-#   MODE 1 — assembly (the default, offline, deterministic, free)
+#   PASS 1 — assembly (offline, deterministic, free)
 #     Builds the prompt for each fixture through the real build_system_prompt
 #     and asserts STRUCTURAL properties: that the user's message is not buried
 #     inside the system prompt, that the turn frame names it as the subject,
 #     that the state block leads with its totals, that nothing belonging to the
-#     desktop coding agent got in, that the profile's byte budget holds. Several
-#     of those the pre-overhaul assembler cannot satisfy yet — they are the RED
-#     acceptance criteria for phase 4. They report a loud SKIP with the reason,
-#     and PROMPT_CASES_STRICT=1 turns every one of them into a failure, which is
-#     how phase 4 checks itself off.
+#     desktop coding agent got in, that the profile's byte budget holds. These
+#     were phase 4's red list and were written to SKIP with a reason while the
+#     assembler could not meet them. Phase 4 is done and every one of them is a
+#     hard failure now: nine were written `if grep; then ok; else skip`, and a
+#     skip is not counted, so deleting the thing being asserted — the sentence
+#     naming his report as ground truth, the arithmetic rule, the whole index
+#     layer — turned the assertion GREEN rather than red.
 #
-#   MODE 2 — reply judgement (PROMPT_CASES_MODE=reply)
-#     Grades a reply against the case's assertions. Offline by default: each
-#     case ships a canned good reply (must pass every rule) and a canned bad
-#     reply in the shape of the original failure (must trip at least one rule),
-#     so the grader itself is testable without a model. With
-#     PROMPT_CASES_LIVE=1 the assembled prompt goes to a REAL session instead
-#     and its reply is graded — that spends real tokens and runs real tools, and
-#     it is for verifying a fix, not for a routine run.
+#   PASS 2 — reply judgement (offline)
+#     Grades a reply against the case's assertions. Each case ships a canned
+#     good reply that must pass every rule and a canned bad reply in the shape
+#     of the original failure that must trip at least one, so the grader is
+#     testable without a model. This pass used to be reachable only by hand
+#     (PROMPT_CASES_MODE=reply), and it is where 71 of the 81 rules live — so
+#     a routine run evaluated ten of them and nothing ever asked whether the
+#     rest discriminate. It runs by default now. PROMPT_CASES_MODE=reply still
+#     runs it alone, and PROMPT_CASES_LIVE=1 sends the assembled prompt to a
+#     REAL session and grades its reply — that spends real tokens and runs real
+#     tools, and it is for verifying a fix, not for a routine run.
 #
 # THE ASSERTION FORMAT (tests/prompt-cases/<case>/assertions.txt)
 #
@@ -115,7 +120,10 @@ STRICT="${PROMPT_CASES_STRICT:-0}"
 [ "$LIVE" = "1" ] && MODE="reply"
 
 # The turn profile's total system-prompt budget, specs/prompt-assembly.md §11.
-PROFILE_TOTAL_TURN=21400
+# The two layers rule 4 exempts from trimming can push a real build past this;
+# tests/test_prompt_profiles.sh is where that arithmetic is held. These
+# fixtures are small enough that the plain ceiling is the honest test.
+PROFILE_TOTAL_TURN=21800
 
 # A sentinel planted where the desktop coding agent's instruction file lives.
 # If it ever shows up in an assembled prompt, persona separation has broken.
@@ -514,7 +522,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiE 'this turn is about|the message below|the text that follows' <<<"$tail_of_prompt"; then
         ok "rule 7 — the prompt ends by naming the message as this turn's subject"
     else
-        skip "rule 7 — the prompt ends by naming the message as this turn's subject" \
+        bad  "rule 7 — the prompt ends by naming the message as this turn's subject" \
              "there is no turn frame; the prompt ends on the regroup slot"
     fi
 
@@ -522,7 +530,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiE 'ground truth' <<<"$P"; then
         ok "rule 8 — the ranking rule is in the prompt"
     else
-        skip "rule 8 — the ranking rule is in the prompt" \
+        bad  "rule 8 — the ranking rule is in the prompt" \
              "no ranking layer exists yet; nothing states that his report is ground truth"
     fi
 
@@ -530,7 +538,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiE 'authoritative for what was said' <<<"$P"; then
         ok "rule 9 — the transcript layer scopes its authority to what was said"
     else
-        skip "rule 9 — the transcript layer scopes its authority to what was said" \
+        bad  "rule 9 — the transcript layer scopes its authority to what was said" \
              "the transcript is still called authoritative for what was said AND DONE"
     fi
 
@@ -543,7 +551,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiE '[0-9]+ total' <<<"$P"; then
         ok "self-awareness 5 — the state block's lists lead with their totals"
     else
-        skip "self-awareness 5 — the state block's lists lead with their totals" \
+        bad  "self-awareness 5 — the state block's lists lead with their totals" \
              "lists are printed as bullets with no count in front of them"
     fi
 
@@ -551,7 +559,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiF 'unless both counts read zero' <<<"$P"; then
         ok "self-awareness 19 — the arithmetic negative-claims rule is in the block"
     else
-        skip "self-awareness 19 — the arithmetic negative-claims rule is in the block" \
+        bad  "self-awareness 19 — the arithmetic negative-claims rule is in the block" \
              "the block asks her to run a command instead of stating the comparison"
     fi
 
@@ -559,7 +567,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiE 'promise audit' <<<"$P" && grep -qiE 'canary' <<<"$P"; then
         ok "self-awareness 10 — the prompt names the subsystems that book wakes as her"
     else
-        skip "self-awareness 10 — the prompt names the subsystems that book wakes as her" \
+        bad  "self-awareness 10 — the prompt names the subsystems that book wakes as her" \
              "nothing tells her that other subsystems book wakes in her name"
     fi
 
@@ -579,7 +587,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qiF 'WHERE THINGS ARE' <<<"$P"; then
         ok "rule 22 — the prompt carries a WHERE THINGS ARE index"
     else
-        skip "rule 22 — the prompt carries a WHERE THINGS ARE index" \
+        bad  "rule 22 — the prompt carries a WHERE THINGS ARE index" \
              "no path index; the engineering threads and the journal are named nowhere"
     fi
 
@@ -593,7 +601,7 @@ structural_checks() { # <case state dir> <case source dir>
     if grep -qF -- '--profile' "$REPO_DIR/lib/common.sh"; then
         ok "rule 1 — the assembler takes a profile"
     else
-        skip "rule 1 — the assembler takes a profile" \
+        bad  "rule 1 — the assembler takes a profile" \
              "build_system_prompt has one shape and no --profile turn|wake|job|classify"
     fi
 
@@ -614,7 +622,7 @@ structural_checks() { # <case state dir> <case source dir>
     if [ -z "$unparsed" ]; then
         ok "transcript — every block header in the fixture parses as a block"
     else
-        skip "transcript — every block header in the fixture parses as a block" \
+        bad  "transcript — every block header in the fixture parses as a block" \
              "the block pattern cannot carry provenance yet: $unparsed"
     fi
 
@@ -762,9 +770,25 @@ for SRC in "$CASES_DIR"/case-*; do
         if [ -f "$SRC/message-2.txt" ]; then
             run_assertions "$SRC/assertions-2.txt" "$CS"
         fi
+        # ...and then MODE 2, offline, in the same run. Most of every case's
+        # contract is reply rules, and apply_rule returns without recording
+        # anything for a reply, spoken or display target while the mode is
+        # assembly — so a suite that only ever ran this file in its default
+        # mode evaluated 10 of 81 rules and never once asked whether the other
+        # 71 catch anything. Weakening every rule in a case left the run
+        # green. The grading is deterministic, offline and free: each case
+        # ships a canned good reply that must pass every rule and a canned bad
+        # reply in the original failure's shape that must trip at least one.
+        # PROMPT_CASES_MODE=reply still runs the grading alone, and
+        # PROMPT_CASES_LIVE=1 still sends the assembled prompt to a real
+        # session; neither is what a routine run needs.
         deferred="$(cat "$SRC"/assertions*.txt 2>/dev/null \
             | grep -cE '^(should |phase4 )*(reply|spoken|display) ')"
-        printf '  note  %s reply rules wait for MODE 2 (PROMPT_CASES_MODE=reply)\n' "$deferred"
+        printf '  note  grading %s reply rules against the canned replies\n' "$deferred"
+        MODE=reply
+        grade_step "$CS" "$SRC" message.txt assertions.txt reply.txt reply-bad.txt
+        grade_step "$CS" "$SRC" message-2.txt assertions-2.txt reply-2.txt reply-2-bad.txt
+        MODE=assembly
     else
         grade_step "$CS" "$SRC" message.txt assertions.txt reply.txt reply-bad.txt
         grade_step "$CS" "$SRC" message-2.txt assertions-2.txt reply-2.txt reply-2-bad.txt
