@@ -336,7 +336,7 @@ If [weather-cache](https://github.com/TheDiscordian/weather-cache) is installed 
 
 ## Conversation history
 
-Crab maintains a running conversation at `/tmp/deskcrab-convo.txt`. After a period of inactivity (default: 5 minutes), the conversation is archived to `~/.local/share/deskcrab/archive/` with a timestamp filename. This lets Crab remember context within a session while keeping old conversations for reference.
+Crab maintains a running conversation at `/tmp/deskcrab-convo.txt`. After a period of inactivity (`CONVO_TIMEOUT`, default 15 minutes), the conversation is archived with a timestamp filename to `ARCHIVE_DIR` — default `~/.local/share/deskcrab/archive/`, configurable in `deskcrab.conf`, so check the config before concluding from an empty default directory that archives are missing. The archive is written and byte-verified before the live conversation is let go; a failed archive leaves the conversation in place and says so loudly.
 
 The archive directory can be changed with `ARCHIVE_DIR` in your config, and the inactivity timeout with `CONVO_TIMEOUT`.
 
