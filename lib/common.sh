@@ -2947,7 +2947,7 @@ run_claude_wake() {
     # at the end of this function.
     SESSION_REPLY="$RESPONSE"
 
-    local SPOKEN DISPLAY_PART TRACE SILENT_NOTE=""
+    local SPOKEN DISPLAY_PART TRACE SILENT_NOTE="" QUIET_BUBBLE=""
     SPOKEN=$(spoken_part "$RESPONSE")
     DISPLAY_PART=$(display_part "$RESPONSE")
 
@@ -2966,6 +2966,11 @@ run_claude_wake() {
         SPOKEN=""
         # ALWAYS visible — his instruction (2026-08-07): a quiet reply shows
         # as a "(quiet) ..." bubble no matter what; hiding it is forbidden.
+        # QUIET_BUBBLE is what carries that promise past the nothing-to-deliver
+        # gate below, which otherwise sees an empty SPOKEN and returns before
+        # the bubble is appended. A bare marker with no thoughts stays plain
+        # silence and earns no bubble.
+        [ -n "$(printf '%s' "$THOUGHTS" | tr -d '[:space:]')" ] && QUIET_BUBBLE=1
         RESPONSE="(quiet) $THOUGHTS"
         if [ -n "$DISPLAY_PART" ]; then
             RESPONSE="$RESPONSE
@@ -3038,7 +3043,7 @@ $DISPLAY_PART"
     # Nothing to say and nothing to show: the wake is complete, invisibly.
     # Silence is never narrated — no speech, no notification, no window, and
     # now no bubble either.
-    if [ -z "$(printf '%s' "$SPOKEN$DISPLAY_PART" | tr -d '[:space:]')" ]; then
+    if [ -z "$(printf '%s' "$SPOKEN$DISPLAY_PART" | tr -d '[:space:]')" ] && [ -z "$QUIET_BUBBLE" ]; then
         return 0
     fi
 

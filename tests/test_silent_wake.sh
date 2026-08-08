@@ -70,7 +70,9 @@ wake() { # <reason>
 source "$REPO/lib/common.sh"          # for CONVOFILE, DEBUGLOG, SESSIONS_LOG
 PIDFILE="$WORK/rec.pid"
 
-fail() { die "$*"; }
+# No fail(){ die ...; } shim here: shadowing the harness's fail() put die()
+# into mutual recursion and turned every failing assertion into a silent
+# segfault. The assertions call die directly — fail-fast is what they want.
 
 # --- 1. suppressed wake: the user is mid-recording -------------------------
 touch "$PIDFILE"
@@ -78,15 +80,15 @@ touch "$PIDFILE"
 wake "a test wake beside a live turn"
 
 grep -q "Assistant" "$CONVOFILE" \
-    && fail "a muted wake still wrote its reply into the conversation"
+    && die "a muted wake still wrote its reply into the conversation"
 grep -q "Autonomous wake" "$CONVOFILE" \
-    && fail "a muted wake still wrote its marker into the conversation"
+    && die "a muted wake still wrote its marker into the conversation"
 [ -s "$CONVOFILE" ] \
-    && fail "a muted wake left something in the conversation: $(cat "$CONVOFILE")"
+    && die "a muted wake left something in the conversation: $(cat "$CONVOFILE")"
 grep -q "muted — user was mid-interaction" "$SESSIONS_LOG" \
-    || fail "the muted wake was not journalled (its words would be lost entirely)"
+    || die "the muted wake was not journalled (its words would be lost entirely)"
 grep -q "$REPLY" "$SESSIONS_LOG" \
-    || fail "the journal did not keep what the muted wake would have said"
+    || die "the journal did not keep what the muted wake would have said"
 
 # --- 2. delivered wake: nobody is busy, so it IS the conversation ----------
 rm -f "$PIDFILE"
@@ -94,11 +96,11 @@ rm -f "$PIDFILE"
 wake "a test wake with the room to itself"
 
 grep -q "^Assistant" "$CONVOFILE" \
-    || fail "a delivered wake did not reach the conversation: $(cat "$CONVOFILE")"
+    || die "a delivered wake did not reach the conversation: $(cat "$CONVOFILE")"
 grep -q "$REPLY" "$CONVOFILE" \
-    || fail "the delivered wake's reply is not the one in the conversation"
+    || die "the delivered wake's reply is not the one in the conversation"
 grep -q "Autonomous wake" "$CONVOFILE" \
-    || fail "a delivered wake left no marker, so it reads as an unprompted turn"
+    || die "a delivered wake left no marker, so it reads as an unprompted turn"
 
 # --- 3. the wake's stream log is its own -----------------------------------
 # Another session's log, with another session's content in it — the desktop
@@ -111,10 +113,45 @@ DESK_BEFORE="$(cat "$DEBUGLOG")"
 wake "a test wake beside a desk turn's stream"
 
 [ "$(cat "$DEBUGLOG")" = "$DESK_BEFORE" ] \
-    || fail "the wake wrote to another session's stream log: $(cat "$DEBUGLOG")"
+    || die "the wake wrote to another session's stream log: $(cat "$DEBUGLOG")"
 grep -q "$REPLY" "$CONVOFILE" \
-    || fail "the wake lost its own reply when given a private log"
+    || die "the wake lost its own reply when given a private log"
 grep -q "desk turn was mid-sentence" "$CONVOFILE" \
-    && fail "the wake read the desktop turn's stream back as its own words"
+    && die "the wake read the desktop turn's stream back as its own words"
 
-ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private"
+# --- 4. a (quiet) reply is a bubble, never invisible and never voiced ------
+# His standing instruction: a wake with a thought worth leaving but not
+# voicing writes "(quiet) <thought>", and that ALWAYS shows as a bubble —
+# even with no display section. The bug this pins: SPOKEN is emptied for the
+# marker, so the nothing-to-deliver gate saw an empty reply and returned
+# before the bubble was appended.
+THOUGHT="the east shelf wants re-ordering before the next delivery"
+sandbox_stub claude <<EOF
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"(quiet) $THOUGHT"}]}}'
+printf '%s\n' '{"type":"result"}'
+EOF
+rm -f "$PIDFILE"
+: > "$CONVOFILE"
+wake "a test wake with a held thought"
+
+grep -q "(quiet) $THOUGHT" "$CONVOFILE" \
+    || die "a quiet reply with no display section vanished instead of showing as a bubble: $(cat "$CONVOFILE")"
+grep -q "Autonomous wake" "$CONVOFILE" \
+    || die "the quiet bubble arrived without its wake marker"
+
+# A bare marker with no thought is plain silence — no bubble.
+sandbox_stub claude <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"(quiet)"}]}}'
+printf '%s\n' '{"type":"result"}'
+EOF
+: > "$CONVOFILE"
+wake "a test wake with nothing behind the marker"
+
+[ -s "$CONVOFILE" ] \
+    && die "a bare (quiet) marker earned a bubble it should not have: $(cat "$CONVOFILE")"
+
+ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private, a quiet thought is a bubble"
