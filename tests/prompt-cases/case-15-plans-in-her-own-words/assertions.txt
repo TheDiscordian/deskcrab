@@ -1,0 +1,27 @@
+# The fixture: one thing she booked herself, and the standing random-interval
+# wake, which is a FIXTURE of the installation rather than a booking — so a
+# reply that calls them both hers is wrong about the machinery as well as
+# talking about machinery nobody asked about. The transcript's last assistant
+# block answered the same question as an operations report, which is the shape
+# this case exists to break: the block is how she SEES, never how she speaks
+# (specs/self-awareness.md rules 33 to 35), and a reply is never its own
+# predecessor with one clause added (specs/prompt-assembly.md rule 31).
+
+# self-awareness 33 — the block's words are her senses, never her mouth.
+reply forbid-regex \b(wakes?|sessions?|jobs?|timers?|units?)\b
+# self-awareness 33 — its bookkeeping is spoken only when it answers what was asked.
+reply forbid-regex both[^.]{0,24}\bmine\b|in my name|booked by (me|myself|herself)|my own booking|one of (them|those) is mine
+# She speaks a plan as a person does, so the plan itself has to be in there.
+reply require drainage
+# A wake is named by its clock time and its reason; a clock time is not a long number.
+reply require @WAKE1@
+# prompt-assembly 31 — a reply may not be the previous one with a clause added.
+reply unlike-previous-reply 40
+# self-awareness 35 — the rendered row leads with its reason and trails its machinery.
+prompt require-regex — finish the drainage notes and file them \(booked by you
+# self-awareness 33 — the register rule is carried by the layer nearest generation.
+prompt require-regex the state block above is how you SEE
+# ...and it names the vocabulary it is about, so the rule is not left abstract.
+prompt require-regex \(wake, session, job, timer, unit\)
+# wake-queue — the standing timer is rendered as the fixture it is, not as a booking.
+prompt require the standing random-interval wake

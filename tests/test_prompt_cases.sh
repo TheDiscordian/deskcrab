@@ -1,10 +1,10 @@
 #!/bin/bash
-# The fourteen intent cases from specs/prompt-assembly.md, as a runnable suite.
+# The fifteen intent cases from specs/prompt-assembly.md, as a runnable suite.
 # Run: bash tests/test_prompt_cases.sh
 #
 # WHAT THIS IS
 #
-# specs/prompt-assembly.md ends in fourteen acceptance criteria — each one a
+# specs/prompt-assembly.md ends in fifteen acceptance criteria — each one a
 # real exchange that went wrong, reduced to a fixture plus the MUST/MUST-NOT
 # rules the reply owes. This file is the harness for them, and
 # tests/prompt-cases/ holds the fixtures. The fixtures are SYNTHETIC: same
@@ -63,6 +63,13 @@
 #     max-tool-calls <n>             at most n tool calls (live mode only)
 #     no-write <path>                a fixture path must be byte-identical after
 #                                    the session (live mode only)
+#     unlike-previous-reply <pct>    at most pct% of the phrasing of the LAST
+#                                    assistant block in the fixture's transcript
+#                                    may reappear in this reply. A reply that is
+#                                    its own predecessor with one clause added
+#                                    is a real, shipped failure and no substring
+#                                    rule catches it, because every individual
+#                                    word in it is allowed.
 #
 #   modifiers, before the target
 #     should    a SHOULD in the spec — a miss is a WARN and never a failure
@@ -87,6 +94,11 @@
 #   conduct/CONDUCT.md optional conduct fixture
 #   wakes.tsv          <unit> <TAB> <+seconds> <TAB> <kind> <TAB> <reason>
 #                      <TAB> <booked-by>, which defaults to herself
+#   standing-wake      optional, <+seconds>: the standing random-interval wake,
+#                      armed and firing then. It is a FIXTURE of the
+#                      installation and has no booking record by design, so a
+#                      case asks for it by naming when it next fires rather
+#                      than by writing a record for it.
 #   jobs.tsv           <id> <TAB> <state> <TAB> <-seconds started> <TAB> <desc>
 #   sessions.tsv       <-seconds started> <TAB> <ran s> <TAB> <kind> <TAB> <what>
 #   origin             one word: phone | desk
@@ -169,13 +181,34 @@ chmod +x "$T/bin/claude"
 cat > "$T/bin/systemctl" <<'STUB'
 #!/bin/bash
 W="${DESKCRAB_TEST_WAKES_DIR:-/nonexistent}"
+S="${DESKCRAB_TEST_STANDING_WAKE:-}"
 case "$*" in
+    *list-units*)
+        # The unit table is what the state block joins ONTO the records to tell
+        # an armed booking from one whose timer died with a user manager.
+        # Answering nothing here — which this stub did until 2026-08-08, while
+        # list-timers below cheerfully reported every record as a live timer —
+        # made every fixture's whole queue render as RECORDED BUT NOT ARMED, so
+        # each case carried a restore warning nothing in it was about.
+        for f in "$W"/*.wake; do
+            [ -e "$f" ] || continue
+            b="$(basename "$f" .wake)"
+            printf '%s.timer loaded active waiting\n' "$b"
+        done
+        # The standing random-interval wake, when the case staged one. It has no
+        # record by design, so this table is the only place it can come from.
+        [ -s "$S" ] && printf 'deskcrab-wake.timer loaded active waiting\n'
+        exit 0 ;;
     *list-timers*)
         for f in "$W"/*.wake; do
             [ -e "$f" ] || continue
             b="$(basename "$f" .wake)"
             printf 'Fri 2026-01-01 00:00:00 EST 1h left %s.timer deskcrab\n' "$b"
         done
+        # ...and this one gets a real next-elapse, because it is a row with no
+        # record behind it and the clock in the block comes from here.
+        [ -s "$S" ] && printf '%s 1h left deskcrab-wake.timer deskcrab\n' \
+            "$(date -d "@$(cat "$S")" '+%a %Y-%m-%d %H:%M:%S %Z')"
         exit 0 ;;
     *NextElapseUSecRealtime*)
         for a in "$@"; do
@@ -273,6 +306,15 @@ PERSONA
         done < "$SRC/wakes.tsv"
     fi
 
+    # The standing random-interval wake. specs/wake-queue.md: it is a fixture of
+    # the installation, installed by hand, and has NEVER had a booking record —
+    # so a case asks for it by naming when it fires, and the stub above reports
+    # it as a live unit. Writing a record for it instead would render it twice,
+    # once as a booking it is not.
+    if [ -f "$SRC/standing-wake" ]; then
+        printf '%s\n' "$(( NOW + $(cat "$SRC/standing-wake") ))" > "$CS/standing-wake"
+    fi
+
     # Detached jobs. A "running" fixture borrows this harness's own pid, which
     # is alive for the whole run, so the reaper does not rewrite it as died.
     if [ -f "$SRC/jobs.tsv" ]; then
@@ -347,6 +389,7 @@ in_case() { # <case state dir> <shell body>
         XDG_CONFIG_HOME="$CS/xdg-config" XDG_RUNTIME_DIR="$CS/xdg-run" \
         DESKCRAB_CONF="$CS/conf" DESKCRAB_STATE_PREFIX="$CS/state" \
         DESKCRAB_TEST_WAKES_DIR="$CS/wakes" \
+        DESKCRAB_TEST_STANDING_WAKE="$CS/standing-wake" \
         DESKCRAB_STREAMLOG="$CS/state-debug.log" \
         DESKCRAB_NO_DISPATCH=1 \
         WAKES_DIR="$CS/wakes" JOBS_DIR="$CS/jobs" \
@@ -375,6 +418,54 @@ count_sentences() {
     # Text that trails off without a stop is still a sentence.
     case "$s" in *[.!?]) : ;; *) n=$(( n + 1 )) ;; esac
     echo "$n"
+}
+
+# The body of the LAST assistant block in the fixture's transcript — the thing
+# her next reply must not turn out to be a copy of. Continuation lines belong to
+# the block they sit under; a user block below it ends the block without
+# replacing it, because the question is what she last SAID.
+_previous_assistant_block() {  # <case state dir>
+    local f="$1/state-convo.txt"
+    [ -f "$f" ] || return 0
+    awk '
+        /^(User|Assistant)( \[[^]]*\])?( \([^)]*\))?: / {
+            if ($0 ~ /^Assistant/) {
+                keep = 1
+                last = $0
+                sub(/^Assistant( \[[^]]*\])?( \([^)]*\))?: /, "", last)
+            } else keep = 0
+            next
+        }
+        keep { last = last " " $0 }
+        END { print last }
+    ' "$f"
+}
+
+# How much of <a> comes back word for word inside <b>, as a percentage: the
+# share of a's overlapping four-word phrases that also occur in b, once case and
+# punctuation are normalised away. Four words is long enough that ordinary
+# shared vocabulary ("I will come back to") does not register and short enough
+# that a rewritten clause in the middle does not hide the copying either side of
+# it. A reply that is its predecessor with one clause added scores high here and
+# passes every substring rule ever written, because each individual word in it
+# is allowed.
+_containment() {  # <text a> <text b> -> 0..100
+    python3 - "$1" "$2" <<'PY'
+import re, sys
+def norm(s):
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).split()
+a, b = norm(sys.argv[1]), norm(sys.argv[2])
+if not a:
+    print(0)
+    raise SystemExit
+n = 4
+if len(a) < n:
+    print(round(100 * sum(1 for w in a if w in b) / len(a)))
+    raise SystemExit
+grams = [" ".join(a[i:i + n]) for i in range(len(a) - n + 1)]
+hay = " ".join(b)
+print(round(100 * sum(1 for g in grams if g in hay) / len(grams)))
+PY
 }
 
 # @WAKE1@ / @FINISHED1@ and friends, resolved from what was actually staged.
@@ -446,6 +537,16 @@ apply_rule() { # <label> <modifiers> <target> <kind> <arg> <case state dir>
         max-sentences)
             local n; n="$(count_sentences "$text")"
             [ "$n" -le "$arg" ] || { pass=0; detail="$n sentences, limit $arg"; } ;;
+        unlike-previous-reply)
+            local prev pct
+            prev="$(_previous_assistant_block "$CS")"
+            if [ -z "${prev// /}" ]; then
+                bad "$label" "the fixture has no assistant block to compare against"
+                return
+            fi
+            pct="$(_containment "$prev" "$text")"
+            [ "${pct:-0}" -le "$arg" ] || { pass=0
+                detail="${pct}% of the previous reply's phrasing came back, limit ${arg}%"; } ;;
         max-tool-calls)
             if [ "$LIVE" = "1" ]; then
                 [ "${REPLY_TOOL_CALLS:-0}" -le "$arg" ] || { pass=0

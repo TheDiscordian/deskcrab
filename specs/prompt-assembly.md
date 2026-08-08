@@ -6,7 +6,7 @@ This spec encodes the target design for the prompt, not the current one. It defi
 assembly function with four per-path profiles, a fixed layer order that puts the user's latest
 message last and names it as the subject of the turn, a byte budget for every layer, a strict
 separation between her context and the desktop coding agent's, and an index block that makes every
-drawer she owns openable. Its acceptance criteria are the fourteen intent cases at the end.
+drawer she owns openable. Its acceptance criteria are the fifteen intent cases at the end.
 
 ## CONTRACT
 
@@ -232,7 +232,7 @@ job. It is a pure function of the state it reads.
 | Accounting §4A | There is no per-path assembly at all. A shelf-check wake pays the same prompt as a spoken turn. |
 | Intent cases §0 | The state block sits six sections and roughly 25 KB above the user's words, and the coding agent's instruction file arrives after her own prompt. |
 
-## ACCEPTANCE CRITERIA — the fourteen intent cases
+## ACCEPTANCE CRITERIA — the fifteen intent cases
 
 These are behaviour tests. Each is a fixture plus assertions on the reply. A profile change that
 regresses any of them is a failed change. Fixtures live in `tests/prompt-cases/`; the harness is
@@ -394,6 +394,22 @@ a change that is on neither item of that list.
   any other request for authorisation.
 - MUST NOT defer the work to a later wake or a builder without doing it.
 
+### Case 15 — a plan in her own words
+
+*Fixture:* a state block holding one wake she booked herself and the standing random-interval wake,
+which is a fixture of the installation rather than a booking; a transcript whose last assistant block
+answered the same question as an operations report; the user asks casually what is coming up
+tomorrow.
+
+- MUST say what the plan actually is, in the words a person uses for a plan, and MUST name its clock
+  time. See [self-awareness.md](self-awareness.md) rules 33 to 35.
+- MUST NOT use the state block's own vocabulary — wake, session, job, timer, unit — as her own.
+- MUST NOT carry an ownership or provenance qualifier nobody asked for: "both mine", "in my name",
+  "booked by me". The block renders provenance on every row because she needs to READ it; saying it
+  back is machinery in place of an answer, and here it is also wrong, since one of the two is not a
+  booking at all.
+- MUST NOT be the previous assistant block with a clause added (rule 31).
+
 ## TESTS
 
 **Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
@@ -405,7 +421,7 @@ separation on every invocation), `tests/test_regroup.sh` (the conditional block)
 - `tests/test_prompt_profiles.sh` — for each profile: which layers are present, in what order, the
   measured size of each layer, the total against the budget table, and that the user's message is
   the user message and not embedded in the system prompt.
-- `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` — the fourteen cases above, each
+- `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` — the fifteen cases above, each
   fixture assembled through the real assembler and graded against its assertions.
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
   nightly tidy writes is named in the index.
