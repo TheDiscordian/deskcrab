@@ -217,11 +217,16 @@ ok() {
     PASS=$(( PASS + 1 )); echo "  ok: $1"
     printf '%s\n' "$1" >> "$SANDBOX/witness/passes"
 }
-fail() {
+# The private spelling exists so die() cannot be caught in mutual recursion: a
+# test that shadows fail() with its own fail(){ die ...; } otherwise turns any
+# failing assertion into fail -> die -> fail -> ... — a silent segfault where
+# the failure message should have been (found live in test_silent_wake.sh).
+_sandbox_fail() {
     FAIL=$(( FAIL + 1 ))
     if [ $# -gt 1 ]; then echo "  FAIL: $1 — got [$2]"; else echo "  FAIL: $1"; fi
     printf '%s\n' "$1" >> "$SANDBOX/witness/failures"
 }
+fail() { _sandbox_fail "$@"; }
 
 # check <desc> <cmd...> — the command's exit status is the assertion.
 check() { local desc="$1"; shift; if "$@"; then ok "$desc"; else fail "$desc"; fi; }
@@ -233,7 +238,7 @@ contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 # die <desc> [got] — for the files written fail-fast. Counted like any other
 # failure so the summary reads the same, then the test stops where it stood.
-die() { fail "$@"; _SANDBOX_ABORTED=1; exit 1; }
+die() { _sandbox_fail "$@"; _SANDBOX_ABORTED=1; exit 1; }
 
 # sandbox_skip <reason> — this box cannot run the test. Says why, out loud, and
 # exits 77, which the runner reports as a skip rather than a pass. A silent
