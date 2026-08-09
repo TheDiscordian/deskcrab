@@ -145,8 +145,9 @@ describes, which turns a notice into pressure to say something again.
 ### The pre-speech mirror
 
 The live half of the claudism guard. Her own phrase list, held against each line at the last
-hand-off before the synthesiser; a line that fires is routed back to HER for one rewrite, and
-what she decides is what is spoken. The capture half is [turn-pipeline.md](turn-pipeline.md)
+hand-off before the synthesiser; a line that fires is repaired from her own replacement table
+where she has written one, and otherwise routed back to HER for one rewrite, and what she decides
+is what is spoken. The capture half is [turn-pipeline.md](turn-pipeline.md)
 rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; the design record is
 `engineering/claudism-guard-amendment.md` in her data directory.
 
@@ -163,7 +164,8 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     hold nobody can read is not a mirror, it is a stall, and if the record cannot be written the
     sentence is spoken unchecked instead.
 41. One rewrite chance, hers. A `rewrite` verdict speaks her replacement in place of the held
-    sentence, as given — never re-checked, never re-flagged, never edited by code. A `release`
+    sentence, as given — never re-checked, never re-flagged, never edited by code (the table of
+    rule 47 is the one exception, and it runs before the hold, never after a verdict). A `release`
     verdict, a verdict that never comes inside the deadline, a caller that died, or a caller
     that has already moved past the turn (the done marker) speaks the original untouched.
 42. FAIL OPEN is the only failure mode. No path through the mirror may end in suppressed speech
@@ -189,6 +191,25 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     to break. The whole-draft paths of rule 44 keep the generous call deadline: they delay a
     reply's start, which is not the same injury as silence in the middle of one. Both are
     overridable, and neither may be raised to where a listener would think the machine had died.
+47. Her table applies itself. An entry in the phrase list MAY carry one or more `replace:` lines —
+    a narrow regex and the literal text that stands in for it, both written by her. When a fired
+    sentence is fully repaired by the table (every match of the firing pattern is covered by that
+    entry's own replacements), the repaired sentence is spoken and there is NO hold and NO mirror
+    call: the swap is a string operation on the hand-off, and it MUST cost no more latency than
+    the scan that found it. This is the only place code may alter a sentence, and only ever into
+    words she wrote.
+48. The table's reach is deliberately short. A `replace:` regex MUST be narrower than the entry's
+    firing pattern — it exists to strip decoration she has already ruled on, not to rewrite a
+    sentence. Code may repair only what deleting a span breaks: collapsing the doubled space,
+    dropping a now-orphaned leading comma, restoring the capital on the first letter of the
+    sentence. Anything the table does not fully cover holds and routes to her under rules 40–46,
+    and no runtime model may add, widen or invent a table entry — the list is hers, by hand.
+49. An applied swap is a fire, logged like any other. The fire record carries the before and after
+    text and the entry that did it, with outcome `table-swap`; the day's flag log gets the same,
+    so the swap reaches her twice — in the recent-catches block at the start of her next turn, and
+    in the nightly reading, where she is the one who revokes an entry that read badly. A swap that
+    cannot be logged MUST NOT be applied: the sentence holds instead, or, if that too fails,
+    speaks untouched under rule 42.
 
 ## DATA
 
@@ -201,7 +222,7 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
 | `${STATE_PREFIX}-live-speech` | the streamer, `speak_once`, the phone paths | `epoch \t device \t pid \t until` then the text. `pid` 0 means nothing to watch, and then `until` — the clip's measured length — is the only liveness there is. Retired by the next message from that device. |
 | `${STATE_PREFIX}-shutup` | `crab shutup` | the asked-for-silence marker, cleared at turn start |
 | `/tmp/deskcrab-display-*.md` | the turn | one file per display window |
-| `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list that arms the mirror; format is `lib/claudism-capture`'s |
+| `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list that arms the mirror, and the replacement table of rules 47–49; format is `lib/claudism-capture`'s |
 | `${STATE_PREFIX}-claudism-fires-<pid>.jsonl` | the streamer | append-only: one fire record per held sentence, one outcome record per resolution |
 | `${STATE_PREFIX}-claudism-fires-<pid>.jsonl.verdict-<seq>` | the mirror pass in `lib/common.sh` | one verdict, written atomically: her `rewrite` text, or `release` |
 | `${STATE_PREFIX}-claudism-fires-<pid>.jsonl.done` | the mirror pass | the caller has moved past the turn; a later fire speaks unheld |
