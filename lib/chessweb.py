@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""crab-chessweb: the browser board onto a crab-chess game.
+"""betty-chessweb: the browser board onto a betty-chess game.
 
 A SpeedyChess-protocol server. It serves the stock SpeedyChess web client over
 HTTP and speaks its wire protocol (framed protobuf over WebSocket) on the same
-port, so the user plays in a browser while she plays through `crab-chess move`.
-The crab-chess game file is the only record: the user's moves are validated and
+port, so the user plays in a browser while she plays through `betty-chess move`.
+The betty-chess game file is the only record: the user's moves are validated and
 appended there, moves appended there by any other hand are mirrored into the
 browser, and each recorded user move books one event wake carrying the
-position. specs/chessweb.md is the contract; run through `crab-chessweb`,
+position. specs/chessweb.md is the contract; run through `betty-chessweb`,
 which owns the venv.
 """
 
@@ -30,7 +30,7 @@ from pathlib import Path
 import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import chess_cli  # the crab-chess store: build_board, save_game, compute_state
+import chess_cli  # the betty-chess store: build_board, save_game, compute_state
 
 # Message type = the message's index in SpeedyChess's chesspb.proto.
 PING, JOIN, NEWGAME, MOVE, ERROR, TEAM, PLAYER, \
@@ -357,7 +357,7 @@ class WSConn:
 # ------------------------------------------------------------- the store
 
 class Store:
-    """The bridge's one view of the crab-chess game files. Every read is from
+    """The bridge's one view of the betty-chess game files. Every read is from
     disk; every write goes through chess_cli.save_game. No cached truth."""
 
     def __init__(self, opponent, her_side, game_id=None):
@@ -490,7 +490,7 @@ class Hub:
         if over:
             reason = (f"chessweb: the game against {g['opponent']} ({gid}) "
                       f"just ended — {over}, after {san}. "
-                      f"History: {history}. Board: crab-chess show {gid}")
+                      f"History: {history}. Board: betty-chess show {gid}")
         else:
             played = f"they played {san}. " if san else ""
             # Off the board, not the dict: the ply must name the very position
@@ -501,10 +501,10 @@ class Hub:
                       f"FEN: {board.fen()}. History: {history}. This is the "
                       f"board at ply {ply}, photographed when the wake was "
                       f"booked. Choose your reply and play it with: "
-                      f"crab-chess move {gid} <move> --expect-ply {ply} — the "
+                      f"betty-chess move {gid} <move> --expect-ply {ply} — the "
                       f"guard refuses it if the game moved on while you "
                       f"thought, and it reaches their browser within seconds. "
-                      f"See the board as it stands: crab-chess show {gid}")
+                      f"See the board as it stands: betty-chess show {gid}")
         if self.port:
             reason += (f". Before you think, say so: curl -sf -X POST "
                        f"http://127.0.0.1:{self.port}/thinking -o /dev/null "
@@ -869,19 +869,19 @@ def default_wake_cmd():
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        prog="crab-chessweb",
-        description="Serve a browser board onto a crab-chess game.")
+        prog="betty-chessweb",
+        description="Serve a browser board onto a betty-chess game.")
     sub = p.add_subparsers(dest="command", required=True)
     sp = sub.add_parser("serve", help="host the board and the game protocol")
     sp.add_argument("--port", type=int,
                     default=int(os.environ.get("DESKCRAB_CHESSWEB_PORT",
                                                "8181")))
     sp.add_argument("--opponent", default="browser",
-                    help="who the user is in the crab-chess store")
+                    help="who the user is in the betty-chess store")
     sp.add_argument("--human-side", choices=["white", "black"],
                     default="white", help="the user's colour in a NEW game")
     sp.add_argument("--game", default=None,
-                    help="pin a crab-chess game id instead of newest-active")
+                    help="pin a betty-chess game id instead of newest-active")
     sp.add_argument("--client", default=None,
                     help="the SpeedyChess client directory")
     sp.add_argument("--poll", type=float, default=1.0,

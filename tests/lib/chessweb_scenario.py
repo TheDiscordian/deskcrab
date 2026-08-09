@@ -208,13 +208,13 @@ def hard_reset(sock):
 
 
 def her_move(chess_dir, gid, move):
-    """Her reply path: the real crab-chess CLI against the same store."""
+    """Her reply path: the real betty-chess CLI against the same store."""
     env = dict(os.environ, DESKCRAB_CHESS_DIR=chess_dir,
                PYTHONDONTWRITEBYTECODE="1")
     r = subprocess.run([VENV_PY, str(REPO / "lib/chess_cli.py"),
                         "move", gid, move],
                        capture_output=True, text=True, env=env, timeout=30)
-    assert r.returncode == 0, f"crab-chess move {move}: {r.stderr}"
+    assert r.returncode == 0, f"betty-chess move {move}: {r.stderr}"
 
 
 def game_moves(chess_dir, gid):
@@ -293,7 +293,7 @@ def s_fresh(port, chess_dir, wake_log):
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
     assert "guest-001" in wake and "FEN:" in wake \
-        and "crab-chess move guest-001" in wake and "e4" in wake, wake
+        and "betty-chess move guest-001" in wake and "e4" in wake, wake
     ok("wake booked with game id, SAN, FEN, and the reply instruction")
 
     # The photograph must say when it was taken: one ply played, so a reply
@@ -303,7 +303,7 @@ def s_fresh(port, chess_dir, wake_log):
 
     her_move(chess_dir, "guest-001", "e5")
     c.expect_move("e7", "e5")
-    ok("her crab-chess reply mirrored to the browser")
+    ok("her betty-chess reply mirrored to the browser")
 
     obs = Client(port)
     obs.join(player=False)

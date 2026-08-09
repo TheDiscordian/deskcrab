@@ -654,7 +654,7 @@ click that starts a fresh game once the stored one has ended. Three changes came
 each pinned by a wire-level test in `tests/test_chessweb.sh`: a seat Join now syncs the live game
 at once (rule 3); connection-family errors log one line instead of a stack trace, with a guard on
 the accept loop for anything that ever escapes a handler (rule 14); and
-`systemd/deskcrab-chessweb.service` (`Restart=always`, `RestartSec=2`) owns the process, because
+`systemd/deskbetty-chessweb.service` (`Restart=always`, `RestartSec=2`) owns the process, because
 rule 10 already made restarts lossless — the suite SIGKILLs the bridge mid-game, restarts it, and
 plays on in the same game.
 

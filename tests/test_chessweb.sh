@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests for chessweb — the browser board onto a crab-chess game
+# Tests for chessweb — the browser board onto a betty-chess game
 # (specs/chessweb.md). Run: bash tests/test_chessweb.sh
 #
 # The bridge is started against a scratch store and a stub client directory;
@@ -16,9 +16,9 @@ SCENARIO="$REPO/tests/lib/chessweb_scenario.py"
 # Read-only use of a live path: an interpreter, not state — the same bargain
 # the memory tests strike with their venv. -B keeps it read-only in fact.
 VENV_PY="$SANDBOX_LIVE_DATA/chess/venv/bin/python"
-[ -x "$VENV_PY" ] || sandbox_skip "the crab-chess venv is not built (run crab-chess once)"
+[ -x "$VENV_PY" ] || sandbox_skip "the betty-chess venv is not built (run betty-chess once)"
 "$VENV_PY" -B -c 'import chess' 2>/dev/null \
-    || sandbox_skip "python-chess is missing from the crab-chess venv"
+    || sandbox_skip "python-chess is missing from the betty-chess venv"
 export PYTHONDONTWRITEBYTECODE=1
 
 # Any directory with an index.html serves; the serveraddr line matches the

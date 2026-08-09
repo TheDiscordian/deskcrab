@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""crab-chess: persistent correspondence chess against a named opponent.
+"""betty-chess: persistent correspondence chess against a named opponent.
 
 One JSON file per game under $DESKCRAB_CHESS_DIR/games (default
 ~/.local/share/deskcrab/chess/games). The move list is the record; the board
 is replayed from it on every invocation, so state on disk can never drift
-from the rules. Run through the `crab-chess` wrapper, which owns the venv.
+from the rules. Run through the `betty-chess` wrapper, which owns the venv.
 
 Commands: new, list, show, move, undo, status, png, resign, draw, engine.
 """
@@ -60,7 +60,7 @@ def load_all() -> list[dict]:
             with open(path) as f:
                 games.append(json.load(f))
         except (OSError, json.JSONDecodeError) as e:
-            print(f"crab-chess: skipping unreadable {path.name}: {e}",
+            print(f"betty-chess: skipping unreadable {path.name}: {e}",
                   file=sys.stderr)
     return games
 
@@ -117,7 +117,7 @@ def compute_state(g: dict, board: chess.Board) -> tuple[str, str, str]:
 def resolve_game(spec: str | None) -> dict:
     games = load_all()
     if not games:
-        raise CliError("no games yet — start one with: crab-chess new <opponent>")
+        raise CliError("no games yet — start one with: betty-chess new <opponent>")
 
     def is_active(g):
         return compute_state(g, build_board(g))[0] == "active"
@@ -130,7 +130,7 @@ def resolve_game(spec: str | None) -> dict:
         matched = [g for g in games
                    if slugify(g["opponent"]) == s or g["id"].startswith(s)]
         if not matched:
-            raise CliError(f"no game matches '{spec}' — see: crab-chess list")
+            raise CliError(f"no game matches '{spec}' — see: betty-chess list")
         active = [g for g in matched if is_active(g)]
         pool = active or matched
         if len(pool) > 1:
@@ -261,7 +261,7 @@ def render_png(g: dict, board: chess.Board, out: Path) -> str:
 
 
 def default_png_path(g: dict) -> Path:
-    return Path(tempfile.gettempdir()) / f"crab-chess-{g['id']}.png"
+    return Path(tempfile.gettempdir()) / f"betty-chess-{g['id']}.png"
 
 
 # ---------------------------------------------------------------- moves
@@ -318,12 +318,12 @@ def check_expectation(g: dict, board: chess.Board, ply, fen) -> None:
             raise CliError(
                 f"{g['id']}: you expected ply {ply}, but only {have} have been "
                 f"played — that position never happened. Read the board: "
-                f"crab-chess show {g['id']}")
+                f"betty-chess show {g['id']}")
         since = moves_since(g, ply) or "(nothing)"
         raise CliError(
             f"{g['id']}: the board has moved on — you expected ply {ply}, it "
             f"is at ply {have}. Played since: {since}. Refusing the move. "
-            f"Read the board and think again: crab-chess show {g['id']}")
+            f"Read the board and think again: betty-chess show {g['id']}")
     if fen is not None:
         want = fen.strip()
         # Compare the position proper; halfmove/fullmove counters and a stale
@@ -332,7 +332,7 @@ def check_expectation(g: dict, board: chess.Board, ply, fen) -> None:
             raise CliError(
                 f"{g['id']}: the board has moved on — the FEN you expected is "
                 f"not the position on disk (now at ply {have}: {board.fen()}). "
-                f"Refusing the move. Read the board: crab-chess show {g['id']}")
+                f"Refusing the move. Read the board: betty-chess show {g['id']}")
 
 
 def history(board_moves: list[str]) -> str:
@@ -385,7 +385,7 @@ def cmd_new(args):
 def cmd_list(args):
     games = load_all()
     if not games:
-        print("no games — crab-chess new <opponent>")
+        print("no games — betty-chess new <opponent>")
         return
     games.sort(key=lambda g: g.get("updated", ""), reverse=True)
     for g in games:
@@ -423,7 +423,7 @@ def cmd_move(args):
     elif len(args.words) == 2:
         spec, text = args.words
     else:
-        raise CliError("usage: crab-chess move [game] <move>")
+        raise CliError("usage: betty-chess move [game] <move>")
     g = resolve_game(spec)
     board = build_board(g)
     check_expectation(g, board, args.expect_ply, args.expect_fen)
@@ -545,7 +545,7 @@ def cmd_engine(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        prog="crab-chess",
+        prog="betty-chess",
         description="Correspondence chess with state on disk. Most commands "
                     "take an optional game id or opponent name; with one "
                     "active game it is inferred.")
@@ -609,7 +609,7 @@ def main(argv=None):
     try:
         args.func(args)
     except CliError as e:
-        print(f"crab-chess: {e}", file=sys.stderr)
+        print(f"betty-chess: {e}", file=sys.stderr)
         return 1
     return 0
 

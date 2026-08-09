@@ -1,5 +1,5 @@
 #!/bin/bash
-# crab-chess: the disk record is the move list, and inference picks the game.
+# betty-chess: the disk record is the move list, and inference picks the game.
 # Run: bash tests/test_chess.sh
 #
 # The two things that only bite after a game ends. A finished game used to be
@@ -10,13 +10,13 @@
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 
 REPO="$(dirname "$(dirname "$(readlink -f "$0")")")"
-CHESS="$REPO/lib/crab-chess"
+CHESS="$REPO/lib/betty-chess"
 # The sandbox moves HOME, and a venv is 100MB of install — so the live one is
 # borrowed read-only rather than rebuilt per run. Skip if it was never made.
 VENV="${DESKCRAB_CHESS_VENV:-$SANDBOX_LIVE_DATA/chess/venv}"
 
 if [ ! -x "$VENV/bin/python" ]; then
-  echo "SKIP: no chess venv at $VENV — run crab-chess once to bootstrap it"
+  echo "SKIP: no chess venv at $VENV — run betty-chess once to bootstrap it"
   exit 0
 fi
 

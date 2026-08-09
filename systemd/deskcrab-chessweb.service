@@ -1,5 +1,5 @@
 [Unit]
-Description=DeskCrab chess bridge (crab-chessweb serve)
+Description=DeskCrab chess bridge (betty-chessweb serve)
 Documentation=https://github.com/TheDiscordian/deskcrab
 After=network-online.target
 # Same bargain as deskcrab-serve.service: never stop retrying. A port briefly
@@ -8,9 +8,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=%h/.local/lib/deskcrab/crab-chessweb serve
+ExecStart=%h/.local/lib/deskcrab/betty-chessweb serve
 WorkingDirectory=%h
-# The game lives in the crab-chess store on disk; the process holds no truth,
+# The game lives in the betty-chess store on disk; the process holds no truth,
 # so a death is a two-second gap and a rejoin, not a lost game
 # (specs/chessweb.md rules 10 and 14). This unit exists because a bridge run
 # as a background child of a session dies with the session, silently.

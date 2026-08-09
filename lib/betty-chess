@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crab-chess — persistent correspondence chess. This wrapper owns exactly one
+# betty-chess — persistent correspondence chess. This wrapper owns exactly one
 # job: make sure the venv with python-chess exists, then hand over to
 # chess_cli.py. State (games and the venv) lives under the durable share dir,
 # never in this checkout.
@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 if ! "$VENV/bin/python" -c 'import chess, chess.svg' >/dev/null 2>&1; then
     command -v uv >/dev/null 2>&1 || {
-        echo "crab-chess: need uv to bootstrap the venv at $VENV (no pip on this box)" >&2
+        echo "betty-chess: need uv to bootstrap the venv at $VENV (no pip on this box)" >&2
         exit 1
     }
     mkdir -p "$(dirname "$VENV")"

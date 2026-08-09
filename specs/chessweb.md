@@ -1,14 +1,14 @@
-# chessweb — the browser board onto a crab-chess game
+# chessweb — the browser board onto a betty-chess game
 
 ## PURPOSE
 
-crab-chess holds a correspondence game on disk, and she plays it by running `crab-chess move`.
+betty-chess holds a correspondence game on disk, and she plays it by running `betty-chess move`.
 This module gives the *other* player a real board: a browser page where the user drags pieces,
 while she keeps playing exactly as before. The bridge is a SpeedyChess-protocol server
-(`lib/chessweb.py`, run through `lib/crab-chessweb`): it serves the stock SpeedyChess web client
+(`lib/chessweb.py`, run through `lib/betty-chessweb`): it serves the stock SpeedyChess web client
 over HTTP and speaks its wire protocol over WebSocket upgrades on the same port. It owns no game
-state of its own — the crab-chess game file is the one record. The user's moves are validated and
-appended there; moves appended there by any other hand (hers, via `crab-chess move`) are mirrored
+state of its own — the betty-chess game file is the one record. The user's moves are validated and
+appended there; moves appended there by any other hand (hers, via `betty-chess move`) are mirrored
 into the browser; and every recorded user move books an event wake carrying the position, so she
 answers in her own words and on her own clock.
 
@@ -41,7 +41,7 @@ cannot be changed.
 
 ## CONTRACT
 
-1. `crab-chessweb serve` listens on one port (`--port`, else `$DESKCRAB_CHESSWEB_PORT`, else
+1. `betty-chessweb serve` listens on one port (`--port`, else `$DESKCRAB_CHESSWEB_PORT`, else
    8181) and answers both plain HTTP GETs — static files from the client directory — and
    WebSocket upgrades — the game protocol. The client directory is `--client`, else
    `$DESKCRAB_CHESSWEB_CLIENT`, else `~/.local/share/deskcrab/chessweb/client`; if none exists
@@ -59,7 +59,7 @@ cannot be changed.
    their Moves are refused.
 4. NewGame from the seat syncs the browser to the stored game: Team with the user's colour, then
    the stored move list replayed as broadcasts (a promotion replays as its Move then its
-   Promote). If no game is active, one is created in the crab-chess store first — opponent from
+   Promote). If no game is active, one is created in the betty-chess store first — opponent from
    `--opponent`, her side from the complement of `--human-side` (default: the user is white).
    `--game` pins a specific game id instead of newest-active-against-opponent.
 5. An incoming user Move or Promote is translated to UCI and validated against the stored game's
@@ -77,7 +77,7 @@ cannot be changed.
    connection, game-end check, and — if the game is still on — one wake booked through
    `crab wake-at --by chessweb 1s event <reason>`, the reason carrying the game id, the user's
    move in SAN, the FEN, the movetext so far, the ply the store stood at when the wake was
-   booked, and the reply instruction — which carries that ply as `crab-chess move <id> <move>
+   booked, and the reply instruction — which carries that ply as `betty-chess move <id> <move>
    --expect-ply <n>`, so a reply worked out from a photograph that has since gone stale is
    refused rather than played (rule 15). One wake per recorded user move; never a wake for
    her own.
@@ -96,9 +96,9 @@ cannot be changed.
     included — restart it, rejoin from the browser, and the same game comes back: same id, same
     position, same side to move, her pending reply intact. This is the overnight property, and it
     is a consequence of rules 3, 4 and 8 rather than a feature of its own.
-11. The bridge writes nothing but game files in the crab-chess store, books wakes only through
-    `crab wake-at`, and runs in the crab-chess venv (the wrapper bootstraps it the same way
-    `crab-chess` does).
+11. The bridge writes nothing but game files in the betty-chess store, books wakes only through
+    `crab wake-at`, and runs in the betty-chess venv (the wrapper bootstraps it the same way
+    `betty-chess` does).
 12. The browser is told where her turn stands, because a long think and a wake that never fired
     look identical from a phone. The bridge keeps three stamps — asked (a wake was booked),
     started (she picked the thought up), played (her move reached the board) — and serves them
@@ -116,11 +116,11 @@ cannot be changed.
     one connection that raised it; connection-family errors log one line each, never a stack
     trace (a traceback in the serve log means a bug, not a phone roaming off the network); and
     the accept loop itself survives anything that escapes a handler. The process is still
-    mortal, so `systemd/deskcrab-chessweb.service` runs the serve under the user manager with
+    mortal, so `systemd/deskbetty-chessweb.service` runs the serve under the user manager with
     `Restart=always` and a short `RestartSec`, and rule 10 makes every comeback lossless. The
     bridge is never run as a background child of a shell or of one of her turns — a session's
     exit reaps its children, which is a silent way to lose the listener mid-game.
-15. `crab-chess move` takes an optional `--expect-ply <n>` (and `--expect-fen <fen>`) naming the
+15. `betty-chess move` takes an optional `--expect-ply <n>` (and `--expect-fen <fen>`) naming the
     position the caller believed it was answering, and refuses — non-zero, nothing written — when
     the stored game is no longer there, naming the current ply and the SAN of everything played
     since. A wake carrying a position is a photograph, and the queue delay between the shutter

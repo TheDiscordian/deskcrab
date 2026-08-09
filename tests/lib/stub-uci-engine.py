@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A minimal UCI engine: legal random moves, and a Skill Level to set.
 
-Here so that crab-chess's engine path is exercised on every test run rather
+Here so that betty-chess's engine path is exercised on every test run rather
 than only on a machine that happens to have stockfish installed. It answers
 uci/isready/setoption/position/go/quit and nothing else, and it plays badly
 on purpose — the point is the protocol, not the chess.
