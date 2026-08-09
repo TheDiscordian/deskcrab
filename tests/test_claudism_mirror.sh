@@ -36,6 +36,7 @@ cat > "$LIST" <<'EOF'
 # What is borrowed
 
 - `to be honest` — honesty is assumed; the hedge is the habit.
+- function: hedging
 - `you're absolutely right` — the brochure's reflex agreement.
 EOF
 
@@ -130,6 +131,9 @@ j "$FIRE_CLOSED"; j "$RESULT"
 fire_recorded() { grep -qF '"pattern": "to be honest"' "$FIRES" 2>/dev/null; }
 wait_for fire_recorded && ok "the fire record lands before anything is held" \
     || fail "no fire record" "$(cat "$FIRES" 2>/dev/null)"
+grep -qF '"function": "hedging"' "$FIRES" \
+    && ok "and carries the entry's function for the mirror pass (rule 52)" \
+    || fail "fire record has no function field" "$(cat "$FIRES" 2>/dev/null)"
 first_spoken() { [ "$(said_count 'The first sentence is clean.')" -ge 1 ]; }
 wait_for first_spoken
 sleep 0.3

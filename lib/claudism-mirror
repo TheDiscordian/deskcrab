@@ -17,10 +17,17 @@ Modes:
       the first occurrence of the sentence in the SPOKEN half only and prints
       the whole spliced response. Exit 3 when the sentence is not found — the
       caller keeps the original (rule 42).
-  logflag <flags-dir> <kind> <pid> <outcome>
+  logflag <flags-dir> <kind> <pid> <outcome> [rewrite]
       One flag object on stdin; appends the day's record — claudism-capture's
       shape plus {"stage": "live", "outcome": ...} — flocked, like the
-      capture and the day journal.
+      capture and the day journal. A rewrite outcome hands the replacement
+      text as the fifth argument and the row carries it as before/after,
+      the pair a table-swap row already has (rule 51).
+  family <phrase-file> <function>
+      Prints the named function family, one entry per line — pattern, then
+      the why — the live: no wide net included (rule 52). Context for the
+      mirror call's prompt, so a missing file or an unknown function prints
+      nothing and exits 0: the call goes out exactly as before.
   tableswap <phrase-file> <flags-dir> <kind> <pid>
       The whole response on stdin. Her replacement table (rules 47-49),
       applied to the spoken half: every sentence an entry's own replace
@@ -252,9 +259,12 @@ def table_swap(sentence, rx, replaces):
     return out
 
 
-def flag_row(kind, pid, rec, outcome):
+def flag_row(kind, pid, rec, outcome, rewrite=None):
     """One live-stage flag record — claudism-capture's shape plus stage and
-    outcome, the same row logflag has always written."""
+    outcome, the same row logflag has always written. A rewrite hands its
+    replacement text in and the row carries it as before/after, the pair a
+    table-swap row already has (rule 51): outcome alone says a line was
+    resaid, never what it became."""
     now = int(time.time())
     row = {
         "epoch": now,
@@ -269,7 +279,23 @@ def flag_row(kind, pid, rec, outcome):
     for key in ("note", "function", "use"):
         if rec.get(key):
             row[key] = str(rec[key])
+    if rewrite:
+        row["before"] = row["sentence"]
+        row["after"] = str(rewrite)
     return row
+
+
+def family_lines(patterns, function):
+    """Every entry of one function family — the fired sibling included, and
+    the live: no wide net too, since a sibling invisible at resay time is
+    the one that gets reached for (rule 52). Plain lines, not JSON: the
+    reader is the model, mid-call."""
+    out = []
+    for e in patterns:
+        if e["function"] == function:
+            out.append("- %s%s" % (e["pat"],
+                                   " — " + e["note"] if e["note"] else ""))
+    return out
 
 
 def append_flag(flags_dir, row):
@@ -353,13 +379,27 @@ def main(argv):
     if mode == "logflag":
         try:
             flags_dir, kind, pid, outcome = argv[1:5]
+            rewrite = argv[5] if len(argv) > 5 else ""
             rec = json.load(sys.stdin)
         except Exception:
             return 2
         try:
-            append_flag(flags_dir, flag_row(kind, pid, rec, outcome))
+            append_flag(flags_dir,
+                        flag_row(kind, pid, rec, outcome, rewrite or None))
         except OSError:
             return 2
+        return 0
+    if mode == "family":
+        # Context for the mirror call, never a gate: anything unreadable
+        # here means the call goes out exactly as it always has.
+        try:
+            patterns, _bad = load_patterns(argv[1])
+            fn = argv[2].strip().lower()
+        except (IndexError, OSError):
+            return 0
+        if fn:
+            for ln in family_lines(patterns, fn):
+                print(ln)
         return 0
     if mode == "tableswap":
         try:
@@ -396,8 +436,9 @@ def main(argv):
         sys.stdout.write(out + ("\n" + tail if tail else ""))
         return 0
     sys.stderr.write("usage: claudism-mirror scan <phrase-file> | splice | "
-                     "logflag <flags-dir> <kind> <pid> <outcome> | "
-                     "tableswap <phrase-file> <flags-dir> <kind> <pid>\n")
+                     "logflag <flags-dir> <kind> <pid> <outcome> [rewrite] | "
+                     "tableswap <phrase-file> <flags-dir> <kind> <pid> | "
+                     "family <phrase-file> <function>\n")
     return 2
 
 

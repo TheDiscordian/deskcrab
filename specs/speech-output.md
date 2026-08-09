@@ -218,6 +218,21 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     turn-close capture and the nightly review, never the mirror — the broad, urge-shaped
     patterns that make the night's scoring honest would make the speech path stutter, so the
     list carries both kinds and each half reads its own.
+51. A `rewrite` outcome is logged with the words that went out. The day's flag-log row for a
+    model rewrite carries `before` — the held sentence — and `after` — her replacement as it
+    was spliced — the same pair a table-swap row has carried under rule 49, so the two kinds
+    of repair read alike and the nightly reading can see what the mirror said, not only that
+    it said something. The row is written after the words are already decided: a row that
+    cannot be written changes nothing about what is spoken or committed — logging is never a
+    gate (rule 42), and the turn-close capture still records the turn regardless.
+52. The mirror call shows the whole family. When the fired entry declares a `function:`, the
+    prompt of the mirror call carries every entry of that family — patterns and their whys,
+    the `live: no` wide net included — so the sibling phrasing is visible at the moment of
+    resaying and a resay cannot land on a neighbour unseen. Context only: what comes back is
+    spoken as given under rule 41, never re-scanned, re-flagged, or held against the family;
+    an entry with no function, or a family that cannot be read, prompts exactly as before.
+    The desk fire record carries the fired entry's `function` so the pass in `lib/common.sh`
+    can build the same block the whole-draft paths do.
 
 ## DATA
 
@@ -312,6 +327,11 @@ place while the sentence after it still speaks; a verdict that never comes fails
 original; an unarmed streamer and a missing list never check at all; and rule 46's two deadlines
 read out of the sources that define them, so raising one without the other fails here rather than
 as dead air at his desk).
+
+Rules 51–52 are held by `tests/test_claudism_scan.sh` (the rewrite row's before/after pair, the
+family block reaching the mirror call's prompt, and the fail-open shape of both), with the desk
+fire record's `function` field asserted in `tests/test_claudism_mirror.sh` where the streamer
+already runs.
 
 **To be written:**
 

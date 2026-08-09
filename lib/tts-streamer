@@ -369,6 +369,10 @@ class Voice(threading.Thread):
         swap_say = for_speech(swap) if swap is not None else ""
         rec = {"seq": seq, "sentence": raw, "spoken": spoken,
                "pattern": flag["pattern"], "note": flag.get("note", "")}
+        if flag.get("function"):
+            # The mirror pass reads the family off this record
+            # (specs/speech-output.md rule 52).
+            rec["function"] = flag["function"]
         if swap is not None and swap_say:
             rec["before"], rec["after"] = raw, swap
         # The record goes down BEFORE the hold begins (rule 40) and before a

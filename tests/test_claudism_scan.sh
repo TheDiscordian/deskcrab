@@ -1,6 +1,8 @@
 #!/bin/bash
-# The nightly claudism review — specs/nightly.md rules 39 to 45. Run: bash
-# tests/test_claudism_scan.sh
+# The nightly claudism review — specs/nightly.md rules 39 to 45 — and, at the
+# end, the live mirror's flag-log and family shape, specs/speech-output.md
+# rules 51-52, held here beside the nightly reading that consumes it. Run:
+# bash tests/test_claudism_scan.sh
 #
 # Detection and review only, so the assertions are about what the scan READS
 # (the spoken half of her own replies — never his words, never a job's log,
@@ -203,3 +205,98 @@ check "and the caught sentence is still quoted for the resay" \
     contains "$(cat "$R")" "the honest kind of hard"
 check "an -ly adverb in the same sentence still comes away clean" \
     contains "$(cat "$R")" "instead (deletion): “I put the kettle on late.”"
+
+echo
+echo "the live mirror's log and call (speech-output rules 51-52):"
+# The nightly reads what the mirror wrote, so the writer's shape is held
+# here beside its reader: a rewrite row carries the words that went out,
+# and the mirror call sees the fired entry's whole family — context for
+# the resay, never a gate on it.
+MLIST="$T/mirror-list.md"
+cat > "$MLIST" <<'LIST'
+## the honesty family
+- pattern: `\bhonestly\b`
+- why: assumed of her anyway.
+- function: vouching
+
+## decoration
+- pattern: `\bgenuinely\b`
+- why: the same move, one word over.
+- function: vouching
+- live: no
+
+## flat apology
+- pattern: `\bI apologize\b`
+- why: another family entirely.
+- function: apologising
+
+## bare habit
+- pattern: `\bneedless to say\b`
+- why: an entry with no function at all.
+LIST
+MIRROR="$REPO/lib/claudism-mirror"
+
+FAM="$("$MIRROR" family "$MLIST" vouching)"; rc=$?
+check_eq "family exits clean" "$rc" "0"
+check "the fired pattern is in its own family" contains "$FAM" 'honestly'
+check "a live: no sibling is shown too — the wide net is visible at resay time" \
+    contains "$FAM" 'genuinely'
+refute "another function's entry stays out" contains "$FAM" 'apologize'
+check_eq "an unknown function prints nothing and exits clean" \
+    "$("$MIRROR" family "$MLIST" nosuch; echo "rc=$?")" "rc=0"
+check_eq "a missing list prints nothing and exits clean — context, never a gate" \
+    "$("$MIRROR" family "$T/absent.md" vouching; echo "rc=$?")" "rc=0"
+
+FL="$T/flags-live"
+printf '%s' '{"sentence": "Honestly, the kettle is on.", "pattern": "\\bhonestly\\b", "note": "the honesty family", "function": "vouching"}' \
+    | "$MIRROR" logflag "$FL" wake 7002 rewrite "The kettle is on."
+ROW="$(cat "$FL"/*.jsonl)"
+check "a rewrite row carries the held sentence as before" \
+    contains "$ROW" '"before": "Honestly, the kettle is on."'
+check "and the words that replaced it as after (rule 51)" \
+    contains "$ROW" '"after": "The kettle is on."'
+printf '%s' '{"sentence": "Honestly, twice.", "pattern": "\\bhonestly\\b"}' \
+    | "$MIRROR" logflag "$FL" wake 7003 original-mirror-failed
+refute "a failed mirror logs no after — nothing replaced the line" \
+    contains "$(tail -1 "$FL"/*.jsonl)" '"after"'
+
+echo
+echo "and both are wired through the whole-draft pass in lib/common.sh:"
+cat > "$T/claude-stub" <<STUB
+#!/bin/bash
+cat > "$T/mirror-prompt.txt"
+printf '%s\n' '{"type":"assistant","message":{"model":"m","id":"msg_A","content":[{"type":"text","text":"The kettle is on."}]}}'
+printf '%s\n' '{"type":"result","result":"The kettle is on."}'
+STUB
+chmod +x "$T/claude-stub"
+FL2="$T/flags-direct"
+DIRECT="$(CLAUDE_BIN="$T/claude-stub" CLAUDISMS_FILE="$MLIST" CLAUDISM_FLAGS_DIR="$FL2" \
+    sandbox_bash 'claudism_mirror_direct wake "Honestly, the kettle is on."')"
+check_eq "the fired line was resaid in her stubbed voice" \
+    "$DIRECT" "The kettle is on."
+PROMPT="$(cat "$T/mirror-prompt.txt" 2>/dev/null)"
+check "the call's prompt carries the family banner (rule 52)" \
+    contains "$PROMPT" 'Its whole family (vouching)'
+check "with the sibling visible at the moment of resaying" \
+    contains "$PROMPT" 'genuinely'
+ROW="$(cat "$FL2"/*.jsonl 2>/dev/null)"
+check "the pass logged the rewrite with its words (rule 51)" \
+    contains "$ROW" '"after": "The kettle is on."'
+check "as a rewrite outcome, before/after like a table swap" \
+    contains "$ROW" '"outcome": "rewrite"'
+rm -f "$T/mirror-prompt.txt"
+DIRECT="$(CLAUDE_BIN="$T/claude-stub" CLAUDISMS_FILE="$MLIST" CLAUDISM_FLAGS_DIR="$FL2" \
+    sandbox_bash 'claudism_mirror_direct wake "Needless to say, tea is up."')"
+refute "an entry with no function prompts exactly as before" \
+    contains "$(cat "$T/mirror-prompt.txt" 2>/dev/null)" 'Its whole family'
+cat > "$T/claude-stub2" <<STUB
+#!/bin/bash
+cat > "$T/mirror-prompt2.txt"
+printf '%s\n' '{"type":"assistant","message":{"model":"m","id":"msg_A","content":[{"type":"text","text":"Genuinely: the kettle is on."}]}}'
+printf '%s\n' '{"type":"result","result":"Genuinely: the kettle is on."}'
+STUB
+chmod +x "$T/claude-stub2"
+DIRECT="$(CLAUDE_BIN="$T/claude-stub2" CLAUDISMS_FILE="$MLIST" CLAUDISM_FLAGS_DIR="$FL2" \
+    sandbox_bash 'claudism_mirror_direct wake "Honestly, the kettle is on."')"
+check_eq "a resay that lands on the sibling anyway still goes out — informed, never gated (rule 41)" \
+    "$DIRECT" "Genuinely: the kettle is on."

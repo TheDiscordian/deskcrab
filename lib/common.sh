@@ -3006,13 +3006,24 @@ _claudism_field() {  # <json> <key>
 # nothing as "the original stands". One attempt, on the ambient login: a
 # walk of a dry account chain is minutes of held speech, and fail-open is
 # cheaper than any of them.
-_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft>
-    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4"
+_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [function]
+    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4" FN="${5:-}"
     # A fire is the one place a finished reply waits on another model run, and
     # the metrics log (turn-pipeline rule 33) measured that wait at over a
     # minute on the phone path — so the call stamps itself, both ends.
     turn_metric mirror-call-start
     local PERSONA="" SYS OUT MLOG="${STATE_PREFIX}-claudism-mirror-$$.log"
+    # The fired entry's whole function: family rides the prompt (rule 52) —
+    # the sibling phrasing visible at the moment of resaying. Context only:
+    # her answer goes out as given, never held against this list, and a
+    # family that cannot be read is a prompt exactly as before.
+    local FAMILY="" FAMBLOCK=""
+    if [ -n "$FN" ]; then
+        FAMILY="$("$LIB_DIR/claudism-mirror" family "$CLAUDISMS_FILE" "$FN" \
+            2>/dev/null)" || FAMILY=""
+    fi
+    [ -n "$FAMILY" ] && FAMBLOCK="$(printf '\nIts whole family (%s) — every phrasing of this same move, so a resay does not land on a sibling unseen:\n%s' \
+        "$FN" "$FAMILY")"
     if [ -n "${CUSTOM_PROMPT:-}" ] && [ -f "$CUSTOM_PROMPT" ] \
             && [ "$(wc -c < "$CUSTOM_PROMPT" 2>/dev/null || echo 999999)" -le 65536 ]; then
         PERSONA="$(cat "$CUSTOM_PROMPT")"
@@ -3027,8 +3038,8 @@ unlearn. The line has NOT been spoken; everything before it has. Say the line ag
 voice, or give it back exactly as written if you meant it — your call, your voice, one pass.
 Output ONLY the replacement line: no preamble, no quotes, no commentary, no display section."
     : > "$MLOG"
-    { printf 'Pattern that fired: %s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \
-        "$PAT" "${NOTE:+ — $NOTE}" "$SENT" "$DRAFT" \
+    { printf 'Pattern that fired: %s%s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \
+        "$PAT" "${NOTE:+ — $NOTE}" "$FAMBLOCK" "$SENT" "$DRAFT" \
       | CLAUDE_CLASSIFY_STREAM=1 \
         CLAUDE_CLASSIFY_TIMEOUT="${CLAUDISM_MIRROR_CALL_TIMEOUT:-90}" \
         claude_classify "$CLAUDE_MODEL" "$SYS"; } >"$MLOG" 2>&1 || true
@@ -3066,7 +3077,7 @@ claudism_mirror_direct() {  # <kind> <response>
         RESPONSE="$SWAPPED"
         speech_log "claudism table ($KIND): her table repaired the draft"
     fi
-    local FLAGS N I REC SENT PAT NOTE REWRITE SPLICED OUTLOG
+    local FLAGS N I REC SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTLOG
     FLAGS="$(spoken_part "$RESPONSE" \
         | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" \
         || { printf '%s' "$RESPONSE"; return 0; }
@@ -3085,8 +3096,9 @@ claudism_mirror_direct() {  # <kind> <response>
         SENT="$(_claudism_field "$REC" sentence)"
         PAT="$(_claudism_field "$REC" pattern)"
         NOTE="$(_claudism_field "$REC" note)"
+        FN="$(_claudism_field "$REC" function)"
         SPLICED=""
-        REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")")"
+        REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN")"
         if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
             SPLICED="$(python3 -c \
                 'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
@@ -3096,11 +3108,13 @@ claudism_mirror_direct() {  # <kind> <response>
         if [ -n "$SPLICED" ]; then
             RESPONSE="$SPLICED"
             OUTLOG="rewrite"
+            LOGREW="$REWRITE"
         else
             OUTLOG="original-mirror-failed"
+            LOGREW=""
         fi
         printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
-            "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" "$OUTLOG" 2>/dev/null
+            "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" "$OUTLOG" "$LOGREW" 2>/dev/null
         speech_log "claudism mirror ($KIND): '$PAT' -> $OUTLOG"
         I=$((I + 1))
     done
@@ -3184,7 +3198,7 @@ claudism_mirror_desk() {  # <response>
         'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)" || P=1
     case "$P" in ''|*[!0-9]*) P=1 ;; esac
     local DEADLINE=$(( $(date +%s) + ${CLAUDISM_DESK_WAIT:-600} )) LAST=0
-    local INFO SWAPPED REC SEQ SENT PAT NOTE REWRITE SPLICED OUTCOME OUTLOG VERDICT W
+    local INFO SWAPPED REC SEQ SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTCOME OUTLOG VERDICT W
     while :; do
         # First line: how many predicted fires the streamer's table already
         # answered itself (outcome table-swap) — they count towards the
@@ -3232,9 +3246,10 @@ PY
             SENT="$(_claudism_field "$REC" sentence)"
             PAT="$(_claudism_field "$REC" pattern)"
             NOTE="$(_claudism_field "$REC" note)"
+            FN="$(_claudism_field "$REC" function)"
             SPLICED=""
             REWRITE="$(CLAUDISM_MIRROR_CALL_TIMEOUT="$CLAUDISM_MIRROR_DESK_CALL_TIMEOUT" \
-                _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")")"
+                _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN")"
             if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
                 SPLICED="$(python3 -c \
                     'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
@@ -3284,13 +3299,16 @@ PY
             if [ "$OUTCOME" = "rewrite-spoken" ] && [ -n "$SPLICED" ]; then
                 RESPONSE="$SPLICED"
                 OUTLOG="rewrite"
+                LOGREW="$REWRITE"
             elif [ "$OUTCOME" = "released" ]; then
                 OUTLOG="original-mirror-failed"
+                LOGREW=""
             else
                 OUTLOG="original-failopen"
+                LOGREW=""
             fi
             printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
-                "$CLAUDISM_FLAGS_DIR" desktop "$$" "$OUTLOG" 2>/dev/null
+                "$CLAUDISM_FLAGS_DIR" desktop "$$" "$OUTLOG" "$LOGREW" 2>/dev/null
             speech_log "claudism mirror (desk): '$PAT' -> $OUTLOG"
             R=$((R + 1))
             [ "$((R + SWAPPED))" -ge "$P" ] && break
