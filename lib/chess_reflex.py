@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS games (
     result     TEXT NOT NULL,     -- '1-0', '0-1', '1/2-1/2'
     my_outcome TEXT NOT NULL,     -- 'win', 'loss', 'draw' for the my_side player
     plies      INTEGER NOT NULL,
-    ingested   TEXT NOT NULL
+    ingested   TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'played'  -- 'played' or 'book' (theory)
 );
 CREATE TABLE IF NOT EXISTS moves (
     fen     TEXT NOT NULL,        -- the full FEN the move was made from
@@ -65,7 +66,18 @@ def connect() -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Stores written before the book existed have no `source`; everything in
+    them was played, which is exactly what the column defaults to."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(games)")}
+    if "source" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN source TEXT NOT NULL"
+                     " DEFAULT 'played'")
+        conn.commit()
 
 
 def fen_key(fen: str) -> str:
@@ -104,7 +116,7 @@ def _ingest(conn: sqlite3.Connection, g: dict, board_final: chess.Board,
     outcome = "draw" if won is None else ("win" if won == my_side else "loss")
     conn.execute(
         "INSERT INTO games (game_id, opponent, my_side, result, my_outcome,"
-        " plies, ingested) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        " plies, ingested, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'played')",
         (g["id"], g.get("opponent"), my_side, result, outcome,
          len(g["moves"]),
          datetime.now(timezone.utc).isoformat(timespec="seconds")))
@@ -167,21 +179,27 @@ def score(wins: int, draws: int, n: int) -> float:
 
 def lookup(fen: str) -> list[dict]:
     """Candidate moves for the side to move in `fen`, best first. Each is
-    {move, n, wins, draws, losses, score}; wins are the mover's, so a move
-    that led to losses ranks below one that won less often."""
+    {move, n, wins, draws, losses, score, book}; wins are the mover's, so a
+    move that led to losses ranks below one that won less often. `n` and the
+    score count played games only — `book` is how many theory lines run
+    through the move, and theory is never allowed to pass for experience."""
     key = fen_key(fen)
     with connect() as conn:
         rows = conn.execute(
-            """SELECT m.move, COUNT(*),
-                      SUM(CASE WHEN (m.colour = 'white' AND g.result = '1-0')
-                             OR (m.colour = 'black' AND g.result = '0-1')
+            """SELECT m.move,
+                      SUM(CASE WHEN g.source = 'played' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN g.source = 'played'
+                                AND ((m.colour = 'white' AND g.result = '1-0')
+                                  OR (m.colour = 'black' AND g.result = '0-1'))
                           THEN 1 ELSE 0 END),
-                      SUM(CASE WHEN g.result = '1/2-1/2' THEN 1 ELSE 0 END)
+                      SUM(CASE WHEN g.source = 'played'
+                                AND g.result = '1/2-1/2' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN g.source = 'book' THEN 1 ELSE 0 END)
                FROM moves m JOIN games g ON g.game_id = m.game_id
                WHERE m.fen_key = ? GROUP BY m.move""", (key,)).fetchall()
     out = [{"move": move, "n": n, "wins": w, "draws": d, "losses": n - w - d,
-            "score": score(w, d, n)} for move, n, w, d in rows]
-    out.sort(key=lambda c: (-c["score"], -c["n"], c["move"]))
+            "score": score(w, d, n), "book": bk} for move, n, w, d, bk in rows]
+    out.sort(key=lambda c: (-c["score"], -c["n"], -c["book"], c["move"]))
     return out
 
 
@@ -190,11 +208,18 @@ def best_move(fen: str, board: chess.Board | None = None,
     """The move memory would play from `fen`, or None to fall through to
     normal play. The first candidate in rank order that clears the gate wins;
     a board, if given, also vetoes anything not legal on it (the key strips
-    the counters, so this is belt on top of braces)."""
+    the counters, so this is belt on top of braces).
+
+    Two ways through the gate: enough played games that ended well enough, or
+    membership of the opening book. Experience outranks theory — a book move
+    her own games have gone badly with is vetoed and thought about instead."""
     min_games = MIN_GAMES if min_games is None else min_games
     min_score = MIN_SCORE if min_score is None else min_score
     for cand in lookup(fen):
-        if cand["n"] < min_games or cand["score"] < min_score:
+        enough = cand["n"] >= min_games
+        played_ok = enough and cand["score"] >= min_score
+        book_ok = cand["book"] > 0 and not (enough and not played_ok)
+        if not (played_ok or book_ok):
             continue
         if board is not None:
             try:

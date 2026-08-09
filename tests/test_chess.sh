@@ -210,3 +210,54 @@ out="$(chess reflex "$START")"
 echo "$out" | grep "^f3 " | grep -q "games   2" \
   && ok "undoing a finished game took its moves back out of memory" \
   || fail "retraction after undo: $out"
+
+# --- the opening book (specs/chess-reflex.md rule 9) ----------------------
+# Theory she has never played. It must open the gate where she is ignorant
+# and shut up entirely where her own games have already spoken.
+NAJDORF="rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 7"
+
+out="$(chess reflex --seed-book)"
+echo "$out" | grep -qE "book seeded — [0-9]+ lines" \
+  && ok "the book seeds into the same store as her games" \
+  || fail "seeding: $out"
+
+out="$(chess reflex "$NAJDORF")"
+echo "$out" | grep -q "would play" && echo "$out" | grep -q "book," \
+  && ok "a position only theory knows is played from the book, unplayed" \
+  || fail "book gate stayed shut: $out"
+
+# Book membership must not be smuggled into the played tallies (rule 6): e4
+# runs through thirteen book lines and has still only been played twice.
+out="$(chess reflex "$START")"
+echo "$out" | grep "^e4 " | grep -q "games   2  2-0-0" \
+  && ok "the book left the played W-D-L alone" \
+  || fail "book leaked into the results: $out"
+echo "$out" | grep "^e4 " | grep -q "book " \
+  && ok "and a move theory also knows says so separately" \
+  || fail "book count missing: $out"
+
+# Experience outranks theory: three lost games with the Najdorf's 6.Be3 must
+# shut the book's mouth in the very position it was seeded for.
+seed_lost() { # <id> <ucis...> — white plays them, then resigns
+  local id="$1"; shift
+  cat > "$DESKCRAB_CHESS_DIR/games/$id.json" <<JSON
+{"id": "$id", "opponent": "import", "my_side": "white",
+ "moves": [$(printf '"%s",' "$@" | sed 's/,$//')],
+ "resigned_by": "white", "draw_agreed": false, "engine_level": null,
+ "created": "2026-01-01T00:00:00+00:00", "updated": "2026-01-01T00:00:00+00:00"}
+JSON
+}
+NAJDORF_LINE="e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6 c1e3"
+for i in 1 2 3; do seed_lost "book-veto-$i" $NAJDORF_LINE; done
+chess reflex --backfill >/dev/null
+out="$(chess reflex "$NAJDORF")"
+echo "$out" | grep -q "not confident enough" \
+  && ok "her own losses veto the book: she thinks instead of playing theory" \
+  || fail "book overrode experience: $out"
+
+# Reseeding replaces the book rather than doubling it, and never eats a game.
+before="$(chess reflex "$START")"
+chess reflex --seed-book >/dev/null
+[ "$(chess reflex "$START")" = "$before" ] \
+  && ok "reseeding the book is idempotent and leaves played games standing" \
+  || fail "reseed changed the memory: $(chess reflex "$START")"

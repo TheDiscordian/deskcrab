@@ -553,8 +553,16 @@ def cmd_reflex(args):
         print(f"reflex: ingested {done} finished game(s), "
               f"left {active} active one(s) alone ({chess_reflex.db_path()})")
         return
+    if args.seed_book:
+        import chess_book
+        r = chess_book.seed()
+        print(f"reflex: book seeded — {r['lines']} lines, {r['moves']} moves; "
+              f"positions {r['positions_before']} -> {r['positions_after']} "
+              f"({chess_reflex.db_path()})")
+        return
     if not args.fen:
-        raise CliError("usage: betty-chess reflex <fen> | reflex --backfill")
+        raise CliError("usage: betty-chess reflex <fen> | reflex --backfill"
+                       " | reflex --seed-book")
     fen = " ".join(args.fen).strip()
     try:
         board = chess.Board(fen)
@@ -568,14 +576,16 @@ def cmd_reflex(args):
             san = board.san(chess.Move.from_uci(c["move"]))
         except (chess.InvalidMoveError, chess.IllegalMoveError, AssertionError):
             san = "??"  # remembered from a position this board disagrees with
+        book = f"  book {c['book']}" if c["book"] else ""
         print(f"{san:<8} {c['move']:<6} games {c['n']:>3}  "
               f"{c['wins']}-{c['draws']}-{c['losses']}  "
-              f"score {c['score']:.2f}")
+              f"score {c['score']:.2f}{book}")
     best = chess_reflex.best_move(board.fen(), board)
     if best:
         san = board.san(chess.Move.from_uci(best["move"]))
-        print(f"reflex: would play {san} "
-              f"(seen {best['n']}x, score {best['score']:.2f})")
+        why = (f"seen {best['n']}x, score {best['score']:.2f}" if best["n"]
+               else f"book, {best['book']} line(s)")
+        print(f"reflex: would play {san} ({why})")
     else:
         print(f"reflex: not confident enough — needs "
               f"{chess_reflex.MIN_GAMES} game(s) at score "
@@ -653,6 +663,8 @@ def main(argv=None):
                     help="a FEN, quoted or not; candidates come back ranked")
     sp.add_argument("--backfill", action="store_true",
                     help="ingest every finished game already on disk")
+    sp.add_argument("--seed-book", action="store_true",
+                    help="(re)write the opening book of mainline theory")
     sp.set_defaults(func=cmd_reflex)
 
     args = p.parse_args(argv)

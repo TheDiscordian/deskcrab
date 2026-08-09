@@ -17,11 +17,15 @@ games ended well enough. A move that kept losing is remembered too — as a reas
 
 1. The store is one SQLite file, `$DESKCRAB_CHESS_DIR/reflex.db` by default, path overridable
    with `$DESKCRAB_CHESS_REFLEX_DB`. Two tables: `games` (game_id, opponent, my_side, result,
-   my_outcome, plies, ingested) and `moves` (fen, fen_key, move, colour, ply, game_id) — the full
+   my_outcome, plies, ingested, source) and `moves` (fen, fen_key, move, colour, ply, game_id) — the full
    FEN of the position each move was made from, the move in UCI, and the colour that made it.
    `fen_key` is the FEN's first four fields (placement, side, castling, en passant), never the
    halfmove or fullmove counters, so a position reached at a different move number still hits.
-2. Only finished games are in the store. `chess_cli.save_game` is the one write path for game
+2. Only finished games are in the store, plus opening theory marked as such. `source` is
+   `'played'` for a real game and `'book'` for a seeded theory line; a book row is a position
+   known to be sound, not a game anyone won, so its `result` is `'*'` and it is counted apart
+   from played games everywhere (rules 5, 6, 9). Nothing but a seeder writes `'book'`, and the
+   two never mix inside one game_id. `chess_cli.save_game` is the one write path for game
    files, and it syncs reflex on every save: a game whose replayed state is over (checkmate,
    stalemate, draw rule, resignation, agreed draw) is ingested; an active one is retracted.
    Ingestion is idempotent per game_id — re-saving a finished game replaces its rows, never
@@ -35,19 +39,28 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    `save_game` by another hand. Active games are counted and left out. Running it twice is
    harmless (rule 2's idempotence).
 5. `betty-chess reflex <fen>` prints the candidate moves for the side to move, best first, each
-   with its games count, W-D-L from the mover's perspective, and score; then a verdict line —
+   with its played-games count, W-D-L from the mover's perspective, how many book lines contain
+   it (`book N`, omitted at zero), and score; then a verdict line —
    `would play <san>` when the gate passes, `not confident enough` when known but thin, and a
    non-zero exit with `no memory of this position` when the position is unknown. The caller that
    cannot use the memory falls through to normal play.
-6. Ranking weights frequency *and* results: score = (wins + draws/2 + 0.5) / (n + 1), wins and
-   draws counted for the colour that made the move. The +0.5/+1 is one phantom drawn game: a
+6. Ranking weights frequency *and* results: score = (wins + draws/2 + 0.5) / (n + 1), over
+   **played games only**, wins and draws counted for the colour that made the move. Book lines
+   contribute nothing to the score — a move nobody has played yet sits at the 0.5 prior whether
+   theory knows it or not — so a real loss is never diluted by however many book lines happen to
+   run through the position. Among equal scores, the move in more book lines ranks first. The
+   +0.5/+1 is one phantom drawn game: a
    move's score starts at 0.5 and moves away only as far as its results deserve, so a move played
    ten times and lost ten times scores 0.045 and sits below a move played once and won (0.75).
    Played-more never outranks lost-more.
 7. The auto-play gate: a remembered move is played without thinking only when some candidate, in
    rank order, has been played in at least `$DESKCRAB_REFLEX_MIN_GAMES` finished games (default
    2) with a score of at least `$DESKCRAB_REFLEX_MIN_SCORE` (default 0.55), and is legal on the
-   live board. Otherwise the answer is None and the caller thinks as it always did.
+   live board. A move in at least one book line clears the gate on theory alone — it needs no
+   played games at all — *unless* her own games contradict it: `min_games` played games at a
+   score below `min_score` veto the book, and she thinks instead. Experience always outranks
+   theory, and theory only speaks where experience is silent. Otherwise the answer is None and
+   the caller thinks as it always did.
 8. The wiring (chessweb.md rule 16): every path in the bridge that would book a wake for her move
    first asks `chess_reflex.best_move`. A hit is played straight into the store through the same
    write path as any move, broadcast to the browser, and logged as
@@ -55,6 +68,12 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    the wake exactly as before. A reflex move that *ends* the game still books the end-of-game
    wake, because she should hear how her game finished. `DESKCRAB_CHESS_REFLEX=0` turns the
    auto-play off; recording is unconditional.
+
+9. `betty-chess reflex --seed-book` writes the opening book: mainline theory replayed with
+   python-chess, one `source='book'` game per line, `game_id` prefixed `book-`, `result` `'*'`,
+   `my_side` and `my_outcome` empty. Both colours' moves live in that one game, because a book
+   row is a position and not a side's victory. Idempotent — seeding deletes the `book-` rows and
+   rewrites them, and it never touches a played game.
 
 ## KNOWN LIMITS
 
