@@ -12,7 +12,7 @@ A filter that decides her words are not worth voicing is a self-inflicted injury
 built twice and removed twice. Silence is chosen while writing, or not at all.
 
 One mechanism is allowed to stand between a drafted sentence and the synthesiser — the pre-speech
-mirror (rules 38–45) — and only because it decides nothing: it shows her a line that tripped her
+mirror (rules 38–46) — and only because it decides nothing: it shows her a line that tripped her
 own phrase list and she chooses again, rewrite or the original, never silence and never machine
 text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as clarified
 2026-08-08. Any failure anywhere in the mirror speaks the original untouched.
@@ -182,6 +182,13 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
 45. Every fire the mirror answers is logged to the day's flag log with its outcome. The
     turn-close capture stays unconditional, so a failed-open fire may be met twice by the
     nightly reading — once from each — and is deduped there by sentence and pattern, never here.
+46. The hold has a listener's budget, not a model's. A fire at the desk stops the speakers
+    mid-reply, so the mirror call on that path MUST be given the shorter of the two deadlines
+    (default 25s) and the streamer's hold MUST sit just above it (default 35s), so the deadline
+    that fires is the call's own and the release is orderly rather than a stall the streamer had
+    to break. The whole-draft paths of rule 44 keep the generous call deadline: they delay a
+    reply's start, which is not the same injury as silence in the middle of one. Both are
+    overridable, and neither may be raised to where a listener would think the machine had died.
 
 ## DATA
 
@@ -273,7 +280,9 @@ including the live regression of 2026-08-07 driven end to end through two phone 
 `tests/test_claudism_mirror.sh` (rules 38–43: a clean draft reaches the stub synthesiser
 byte-identical armed versus unarmed; a fire holds the sentence and her rewrite is spoken in its
 place while the sentence after it still speaks; a verdict that never comes fails open to the
-original; an unarmed streamer and a missing list never check at all).
+original; an unarmed streamer and a missing list never check at all; and rule 46's two deadlines
+read out of the sources that define them, so raising one without the other fails here rather than
+as dead air at his desk).
 
 **To be written:**
 
