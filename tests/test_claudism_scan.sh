@@ -190,3 +190,16 @@ check "a live rewrite whose turn still fires the same move is named (rule 49)" \
     contains "$(cat "$R")" "still fires vouching"
 refute "the corroboration names the reply's own sentence, not the held one" \
     contains "$(grep 'still fires vouching' "$R")" "Honestly, I forgot"
+
+# Rule 50: the bare span comes away only when it is a free-standing adverb.
+cat > "$J/2026-01-21.jsonl" <<'DAY'
+{"epoch": 1705849200, "time": "2026-01-21T10:00:00-0500", "kind": "wake", "pid": 7101, "user": "", "reply": "Intermittent is the honest kind of hard. I put the kettle on honestly late."}
+DAY
+scan 2026-01-21 >/dev/null 2>&1
+R="$OUT/2026-01-21.md"
+refute "an adjective its noun sits on gets no mechanical deletion (rule 50)" \
+    contains "$(cat "$R")" "is the kind of hard"
+check "and the caught sentence is still quoted for the resay" \
+    contains "$(cat "$R")" "the honest kind of hard"
+check "an -ly adverb in the same sentence still comes away clean" \
+    contains "$(cat "$R")" "instead (deletion): “I put the kettle on late.”"

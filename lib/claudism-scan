@@ -241,15 +241,26 @@ def scan(turns, phrases, classify):
 
 def deletion_render(sentence, entry):
     """The mechanical correction for a decoration entry (rule 48): her own
-    replace lines first, the bare matched span struck where they do not
-    cover, then only the repairs a deleted span makes necessary — the doubled
-    space, an orphaned comma, the sentence's leading capital. Returns None
-    where deletion cannot carry the sentence (nothing left, or the pattern
-    still fires) — those route to the model like any resay."""
+    replace lines first, and where they do not cover, the bare span struck
+    only if it is a free-standing -ly adverb — then only the repairs a
+    deleted span makes necessary — the doubled space, an orphaned comma, the
+    sentence's leading capital. Returns None where deletion cannot carry the
+    sentence (nothing left, the pattern still fires, or the span is holding
+    the rest of the words up) — those route to the model like any resay.
+
+    The span guard is rule 50, and 2026-08-08 is why it exists: striking a
+    whole match left "Intermittent is the kind of hard" and "what was
+    surfaced, what with it". An adverb comes away clean; an adjective its
+    noun is sitting on, or a span with the verb inside it, does not, and a
+    mangled line teaches nothing."""
     out = sentence
     for rx, text in entry["replaces"]:
         out = rx.sub(lambda _m, _t=text: _t, out)
     if entry["pattern"].search(out):
+        spans = {m.group(0).strip().lower()
+                 for m in entry["pattern"].finditer(out)}
+        if not all(re.fullmatch(r"[a-z]+ly", s) for s in spans):
+            return None
         out = entry["pattern"].sub("", out)
     if out == sentence:
         return None

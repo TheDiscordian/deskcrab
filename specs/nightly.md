@@ -148,13 +148,20 @@ which fails silently is worse than one that does not exist.
     the report MUST mark it substituted and MUST NOT present it as the fix. The rewrite
     instruction is function-aware — for a `fix: delete` entry the proposal is the sentence with
     the decoration struck (the entry's own `replace:` lines where they cover it, the matched
-    span struck where they do not), and the model is asked only where the fix is a different
-    sentence.
+    span struck where they do not and rule 50 allows it), and the model is asked only where the
+    fix is a different sentence.
 49. The night corroborates the live mirror. For each flag-log record of a live rewrite
     ([speech-output.md](speech-output.md) rule 45), the review MUST check whether the same
     turn's final reply still fires the same function, and name it in the report when it does: a
     hold answered with a synonym went out as the same move in new words, and only the night can
     see both halves. This is the corroboration `MIN-34` is owed, in its first piece.
+50. A mechanical deletion may only strike what comes away clean. Where no `replace:` line covers
+    a `fix: delete` hit, the bare span MAY be struck only if every uncovered match is a single
+    `-ly` adverb; any other span — an adjective its noun is sitting on, a match with the verb
+    inside it — MUST route to the model as a resay instead. A correction that leaves an
+    ungrammatical sentence teaches nothing and discredits the entry it came from: the review of
+    2026-08-08 offered "Intermittent is the kind of hard" and "what was surfaced, what with it"
+    as the lines she should have said.
 
 The same engine is runnable by hand: `lib/claudism-corpus` scores an archived conversation
 directory (the rotation's transcript format — [turn-pipeline.md](turn-pipeline.md) DATA) against
