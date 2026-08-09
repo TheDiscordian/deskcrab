@@ -4659,22 +4659,35 @@ synth_opus() {
     local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
     [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
-    printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null \
+    # Both processes are silenced on the terminal — a synthesiser narrating into
+    # the middle of a turn is noise — but their stderr is kept here so a lost
+    # voice has something to be read off (spec rule 53).
+    local ERR; ERR="$(mktemp -t crab-synth-err.XXXXXX)"
+    printf '%s' "$TEXT" | "${CMD[@]}" 2>>"$ERR" \
         | ffmpeg -y -loglevel error -f s16le -ar 22050 -ac 1 -i - \
-            -c:a libopus -b:a 32k "$OUT" 2>/dev/null
-    local PIPER_RC="${PIPESTATUS[1]}"
+            -c:a libopus -b:a 32k "$OUT" 2>>"$ERR"
+    local PIPER_RC="${PIPESTATUS[1]}" FF_RC="${PIPESTATUS[2]}"
+    local SIZE; SIZE="$(stat -c %s "$OUT" 2>/dev/null)" || SIZE=""
     # A dead synthesiser is not an empty file: ffmpeg muxes a header-only husk
     # (137 bytes, exit 0) from zero input, so a bare -s test calls a silent
     # clip a success. The smallest real utterance measures ~3000 bytes; 256
-    # splits the two with room. Piper and ffmpeg both have their stderr
-    # muzzled above, so this is the one place their death can be seen at all —
-    # on 2026-08-08 two phone turns lost their voices in this pipeline with no
-    # witness anywhere, and the cause could not be established from what
-    # survived. Every silence explains itself somewhere.
-    if ! [ -s "$OUT" ] || [ "$(stat -c %s "$OUT" 2>/dev/null || echo 0)" -lt 256 ]; then
-        speech_log "synth_opus produced no audio for ${#TEXT} chars (piper rc=$PIPER_RC) -> $OUT"
+    # splits the two with room. This is the one place either process's death
+    # can be seen at all — on 2026-08-08 two phone turns lost their voices in
+    # this pipeline with piper exiting 0 and the file never created, and the
+    # cause could not be established because nothing had recorded ffmpeg's
+    # side. Every silence explains itself somewhere.
+    if [ -z "$SIZE" ] || [ "$SIZE" -lt 256 ]; then
+        local WHY; WHY="$(tr '\n' ' ' < "$ERR" | tail -c 400)"
+        speech_log "synth_opus produced no audio for ${#TEXT} chars (piper rc=$PIPER_RC, ffmpeg rc=$FF_RC, output ${SIZE:-missing}${SIZE:+ bytes}) -> $OUT${WHY:+ — stderr: $WHY}"
+        rm -f "$ERR"
         return 1
     fi
+    # A clip that plays is a success whatever ffmpeg claimed, but the claim is
+    # worth a line: it is the shape a near-miss takes before it becomes silence.
+    if [ "$FF_RC" != 0 ]; then
+        speech_log "synth_opus: ffmpeg rc=$FF_RC but the clip is $SIZE bytes, so it stands -> $OUT"
+    fi
+    rm -f "$ERR"
 }
 
 # Remote turn (crab serve / the phone). Same conversation, same prompt, but the

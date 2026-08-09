@@ -234,6 +234,16 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     The desk fire record carries the fired entry's `function` so the pass in `lib/common.sh`
     can build the same block the whole-draft paths do.
 
+53. A lost synthesis MUST name its killer. When `synth_opus` decides there is no audio, the
+    speech log line MUST carry piper's exit status, ffmpeg's exit status, whether the output
+    file is missing or merely too small (with its size), and the tail of whatever the two
+    processes wrote to stderr — their stderr is muzzled everywhere else, so this line is the
+    only witness a silent turn ever gets. On 2026-08-08 two phone turns lost their voices here
+    with piper exiting 0 and the file never created at all, and the cause could not be
+    established afterwards because nothing recorded ffmpeg's side. A non-zero ffmpeg status
+    with a good clip is logged too and is NOT a failure: the size test alone decides what
+    counts as audio.
+
 ## DATA
 
 | Path | Owner | Purpose |
