@@ -240,6 +240,34 @@ function attachDisplay(replyEl, html) {
 const voiceQueue = [];
 let voicePlaying = false;
 
+// Playback truth (spec rules 44-46): this page is the only process that knows
+// whether a clip actually sounded, so it says so — queued, actually started
+// (the element's own playing/timeupdate, never merely play() returning),
+// completed, or error with the reason and the clip's index. Fire-and-forget:
+// a report that cannot be delivered, or a server too old to take one, must
+// never disturb the playback it describes.
+function reportPlay(meta, event, detail) {
+  if (!meta || !meta.tid) return;
+  post("/played", JSON.stringify({ turn: meta.tid, clip: meta.clip,
+                                   event, detail: detail || "" }),
+       { "Content-Type": "application/json" }, 10000).catch(() => {});
+}
+
+// The clip now loaded in the player, and whether its start was already
+// reported — one started per clip, whatever order playing and timeupdate
+// arrive in.
+let playerMeta = null, playerStarted = false;
+
+function markStarted() {
+  if (playerStarted || !playerMeta) return;
+  playerStarted = true;
+  reportPlay(playerMeta, "started");
+}
+player.addEventListener("playing", markStarted);
+player.addEventListener("timeupdate", () => {
+  if (player.currentTime > 0) markStarted();
+});
+
 // The phone's SUPER+SHIFT+A, folded into the talk button itself: while speech
 // is playing (or queued) a short TAP on it stops the voice; press-and-hold
 // still records. Nothing floats over the conversation any more.
@@ -262,6 +290,11 @@ function updateTalkBtn() {
 
 function stopSpeech() {
   voiceMuted = true;
+  // A chosen stop is not a lost voice: reported so the silence alarm never
+  // pages anyone over it. One report covers the turn.
+  const cur = playerMeta || (voiceQueue[0] && voiceQueue[0].meta);
+  reportPlay(cur, "error", "stopped by hand");
+  playerMeta = null;
   voiceQueue.length = 0;
   voicePlaying = false;
   player.pause();
@@ -271,26 +304,43 @@ function stopSpeech() {
   setStatus("speech stopped");
 }
 
-function enqueueVoice(url) {
-  if (voiceMuted) return;
-  voiceQueue.push(url);
+function enqueueVoice(url, meta) {
+  if (voiceMuted) { reportPlay(meta, "error", "stopped: dropped on arrival"); return; }
+  voiceQueue.push({ url, meta });
+  reportPlay(meta, "requested");
   playNextVoice();
   updateTalkBtn();
 }
 
 function playNextVoice() {
   if (voicePlaying || !voiceQueue.length) return;
-  const url = voiceQueue.shift();
+  const next = voiceQueue.shift();
   voicePlaying = true;
-  player.src = url;
+  playerMeta = next.meta;
+  playerStarted = false;
+  player.src = next.url;
   player.load();
   const p = player.play();
-  if (p) p.catch(() => { voicePlaying = false; updateTalkBtn(); offerPlay(url); });
+  if (p) p.catch(() => {
+    reportPlay(playerMeta, "error", "autoplay refused");
+    voicePlaying = false; updateTalkBtn(); offerPlay(next.url);
+  });
   updateTalkBtn();
 }
 
-player.addEventListener("ended", () => { voicePlaying = false; playNextVoice(); updateTalkBtn(); });
-player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); updateTalkBtn(); });
+player.addEventListener("ended", () => {
+  reportPlay(playerMeta, "completed");
+  playerMeta = null;
+  voicePlaying = false; playNextVoice(); updateTalkBtn();
+});
+player.addEventListener("error", () => {
+  // Unloading (stopSpeech) fires no error with meta already cleared; a real
+  // clip that died mid-fetch or mid-decode lands here with its meta intact.
+  const code = player.error && player.error.code;
+  reportPlay(playerMeta, "error", "media error" + (code ? " " + code : ""));
+  playerMeta = null;
+  voicePlaying = false; playNextVoice(); updateTalkBtn();
+});
 
 // The mute, for a phone that fires in a public pocket. Persistent across
 // reloads, and it silences EVERYTHING the page can sound — the voice clips
@@ -349,7 +399,7 @@ function closeMedia() {
 }
 $("media-close").addEventListener("click", closeMedia);
 
-async function deliver(res, replyEl) {
+async function deliver(res, replyEl, meta) {
   if (res.error) {
     setStatus(res.error, "err");
     // Never overwrite what she already said. A reply that streamed in full and
@@ -378,7 +428,7 @@ async function deliver(res, replyEl) {
   // emptiness, which reads as the assistant saying "no reply" out loud.
   if (!replyEl.textContent && !replyEl.querySelector("*")) replyEl.remove();
   setStatus("ready");
-  if (res.audio) enqueueVoice(res.audio);
+  if (res.audio) enqueueVoice(res.audio, meta);
   replyEl.scrollIntoView({ block: "end" });
 }
 
@@ -401,6 +451,10 @@ const STREAM_IDLE_MS = 45000;
 async function streamTurn(text, turn, tid, resuming, seq) {
   tid = tid || randomHex(32);
   let seen = 0, delay = 1000;
+  // Clip index within this turn, for the playback reports: a chunked reply
+  // that dies part-way names the chunk it died on. Replayed backlog clips are
+  // gated below and never counted — only what this page actually queues.
+  let clipIdx = 0;
   // A re-attach after a reload replays the whole buffered backlog in a burst,
   // voice events included — clips that were already playing when the page
   // died. Re-sounding them reads as the reply starting over, so replayed
@@ -472,7 +526,10 @@ async function streamTurn(text, turn, tid, resuming, seq) {
           deadline = lastTurnProgress + GIVE_UP_MS;
           if (ev.kind === "done") return ev;
           if (ev.kind === "voice") {
-            if (Date.now() >= voiceGateUntil) { turnVoiced = true; enqueueVoice(ev.audio); }
+            if (Date.now() >= voiceGateUntil) {
+              turnVoiced = true;
+              enqueueVoice(ev.audio, { tid, clip: String(clipIdx++) });
+            }
             continue;
           }
           showThought(turn, ev);
@@ -689,13 +746,13 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
     if (res && releasedSeq !== seq) {
       foldThoughts(turn);
       if (res.spoken) pendingReply = norm(res.spoken);
-      await deliver(res, turn.reply);
+      await deliver(res, turn.reply, { tid, clip: "done" });
     } else if (res && res.audio) {
       // The voice tail of a released turn (rule 42): the words were already
       // reconciled to the record, but nothing had been voiced, so the
       // completion clip is the only sound this turn will ever make. Play it;
       // touch nothing else.
-      enqueueVoice(res.audio);
+      enqueueVoice(res.audio, { tid, clip: "done" });
     }
   } catch (e) {
     setStatus(String(e.message || e), "err");

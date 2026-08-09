@@ -260,6 +260,78 @@ def _clean_tid(raw):
     return tid or uuid.uuid4().hex
 
 
+# Playback truth (specs/phone.md rules 44-46). The completion event proves the
+# reply reached the wire, not the ear: on 2026-08-09 two long replies were
+# delivered in full and played nothing — every synthesis of the turn had
+# quietly failed — and the only witness was the silence, reported by hand.
+# The client posts what its audio element actually did, per turn and per clip;
+# the reports land in the metrics log beside the synth stamps, and a turn
+# whose text was delivered with no started report inside the alarm window
+# raises exactly one `crab notify`.
+PLAY_ALARM = int(os.environ.get("DESKCRAB_SERVE_PLAY_ALARM", "90"))
+
+PLAYBACK = {}
+PLAYBACK_LOCK = threading.Lock()
+# Any valid report ever, this process. A page from before rule 44 reports
+# nothing at all; notifying on every one of its turns would be an old client
+# degrading into a nightly page of the house (the MAJ-19 shape), so the alarm
+# only notifies once some client has proven it reports.
+PLAY_CAPABLE = [False]
+
+
+def playback_state(tid):
+    with PLAYBACK_LOCK:
+        now = time.time()
+        for dead in [k for k, v in PLAYBACK.items()
+                     if now - v["created"] > TURN_BUFFER_TTL]:
+            PLAYBACK.pop(dead)
+        st = PLAYBACK.get(tid)
+        if st is None:
+            st = PLAYBACK[tid] = {"created": now, "started": False,
+                                  "stopped": False, "last_error": "",
+                                  "alarmed": False}
+        return st
+
+
+def _silence_alarm(tid, clips_offered):
+    """One notification for one silent turn, and never a second."""
+    st = playback_state(tid)
+    with PLAYBACK_LOCK:
+        if st["started"] or st["stopped"] or st["alarmed"]:
+            return
+        st["alarmed"] = True
+        reason = st["last_error"]
+        capable = PLAY_CAPABLE[0]
+    if not reason:
+        reason = ("no clip was ever synthesised" if not clips_offered
+                  else "%d clip(s) offered, none reported playing"
+                  % clips_offered)
+    turn_metric("silent-turn", "turn %s — %s" % (tid[:8], reason))
+    print("playback: turn %s delivered its text but no audio ever played — %s"
+          % (tid[:8], reason), file=sys.stderr, flush=True)
+    if not capable:
+        return
+    try:
+        subprocess.run(
+            [CRAB_BIN, "notify",
+             "A phone reply went silent: the text arrived but no audio ever "
+             "played (turn %s — %s)." % (tid[:8], reason)],
+            capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print("playback: crab notify failed for turn %s: %s" % (tid[:8], exc),
+              file=sys.stderr, flush=True)
+
+
+def arm_silence_alarm(tid, clips_offered):
+    st = playback_state(tid)
+    with PLAYBACK_LOCK:
+        if st["started"] or st["stopped"]:
+            return
+    t = threading.Timer(PLAY_ALARM, _silence_alarm, args=(tid, clips_offered))
+    t.daemon = True
+    t.start()
+
+
 # A queued turn used to be dead air (spec rule 43): the runner serialises on
 # the remote lock with a bounded wait of up to ten minutes, and for all of it
 # nothing reached this buffer — the tail carried keepalives, the page showed a
@@ -331,6 +403,12 @@ def run_turn(turn, text):
                 "audio": audio,
                 "error": reply.get("error", ""),
             })
+            # The reply's text is on its way; whether any of its sound is ever
+            # heard is now the client's story to tell (spec rules 44-46). A
+            # turn that spoke no text has nothing to be silent about, and an
+            # errored turn is already surfaced by its error field.
+            if reply.get("spoken", "").strip() and not reply.get("error"):
+                arm_silence_alarm(turn.tid, speaker.voiced + (1 if audio else 0))
     except Exception as exc:  # noqa: BLE001 — the client must hear about it
         turn.emit("done", {"spoken": "", "display_html": "", "audio": "",
                            "error": str(exc)[:300]})
@@ -1348,6 +1426,38 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._json(200, {"error": "no speech detected"})
             return self._json(200, {"transcript": text})
+
+        if url.path == "/played":
+            # A playback report (spec rules 44-46): what the phone's audio
+            # element actually did with a turn's clip. Recorded beside the
+            # synth stamps in the metrics log, and consulted by the silence
+            # alarm. Best-effort by design on the client, so the answer here
+            # is never load-bearing.
+            try:
+                doc = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return self._json(400, {"error": "bad json"})
+            tid = re.sub(r"[^a-f0-9]", "",
+                         str(doc.get("turn", "")).lower())[:64]
+            event = str(doc.get("event", ""))
+            clip = str(doc.get("clip", ""))[:16]
+            detail = " ".join(str(doc.get("detail", "")).split())[:120]
+            if not tid or event not in ("requested", "started", "completed",
+                                        "error"):
+                return self._json(400, {"error": "bad report"})
+            st = playback_state(tid)
+            with PLAYBACK_LOCK:
+                PLAY_CAPABLE[0] = True
+                if event == "started":
+                    st["started"] = True
+                elif event == "error":
+                    if detail.startswith("stopped"):
+                        st["stopped"] = True
+                    st["last_error"] = (detail or "error") + " at clip " + clip
+            turn_metric("play-" + event,
+                        "turn %s clip %s%s"
+                        % (tid[:8], clip, " — " + detail if detail else ""))
+            return self._json(200, {"ok": True})
 
         if url.path in ("/push/subscribe", "/push/unsubscribe"):
             # The browser's PushSubscription, stored so `crab notify` can reach

@@ -231,6 +231,7 @@ says so.
 | `${STATE_PREFIX}-convo.txt` | followed by the poll route |
 | `~/.local/share/deskcrab/webpush/` | key pair and subscriptions |
 | `~/.local/share/deskcrab/last-origin` | desk or phone, durable |
+| the per-day metrics log (turn-pipeline rule 33) | playback reports and the silent-turn record, beside the latency stamps |
 | TLS material under the configured directory | self-signed by default |
 
 ## The phone turn
@@ -262,7 +263,8 @@ flowchart TD
 ## INTERACTIONS
 
 **The phone server may call:** the remote turn entry point, the synthesiser, the batch transcriber,
-the push sender, and the conversation reader.
+the push sender (directly, and as `crab notify` for rule 46's silent-turn alarm), and the
+conversation reader.
 
 **The phone server may be called by:** the client page, by the wake path writing an audio pointer,
 and by any hand writing the play pointer (`crab play`).
@@ -350,6 +352,11 @@ spoken, a re-emitted message and a duplicated completed event add nothing, and t
 never reaches the synthesiser; with the flag off, the same stream produces exactly the one-clip-
 per-block output of today, and the config plumbing (`PHONE_SENTENCE_STREAM` through `crab serve`
 into the server's environment) is asserted in the same file.
+`tests/test_phone_playback.sh` drives rules 44-46 through two real servers: playback reports land
+in the per-day metrics log with the turn id and clip index; a turn whose clip reported playing
+raises nothing; a silent turn raises exactly one notification through a stub `crab notify`; an
+unanswered autoplay refusal is named in it; a stop by hand counts as heard; and a server that has
+never seen a report records its silent turns but never notifies.
 `tests/test_phone_queue_wait.sh` drives rule 43 through the real server: a turn parked before its
 first output carries wait notes in its stream naming which wait it is (behind this conversation's
 previous message, or behind something else), the notes stop once real output flows and never
