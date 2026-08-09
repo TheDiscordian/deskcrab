@@ -124,7 +124,10 @@ with the page closed.
 
 39. The client MUST remember its in-flight turn (identifier, text, and when) across a reload, and a
     freshly loaded page MUST re-attach to it by re-posting the same identifier — rule 1 makes that
-    an attach, never a second run. The re-attach MUST be bounded by age and skipped when the visible
+    an attach, never a second run. The re-attach MUST be bounded by age — measured from the turn's
+    ORIGINAL post, so a resume carries the remembered clock forward rather than restamping it;
+    refreshing the stamp on every resume made the bound measure from the latest reload, and a
+    reload storm could pick a dead turn back up forever — and skipped when the visible
     record already carries the exchange. A reload mid-turn used to orphan the turn: it kept running,
     it kept the lock, the re-spoken question queued behind it showing nothing, and the reply landed
     nowhere — that is how a reply failed to transmit on 2026-08-08, and how three reloads piled up
@@ -165,6 +168,18 @@ with the page closed.
     stream, the watcher carries no audio pointer, and rule 6's never-twice guarantee outweighs a
     voice for the tail case. A reply that arrived silent stays readable with the button back;
     hearing a reply twice to maybe voice a rare silent one is the wrong trade.
+43. A queued turn MUST NOT be dead air. Rule 2's lock wait is bounded at ten minutes, and for all
+    of it the runner emits nothing: the buffer holds one transcript event, the tail carries only
+    keepalives, and the page shows a frozen status until rule 4 gives up on a turn that is in
+    fact coming. Measured live on 2026-08-09: a message posted at 00:19:55 waited 203 s behind a
+    four-minute turn, the phone sat on "picking the turn back up…" the whole time, and the page
+    was hand reloaded four times — the stall as reported. So while a turn has produced nothing
+    beyond its own transcript echo, the server MUST emit periodic wait events saying so — and
+    saying which kind of wait it is: behind another message of this conversation, or behind
+    something else the mind is on. The client MUST render them as one line updated in place
+    rather than a growing pile, and MUST count their arrival as progress for rule 4's deadline —
+    a turn visibly in line is not a turn gone silent. The wait notes MUST stop at the run's first
+    real event and MUST never follow the completion event to a tail.
 
 ## DATA
 
@@ -290,6 +305,12 @@ its exchange arrives through the watcher — stream aborted, memory forgotten, b
 inside the watchdog window; an empty bubble is filled from the record and the display card
 attached either way; a marked block, another exchange's blocks, and an idle page release nothing;
 and a reply riding a busy reset's payload is scanned and releases the same way.
+`tests/test_phone_queue_wait.sh` drives rule 43 through the real server: a turn parked before its
+first output carries wait notes in its stream naming which wait it is (behind this conversation's
+previous message, or behind something else), the notes stop once real output flows and never
+follow the completion event, and a turn that starts promptly never sees one. The client half
+lives in `tests/phone_client_test.js`: wait notes draw one line updated in place with the status
+following, and rule 39's resume carries the original clock rather than restamping it.
 
 **To be written:**
 

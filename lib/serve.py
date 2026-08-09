@@ -227,14 +227,58 @@ def _clean_tid(raw):
     return tid or uuid.uuid4().hex
 
 
+# A queued turn used to be dead air (spec rule 43): the runner serialises on
+# the remote lock with a bounded wait of up to ten minutes, and for all of it
+# nothing reached this buffer — the tail carried keepalives, the page showed a
+# frozen status, and the reload storm began. Measured live on 2026-08-09: a
+# message waited 203 s behind a four-minute turn and the page was hand reloaded
+# four times. So until the run shows its first real sign of life, a watcher
+# says what the wait is, and its notes count as progress on the client's
+# deadline — a turn visibly in line is not a turn gone silent.
+QUEUE_NOTE_AFTER = int(os.environ.get("DESKCRAB_SERVE_QUEUE_NOTE_AFTER", "15"))
+QUEUE_NOTE_EVERY = int(os.environ.get("DESKCRAB_SERVE_QUEUE_NOTE_EVERY", "25"))
+
+
+def _turn_started(turn):
+    """Whether the run has produced anything beyond its own transcript echo
+    and the queue watcher's wait notes — the first real sign the model is up."""
+    with turn.cond:
+        return turn.done or any(
+            e["kind"] not in ("transcript", "wait") for e in turn.events)
+
+
+def _queue_watch(turn, stop):
+    started = time.time()
+    if stop.wait(QUEUE_NOTE_AFTER):
+        return
+    while not stop.is_set() and not _turn_started(turn):
+        behind = False
+        with TURNS_LOCK:
+            behind = any(t is not turn and not t.done for t in TURNS.values())
+        mins = int((time.time() - started) // 60)
+        note = ("in line — she's still finishing the previous message" if behind
+                else "in line — she's in the middle of something else")
+        if mins:
+            note += f" ({mins} min so far)"
+        turn.emit("wait", {"text": note})
+        if stop.wait(QUEUE_NOTE_EVERY):
+            return
+
+
 def run_turn(turn, text):
     """The actual assistant turn, feeding the buffer. Socket-independent."""
     try:
         with turn_in_flight():
-            speaker = Speaker(turn.emit)
-            reply = ask(text,
-                        on_event=lambda kind, msg: turn.emit(kind, {"text": msg}),
-                        speaker=speaker)
+            stop = threading.Event()
+            threading.Thread(target=_queue_watch, args=(turn, stop),
+                             daemon=True).start()
+            try:
+                speaker = Speaker(turn.emit)
+                reply = ask(text,
+                            on_event=lambda kind, msg: turn.emit(kind, {"text": msg}),
+                            speaker=speaker)
+            finally:
+                stop.set()
             # The reply clip the turn itself synthesised is the never-silent
             # fallback: offered when and only when no streaming clip was
             # voiced, so a client that heard the clips is not made to hear

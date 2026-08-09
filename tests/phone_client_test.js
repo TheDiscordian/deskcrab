@@ -802,19 +802,24 @@ async function testResumePending() {
                       removeItem: () => { store.v = null; },
                       setItem: (k, v) => { store.v = v; } },
       norm: s => (s || "").replace(/\s+/g, " ").trim(),
-      runTurn: (b, c, text, tid) => calls.push({ text, tid }),
+      runTurn: (b, c, text, tid, at) => calls.push({ text, tid, at }),
       _calls: calls, _store: store, _seed: { turns: seedTurns || [] },
     };
   }
   const lifted = ["function forgetTurn", "function resumePending"];
 
   // A fresh memory whose exchange is NOT on the seed: re-attach.
-  let ctx = rctx({ tid: "cafe01", text: "how did it go", at: Date.now() - 30000 });
+  const postedAt = Date.now() - 30000;
+  let ctx = rctx({ tid: "cafe01", text: "how did it go", at: postedAt });
   build(lifted, ctx).resumePending(ctx._seed);
   if (ctx._calls.length === 1 && ctx._calls[0].tid === "cafe01"
       && ctx._calls[0].text === "how did it go")
     ok("the remembered turn is re-joined with the SAME identifier");
   else bad("a fresh in-flight memory must re-attach", JSON.stringify(ctx._calls));
+  if (ctx._calls.length === 1 && ctx._calls[0].at === postedAt)
+    ok("and it carries the ORIGINAL clock, not a fresh stamp");
+  else bad("a resume must carry the original post's clock (rule 39)",
+           JSON.stringify(ctx._calls));
 
   // The seed already carries the exchange: nothing to do, memory wiped.
   ctx = rctx({ tid: "cafe02", text: "how did it go", at: Date.now() - 30000 },
@@ -832,6 +837,76 @@ async function testResumePending() {
   if (ctx._calls.length === 0 && ctx._store.v === null)
     ok("an aged-out memory is dropped — re-posting it could start a turn");
   else bad("the age bound must hold", JSON.stringify(ctx._calls));
+}
+
+async function testResumeKeepsOriginalClock() {
+  console.log("");
+  console.log("rememberTurn — a resume keeps the clock it was posted with (rule 39):");
+  const store = { v: null };
+  const ctx = {
+    localStorage: { setItem: (k, v) => { store.v = v; },
+                    getItem: () => store.v,
+                    removeItem: () => { store.v = null; } },
+  };
+  const api = build(["function rememberTurn"], ctx);
+
+  api.rememberTurn("cafe10", "how goes it", 123456789);
+  let rec = JSON.parse(store.v);
+  if (rec.at === 123456789)
+    ok("a resumed turn is re-remembered with the original stamp");
+  else bad("restamping is how a reload storm resumed a dead turn forever", store.v);
+
+  const before = Date.now();
+  api.rememberTurn("cafe11", "how goes it");
+  rec = JSON.parse(store.v);
+  if (rec.at >= before) ok("a fresh turn is stamped now, as ever");
+  else bad("a fresh turn must stamp the present", store.v);
+}
+
+async function testQueueWaitLine() {
+  console.log("");
+  console.log("showThought — a queued turn's wait notes draw ONE line, in place (rule 43):");
+  const statuses = [];
+  const mk = tag => ({
+    tag, className: "", textContent: "", children: [],
+    classList: { contains: () => false, toggle: () => {}, add: () => {} },
+    append(...n) { this.children.push(...n); },
+    scrollIntoView() {},
+  });
+  const parent = mk("div");
+  parent.insertBefore = (n, ref) => {
+    const i = parent.children.indexOf(ref);
+    parent.children.splice(i < 0 ? parent.children.length : i, 0, n);
+  };
+  const reply = mk("div");
+  reply.parentNode = parent;
+  parent.children.push(reply);
+  const turn = { reply };
+  const ctx = {
+    document: { createElement: mk },
+    setStatus: s => statuses.push(s),
+    addSaid: () => {},
+  };
+  const api = build(["function headText", "function showThought"], ctx);
+
+  api.showThought(turn, { kind: "wait", text: "in line — she's in the middle of something else" });
+  api.showThought(turn, { kind: "wait", text: "in line — she's in the middle of something else (1 min so far)" });
+
+  const rows = turn.thoughts ? turn.thoughts.children : [];
+  if (rows.length === 1) ok("two wait notes draw one line, not a pile");
+  else bad("wait notes must update in place", rows.length + " rows");
+  if (rows[0] && rows[0].textContent.indexOf("1 min so far") >= 0)
+    ok("and the line carries the latest note");
+  else bad("the line must carry the latest note", rows[0] && rows[0].textContent);
+  if (statuses[statuses.length - 1] &&
+      statuses[statuses.length - 1].indexOf("in line") === 0)
+    ok("the status line says what the wait is, not a frozen resume message");
+  else bad("the status must carry the wait note", statuses.join(" | "));
+
+  api.showThought(turn, { kind: "thinking", text: "right, the calendar" });
+  if (turn.thoughts.children.length === 2)
+    ok("a real thought still lands as its own row after the wait");
+  else bad("real thoughts must append as ever", turn.thoughts.children.length + " rows");
 }
 
 async function testResumeReplayIsQuiet() {
@@ -1208,6 +1283,8 @@ async function testResetPayloadReleases() {
   await testTurnEndsHandBackButton();
   await testHungTranscriptionIsBounded();
   await testResumePending();
+  await testResumeKeepsOriginalClock();
+  await testQueueWaitLine();
   await testResumeReplayIsQuiet();
   await testForegroundKick();
   await testDeadMicReacquired();

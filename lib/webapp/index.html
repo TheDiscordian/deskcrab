@@ -577,6 +577,23 @@ function showThought(turn, ev) {
     turn.reply.parentNode.insertBefore(box, turn.reply);
     turn.thoughts = box; turn.thHead = head;
   }
+  if (ev.kind === "wait") {
+    // Rule 43: one line, updated in place. These arrive every half-minute for
+    // as long as the turn is queued behind the lock, and a growing pile of
+    // near-identical rows would read as thinking happening when none is.
+    let wline = turn.waitLine;
+    if (!wline) {
+      wline = document.createElement("div");
+      wline.className = "thought wait";
+      box.append(wline);
+      turn.waitLine = wline;
+      turn.thHead.textContent = headText(box);
+      wline.scrollIntoView({ block: "end" });
+    }
+    wline.textContent = "⏳ " + ev.text;
+    setStatus(ev.text, "busy");
+    return;
+  }
   const line = document.createElement("div");
   line.className = "thought " + ev.kind;
   line.textContent = (ev.kind === "tool" ? "⚙ " : "… ") + ev.text;
@@ -604,7 +621,7 @@ function post(url, body, headers, timeoutMs) {
 // A turn is two requests, not one: transcription comes back in a second or two
 // and is shown immediately, so a mis-heard sentence is visible during the long
 // wait for the answer rather than after it.
-async function runTurn(blob, ctype, typed, resumeTid) {
+async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
   if (busy) return;
   // Dimmed, not disabled: a disabled button gets no pointer events, and the
   // reply's clips play while the turn is still running — tap-to-stop must
@@ -660,9 +677,12 @@ async function runTurn(blob, ctype, typed, resumeTid) {
     // from here, not from the press of the button.
     lastTurnProgress = Date.now();
     // Remembered so a reload mid-turn re-attaches instead of orphaning the
-    // turn behind the lock (spec rule 39); forgotten the moment it ends.
+    // turn behind the lock (spec rule 39); forgotten the moment it ends. A
+    // resume carries the ORIGINAL clock forward: restamping it here made the
+    // ten-minute bound measure from the latest reload, so a reload storm
+    // could pick a dead turn back up forever.
     const tid = resumeTid || randomHex(32);
-    rememberTurn(tid, text);
+    rememberTurn(tid, text, resumeAt);
     const res = await streamTurn(text, turn, tid, !!resumeTid, seq);
     // Null means the watcher ended this turn first (rule 42): the bubble,
     // the button, and the status were all settled there.
@@ -697,10 +717,10 @@ async function runTurn(blob, ctype, typed, resumeTid) {
 // and when. Rule 1 makes re-posting the same identifier an attach, so a page
 // that comes back re-joins its own turn rather than leaving it running
 // invisibly — holding the lock — while the re-asked question queues behind it.
-function rememberTurn(tid, text) {
+function rememberTurn(tid, text, at) {
   try {
     localStorage.setItem("crab-turn",
-                         JSON.stringify({ tid, text, at: Date.now() }));
+                         JSON.stringify({ tid, text, at: at || Date.now() }));
   } catch (_) {}
 }
 
@@ -726,7 +746,7 @@ function resumePending(ctx) {
       forgetTurn();
       return;
     }
-  runTurn(null, null, rec.text, rec.tid);
+  runTurn(null, null, rec.text, rec.tid, rec.at);
 }
 
 // The last line of defence against C10: if `busy` is still set long after
