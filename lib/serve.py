@@ -463,8 +463,12 @@ def read_turns():
             # The stamp is metadata, not speech: it rides beside the bubble as
             # "time" and never inside its text. Older, unstamped lines match the
             # same pattern with the group empty and read exactly as they did.
+            # The mark rides too (phone rule 42): the client's own-turn release
+            # must never take a wake's reply for the answer it is waiting on,
+            # and the mark is the only thing that tells them apart.
             cur = {"role": m.group(1).lower(), "text": line[m.end():],
-                   "time": (m.group(2) or "").strip("[] ")}
+                   "time": (m.group(2) or "").strip("[] "),
+                   "mark": (m.group(3) or "").strip("() ")}
             turns.append(cur)
         elif line.startswith("[Autonomous wake"):
             # A wake marker is a turn boundary, not prose. Without this it is

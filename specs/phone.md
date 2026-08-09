@@ -139,6 +139,25 @@ with the page closed.
     client MUST abort the current attempt and reconnect immediately rather than waiting out
     throttled timers. And when the microphone stream's tracks died while the page was away, the
     next hold MUST re-acquire the microphone rather than record silence into a "too short".
+42. A reply that arrives through the conversation watcher ends the turn that is waiting for it.
+    This is an ordinary arrival, not a broken one: the mirror pass can rewrite the draft after its
+    raw text has streamed, so the stored block no longer matches what the page heard, and
+    compaction — a whole model run — sits between the conversation append and the process exit
+    that emits the completion event, so on every compaction turn the record carries the answer up
+    to a minute before the stream does. The client MUST recognise its own exchange: the assistant
+    block whose text matches what streamed, or the first unmarked assistant block after this
+    turn's own User block came back through the watcher — a User block that is not this turn's
+    question breaks that adjacency (whatever follows answers it), and a marked block (an
+    autonomous wake) is never a candidate, which is why every block the watch and context routes
+    deliver carries its mark. On recognition the client MUST abort the turn's stream, forget the
+    remembered turn, and hand the button back, guarded by the turn sequence exactly as the normal
+    end is, so a superseded turn can never clear a newer one's state. The recognised block fills
+    the live bubble when nothing streamed, carries the display card in either case — the display
+    never rides the stream's text events — and is never drawn a second time as a turn from
+    elsewhere. It is not re-voiced: the clips the turn produced were already spoken from the
+    stream, the watcher carries no audio pointer, and rule 6's never-twice guarantee outweighs a
+    voice for the tail case. A reply that arrived silent stays readable with the button back;
+    hearing a reply twice to maybe voice a rare silent one is the wrong trade.
 
 ## DATA
 
@@ -231,6 +250,7 @@ block itself. The turn it spawns does that.
 | `MIN-25` | Audio and image routes ignore range requests. **Resolved:** one range-capable file sender serves the audio, image, and media routes; held by `tests/test_phone_media.sh`. |
 | `MIN-26` | Web Push is wired but called by no code. With the page closed the phone receives nothing. |
 | `C12` | The hold-to-talk button sat grey past any patience: the transcription fetches had no bound at all (a hang held the refusal until a seventeen-minute watchdog), a reload mid-turn orphaned the running turn behind the lock so the next attempt showed nothing either, and the give-up ladder was tuned in tens of minutes. Three reloads in four minutes on 2026-08-08, reported twice that evening. **Resolved:** rules 39-41 — bounded transcription, re-attach across reload, a foreground kick, and the ladder brought down to single minutes; held by the abnormal-end cases in `tests/phone_client_test.js`. |
+| `C13` | A phone turn whose answer reached the conversation file before its stream's completion event left the button grey with the answer already on screen, drawn as a turn from the laptop. Structural, twice over: the mirror pass rewrites the draft after the raw text has streamed, so the stored block no longer matches the own-turn filter; and compaction — a whole model run — sits between the conversation append and the process exit that emits the completion event, so the stream carries nothing but keepalives while the record already holds the reply. Measured live on 2026-08-08: the mirror rewrite logged at 23:42:30, the reply delivered by the watcher by 23:42:55, the page reloaded by hand at 23:43:29, and the completion event not possible before ~23:43:35. **Resolved:** rule 42 — a watcher-delivered reply ends the turn well inside the watchdog window; held by the watcher-release cases in `tests/phone_client_test.js`. |
 
 ## TESTS
 
@@ -257,7 +277,12 @@ carries the recovery cases of rules 39-41: a turn that ends in an error, a throw
 transcription fetch always hands the button back; a remembered turn is re-attached with the same
 identifier on the next load, is skipped when the record already shows the exchange or the memory
 has aged out, and does not re-sound the replayed clip backlog; and the foreground kick aborts a
-stale attempt so the reconnect happens now rather than after a throttled timer.
+stale attempt so the reconnect happens now rather than after a throttled timer. It also carries
+rule 42's watcher-release cases: a turn whose stream hangs on keepalives is released the moment
+its exchange arrives through the watcher — stream aborted, memory forgotten, button back, well
+inside the watchdog window; an empty bubble is filled from the record and the display card
+attached either way; a marked block, another exchange's blocks, and an idle page release nothing;
+and a reply riding a busy reset's payload is scanned and releases the same way.
 
 **To be written:**
 

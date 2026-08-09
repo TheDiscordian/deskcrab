@@ -398,7 +398,7 @@ async function deliver(res, replyEl) {
 // many minutes. Same shape as the 45 s guard on the /watch poll.
 const STREAM_IDLE_MS = 45000;
 
-async function streamTurn(text, turn, tid, resuming) {
+async function streamTurn(text, turn, tid, resuming, seq) {
   tid = tid || randomHex(32);
   let seen = 0, delay = 1000;
   // A re-attach after a reload replays the whole buffered backlog in a burst,
@@ -420,6 +420,10 @@ async function streamTurn(text, turn, tid, resuming) {
   let deadline = Date.now() + GIVE_UP_MS;
   const giveUp = { error: "gave up: no progress in 6 minutes" };
   for (;;) {
+    // Ended from outside by the conversation watcher (rule 42): this loop's
+    // turn is over. Reconnecting would re-tail a buffer nobody is waiting on
+    // — and overwrite a newer turn's abort handle below.
+    if (releasedSeq === seq) return null;
     // Checked HERE as well as in the catch. It used to be consulted only
     // after a throw, so a fetch that never threw and never delivered another
     // byte held `busy` forever: recording refused, the reset redraw refused,
@@ -485,6 +489,7 @@ async function streamTurn(text, turn, tid, resuming) {
       // turn. Fall through to reconnect.
       throw new Error("stream cut");
     } catch (e) {
+      if (releasedSeq === seq) return null;
       // An abort lands here like any other cut: the turn is still running on
       // the laptop, buffered under its id, and the reconnect below picks it
       // up from exactly where this socket stopped.
@@ -611,6 +616,10 @@ async function runTurn(blob, ctype, typed, resumeTid) {
   // Asking again means wanting the answer aloud again.
   voiceMuted = false;
   const turn = addTurn(typed || "🎤 …");
+  // Held where the watcher can reach it: the reply can arrive through the
+  // conversation instead of this turn's stream (rule 42), and it must land in
+  // this bubble, not beside it.
+  liveTurn = turn;
   try {
     let text = typed;
     if (!text) {
@@ -645,6 +654,7 @@ async function runTurn(blob, ctype, typed, resumeTid) {
     // laptop turn landing mid-flight still renders instead of vanishing.
     pendingUser = norm(text);
     pendingReply = null;
+    awaitedUserSeen = false;
     // Transcription may have taken a while; the watchdog measures the stream
     // from here, not from the press of the button.
     lastTurnProgress = Date.now();
@@ -652,10 +662,14 @@ async function runTurn(blob, ctype, typed, resumeTid) {
     // turn behind the lock (spec rule 39); forgotten the moment it ends.
     const tid = resumeTid || randomHex(32);
     rememberTurn(tid, text);
-    const res = await streamTurn(text, turn, tid, !!resumeTid);
-    foldThoughts(turn);
-    if (res && res.spoken) pendingReply = norm(res.spoken);
-    await deliver(res, turn.reply);
+    const res = await streamTurn(text, turn, tid, !!resumeTid, seq);
+    // Null means the watcher ended this turn first (rule 42): the bubble,
+    // the button, and the status were all settled there.
+    if (res) {
+      foldThoughts(turn);
+      if (res.spoken) pendingReply = norm(res.spoken);
+      await deliver(res, turn.reply);
+    }
   } catch (e) {
     setStatus(String(e.message || e), "err");
     turn.reply.textContent = "(failed)";
@@ -665,6 +679,7 @@ async function runTurn(blob, ctype, typed, resumeTid) {
     // running — that turn's state is not this one's to clear.
     if (turnSeq === seq) {
       forgetTurn();
+      liveTurn = null;
       busy = false; talk.classList.remove("busy");
       updateTalkBtn();
     }
@@ -717,6 +732,13 @@ function resumePending(ctx) {
 let lastTurnProgress = 0;
 let turnCtl = null;
 let turnSeq = 0;
+// The turn the conversation watcher ended (rule 42). streamTurn compares its
+// own sequence against this and returns quietly instead of reconnecting to a
+// turn the page no longer owns.
+let releasedSeq = 0;
+// The in-flight turn's bubbles, so a watcher-delivered reply lands in them
+// rather than beside them.
+let liveTurn = null;
 // Set by the foreground kick just before it aborts a stale attempt, read by
 // streamTurn's catch: this cut asks for an immediate reconnect, not backoff.
 let turnKicked = false;
@@ -1021,6 +1043,7 @@ async function reseed() {
   // The rewrite folded whatever the pending filters were guarding into the
   // file itself; a match against some future identical turn would eat it.
   pendingUser = pendingReply = null;
+  awaitedUserSeen = false;
   const shown = renderedKeys();
   if (shown.size) {
     renderCarried(ctx, shown);
@@ -1059,26 +1082,93 @@ let wakeSeen = "";
 // text and filtered out individually; everything else always renders.
 let pendingUser = null;
 let pendingReply = null;
+// This turn's own User block has come back through the watcher; the next
+// unmarked assistant block is its answer (rule 42) unless another User block
+// breaks the adjacency first.
+let awaitedUserSeen = false;
 
 // A /watch reset that arrived while a turn was in flight. The redraw would
 // wipe the exchange being spoken, so it waits here until `busy` clears.
 let needReseed = false;
 
+// The reply this page is waiting on arrived through the conversation watcher
+// instead of the turn's own stream (rule 42). That is an ordinary arrival,
+// not a broken one: the mirror pass can rewrite the draft after its raw text
+// streamed, and compaction — a whole model run — sits between the
+// conversation append and the exit that emits the done event, so the record
+// can carry the answer a minute before the stream does. The arrival IS the
+// turn's end: the bubble is reconciled to the record, the stream cut, the
+// button handed back. Never re-voiced — any clips this turn produced were
+// already spoken from the stream, and the watcher carries no audio to speak.
+function releaseTurn(t) {
+  if (!busy) return;
+  const seq = turnSeq;
+  releasedSeq = seq;
+  const r = liveTurn && liveTurn.reply;
+  if (r) {
+    // Nothing streamed: the record holds the only copy of the answer.
+    if (!(r._said || []).length) r.textContent = t.text;
+    // The display card never rides the stream's text events; without this it
+    // would be lost with the done event.
+    if (t.display_html && !r.parentNode.querySelector(".display"))
+      attachDisplay(r, t.display_html);
+    foldThoughts(liveTurn);
+    r.scrollIntoView({ block: "end" });
+  }
+  if (turnCtl) turnCtl.abort();
+  forgetTurn();
+  pendingReply = null;
+  busy = false;
+  talk.classList.remove("busy");
+  updateTalkBtn();
+  setStatus("the reply arrived through the conversation — ready");
+}
+
+// One filter for every block the watcher delivers. It holds the own-turn
+// suppression that keeps this phone's exchange from echoing back as a
+// duplicate bubble, and the recognition that ends a turn whose answer arrived
+// through the record rather than the stream (rule 42). Identity is text for
+// the User block; for the reply it is text when the streamed blocks match,
+// and adjacency when they do not — the mirror can rewrite the draft between
+// the stream and the record, so the first unmarked assistant block after this
+// turn's own question is its answer even worded differently. A User block
+// that is not this turn's question breaks the adjacency: whatever follows it
+// answers it, not this turn. A marked block (an autonomous wake) is never a
+// candidate, and never consumes the wait either — a wake landing mid-turn
+// must not cost this turn its release.
+function watchFilter(t) {
+  if (t.role === "user") {
+    if (pendingUser && norm(t.text) === pendingUser) {
+      pendingUser = null;
+      awaitedUserSeen = true;
+      return true;
+    }
+    awaitedUserSeen = false;
+    return false;
+  }
+  if (!t.mark) {
+    if (pendingReply && norm(t.text) === pendingReply) {
+      pendingReply = null;
+      awaitedUserSeen = false;
+      if (busy) releaseTurn(t);
+      return true;
+    }
+    if (awaitedUserSeen) {
+      awaitedUserSeen = false;
+      // Idle with a reply that matched nothing shown: a late answer to a
+      // given-up turn. It must stay visible, so it draws as ever.
+      if (busy) { releaseTurn(t); return true; }
+    }
+  }
+  return false;
+}
+
 function renderRemote(turns) {
   // Same rule as the seed: an empty block is not a bubble — appendTurns holds
-  // that line. What is extra here is the own-turn filter: this phone's own
+  // that line. What is extra here is the filter above: this phone's own
   // exchange comes back around through the file and must not be drawn twice.
-  appendTurns(logEl, turns, "turn elsewhere", t => {
-    if (pendingUser && t.role === "user" && norm(t.text) === pendingUser) {
-      pendingUser = null;
-      return true;
-    }
-    if (pendingReply && t.role === "assistant" && norm(t.text) === pendingReply) {
-      pendingReply = null;
-      return true;
-    }
-    return false;
-  }, t => t.scrollIntoView({ block: "end" }));
+  appendTurns(logEl, turns, "turn elsewhere", watchFilter,
+              t => t.scrollIntoView({ block: "end" }));
 }
 
 async function startWatch() {
@@ -1143,7 +1233,16 @@ async function startWatch() {
         // every phone turn, and compaction is exactly what changes the gen.
         cursor = data.n;
         if (data.gen !== undefined) gen = data.gen;
-        if (busy) { needReseed = true; continue; }
+        if (busy) {
+          // The answer this page is waiting on can ride the reset itself —
+          // compaction is what changes the gen, and compaction runs inside
+          // the very turn being waited on. The payload is scanned, never
+          // drawn (the queued reseed redraws everything), so rule 42's
+          // release is not lost with the deferral.
+          (data.turns || []).forEach(watchFilter);
+          needReseed = true;
+          continue;
+        }
         await reseed();
         needReseed = false;
         continue;

@@ -67,7 +67,7 @@ async function testStreamTurn() {
     setStatus: (s) => { if (s === "reconnecting…") reconnects++; },
     showThought: () => {},
     enqueueVoice: () => {},
-    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
     fetch: null,
   };
   const fast = new Function("ctx", "with (ctx) {\n" +
@@ -131,7 +131,7 @@ async function testDeadline() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: () => {},
-    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
     // Answers cleanly every time, forever: nothing ever throws, so a deadline
     // that is only read inside the catch is never read at all.
     fetch: async () => ({
@@ -175,7 +175,7 @@ async function testPingsAreNotProgress() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: () => {},
-    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
     // Pings forever: bytes keep arriving, no frame ever parses to an event.
     fetch: async () => ({
       ok: true, status: 200,
@@ -215,7 +215,7 @@ async function testProgressExtendsDeadline() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: () => {},
-    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
     // Eight thinking events 100 ms apart — 800 ms of turn against a 400 ms
     // ceiling — then the reply. Only a deadline measured from the LAST event
     // lets this finish.
@@ -301,6 +301,7 @@ async function testWatchReset() {
     voiceMuted: false,
     reseed: async () => { reseeds++; ctx.cursor = 99; ctx.gen = "FRESH"; },
     renderRemote: () => {},
+    watchFilter: () => false,
     enqueueVoice: () => {},
     fetch: async (q) => {
       polls.push(q);
@@ -696,6 +697,7 @@ function turnCtx(streamImpl) {
   return {
     busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
     pendingUser: null, pendingReply: null,
+    awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
     sttSid: null, sttChain: Promise.resolve(), sttFailed: false,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
@@ -845,7 +847,7 @@ async function testResumeReplayIsQuiet() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: u => voiced.push(u),
-    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
     fetch: async (url, opts) => {
       posts.push({ url, body: opts && opts.body });
       return { ok: true, status: 200, body: { getReader: () => ({
@@ -943,6 +945,230 @@ async function testDeadMicReacquired() {
            "stopped=" + stopped + " acquired=" + acquired);
 }
 
+// --- 6: rule 42 — a reply arriving through the watcher ends the turn --------
+//
+// Written against 2026-08-08 23:42: the mirror rewrote the draft after its raw
+// text streamed, so the stored reply no longer matched the own-turn filter and
+// drew "at the laptop"; compaction — a whole model run — then sat between the
+// conversation append and the exit that emits the done event. The stream
+// carried nothing but pings, the answer sat on screen, and the button stayed
+// grey until a hand reload at 23:43:29.
+
+async function testWatcherReleasesTurn() {
+  console.log("");
+  console.log("rule 42 — the exchange arriving through the watcher hands the button back:");
+  const enc = new TextEncoder();
+  const cls = new Set();
+  const statuses = [];
+  const displays = [];
+  let forgotten = 0, delivered = 0;
+  const bubble = {
+    textContent: "…",
+    scrollIntoView() {},
+    parentNode: { querySelector: () => null, append() {} },
+  };
+  const ctx = {
+    busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
+    pendingUser: null, pendingReply: null,
+    awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
+    turnCtl: null, turnKicked: false, STREAM_IDLE_MS: 60000,
+    talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
+                         contains: c => cls.has(c) } },
+    setStatus: s => statuses.push(s),
+    addTurn: () => ({ you: { textContent: "", scrollIntoView() {} },
+                      reply: bubble }),
+    armTurnWatchdog: () => () => {},
+    randomHex: () => "feedfacefeedfacefeedfacefeedface",
+    rememberTurn: () => {},
+    forgetTurn: () => { forgotten++; },
+    foldThoughts: () => {},
+    deliver: async () => { delivered++; },
+    updateTalkBtn: () => {},
+    showThought: () => {},
+    enqueueVoice: () => {},
+    attachDisplay: (el, html) => displays.push(html),
+    // The C13 stream: opens fine, pings forever, done never comes. Only the
+    // release's abort ends a read.
+    fetch: async (url, opts) => ({
+      ok: true, status: 200, body: { getReader: () => ({
+        read: () => new Promise((res, rej) => {
+          const t = setTimeout(() => res(
+            { value: enc.encode(": ping\n\n"), done: false }), 25);
+          if (opts && opts.signal) opts.signal.addEventListener("abort",
+            () => { clearTimeout(t); rej(new Error("aborted")); });
+        }),
+      }) },
+    }),
+  };
+  const api = build(["function norm", "async function streamTurn",
+                     "function releaseTurn", "function watchFilter",
+                     "async function runTurn"], ctx);
+  const started = Date.now();
+  const p = api.runTurn(null, null, "how did it go");
+  await sleep(120);
+  if (ctx.busy && cls.has("busy")) ok("the harness holds a live grey turn to release");
+  else bad("the turn must be in flight before the watcher answers",
+           "busy=" + ctx.busy);
+
+  // The watcher poll delivers the exchange — the reply worded by the mirror,
+  // not as it streamed (nothing streamed here at all).
+  const hidUser = api.watchFilter({ role: "user", text: "how did it go" });
+  const hidReply = api.watchFilter({ role: "assistant",
+                                     text: "it went well, in fact",
+                                     display_html: "<p>card</p>" });
+  await Promise.race([p, sleep(3000).then(() => {
+    throw new Error("HARNESS TIMEOUT");
+  })]).catch(e => bad("runTurn must return once released", e.message));
+  const took = Date.now() - started;
+
+  if (hidUser && hidReply) ok("both halves of the exchange are recognised, neither drawn twice");
+  else bad("the own exchange must be suppressed", "user=" + hidUser + " reply=" + hidReply);
+  if (!ctx.busy && !cls.has("busy"))
+    ok("the button is handed back (" + took + "ms — well inside the watchdog)");
+  else bad("busy must clear when the watcher delivers the reply",
+           "busy=" + ctx.busy + " cls=" + [...cls]);
+  if (took < 2000) ok("released by the watcher, not by any deadline");
+  else bad("the release must be immediate", took + "ms");
+  if (bubble.textContent === "it went well, in fact")
+    ok("nothing streamed, so the record's text fills the live bubble");
+  else bad("an empty bubble must take the watcher's reply", bubble.textContent);
+  if (displays.length === 1) ok("and the display card rides in — it never streams");
+  else bad("the display card must be attached on release", displays.length);
+  if (forgotten >= 1) ok("the remembered turn is forgotten");
+  else bad("forgetTurn must run on release", forgotten);
+  if (delivered === 0) ok("deliver never runs — there is no done event to deliver");
+  else bad("a released turn must not also deliver", delivered);
+  if (statuses.some(s => /arrived through the conversation/.test(s)))
+    ok("and the status says what happened");
+  else bad("the release must be announced", statuses.join(" | ") || "no status");
+}
+
+async function testWatchFilterIdentity() {
+  console.log("");
+  console.log("rule 42 — only this turn's own answer can release it:");
+  function fctx() {
+    const releases = [];
+    return {
+      busy: true, turnSeq: 3,
+      pendingUser: null, pendingReply: null, awaitedUserSeen: false,
+      norm: s => (s || "").replace(/\s+/g, " ").trim(),
+      releaseTurn: t => releases.push(t.text),
+      _releases: releases,
+    };
+  }
+
+  // A wake lands between the question and the answer: skipped, never a
+  // candidate, and the wait survives it.
+  let ctx = fctx(); ctx.pendingUser = "how goes it";
+  let api = build(["function watchFilter"], ctx);
+  api.watchFilter({ role: "user", text: "how goes it" });
+  const drewWake = !api.watchFilter({ role: "assistant", text: "a wake speaks",
+                                      mark: "autonomous wake" });
+  api.watchFilter({ role: "assistant", text: "the real answer, reworded" });
+  if (drewWake && ctx._releases.join(",") === "the real answer, reworded")
+    ok("a marked block draws as ever and the reworded reply still releases");
+  else bad("the mark must shield the wake and keep the wait alive",
+           "drewWake=" + drewWake + " releases=" + ctx._releases.join(","));
+
+  // Another voice's User block breaks the adjacency: whatever follows answers
+  // it, not this turn.
+  ctx = fctx(); ctx.pendingUser = "q one";
+  api = build(["function watchFilter"], ctx);
+  api.watchFilter({ role: "user", text: "q one" });
+  api.watchFilter({ role: "user", text: "another voice" });
+  const drew = !api.watchFilter({ role: "assistant", text: "its answer" });
+  if (drew && ctx._releases.length === 0)
+    ok("an intervening User block keeps another exchange's reply from releasing");
+  else bad("adjacency must break on a foreign User block",
+           "drew=" + drew + " releases=" + ctx._releases.length);
+
+  // The exact-text match releases on its own, question echo or not.
+  ctx = fctx(); ctx.pendingReply = "the words that streamed";
+  api = build(["function watchFilter"], ctx);
+  const hid = api.watchFilter({ role: "assistant", text: "the words that streamed" });
+  if (hid && ctx._releases.length === 1 && ctx.pendingReply === null)
+    ok("the reply matching what streamed releases and is not drawn twice");
+  else bad("a pendingReply match while busy must release",
+           "hid=" + hid + " releases=" + ctx._releases.length);
+
+  // An idle page: a late answer to a given-up turn must stay visible.
+  ctx = fctx(); ctx.busy = false; ctx.awaitedUserSeen = true;
+  api = build(["function watchFilter"], ctx);
+  const drewLate = !api.watchFilter({ role: "assistant", text: "a late answer" });
+  if (drewLate && ctx._releases.length === 0)
+    ok("an idle page draws the late reply instead of eating it");
+  else bad("no release and no suppression while idle",
+           "drew=" + drewLate + " releases=" + ctx._releases.length);
+}
+
+async function testReleaseGuards() {
+  console.log("");
+  console.log("rule 42 — the release cannot touch a turn it does not own:");
+  let aborted = 0, forgotten = 0;
+  const streamed = {
+    textContent: "what streamed", _said: ["what streamed"],
+    scrollIntoView() {},
+    parentNode: { querySelector: () => null, append() {} },
+  };
+  const ctx = {
+    busy: false, turnSeq: 7, releasedSeq: 0,
+    liveTurn: { reply: streamed },
+    turnCtl: { abort: () => { aborted++; } },
+    forgetTurn: () => { forgotten++; },
+    pendingReply: "x",
+    talk: { classList: { remove() {} } },
+    updateTalkBtn: () => {}, setStatus: () => {},
+    attachDisplay: () => {}, foldThoughts: () => {},
+  };
+  const api = build(["function releaseTurn"], ctx);
+  api.releaseTurn({ text: "too late" });
+  if (aborted === 0 && forgotten === 0 && ctx.releasedSeq === 0)
+    ok("an idle page is left exactly as it was");
+  else bad("releaseTurn must refuse when no turn is in flight",
+           "aborted=" + aborted + " forgotten=" + forgotten);
+
+  ctx.busy = true;
+  api.releaseTurn({ text: "the record's wording" });
+  if (streamed.textContent === "what streamed")
+    ok("a bubble that streamed keeps its words — no overwrite mid-read");
+  else bad("streamed text must not be replaced", streamed.textContent);
+  if (ctx.releasedSeq === 7 && aborted === 1 && !ctx.busy)
+    ok("the release marks this turn's sequence, cuts the stream, clears busy");
+  else bad("the release must be guarded by the turn sequence",
+           "seq=" + ctx.releasedSeq + " aborted=" + aborted + " busy=" + ctx.busy);
+}
+
+async function testResetPayloadReleases() {
+  console.log("");
+  console.log("/watch — the reply riding a busy reset's payload is scanned, not lost:");
+  const seen = [];
+  const ctx = {
+    watching: false, needReseed: false, busy: true,
+    cursor: 5, gen: "STALE", wakeSeen: "", playSeen: "", voiceMuted: false,
+    reseed: async () => {},
+    renderRemote: () => {},
+    enqueueVoice: () => {},
+    watchFilter: t => { seen.push(t.role + ":" + t.text); return true; },
+    fetch: async () => {
+      await sleep(20);
+      if (ctx.gen !== "FRESH")
+        return { ok: true, json: async () => (
+          { n: 2, gen: "FRESH", reset: true,
+            turns: [{ role: "user", text: "the question" },
+                    { role: "assistant", text: "the answer" }] }) };
+      return { ok: true, json: async () => ({ n: 2, gen: "FRESH", turns: [] }) };
+    },
+  };
+  build(["async function startWatch"], ctx).startWatch();
+  await sleep(400);
+  if (seen.join(" | ") === "user:the question | assistant:the answer")
+    ok("every block in the reset payload passes the own-turn filter");
+  else bad("the reset payload must be scanned for this turn's reply",
+           seen.join(" | ") || "nothing scanned");
+  if (ctx.needReseed) ok("and the redraw still waits for the turn to end");
+  else bad("the deferral must survive the scan", "needReseed=" + ctx.needReseed);
+}
+
 (async () => {
   await testStreamTurn();
   await testDeadline();
@@ -955,6 +1181,10 @@ async function testDeadMicReacquired() {
   await testResumeReplayIsQuiet();
   await testForegroundKick();
   await testDeadMicReacquired();
+  await testWatcherReleasesTurn();
+  await testWatchFilterIdentity();
+  await testReleaseGuards();
+  await testResetPayloadReleases();
   await testWatchReset();
   await testMutePersisted();
   await testMediaTransport();
