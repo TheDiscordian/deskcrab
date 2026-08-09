@@ -178,6 +178,26 @@ python3 -c "import sys;sys.exit(0 if float(sys.argv[1])<1.2 else 1)" "$FIRST" \
     && ok "one piper process for the whole burst (the voice model loads once)" \
     || fail "piper restarted per sentence" "$(grep -c START "$TRACE")"
 
+# The reply shape of 2026-08-09 (C14): a quoted span, an em dash, and a final
+# sentence that ends at a question mark with no trailing newline. The clipping
+# was in the phone client, not here — this pins that the desk's final flush
+# speaks the last sentence whole, so a chunker or streamer change that starts
+# holding an unterminated tail fails loudly.
+stream partial_tailq '
+    a "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"}}"
+    tblock 0
+    delta "Hmph. \"Sure,\" he says, like that settles anything."
+    sleep 0.3; delta " Go on then — what did you actually come here for?"
+    sleep 0.3
+    say_json "Hmph. \"Sure,\" he says, like that settles anything. Go on then — what did you actually come here for?"
+    done_json'
+[ "$(printf '%s\n' "$SAID" | grep -c "come here for?")" = 1 ] \
+    && ok "the final sentence — em dash, question mark, no newline — is spoken" \
+    || fail "the tail sentence must be spoken exactly once" "$SAID"
+[ "$(printf '%s\n' "$SAID" | grep -c "settles anything")" = 1 ] \
+    && ok "and the quoted sentence before it exactly once too" \
+    || fail "the quoted sentence must be spoken exactly once" "$SAID"
+
 stream partial_delim '
     a "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"}}"
     tblock 0

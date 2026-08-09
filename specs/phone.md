@@ -163,14 +163,23 @@ with the page closed.
     autonomous wake) is never a candidate, which is why every block the watch and context routes
     deliver carries its mark. On recognition the client MUST forget the remembered turn and hand
     the button back, guarded by the turn sequence exactly as the normal end is, so a superseded
-    turn can never clear a newer one's state. The turn's stream MUST be aborted if any clip of
-    this turn has already sounded, and MUST be left open if none has: the watcher carries no
-    audio pointer, so a turn released before its first clip was cut off from the only sound it
-    would ever make, and arrived in writing and in silence. A stream left open this way is a
-    voice tail — it MUST play the clips and the completion clip that still arrive on it, and MUST
-    touch nothing else: no bubble, no button, no status, the record having already settled those.
-    Rule 6's never-twice guarantee is kept, because the tail only ever runs where nothing was
-    voiced. The recognised block fills
+    turn can never clear a newer one's state. The release MUST NOT abort the turn's stream: the
+    stream is always left open as a voice tail. The watcher carries no audio pointer, so a turn
+    released before its first clip was cut off from the only sound it would ever make, and
+    arrived in writing and in silence — and a clip having already sounded proves nothing either,
+    because the conversation append runs ahead of the synthesiser: under rule 17's sentence
+    streaming the record regularly arrives while the tail sentences of the same reply are still
+    becoming clips. An earlier form of this rule aborted the stream once any clip had sounded,
+    and on 2026-08-09 that clause itself broke rule 17's never-dropped guarantee three turns
+    running — every sentence past the second was synthesised, emitted, and never fetched,
+    because the release had cut the socket one to two seconds before the tail clips were ready
+    (`C14`). The voice tail MUST play the clips and the completion clip that still arrive on it,
+    and MUST touch nothing else: no bubble, no button, no status, the record having already
+    settled those. Rule 6's never-twice guarantee is kept either way: a clip rides the live
+    stream exactly once, and the completion clip is offered only when nothing streamed. The
+    tail is not unbounded — it ends at the turn's own completion event, which rule 6 guarantees
+    exactly once per turn, and rule 4's progress deadline still covers a tail whose done event
+    never comes. The recognised block fills
     the live bubble when nothing streamed, carries the display card in either case — the display
     never rides the stream's text events — and is never drawn a second time as a turn from
     elsewhere. It is not re-voiced: the clips the turn produced were already spoken from the
@@ -312,6 +321,7 @@ block itself. The turn it spawns does that.
 | `MIN-25` | Audio and image routes ignore range requests. **Resolved:** one range-capable file sender serves the audio, image, and media routes; held by `tests/test_phone_media.sh`. |
 | `MIN-26` | Web Push is wired but called by no code. With the page closed the phone receives nothing. |
 | `C12` | The hold-to-talk button sat grey past any patience: the transcription fetches had no bound at all (a hang held the refusal until a seventeen-minute watchdog), a reload mid-turn orphaned the running turn behind the lock so the next attempt showed nothing either, and the give-up ladder was tuned in tens of minutes. Three reloads in four minutes on 2026-08-08, reported twice that evening. **Resolved:** rules 39-41 — bounded transcription, re-attach across reload, a foreground kick, and the ladder brought down to single minutes; held by the abnormal-end cases in `tests/phone_client_test.js`. |
+| `C14` | The rule 42 release cut the turn's stream as soon as any clip had sounded, on the belief that a voiced turn had no sound left to deliver. Sentence streaming (rule 17) made that belief false: the conversation append runs one to two seconds ahead of the synthesiser's tail, so on 2026-08-09 16:54–16:55 three replies in a row lost every sentence past the second — synthesised, emitted, never fetched, the clips left on disk with no listener. The user heard each reply stop mid-thought. **Resolved:** the release never aborts the stream; it always becomes a voice tail that plays the clips still arriving and ends at the turn's own completion event. Held by the released-tail case in `tests/phone_client_test.js` and the voice-before-done ordering pin in `tests/test_phone_stream.sh`. |
 | `C13` | A phone turn whose answer reached the conversation file before its stream's completion event left the button grey with the answer already on screen, drawn as a turn from the laptop. Structural, twice over: the mirror pass rewrites the draft after the raw text has streamed, so the stored block no longer matches the own-turn filter; and compaction — a whole model run — sits between the conversation append and the process exit that emits the completion event, so the stream carries nothing but keepalives while the record already holds the reply. Measured live on 2026-08-08: the mirror rewrite logged at 23:42:30, the reply delivered by the watcher by 23:42:55, the page reloaded by hand at 23:43:29, and the completion event not possible before ~23:43:35. **Resolved:** rule 42 — a watcher-delivered reply ends the turn well inside the watchdog window; held by the watcher-release cases in `tests/phone_client_test.js`. |
 
 ## TESTS
@@ -341,10 +351,13 @@ identifier on the next load, is skipped when the record already shows the exchan
 has aged out, and does not re-sound the replayed clip backlog; and the foreground kick aborts a
 stale attempt so the reconnect happens now rather than after a throttled timer. It also carries
 rule 42's watcher-release cases: a turn whose stream hangs on keepalives is released the moment
-its exchange arrives through the watcher — stream aborted, memory forgotten, button back, well
-inside the watchdog window; an empty bubble is filled from the record and the display card
-attached either way; a marked block, another exchange's blocks, and an idle page release nothing;
-and a reply riding a busy reset's payload is scanned and releases the same way.
+its exchange arrives through the watcher — memory forgotten, button back, well inside the
+watchdog window, and the stream left open as a voice tail in every case; a released turn whose
+clips were still being synthesised when the record arrived plays every clip the tail delivers
+(`C14` — the release used to cut this socket and the tail sentences with it); an empty bubble
+is filled from the record and the display card attached either way; a marked block, another
+exchange's blocks, and an idle page release nothing; and a reply riding a busy reset's payload
+is scanned and releases the same way.
 `tests/test_phone_stream.sh` drives one synthetic delta stream through two real servers, one per
 mode of rule 17's flag: with the flag on, clips are per sentence and in order, the first clip is
 emitted before the block completes, the completed event voices only the tail the deltas had not

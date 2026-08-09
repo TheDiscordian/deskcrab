@@ -1136,6 +1136,101 @@ async function testWatcherReleasesTurn() {
   else bad("the release must be announced", statuses.join(" | ") || "no status");
 }
 
+// The C14 shape, measured live 2026-08-09 16:54–16:55: sentence streaming cuts
+// a clip per sentence, so the conversation append — which runs ahead of the
+// synthesiser — arrived while the tail sentences were still becoming clips.
+// The release saw a turn that had already sounded and cut the socket, and every
+// clip past the second was synthesised, emitted, and never fetched: three
+// replies in a row heard to stop mid-thought. The release must leave the
+// stream open as a voice tail in EVERY case, not only the silent one.
+async function testReleasedTailKeepsPlaying() {
+  console.log("");
+  console.log("rule 42 — a released turn's stream still delivers the clips it owes (C14):");
+  const enc = new TextEncoder();
+  const cls = new Set();
+  const clips = [];
+  let delivered = 0, aborted = 0, frame_n = 0;
+  const bubble = {
+    textContent: "…",
+    scrollIntoView() {},
+    parentNode: { querySelector: () => null, append() {} },
+  };
+  const ctx = {
+    busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
+    pendingUser: null, pendingReply: null,
+    awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
+    turnCtl: null, turnKicked: false, turnVoiced: false, STREAM_IDLE_MS: 60000,
+    talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
+                         contains: c => cls.has(c) } },
+    setStatus: () => {},
+    addTurn: () => ({ you: { textContent: "", scrollIntoView() {} },
+                      reply: bubble }),
+    armTurnWatchdog: () => () => {},
+    randomHex: () => "c14c14c14c14c14c14c14c14c14c14c1",
+    rememberTurn: () => {},
+    forgetTurn: () => {},
+    foldThoughts: () => {},
+    deliver: async () => { delivered++; },
+    updateTalkBtn: () => {},
+    showThought: () => {},
+    enqueueVoice: a => clips.push(a),
+    attachDisplay: () => {},
+    // The incident's stream: the first clip lands at once, the tail clips only
+    // after the record has already released the turn — they were still being
+    // synthesised when the append reached the watcher.
+    fetch: async (url, opts) => ({
+      ok: true, status: 200, body: { getReader: () => ({
+        read: () => new Promise((res, rej) => {
+          const late = Date.now() - opened > 500;
+          let frame = ": ping\n\n";
+          if (frame_n === 0)
+            frame = "data: " + JSON.stringify({ kind: "voice", text: "Hmph.",
+                                                audio: "/audio/one.opus" }) + "\n\n";
+          else if (late && frame_n === 1)
+            frame = "data: " + JSON.stringify({ kind: "voice", text: "the tail",
+                                                audio: "/audio/two.opus" }) + "\n\n";
+          else if (late && frame_n === 2)
+            frame = "data: " + JSON.stringify({ kind: "done", spoken: "Hmph. the tail",
+                                                display_html: "", audio: "",
+                                                error: "" }) + "\n\n";
+          if (frame.startsWith("data:")) frame_n++;
+          const t = setTimeout(() => res(
+            { value: enc.encode(frame), done: false }), 25);
+          if (opts && opts.signal) opts.signal.addEventListener("abort",
+            () => { aborted++; clearTimeout(t); rej(new Error("aborted")); });
+        }),
+      }) },
+    }),
+  };
+  const opened = Date.now();
+  const api = build(["function norm", "async function streamTurn",
+                     "function releaseTurn", "function watchFilter",
+                     "async function runTurn"], ctx);
+  const p = api.runTurn(null, null, "go on then");
+  for (let i = 0; i < 40 && !clips.length; i++) await sleep(25);
+  if (clips.length === 1) ok("the first clip has sounded while the turn runs");
+  else bad("the harness must voice a clip before the release", clips.join(","));
+
+  // The record arrives through the watcher with the tail clips still uncut.
+  api.watchFilter({ role: "user", text: "go on then" });
+  api.watchFilter({ role: "assistant", text: "Hmph. the tail, reworded" });
+  if (!ctx.busy) ok("the watcher released the turn");
+  else bad("the release must clear busy", ctx.busy);
+
+  await Promise.race([p, sleep(3000).then(() => {
+    throw new Error("HARNESS TIMEOUT");
+  })]).catch(e => bad("the voice tail must end at its done event", e.message));
+
+  if (aborted === 0) ok("the stream was left open — a voiced turn is not a finished one");
+  else bad("the release must not cut the socket the tail clips ride", "aborted " + aborted);
+  if (clips.join(",") === "/audio/one.opus,/audio/two.opus")
+    ok("the clip cut after the release still plays — nothing swallowed");
+  else bad("every clip the stream still owed must be enqueued",
+           clips.join(",") || "silence");
+  if (delivered === 0) ok("deliver never runs — the record already settled the bubble");
+  else bad("a released turn must not also deliver", delivered);
+}
+
 async function testWatchFilterIdentity() {
   console.log("");
   console.log("rule 42 — only this turn's own answer can release it:");
@@ -1207,9 +1302,6 @@ async function testReleaseGuards() {
     busy: false, turnSeq: 7, releasedSeq: 0,
     liveTurn: { reply: streamed },
     turnCtl: { abort: () => { aborted++; } },
-    // This turn has already been heard, so the stream owes nothing more and
-    // the release cuts it. The silent case is the next assertion down.
-    turnVoiced: true,
     forgetTurn: () => { forgotten++; },
     pendingReply: "x",
     talk: { classList: { remove() {} } },
@@ -1228,18 +1320,19 @@ async function testReleaseGuards() {
   if (streamed.textContent === "what streamed")
     ok("a bubble that streamed keeps its words — no overwrite mid-read");
   else bad("streamed text must not be replaced", streamed.textContent);
-  if (ctx.releasedSeq === 7 && aborted === 1 && !ctx.busy)
-    ok("the release marks this turn's sequence, cuts the stream, clears busy");
+  if (ctx.releasedSeq === 7 && aborted === 0 && !ctx.busy)
+    ok("the release marks this turn's sequence and clears busy, stream untouched");
   else bad("the release must be guarded by the turn sequence",
            "seq=" + ctx.releasedSeq + " aborted=" + aborted + " busy=" + ctx.busy);
 
-  // Nothing has been voiced: the stream is the only place the sound can still
-  // come from, so it is left open as a voice tail and the button still returns.
-  ctx.busy = true; ctx.turnVoiced = false; ctx.turnSeq = 8;
+  // Whatever has or has not sounded, the stream survives the release: the
+  // sound still owed — tail clips mid-synthesis, or a completion clip for a
+  // turn that voiced nothing — can only arrive down it (C14).
+  ctx.busy = true; ctx.turnSeq = 8;
   api.releaseTurn({ text: "silent so far" });
-  if (aborted === 1 && !ctx.busy && ctx.releasedSeq === 8)
-    ok("a turn that has voiced nothing keeps its stream — the button comes back anyway");
-  else bad("a silent turn's stream must survive the release",
+  if (aborted === 0 && !ctx.busy && ctx.releasedSeq === 8)
+    ok("the stream is never cut by a release — the button comes back anyway");
+  else bad("a released turn's stream must survive the release",
            "aborted=" + aborted + " busy=" + ctx.busy);
 }
 
@@ -1289,6 +1382,7 @@ async function testResetPayloadReleases() {
   await testForegroundKick();
   await testDeadMicReacquired();
   await testWatcherReleasesTurn();
+  await testReleasedTailKeepsPlaying();
   await testWatchFilterIdentity();
   await testReleaseGuards();
   await testResetPayloadReleases();

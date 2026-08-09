@@ -266,6 +266,20 @@ contains "$DONE_LINE" "A card" \
     || fail "and the display card still rides the completion event" \
             "done event: ${DONE_LINE:-none}"
 
+# Rule 17's never-dropped, at the stream's far end: every voice event precedes
+# the done event, however promptly the turn exits after its last delta. The
+# tail clips of 2026-08-09 (C14) were all emitted before done exactly as this
+# pins — the loss was client-side — and a server that ever let a clip slip
+# past the completion event would starve the client's voice tail the same way.
+LAST_VOICE=$(grep -n '"kind": *"voice"' "$T/on.sse" | tail -n1 | cut -d: -f1)
+DONE_AT=$(grep -n '"kind": *"done"' "$T/on.sse" | head -n1 | cut -d: -f1)
+if [ -n "$LAST_VOICE" ] && [ -n "$DONE_AT" ] && [ "$LAST_VOICE" -lt "$DONE_AT" ]; then
+    ok "every voice event precedes the done event — the tail cannot be orphaned"
+else
+    fail "every voice event precedes the done event — the tail cannot be orphaned" \
+         "last voice at line ${LAST_VOICE:-none}, done at ${DONE_AT:-none}"
+fi
+
 # --- the flag off: byte-for-byte the block behaviour -----------------------
 echo "== flag off: one clip per completed block, nothing streams early =="
 
