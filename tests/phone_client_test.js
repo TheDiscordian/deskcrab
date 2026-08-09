@@ -295,6 +295,7 @@ async function testWatchReset() {
     cursor: 17,
     gen: "STALE",
     wakeSeen: "",
+    playSeen: "",
     voiceMuted: false,
     reseed: async () => { reseeds++; ctx.cursor = 99; ctx.gen = "FRESH"; },
     renderRemote: () => {},
@@ -329,6 +330,154 @@ async function testWatchReset() {
   else bad("the deferred redraw must actually happen", reseeds + " reseeds");
   if (!ctx.needReseed) ok("and is not repeated on every poll after that");
   else bad("the flag must clear", "needReseed still set");
+}
+
+// --- 3b: the mute is persistent and lands on BOTH audio elements -----------
+//
+// Spec rule 38. The switch exists for a phone that fires in a public pocket:
+// one control silences everything the page can sound — the voice clips
+// through #player and a handed piece through #music — its state survives a
+// reload through localStorage, and it silences rather than suppresses, so
+// nothing queued is dropped and nothing replays on unmute.
+
+function muteCtx(stored) {
+  const store = { v: stored };
+  const btn = { textContent: "", title: "", cls: {} };
+  btn.classList = { toggle: (c, on) => { btn.cls[c] = !!on; } };
+  return {
+    muted: false,
+    player: { muted: false },
+    music: { muted: false },
+    $: () => btn,
+    setStatus: () => {},
+    localStorage: { getItem: () => store.v,
+                    setItem: (k, v) => { store.v = v; } },
+    _btn: btn, _store: store,
+  };
+}
+
+async function testMutePersisted() {
+  console.log("");
+  console.log("the mute — a stored mute lands on both elements, and the toggle persists:");
+  const ctx = muteCtx("1");
+  const api = build(["function applyMute", "function initMute",
+                     "function toggleMute"], ctx);
+
+  api.initMute();
+  if (ctx.muted && ctx.player.muted && ctx.music.muted)
+    ok("a reload with the mute stored silences the voice AND the music");
+  else
+    bad("the stored mute must land on both audio elements",
+        "muted=" + ctx.muted + " player=" + ctx.player.muted + " music=" + ctx.music.muted);
+  if (ctx._btn.textContent === "\u{1F507}" && ctx._btn.cls.muted === true)
+    ok("and the button wears the muted look — obvious at a glance");
+  else
+    bad("the muted state must be visible on the button",
+        ctx._btn.textContent + " cls=" + JSON.stringify(ctx._btn.cls));
+
+  api.toggleMute();
+  if (!ctx.muted && !ctx.player.muted && !ctx.music.muted)
+    ok("the toggle unmutes both elements together");
+  else
+    bad("unmuting must reach both elements",
+        "muted=" + ctx.muted + " player=" + ctx.player.muted + " music=" + ctx.music.muted);
+  if (ctx._store.v === "0")
+    ok("and the choice is written back, so it survives the next reload");
+  else
+    bad("the toggle must persist", ctx._store.v);
+}
+
+// --- 3c: the transport for a handed piece ----------------------------------
+//
+// Spec rule 36: a piece handed with `crab play` gets a visible transport —
+// the name, the native play/pause and seek — with its own dismissal, playing
+// beside the voice rather than through its queue.
+
+async function testMediaTransport() {
+  console.log("");
+  console.log("the transport — a handed piece is shown by name, muted state and all:");
+  const bar = { hidden: true }, title = { textContent: "" };
+  let played = 0;
+  const music = {
+    muted: false, src: "", paused: false,
+    play() { played++; return { catch: () => {} }; },
+    pause() { this.paused = true; },
+    removeAttribute(a) { if (a === "src") this.src = ""; },
+    load() {},
+  };
+  const ctx = {
+    muted: true,
+    music,
+    $: id => (id === "media" ? bar : title),
+  };
+  const api = build(["function showMedia", "function closeMedia"], ctx);
+
+  api.showMedia({ id: "p1", url: "/media/tok", title: "night piece" });
+  if (title.textContent === "night piece") ok("the piece's name is on the bar");
+  else bad("the transport must carry the name", title.textContent);
+  if (!bar.hidden) ok("the transport is visible");
+  else bad("the transport must be shown", "still hidden");
+  if (music.src === "/media/tok") ok("the element points at the served url");
+  else bad("src must be the media url", music.src);
+  if (music.muted) ok("a muted page hands a muted element — the mute holds on arrival");
+  else bad("the mute must land on media arriving after it was set", music.muted);
+  if (played === 1) ok("playback was attempted (a refusal falls to the native ▶)");
+  else bad("play must be attempted exactly once", played);
+
+  api.closeMedia();
+  if (bar.hidden && music.paused && !music.src)
+    ok("dismissal pauses, unloads, and hides");
+  else
+    bad("closeMedia must pause, unload, and hide",
+        "hidden=" + bar.hidden + " paused=" + music.paused + " src=" + music.src);
+}
+
+// --- 3d: /watch fires the transport once per id, and never on the seed -----
+
+function watchPlayCtx(playSeen, polls, onShow) {
+  return {
+    watching: false, needReseed: false, busy: false,
+    cursor: 0, gen: "G", wakeSeen: "", playSeen, voiceMuted: false,
+    reseed: async () => {},
+    renderRemote: () => {},
+    enqueueVoice: () => {},
+    showMedia: onShow,
+    fetch: async (q) => {
+      polls.push(q);
+      await sleep(20);
+      return { ok: true, json: async () => (
+        { n: 0, gen: "G", turns: [],
+          play: { id: "p1", url: "/media/tok", title: "night piece" } }) };
+    },
+  };
+}
+
+async function testWatchPlay() {
+  console.log("");
+  console.log("/watch — a play event fires the transport once, and a seeded id never:");
+
+  const polls = [];
+  let shown = 0;
+  const ctx = watchPlayCtx("", polls, () => { shown++; });
+  build(["async function startWatch"], ctx).startWatch();
+  await sleep(700);
+  if (shown === 1) ok("one id, one transport — repeats of it start nothing");
+  else bad("the same play id must not re-fire the transport", shown + " times");
+  if (ctx.playSeen === "p1") ok("the cursor took the id");
+  else bad("playSeen must adopt the delivered id", ctx.playSeen);
+  if (polls.filter(q => /playseen=p1/.test(q)).length > 0)
+    ok("and later polls acknowledge it back to the server");
+  else
+    bad("the ack must ride the next poll", polls[polls.length - 1]);
+
+  // The seeded page: /context said this pointer predates the load (rule 37),
+  // so the same id arriving on /watch is old news and starts nothing.
+  let blared = 0;
+  build(["async function startWatch"],
+        watchPlayCtx("p1", [], () => { blared++; })).startWatch();
+  await sleep(400);
+  if (blared === 0) ok("a freshly loaded page never blares a pending hand-off");
+  else bad("the seeded id must be treated as already seen", blared + " shows");
 }
 
 // --- 4: a rewrite of the record never wipes what is already on screen ------
@@ -536,6 +685,9 @@ async function testReseedEmptyPage() {
   await testProgressExtendsDeadline();
   await testWatchdog();
   await testWatchReset();
+  await testMutePersisted();
+  await testMediaTransport();
+  await testWatchPlay();
   await testReseedKeepsScrollback();
   await testReseedDedupes();
   await testReseedQuietWhenNothingNew();

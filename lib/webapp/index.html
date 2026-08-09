@@ -37,6 +37,13 @@
   #bell { background: none; border: none; font: inherit; font-size: 16px;
           padding: 0 2px; cursor: pointer; filter: grayscale(1); opacity: .55; }
   #bell.on { filter: none; opacity: 1; }
+  /* The public-pocket switch. Unmuted it sits as quietly as the bell; muted it
+     wears the page's danger colours, because a glance must settle whether this
+     phone can make a sound. */
+  #mute { background: none; border: none; font: inherit; font-size: 16px;
+          padding: 0 2px; cursor: pointer; filter: grayscale(1); opacity: .55; }
+  #mute.muted { filter: none; opacity: 1; background: #3a1414;
+                border: 1px solid #a33; border-radius: 8px; padding: 2px 8px; }
 
   main { flex: 1; overflow-y: auto; padding: 16px; }
   .turn { margin-bottom: 18px; }
@@ -99,6 +106,20 @@
   .disp-body > :first-child { margin-top: 0; }
   .disp-body > :last-child { margin-bottom: 0; }
 
+  /* The transport for a handed piece (crab play): its name, the native
+     controls for play/pause and seek, and its own dismissal. display:flex
+     would defeat the hidden attribute, so hidden is restated. */
+  #media { border-top: 1px solid var(--border); background: var(--panel);
+           padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; }
+  #media[hidden] { display: none; }
+  #media-head { display: flex; align-items: center; gap: 8px; }
+  #media-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; font-size: 13px; }
+  #media-title::before { content: "♪ "; color: var(--accent); }
+  #media-close { background: none; border: none; color: var(--dim); font: inherit;
+                 cursor: pointer; padding: 0 4px; }
+  #media audio { width: 100%; height: 36px; }
+
   footer { padding: 16px; border-top: 1px solid var(--border); display: flex;
            flex-direction: column; gap: 12px; }
   #talk {
@@ -122,10 +143,17 @@
 </style>
 </head>
 <body>
-<header><h1 id="name">DeskCrab</h1><span id="status">ready</span><button id="bell" hidden>🔔</button></header>
+<header><h1 id="name">DeskCrab</h1><span id="status">ready</span><button id="mute">🔊</button><button id="bell" hidden>🔔</button></header>
 <main>
   <div id="log"></div>
 </main>
+<div id="media" hidden>
+  <div id="media-head">
+    <span id="media-title"></span>
+    <button id="media-close">✕</button>
+  </div>
+  <audio id="music" controls playsinline></audio>
+</div>
 <footer>
   <button id="talk">Hold to talk</button>
   <div class="row">
@@ -137,6 +165,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const statusEl = $("status"), logEl = $("log"), player = $("player");
+const music = $("music");
 let recorder = null, chunks = [], stream = null, busy = false;
 let sttSid = null, sttChain = Promise.resolve(), sttFailed = false;
 
@@ -262,6 +291,63 @@ function playNextVoice() {
 
 player.addEventListener("ended", () => { voicePlaying = false; playNextVoice(); updateTalkBtn(); });
 player.addEventListener("error", () => { voicePlaying = false; playNextVoice(); updateTalkBtn(); });
+
+// The mute, for a phone that fires in a public pocket. Persistent across
+// reloads, and it silences EVERYTHING the page can sound — the voice clips
+// through #player and a handed piece through #music. Silences, never
+// suppresses: clips still queue, cursors still advance, the transport still
+// appears, so unmuting never replays a backlog and never loses one either.
+// Element muted-ness survives src changes, so setting it once per toggle
+// covers every clip that follows.
+let muted = false;
+
+function applyMute(m) {
+  muted = !!m;
+  player.muted = muted;
+  music.muted = muted;
+  const b = $("mute");
+  b.textContent = muted ? "🔇" : "🔊";
+  b.classList.toggle("muted", muted);
+  b.title = muted ? "Muted — tap for sound" : "Sound on — tap to mute";
+  try { localStorage.setItem("crab-muted", muted ? "1" : "0"); } catch (_) {}
+}
+
+function initMute() {
+  let m = false;
+  try { m = localStorage.getItem("crab-muted") === "1"; } catch (_) {}
+  applyMute(m);
+}
+
+function toggleMute() {
+  applyMute(!muted);
+  setStatus(muted ? "muted — nothing will sound" : "sound on");
+}
+$("mute").addEventListener("click", toggleMute);
+initMute();
+
+// A handed piece (crab play) rides /watch beside the wake audio, with its own
+// cursor. It is music with a length, not a reply — so it plays through its own
+// element with a visible transport (name, play/pause, seek) rather than
+// through the voice queue, and stopping speech never stops it.
+let playSeen = "";
+
+function showMedia(play) {
+  $("media-title").textContent = play.title || "";
+  music.muted = muted;
+  music.src = play.url;
+  $("media").hidden = false;
+  const p = music.play();
+  // Autoplay refused (no gesture yet): the transport's own ▶ is right there.
+  if (p) p.catch(() => {});
+}
+
+function closeMedia() {
+  music.pause();
+  music.removeAttribute("src");
+  music.load();
+  $("media").hidden = true;
+}
+$("media-close").addEventListener("click", closeMedia);
 
 async function deliver(res, replyEl) {
   if (res.error) {
@@ -742,8 +828,10 @@ function renderSeed(ctx) {
 
 fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx => {
   // Any wake audio already pending was routed before this page existed —
-  // mark it heard so loading the app never blares an old clip.
+  // mark it heard so loading the app never blares an old clip. A pending
+  // media hand-off is seeded the same way and for the same reason.
   wakeSeen = ctx.wake_id || "";
+  playSeen = ctx.play_id || "";
   cursor = ctx.n;
   gen = ctx.gen || "";
   renderSeed(ctx);
@@ -893,6 +981,7 @@ async function startWatch() {
       // it is the only loop that runs after `busy` clears.
       if (needReseed && !busy) { await reseed(); needReseed = false; }
       const q = "/watch?wait=1&wakeseen=" + encodeURIComponent(wakeSeen)
+              + "&playseen=" + encodeURIComponent(playSeen)
               + (cursor === null ? "" : "&since=" + cursor)
               + "&gen=" + encodeURIComponent(gen);
       // The server answers every poll within its ~25 s window even when
@@ -917,6 +1006,13 @@ async function startWatch() {
         // hasn't spoken yet.
         voiceMuted = false;
         enqueueVoice(data.wake.audio);
+      }
+      // A handed piece. Not gated on voiceMuted — the stop-tap is about
+      // speech — and the persistent mute silences rather than suppresses,
+      // so the id is acknowledged either way and never replays later.
+      if (data.play && data.play.id !== playSeen) {
+        playSeen = data.play.id;
+        showMedia(data.play);
       }
       if (data.reset) {
         // The conversation file was rewritten under the cursor (compaction,

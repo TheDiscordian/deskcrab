@@ -66,8 +66,8 @@ with the page closed.
     [speech-output.md](speech-output.md) holds on this path as well. A skipped voice event with no
     witness anywhere is how two phone turns went silent on 2026-08-08 and the cause could no longer
     be established from what survived.
-18. Audio and image routes MUST honour range requests. Some browsers issue them for audio elements
-    and will not play without.
+18. Audio, image, and media routes MUST honour range requests. Some browsers issue them for audio
+    elements and will not play without — and none will seek without.
 19. A wake's audio goes to the phone only when the last turn came from the phone and the phone's
     beacon is fresh. Anything short of both conditions falls back to the desk.
 20. The audio cursor MUST be seeded when the page loads, so a freshly loaded page never replays old
@@ -100,6 +100,26 @@ with the page closed.
 32. Dead endpoints MUST be pruned when the push service says they are gone.
 33. The key pair is generated once and never rotated. Rotation orphans every subscription.
 
+### Handed media and the mute
+
+34. Any hand on this machine MAY hand the phone one audio file to play (`crab play <path>`), by a
+    pointer under the state prefix — the same delivery channel as a wake's audio. The pointer MUST
+    expire: a hand-off nobody collected does not start playing when a page finally loads later.
+35. The media route MUST serve only a file explicitly handed over, MUST re-resolve it at serving
+    time, and MUST refuse any path that does not resolve to a file under the user's home directory
+    — on the writing side and on the serving side both. Handing the phone a file is never a door
+    onto the rest of the filesystem.
+36. Handed media MUST get a visible transport on the page — play/pause, seek, and the piece's name —
+    with its own dismissal. It plays beside the voice, not through its queue: a reply's clips and
+    the music are different channels, and stopping one MUST NOT stop the other.
+37. The media cursor MUST be seeded when the page loads, exactly as rule 20 seeds the audio cursor,
+    so a freshly loaded page never starts playing a pending hand-off unasked.
+38. The top bar MUST carry a mute control. Its state MUST survive a reload, MUST silence everything
+    the page can sound — handed media and spoken voice clips alike — and MUST be obvious at a
+    glance. Muting silences, it never suppresses: turns, transports, and cursors behave exactly as
+    unmuted, so a clip that arrived muted is acknowledged like any other and unmuting never replays
+    a backlog.
+
 ## DATA
 
 | Path | Role |
@@ -108,6 +128,7 @@ with the page closed.
 | `${STATE_PREFIX}-remote.lock` | serialises phone turns |
 | `${STATE_PREFIX}-phone-seen` | touched on every authenticated poll; the delivery beacon |
 | `${STATE_PREFIX}-wake-audio` | pointer to a wake's synthesised reply |
+| `${STATE_PREFIX}-play` | pointer to a handed audio file (`crab play`), expiring |
 | `${STATE_PREFIX}-convo.txt` | followed by the poll route |
 | `~/.local/share/deskcrab/webpush/` | key pair and subscriptions |
 | `~/.local/share/deskcrab/last-origin` | desk or phone, durable |
@@ -144,8 +165,8 @@ flowchart TD
 **The phone server may call:** the remote turn entry point, the synthesiser, the batch transcriber,
 the push sender, and the conversation reader.
 
-**The phone server may be called by:** the client page, and by the wake path writing an audio
-pointer.
+**The phone server may be called by:** the client page, by the wake path writing an audio pointer,
+and by any hand writing the play pointer (`crab play`).
 
 **The phone server must never:** speak on the desk, open a desktop window, or write a conversation
 block itself. The turn it spawns does that.
@@ -187,7 +208,7 @@ block itself. The turn it spawns does that.
 | `MIN-22` | The image registry grows without bound and never expires, in a process measured at nearly a gigabyte of peak memory. |
 | `MIN-23` | The speaker can emit voice events after the completion event, because the join deadline is shorter than the per-synthesis timeout. |
 | `MIN-24` | The health route discloses the assistant's name to unauthenticated callers, contradicting the comment two lines below it. |
-| `MIN-25` | Audio and image routes ignore range requests. |
+| `MIN-25` | Audio and image routes ignore range requests. **Resolved:** one range-capable file sender serves the audio, image, and media routes; held by `tests/test_phone_media.sh`. |
 | `MIN-26` | Web Push is wired but called by no code. With the page closed the phone receives nothing. |
 
 ## TESTS
@@ -204,6 +225,13 @@ synthesiser between them: a turn whose streaming synthesis died carries its own 
 completion payload — fetched back down the audio route, not merely pointed at — and names the
 failure in the log; a turn that voiced its blocks carries an empty completion audio, so nothing is
 heard twice. It was written against the silence of 2026-08-08 and fails on the code that caused it.
+`tests/test_phone_media.sh` drives the handed-media path through the real server: a file handed
+with `crab play` reaches `/watch` as a play event with its title and a served URL; the media and
+audio routes honour ranges; a pointer outside the home directory, an expired pointer, and an
+unauthenticated fetch all serve nothing; and delivery is opt-in by the `playseen` parameter's
+presence, exactly as wake audio is by `wakeseen`. `tests/phone_client_test.js` also carries the
+mute and transport cases: the persisted mute lands on both audio elements and survives a reload,
+and a play event shows the transport once and never re-fires on an id already seen.
 
 **To be written:**
 

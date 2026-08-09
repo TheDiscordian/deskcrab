@@ -1222,6 +1222,13 @@ self_state_report() {
             "$(printf '%s\n' "$recent" | grep -c '^  - ')"
         printf '%s\n' "$recent"
     fi
+    # The block closes with the pile since last sleep, one line, from file
+    # facts alone — specs/self-awareness.md rules 36-38. Fail-safe: a missing
+    # scorer or an unreadable pile costs the line, never the block.
+    local tired
+    tired="$("$LIB_DIR/tiredness" --line 2>/dev/null)" || tired=""
+    [ -n "$tired" ] && printf '%s\n' "$tired"
+    return 0
 }
 
 # --- Append-only records that are read, not archived ------------------------
@@ -2734,6 +2741,36 @@ wake_speak_to_phone() {
     # past it. That end time is the only thing keeping this record alive, so it
     # is measured (see _speech_until) rather than guessed generously.
     live_speech_begin "phone" "$1" 0 "$(_speech_until "$OUT" "$1")"
+}
+
+# Hand the phone an audio file to play, with a transport on the page
+# (specs/phone.md rules 34–35). Same delivery as a wake's audio — a pointer
+# file the server's /watch loop notices — but the file is served in place
+# rather than synthesised, so a piece of music keeps its seek bar. Only paths
+# under $HOME are ever offered, and the server holds the same boundary again
+# on its own side.
+phone_play() {
+    local RP TITLE ID PTR="${STATE_PREFIX}-play"
+    RP="$(realpath -e -- "$1" 2>/dev/null)" || {
+        echo "crab play: no such file: $1" >&2; return 1; }
+    [ -f "$RP" ] || { echo "crab play: not a file: $RP" >&2; return 1; }
+    case "$RP" in
+        "$HOME"/*) ;;
+        *) echo "crab play: only files under $HOME are served to the phone." >&2
+           return 1 ;;
+    esac
+    ID="$(date +%s%N)"
+    TITLE="$(basename "$RP")"; TITLE="${TITLE%.*}"
+    python3 -c 'import json,sys; print(json.dumps({"id":sys.argv[1],"path":sys.argv[2],"title":sys.argv[3]}))' \
+        "$ID" "$RP" "$TITLE" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR" || return 1
+    if phone_connected; then
+        echo "Handed to the phone: $TITLE"
+    else
+        # Not an error: the pointer stands, so a page loading inside its TTL
+        # still collects it. But an absent phone should be said out loud, or
+        # a hand-off into silence reads as a playback bug.
+        echo "Handed to the phone: $TITLE — though the phone has not polled recently, so it plays only if a page picks it up soon."
+    fi
 }
 
 # Total utime+stime jiffies for a PID and all its descendants. Field extraction

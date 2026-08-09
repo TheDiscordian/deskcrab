@@ -381,6 +381,48 @@ def read_wake():
     return None
 
 
+# Pointer any hand writes (`crab play`) to put an audio file on the phone with
+# a visible transport. Same delivery shape as the wake pointer, and the same
+# reason for the TTL: a hand-off nobody collected must not start playing when
+# a page finally loads later.
+PLAY_FILE = STATE_PREFIX + "-play"
+PLAY_TTL = int(os.environ.get("DESKCRAB_SERVE_PLAY_TTL", "120"))
+
+# Files handed over for the phone to play, by token. Fed only by the play
+# pointer, never by a request, and bounded — handing over a file is not a door
+# onto the rest of the filesystem, and a dict in a long-lived process is not
+# allowed to grow forever.
+MEDIA = {}
+MEDIA_CAP = 64
+
+
+def read_play():
+    """The current play pointer, if fresh and pointing at a file under home."""
+    p = Path(PLAY_FILE)
+    try:
+        if time.time() - p.stat().st_mtime > PLAY_TTL:
+            return None
+        doc = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    if not doc.get("id") or not doc.get("path"):
+        return None
+    try:
+        f = Path(str(doc["path"])).expanduser().resolve(strict=True)
+    except OSError:
+        return None
+    # The one boundary, enforced here as well as by the writer: only a file
+    # that resolves under the home directory is ever offered.
+    if not f.is_file() or not f.is_relative_to(Path.home().resolve()):
+        return None
+    token = hashlib.sha256(str(f).encode()).hexdigest()[:24]
+    MEDIA[token] = f
+    while len(MEDIA) > MEDIA_CAP:
+        MEDIA.pop(next(iter(MEDIA)))
+    return {"id": str(doc["id"]), "url": "/media/" + token,
+            "title": str(doc.get("title") or f.stem)}
+
+
 def read_context():
     """Where the conversation currently stands, for seeding a freshly loaded page.
 
@@ -397,12 +439,15 @@ def read_context():
     turns = read_turns()
     n = len(turns)
     wake = read_wake()
+    play = read_play()
     # wake_id lets a freshly loaded page mark the current wake audio as already
-    # heard instead of blaring it on open.
+    # heard instead of blaring it on open; play_id does the same for a pending
+    # media hand-off (spec rule 37).
     # Pairs, not messages — six exchanges reads as six exchanges.
     return {"summary": summary, "turns": turns[-(CONTEXT_TURNS * 2):], "n": n,
             "gen": turns_gen(turns, summary),
-            "wake_id": wake["id"] if wake else ""}
+            "wake_id": wake["id"] if wake else "",
+            "play_id": play["id"] if play else ""}
 
 
 def read_turns():
@@ -476,7 +521,7 @@ def turns_gen(turns, summary=None):
     return hashlib.sha1(head.encode()).hexdigest()[:12] if head else ""
 
 
-def watch_turns(since, wait, wakeseen=None, gen=None):
+def watch_turns(since, wait, wakeseen=None, gen=None, playseen=None):
     """Long-poll for turns that appeared since the caller's cursor.
 
     The cursor is a turn count, valid only for the incarnation of the file it
@@ -495,6 +540,9 @@ def watch_turns(since, wait, wakeseen=None, gen=None):
     it the wake would turn every poll into an instant return for the pointer's
     whole TTL — a hot loop. Wake delivery is strictly opt-in by the parameter's
     presence (an empty value opts in; None does not).
+
+    A handed media file (`crab play`) rides the same way with its own cursor:
+    `playseen`, identical semantics to `wakeseen` for identical reasons.
     """
     deadline = time.time() + (WATCH_TIMEOUT if wait else 0)
     while True:
@@ -504,6 +552,9 @@ def watch_turns(since, wait, wakeseen=None, gen=None):
         wake = read_wake() if wakeseen is not None else None
         if wake is not None and wake["id"] == wakeseen:
             wake = None
+        play = read_play() if playseen is not None else None
+        if play is not None and play["id"] == playseen:
+            play = None
         # A gen the client holds that no longer matches means the list was
         # rewritten under its cursor. The one benign mismatch is a client that
         # has seen nothing at all (empty gen, cursor at zero): its cursor is
@@ -512,13 +563,17 @@ def watch_turns(since, wait, wakeseen=None, gen=None):
             out = {"n": n, "gen": cur, "turns": turns, "reset": True}
             if wake is not None:
                 out["wake"] = wake
+            if play is not None:
+                out["play"] = play
             return out
         if since is None or since > n:
             since = n
-        if n > since or wake is not None:
+        if n > since or wake is not None or play is not None:
             out = {"n": n, "gen": cur, "turns": turns[since:]}
             if wake is not None:
                 out["wake"] = wake
+            if play is not None:
+                out["play"] = play
             return out
         if time.time() >= deadline:
             return {"n": n, "gen": cur, "turns": []}
@@ -961,6 +1016,34 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj, extra=None):
         self._send(code, json.dumps(obj), "application/json; charset=utf-8", extra)
 
+    def _send_file(self, f, ctype, extra=None):
+        """A file, with single-range support (spec rule 18): browsers issue
+        Range for audio elements and will not seek — some will not play —
+        without it. A multi-range or unparseable header is answered with the
+        whole file, which a server may always do."""
+        try:
+            data = f.read_bytes()
+        except OSError:
+            return self._send(404, "not found")
+        headers = dict(extra or {})
+        headers["Accept-Ranges"] = "bytes"
+        m = re.match(r"bytes=(\d*)-(\d*)$",
+                     (self.headers.get("Range") or "").strip())
+        if not m or (not m.group(1) and not m.group(2)):
+            return self._send(200, data, ctype, headers)
+        if m.group(1):
+            start = int(m.group(1))
+            end = min(int(m.group(2)), len(data) - 1) if m.group(2) \
+                else len(data) - 1
+        else:  # bytes=-N: the final N bytes
+            start = max(0, len(data) - int(m.group(2)))
+            end = len(data) - 1
+        if start >= len(data) or start > end:
+            headers["Content-Range"] = "bytes */%d" % len(data)
+            return self._send(416, b"", ctype, headers)
+        headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, len(data))
+        return self._send(206, data[start:end + 1], ctype, headers)
+
     def _presented_key(self):
         header = self.headers.get("X-Crab-Key")
         if header:
@@ -1034,6 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
                 since = None
             wait = (query.get("wait") or ["1"])[0] != "0"
             wakeseen = (query.get("wakeseen") or [None])[0]
+            playseen = (query.get("playseen") or [None])[0]
             gen = (query.get("gen") or [None])[0]
             # Only a wake-capable client (one that sends wakeseen) counts as
             # "connected": routing audio at a page too old to play it would
@@ -1041,7 +1125,8 @@ class Handler(BaseHTTPRequestHandler):
             if wakeseen is not None:
                 with contextlib.suppress(OSError):
                     Path(PHONE_SEEN).touch()
-            return self._json(200, watch_turns(since, wait, wakeseen, gen), extra)
+            return self._json(200, watch_turns(since, wait, wakeseen, gen,
+                                               playseen), extra)
 
         if path.startswith("/turn/"):
             # Re-attach to an in-flight (or recently finished) turn: replay
@@ -1083,7 +1168,7 @@ class Handler(BaseHTTPRequestHandler):
             if f is None or not f.is_file():
                 return self._send(404, "not found")
             ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
-            return self._send(200, f.read_bytes(), ctype, extra)
+            return self._send_file(f, ctype, extra)
         if path.startswith("/audio/"):
             name = os.path.basename(path)
             # Only ever serve this server's own generated replies.
@@ -1092,7 +1177,21 @@ class Handler(BaseHTTPRequestHandler):
             f = Path(tempfile.gettempdir()) / name
             if not f.exists():
                 return self._send(404, "not found")
-            return self._send(200, f.read_bytes(), "audio/ogg", extra)
+            return self._send_file(f, "audio/ogg", extra)
+        if path.startswith("/media/"):
+            f = MEDIA.get(os.path.basename(path))
+            # Re-made at serving time, not only at hand-off: a file moved or
+            # swapped since the pointer was read must not widen what the token
+            # reaches (spec rule 35).
+            try:
+                f = f.resolve(strict=True) if f is not None else None
+            except OSError:
+                f = None
+            if f is None or not f.is_file() \
+                    or not f.is_relative_to(Path.home().resolve()):
+                return self._send(404, "not found")
+            ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+            return self._send_file(f, ctype, extra)
 
         return self._send(404, "not found")
 

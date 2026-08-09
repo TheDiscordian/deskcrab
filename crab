@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | status | shutup | job <desc> | jobs | memory <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | remote <text> | <text>
+# Usage: crab start | stop | status | tired | shutup | play <file> | job <desc> | jobs | memory <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -82,6 +82,14 @@ case "${1:-}" in
         account_state_line
         self_state_report
         exit 0
+        ;;
+
+    tired)
+        # The unread pile since last sleep, as one number and one word — file
+        # facts only, no model, no transcript content. The state block carries
+        # the same line; this is the parts. specs/self-awareness.md rules 36-38.
+        shift
+        exec "$SCRIPT_DIR/lib/tiredness" "$@"
         ;;
 
     claim)
@@ -272,6 +280,19 @@ What you did tonight is journaled from your tool activity without your help, so 
         synth_opus "$*" "$OUT" && printf '%s\n' "$OUT"
         ;;
 
+    play)
+        # Hand the phone an audio file to play — music, mostly — with a
+        # transport on the page: play/pause, seek, the piece's name. The
+        # pointer expires unclaimed, and only files under $HOME are offered.
+        shift
+        if [ -z "${1:-}" ]; then
+            echo "Usage: crab play <audio file under \$HOME>"
+            exit 1
+        fi
+        phone_play "$1"
+        exit $?
+        ;;
+
     notify)
         # Web Push to every subscribed phone — the channel that works with the
         # page CLOSED. Transport only: no TTS, no windows, no desktop
@@ -421,7 +442,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+        echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"
         exit 0
         ;;
 
@@ -433,7 +454,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|<message>"
+            echo "Usage: crab start|stop|status|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] <desc>|job log <id>|jobs|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"
             exit 1
         fi
         stop_tts
