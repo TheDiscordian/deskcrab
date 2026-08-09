@@ -67,6 +67,7 @@ async function testStreamTurn() {
     setStatus: (s) => { if (s === "reconnecting…") reconnects++; },
     showThought: () => {},
     enqueueVoice: () => {},
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
     fetch: null,
   };
   const fast = new Function("ctx", "with (ctx) {\n" +
@@ -130,6 +131,7 @@ async function testDeadline() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: () => {},
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
     // Answers cleanly every time, forever: nothing ever throws, so a deadline
     // that is only read inside the catch is never read at all.
     fetch: async () => ({
@@ -138,7 +140,7 @@ async function testDeadline() {
     }),
   };
   const body = lift("async function streamTurn")
-      .replace("15 * 60 * 1000", "150")      // a ceiling this test can reach
+      .replace("6 * 60 * 1000", "150")       // a ceiling this test can reach
       .replace(/STREAM_IDLE_MS/g, "IDLE_MS");
   const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {streamTurn};\n}")(
       Object.assign(ctx, { IDLE_MS: 5000 }));
@@ -173,7 +175,7 @@ async function testPingsAreNotProgress() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: () => {},
-    turnCtl: null, lastTurnProgress: 0,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
     // Pings forever: bytes keep arriving, no frame ever parses to an event.
     fetch: async () => ({
       ok: true, status: 200,
@@ -184,7 +186,7 @@ async function testPingsAreNotProgress() {
     }),
   };
   const body = lift("async function streamTurn")
-      .replace("15 * 60 * 1000", "500")   // the give-up, reachable in a test
+      .replace("6 * 60 * 1000", "500")    // the give-up, reachable in a test
       .replace(/STREAM_IDLE_MS/g, "IDLE_MS");
   const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {streamTurn};\n}")(ctx);
   const started = Date.now();
@@ -213,7 +215,7 @@ async function testProgressExtendsDeadline() {
     setStatus: () => {},
     showThought: () => {},
     enqueueVoice: () => {},
-    turnCtl: null, lastTurnProgress: 0,
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
     // Eight thinking events 100 ms apart — 800 ms of turn against a 400 ms
     // ceiling — then the reply. Only a deadline measured from the LAST event
     // lets this finish.
@@ -231,7 +233,7 @@ async function testProgressExtendsDeadline() {
     }),
   };
   const body = lift("async function streamTurn")
-      .replace("15 * 60 * 1000", "400")
+      .replace("6 * 60 * 1000", "400")
       .replace(/STREAM_IDLE_MS/g, "IDLE_MS");
   const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {streamTurn};\n}")(ctx);
   const res = await Promise.race([
@@ -262,8 +264,8 @@ async function testWatchdog() {
     setStatus: s => statuses.push(s),
   };
   const body = lift("function armTurnWatchdog")
-      .replace("17 * 60 * 1000", "250")   // the stall ceiling
-      .replace("30 * 1000", "50");        // the poll
+      .replace("7 * 60 * 1000", "250")    // the stall ceiling
+      .replace("5 * 1000", "50");         // the poll
   const api = new Function("ctx", "with (ctx) {\n" + body + "\nreturn {armTurnWatchdog};\n}")(ctx);
   api.armTurnWatchdog(1);
 
@@ -678,12 +680,281 @@ async function testReseedEmptyPage() {
   else bad("the empty case keeps the summary", "no seed block");
 }
 
+// --- 5: recovery (spec rules 39-41) — the button can never stay grey --------
+//
+// Written against 2026-08-08: the hold-to-talk button sat grey until a hand
+// reload, twice reported in one evening. The holes: transcription fetches
+// with no bound at all, and a reload mid-turn orphaning the turn behind the
+// lock so the re-asked question showed nothing either.
+
+// Enough of the page to run runTurn: the button, the bubbles, the spies.
+function turnCtx(streamImpl) {
+  const cls = new Set();
+  const statuses = [];
+  const remembered = [];
+  let forgotten = 0;
+  return {
+    busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
+    pendingUser: null, pendingReply: null,
+    sttSid: null, sttChain: Promise.resolve(), sttFailed: false,
+    talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
+                         contains: c => cls.has(c) } },
+    setStatus: (s) => statuses.push(s),
+    addTurn: () => ({ you: { textContent: "", scrollIntoView() {} },
+                      reply: { textContent: "", scrollIntoView() {} } }),
+    armTurnWatchdog: () => () => {},
+    randomHex: () => "feedfacefeedfacefeedfacefeedface",
+    rememberTurn: (tid, text) => remembered.push({ tid, text }),
+    forgetTurn: () => { forgotten++; },
+    norm: s => (s || "").replace(/\s+/g, " ").trim(),
+    foldThoughts: () => {},
+    deliver: async () => {},
+    updateTalkBtn: () => {},
+    post: async () => ({ transcript: "hi" }),
+    streamTurn: streamImpl,
+    _cls: cls, _statuses: statuses, _remembered: remembered,
+    _forgotten: () => forgotten,
+  };
+}
+
+async function testTurnEndsHandBackButton() {
+  console.log("");
+  console.log("runTurn — however the turn ends, the button comes back:");
+
+  // The turn ends in an error payload.
+  let ctx = turnCtx(async () => ({ error: "it broke" }));
+  await build(["async function runTurn"], ctx).runTurn(null, null, "hello");
+  if (!ctx.busy && !ctx._cls.has("busy"))
+    ok("an error completion hands the button back");
+  else bad("busy must clear on an error completion",
+           "busy=" + ctx.busy + " cls=" + [...ctx._cls]);
+
+  // The turn path throws outright.
+  ctx = turnCtx(async () => { throw new Error("boom"); });
+  await build(["async function runTurn"], ctx).runTurn(null, null, "hello");
+  if (!ctx.busy && !ctx._cls.has("busy"))
+    ok("a thrown turn hands the button back");
+  else bad("busy must clear when the turn path throws",
+           "busy=" + ctx.busy + " cls=" + [...ctx._cls]);
+  if (ctx._statuses.some(s => /boom/.test(s)))
+    ok("and says what happened");
+  else bad("the throw must reach the status line", ctx._statuses.join(" | "));
+
+  // The memory of the turn: written before the stream, wiped when it ends.
+  ctx = turnCtx(async () => ({ spoken: "fine" }));
+  await build(["async function runTurn"], ctx).runTurn(null, null, "hello");
+  if (ctx._remembered.length === 1 && ctx._remembered[0].text === "hello")
+    ok("the in-flight turn is remembered for a reload to find");
+  else bad("rememberTurn must run before the stream",
+           JSON.stringify(ctx._remembered));
+  if (ctx._forgotten() >= 1)
+    ok("and forgotten the moment the turn ends");
+  else bad("forgetTurn must run when the turn ends", ctx._forgotten());
+}
+
+async function testHungTranscriptionIsBounded() {
+  console.log("");
+  console.log("runTurn — a transcription fetch that hangs cannot hold the button (rule 40):");
+  // The real post() with a fetch that never settles on its own: only post's
+  // abort guard ends it. The chain never settles either. Bounds shrunk to
+  // what a test can wait for.
+  const ctx = turnCtx(async () => ({ spoken: "never reached" }));
+  ctx.sttSid = "abc";
+  ctx.sttChain = new Promise(() => {});             // a slice upload, stuck
+  // The REAL post must be the one resolved, not the harness stub: under
+  // `with`, a ctx property shadows the lifted declaration.
+  delete ctx.post;
+  ctx.fetch = (url, opts) => new Promise((res, rej) => {
+    opts.signal.addEventListener("abort", () => rej(new Error("aborted")));
+  });
+  const body = lift("function post") + "\n" +
+      lift("async function runTurn")
+          .replace("8000", "120")     // the chain-settle race
+          .replace("30000", "180")    // the finish bound
+          .replace("75000", "250");   // the batch fallback bound
+  const api = new Function("ctx", "with (ctx) {\n" + body +
+                           "\nreturn {runTurn};\n}")(ctx);
+  const started = Date.now();
+  await Promise.race([
+    api.runTurn(new Uint8Array(2000), "audio/webm", null),
+    sleep(4000).then(() => { throw new Error("HARNESS TIMEOUT"); }),
+  ]).catch(e => bad("runTurn must return on its own", e.message));
+  const took = Date.now() - started;
+  if (!ctx.busy && !ctx._cls.has("busy"))
+    ok("the hung fetch was aborted and the button handed back (" + took + "ms)");
+  else bad("an unbounded transcription fetch is the grey button",
+           "busy=" + ctx.busy);
+  if (took < 2000) ok("inside the bound, not the watchdog");
+  else bad("recovery must come from the fetch bound", took + "ms");
+}
+
+async function testResumePending() {
+  console.log("");
+  console.log("resumePending — a reload mid-turn re-attaches, never re-asks blind (rule 39):");
+  function rctx(stored, seedTurns) {
+    const calls = [];
+    const store = { v: stored ? JSON.stringify(stored) : null };
+    return {
+      RESUME_MAX_AGE_MS: 10 * 60 * 1000,
+      localStorage: { getItem: () => store.v,
+                      removeItem: () => { store.v = null; },
+                      setItem: (k, v) => { store.v = v; } },
+      norm: s => (s || "").replace(/\s+/g, " ").trim(),
+      runTurn: (b, c, text, tid) => calls.push({ text, tid }),
+      _calls: calls, _store: store, _seed: { turns: seedTurns || [] },
+    };
+  }
+  const lifted = ["function forgetTurn", "function resumePending"];
+
+  // A fresh memory whose exchange is NOT on the seed: re-attach.
+  let ctx = rctx({ tid: "cafe01", text: "how did it go", at: Date.now() - 30000 });
+  build(lifted, ctx).resumePending(ctx._seed);
+  if (ctx._calls.length === 1 && ctx._calls[0].tid === "cafe01"
+      && ctx._calls[0].text === "how did it go")
+    ok("the remembered turn is re-joined with the SAME identifier");
+  else bad("a fresh in-flight memory must re-attach", JSON.stringify(ctx._calls));
+
+  // The seed already carries the exchange: nothing to do, memory wiped.
+  ctx = rctx({ tid: "cafe02", text: "how did it go", at: Date.now() - 30000 },
+             [{ role: "user", text: "how did it go" },
+              { role: "assistant", text: "fine, in fact" }]);
+  build(lifted, ctx).resumePending(ctx._seed);
+  if (ctx._calls.length === 0 && ctx._store.v === null)
+    ok("a turn the seed already shows is not re-drawn or re-run");
+  else bad("an answered turn must not resume",
+           JSON.stringify(ctx._calls) + " store=" + ctx._store.v);
+
+  // A memory past the age bound: wiped, never posted — rule 1 would CREATE.
+  ctx = rctx({ tid: "cafe03", text: "good night", at: Date.now() - 11 * 60 * 1000 });
+  build(lifted, ctx).resumePending(ctx._seed);
+  if (ctx._calls.length === 0 && ctx._store.v === null)
+    ok("an aged-out memory is dropped — re-posting it could start a turn");
+  else bad("the age bound must hold", JSON.stringify(ctx._calls));
+}
+
+async function testResumeReplayIsQuiet() {
+  console.log("");
+  console.log("streamTurn — a re-attach replays quietly and speaks only what is live:");
+  const enc = new TextEncoder();
+  const posts = [];
+  const voiced = [];
+  let reads = 0;
+  const ctx = {
+    IDLE_MS: 60000,
+    randomHex: () => "MUSTNOTBEUSED",
+    setStatus: () => {},
+    showThought: () => {},
+    enqueueVoice: u => voiced.push(u),
+    turnCtl: null, lastTurnProgress: 0, turnKicked: false,
+    fetch: async (url, opts) => {
+      posts.push({ url, body: opts && opts.body });
+      return { ok: true, status: 200, body: { getReader: () => ({
+        read: () => new Promise(res => {
+          reads++;
+          if (reads === 1)          // the buffered backlog, replayed at once
+            res({ value: enc.encode(
+                'data: {"kind":"voice","audio":"/audio/old.opus"}\n\n'),
+                  done: false });
+          else if (reads === 2)     // a clip that is genuinely live
+            setTimeout(() => res({ value: enc.encode(
+                'data: {"kind":"voice","audio":"/audio/new.opus"}\n\n' +
+                'data: {"kind":"done","spoken":"back"}\n\n'), done: false }),
+                350);
+          else res({ done: true });
+        }),
+      }) } };
+    },
+  };
+  const body = lift("async function streamTurn")
+      .replace("1500", "200")            // the replay gate, test-reachable
+      .replace(/STREAM_IDLE_MS/g, "IDLE_MS");
+  const api = new Function("ctx", "with (ctx) {\n" + body +
+                           "\nreturn {streamTurn};\n}")(ctx);
+  const res = await Promise.race([
+    api.streamTurn("hello", {}, "cafe1234", true),
+    sleep(4000).then(() => ({ error: "HARNESS TIMEOUT" })),
+  ]);
+  if (res && res.spoken === "back") ok("the re-attached turn completes");
+  else bad("the resume must ride the normal stream",
+           (res && (res.error || JSON.stringify(res))) || "nothing");
+  if (posts.length && /"turn":"cafe1234"/.test(posts[0].body || ""))
+    ok("the POST carries the remembered id — an attach, never a second run");
+  else bad("the given id must ride the POST", posts.length ? posts[0].body : "no post");
+  if (voiced.join(",") === "/audio/new.opus")
+    ok("the replayed backlog stays quiet; the live clip plays");
+  else bad("replayed clips must not re-sound", voiced.join(",") || "nothing");
+}
+
+async function testForegroundKick() {
+  console.log("");
+  console.log("the foreground kick — coming back to a stale turn cuts it loose (rule 41):");
+  let aborted = 0;
+  const ctx = {
+    busy: true,
+    STREAM_IDLE_MS: 45000,
+    lastTurnProgress: Date.now() - 60000,
+    turnKicked: false,
+    turnCtl: { abort: () => { aborted++; } },
+  };
+  build(["function kickStaleTurn"], ctx).kickStaleTurn();
+  if (aborted === 1 && ctx.turnKicked)
+    ok("a stale attempt is aborted, marked for an immediate reconnect");
+  else bad("the kick must cut the stale attempt",
+           "aborted=" + aborted + " kicked=" + ctx.turnKicked);
+
+  const fresh = { busy: true, STREAM_IDLE_MS: 45000,
+                  lastTurnProgress: Date.now(), turnKicked: false,
+                  turnCtl: { abort: () => { aborted += 100; } } };
+  build(["function kickStaleTurn"], fresh).kickStaleTurn();
+  const idle = { busy: false, STREAM_IDLE_MS: 45000,
+                 lastTurnProgress: 0, turnKicked: false,
+                 turnCtl: { abort: () => { aborted += 100; } } };
+  build(["function kickStaleTurn"], idle).kickStaleTurn();
+  if (aborted === 1)
+    ok("a working turn and an idle page are left alone");
+  else bad("the kick must only fire on a stale busy turn", aborted);
+}
+
+async function testDeadMicReacquired() {
+  console.log("");
+  console.log("startRec — a microphone that died while the page was away is retaken (rule 41):");
+  let acquired = 0, stopped = 0;
+  const dead = { getTracks: () => [{ readyState: "ended",
+                                     stop: () => { stopped++; } }] };
+  const ctx = {
+    busy: false, recWanted: false, stream: dead,
+    navigator: { mediaDevices: { getUserMedia: async () => {
+      acquired++;
+      return { getTracks: () => [{ readyState: "live", stop() {} }] };
+    } } },
+    setStatus: () => {}, chunks: [], recorder: null,
+    sttSid: null, sttChain: null, sttFailed: false,
+    randomHex: () => "aabbccddeeff00112233445566778899",
+    post: async () => ({}),
+    MediaRecorder: class { constructor(s) { this.stream = s;
+                                            this.mimeType = "audio/webm"; }
+                           start() {} },
+    talk: { classList: { add() {}, remove() {} }, textContent: "" },
+  };
+  await build(["async function startRec"], ctx).startRec();
+  if (stopped === 1 && acquired === 1 && ctx.stream !== dead)
+    ok("the dead stream is dropped and a fresh microphone taken");
+  else bad("a dead cached stream must be replaced, not recorded from",
+           "stopped=" + stopped + " acquired=" + acquired);
+}
+
 (async () => {
   await testStreamTurn();
   await testDeadline();
   await testPingsAreNotProgress();
   await testProgressExtendsDeadline();
   await testWatchdog();
+  await testTurnEndsHandBackButton();
+  await testHungTranscriptionIsBounded();
+  await testResumePending();
+  await testResumeReplayIsQuiet();
+  await testForegroundKick();
+  await testDeadMicReacquired();
   await testWatchReset();
   await testMutePersisted();
   await testMediaTransport();

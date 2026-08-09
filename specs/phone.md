@@ -120,6 +120,26 @@ with the page closed.
     unmuted, so a clip that arrived muted is acknowledged like any other and unmuting never replays
     a backlog.
 
+### Recovery — the button can never stay grey
+
+39. The client MUST remember its in-flight turn (identifier, text, and when) across a reload, and a
+    freshly loaded page MUST re-attach to it by re-posting the same identifier — rule 1 makes that
+    an attach, never a second run. The re-attach MUST be bounded by age and skipped when the visible
+    record already carries the exchange. A reload mid-turn used to orphan the turn: it kept running,
+    it kept the lock, the re-spoken question queued behind it showing nothing, and the reply landed
+    nowhere — that is how a reply failed to transmit on 2026-08-08, and how three reloads piled up
+    in four minutes the same evening. Voice clips replayed by the re-attach MUST NOT re-sound the
+    already-buffered backlog; clips arriving live after the re-attach play as ever, and rule 6's
+    completion audio covers a turn that voiced nothing.
+40. Every request the turn path makes MUST be bounded by an abort timeout — the slice uploads, the
+    finish, and the batch-transcription fallback included, not only the streaming fetch of rule 4.
+    An unbounded transcription fetch held rule 5's refusal until the watchdog, and a refusal held
+    for minutes is indistinguishable from forever from a phone.
+41. When the page returns to the foreground with a turn in flight and no recent progress, the
+    client MUST abort the current attempt and reconnect immediately rather than waiting out
+    throttled timers. And when the microphone stream's tracks died while the page was away, the
+    next hold MUST re-acquire the microphone rather than record silence into a "too short".
+
 ## DATA
 
 | Path | Role |
@@ -210,6 +230,7 @@ block itself. The turn it spawns does that.
 | `MIN-24` | The health route discloses the assistant's name to unauthenticated callers, contradicting the comment two lines below it. |
 | `MIN-25` | Audio and image routes ignore range requests. **Resolved:** one range-capable file sender serves the audio, image, and media routes; held by `tests/test_phone_media.sh`. |
 | `MIN-26` | Web Push is wired but called by no code. With the page closed the phone receives nothing. |
+| `C12` | The hold-to-talk button sat grey past any patience: the transcription fetches had no bound at all (a hang held the refusal until a seventeen-minute watchdog), a reload mid-turn orphaned the running turn behind the lock so the next attempt showed nothing either, and the give-up ladder was tuned in tens of minutes. Three reloads in four minutes on 2026-08-08, reported twice that evening. **Resolved:** rules 39-41 — bounded transcription, re-attach across reload, a foreground kick, and the ladder brought down to single minutes; held by the abnormal-end cases in `tests/phone_client_test.js`. |
 
 ## TESTS
 
@@ -231,7 +252,12 @@ audio routes honour ranges; a pointer outside the home directory, an expired poi
 unauthenticated fetch all serve nothing; and delivery is opt-in by the `playseen` parameter's
 presence, exactly as wake audio is by `wakeseen`. `tests/phone_client_test.js` also carries the
 mute and transport cases: the persisted mute lands on both audio elements and survives a reload,
-and a play event shows the transport once and never re-fires on an id already seen.
+and a play event shows the transport once and never re-fires on an id already seen. The same file
+carries the recovery cases of rules 39-41: a turn that ends in an error, a throw, or a hung
+transcription fetch always hands the button back; a remembered turn is re-attached with the same
+identifier on the next load, is skipped when the record already shows the exchange or the memory
+has aged out, and does not re-sound the replayed clip backlog; and the foreground kick aborts a
+stale attempt so the reconnect happens now rather than after a throttled timer.
 
 **To be written:**
 

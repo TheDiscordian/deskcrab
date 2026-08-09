@@ -398,17 +398,27 @@ async function deliver(res, replyEl) {
 // many minutes. Same shape as the 45 s guard on the /watch poll.
 const STREAM_IDLE_MS = 45000;
 
-async function streamTurn(text, turn) {
-  const tid = randomHex(32);
+async function streamTurn(text, turn, tid, resuming) {
+  tid = tid || randomHex(32);
   let seen = 0, delay = 1000;
+  // A re-attach after a reload replays the whole buffered backlog in a burst,
+  // voice events included — clips that were already playing when the page
+  // died. Re-sounding them reads as the reply starting over, so replayed
+  // clips are dropped and only clips arriving live after the re-attach play
+  // (spec rule 39). The boundary is a moment of wall clock because the
+  // stream itself does not mark it; the backlog lands in milliseconds.
+  let voiceGateUntil = resuming ? Date.now() + 1500 : 0;
   // Progress, not wall clock: every event pushes the deadline forward, so a
   // long turn that is visibly working is never cut off, while a turn that has
   // gone silent on a link healthy enough to carry keepalives forever still
   // ends here. Pings reset the idle timer below (the link is alive) but never
-  // this (the turn is not).
-  const GIVE_UP_MS = 15 * 60 * 1000;
+  // this (the turn is not). Six minutes, down from fifteen: nothing
+  // legitimate on the remote profile is silent that long, the reply still
+  // arrives through /watch if the turn completes later, and a button held
+  // grey for tens of minutes was answered with a hand reload every time.
+  const GIVE_UP_MS = 6 * 60 * 1000;
   let deadline = Date.now() + GIVE_UP_MS;
-  const giveUp = { error: "gave up: no progress in 15 minutes" };
+  const giveUp = { error: "gave up: no progress in 6 minutes" };
   for (;;) {
     // Checked HERE as well as in the catch. It used to be consulted only
     // after a throw, so a fetch that never threw and never delivered another
@@ -457,7 +467,10 @@ async function streamTurn(text, turn) {
           lastTurnProgress = Date.now();
           deadline = lastTurnProgress + GIVE_UP_MS;
           if (ev.kind === "done") return ev;
-          if (ev.kind === "voice") { enqueueVoice(ev.audio); continue; }
+          if (ev.kind === "voice") {
+            if (Date.now() >= voiceGateUntil) enqueueVoice(ev.audio);
+            continue;
+          }
           showThought(turn, ev);
         }
         // Pings land here as bytes that parse to nothing. A turn whose done
@@ -476,8 +489,17 @@ async function streamTurn(text, turn) {
       // the laptop, buffered under its id, and the reconnect below picks it
       // up from exactly where this socket stopped.
       setStatus("reconnecting…", "busy");
-      await new Promise(res => setTimeout(res, delay));
-      delay = Math.min(delay * 2, 30000);
+      if (turnKicked) {
+        // The page just came back to the foreground and cut a stale attempt
+        // itself (spec rule 41). Backoff exists for a link that keeps
+        // failing, not for a socket the OS froze — reconnect now.
+        turnKicked = false;
+        delay = 1000;
+        await new Promise(res => setTimeout(res, 250));
+      } else {
+        await new Promise(res => setTimeout(res, delay));
+        delay = Math.min(delay * 2, 30000);
+      }
     } finally {
       clearTimeout(idle);
       if (turnCtl === ctl) turnCtl = null;
@@ -561,15 +583,23 @@ function showThought(turn, ev) {
   if (ev.kind !== "tool") line.scrollIntoView({ block: "end" });
 }
 
-function post(url, body, headers) {
-  return fetch(url, { method: "POST", body, headers, credentials: "same-origin" })
-    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+// Every request the turn path makes is bounded (spec rule 40): a fetch that
+// hangs on a half-dead link never rejects on its own, and an unbounded await
+// anywhere in runTurn holds `busy` — a grey button — until the watchdog,
+// which from a phone is indistinguishable from forever.
+function post(url, body, headers, timeoutMs) {
+  const ctl = new AbortController();
+  const guard = setTimeout(() => ctl.abort(), timeoutMs || 30000);
+  return fetch(url, { method: "POST", body, headers,
+                      credentials: "same-origin", signal: ctl.signal })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .finally(() => clearTimeout(guard));
 }
 
 // A turn is two requests, not one: transcription comes back in a second or two
 // and is shown immediately, so a mis-heard sentence is visible during the long
 // wait for the answer rather than after it.
-async function runTurn(blob, ctype, typed) {
+async function runTurn(blob, ctype, typed, resumeTid) {
   if (busy) return;
   // Dimmed, not disabled: a disabled button gets no pointer events, and the
   // reply's clips play while the turn is still running — tap-to-stop must
@@ -588,22 +618,28 @@ async function runTurn(blob, ctype, typed) {
       // Nearly all of this audio is already on the laptop and decoded, so
       // finishing usually only leaves the last slice to transcribe. If any
       // slice failed to upload the session is incomplete and we fall back to
-      // sending the whole recording the old way.
+      // sending the whole recording the old way. Every wait here is bounded
+      // (spec rule 40): a slice upload stuck on a half-dead link used to
+      // hold this await — and the button — until the watchdog.
       let t;
       const sid = sttSid;
-      await sttChain.catch(() => { sttFailed = true; });
+      const settled = await Promise.race([
+        sttChain.then(() => true, () => false),
+        new Promise(res => setTimeout(() => res(false), 8000)),
+      ]);
+      if (!settled) sttFailed = true;
       if (sid && !sttFailed) {
-        t = await post("/stt/finish?s=" + sid, null, { "X-Audio-Type": ctype })
+        t = await post("/stt/finish?s=" + sid, null, { "X-Audio-Type": ctype }, 30000)
               .catch(() => ({ error: "stream lost" }));
         if (t.error) t = null;
       }
-      if (!t) t = await post("/transcribe", blob, { "X-Audio-Type": ctype });
+      if (!t) t = await post("/transcribe", blob, { "X-Audio-Type": ctype }, 75000);
       if (t.error) { turn.reply.textContent = "(" + t.error + ")"; setStatus(t.error, "err"); return; }
       text = t.transcript;
       turn.you.textContent = text;
       turn.you.scrollIntoView({ block: "end" });
     }
-    setStatus("thinking…", "busy");
+    setStatus(resumeTid ? "picking the turn back up…" : "thinking…", "busy");
     // This turn is about to land in the convo file too; the watcher filters
     // it by text rather than skipping everything in the window, so a wake or
     // laptop turn landing mid-flight still renders instead of vanishing.
@@ -612,7 +648,11 @@ async function runTurn(blob, ctype, typed) {
     // Transcription may have taken a while; the watchdog measures the stream
     // from here, not from the press of the button.
     lastTurnProgress = Date.now();
-    const res = await streamTurn(text, turn);
+    // Remembered so a reload mid-turn re-attaches instead of orphaning the
+    // turn behind the lock (spec rule 39); forgotten the moment it ends.
+    const tid = resumeTid || randomHex(32);
+    rememberTurn(tid, text);
+    const res = await streamTurn(text, turn, tid, !!resumeTid);
     foldThoughts(turn);
     if (res && res.spoken) pendingReply = norm(res.spoken);
     await deliver(res, turn.reply);
@@ -624,10 +664,47 @@ async function runTurn(blob, ctype, typed) {
     // If the watchdog fired, the page is already idle and a NEW turn may be
     // running — that turn's state is not this one's to clear.
     if (turnSeq === seq) {
+      forgetTurn();
       busy = false; talk.classList.remove("busy");
       updateTalkBtn();
     }
   }
+}
+
+// The memory that survives a reload: which turn was in flight, what was asked,
+// and when. Rule 1 makes re-posting the same identifier an attach, so a page
+// that comes back re-joins its own turn rather than leaving it running
+// invisibly — holding the lock — while the re-asked question queues behind it.
+function rememberTurn(tid, text) {
+  try {
+    localStorage.setItem("crab-turn",
+                         JSON.stringify({ tid, text, at: Date.now() }));
+  } catch (_) {}
+}
+
+function forgetTurn() {
+  try { localStorage.removeItem("crab-turn"); } catch (_) {}
+}
+
+// Ten minutes: past the give-up, past the watchdog, and past any run a phone
+// turn is allowed — a memory older than this is a page nobody reloaded, and
+// re-posting it could START a turn (the buffer TTL-swept, rule 1 creates).
+const RESUME_MAX_AGE_MS = 10 * 60 * 1000;
+
+function resumePending(ctx) {
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem("crab-turn") || "null"); } catch (_) {}
+  if (!rec || !rec.tid || !rec.text) return;
+  if (Date.now() - (rec.at || 0) > RESUME_MAX_AGE_MS) { forgetTurn(); return; }
+  // Already answered and already on screen: the seed carries the exchange, so
+  // there is nothing to re-attach to — re-drawing it would double the bubble.
+  const turns = (ctx && ctx.turns) || [];
+  for (let i = turns.length - 1; i >= 0; i--)
+    if (turns[i].role === "user" && norm(turns[i].text) === norm(rec.text)) {
+      forgetTurn();
+      return;
+    }
+  runTurn(null, null, rec.text, rec.tid);
 }
 
 // The last line of defence against C10: if `busy` is still set long after
@@ -640,9 +717,16 @@ async function runTurn(blob, ctype, typed) {
 let lastTurnProgress = 0;
 let turnCtl = null;
 let turnSeq = 0;
+// Set by the foreground kick just before it aborts a stale attempt, read by
+// streamTurn's catch: this cut asks for an immediate reconnect, not backoff.
+let turnKicked = false;
 
 function armTurnWatchdog(seq) {
-  const limit = 17 * 60 * 1000, poll = 30 * 1000;
+  // Seven minutes, one past the stream's own give-up so the polite path
+  // always answers first — and polled every five seconds, because a watchdog
+  // that fires up to half a minute late is half a minute of a dead grey
+  // button. Seventeen minutes was not a defence anyone lived to see.
+  const limit = 7 * 60 * 1000, poll = 5 * 1000;
   const timer = setInterval(() => {
     if (!busy || turnSeq !== seq) { clearInterval(timer); return; }
     if (Date.now() - lastTurnProgress < limit) return;
@@ -656,6 +740,22 @@ function armTurnWatchdog(seq) {
   return () => clearInterval(timer);
 }
 
+// The foreground kick (spec rule 41). While the page is hidden the OS freezes
+// its timers and lets its sockets rot, so a turn that was streaming when the
+// screen locked comes back to a fetch that will never deliver and an idle
+// timer that has not been allowed to fire. Coming back to the foreground is
+// the moment to notice: cut the stale attempt so the reconnect happens NOW,
+// and if the whole turn is past saving, let the watchdog's own check run
+// rather than waiting out a throttled interval.
+function kickStaleTurn() {
+  if (!busy) return;
+  if (Date.now() - lastTurnProgress < STREAM_IDLE_MS) return;
+  if (turnCtl) { turnKicked = true; turnCtl.abort(); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) kickStaleTurn();
+});
+
 // Set on press (past the hold threshold), cleared on release. getUserMedia can
 // resolve after a very quick release — without this check the recorder would
 // start with nothing left to stop it.
@@ -664,6 +764,14 @@ let recWanted = false;
 async function startRec() {
   if (busy) return;
   recWanted = true;
+  // The cached stream can die while the page is away — the browser revokes
+  // the microphone on a locked screen — and a dead stream records nothing:
+  // every hold after that came back "too short" until a reload (spec rule
+  // 41). A track that has ended is not a microphone; take a fresh one.
+  if (stream && stream.getTracks().some(t => t.readyState === "ended")) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
   try {
     if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) { setStatus("no microphone: " + e.name, "err"); return; }
@@ -835,6 +943,9 @@ fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx =
   cursor = ctx.n;
   gen = ctx.gen || "";
   renderSeed(ctx);
+  // After the seed, deliberately: whether the remembered turn already
+  // answered is read off the seed itself (spec rule 39).
+  resumePending(ctx);
 }).then(startWatch).catch(startWatch);
 
 // Two turns are the same turn when the same speaker said the same words. The
