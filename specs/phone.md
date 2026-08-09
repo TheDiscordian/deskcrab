@@ -190,6 +190,35 @@ with the page closed.
     a turn visibly in line is not a turn gone silent. The wait notes MUST stop at the run's first
     real event and MUST never follow the completion event to a tail.
 
+### Playback truth — the server learns what actually sounded
+
+The completion event proves the reply's text and audio pointer reached the wire. It proves nothing
+about the speaker: on 2026-08-09 two long replies were delivered in full and played nothing —
+every synthesis of the turn had quietly failed — and the only witness was the phone's silence,
+reported by hand. The client is the sole process that knows whether audio played, so the client
+says so.
+
+44. The client MUST report, per turn, what became of the audio it was handed: that a clip was
+    queued (`requested`), that a clip actually began to sound (`started` — taken from the audio
+    element's own `playing` or first past-zero `timeupdate` event, never merely from `play()`
+    having been called), that a clip finished (`completed`), and that a clip failed or was cut
+    short (`error`, naming the reason: an autoplay refusal, a decode error, a deliberate stop).
+    Every report carries the turn identifier and the clip's index within the turn, so a chunked
+    reply that died part-way names the chunk it died on. Reports are fire-and-forget: a report
+    that cannot be delivered MUST NOT disturb playback, and a server too old to accept one is an
+    ignored error, not a broken page.
+45. The server MUST record every playback report to the per-day metrics log it already writes its
+    latency stamps to, so the stamp that says a clip was synthesised has a neighbour that says
+    whether it was ever heard.
+46. A turn whose spoken text was delivered but for which no `started` report arrives within a
+    bounded wait MUST raise exactly one notification (`crab notify`) naming the turn and the last
+    known reason — a synthesis that offered no clip at all, clips offered that nothing fetched, or
+    an autoplay refusal nobody answered. One silent turn, one notification, never more. A turn
+    stopped by hand counts as heard (the silence was chosen), and a turn that spoke no text raises
+    nothing. A client that has never reported playback at all is a page from before this rule:
+    its turns are recorded in the metrics as silent but MUST NOT be notified — an old client
+    degrading into a nightly page of the house is exactly the noise rule 26 exists to prevent.
+
 ## DATA
 
 | Path | Role |
