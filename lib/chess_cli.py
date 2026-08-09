@@ -23,6 +23,9 @@ from pathlib import Path
 import chess
 import chess.svg
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import chess_reflex  # position memory; fed on every save, never in the way
+
 CHESS_DIR = Path(os.environ.get("DESKCRAB_CHESS_DIR",
                                 Path.home() / ".local/share/deskcrab/chess"))
 GAMES_DIR = CHESS_DIR / "games"
@@ -77,6 +80,9 @@ def save_game(g: dict) -> None:
     except BaseException:
         os.unlink(tmp)
         raise
+    # After the file is safely down: a finished game enters reflex memory, a
+    # reopened one leaves it. sync_game contains its own failures.
+    chess_reflex.sync_game(g)
 
 
 def build_board(g: dict) -> chess.Board:
@@ -541,6 +547,41 @@ def cmd_engine(args):
     print_position(g, board)
 
 
+def cmd_reflex(args):
+    if args.backfill:
+        done, active = chess_reflex.backfill(load_all())
+        print(f"reflex: ingested {done} finished game(s), "
+              f"left {active} active one(s) alone ({chess_reflex.db_path()})")
+        return
+    if not args.fen:
+        raise CliError("usage: betty-chess reflex <fen> | reflex --backfill")
+    fen = " ".join(args.fen).strip()
+    try:
+        board = chess.Board(fen)
+    except ValueError as e:
+        raise CliError(f"cannot read that as a FEN: {e}")
+    candidates = chess_reflex.lookup(board.fen())
+    if not candidates:
+        raise CliError("no memory of this position")
+    for c in candidates:
+        try:
+            san = board.san(chess.Move.from_uci(c["move"]))
+        except (chess.InvalidMoveError, chess.IllegalMoveError, AssertionError):
+            san = "??"  # remembered from a position this board disagrees with
+        print(f"{san:<8} {c['move']:<6} games {c['n']:>3}  "
+              f"{c['wins']}-{c['draws']}-{c['losses']}  "
+              f"score {c['score']:.2f}")
+    best = chess_reflex.best_move(board.fen(), board)
+    if best:
+        san = board.san(chess.Move.from_uci(best["move"]))
+        print(f"reflex: would play {san} "
+              f"(seen {best['n']}x, score {best['score']:.2f})")
+    else:
+        print(f"reflex: not confident enough — needs "
+              f"{chess_reflex.MIN_GAMES} game(s) at score "
+              f"{chess_reflex.MIN_SCORE:.2f}; think instead")
+
+
 # ---------------------------------------------------------------- entry
 
 def main(argv=None):
@@ -604,6 +645,15 @@ def main(argv=None):
     sp.add_argument("game", nargs="?")
     sp.add_argument("--level", type=int, help="stockfish skill 0-20, remembered")
     sp.set_defaults(func=cmd_engine)
+
+    sp = sub.add_parser("reflex",
+                        help="what memory says about a position "
+                             "(specs/chess-reflex.md)")
+    sp.add_argument("fen", nargs="*",
+                    help="a FEN, quoted or not; candidates come back ranked")
+    sp.add_argument("--backfill", action="store_true",
+                    help="ingest every finished game already on disk")
+    sp.set_defaults(func=cmd_reflex)
 
     args = p.parse_args(argv)
     try:

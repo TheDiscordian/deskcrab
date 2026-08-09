@@ -357,6 +357,7 @@ crab serve   →  HTTP  →  ffmpeg → whisper-cli (batch) → crab remote
 - `lib/webapp/` — the phone client (single page, installable)
 - `crab-debug` — real-time debug viewer
 - `lib/betty-chess` — persistent correspondence chess (`lib/chess_cli.py` is the program; the wrapper owns its venv)
+- `lib/chess_reflex.py` — chess position memory: every move of every finished game, keyed by the FEN it was played from, weighted by how the game ended. Known positions (openings, remembered traps) are answered instantly from `reflex.db` instead of costing a model turn; `betty-chess reflex <fen>` shows what memory would do, `betty-chess reflex --backfill` ingests games recorded before the memory existed. See `specs/chess-reflex.md`.
 
 ## License
 

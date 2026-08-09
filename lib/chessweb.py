@@ -31,6 +31,7 @@ import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chess_cli  # the betty-chess store: build_board, save_game, compute_state
+import chess_reflex  # position memory, asked before any wake is booked
 
 # Message type = the message's index in SpeedyChess's chesspb.proto.
 PING, JOIN, NEWGAME, MOVE, ERROR, TEAM, PLAYER, \
@@ -484,7 +485,44 @@ class Hub:
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"notify failed: {e}")
 
+    def try_reflex(self, g, board):
+        """Her move from memory instead of from a wake, when the position is
+        known well enough (specs/chess-reflex.md rules 7 and 8). True means
+        the move is played, saved, and broadcast — book no wake. Any failure
+        here is a fall-through to thinking, never a lost turn."""
+        if os.environ.get("DESKCRAB_CHESS_REFLEX", "1") == "0":
+            return False
+        try:
+            best = chess_reflex.best_move(board.fen(), board)
+        except Exception as e:
+            log(f"reflex lookup failed, thinking instead: {e}")
+            return False
+        if best is None:
+            return False
+        move = chess.Move.from_uci(best["move"])
+        msgs = wire_msgs_for_move(board, move)
+        san = board.san(move)
+        board.push(move)
+        g["moves"].append(move.uci())
+        chess_cli.save_game(g)
+        self.synced = list(g["moves"])
+        for m in msgs:
+            self.broadcast(m)
+        self.activity.update(poked_at=None, started_at=None,
+                             played_at=time.time(), san=san)
+        key, desc, result = chess_cli.compute_state(g, board)
+        log(f"{g['id']}: reflex played {san} from memory "
+            f"({best['n']} game(s), score {best['score']:.2f}) — no wake")
+        if key != "active":
+            self.over_announced = True
+            self.broadcast(self.result_msg(key, result))
+            # She still hears how her game ended, even when memory ended it.
+            self.dispatch_wake(g, board, san, over=f"{desc} [{result}]")
+        return True
+
     def dispatch_wake(self, g, board, san=None, over=None):
+        if over is None and self.try_reflex(g, board):
+            return
         gid = g["id"]
         history = chess_cli.history(g["moves"])
         if over:

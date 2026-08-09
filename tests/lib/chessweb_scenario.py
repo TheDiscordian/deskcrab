@@ -432,6 +432,52 @@ def s_poller_end(port, chess_dir):
     ok("her mating move from the CLI ends the game as BlackWin")
 
 
+def s_reflex(port, chess_dir, wake_log):
+    # Two finished fool's mates were backfilled into reflex memory before the
+    # bridge started. The user walks into the same trap: both of her replies
+    # must come back from memory — instantly, with no thinking wake booked —
+    # and the mate she remembers ends the game (specs/chess-reflex.md rule 8).
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.send(NEWGAME)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 0, "the user should be white"
+
+    c.move("f2", "f3")
+    c.expect_move("f2", "f3")
+    c.expect_move("e7", "e5")
+    ok("her reply to a remembered position arrived from reflex, no wake")
+
+    c.move("g2", "g4")
+    c.expect_move("g2", "g4")
+    c.expect_move("d8", "h4")
+    f = c.expect(GAME_COMPLETE)
+    assert f.get(1, 0) == 1, f"wanted BlackWin(1), got {f}"
+    ok("the remembered mate ended the game as BlackWin")
+
+    assert game_moves(chess_dir, "guest-001") == \
+        ["f2f3", "e7e5", "g2g4", "d8h4"]
+    ok("reflex moves went through the store like any other move")
+
+    deadline = time.time() + 5
+    wake = ""
+    while time.time() < deadline and "ended" not in wake:
+        wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
+        time.sleep(0.1)
+    assert "your move" not in wake, f"a thinking wake was booked: {wake}"
+    assert "ended" in wake and "checkmate" in wake, wake
+    ok("no thinking wake was spent; the end-of-game wake still fired")
+
+    import sqlite3
+    n = sqlite3.connect(Path(chess_dir) / "reflex.db").execute(
+        "SELECT COUNT(*) FROM games WHERE game_id = 'guest-001'"
+    ).fetchone()[0]
+    assert n == 1, "the game reflex just finished never entered the memory"
+    ok("and the game reflex finished was itself ingested at game end")
+
+
 def s_reset(port, chess_dir):
     # A peer reset at every point the night of 2026-08-09 hit: mid-request,
     # mid-upgrade, and under the poll thread's broadcast. Survival is the
@@ -561,7 +607,7 @@ def main():
     {"http": s_http, "fresh": s_fresh, "resume": s_resume,
      "special": s_special, "promote": s_promote, "mate": s_mate,
      "poller_end": s_poller_end, "reset": s_reset, "rejoin": s_rejoin,
-     "postkill": s_postkill}[what](port, *rest)
+     "postkill": s_postkill, "reflex": s_reflex}[what](port, *rest)
 
 
 if __name__ == "__main__":

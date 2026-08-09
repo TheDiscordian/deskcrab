@@ -136,3 +136,77 @@ out="$(chess move stale Nxe5 --expect-fen "$loose")"; rc=$?
 [ "$rc" -eq 0 ] \
   && ok "the move counters in an expected FEN are ignored" \
   || fail "counters made a matching position look stale: rc=$rc $out"
+
+# --- reflex memory (specs/chess-reflex.md) --------------------------------
+# The fool's mate at the top of this file finished a game through the normal
+# move path; nothing since has mentioned reflex. If the memory works, that
+# game is already in it.
+START="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+DB="$DESKCRAB_CHESS_DIR/reflex.db"
+
+out="$(chess reflex "$START")"
+[ -f "$DB" ] && echo "$out" | grep -q "^f3 " \
+  && ok "a game played to its end entered reflex memory by itself" \
+  || fail "recording: db=$([ -f "$DB" ] && echo yes || echo no) out=$out"
+
+# Backfill is the retroactive path: wipe the memory, re-ingest from the game
+# files alone. opponent-001 is finished; other-001 and stale-001 are not.
+rm -f "$DB"
+out="$(chess reflex --backfill)"
+echo "$out" | grep -q "ingested 1 finished" \
+  && echo "$out" | grep -q "left 2 active" \
+  && ok "backfill re-ingested the finished game and left the live ones alone" \
+  || fail "backfill: $out"
+
+# Hand-written game files (no save_game involved) are what backfill exists
+# for: two more f3 losses and one e4 win, all from white's seat.
+seed_game() { # <id> <result-line of ucis...>
+  local id="$1"; shift
+  cat > "$DESKCRAB_CHESS_DIR/games/$id.json" <<JSON
+{"id": "$id", "opponent": "import", "my_side": "white",
+ "moves": [$(printf '"%s",' "$@" | sed 's/,$//')],
+ "resigned_by": null, "draw_agreed": false, "engine_level": null,
+ "created": "2026-01-01T00:00:00+00:00", "updated": "2026-01-01T00:00:00+00:00"}
+JSON
+}
+seed_game import-001 f2f3 e7e5 g2g4 d8h4                       # 0-1
+seed_game import-002 f2f3 e7e5 g2g4 d8h4                       # 0-1
+seed_game import-003 e2e4 e7e5 f1c4 b8c6 d1h5 g8f6 h5f7        # 1-0
+out="$(chess reflex --backfill)"
+echo "$out" | grep -q "ingested 4 finished" \
+  && ok "backfill picked up game files written by another hand" \
+  || fail "retroactive backfill: $out"
+
+# Ranking: f3 has now been played three times and lost every game; e4 once,
+# and won. Frequency alone would put f3 first; the results must not.
+out="$(chess reflex "$START")"
+echo "$out" | head -1 | grep -q "^e4 " \
+  && ok "a move that kept losing ranks below one that won less often" \
+  || fail "ranking ignored the results: $out"
+echo "$out" | grep "^f3 " | grep -q "0-0-3" \
+  && ok "and the losing move's W-D-L says why" \
+  || fail "f3's tally wrong: $out"
+
+# The gate: one winning game is memory, not confidence.
+echo "$out" | grep -q "not confident enough" \
+  && ok "one good game is not enough to play from memory" \
+  || fail "gate opened on a single game: $out"
+seed_game import-004 e2e4 e7e5 f1c4 b8c6 d1h5 g8f6 h5f7        # a second win
+chess reflex --backfill >/dev/null
+out="$(chess reflex "$START")"
+echo "$out" | grep -q "would play e4" \
+  && ok "two winning games open the gate: reflex would play e4" \
+  || fail "gate stayed shut at two wins: $out"
+
+# Unknown position: the caller must fall through to normal play.
+out="$(chess reflex "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1")"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "no memory of this position" \
+  && ok "an unknown position refuses loudly, so callers fall through" \
+  || fail "unknown position: rc=$rc $out"
+
+# An undo reopens a finished game, and its result is no longer true.
+chess undo opponent >/dev/null
+out="$(chess reflex "$START")"
+echo "$out" | grep "^f3 " | grep -q "games   2" \
+  && ok "undoing a finished game took its moves back out of memory" \
+  || fail "retraction after undo: $out"

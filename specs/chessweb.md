@@ -84,6 +84,8 @@ cannot be changed.
    Serve start books the same wake if the loaded game is active with her to move (covers a
    bridge that died before booking). `$DESKCRAB_CHESSWEB_WAKE_CMD` replaces the crab invocation
    wholesale (the reason becomes its one argument) so tests never touch the live queue.
+   Rule 16 stands in front of all of this: a position reflex memory knows well enough is
+   answered without any wake at all.
 8. The store is watched (a poll, at most 2s late). Moves appended by another hand are
    translated and broadcast in order, exactly as if the bridge had made them. Any other change
    — a shorter list, a rewritten prefix, an undo — forces a full resync (Team + replay) of every
@@ -130,6 +132,16 @@ cannot be changed.
     en passant — never the halfmove or fullmove counters. No expectation given, no check: every
     existing caller keeps working. `show` and `status` print the current ply, so the value is
     always at hand.
+16. Before booking any wake for her move, the bridge asks reflex memory
+    (`chess_reflex.best_move`, specs/chess-reflex.md) whether the position is already known well
+    enough to answer. A hit is played immediately: recorded through `chess_cli.save_game` like
+    any move, broadcast to every connection, stamped as played in the `/thinking` state, and
+    logged as `reflex played <san> from memory` — and the wake is never booked, which is the
+    point: a remembered opening costs no reasoning turn. A miss, an unconfident position, or any
+    reflex failure books the wake exactly as rule 7 says. A reflex move that ends the game still
+    broadcasts GameComplete (rule 9) and books the end-of-game wake, because she should hear how
+    her game finished. `DESKCRAB_CHESS_REFLEX=0` disables the auto-play; recording of finished
+    games is unconditional.
 
 ## KNOWN LIMITS
 

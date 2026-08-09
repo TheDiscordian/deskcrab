@@ -157,3 +157,20 @@ if start_bridge "$CH" "$SANDBOX/wake-fools.log" --opponent guest; then
     scn poller_end "$PORT" "$CH"
 fi
 stop_bridge
+
+echo "a known position is answered from reflex memory, not a wake:"
+CH="$SANDBOX/chess-reflex"
+seed "$CH" rival-001 rival black f2f3 e7e5 g2g4 d8h4
+seed "$CH" rival-002 rival black f2f3 e7e5 g2g4 d8h4
+DESKCRAB_CHESS_DIR="$CH" PYTHONDONTWRITEBYTECODE=1 \
+    "$VENV_PY" -B "$REPO/lib/chess_cli.py" reflex --backfill >/dev/null
+if start_bridge "$CH" "$SANDBOX/wake-reflex.log" --opponent guest; then
+    scn reflex "$PORT" "$CH" "$SANDBOX/wake-reflex.log"
+    if grep -q "reflex played" "$SANDBOX/serve.log"; then
+        ok "the serve log says the moves came from memory, not thought"
+    else
+        sed 's/^/    serve: /' "$SANDBOX/serve.log" | tail -15
+        fail "no 'reflex played' line in the serve log"
+    fi
+fi
+stop_bridge
