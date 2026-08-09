@@ -142,7 +142,9 @@ def resolve_game(spec: str | None) -> dict:
     if len(active) == 1:
         return active[0]
     if not active:
-        raise CliError("no active games — start one with: crab-chess new <opponent>")
+        # Every game is finished: the last one played is what anyone means by
+        # "the game" — a post-mortem is exactly when you want to look at it.
+        return max(games, key=lambda g: (g.get("updated") or "", g["id"]))
     ids = ", ".join(g["id"] for g in active)
     raise CliError(f"several active games ({ids}) — name one")
 
