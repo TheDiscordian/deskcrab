@@ -465,11 +465,15 @@ def cmd_draw(args):
 
 
 def cmd_engine(args):
-    path = shutil.which("stockfish")
+    # CRAB_CHESS_ENGINE names any UCI binary; stockfish is only the default.
+    named = os.environ.get("CRAB_CHESS_ENGINE")
+    path = shutil.which(named) if named else shutil.which("stockfish")
     if not path:
-        raise CliError("stockfish is not on PATH — the engine opponent is "
+        which = named or "stockfish"
+        raise CliError(f"{which} is not on PATH — the engine opponent is "
                        "optional and currently unavailable; human play is "
-                       "unaffected")
+                       "unaffected (set CRAB_CHESS_ENGINE to another UCI "
+                       "engine if you have one)")
     import chess.engine
     g = resolve_game(args.game)
     board = build_board(g)
