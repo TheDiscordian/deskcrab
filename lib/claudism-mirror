@@ -21,6 +21,14 @@ Modes:
       One flag object on stdin; appends the day's record — claudism-capture's
       shape plus {"stage": "live", "outcome": ...} — flocked, like the
       capture and the day journal.
+  tableswap <phrase-file> <flags-dir> <kind> <pid>
+      The whole response on stdin. Her replacement table (rules 47-49),
+      applied to the spoken half: every sentence an entry's own replace
+      lines fully repair is swapped, each swap logged to the day's flag log
+      with before, after and outcome table-swap BEFORE it lands — a swap
+      that cannot be logged is not applied, so the sentence stays for the
+      caller's own scan to hold and route as ever. Prints the response,
+      swapped or untouched.
 
 The phrase list format is defined by lib/claudism-capture (an entry is a
 bullet or heading whose first backtick span is a case-insensitive regex, the
@@ -46,8 +54,26 @@ def load_patterns(path):
     entries, bad = [], 0
     head_re = re.compile(r"^#{1,6}\s+(.*)")
     pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
+    rep_re = re.compile(r"^\s*[-*]\s*replace:\s*`(.*)`\s*->\s*`(.*)`\s*$",
+                        re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
+
+    def add_replace(m):
+        # A replace line rides the entry above it and is NEVER a trigger. A
+        # stray one (no entry yet) or a broken regex is skipped like any
+        # unparseable entry — the entry itself still fires, it just routes
+        # to her instead of swapping.
+        nonlocal bad
+        if not entries:
+            bad += 1
+            return
+        try:
+            entries[-1][3].append((re.compile(m.group(1), re.IGNORECASE),
+                                   m.group(2)))
+        except re.error:
+            bad += 1
+
     with open(path, encoding="utf-8") as f:
         lines = f.read().splitlines()
     if any(pat_re.match(ln) for ln in lines):
@@ -60,6 +86,10 @@ def load_patterns(path):
             if hm:
                 head = hm.group(1).strip()
                 continue
+            rm = rep_re.match(raw)
+            if rm:
+                add_replace(rm)
+                continue
             pm = pat_re.match(raw)
             if not pm:
                 continue
@@ -69,11 +99,15 @@ def load_patterns(path):
                 continue
             try:
                 entries.append((re.compile(span.group(1).strip(), re.IGNORECASE),
-                                span.group(1).strip(), head))
+                                span.group(1).strip(), head, []))
             except re.error:
                 bad += 1
     else:
         for raw in lines:
+            rm = rep_re.match(raw.rstrip())
+            if rm:
+                add_replace(rm)
+                continue
             m = entry_re.match(raw.rstrip())
             if not m:
                 continue
@@ -83,7 +117,7 @@ def load_patterns(path):
             pat = span.group(1).strip()
             note = span_re.sub("", m.group(1)).strip(" —-–:,.")
             try:
-                entries.append((re.compile(pat, re.IGNORECASE), pat, note))
+                entries.append((re.compile(pat, re.IGNORECASE), pat, note, []))
             except re.error:
                 bad += 1
     return entries, bad
@@ -91,11 +125,82 @@ def load_patterns(path):
 
 def first_flag(text, patterns):
     """The first pattern that fires anywhere in this text, or None. The
-    streamer hands one sentence at a time, so 'anywhere' is one sentence."""
-    for rx, pat, note in patterns:
+    streamer hands one sentence at a time, so 'anywhere' is one sentence.
+    The rx and replaces keys carry the entry itself for the table of rule
+    47; scan() rebuilds its records from the plain fields, so nothing
+    uncompilable ever reaches a JSON boundary."""
+    for rx, pat, note, replaces in patterns:
         if rx.search(text):
-            return {"pattern": pat, "note": note}
+            return {"pattern": pat, "note": note, "rx": rx,
+                    "replaces": replaces}
     return None
+
+
+def table_swap(sentence, rx, replaces):
+    """Her replacement table, applied where it fully covers the fire
+    (specs/speech-output.md rules 47-48). Every replace line of the firing
+    entry is applied; if the entry's own pattern still matches what is left,
+    the table did not cover this fire and the sentence holds as usual. Code
+    then repairs ONLY what deleting a span breaks — the doubled space, an
+    orphaned leading comma, the sentence's leading capital — and nothing
+    else. Returns the repaired sentence, or None to hold. The replacement
+    text is hers, spliced literally: never a template, never expanded."""
+    if not replaces:
+        return None
+    out = sentence
+    for rep_rx, rep_text in replaces:
+        out = rep_rx.sub(lambda _m, _t=rep_text: _t, out)
+    if out == sentence:
+        return None
+    out = re.sub(r" {2,}", " ", out)
+    out = re.sub(r"^(\s*),\s*", r"\1", out)
+    for i, ch in enumerate(out):
+        if not ch.isalpha():
+            continue
+        if ch.islower():
+            for bch in sentence:
+                if bch.isalpha():
+                    if bch.isupper():
+                        out = out[:i] + ch.upper() + out[i + 1:]
+                    break
+        break
+    if not out.strip() or rx.search(out):
+        return None
+    return out
+
+
+def flag_row(kind, pid, rec, outcome):
+    """One live-stage flag record — claudism-capture's shape plus stage and
+    outcome, the same row logflag has always written."""
+    now = int(time.time())
+    row = {
+        "epoch": now,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "kind": kind,
+        "pid": int(pid) if str(pid).isdigit() else None,
+        "sentence": str(rec.get("sentence", "")),
+        "pattern": str(rec.get("pattern", "")),
+        "stage": "live",
+        "outcome": outcome,
+    }
+    if rec.get("note"):
+        row["note"] = str(rec["note"])
+    return row
+
+
+def append_flag(flags_dir, row):
+    """Append one row to the day's flag log — flocked, like the capture and
+    the day journal. Raises on failure: every caller decides what an
+    unwritable log means, and for a table swap the answer is rule 49's — the
+    swap is NOT applied."""
+    os.makedirs(flags_dir, exist_ok=True)
+    day = time.strftime("%Y-%m-%d",
+                        time.localtime(row.get("epoch", int(time.time()))))
+    with open(os.path.join(flags_dir, day + ".jsonl"), "a",
+              encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
 
 
 def sentences(text):
@@ -164,32 +269,48 @@ def main(argv):
             rec = json.load(sys.stdin)
         except Exception:
             return 2
-        now = int(time.time())
-        row = {
-            "epoch": now,
-            "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "kind": kind,
-            "pid": int(pid) if str(pid).isdigit() else None,
-            "sentence": str(rec.get("sentence", "")),
-            "pattern": str(rec.get("pattern", "")),
-            "stage": "live",
-            "outcome": outcome,
-        }
-        if rec.get("note"):
-            row["note"] = str(rec["note"])
         try:
-            os.makedirs(flags_dir, exist_ok=True)
-            day = time.strftime("%Y-%m-%d", time.localtime(now))
-            with open(os.path.join(flags_dir, day + ".jsonl"), "a",
-                      encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                f.flush()
+            append_flag(flags_dir, flag_row(kind, pid, rec, outcome))
         except OSError:
             return 2
         return 0
+    if mode == "tableswap":
+        try:
+            phrase_file, flags_dir, kind, pid = argv[1:5]
+        except ValueError:
+            return 2
+        text = sys.stdin.read()
+        try:
+            patterns, _bad = load_patterns(phrase_file)
+        except OSError:
+            patterns = []
+        head, tail = split_spoken(text)
+        out = head
+        for sent in sentences(head) if patterns else []:
+            f = first_flag(sent, patterns)
+            if not f or not f["replaces"]:
+                continue
+            repaired = table_swap(sent, f["rx"], f["replaces"])
+            if repaired is None or sent not in out:
+                continue
+            # Rule 49: the flag log gets the swap BEFORE the swap lands. A
+            # row that cannot be written leaves the sentence exactly as it
+            # was, so the caller's own scan still flags it and it holds and
+            # routes to her as it always did.
+            row = flag_row(kind, pid, {"sentence": sent,
+                                       "pattern": f["pattern"],
+                                       "note": f["note"]}, "table-swap")
+            row["before"], row["after"] = sent, repaired
+            try:
+                append_flag(flags_dir, row)
+            except OSError:
+                continue
+            out = out.replace(sent, repaired, 1)
+        sys.stdout.write(out + ("\n" + tail if tail else ""))
+        return 0
     sys.stderr.write("usage: claudism-mirror scan <phrase-file> | splice | "
-                     "logflag <flags-dir> <kind> <pid> <outcome>\n")
+                     "logflag <flags-dir> <kind> <pid> <outcome> | "
+                     "tableswap <phrase-file> <flags-dir> <kind> <pid>\n")
     return 2
 
 

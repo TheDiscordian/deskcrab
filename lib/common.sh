@@ -2929,6 +2929,19 @@ claudism_mirror_direct() {  # <kind> <response>
     local KIND="$1" RESPONSE="$2"
     { [ -x "$LIB_DIR/claudism-mirror" ] && [ -f "$CLAUDISMS_FILE" ]; } \
         || { printf '%s' "$RESPONSE"; return 0; }
+    # Her table first (rules 47 and 49): every sentence her own replace
+    # lines fully repair is swapped here, logged before applied, at string
+    # cost — and the scan below then sees the repaired draft, so only the
+    # fires the table could not cover pay for a mirror call. A table pass
+    # that fails leaves the draft exactly as it was.
+    local SWAPPED
+    SWAPPED="$(printf '%s' "$RESPONSE" \
+        | "$LIB_DIR/claudism-mirror" tableswap "$CLAUDISMS_FILE" \
+            "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" 2>/dev/null)" || SWAPPED=""
+    if [ -n "$SWAPPED" ] && [ "$SWAPPED" != "$RESPONSE" ]; then
+        RESPONSE="$SWAPPED"
+        speech_log "claudism table ($KIND): her table repaired the draft"
+    fi
     local FLAGS N I REC SENT PAT NOTE REWRITE SPLICED OUTLOG
     FLAGS="$(spoken_part "$RESPONSE" \
         | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" \
@@ -2970,6 +2983,59 @@ claudism_mirror_direct() {  # <kind> <response>
     printf '%s' "$RESPONSE"
 }
 
+# The swaps the streamer's table applied (outcome table-swap in the fires
+# file), folded into the reply so the conversation matches the speakers
+# (rule 43's purpose; the swap was already logged and spoken, rule 49). A
+# swap whose sentence cannot be found leaves the reply alone and says so —
+# never a reason to hold anything, the words are already out.
+_claudism_swaps_splice() {  # <fires-file> <response> -> response on stdout
+    local FIRES="$1" RESPONSE="$2" ROW SENT AFTER SPLICED
+    [ -f "$FIRES" ] || { printf '%s' "$RESPONSE"; return 0; }
+    while IFS= read -r ROW; do
+        [ -n "$ROW" ] || continue
+        SENT="$(_claudism_field "$ROW" before)"
+        AFTER="$(_claudism_field "$ROW" after)"
+        { [ -n "$SENT" ] && [ -n "$AFTER" ]; } || continue
+        SPLICED="$(python3 -c \
+            'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
+            "$RESPONSE" "$SENT" "$AFTER" \
+            | "$LIB_DIR/claudism-mirror" splice 2>/dev/null)" || SPLICED=""
+        if [ -n "$SPLICED" ]; then
+            RESPONSE="$SPLICED"
+        else
+            speech_log "claudism table-swap was spoken but its line is not in the reply — the reply keeps the original"
+        fi
+    done <<EOF
+$(python3 - "$FIRES" <<'PY' 2>/dev/null
+import json, sys
+fires, swapped = {}, []
+try:
+    fh = open(sys.argv[1])
+except OSError:
+    sys.exit(0)
+with fh:
+    for ln in fh:
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        seq = d.get("seq")
+        if seq is None:
+            continue
+        if d.get("outcome") == "table-swap":
+            swapped.append(seq)
+        elif "outcome" not in d:
+            fires[seq] = d
+for s in swapped:
+    f = fires.get(s)
+    if f and f.get("before") and f.get("after"):
+        print(json.dumps({"before": f["before"], "after": f["after"]}))
+PY
+)
+EOF
+    printf '%s' "$RESPONSE"
+}
+
 # The desk pass: answer the streamer's fires as the voice reaches them. The
 # streamer's outcome record is the single source of truth for what was
 # spoken (rule 43), so the reply echoed here can never disagree with the
@@ -2983,23 +3049,32 @@ claudism_mirror_desk() {  # <response>
     PREDICTED="$(spoken_part "$RESPONSE" \
         | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" || PREDICTED="[]"
     if [ -z "$PREDICTED" ] || [ "$PREDICTED" = "[]" ]; then
+        # A chunk-boundary surprise the table swapped is already spoken and
+        # logged; done goes down first so no later fire can swap, then what
+        # was swapped is folded into the reply.
         printf 'done\n' > "$FIRES.done" 2>/dev/null
-        printf '%s' "$RESPONSE"
+        _claudism_swaps_splice "$FIRES" "$RESPONSE"
         return 0
     fi
     P="$(printf '%s' "$PREDICTED" | python3 -c \
         'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)" || P=1
     case "$P" in ''|*[!0-9]*) P=1 ;; esac
     local DEADLINE=$(( $(date +%s) + ${CLAUDISM_DESK_WAIT:-600} )) LAST=0
-    local REC SEQ SENT PAT NOTE REWRITE SPLICED OUTCOME OUTLOG VERDICT W
+    local INFO SWAPPED REC SEQ SENT PAT NOTE REWRITE SPLICED OUTCOME OUTLOG VERDICT W
     while :; do
-        REC="$(python3 - "$FIRES" "$LAST" <<'PY' 2>/dev/null
+        # First line: how many predicted fires the streamer's table already
+        # answered itself (outcome table-swap) — they count towards the
+        # predicted total or this loop would sit out the whole voice waiting
+        # for holds that will never come. Second line, when there is one:
+        # the next fire waiting for an answer.
+        INFO="$(python3 - "$FIRES" "$LAST" <<'PY' 2>/dev/null
 import json, sys
 path, last = sys.argv[1], int(sys.argv[2])
-fires, done = {}, set()
+fires, done, swapped = {}, set(), 0
 try:
     fh = open(path)
 except OSError:
+    print(0)
     sys.exit(0)
 with fh:
     for ln in fh:
@@ -3012,14 +3087,20 @@ with fh:
             continue
         if "outcome" in d:
             done.add(seq)
+            if d["outcome"] == "table-swap":
+                swapped += 1
         else:
             fires[seq] = d
+print(swapped)
 for k in sorted(fires):
     if k > last and k not in done:
         print(json.dumps(fires[k]))
         break
 PY
 )"
+        SWAPPED="$(printf '%s\n' "$INFO" | sed -n 1p)"
+        case "$SWAPPED" in ''|*[!0-9]*) SWAPPED=0 ;; esac
+        REC="$(printf '%s\n' "$INFO" | sed -n 2p)"
         if [ -n "$REC" ]; then
             SEQ="$(_claudism_field "$REC" seq)"
             case "$SEQ" in ''|*[!0-9]*) SEQ=0 ;; esac
@@ -3088,15 +3169,18 @@ PY
                 "$CLAUDISM_FLAGS_DIR" desktop "$$" "$OUTLOG" 2>/dev/null
             speech_log "claudism mirror (desk): '$PAT' -> $OUTLOG"
             R=$((R + 1))
-            [ "$R" -ge "$P" ] && break
+            [ "$((R + SWAPPED))" -ge "$P" ] && break
             continue
         fi
+        [ "$((R + SWAPPED))" -ge "$P" ] && break
         kill -0 "${_TTS_STREAMER_PID:-0}" 2>/dev/null || break
         [ "$(date +%s)" -ge "$DEADLINE" ] && break
         sleep 0.2
     done
     printf 'done\n' > "$FIRES.done" 2>/dev/null
-    printf '%s' "$RESPONSE"
+    # Fold in whatever the table swapped — after done, so a swap landing
+    # between the last read and the marker is still picked up here.
+    _claudism_swaps_splice "$FIRES" "$RESPONSE"
 }
 
 # A turn ending without the answer loop (every account refused, no text at
@@ -4175,6 +4259,7 @@ start_tts_streamer() {
         DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
         DESKCRAB_CLAUDISMS="${_CLAUDISM_FIRES_FILE:+$CLAUDISMS_FILE}" \
         DESKCRAB_CLAUDISM_FIRES="${_CLAUDISM_FIRES_FILE:-}" \
+        DESKCRAB_CLAUDISM_FLAGS="${_CLAUDISM_FIRES_FILE:+$CLAUDISM_FLAGS_DIR}" \
         DESKCRAB_CLAUDISM_MIRROR_TIMEOUT="$CLAUDISM_MIRROR_TIMEOUT" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
     _TTS_STREAMER_PID=$!

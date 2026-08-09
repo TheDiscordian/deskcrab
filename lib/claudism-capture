@@ -21,6 +21,13 @@ back to the liberal reading: the first backtick span of any bullet or
 heading entry is the trigger. A missing or unparseable list means no flags,
 never a failed turn.
 
+An entry may also carry ``- replace: `regex` -> `text` `` lines — her own
+replacement table, the live mirror's fast path (specs/speech-output.md
+rules 47-49). They are parsed here because the list has ONE format and this
+file owns it; a replace line belongs to the entry above it, is compiled
+case-insensitively like the trigger, and is never itself a trigger. The
+capture only carries them — nothing here ever applies one.
+
 Flag records key on (epoch, pid) — the day journal's identity — so the
 nightly review, which is her re-reading her own log, can find the whole
 turn a sentence came from.
@@ -61,8 +68,26 @@ def load_patterns(path):
     entries, bad = [], 0
     head_re = re.compile(r"^#{1,6}\s+(.*)")
     pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
+    rep_re = re.compile(r"^\s*[-*]\s*replace:\s*`(.*)`\s*->\s*`(.*)`\s*$",
+                        re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
+
+    def add_replace(m):
+        # A replace line rides the entry above it and is NEVER a trigger. A
+        # stray one (no entry yet) or a broken regex is skipped like any
+        # unparseable entry — the entry itself still fires, it just routes
+        # to her instead of swapping.
+        nonlocal bad
+        if not entries:
+            bad += 1
+            return
+        try:
+            entries[-1][3].append((re.compile(m.group(1), re.IGNORECASE),
+                                   m.group(2)))
+        except re.error:
+            bad += 1
+
     with open(path, encoding="utf-8") as f:
         lines = f.read().splitlines()
     if any(pat_re.match(ln) for ln in lines):
@@ -75,6 +100,10 @@ def load_patterns(path):
             if hm:
                 head = hm.group(1).strip()
                 continue
+            rm = rep_re.match(raw)
+            if rm:
+                add_replace(rm)
+                continue
             pm = pat_re.match(raw)
             if not pm:
                 continue
@@ -84,11 +113,15 @@ def load_patterns(path):
                 continue
             try:
                 entries.append((re.compile(span.group(1).strip(), re.IGNORECASE),
-                                span.group(1).strip(), head))
+                                span.group(1).strip(), head, []))
             except re.error:
                 bad += 1
     else:
         for raw in lines:
+            rm = rep_re.match(raw.rstrip())
+            if rm:
+                add_replace(rm)
+                continue
             m = entry_re.match(raw.rstrip())
             if not m:
                 continue
@@ -98,7 +131,7 @@ def load_patterns(path):
             pat = span.group(1).strip()
             note = span_re.sub("", m.group(1)).strip(" —-–:,.")
             try:
-                entries.append((re.compile(pat, re.IGNORECASE), pat, note))
+                entries.append((re.compile(pat, re.IGNORECASE), pat, note, []))
             except re.error:
                 bad += 1
     return entries, bad
@@ -132,7 +165,7 @@ def main(argv):
         return 0
     hits = []
     for sent in sentences(spoken):
-        for rx, pat, note in patterns:
+        for rx, pat, note, _replaces in patterns:
             if rx.search(sent):
                 rec = {
                     "epoch": epoch,

@@ -128,6 +128,10 @@ def _is_limit(text):
 CLAUDISMS = os.environ.get("DESKCRAB_CLAUDISMS", "").strip()
 CLAUDISM_FIRES = os.environ.get("DESKCRAB_CLAUDISM_FIRES", "").strip()
 CLAUDISM_TIMEOUT = float(os.environ.get("DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "35"))
+# The day's flag log, for the table of rules 47-49: a swap is applied only
+# once it is on the record there, so without this path the table never swaps
+# and every fire holds exactly as it did before the table existed.
+CLAUDISM_FLAGS = os.environ.get("DESKCRAB_CLAUDISM_FLAGS", "").strip()
 
 _CLAUDISM_PATTERNS = []
 _CLAUDISM_MOD = None
@@ -314,7 +318,9 @@ class Voice(threading.Thread):
                 fh.flush()
 
         # The caller has already committed the turn: a hold now could never
-        # be answered, so the fire is recorded and the sentence speaks.
+        # be answered, and a swap now could never reach the committed reply
+        # (rule 43 — the conversation must match the speakers), so the fire
+        # is recorded and the sentence speaks.
         if os.path.exists(done_path):
             try:
                 record({"seq": seq, "sentence": raw, "spoken": spoken,
@@ -326,15 +332,62 @@ class Voice(threading.Thread):
             speech_log("claudism fire #%d (%s) after the turn moved on — "
                        "speaking the original" % (seq, flag["pattern"]))
             return spoken
-        # The record goes down BEFORE the hold begins (rule 40): a hold
-        # nobody can read is a stall, not a mirror.
+        # Her table (rules 47-49), before the hold, never after a verdict: a
+        # fire the entry's own replace lines fully repair is spoken repaired
+        # — a string swap into words she wrote, no hold, no mirror call. A
+        # failure computing it is a failure to SWAP, and the fire holds as
+        # it always did.
+        swap = None
+        if CLAUDISM_FLAGS and flag.get("replaces"):
+            try:
+                swap = _CLAUDISM_MOD.table_swap(raw, flag["rx"],
+                                                flag["replaces"])
+            except Exception as exc:
+                swap = None
+                speech_log("claudism table failed (%s) — holding as usual"
+                           % exc)
+        swap_say = for_speech(swap) if swap is not None else ""
+        rec = {"seq": seq, "sentence": raw, "spoken": spoken,
+               "pattern": flag["pattern"], "note": flag.get("note", "")}
+        if swap is not None and swap_say:
+            rec["before"], rec["after"] = raw, swap
+        # The record goes down BEFORE the hold begins (rule 40) and before a
+        # swap is applied (rule 49): a hold nobody can read is a stall, not
+        # a mirror, and an unlogged swap never happened.
         try:
-            record({"seq": seq, "sentence": raw, "spoken": spoken,
-                    "pattern": flag["pattern"], "note": flag.get("note", "")})
+            record(rec)
         except Exception as exc:
             speech_log("claudism fire could not be recorded (%s) — speaking "
                        "the original" % exc)
             return spoken
+        if swap is not None and swap_say:
+            # Rule 49: the flag log and the outcome record both land before
+            # the repaired words do. Either write failing means the swap is
+            # NOT applied — the fire record is already down, so the sentence
+            # holds and routes to her exactly as an uncovered fire does.
+            logged = True
+            try:
+                row = _CLAUDISM_MOD.flag_row("desktop", os.getpid(), rec,
+                                             "table-swap")
+                row["before"], row["after"] = raw, swap
+                _CLAUDISM_MOD.append_flag(CLAUDISM_FLAGS, row)
+            except Exception as exc:
+                logged = False
+                speech_log("claudism table-swap #%d could not reach the flag "
+                           "log (%s) — holding instead" % (seq, exc))
+            if logged:
+                try:
+                    record({"seq": seq, "outcome": "table-swap"})
+                except Exception as exc:
+                    logged = False
+                    speech_log("claudism table-swap #%d outcome could not be "
+                               "recorded (%s) — holding instead" % (seq, exc))
+            if logged:
+                speech_log("CLAUDISM table-swap #%d (%s): %s -> %s"
+                           % (seq, flag["pattern"],
+                              " ".join(raw.split())[:60],
+                              " ".join(swap.split())[:60]))
+                return swap_say
         speech_log("CLAUDISM fire #%d (%s): %s — held for her rewrite"
                    % (seq, flag["pattern"], " ".join(raw.split())[:90]))
         verdict_path = "%s.verdict-%d" % (CLAUDISM_FIRES, seq)
