@@ -962,6 +962,7 @@ async function testWatcherReleasesTurn() {
   const statuses = [];
   const displays = [];
   let forgotten = 0, delivered = 0;
+  const clips = [];
   const bubble = {
     textContent: "…",
     scrollIntoView() {},
@@ -971,7 +972,7 @@ async function testWatcherReleasesTurn() {
     busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
     pendingUser: null, pendingReply: null,
     awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
-    turnCtl: null, turnKicked: false, STREAM_IDLE_MS: 60000,
+    turnCtl: null, turnKicked: false, turnVoiced: false, STREAM_IDLE_MS: 60000,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
     setStatus: s => statuses.push(s),
@@ -985,21 +986,30 @@ async function testWatcherReleasesTurn() {
     deliver: async () => { delivered++; },
     updateTalkBtn: () => {},
     showThought: () => {},
-    enqueueVoice: () => {},
+    enqueueVoice: a => clips.push(a),
     attachDisplay: (el, html) => displays.push(html),
-    // The C13 stream: opens fine, pings forever, done never comes. Only the
-    // release's abort ends a read.
+    // The C13 stream: opens fine, pings while the record already carries the
+    // answer, and only much later — after compaction — emits its done event.
+    // That event carries the turn's own reply clip, the only sound this turn
+    // will ever make, which is why the release must not cut this socket.
     fetch: async (url, opts) => ({
       ok: true, status: 200, body: { getReader: () => ({
         read: () => new Promise((res, rej) => {
+          const late = Date.now() - opened > 400;
+          const frame = late
+            ? "data: " + JSON.stringify({ kind: "done", spoken: "it went well, in fact",
+                                          display_html: "", audio: "/audio/tail.wav",
+                                          error: "" }) + "\n\n"
+            : ": ping\n\n";
           const t = setTimeout(() => res(
-            { value: enc.encode(": ping\n\n"), done: false }), 25);
+            { value: enc.encode(frame), done: false }), 25);
           if (opts && opts.signal) opts.signal.addEventListener("abort",
             () => { clearTimeout(t); rej(new Error("aborted")); });
         }),
       }) },
     }),
   };
+  const opened = Date.now();
   const api = build(["function norm", "async function streamTurn",
                      "function releaseTurn", "function watchFilter",
                      "async function runTurn"], ctx);
@@ -1016,10 +1026,14 @@ async function testWatcherReleasesTurn() {
   const hidReply = api.watchFilter({ role: "assistant",
                                      text: "it went well, in fact",
                                      display_html: "<p>card</p>" });
+  // The button comes back on the release, not on the stream: measured as soon
+  // as busy clears, while the socket is still open for the voice.
+  let took = 0;
+  for (let i = 0; i < 60 && ctx.busy; i++) await sleep(25);
+  took = Date.now() - started;
   await Promise.race([p, sleep(3000).then(() => {
     throw new Error("HARNESS TIMEOUT");
-  })]).catch(e => bad("runTurn must return once released", e.message));
-  const took = Date.now() - started;
+  })]).catch(e => bad("the voice tail must end when its done event lands", e.message));
 
   if (hidUser && hidReply) ok("both halves of the exchange are recognised, neither drawn twice");
   else bad("the own exchange must be suppressed", "user=" + hidUser + " reply=" + hidReply);
@@ -1036,8 +1050,12 @@ async function testWatcherReleasesTurn() {
   else bad("the display card must be attached on release", displays.length);
   if (forgotten >= 1) ok("the remembered turn is forgotten");
   else bad("forgetTurn must run on release", forgotten);
-  if (delivered === 0) ok("deliver never runs — there is no done event to deliver");
+  if (delivered === 0) ok("deliver never runs — the record already settled the bubble");
   else bad("a released turn must not also deliver", delivered);
+  if (clips.join(",") === "/audio/tail.wav")
+    ok("but the completion clip still sounds — a reply read is a reply heard");
+  else bad("the voice tail must play the clip the stream still owed",
+           clips.join(",") || "silence");
   if (statuses.some(s => /arrived through the conversation/.test(s)))
     ok("and the status says what happened");
   else bad("the release must be announced", statuses.join(" | ") || "no status");
@@ -1114,6 +1132,9 @@ async function testReleaseGuards() {
     busy: false, turnSeq: 7, releasedSeq: 0,
     liveTurn: { reply: streamed },
     turnCtl: { abort: () => { aborted++; } },
+    // This turn has already been heard, so the stream owes nothing more and
+    // the release cuts it. The silent case is the next assertion down.
+    turnVoiced: true,
     forgetTurn: () => { forgotten++; },
     pendingReply: "x",
     talk: { classList: { remove() {} } },
@@ -1136,6 +1157,15 @@ async function testReleaseGuards() {
     ok("the release marks this turn's sequence, cuts the stream, clears busy");
   else bad("the release must be guarded by the turn sequence",
            "seq=" + ctx.releasedSeq + " aborted=" + aborted + " busy=" + ctx.busy);
+
+  // Nothing has been voiced: the stream is the only place the sound can still
+  // come from, so it is left open as a voice tail and the button still returns.
+  ctx.busy = true; ctx.turnVoiced = false; ctx.turnSeq = 8;
+  api.releaseTurn({ text: "silent so far" });
+  if (aborted === 1 && !ctx.busy && ctx.releasedSeq === 8)
+    ok("a turn that has voiced nothing keeps its stream — the button comes back anyway");
+  else bad("a silent turn's stream must survive the release",
+           "aborted=" + aborted + " busy=" + ctx.busy);
 }
 
 async function testResetPayloadReleases() {

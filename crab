@@ -183,7 +183,19 @@ case "${1:-}" in
         # the first one's and works the same want twice. The lock is held for
         # the life of this process, so it covers the whole session.
         exec 9>"${STATE_PREFIX}-wake.lock"
-        if ! flock -n 9; then
+        # An event wake has somebody waiting on the other end of it — a move on
+        # a board, a file that landed. It WAITS for the lock rather than
+        # bouncing off it, and if it still cannot have it, it comes back in
+        # seconds, not in a quarter of an hour.
+        _wake_lock_ok=0
+        if [ "${WAKE_KIND:-}" = "event" ]; then
+            flock -w "${WAKE_EVENT_LOCK_WAIT:-90}" 9 && _wake_lock_ok=1
+            _wake_retry="${WAKE_EVENT_DEFER_DELAY:-15}"
+        else
+            flock -n 9 && _wake_lock_ok=1
+            _wake_retry="$WAKE_DEFER_DELAY"
+        fi
+        if [ "$_wake_lock_ok" != 1 ]; then
             # Push back to a moment nothing else has taken. A flat 15 minutes
             # here is what produced three timers at the same second with
             # sequential ids: every wake blocked in the same minute re-armed to

@@ -347,6 +347,12 @@ wake_pending_equivalent() {  # <fire-epoch> <kind> <reason>
 # landing on another wake's second costs it a quarter of an hour.
 wake_free_slot() {  # [base-delay-seconds] -> delay in seconds
     local base="${1:-$WAKE_DEFER_DELAY}" now cand f diff clash guard=0
+    # An urgent booking is not part of the convoy. Spacing exists so wakes
+    # that all want the same distant minute do not land on one second; a wake
+    # that wants to fire NOW (a move waiting on a board, someone sitting
+    # there) must not be shoved minutes into the future by a queue it was
+    # never in. It takes the lock or waits for it — that is spacing enough.
+    if [ "$base" -le "$WAKE_URGENT_DELAY" ]; then echo "$base"; return; fi
     now=$(date +%s); cand=$(( now + base ))
     while [ "$guard" -lt 64 ]; do
         clash=0

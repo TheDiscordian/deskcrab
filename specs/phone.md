@@ -149,9 +149,16 @@ with the page closed.
     turn's own User block came back through the watcher — a User block that is not this turn's
     question breaks that adjacency (whatever follows answers it), and a marked block (an
     autonomous wake) is never a candidate, which is why every block the watch and context routes
-    deliver carries its mark. On recognition the client MUST abort the turn's stream, forget the
-    remembered turn, and hand the button back, guarded by the turn sequence exactly as the normal
-    end is, so a superseded turn can never clear a newer one's state. The recognised block fills
+    deliver carries its mark. On recognition the client MUST forget the remembered turn and hand
+    the button back, guarded by the turn sequence exactly as the normal end is, so a superseded
+    turn can never clear a newer one's state. The turn's stream MUST be aborted if any clip of
+    this turn has already sounded, and MUST be left open if none has: the watcher carries no
+    audio pointer, so a turn released before its first clip was cut off from the only sound it
+    would ever make, and arrived in writing and in silence. A stream left open this way is a
+    voice tail — it MUST play the clips and the completion clip that still arrive on it, and MUST
+    touch nothing else: no bubble, no button, no status, the record having already settled those.
+    Rule 6's never-twice guarantee is kept, because the tail only ever runs where nothing was
+    voiced. The recognised block fills
     the live bubble when nothing streamed, carries the display card in either case — the display
     never rides the stream's text events — and is never drawn a second time as a turn from
     elsewhere. It is not re-voiced: the clips the turn produced were already spoken from the

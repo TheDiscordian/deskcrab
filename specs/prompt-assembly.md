@@ -162,6 +162,12 @@ state block's own content, not for a cut.
     written once, in one layer, and the other layers point at it.
 25. Only one regroup block may be emitted. The two current blocks say the same thing in the same
     words and routinely co-occur.
+25a. A user message that no session ever answered MUST be carried into the next wake's prompt as
+    unanswered business, to be folded into that wake's reply. The concurrent-conversation block
+    silences a wake against a message another session is answering; without this, a message nobody
+    picked up is silenced forever, because later turns are framed around his newest sentence only.
+    Emitted only when neither regroup block fired, and only when the blocks following the last user
+    message are all autonomous wakes — a wake's own reply does not answer him.
 
 ### Instruction collisions
 

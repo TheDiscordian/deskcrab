@@ -267,6 +267,14 @@ WAKES_SHOW="${WAKES_SHOW:-5}"
 # push-back, and the minimum distance two bookings must keep from each other.
 WAKE_DEFER_DELAY="${WAKE_DEFER_DELAY:-900}"
 WAKE_SLOT_SPREAD="${WAKE_SLOT_SPREAD:-180}"
+# A booking that wants to fire within this many seconds is urgent: it skips
+# the anti-collision spreading entirely (see wake_free_slot).
+WAKE_URGENT_DELAY="${WAKE_URGENT_DELAY:-120}"
+# An event wake has something waiting on it. It holds on for the wake lock
+# instead of bouncing, and its retry is seconds rather than the flat quarter
+# hour a scheduled wake can afford.
+WAKE_EVENT_LOCK_WAIT="${WAKE_EVENT_LOCK_WAIT:-90}"
+WAKE_EVENT_DEFER_DELAY="${WAKE_EVENT_DEFER_DELAY:-15}"
 # Booking is check-then-act three times over — is an equivalent wake already
 # pending, is this moment free, write the record, book the timer — and several
 # sessions book at once. Two wakes finishing in the same second each asked "is a
@@ -2264,6 +2272,8 @@ ${SHOWN:-(the shelf did not fit this turn — it is at $WANTS_FILE)}"
         REGROUP="${REGROUP_CONTEXT-$(regroup_context)}"
         [ -n "$REGROUP" ] || [ "$PROMPT_PROFILE" != wake ] \
             || REGROUP="$(wake_concurrent_turn_context)"
+        [ -n "$REGROUP" ] || [ "$PROMPT_PROFILE" != wake ] \
+            || REGROUP="$(wake_unanswered_user_context)"
     fi
     _prompt_layer regroup "the conversation above" "$REGROUP"
 
@@ -2706,6 +2716,35 @@ You have, in effect, just heard yourself say that. Never restate, rephrase or re
 Say nothing — end with no message text at all — only if everything you had is genuinely covered by that exchange. Silence is a judgement about content, never a courtesy to the other session, and it is never announced.
 EOF
     fi
+}
+
+# The last thing he said that NOBODY answered. A wake landing on a live
+# conversation is told (above) not to re-answer a message another session is
+# handling — but when no session ever did, that message just sits there: every
+# later wake reads it as already dealt with, and the next interactive turn is
+# told "THIS TURN IS ABOUT" whatever he said most recently. His older sentence
+# is then answered by nobody, ever. That is the hole this closes.
+#
+# Unanswered means: the last User block in the conversation has, after it,
+# either no Assistant block at all or only autonomous-wake blocks — a wake's
+# reply to itself is not an answer to him. Deliberately runs only when neither
+# regroup block fired, so a message being answered right now never appears here.
+wake_unanswered_user_context() {
+    [ -f "$CONVOFILE" ] || return 0
+    local TAIL SAID
+    TAIL="$(awk '/^User \[/ { buf = ""; seen = 1 }
+                 seen { buf = buf $0 "\n" }
+                 END { printf "%s", buf }' "$CONVOFILE")"
+    [ -n "$TAIL" ] || return 0
+    # Any answered-by-a-real-turn marker disqualifies it.
+    printf '%s' "$TAIL" | grep -q '^Assistant \[[^]]*\]: ' && return 0
+    SAID="$(printf '%s' "$TAIL" | awk '/^Assistant \[/ { exit } { print }')"
+    [ -n "$(printf '%s' "$SAID" | tr -d '[:space:]')" ] || return 0
+    cat <<EOF
+UNANSWERED — he said this and no session of you has replied to it yet. It is not old business and he is still owed it:
+$SAID
+Answer it as part of what you say now. Fold it together with whatever brought you here into ONE reply, his message first — never two separate answers, and never a note that you are catching up on it.
+EOF
 }
 
 # Is the phone client connected right now? serve.py touches the seen-file on

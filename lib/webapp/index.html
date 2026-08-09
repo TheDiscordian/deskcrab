@@ -472,7 +472,7 @@ async function streamTurn(text, turn, tid, resuming, seq) {
           deadline = lastTurnProgress + GIVE_UP_MS;
           if (ev.kind === "done") return ev;
           if (ev.kind === "voice") {
-            if (Date.now() >= voiceGateUntil) enqueueVoice(ev.audio);
+            if (Date.now() >= voiceGateUntil) { turnVoiced = true; enqueueVoice(ev.audio); }
             continue;
           }
           showThought(turn, ev);
@@ -615,6 +615,7 @@ async function runTurn(blob, ctype, typed, resumeTid) {
   const disarmWatchdog = armTurnWatchdog(seq);
   // Asking again means wanting the answer aloud again.
   voiceMuted = false;
+  turnVoiced = false;
   const turn = addTurn(typed || "🎤 …");
   // Held where the watcher can reach it: the reply can arrive through the
   // conversation instead of this turn's stream (rule 42), and it must land in
@@ -665,10 +666,16 @@ async function runTurn(blob, ctype, typed, resumeTid) {
     const res = await streamTurn(text, turn, tid, !!resumeTid, seq);
     // Null means the watcher ended this turn first (rule 42): the bubble,
     // the button, and the status were all settled there.
-    if (res) {
+    if (res && releasedSeq !== seq) {
       foldThoughts(turn);
       if (res.spoken) pendingReply = norm(res.spoken);
       await deliver(res, turn.reply);
+    } else if (res && res.audio) {
+      // The voice tail of a released turn (rule 42): the words were already
+      // reconciled to the record, but nothing had been voiced, so the
+      // completion clip is the only sound this turn will ever make. Play it;
+      // touch nothing else.
+      enqueueVoice(res.audio);
     }
   } catch (e) {
     setStatus(String(e.message || e), "err");
@@ -736,6 +743,10 @@ let turnSeq = 0;
 // own sequence against this and returns quietly instead of reconnecting to a
 // turn the page no longer owns.
 let releasedSeq = 0;
+// Whether this turn has sounded a single clip yet. A watcher release with this
+// still false must leave the stream open: the sound is still on its way down
+// it, and cutting the socket was how a reply arrived in writing and in silence.
+let turnVoiced = false;
 // The in-flight turn's bubbles, so a watcher-delivered reply lands in them
 // rather than beside them.
 let liveTurn = null;
@@ -1098,12 +1109,17 @@ let needReseed = false;
 // conversation append and the exit that emits the done event, so the record
 // can carry the answer a minute before the stream does. The arrival IS the
 // turn's end: the bubble is reconciled to the record, the stream cut, the
-// button handed back. Never re-voiced — any clips this turn produced were
-// already spoken from the stream, and the watcher carries no audio to speak.
+// button handed back. Clips already spoken from the stream are never
+// re-voiced — but the watcher carries no audio of its own, so a turn released
+// with NOTHING yet voiced would be silent forever: the abort below used to cut
+// the very socket the voice was still coming down. When no clip has sounded,
+// the stream is left running as a voice tail — the record has the words, the
+// stream still owes the sound — and only the UI is released here.
 function releaseTurn(t) {
   if (!busy) return;
   const seq = turnSeq;
   releasedSeq = seq;
+  const silent = !turnVoiced;
   const r = liveTurn && liveTurn.reply;
   if (r) {
     // Nothing streamed: the record holds the only copy of the answer.
@@ -1115,7 +1131,7 @@ function releaseTurn(t) {
     foldThoughts(liveTurn);
     r.scrollIntoView({ block: "end" });
   }
-  if (turnCtl) turnCtl.abort();
+  if (turnCtl && !silent) turnCtl.abort();
   forgetTurn();
   pendingReply = null;
   busy = false;
