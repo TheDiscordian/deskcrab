@@ -14,6 +14,7 @@ which owns the venv.
 import argparse
 import base64
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -54,6 +55,42 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
                  ".css": "text/css", ".wasm": "application/wasm",
                  ".png": "image/png", ".ico": "image/x-icon",
                  ".json": "application/json"}
+
+
+ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "The assistant")
+
+# Injected into the stock client's index.html: a one-line clock over the board
+# saying whether she has been asked for a move, whether she has picked the
+# thought up, and how long ago. Polls /thinking; touches nothing else on the
+# page, so a client rebuild cannot break it.
+THINKING_WIDGET = ("""
+<div id="crab-thinking" style="position:fixed;top:0;left:0;right:0;z-index:99;
+ font:600 15px/1.6 system-ui,sans-serif;text-align:center;padding:4px 8px;
+ background:#1c1a24;color:#e8e2f0;display:none"></div>
+<script>
+(function(){
+  var el=document.getElementById('crab-thinking'), s=null;
+  function ago(t,now){var d=Math.max(0,Math.round(now-t));
+    return d<60?d+'s':Math.floor(d/60)+'m '+(d%%60)+'s';}
+  function paint(){
+    if(!s){el.style.display='none';return;}
+    var now=s.now+(Date.now()-s.at)/1000, txt=null;
+    if(s.started_at) txt='%(name)s is thinking \\u2014 '+ago(s.started_at,now);
+    else if(s.poked_at) txt='%(name)s was asked to move '
+      +ago(s.poked_at,now)+' ago';
+    else if(s.played_at&&now-s.played_at<20)
+      txt='%(name)s played '+(s.san||'her move');
+    if(!txt){el.style.display='none';return;}
+    el.textContent=txt; el.style.display='block';
+  }
+  function poll(){
+    fetch('/thinking',{cache:'no-store'}).then(function(r){return r.json();})
+      .then(function(j){j.at=Date.now();s=j;paint();}).catch(function(){});
+  }
+  setInterval(poll,2000); setInterval(paint,1000); poll();
+})();
+</script>
+""" % {"name": ASSISTANT_NAME}).encode()
 
 
 def log(msg):
@@ -378,6 +415,11 @@ class Hub:
         self.synced = None       # move list each connection has been shown
         self.over_announced = False
         self.pending_promo = None  # chess.Move awaiting its Promote answer
+        # What the browser is told about her side of the clock. Without it a
+        # think and a bridge that never woke her look identical from the phone.
+        self.activity = {"poked_at": None, "started_at": None,
+                         "played_at": None, "san": None}
+        self.port = None
 
     # -- helpers -----------------------------------------------------------
     def human_side(self):
@@ -433,6 +475,15 @@ class Hub:
         else:
             self.dispatch_wake(g, board, san)
 
+    def notify_phone(self):
+        # The board banner is only useful to someone looking at the board; a
+        # push says "she has started" wherever the user happens to be.
+        try:
+            subprocess.run(["crab", "notify", f"{ASSISTANT_NAME} is thinking about her "
+                            f"chess move"], capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"notify failed: {e}")
+
     def dispatch_wake(self, g, board, san=None, over=None):
         gid = g["id"]
         history = chess_cli.history(g["moves"])
@@ -448,6 +499,10 @@ class Hub:
                       f"Choose your reply and play it with: crab-chess move "
                       f"{gid} <move> — it reaches their browser within "
                       f"seconds. See the board: crab-chess show {gid}")
+        if self.port:
+            reason += (f". Before you think, say so: curl -sf -X POST "
+                       f"http://127.0.0.1:{self.port}/thinking -o /dev/null "
+                       f"— it lights the thinking line on the user's board")
         cmd = self.wake_cmd + [reason]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
@@ -457,6 +512,8 @@ class Hub:
                     f"{(r.stderr or r.stdout).strip()}")
             else:
                 log(f"wake booked: her move in {gid}")
+                self.activity.update(poked_at=time.time(), started_at=None,
+                                     played_at=None, san=None)
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"wake failed: {e}")
 
@@ -650,6 +707,8 @@ class Hub:
                     self.broadcast(m)
                 board.push(move)
                 log(f"{g['id']}: mirrored {san} to the browser")
+                self.activity.update(poked_at=None, started_at=None,
+                                     played_at=time.time(), san=san)
             self.synced = list(moves)
             self.pending_promo = None
         else:
@@ -686,7 +745,40 @@ def make_handler(hub, client_dir):
             if self.headers.get("Upgrade", "").lower() == "websocket":
                 self.upgrade()
                 return
+            if self.path.split("?", 1)[0] == "/thinking":
+                self.thinking_state()
+                return
             self.static()
+
+        def do_POST(self):
+            if self.path.split("?", 1)[0] != "/thinking":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            with hub.lock:
+                first = hub.activity["started_at"] is None
+                if first:
+                    hub.activity["started_at"] = time.time()
+            if first:
+                hub.notify_phone()
+            self.json_body({"ok": True})
+
+        def thinking_state(self):
+            with hub.lock:
+                state = dict(hub.activity)
+            state["now"] = time.time()
+            self.json_body(state)
+
+        def json_body(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def upgrade(self):
             key = self.headers.get("Sec-WebSocket-Key", "")
@@ -712,6 +804,8 @@ def make_handler(hub, client_dir):
                 body = re.sub(
                     rb'(id="serveraddr"\s+value=")[^"]*(")',
                     lambda m: m.group(1) + host.encode() + m.group(2), body)
+                body = body.replace(b"</body>", THINKING_WIDGET + b"</body>",
+                                    1)
             self.send_response(200)
             self.send_header("Content-Type", CONTENT_TYPES.get(
                 target.suffix, "application/octet-stream"))
@@ -772,6 +866,7 @@ def main(argv=None):
     httpd = ThreadingHTTPServer(("", args.port), make_handler(hub, client_dir))
     httpd.daemon_threads = True
     port = httpd.server_address[1]
+    hub.port = port
     log(f"serving {client_dir} and the game protocol on port {port}")
     log(f"open http://<this host>:{port}/ then Connect, Join, New Game")
 

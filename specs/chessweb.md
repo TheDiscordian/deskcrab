@@ -93,7 +93,16 @@ cannot be changed.
 11. The bridge writes nothing but game files in the crab-chess store, books wakes only through
     `crab wake-at`, and runs in the crab-chess venv (the wrapper bootstraps it the same way
     `crab-chess` does).
-12. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
+12. The browser is told where her turn stands, because a long think and a wake that never fired
+    look identical from a phone. The bridge keeps three stamps — asked (a wake was booked),
+    started (she picked the thought up), played (her move reached the board) — and serves them
+    at `GET /thinking` as JSON; `POST /thinking` sets the started stamp, and the wake reason
+    tells her to post it before she thinks. A small polling banner is injected into the served
+    `index.html` ahead of `</body>`; the client directory itself stays unmodified (rule 3), and
+    a client that never loads the banner plays exactly as before. The first `POST /thinking` of
+    a turn also sends one push notification (`crab notify`), so the user learns she has started
+    without watching the board; later posts in the same turn are silent.
+13. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
     up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
     drops two minutes into a think.
 
