@@ -43,6 +43,20 @@ out="$(chess move e4)"; rc=$?
   && ok "a move onto a finished board is refused" \
   || fail "move after checkmate: rc=$rc $out"
 
+# Her side's CLI moves stamp the move path's metrics (chessweb.md rule 17,
+# sandbox-pinned DESKCRAB_METRICS_DIR); the opponent's moves do not. In the
+# mate above she was white, so f3 and g4 are hers, e5 and Qh4 are not.
+MET="$DESKCRAB_METRICS_DIR/$(date +%F).log"
+grep -q "opponent-001 ply 0 f3 cli" "$MET" 2>/dev/null \
+  && grep -q "opponent-001 ply 2 g4 cli" "$MET" \
+  && ok "her moves stamped move-played with game, ply, and san" \
+  || fail "move-played stamps missing from $MET"
+stamped=$(awk -F'\t' '$3=="chess" && $4=="move-played" && $5 ~ /^opponent-001 /' \
+  "$MET" 2>/dev/null | wc -l)
+[ "$stamped" -eq 2 ] \
+  && ok "the opponent's moves left no stamp" \
+  || fail "wanted 2 move-played stamps for opponent-001, found $stamped"
+
 # A live game outranks a finished one when neither is named.
 chess new other >/dev/null
 chess status | grep -q "other-001" \

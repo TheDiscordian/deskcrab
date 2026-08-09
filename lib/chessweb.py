@@ -492,19 +492,26 @@ class Hub:
         here is a fall-through to thinking, never a lost turn."""
         if os.environ.get("DESKCRAB_CHESS_REFLEX", "1") == "0":
             return False
+        ply = len(board.move_stack)
         try:
             best = chess_reflex.best_move(board.fen(), board)
         except Exception as e:
             log(f"reflex lookup failed, thinking instead: {e}")
+            chess_cli.metric("reflex-miss", f"{g['id']} ply {ply} error")
             return False
         if best is None:
+            chess_cli.metric("reflex-miss", f"{g['id']} ply {ply}")
             return False
+        chess_cli.metric("reflex-hit",
+                         f"{g['id']} ply {ply} {best['move']}"
+                         f" n={best['n']} score={best['score']:.2f}")
         move = chess.Move.from_uci(best["move"])
         msgs = wire_msgs_for_move(board, move)
         san = board.san(move)
         board.push(move)
         g["moves"].append(move.uci())
         chess_cli.save_game(g)
+        chess_cli.metric("move-played", f"{g['id']} ply {ply} {san} reflex")
         self.synced = list(g["moves"])
         for m in msgs:
             self.broadcast(m)
@@ -521,8 +528,12 @@ class Hub:
         return True
 
     def dispatch_wake(self, g, board, san=None, over=None):
-        if over is None and self.try_reflex(g, board):
-            return
+        if over is None:
+            chess_cli.metric("move-start",
+                             f"{g['id']} ply {len(board.move_stack)}"
+                             + (f" after {san}" if san else ""))
+            if self.try_reflex(g, board):
+                return
         gid = g["id"]
         history = chess_cli.history(g["moves"])
         if over:
@@ -556,6 +567,9 @@ class Hub:
                     f"{(r.stderr or r.stdout).strip()}")
             else:
                 log(f"wake booked: her move in {gid}")
+                if over is None:
+                    chess_cli.metric("wake-booked",
+                                     f"{gid} ply {len(board.move_stack)}")
                 self.activity.update(poked_at=time.time(), started_at=None,
                                      played_at=None, san=None)
         except (OSError, subprocess.TimeoutExpired) as e:

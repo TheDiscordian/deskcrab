@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -83,6 +84,28 @@ def save_game(g: dict) -> None:
     # After the file is safely down: a finished game enters reflex memory, a
     # reopened one leaves it. sync_game contains its own failures.
     chess_reflex.sync_game(g)
+
+
+# Turn metrics for the chess move path (specs/chessweb.md rule 17, kind
+# `chess`): where her move's time went, correlated across processes by the
+# game id and ply that open every detail. Rule 33's discipline — evidence,
+# never control flow; a stamp that cannot be written costs only itself.
+METRICS_DIR = os.environ.get("DESKCRAB_METRICS_DIR") or os.path.join(
+    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+    "deskcrab", "metrics")
+
+
+def metric(stage: str, detail: str = "") -> None:
+    if os.environ.get("TURN_METRICS", "1") == "0":
+        return
+    try:
+        os.makedirs(METRICS_DIR, exist_ok=True)
+        path = os.path.join(METRICS_DIR, time.strftime("%Y-%m-%d") + ".log")
+        with open(path, "a") as fh:
+            fh.write("%.3f\t%d\t%s\t%s\t%s\n"
+                     % (time.time(), os.getpid(), "chess", stage, detail))
+    except OSError:
+        pass
 
 
 def build_board(g: dict) -> chess.Board:
@@ -439,9 +462,13 @@ def cmd_move(args):
                        "or start a new game")
     move = parse_move(board, text)
     san = board.san(move)
+    mover = "white" if board.turn == chess.WHITE else "black"
+    ply = len(g["moves"])
     board.push(move)
     g["moves"].append(move.uci())
     save_game(g)
+    if mover == g.get("my_side"):
+        metric("move-played", f"{g['id']} ply {ply} {san} cli")
     print(f"{g['id']}: played {san}")
     print_position(g, board)
 

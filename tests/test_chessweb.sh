@@ -77,11 +77,28 @@ scn() { # <name> [args...] — one scenario, its own prints as the detail
 }
 seed() { "$VENV_PY" -B "$SCENARIO" seed "$@"; }
 
+# The move path's metric stamps (specs/chessweb.md rule 17) land in the
+# sandbox-pinned metrics dir; a stage counts when its detail opens as given.
+MET="$DESKCRAB_METRICS_DIR/$(date +%F).log"
+chess_stamp() { # <stage> <detail prefix>
+    awk -F'\t' -v s="$1" -v d="$2" \
+        '$3=="chess" && $4==s && index($5, d)==1 {n++} END {exit n?0:1}' \
+        "$MET" 2>/dev/null
+}
+
 echo "a fresh game — seat, validation, the wake, her reply, an observer:"
 CH="$SANDBOX/chess-fresh"
 if start_bridge "$CH" "$SANDBOX/wake-fresh.log" --opponent guest; then
     scn http "$PORT"
     scn fresh "$PORT" "$CH" "$SANDBOX/wake-fresh.log"
+    check "move-start stamped when e4 made the position hers (rule 17)" \
+        chess_stamp move-start "guest-001 ply 1 after e4"
+    check "reflex-miss stamped before the wake on an unknown position" \
+        chess_stamp reflex-miss "guest-001 ply 1"
+    check "wake-booked stamped when the wake went to the queue" \
+        chess_stamp wake-booked "guest-001 ply 1"
+    check "her betty-chess reply stamped move-played (cli)" \
+        chess_stamp move-played "guest-001 ply 1 e5 cli"
 fi
 stop_bridge
 
@@ -172,5 +189,9 @@ if start_bridge "$CH" "$SANDBOX/wake-reflex.log" --opponent guest; then
         sed 's/^/    serve: /' "$SANDBOX/serve.log" | tail -15
         fail "no 'reflex played' line in the serve log"
     fi
+    check "reflex-hit stamped with the remembered move (rule 17)" \
+        chess_stamp reflex-hit "guest-001 ply 1 e7e5"
+    check "the memory's answer stamped move-played (reflex)" \
+        chess_stamp move-played "guest-001 ply 1 e5 reflex"
 fi
 stop_bridge

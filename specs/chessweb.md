@@ -142,6 +142,18 @@ cannot be changed.
     broadcasts GameComplete (rule 9) and books the end-of-game wake, because she should hear how
     her game finished. `DESKCRAB_CHESS_REFLEX=0` disables the auto-play; recording of finished
     games is unconditional.
+17. The move path stamps where its time went, into the same dated turn-metrics log as every
+    other path (turn-pipeline.md rule 33), kind `chess`, every line's detail opening with
+    `<game id> ply <n>` so one move's stamps correlate across processes — the bridge and the
+    CLI write from different pids. The bridge stamps `move-start` the moment a position
+    becomes hers to answer (a recorded user move, a NewGame or serve start with her to move),
+    then `reflex-hit` or `reflex-miss` when rule 16's lookup returns, then `wake-booked` when
+    rule 7's wake is handed to the queue; a reflex move stamps `move-played` with source
+    `reflex` when it is saved. `betty-chess move` stamps `move-played` with source `cli` when
+    a move by her side lands in the store, whoever called it — that is the stamp the wake's
+    reasoning turn produces. Rule 33's whole discipline applies: the stamps are evidence,
+    never control flow, best-effort behind their own error handling, and `TURN_METRICS=0`
+    switches them off. `tools/turn-latency-report` renders the chess section per move.
 
 ## KNOWN LIMITS
 
