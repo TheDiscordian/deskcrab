@@ -2867,7 +2867,14 @@ fire_claudism_capture() {  # <journal-kind> <response>
 # ever spoken that she did not write. The streamer holds the flagged sentence
 # (desk); the whole-draft paths (wake, phone) run the pass once before their
 # hand-off.
-CLAUDISM_MIRROR_TIMEOUT="${CLAUDISM_MIRROR_TIMEOUT:-120}"
+# The hold is dead air at his desk, so it is bounded by what a listener will
+# sit through mid-sentence, not by what the model might eventually manage
+# (rule 46). The streamer's ceiling stays above the call's so the deadline
+# that fires is the call's own, and the release is orderly rather than a
+# stall the streamer had to break. The whole-draft paths keep the generous
+# call timeout: nothing is coming out of the speakers while they think.
+CLAUDISM_MIRROR_TIMEOUT="${CLAUDISM_MIRROR_TIMEOUT:-35}"
+CLAUDISM_MIRROR_DESK_CALL_TIMEOUT="${CLAUDISM_MIRROR_DESK_CALL_TIMEOUT:-25}"
 
 _claudism_field() {  # <json> <key>
     printf '%s' "$1" | python3 -c \
@@ -3021,7 +3028,8 @@ PY
             PAT="$(_claudism_field "$REC" pattern)"
             NOTE="$(_claudism_field "$REC" note)"
             SPLICED=""
-            REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")")"
+            REWRITE="$(CLAUDISM_MIRROR_CALL_TIMEOUT="$CLAUDISM_MIRROR_DESK_CALL_TIMEOUT" \
+                _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")")"
             if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
                 SPLICED="$(python3 -c \
                     'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \

@@ -127,7 +127,7 @@ def _is_limit(text):
 # --------------------------------------------------------------------------
 CLAUDISMS = os.environ.get("DESKCRAB_CLAUDISMS", "").strip()
 CLAUDISM_FIRES = os.environ.get("DESKCRAB_CLAUDISM_FIRES", "").strip()
-CLAUDISM_TIMEOUT = float(os.environ.get("DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "120"))
+CLAUDISM_TIMEOUT = float(os.environ.get("DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "35"))
 
 _CLAUDISM_PATTERNS = []
 _CLAUDISM_MOD = None

@@ -219,3 +219,23 @@ echo "$FLAGS" | grep -qF '"note": "the honesty family"' \
 FLAGS=$(printf 'A code word on its own must not fire.' | "$REPO_DIR/lib/claudism-mirror" scan "$DECL")
 [ "$FLAGS" = "[]" ] && ok "a why line quoting code is never a trigger" \
     || fail "why line became a trigger" "$FLAGS"
+
+# --- rule 46: the hold is budgeted for a listener, not a model --------------
+# The two deadlines are read straight out of the sources that define them, so
+# a later hand raising one without the other shows up here rather than as
+# dead air at his desk.
+HOLD=$(grep -o 'CLAUDISM_MIRROR_TIMEOUT:-[0-9]*' "$REPO_DIR/lib/common.sh" | head -1 | grep -o '[0-9]*$')
+CALL=$(grep -o 'CLAUDISM_MIRROR_DESK_CALL_TIMEOUT:-[0-9]*' "$REPO_DIR/lib/common.sh" | head -1 | grep -o '[0-9]*$')
+STREAM=$(grep -o 'DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "[0-9]*' "$REPO_DIR/lib/tts-streamer" | grep -o '[0-9]*$')
+[ -n "$HOLD" ] && [ -n "$CALL" ] && [ -n "$STREAM" ] \
+    && ok "both deadlines have defaults where the spec says they live" \
+    || fail "a deadline default went missing" "hold=$HOLD call=$CALL streamer=$STREAM"
+[ "${HOLD:-0}" -gt "${CALL:-0}" ] \
+    && ok "the hold sits above the call, so the call's deadline is the one that fires" \
+    || fail "the streamer would break the hold before the call gives up" "hold=$HOLD call=$CALL"
+[ "${STREAM:-0}" = "${HOLD:-x}" ] \
+    && ok "the streamer's own default matches the caller's" \
+    || fail "an unset caller and the streamer disagree on the hold" "streamer=$STREAM caller=$HOLD"
+[ "${CALL:-999}" -le 30 ] \
+    && ok "the desk hold stays inside what a listener will sit through" \
+    || fail "the desk would go silent mid-reply for too long" "call=$CALL"
