@@ -11,6 +11,12 @@ the rules that keep the plumbing from ever deciding her words are not worth voic
 A filter that decides her words are not worth voicing is a self-inflicted injury, and it has been
 built twice and removed twice. Silence is chosen while writing, or not at all.
 
+One mechanism is allowed to stand between a drafted sentence and the synthesiser — the pre-speech
+mirror (rules 38–45) — and only because it decides nothing: it shows her a line that tripped her
+own phrase list and she chooses again, rewrite or the original, never silence and never machine
+text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as clarified
+2026-08-08. Any failure anywhere in the mirror speaks the original untouched.
+
 ## CONTRACT
 
 ### One reader, one delimiter
@@ -136,6 +142,47 @@ describes, which turns a notice into pressure to say something again.
     reply he has read and answered. Compared on normalised text, because the streamer publishes the
     sentence it is speaking while the conversation holds the whole reply.
 
+### The pre-speech mirror
+
+The live half of the claudism guard. Her own phrase list, held against each line at the last
+hand-off before the synthesiser; a line that fires is routed back to HER for one rewrite, and
+what she decides is what is spoken. The capture half is [turn-pipeline.md](turn-pipeline.md)
+rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; the design record is
+`engineering/claudism-guard-amendment.md` in her data directory.
+
+38. The check MUST run off the reader thread, at the last hand-off before the synthesiser, and a
+    clean sentence MUST pass through byte-identical, with no added work on the reader and no
+    added latency beyond the pattern scan itself.
+39. The streamer checks ONLY when armed: the caller passed a fires path, which is its promise
+    that it is watching and will answer, and the phrase list — hers, by hand, personal state
+    never in this repository — loaded with at least one usable pattern. Unarmed, or with a
+    missing, empty, or unparseable list, the speech path MUST behave byte-for-byte as if the
+    mirror did not exist.
+40. A fire holds that sentence and everything queued behind it — never the reader. The fire
+    record (seq, sentence, pattern, why) MUST be appended and flushed BEFORE the hold begins: a
+    hold nobody can read is not a mirror, it is a stall, and if the record cannot be written the
+    sentence is spoken unchecked instead.
+41. One rewrite chance, hers. A `rewrite` verdict speaks her replacement in place of the held
+    sentence, as given — never re-checked, never re-flagged, never edited by code. A `release`
+    verdict, a verdict that never comes inside the deadline, a caller that died, or a caller
+    that has already moved past the turn (the done marker) speaks the original untouched.
+42. FAIL OPEN is the only failure mode. No path through the mirror may end in suppressed speech
+    or machine-substituted text: an unreadable list, a helper that will not import, a mirror
+    call that errors or refuses or times out, a splice that cannot find its sentence — every one
+    of them speaks the original and says so in the speech log.
+43. The streamer's outcome record (`rewrite-spoken` / `released` / `failopen` / `post-commit`,
+    per seq) is the single source of truth for what reached the speakers. The caller MUST commit
+    the spliced reply only on `rewrite-spoken` and the original otherwise, so the conversation
+    can never disagree with what was heard.
+44. On the whole-draft paths — a wake before `speak_once` or the phone hand-off, a phone turn
+    before its audio is synthesised — the same pass runs once, on the complete spoken half, with
+    the same one-chance and fail-open rules; the spliced reply is what is spoken, shown, and
+    committed. The pass on these paths is bounded in fires per turn; what the bound skips is
+    left for the turn-close capture to log.
+45. Every fire the mirror answers is logged to the day's flag log with its outcome. The
+    turn-close capture stays unconditional, so a failed-open fire may be met twice by the
+    nightly reading — once from each — and is deduped there by sentence and pattern, never here.
+
 ## DATA
 
 | Path | Owner | Purpose |
@@ -147,6 +194,10 @@ describes, which turns a notice into pressure to say something again.
 | `${STATE_PREFIX}-live-speech` | the streamer, `speak_once`, the phone paths | `epoch \t device \t pid \t until` then the text. `pid` 0 means nothing to watch, and then `until` — the clip's measured length — is the only liveness there is. Retired by the next message from that device. |
 | `${STATE_PREFIX}-shutup` | `crab shutup` | the asked-for-silence marker, cleared at turn start |
 | `/tmp/deskcrab-display-*.md` | the turn | one file per display window |
+| `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list that arms the mirror; format is `lib/claudism-capture`'s |
+| `${STATE_PREFIX}-claudism-fires-<pid>.jsonl` | the streamer | append-only: one fire record per held sentence, one outcome record per resolution |
+| `${STATE_PREFIX}-claudism-fires-<pid>.jsonl.verdict-<seq>` | the mirror pass in `lib/common.sh` | one verdict, written atomically: her `rewrite` text, or `release` |
+| `${STATE_PREFIX}-claudism-fires-<pid>.jsonl.done` | the mirror pass | the caller has moved past the turn; a later fire speaks unheld |
 
 ## INTERACTIONS
 
@@ -218,6 +269,11 @@ including the live regression of 2026-08-07 driven end to end through two phone 
 `tests/test_speech_path.sh` (timing: first speech well before block completion),
 `tests/test_speech_dup.sh` (a shrinking log; a reply behind a thinking block),
 `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_silent_wake.sh`.
+
+`tests/test_claudism_mirror.sh` (rules 38–43: a clean draft reaches the stub synthesiser
+byte-identical armed versus unarmed; a fire holds the sentence and her rewrite is spoken in its
+place while the sentence after it still speaks; a verdict that never comes fails open to the
+original; an unarmed streamer and a missing list never check at all).
 
 **To be written:**
 

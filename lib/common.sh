@@ -2859,6 +2859,282 @@ fire_claudism_capture() {  # <journal-kind> <response>
         "${SESSION_START:-$(date +%s)}" "$$" "$2"
 }
 
+# --- The pre-speech mirror: the live half of the claudism guard -------------
+# specs/speech-output.md rules 38-45. A line of her draft that trips her own
+# phrase list is routed back to HER, once, before it is spoken or committed;
+# her rewrite — or, on any failure anywhere, the original untouched — is what
+# goes out. Nothing in here decides: no path ends in silence, and no text is
+# ever spoken that she did not write. The streamer holds the flagged sentence
+# (desk); the whole-draft paths (wake, phone) run the pass once before their
+# hand-off.
+CLAUDISM_MIRROR_TIMEOUT="${CLAUDISM_MIRROR_TIMEOUT:-120}"
+
+_claudism_field() {  # <json> <key>
+    printf '%s' "$1" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' \
+        "$2" 2>/dev/null
+}
+
+# One mirror call: the flagged line, back in her hands. Prints her
+# replacement; prints nothing on any failure — and every caller reads
+# nothing as "the original stands". One attempt, on the ambient login: a
+# walk of a dry account chain is minutes of held speech, and fail-open is
+# cheaper than any of them.
+_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft>
+    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4"
+    local PERSONA="" SYS OUT MLOG="${STATE_PREFIX}-claudism-mirror-$$.log"
+    if [ -n "${CUSTOM_PROMPT:-}" ] && [ -f "$CUSTOM_PROMPT" ] \
+            && [ "$(wc -c < "$CUSTOM_PROMPT" 2>/dev/null || echo 999999)" -le 65536 ]; then
+        PERSONA="$(cat "$CUSTOM_PROMPT")"
+    fi
+    SYS="You are ${ASSISTANT_NAME:-the assistant}.${PERSONA:+
+
+$PERSONA}
+
+Mid-turn mirror (your conduct rule: no gate on your tongue, as clarified 2026-08-08). One line of
+the reply you just drafted tripped your own claudism list — the phrasings you are trying to
+unlearn. The line has NOT been spoken; everything before it has. Say the line again in your own
+voice, or give it back exactly as written if you meant it — your call, your voice, one pass.
+Output ONLY the replacement line: no preamble, no quotes, no commentary, no display section."
+    : > "$MLOG"
+    { printf 'Pattern that fired: %s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \
+        "$PAT" "${NOTE:+ — $NOTE}" "$SENT" "$DRAFT" \
+      | CLAUDE_CLASSIFY_STREAM=1 \
+        CLAUDE_CLASSIFY_TIMEOUT="${CLAUDISM_MIRROR_CALL_TIMEOUT:-90}" \
+        claude_classify "$CLAUDE_MODEL" "$SYS"; } >"$MLOG" 2>&1 || true
+    # Judged structurally, off the CLI's own events — never by matching her
+    # answer's words (the compaction lesson, account-fallback.md rule 15).
+    if claude_stream_refusal "$MLOG" >/dev/null; then
+        speech_log "claudism mirror call refused — the original stands"
+        rm -f "$MLOG"
+        return 0
+    fi
+    OUT="$(DESKCRAB_DEBUGLOG="$MLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+    rm -f "$MLOG"
+    printf '%s' "$OUT"
+}
+
+# The whole-draft pass (rule 44): wake and phone, where the reply is complete
+# before anything is synthesised. Echoes the reply to deliver — spliced with
+# her rewrites, or exactly what it was given. Bounded in fires per turn; the
+# turn-close capture logs whatever the bound skips.
+claudism_mirror_direct() {  # <kind> <response>
+    local KIND="$1" RESPONSE="$2"
+    { [ -x "$LIB_DIR/claudism-mirror" ] && [ -f "$CLAUDISMS_FILE" ]; } \
+        || { printf '%s' "$RESPONSE"; return 0; }
+    local FLAGS N I REC SENT PAT NOTE REWRITE SPLICED OUTLOG
+    FLAGS="$(spoken_part "$RESPONSE" \
+        | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" \
+        || { printf '%s' "$RESPONSE"; return 0; }
+    { [ -z "$FLAGS" ] || [ "$FLAGS" = "[]" ]; } \
+        && { printf '%s' "$RESPONSE"; return 0; }
+    N="$(printf '%s' "$FLAGS" | python3 -c \
+        'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)" || N=0
+    case "$N" in ''|*[!0-9]*) N=0 ;; esac
+    [ "$N" -gt "${CLAUDISM_MAX_FIRES:-3}" ] && N="${CLAUDISM_MAX_FIRES:-3}"
+    I=0
+    while [ "$I" -lt "$N" ]; do
+        REC="$(printf '%s' "$FLAGS" | python3 -c \
+            'import json,sys; print(json.dumps(json.load(sys.stdin)[int(sys.argv[1])]))' \
+            "$I" 2>/dev/null)" || break
+        [ -n "$REC" ] || break
+        SENT="$(_claudism_field "$REC" sentence)"
+        PAT="$(_claudism_field "$REC" pattern)"
+        NOTE="$(_claudism_field "$REC" note)"
+        SPLICED=""
+        REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")")"
+        if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
+            SPLICED="$(python3 -c \
+                'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
+                "$RESPONSE" "$SENT" "$REWRITE" \
+                | "$LIB_DIR/claudism-mirror" splice 2>/dev/null)" || SPLICED=""
+        fi
+        if [ -n "$SPLICED" ]; then
+            RESPONSE="$SPLICED"
+            OUTLOG="rewrite"
+        else
+            OUTLOG="original-mirror-failed"
+        fi
+        printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
+            "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" "$OUTLOG" 2>/dev/null
+        speech_log "claudism mirror ($KIND): '$PAT' -> $OUTLOG"
+        I=$((I + 1))
+    done
+    printf '%s' "$RESPONSE"
+}
+
+# The desk pass: answer the streamer's fires as the voice reaches them. The
+# streamer's outcome record is the single source of truth for what was
+# spoken (rule 43), so the reply echoed here can never disagree with the
+# speakers. A draft whose spoken half matches nothing returns immediately —
+# same list, same text, no fire can come — and the done marker tells a
+# chunk-boundary surprise to speak unheld rather than stall.
+claudism_mirror_desk() {  # <response>
+    local RESPONSE="$1" FIRES="${_CLAUDISM_FIRES_FILE:-}"
+    [ -n "$FIRES" ] || { printf '%s' "$RESPONSE"; return 0; }
+    local PREDICTED P R=0
+    PREDICTED="$(spoken_part "$RESPONSE" \
+        | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" || PREDICTED="[]"
+    if [ -z "$PREDICTED" ] || [ "$PREDICTED" = "[]" ]; then
+        printf 'done\n' > "$FIRES.done" 2>/dev/null
+        printf '%s' "$RESPONSE"
+        return 0
+    fi
+    P="$(printf '%s' "$PREDICTED" | python3 -c \
+        'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)" || P=1
+    case "$P" in ''|*[!0-9]*) P=1 ;; esac
+    local DEADLINE=$(( $(date +%s) + ${CLAUDISM_DESK_WAIT:-600} )) LAST=0
+    local REC SEQ SENT PAT NOTE REWRITE SPLICED OUTCOME OUTLOG VERDICT W
+    while :; do
+        REC="$(python3 - "$FIRES" "$LAST" <<'PY' 2>/dev/null
+import json, sys
+path, last = sys.argv[1], int(sys.argv[2])
+fires, done = {}, set()
+try:
+    fh = open(path)
+except OSError:
+    sys.exit(0)
+with fh:
+    for ln in fh:
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        seq = d.get("seq")
+        if seq is None:
+            continue
+        if "outcome" in d:
+            done.add(seq)
+        else:
+            fires[seq] = d
+for k in sorted(fires):
+    if k > last and k not in done:
+        print(json.dumps(fires[k]))
+        break
+PY
+)"
+        if [ -n "$REC" ]; then
+            SEQ="$(_claudism_field "$REC" seq)"
+            case "$SEQ" in ''|*[!0-9]*) SEQ=0 ;; esac
+            [ "$SEQ" -gt 0 ] || break
+            SENT="$(_claudism_field "$REC" sentence)"
+            PAT="$(_claudism_field "$REC" pattern)"
+            NOTE="$(_claudism_field "$REC" note)"
+            SPLICED=""
+            REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")")"
+            if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
+                SPLICED="$(python3 -c \
+                    'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
+                    "$RESPONSE" "$SENT" "$REWRITE" \
+                    | "$LIB_DIR/claudism-mirror" splice 2>/dev/null)" || SPLICED=""
+            fi
+            VERDICT="$FIRES.verdict-$SEQ"
+            # Written whole and renamed into place: the streamer polls the
+            # final name, so it can never parse half a verdict.
+            if [ -n "$SPLICED" ]; then
+                python3 -c \
+                    'import json,sys; print(json.dumps({"action": "rewrite", "text": sys.argv[1]}))' \
+                    "$REWRITE" > "$VERDICT.tmp" 2>/dev/null \
+                    && mv -f "$VERDICT.tmp" "$VERDICT"
+            else
+                printf '{"action":"release"}\n' > "$VERDICT.tmp" \
+                    && mv -f "$VERDICT.tmp" "$VERDICT"
+            fi
+            LAST="$SEQ"
+            OUTCOME=""
+            W=0
+            while [ "$W" -lt 100 ]; do
+                OUTCOME="$(python3 - "$FIRES" "$SEQ" <<'PY' 2>/dev/null
+import json, sys
+path, want = sys.argv[1], int(sys.argv[2])
+out = ""
+try:
+    fh = open(path)
+except OSError:
+    sys.exit(0)
+with fh:
+    for ln in fh:
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        if d.get("seq") == want and "outcome" in d:
+            out = d["outcome"]
+print(out)
+PY
+)"
+                [ -n "$OUTCOME" ] && break
+                kill -0 "${_TTS_STREAMER_PID:-0}" 2>/dev/null || break
+                sleep 0.2
+                W=$((W + 1))
+            done
+            if [ "$OUTCOME" = "rewrite-spoken" ] && [ -n "$SPLICED" ]; then
+                RESPONSE="$SPLICED"
+                OUTLOG="rewrite"
+            elif [ "$OUTCOME" = "released" ]; then
+                OUTLOG="original-mirror-failed"
+            else
+                OUTLOG="original-failopen"
+            fi
+            printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
+                "$CLAUDISM_FLAGS_DIR" desktop "$$" "$OUTLOG" 2>/dev/null
+            speech_log "claudism mirror (desk): '$PAT' -> $OUTLOG"
+            R=$((R + 1))
+            [ "$R" -ge "$P" ] && break
+            continue
+        fi
+        kill -0 "${_TTS_STREAMER_PID:-0}" 2>/dev/null || break
+        [ "$(date +%s)" -ge "$DEADLINE" ] && break
+        sleep 0.2
+    done
+    printf 'done\n' > "$FIRES.done" 2>/dev/null
+    printf '%s' "$RESPONSE"
+}
+
+# A turn ending without the answer loop (every account refused, no text at
+# all): every unanswered fire is released — her words are never held hostage
+# to a turn that has nothing left to say — and the done marker keeps any
+# later fire from holding at all.
+claudism_mirror_abort() {
+    local FIRES="${_CLAUDISM_FIRES_FILE:-}"
+    [ -n "$FIRES" ] || return 0
+    printf 'done\n' > "$FIRES.done" 2>/dev/null
+    [ -f "$FIRES" ] || return 0
+    local SEQ
+    for SEQ in $(python3 - "$FIRES" <<'PY' 2>/dev/null
+import json, sys
+fires, done = set(), set()
+try:
+    fh = open(sys.argv[1])
+except OSError:
+    sys.exit(0)
+with fh:
+    for ln in fh:
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        seq = d.get("seq")
+        if seq is None:
+            continue
+        (done if "outcome" in d else fires).add(seq)
+for s in sorted(fires - done):
+    print(s)
+PY
+); do
+        printf '{"action":"release"}\n' > "$FIRES.verdict-$SEQ.tmp" 2>/dev/null \
+            && mv -f "$FIRES.verdict-$SEQ.tmp" "$FIRES.verdict-$SEQ" 2>/dev/null
+    done
+}
+
+# Ephemeral state of one turn's mirror, cleared once the voice is done.
+claudism_mirror_cleanup() {
+    [ -n "${_CLAUDISM_FIRES_FILE:-}" ] || return 0
+    rm -f "$_CLAUDISM_FIRES_FILE" "$_CLAUDISM_FIRES_FILE".verdict-* \
+        "$_CLAUDISM_FIRES_FILE.done" 2>/dev/null
+    _CLAUDISM_FIRES_FILE=""
+}
+
 # --- Memory reinforcement: the turn-end genuinely-used judge ----------------
 # Retrieval must never reinforce — a record surfacing in a KNN query is not
 # evidence it mattered, and stamping it anyway teaches the store that whatever
@@ -3592,6 +3868,13 @@ run_claude_wake() {
     # keeps it in full even when every gate below completes the wake silently.
     # It is NOT appended to the conversation here — see the delivery section
     # at the end of this function.
+    #
+    # First, the pre-speech mirror on the whole draft (specs/speech-output.md
+    # rule 44): a wake's reply is complete before anything is spoken or
+    # shown, so a line that trips her claudism list comes back to her here,
+    # once, and everything below — journal, gates, speakers, bubble — sees
+    # the reply she settled on. Fails open to the draft as written.
+    RESPONSE="$(claudism_mirror_direct wake "$RESPONSE")"
     SESSION_REPLY="$RESPONSE"
 
     local SPOKEN DISPLAY_PART TRACE SILENT_NOTE="" QUIET_BUBBLE=""
@@ -3863,6 +4146,16 @@ start_tts_streamer() {
     # is spent. Cleared HERE rather than at `crab shutup` time so that only a
     # shutup DURING this turn suppresses the never-silent guarantee below.
     rm -f "$_TTS_RECEIPT" "$SHUTUP_MARKER"
+    # The pre-speech mirror arms ONLY when this caller implements the answer
+    # side (specs/speech-output.md rule 39): _CLAUDISM_ARM is set by the desk
+    # turn around this call, and an absent phrase list disarms everything.
+    _CLAUDISM_FIRES_FILE=""
+    if [ "${_CLAUDISM_ARM:-0}" = "1" ] && [ -f "$CLAUDISMS_FILE" ] \
+            && [ -x "$LIB_DIR/claudism-mirror" ]; then
+        _CLAUDISM_FIRES_FILE="${STATE_PREFIX}-claudism-fires-$$.jsonl"
+        rm -f "$_CLAUDISM_FIRES_FILE" "$_CLAUDISM_FIRES_FILE".verdict-* \
+            "$_CLAUDISM_FIRES_FILE.done" 2>/dev/null
+    fi
     DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
         DESKCRAB_PIPER_LENGTH_SCALE="${PIPER_LENGTH_SCALE:-}" \
         DESKCRAB_PIPER_SPEAKER="${PIPER_SPEAKER:-}" \
@@ -3872,6 +4165,9 @@ start_tts_streamer() {
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
         DESKCRAB_SPEECH_LOG="$SPEECH_LOG" \
         DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
+        DESKCRAB_CLAUDISMS="${_CLAUDISM_FIRES_FILE:+$CLAUDISMS_FILE}" \
+        DESKCRAB_CLAUDISM_FIRES="${_CLAUDISM_FIRES_FILE:-}" \
+        DESKCRAB_CLAUDISM_MIRROR_TIMEOUT="$CLAUDISM_MIRROR_TIMEOUT" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
     _TTS_STREAMER_PID=$!
 }
@@ -4186,6 +4482,11 @@ _run_claude_remote_locked() {
         ERROR="every login is over its limit: $(printf '%.140s' "$RESPONSE")"
         RESPONSE=""
     elif [ -n "$RESPONSE" ]; then
+        # The pre-speech mirror on the whole draft (specs/speech-output.md
+        # rule 44): the phone's audio is synthesised below from a complete
+        # reply, so the pass runs here, before anything is committed, shown,
+        # or voiced. Fails open to the draft as written.
+        RESPONSE="$(claudism_mirror_direct phone "$RESPONSE")"
         SESSION_REPLY="$RESPONSE"
         convo_append_assistant "$RESPONSE"
         # Delivered: a job that ended badly has now been reported to somebody.
@@ -4310,7 +4611,11 @@ run_claude_and_respond() {
 
     convo_append_user "$TEXT"
 
+    # The desk turn is the one caller that answers the streamer's claudism
+    # fires (claudism_mirror_desk below), so it is the one that arms them.
+    _CLAUDISM_ARM=1
     start_tts_streamer
+    _CLAUDISM_ARM=0
 
     notify_thinking
     # The dismissal rides the trap as well as the straight line. "Thinking..."
@@ -4342,6 +4647,7 @@ run_claude_and_respond() {
         # replay exactly this text aloud. The notification and the journal
         # carry the outage; the default has already rotated, so the next
         # attempt leads with the next login.
+        claudism_mirror_abort
         wait_tts_streamer
         live_turn_end desk "$TEXT" ""
         session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
@@ -4349,6 +4655,11 @@ run_claude_and_respond() {
             "every login is over its limit — nothing was said ($(printf '%.120s' "$RESPONSE"))" 2>/dev/null
         RESPONSE=""
     elif [ -n "$RESPONSE" ]; then
+        # The pre-speech mirror (specs/speech-output.md rules 38-45): any
+        # fire the streamer is holding gets answered here — her rewrite goes
+        # to the held voice and into the committed reply, or the original
+        # stands. A clean draft returns immediately, untouched.
+        RESPONSE="$(claudism_mirror_desk "$RESPONSE")"
         SESSION_REPLY="$RESPONSE"
         convo_append_assistant "$RESPONSE"
         # Delivered: a job that ended badly has now been reported to somebody.
@@ -4377,6 +4688,7 @@ run_claude_and_respond() {
         # write down that the streaming path failed.
         wait_tts_streamer
         tts_verify_spoken "$(spoken_part "$RESPONSE")"
+        claudism_mirror_cleanup
 
         # Out of band, after the user has their answer: did I say I wanted
         # something and fail to write it down? If so this fires an event wake
@@ -4393,6 +4705,7 @@ run_claude_and_respond() {
         # one. Not spoken: an error read aloud in my own voice is the thing
         # that put "You've hit your session limit" in his ears as if I had
         # said it. The notification and the journal carry it instead.
+        claudism_mirror_abort
         live_turn_end desk "$TEXT" ""
         session_outcome "(no reply — the model produced no text for: $(printf '%.80s' "$TEXT"))"
         notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \

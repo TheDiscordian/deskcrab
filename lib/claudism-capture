@@ -22,7 +22,8 @@ heading entry is the trigger. A missing or unparseable list means no flags,
 never a failed turn.
 
 Flag records key on (epoch, pid) — the day journal's identity — so the
-nightly judge can re-read the whole turn a sentence came from.
+nightly review, which is her re-reading her own log, can find the whole
+turn a sentence came from.
 """
 
 import fcntl
@@ -104,7 +105,7 @@ def load_patterns(path):
 
 
 def sentences(text):
-    # Rough on purpose: the judge re-reads the turn at night, so a clumsy
+    # Rough on purpose: she re-reads the turn at night, so a clumsy
     # boundary costs a little context, never a lost flag.
     out = []
     for para in text.splitlines():
@@ -148,7 +149,7 @@ def main(argv):
         os.makedirs(flags_dir, exist_ok=True)
         day = time.strftime("%Y-%m-%d", time.localtime(epoch))
         # Flocked like the day journal: turns finish together, and an
-        # interleaved partial line would poison the judge's whole night.
+        # interleaved partial line would poison the review's whole night.
         with open(os.path.join(flags_dir, day + ".jsonl"), "a", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             for rec in hits:

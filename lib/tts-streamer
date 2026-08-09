@@ -118,6 +118,41 @@ def _is_limit(text):
         return False
 
 
+# --------------------------------------------------------------------------
+# The pre-speech mirror (specs/speech-output.md rules 38-45). Armed ONLY when
+# the caller passed a fires path — its promise that it is watching and will
+# answer — AND her phrase list loads with at least one pattern. Unarmed, the
+# speech path is byte-for-byte what it always was. Any failure arming it is a
+# failure to CHECK, never a failure to speak.
+# --------------------------------------------------------------------------
+CLAUDISMS = os.environ.get("DESKCRAB_CLAUDISMS", "").strip()
+CLAUDISM_FIRES = os.environ.get("DESKCRAB_CLAUDISM_FIRES", "").strip()
+CLAUDISM_TIMEOUT = float(os.environ.get("DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "120"))
+
+_CLAUDISM_PATTERNS = []
+_CLAUDISM_MOD = None
+if CLAUDISM_FIRES and CLAUDISMS:
+    try:
+        import importlib.machinery
+        import importlib.util
+        _cm_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "claudism-mirror")
+        _cm_loader = importlib.machinery.SourceFileLoader("claudism_mirror",
+                                                          _cm_path)
+        _cm_spec = importlib.util.spec_from_loader("claudism_mirror",
+                                                   _cm_loader)
+        _CLAUDISM_MOD = importlib.util.module_from_spec(_cm_spec)
+        _cm_loader.exec_module(_CLAUDISM_MOD)
+        _CLAUDISM_PATTERNS, _cm_bad = _CLAUDISM_MOD.load_patterns(CLAUDISMS)
+        if _cm_bad:
+            speech_log("claudism list: %d unparseable entr(ies) skipped"
+                       % _cm_bad)
+    except Exception as exc:
+        _CLAUDISM_PATTERNS = []
+        speech_log("claudism mirror unavailable (%s) — speaking unchecked"
+                   % exc)
+
+
 def fix_pronunciation(text):
     if not TTS_FIXES:
         return text
@@ -155,6 +190,7 @@ class Voice(threading.Thread):
         self._lockfd = None
         self._said = []
         self._stop = False
+        self.claudism_seq = 0
 
     # Speech mutex: held for the whole TTS stage of this turn, so no other
     # session (a wake's speak_once, another streamer) talks over it. Taken
@@ -242,11 +278,110 @@ class Voice(threading.Thread):
         except Exception:
             pass
 
-    def say(self, text):
+    def say(self, text, raw=None):
+        # `raw` is the unstripped draft text this utterance came from — what
+        # the mirror scans and what the caller splices on. None means "not a
+        # draft sentence" and the mirror never looks at it.
         text = " ".join(text.split())
         if text:
             self.queued_chars += len(text)
-            self.q.put(text)
+            self.q.put((text, raw))
+
+    # The pre-speech mirror gate (specs/speech-output.md rules 38-43). Sits
+    # on the voice thread — the last hand-off before the synthesiser — so the
+    # reader is never blocked and a clean sentence passes byte-identical.
+    # This gate decides NOTHING: a fire routes the sentence back to her, and
+    # the only things ever spoken are her rewrite or the original. Every
+    # failure in here speaks the original (fail open).
+    def _claudism_gate(self, spoken, raw):
+        if not _CLAUDISM_PATTERNS or raw is None:
+            return spoken
+        try:
+            flag = _CLAUDISM_MOD.first_flag(raw, _CLAUDISM_PATTERNS)
+        except Exception as exc:
+            speech_log("claudism check failed (%s) — speaking unchecked" % exc)
+            return spoken
+        if not flag:
+            return spoken
+        self.claudism_seq += 1
+        seq = self.claudism_seq
+        done_path = CLAUDISM_FIRES + ".done"
+        outcome, text = "failopen", spoken
+
+        def record(obj):
+            with open(CLAUDISM_FIRES, "a") as fh:
+                fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                fh.flush()
+
+        # The caller has already committed the turn: a hold now could never
+        # be answered, so the fire is recorded and the sentence speaks.
+        if os.path.exists(done_path):
+            try:
+                record({"seq": seq, "sentence": raw, "spoken": spoken,
+                        "pattern": flag["pattern"],
+                        "note": flag.get("note", "")})
+                record({"seq": seq, "outcome": "post-commit"})
+            except Exception:
+                pass
+            speech_log("claudism fire #%d (%s) after the turn moved on — "
+                       "speaking the original" % (seq, flag["pattern"]))
+            return spoken
+        # The record goes down BEFORE the hold begins (rule 40): a hold
+        # nobody can read is a stall, not a mirror.
+        try:
+            record({"seq": seq, "sentence": raw, "spoken": spoken,
+                    "pattern": flag["pattern"], "note": flag.get("note", "")})
+        except Exception as exc:
+            speech_log("claudism fire could not be recorded (%s) — speaking "
+                       "the original" % exc)
+            return spoken
+        speech_log("CLAUDISM fire #%d (%s): %s — held for her rewrite"
+                   % (seq, flag["pattern"], " ".join(raw.split())[:90]))
+        verdict_path = "%s.verdict-%d" % (CLAUDISM_FIRES, seq)
+        deadline = time.time() + CLAUDISM_TIMEOUT
+        while time.time() < deadline:
+            if os.path.exists(verdict_path):
+                try:
+                    with open(verdict_path) as fh:
+                        v = json.load(fh)
+                except Exception:
+                    # Half-landed verdict: the writer renames into place, so
+                    # one bad parse only means "not yet".
+                    time.sleep(0.05)
+                    continue
+                if v.get("action") == "rewrite":
+                    t = for_speech(str(v.get("text") or "").partition(DELIM)[0])
+                    if t:
+                        outcome, text = "rewrite-spoken", t
+                    else:
+                        outcome, text = "released", spoken
+                else:
+                    outcome, text = "released", spoken
+                try:
+                    os.unlink(verdict_path)
+                except Exception:
+                    pass
+                break
+            if os.path.exists(done_path):
+                outcome = "post-commit"
+                speech_log("claudism fire #%d — the turn moved on, speaking "
+                           "the original" % seq)
+                break
+            if os.getppid() != ORIG_PPID:
+                speech_log("claudism fire #%d — caller gone, speaking the "
+                           "original" % seq)
+                break
+            time.sleep(0.1)
+        if outcome == "failopen":
+            speech_log("claudism fire #%d — no verdict in %.0fs, speaking "
+                       "the original (fail open)" % (seq, CLAUDISM_TIMEOUT))
+        elif outcome == "rewrite-spoken":
+            speech_log("claudism fire #%d — her rewrite goes out" % seq)
+        try:
+            record({"seq": seq, "outcome": outcome})
+        except Exception:
+            pass
+        return text
 
     def finish(self):
         self.q.put(None)
@@ -265,6 +400,10 @@ class Voice(threading.Thread):
             if item is None:
                 self._close()
                 return
+            item, raw = item
+            # The mirror gate, before the synthesiser ever sees the words. A
+            # clean sentence comes back exactly as it went in.
+            item = self._claudism_gate(item, raw)
             if not self._open():
                 # Voice is unusable. Drain rather than block the reader, and
                 # let the receipt tell the caller nothing was spoken.
@@ -439,7 +578,7 @@ class Block:
             self.consumed += len(c)
             spoken = for_speech(c)
             if spoken:
-                VOICE.say(spoken)
+                VOICE.say(spoken, c)
         if self.done:
             self.consumed = len(self.raw)
 
@@ -456,7 +595,7 @@ class Block:
             self.done = True
         spoken = for_speech(head)
         if spoken:
-            VOICE.say(spoken)
+            VOICE.say(spoken, head)
 
 
 # Remember who launched us (the crab process). If it dies we get reparented —

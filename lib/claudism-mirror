@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""claudism-mirror — the live half of the claudism guard: scan and splice.
+
+specs/speech-output.md rules 38-45. The mirror never decides: it finds the
+line that tripped her own phrase list, and the rewrite it splices in is one
+she wrote herself in the mirror pass, or nothing changes. Every failure here
+is the caller's cue to FAIL OPEN — the exit codes are the contract, and
+nothing may raise past main.
+
+Modes:
+  scan <phrase-file>
+      Spoken text on stdin. Prints a JSON list of flags — [{"sentence",
+      "pattern", "note"}] — one per flagged sentence, in draft order.
+      An unreadable or empty list prints [] and exits 0.
+  splice
+      {"response": ..., "sentence": ..., "rewrite": ...} on stdin. Replaces
+      the first occurrence of the sentence in the SPOKEN half only and prints
+      the whole spliced response. Exit 3 when the sentence is not found — the
+      caller keeps the original (rule 42).
+  logflag <flags-dir> <kind> <pid> <outcome>
+      One flag object on stdin; appends the day's record — claudism-capture's
+      shape plus {"stage": "live", "outcome": ...} — flocked, like the
+      capture and the day journal.
+
+The phrase list format is defined by lib/claudism-capture (an entry is a
+bullet or heading whose first backtick span is a case-insensitive regex, the
+prose around it is the why); the parser here must stay compatible with that
+one. lib/tts-streamer imports this file for load_patterns/first_flag, so the
+library half must import with no side effects.
+"""
+
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+
+DELIM = "---DISPLAY---"
+
+
+def load_patterns(path):
+    """claudism-capture's parser, kept identical line for line — the list has
+    ONE declared shape and two readers is already the seam nightly.md tracks
+    as MIN-34; two parsers of it would be the same drift one layer down."""
+    entries, bad = [], 0
+    head_re = re.compile(r"^#{1,6}\s+(.*)")
+    pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
+    entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
+    span_re = re.compile(r"`([^`]+)`")
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    if any(pat_re.match(ln) for ln in lines):
+        # The declared shape. Only pattern: lines are triggers, so a why
+        # line quoting code can never become one; the heading above names
+        # the claudism in the flag record.
+        head = ""
+        for raw in lines:
+            hm = head_re.match(raw)
+            if hm:
+                head = hm.group(1).strip()
+                continue
+            pm = pat_re.match(raw)
+            if not pm:
+                continue
+            span = span_re.search(pm.group(1))
+            if not span:
+                bad += 1
+                continue
+            try:
+                entries.append((re.compile(span.group(1).strip(), re.IGNORECASE),
+                                span.group(1).strip(), head))
+            except re.error:
+                bad += 1
+    else:
+        for raw in lines:
+            m = entry_re.match(raw.rstrip())
+            if not m:
+                continue
+            span = span_re.search(m.group(1))
+            if not span:
+                continue
+            pat = span.group(1).strip()
+            note = span_re.sub("", m.group(1)).strip(" —-–:,.")
+            try:
+                entries.append((re.compile(pat, re.IGNORECASE), pat, note))
+            except re.error:
+                bad += 1
+    return entries, bad
+
+
+def first_flag(text, patterns):
+    """The first pattern that fires anywhere in this text, or None. The
+    streamer hands one sentence at a time, so 'anywhere' is one sentence."""
+    for rx, pat, note in patterns:
+        if rx.search(text):
+            return {"pattern": pat, "note": note}
+    return None
+
+
+def sentences(text):
+    out = []
+    for para in text.splitlines():
+        para = para.strip()
+        if para:
+            out.extend(s.strip() for s in re.split(r"(?<=[.!?…])\s+", para) if s.strip())
+    return out
+
+
+def scan(text, patterns):
+    flags = []
+    for sent in sentences(text):
+        f = first_flag(sent, patterns)
+        if f:
+            flags.append({"sentence": sent, "pattern": f["pattern"],
+                          "note": f["note"]})
+    return flags
+
+
+def split_spoken(response):
+    """(spoken half, tail-including-delimiter) — the delimiter judged the way
+    claudism-capture judges it: its own line, whitespace-tolerant."""
+    lines = response.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.strip() == DELIM:
+            return "\n".join(lines[:i]), "\n".join(lines[i:])
+    return response, ""
+
+
+def splice(response, sentence, rewrite):
+    head, tail = split_spoken(response)
+    for cand in (sentence, sentence.strip()):
+        if cand and cand in head:
+            head = head.replace(cand, rewrite, 1)
+            return head + ("\n" + tail if tail else "")
+    return None
+
+
+def main(argv):
+    mode = argv[0] if argv else ""
+    if mode == "scan":
+        try:
+            patterns, _bad = load_patterns(argv[1])
+        except (IndexError, OSError):
+            patterns = []
+        text = sys.stdin.read()
+        print(json.dumps(scan(text, patterns) if patterns else [],
+                         ensure_ascii=False))
+        return 0
+    if mode == "splice":
+        try:
+            d = json.load(sys.stdin)
+            out = splice(str(d["response"]), str(d["sentence"]),
+                         str(d["rewrite"]))
+        except Exception:
+            return 2
+        if out is None:
+            return 3
+        sys.stdout.write(out)
+        return 0
+    if mode == "logflag":
+        try:
+            flags_dir, kind, pid, outcome = argv[1:5]
+            rec = json.load(sys.stdin)
+        except Exception:
+            return 2
+        now = int(time.time())
+        row = {
+            "epoch": now,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "kind": kind,
+            "pid": int(pid) if str(pid).isdigit() else None,
+            "sentence": str(rec.get("sentence", "")),
+            "pattern": str(rec.get("pattern", "")),
+            "stage": "live",
+            "outcome": outcome,
+        }
+        if rec.get("note"):
+            row["note"] = str(rec["note"])
+        try:
+            os.makedirs(flags_dir, exist_ok=True)
+            day = time.strftime("%Y-%m-%d", time.localtime(now))
+            with open(os.path.join(flags_dir, day + ".jsonl"), "a",
+                      encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.flush()
+        except OSError:
+            return 2
+        return 0
+    sys.stderr.write("usage: claudism-mirror scan <phrase-file> | splice | "
+                     "logflag <flags-dir> <kind> <pid> <outcome>\n")
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception:  # fail open, never fail the caller's turn
+        sys.exit(2)
