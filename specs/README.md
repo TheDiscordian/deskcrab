@@ -74,6 +74,7 @@ flowchart LR
   subgraph F["FILES"]
     CV["convo.txt"]
     CS["convo-summary.txt"]
+    SM["convo-seam.txt"]
     DL["debug-PID.log<br/>+ debug.log symlink"]
     RL["turn-UUID.log"]
     LS["live-speech"]
@@ -103,6 +104,7 @@ flowchart LR
     ING["memory ingest"]
   end
   T & K & R --> CV & CS
+  T & K & R --> SM
   T & K --> DL
   SV & R --> RL
   TS --> LS & RC
@@ -116,6 +118,7 @@ flowchart LR
   MP & T & K --> SU
   CV --> BP & WR & CDBG
   CS --> BP & WR
+  SM --> BP
   DL --> TS & XR & CDBG
   RL --> XR & CDBG & SV
   LS & LT --> BP
