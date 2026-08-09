@@ -1,0 +1,110 @@
+# chessweb — the browser board onto a crab-chess game
+
+## PURPOSE
+
+crab-chess holds a correspondence game on disk, and she plays it by running `crab-chess move`.
+This module gives the *other* player a real board: a browser page where the user drags pieces,
+while she keeps playing exactly as before. The bridge is a SpeedyChess-protocol server
+(`lib/chessweb.py`, run through `lib/crab-chessweb`): it serves the stock SpeedyChess web client
+over HTTP and speaks its wire protocol over WebSocket upgrades on the same port. It owns no game
+state of its own — the crab-chess game file is the one record. The user's moves are validated and
+appended there; moves appended there by any other hand (hers, via `crab-chess move`) are mirrored
+into the browser; and every recorded user move books an event wake carrying the position, so she
+answers in her own words and on her own clock.
+
+The SpeedyChess client is an unmodified third-party build (a Go/WASM page). The bridge never
+edits that checkout; the one server-side liberty it takes is rewriting the server-address box in
+`index.html`, in memory, to the Host the page was fetched from, so connecting is one click.
+
+## THE WIRE, AS THE STOCK CLIENT SPEAKS IT
+
+Learned from the SpeedyChess sources; the bridge must keep to this exactly, because the client
+cannot be changed.
+
+- One WebSocket, binary messages, treated as a byte stream. Each protocol message is a type byte
+  — the message's index in `chesspb.proto`: Ping 0, Join 1, NewGame 2, Move 3, Error 4, Team 5,
+  Player 6, OpponentLeft 7, OpponentJoined 8, Promote 9, GameComplete 10 — then a length, then
+  that many bytes of protobuf. Client→server lengths are one byte; server→client lengths are
+  uvarint. A Ping is the bare type byte with no length in either direction.
+- The board is `[y][x]` with y 0 at black's back rank: file = x (a is 0), rank = 8 − y.
+- A Move carries from/to coordinates and a type. For type 1 (en passant) the "to" square is the
+  *captured pawn's* square, not the capturing pawn's destination. Type 2 castles toward the
+  a-file (queenside), type 3 toward the h-file (kingside); only the king's from-square is
+  trustworthy — one stock client sends no destination at all for castles.
+- Promotion is two-phase: the mover's Move puts the pawn on the last rank, the server prompts
+  with Promote{x,y} (to = 0), the mover answers Promote{x,y,to} where `to` is the piece's
+  Unicode rune codepoint, and the server broadcasts that Promote to everyone.
+- The client applies every broadcast Move to its own board without validating it and toggles
+  whose turn it is on each one. That property is what makes resume work: a stored game replayed
+  as broadcasts rebuilds the client's board and turn state exactly.
+- GameComplete knows three results: Stalemate 0, BlackWin 1, WhiteWin 2.
+
+## CONTRACT
+
+1. `crab-chessweb serve` listens on one port (`--port`, else `$DESKCRAB_CHESSWEB_PORT`, else
+   8181) and answers both plain HTTP GETs — static files from the client directory — and
+   WebSocket upgrades — the game protocol. The client directory is `--client`, else
+   `$DESKCRAB_CHESSWEB_CLIENT`, else `~/.local/share/deskcrab/chessweb/client`; if none exists
+   the serve refuses to start and says what to symlink where. `--port 0` picks a free port and
+   prints it.
+2. `index.html` is served with the server-address box rewritten to the request's Host. No file
+   under the client directory is ever written.
+3. One user seat. The first connection to send Join(player) is seated and immediately told
+   Player{one} and OpponentJoined — her seat needs no joining, she is always present. Further
+   Join(player)s get an Error while the seat is held; a seat whose socket has died is freed for
+   the next joiner. Join(spectator) connections observe: they get Team and the replay at once,
+   and every later broadcast, but their Moves are refused.
+4. NewGame from the seat syncs the browser to the stored game: Team with the user's colour, then
+   the stored move list replayed as broadcasts (a promotion replays as its Move then its
+   Promote). If no game is active, one is created in the crab-chess store first — opponent from
+   `--opponent`, her side from the complement of `--human-side` (default: the user is white).
+   `--game` pins a specific game id instead of newest-active-against-opponent.
+5. An incoming user Move or Promote is translated to UCI and validated against the stored game's
+   board with python-chess before anything else happens. Illegal, out-of-turn, or unseated
+   attempts get an Error and change nothing — on disk or on any board. The bridge's judgement,
+   not the client's, is the rules: the stock client's own move generator is known-permissive
+   (its castling misses rook-moved and through-check cases), and a click it allows may still be
+   refused.
+6. A user pawn reaching the last rank is not recorded until its Promote answer arrives; while
+   the answer is pending, other Moves are refused. The bridge broadcasts the Move at once
+   (stock behaviour), prompts the mover, and on the answer records the whole UCI move and
+   broadcasts the Promote. A disconnect while pending abandons the unrecorded move; the next
+   sync replays the position from before it, which is the store's truth.
+7. Every move recorded to the store by the bridge is followed, in order, by: broadcast to every
+   connection, game-end check, and — if the game is still on — one wake booked through
+   `crab wake-at --by chessweb 1s event <reason>`, the reason carrying the game id, the user's
+   move in SAN, the FEN, the movetext so far, and the reply instruction
+   (`crab-chess move <id> <move>`). One wake per recorded user move; never a wake for her own.
+   Serve start books the same wake if the loaded game is active with her to move (covers a
+   bridge that died before booking). `$DESKCRAB_CHESSWEB_WAKE_CMD` replaces the crab invocation
+   wholesale (the reason becomes its one argument) so tests never touch the live queue.
+8. The store is watched (a poll, at most 2s late). Moves appended by another hand are
+   translated and broadcast in order, exactly as if the bridge had made them. Any other change
+   — a shorter list, a rewritten prefix, an undo — forces a full resync (Team + replay) of every
+   connection rather than a guess at a delta.
+9. When the stored game ends — checkmate, stalemate, draw rule, resignation, agreed draw,
+   whether by a bridge-recorded move or noticed in the poll — every connection gets one
+   GameComplete with the right result; the protocol's three results mean every draw is sent as
+   Stalemate. After that, NewGame from the seat starts a fresh game (rule 4's creation path).
+10. Restart loses nothing: the bridge holds no game truth outside the store, so kill it, restart
+    it, reopen the browser, click New Game, and the position, turn, and her pending reply are
+    all as they were. This is the overnight property, and it is a consequence of rules 4 and 8
+    rather than a feature of its own.
+11. The bridge writes nothing but game files in the crab-chess store, books wakes only through
+    `crab wake-at`, and runs in the crab-chess venv (the wrapper bootstraps it the same way
+    `crab-chess` does).
+12. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
+    up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
+    drops two minutes into a think.
+
+## KNOWN LIMITS
+
+- One game per serve. Two users wanting two boards is two serves on two ports with two
+  `--opponent` names.
+- Plain HTTP on the LAN, no auth: the seat is first-come. The phone server's TLS story does not
+  apply here; do not expose the port beyond the LAN.
+- The client's rate ceiling (nine messages a second in the stock server) is not enforced; the
+  bridge trusts the LAN.
+- If she moves while no browser is attached, the store is ahead of nothing — the next sync
+  replays it all; but a browser left open through a laptop sleep can hold a dead seat for up to
+  one join attempt before rule 3 frees it.
