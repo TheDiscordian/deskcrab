@@ -239,3 +239,29 @@ STREAM=$(grep -o 'DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "[0-9]*' "$REPO_DIR/lib/tts
 [ "${CALL:-999}" -le 30 ] \
     && ok "the desk hold stays inside what a listener will sit through" \
     || fail "the desk would go silent mid-reply for too long" "call=$CALL"
+
+# --- rule 50: a mention is not a fire; the wide net stays off this path -----
+echo
+echo "a mention is not a fire, and a review-only entry never arms (rule 50):"
+TLIST="$T/tagged-list.md"
+cat > "$TLIST" <<'LIST'
+## the honesty family
+- pattern: `\bhonest(?:y|ly)?\b`
+- why: assumed anyway.
+- function: vouching
+
+## the wider net
+- pattern: `\bI made sure\b`
+- why: urge-shaped, review only.
+- function: proof-of-work
+- live: no
+LIST
+OUT="$(printf 'Honestly, the kettle is on.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
+check "a plain use still fires the scan" contains "$OUT" "the kettle is on"
+check "and the record carries its function" contains "$OUT" '"function": "vouching"'
+OUT="$(printf 'He told me to drop "honestly" from the line.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
+check_eq "a quoted word is a mention, never a fire" "$OUT" "[]"
+OUT="$(printf 'The honesty family fired twice at his desk yesterday.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
+check_eq "naming the entry is a mention, never a fire" "$OUT" "[]"
+OUT="$(printf 'I made sure the door was shut.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
+check_eq "a live: no entry never reaches the speech path" "$OUT" "[]"

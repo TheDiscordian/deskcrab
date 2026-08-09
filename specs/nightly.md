@@ -125,6 +125,42 @@ which fails silently is worse than one that does not exist.
 45. The review declares its writes (rule 6), books through the queue's one door under its own
     identity (`claudism-review` — [wake-queue.md](wake-queue.md) rule 41), and its failure MUST
     NOT unstamp or fail the night: the stamp and the exit stay the ingest's own (rules 8 and 10).
+46. The list speaks in functions, not only in strings. An entry MAY declare the rhetorical move
+    it performs (`- function:`, a short slug; several entries may share one) and what a true
+    correction looks like (`- fix: delete` where the cure is striking the decoration, `- fix:
+    resay` where only a different sentence will do; unset, an entry with `replace:` lines
+    defaults to delete and any other to resay). The review MUST aggregate by function and MUST
+    report each function's uses per thousand spoken words, tonight beside its recent nights,
+    because the habit under watch is the move and not the wording: a banned member's share
+    moving to a sibling word is the same habit in a new coat, not a cure. An untagged entry
+    stands as its own function.
+47. A mention is not a use. A hit whose matched words are quoted, inside a code span, or in a
+    sentence that is about the list itself — naming an entry, a ban, a flag, a pattern, a
+    rewrite, the review — MUST be classed a mention: never scored as a use, never handed to the
+    rewrite call, counted and quoted separately under its own per-thousand-words rate. Talking
+    about the drift instead of not drifting is its own failure mode and MUST stay visible;
+    dropping mentions silently would hide it, and scoring them would inflate every count the
+    moment she discusses her own review.
+48. The substitution watch. The report MUST place a function's members side by side across the
+    recent nights and say plainly when the family's total holds while its members churn — a
+    member gone quiet beside a sibling that rose is the habit changing words, not dying. A
+    proposed rewrite that still fires any pattern of the same function is a miss, not a pass:
+    the report MUST mark it substituted and MUST NOT present it as the fix. The rewrite
+    instruction is function-aware — for a `fix: delete` entry the proposal is the sentence with
+    the decoration struck (the entry's own `replace:` lines where they cover it, the matched
+    span struck where they do not), and the model is asked only where the fix is a different
+    sentence.
+49. The night corroborates the live mirror. For each flag-log record of a live rewrite
+    ([speech-output.md](speech-output.md) rule 45), the review MUST check whether the same
+    turn's final reply still fires the same function, and name it in the report when it does: a
+    hold answered with a synonym went out as the same move in new words, and only the night can
+    see both halves. This is the corroboration `MIN-34` is owed, in its first piece.
+
+The same engine is runnable by hand: `lib/claudism-corpus` scores an archived conversation
+directory (the rotation's transcript format — [turn-pipeline.md](turn-pipeline.md) DATA) against
+the list, bucketed by date, uses and mentions apart, per function per thousand spoken words — so
+a claim about the habit's history is a measurement, not an impression. It is wired to no timer
+and writes nothing: a reader run by hand, assistant halves only, spoken halves only.
 
 ## DATA
 
@@ -143,7 +179,8 @@ which fails silently is worse than one that does not exist.
 | `~/.local/state/deskcrab/canary-self.log` | the canary | one line per check |
 | `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
 | `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
-| `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase |
+| `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase, uses only |
+| `~/.local/share/deskcrab/claudisms/functions.tsv` | the claudism review | one line per night and function: uses, mentions, spoken words |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
 service, the self-change path and service, the transcription path and service, the canary timer and
@@ -189,7 +226,7 @@ reaches her through an event wake or through a record she reads.
 | `MIN-30` | A stray file duplicates the engineering namespace: unreachable by every reader, and inside the watcher's glob. |
 | `MIN-31` | The tidy prompt asks for a dated prose line in a machine-written record, where the journal reader skips it and the ingest drops it. Tidy's own record never survives. |
 | `MIN-32` | The canary reports the path unit disabled and only revives it in-session, so it will not come back after a reboot. |
-| `MIN-34` | Two claudism detectors, unreconciled. The turn-close capture ([turn-pipeline.md](turn-pipeline.md) rules 30-32) writes a day flag log; the review judges from the journal directly (rule 39) and does not read it. The log is no longer unread — the recent-catches block ([prompt-assembly.md](prompt-assembly.md) rule 35) surfaces it at the start of a turn, and the pre-speech mirror ([speech-output.md](speech-output.md) rule 45) appends its fires and outcomes to it — so retiring it is off the table. Still owed: the review corroborating its journal scan against the flag log, mirror outcomes included, so the night can tell a line she already re-said mid-turn from one that went out as drafted. Two detectors with no reconciliation will drift. |
+| `MIN-34` | Two claudism detectors, unreconciled. The turn-close capture ([turn-pipeline.md](turn-pipeline.md) rules 30-32) writes a day flag log; the review judges from the journal directly (rule 39) and does not read it. The log is no longer unread — the recent-catches block ([prompt-assembly.md](prompt-assembly.md) rule 35) surfaces it at the start of a turn, and the pre-speech mirror ([speech-output.md](speech-output.md) rule 45) appends its fires and outcomes to it — so retiring it is off the table. The first piece of the corroboration is in — the review reads the day's flag log and names a live rewrite whose turn still fires the same function (rule 49). Still owed: the rest of it — telling a line she already re-said mid-turn from one that went out as drafted, deduped by sentence and pattern. Two detectors with no reconciliation will drift. |
 
 ## TESTS
 

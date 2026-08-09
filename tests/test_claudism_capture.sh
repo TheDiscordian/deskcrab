@@ -85,3 +85,32 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.5
 done
 check "the fallback wrote a real flag" contains "$(cat "$FLAGFILE")" "through the fallback"
+
+echo
+echo "functions, fixes, and the mention class (turn-pipeline rule 31):"
+cat > "$D/tagged.md" <<'LIST'
+## the honesty family
+- pattern: `\bhonest(?:y|ly)?\b`
+- why: assumed anyway.
+- function: vouching
+- fix: delete
+
+## the wider net
+- pattern: `\bI made sure\b`
+- why: the urge, one construction further out.
+- function: proof-of-work
+- live: no
+LIST
+TAGREPLY='Honestly, the kettle is on. He told me to stop writing "honestly" at the desk. I made sure the door was shut.'
+"$SANDBOX_REPO/lib/claudism-capture" "$D/tagged.md" "$D/tag-flags" desktop 1786230000 4242 "$TAGREPLY"
+TAGFILE="$D/tag-flags/$DAY.jsonl"
+check "the tag day's flag file exists" [ -s "$TAGFILE" ]
+check "a use record carries its function" \
+    contains "$(grep 'kettle' "$TAGFILE")" '"function": "vouching"'
+check "and says it was a use" contains "$(grep 'kettle' "$TAGFILE")" '"use": "use"'
+check "a quoted occurrence is recorded — the capture drops nothing" \
+    contains "$(cat "$TAGFILE")" "stop writing"
+check "and classed a mention, never a use" \
+    contains "$(grep 'stop writing' "$TAGFILE")" '"use": "mention"'
+check "a live: no entry still reaches the capture" \
+    contains "$(cat "$TAGFILE")" "I made sure the door was shut."

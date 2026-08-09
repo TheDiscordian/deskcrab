@@ -56,8 +56,16 @@ def load_patterns(path):
     pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
     rep_re = re.compile(r"^\s*[-*]\s*replace:\s*`(.*)`\s*->\s*`(.*)`\s*$",
                         re.IGNORECASE)
+    fn_re = re.compile(r"^\s*[-*]\s*function:\s*([a-z0-9][a-z0-9-]*)\s*$",
+                       re.IGNORECASE)
+    fix_re = re.compile(r"^\s*[-*]\s*fix:\s*(delete|resay)\s*$", re.IGNORECASE)
+    live_re = re.compile(r"^\s*[-*]\s*live:\s*(yes|no)\s*$", re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
+
+    def new_entry(rx, pat, note):
+        return {"rx": rx, "pat": pat, "note": note, "replaces": [],
+                "function": "", "fix": "", "live": True}
 
     def add_replace(m):
         # A replace line rides the entry above it and is NEVER a trigger. A
@@ -69,10 +77,36 @@ def load_patterns(path):
             bad += 1
             return
         try:
-            entries[-1][3].append((re.compile(m.group(1), re.IGNORECASE),
-                                   m.group(2)))
+            entries[-1]["replaces"].append(
+                (re.compile(m.group(1), re.IGNORECASE), m.group(2)))
         except re.error:
             bad += 1
+
+    def add_tag(raw):
+        # function/fix/live lines ride the entry above them, like a replace.
+        nonlocal bad
+        m = fn_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["function"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = fix_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["fix"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = live_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["live"] = m.group(1).lower() != "no"
+            else:
+                bad += 1
+            return True
+        return False
 
     with open(path, encoding="utf-8") as f:
         lines = f.read().splitlines()
@@ -90,6 +124,8 @@ def load_patterns(path):
             if rm:
                 add_replace(rm)
                 continue
+            if add_tag(raw):
+                continue
             pm = pat_re.match(raw)
             if not pm:
                 continue
@@ -98,8 +134,9 @@ def load_patterns(path):
                 bad += 1
                 continue
             try:
-                entries.append((re.compile(span.group(1).strip(), re.IGNORECASE),
-                                span.group(1).strip(), head, []))
+                entries.append(new_entry(
+                    re.compile(span.group(1).strip(), re.IGNORECASE),
+                    span.group(1).strip(), head))
             except re.error:
                 bad += 1
     else:
@@ -107,6 +144,8 @@ def load_patterns(path):
             rm = rep_re.match(raw.rstrip())
             if rm:
                 add_replace(rm)
+                continue
+            if add_tag(raw.rstrip()):
                 continue
             m = entry_re.match(raw.rstrip())
             if not m:
@@ -117,22 +156,66 @@ def load_patterns(path):
             pat = span.group(1).strip()
             note = span_re.sub("", m.group(1)).strip(" —-–:,.")
             try:
-                entries.append((re.compile(pat, re.IGNORECASE), pat, note, []))
+                entries.append(new_entry(re.compile(pat, re.IGNORECASE),
+                                         pat, note))
             except re.error:
                 bad += 1
+    for e in entries:
+        if not e["fix"]:
+            e["fix"] = "delete" if e["replaces"] else "resay"
     return entries, bad
 
 
+# The mention test — specs/nightly.md rule 47, specs/speech-output.md rule
+# 50. Words inside a code span or an unclosed double quote are quoted, not
+# said; a sentence that names its own entry, or that carries the vocabulary
+# of the list itself, is talking about the habit rather than having it. The
+# meta words are deliberately few and STRONG — "pattern", "flagged" and
+# "rewrite" are everyday engineering words in her mouth and are not here on
+# purpose; quoting and entry-naming carry those cases. A mention is still
+# logged and still shown in the review, so a wrong call is visible, never
+# lost. Kept identical to lib/claudism-capture's, like the parser above it.
+META_RE = re.compile(
+    r"claudism|\bban(?:ned|ning|s)?\b|phrase list|\bthe list\b|flag log|"
+    r"conduct sheet|\bthe word\b|\bforbidden\b", re.IGNORECASE)
+
+
+def classify_use(sentence, start, end, note=""):
+    """'use' when the matched words are being said; 'mention' when they are
+    quoted or talked about. start/end bound the match inside sentence; note
+    is the entry's heading, whose short name (before the em-dash) appearing
+    in the sentence is a mention of the entry itself."""
+    before = sentence[:start]
+    if before.count("`") % 2 == 1:
+        return "mention"
+    if before.count('"') % 2 == 1:
+        return "mention"
+    if before.count("“") > before.count("”"):
+        return "mention"
+    title = re.split(r"\s+—\s+", note or "")[0].strip()
+    if len(title) >= 4 and title.lower() in sentence.lower():
+        return "mention"
+    if META_RE.search(sentence):
+        return "mention"
+    return "use"
+
+
 def first_flag(text, patterns):
-    """The first pattern that fires anywhere in this text, or None. The
-    streamer hands one sentence at a time, so 'anywhere' is one sentence.
-    The rx and replaces keys carry the entry itself for the table of rule
-    47; scan() rebuilds its records from the plain fields, so nothing
-    uncompilable ever reaches a JSON boundary."""
-    for rx, pat, note, replaces in patterns:
-        if rx.search(text):
-            return {"pattern": pat, "note": note, "rx": rx,
-                    "replaces": replaces}
+    """The first entry that FIRES on this text, or None: a live entry with a
+    use-class match. A mention is not a fire and a `live: no` entry never
+    fires here (specs/speech-output.md rule 50) — the capture still records
+    both. The streamer hands one sentence at a time, so 'anywhere' is one
+    sentence. The rx and replaces keys carry the entry itself for the table
+    of rule 47; scan() rebuilds its records from the plain fields, so
+    nothing uncompilable ever reaches a JSON boundary."""
+    for e in patterns:
+        if not e["live"]:
+            continue
+        for m in e["rx"].finditer(text):
+            if classify_use(text, m.start(), m.end(), e["note"]) == "use":
+                return {"pattern": e["pat"], "note": e["note"], "rx": e["rx"],
+                        "replaces": e["replaces"], "function": e["function"],
+                        "fix": e["fix"]}
     return None
 
 
@@ -183,8 +266,9 @@ def flag_row(kind, pid, rec, outcome):
         "stage": "live",
         "outcome": outcome,
     }
-    if rec.get("note"):
-        row["note"] = str(rec["note"])
+    for key in ("note", "function", "use"):
+        if rec.get(key):
+            row[key] = str(rec[key])
     return row
 
 
@@ -217,8 +301,11 @@ def scan(text, patterns):
     for sent in sentences(text):
         f = first_flag(sent, patterns)
         if f:
-            flags.append({"sentence": sent, "pattern": f["pattern"],
-                          "note": f["note"]})
+            rec = {"sentence": sent, "pattern": f["pattern"],
+                   "note": f["note"]}
+            if f.get("function"):
+                rec["function"] = f["function"]
+            flags.append(rec)
     return flags
 
 

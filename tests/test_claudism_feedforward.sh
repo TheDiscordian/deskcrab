@@ -104,3 +104,19 @@ rm -rf "$FLAGS"
 TURN="$(run 'build_system_prompt --profile turn')"
 refute "no flags, no block — the layer just assembles without it" \
     contains "$TURN" "RECENT CLAUDISM CATCHES"
+
+echo
+echo "a mention is not shown, and a function names the move (rule 35):"
+mkdir -p "$FLAGS"
+STAMP="$(date -d "@$NOW" +%Y-%m-%dT%H:%M:%S%z)"
+printf '{"epoch": %s, "time": "%s", "kind": "desktop", "pid": 9, "sentence": "He told me to drop the hedge from the line.", "pattern": "%s", "use": "mention", "function": "vouching"}\n' \
+    "$NOW" "$STAMP" "$HONEST" > "$FLAGS/$TODAY.jsonl"
+OUT="$("$FF")"; RC=$?
+check "a log of only mentions produces nothing" [ -z "$OUT" ]
+check "and exits 0" [ "$RC" -eq 0 ]
+printf '{"epoch": %s, "time": "%s", "kind": "desktop", "pid": 9, "sentence": "Honestly, the fan is fine.", "pattern": "%s", "use": "use", "function": "vouching"}\n' \
+    "$NOW" "$STAMP" "$HONEST" >> "$FLAGS/$TODAY.jsonl"
+OUT="$("$FF")"
+check "the use beside it is shown" contains "$OUT" "Honestly, the fan is fine."
+check "and filed under its function" contains "$OUT" "(the vouching move)"
+refute "the mention stayed out of the block" contains "$OUT" "drop the hedge"

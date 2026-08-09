@@ -66,7 +66,7 @@ loader = importlib.machinery.SourceFileLoader("cm", sys.argv[1])
 spec = importlib.util.spec_from_loader("cm", loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 pats, bad = m.load_patterns(sys.argv[2])
-print("%d %d %s" % (len(pats), bad, ",".join(str(len(p[3])) for p in pats)))
+print("%d %d %s" % (len(pats), bad, ",".join(str(len(p["replaces"])) for p in pats)))
 PY
 )"
 check_eq "four entries, none broken, replaces where written" "$COUNTS" "4 0 2,1,1,0"

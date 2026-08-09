@@ -29,7 +29,7 @@ chmod +x "$T/crab"
 
 scan() {
     CRAB_BIN="$T/crab" DAY_JOURNAL_DIR="$J" CLAUDISM_LIST="$LIST" \
-        CLAUDISM_DIR="$OUT" CLAUDISM_REWRITES=0 \
+        CLAUDISM_DIR="$OUT" CLAUDISM_FLAGS_DIR="$T/flags" CLAUDISM_REWRITES=0 \
         "$REPO/lib/claudism-scan" run "$@"
 }
 calls() { cat "$T/crab-calls" 2>/dev/null; }
@@ -144,3 +144,49 @@ case "$out" in
     *) fail "an empty habit is not an error, but it is a line" "$out" ;;
 esac
 check_eq "and neither skip booked a wake" "$(calls | grep -c wake-at)" "0"
+
+echo
+echo "the move, not the wording — functions, mentions, deletion, corroboration (rules 46-49):"
+refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
+cat > "$LIST" <<'LIST'
+## the honesty family
+- pattern: `\bhonest(?:y|ly)?\b`
+- why: assumed of her anyway.
+- function: vouching
+- replace: `\b[Hh]onestly,\s+` -> ``
+
+## decoration
+- pattern: `\bgenuinely\b`
+- why: the same move as honest, one word over.
+- function: vouching
+- fix: delete
+LIST
+cat > "$J/2026-01-20.jsonl" <<'DAY'
+{"epoch": 1705762800, "time": "2026-01-20T10:00:00-0500", "kind": "desktop", "pid": 7001, "user": "?", "reply": "Honestly, the timer is set."}
+{"epoch": 1705766400, "time": "2026-01-20T11:00:00-0500", "kind": "wake", "pid": 7002, "user": "", "reply": "He asked me to stop writing \"genuinely\" in my notes. I genuinely forgot the kettle."}
+DAY
+mkdir -p "$T/flags"
+cat > "$T/flags/2026-01-20.jsonl" <<'FLAGS'
+{"epoch": 1705766300, "time": "2026-01-20T10:58:20-0500", "kind": "wake", "pid": 7002, "sentence": "Honestly, I forgot the kettle.", "pattern": "\\bhonest(?:y|ly)?\\b", "stage": "live", "outcome": "rewrite", "function": "vouching"}
+FLAGS
+scan 2026-01-20 >/dev/null 2>&1
+R="$OUT/2026-01-20.md"
+check "the report scores by function, per 1000 words" \
+    contains "$(cat "$R")" "By function, per 1000 spoken words"
+check "two vouching uses aggregate across both entries" \
+    contains "$(cat "$R")" "| vouching | 2 |"
+check "the quoted sentence is set aside as a mention" \
+    contains "$(cat "$R")" "Talking about the list"
+check "and quoted there, visibly" contains "$(cat "$R")" "stop writing"
+check_eq "the mention never reaches the counts" \
+    "$(awk -F'\t' '$1 == "2026-01-20" && $2 == "decoration" { print $3 }' "$C")" "1"
+check "functions.tsv carries uses, mentions, and the night's words" \
+    contains "$(cat "$OUT/functions.tsv")" "2026-01-20	vouching	2	1"
+check "a delete-fix catch gets its deletion with no model in the loop" \
+    contains "$(cat "$R")" "instead (deletion): “The timer is set.”"
+check "the deletion strikes the decoration and keeps the sentence" \
+    contains "$(cat "$R")" "instead (deletion): “I forgot the kettle.”"
+check "a live rewrite whose turn still fires the same move is named (rule 49)" \
+    contains "$(cat "$R")" "still fires vouching"
+refute "the corroboration names the reply's own sentence, not the held one" \
+    contains "$(grep 'still fires vouching' "$R")" "Honestly, I forgot"

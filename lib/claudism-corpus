@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""claudism-corpus — the review's scoring, run by hand over an archive.
+
+The nightly review scores one day at a time; a question about the habit's
+HISTORY — did banning a word cure the move, or reroute it? — needs the same
+scoring over months. This reads the conversation store's rotation archive
+(specs/turn-pipeline.md DATA: files named YYYYMMDD-HHMMSS.txt of
+`User [stamp]:` / `Assistant [stamp]:` blocks, `*-summary.txt` skipped),
+keeps the assistant's blocks only and their spoken halves only, and scores
+them against the phrase list by FUNCTION, uses apart from mentions, per
+thousand spoken words (specs/nightly.md rules 46-47 and the paragraph after
+rule 49). Wired to no timer, writes nothing: a reader run by hand.
+
+  claudism-corpus <phrase-list.md> <transcript-dir> [--bucket NAME=FROM..TO]...
+
+Buckets are inclusive date ranges (YYYY-MM-DD), judged from the date in each
+filename; a file lands in the first bucket that holds it, and no --bucket
+means one bucket holding everything. Every list entry is scored, `live: no`
+included — the archive is history, not the speech path. Output is markdown
+on stdout: per bucket, the functions with their rates, then the members
+inside each function, so a family whose total holds while its members churn
+is visible on one page.
+"""
+
+import os
+import re
+import sys
+
+DELIM = "---DISPLAY---"
+SPEAKER_RE = re.compile(r"^(User|Assistant)\s*(?:\[[^\]]*\])?\s*(?:\([^)]*\))?\s*:")
+
+
+def load_mirror():
+    """load_patterns and classify_use live in lib/claudism-mirror — the
+    import-safe library half of the guard. One parser, one mention test,
+    everywhere."""
+    import importlib.machinery
+    import importlib.util
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "claudism-mirror")
+    loader = importlib.machinery.SourceFileLoader("claudism_mirror", p)
+    spec = importlib.util.spec_from_loader("claudism_mirror", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def entry_key(e):
+    """The short name the trend tables use: the heading before the em-dash,
+    slugified — claudism-scan's derivation."""
+    key = re.split(r"\s+—\s+", e["note"] or "")[0]
+    key = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
+    return key[:48] or re.sub(r"[^a-z0-9]+", "-", e["pat"].lower()).strip("-")[:48]
+
+
+def assistant_spoken(path):
+    """The assistant's blocks, one at a time, spoken halves only."""
+    blocks, buf, speaking = [], [], False
+
+    def flush():
+        if speaking and buf:
+            text = "\n".join(buf)
+            lines = []
+            for ln in text.splitlines():
+                if ln.strip() == DELIM:
+                    break
+                lines.append(ln)
+            blocks.append("\n".join(lines))
+        del buf[:]
+
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = SPEAKER_RE.match(line)
+            if m:
+                flush()
+                speaking = m.group(1) == "Assistant"
+                if speaking:
+                    buf.append(line[m.end():].rstrip("\n"))
+                continue
+            if speaking:
+                buf.append(line.rstrip("\n"))
+    flush()
+    return blocks
+
+
+def parse_args(argv):
+    if len(argv) < 2:
+        return None
+    list_path, corpus_dir = argv[0], argv[1]
+    buckets = []
+    rest = argv[2:]
+    while rest:
+        if rest[0] != "--bucket" or len(rest) < 2:
+            return None
+        m = re.match(r"^([^=]+)=(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$",
+                     rest[1])
+        if not m:
+            return None
+        buckets.append((m.group(1), m.group(2), m.group(3)))
+        rest = rest[2:]
+    if not buckets:
+        buckets = [("all", "0000-00-00", "9999-99-99")]
+    return list_path, corpus_dir, buckets
+
+
+def main(argv):
+    parsed = parse_args(argv)
+    if not parsed:
+        sys.stderr.write(__doc__)
+        return 2
+    list_path, corpus_dir, buckets = parsed
+    mirror = load_mirror()
+    try:
+        patterns, bad = mirror.load_patterns(list_path)
+    except OSError as e:
+        sys.stderr.write("claudism-corpus: cannot read the list: %s\n" % e)
+        return 2
+    if not patterns:
+        sys.stderr.write("claudism-corpus: no usable entries in %s\n" % list_path)
+        return 2
+
+    try:
+        names = sorted(os.listdir(corpus_dir))
+    except OSError as e:
+        sys.stderr.write("claudism-corpus: cannot read the archive: %s\n" % e)
+        return 2
+
+    # bucket -> {"files": n, "words": n, "fn": {fn: [uses, mentions]},
+    #            "member": {key: [uses, mentions, fn]}}
+    stats = {b[0]: {"files": 0, "words": 0, "fn": {}, "member": {}}
+             for b in buckets}
+    read = skipped = outside = 0
+    for name in names:
+        if not name.endswith(".txt"):
+            continue
+        if name.endswith("-summary.txt"):
+            skipped += 1
+            continue
+        m = re.match(r"^(\d{4})(\d{2})(\d{2})", name)
+        if not m:
+            continue
+        date = "%s-%s-%s" % m.groups()
+        bucket = next((b[0] for b in buckets if b[1] <= date <= b[2]), None)
+        if bucket is None:
+            outside += 1
+            continue
+        read += 1
+        s = stats[bucket]
+        s["files"] += 1
+        for block in assistant_spoken(os.path.join(corpus_dir, name)):
+            block = re.sub(r"```.*?```", " ", block, flags=re.S)
+            s["words"] += len(block.split())
+            for sent in mirror.sentences(block):
+                for e in patterns:
+                    cls = None
+                    for hit in e["rx"].finditer(sent):
+                        if mirror.classify_use(sent, hit.start(), hit.end(),
+                                               e["note"]) == "use":
+                            cls = 0
+                            break
+                        cls = 1
+                    if cls is None:
+                        continue
+                    fn = e["function"] or entry_key(e)
+                    s["fn"].setdefault(fn, [0, 0])[cls] += 1
+                    s["member"].setdefault(entry_key(e), [0, 0, fn])[cls] += 1
+
+    out = ["# Claudism corpus — %s" % corpus_dir, "",
+           "%d transcript%s read, %d summar%s skipped%s. Assistant blocks "
+           "only, spoken halves only, every list entry scored (live and "
+           "review-only alike)."
+           % (read, "" if read == 1 else "s", skipped,
+              "y" if skipped == 1 else "ies",
+              ", %d outside every bucket" % outside if outside else "")]
+    if bad:
+        out.append("(%d unparseable list entr%s skipped.)"
+                   % (bad, "y" if bad == 1 else "ies"))
+    for bname, bfrom, bto in buckets:
+        s = stats[bname]
+        out += ["", "## %s (%s..%s) — %d file%s, %d spoken words"
+                % (bname, bfrom, bto, s["files"],
+                   "" if s["files"] == 1 else "s", s["words"]), ""]
+        if not s["words"]:
+            out.append("Nothing to score.")
+            continue
+        out += ["| function | uses | /1000w | mentions | /1000w |",
+                "|---|---|---|---|---|"]
+        for fn in sorted(s["fn"]):
+            u, m = s["fn"][fn]
+            out.append("| %s | %d | %.2f | %d | %.2f |"
+                       % (fn, u, u * 1000.0 / s["words"],
+                          m, m * 1000.0 / s["words"]))
+        out += ["", "The members inside each function:", "",
+                "| entry | function | uses | mentions |", "|---|---|---|---|"]
+        for key in sorted(s["member"]):
+            u, m, fn = s["member"][key]
+            out.append("| %s | %s | %d | %d |" % (key, fn, u, m))
+    print("\n".join(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

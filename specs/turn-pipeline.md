@@ -96,7 +96,11 @@ design and by rule — the review exists to break a habit, never to gate a tongu
     own one-line run trace.
 31. A flag record MUST carry enough to find the turn again: the session's start epoch and pid
     (the day journal's identity), the journal kind, the sentence as spoken, and the pattern that
-    matched. The flag log is append-only, dated like the journal, and flocked like it. Its
+    matched — and, so the night can score the move rather than the string, the entry's function
+    where the list declares one and whether the words were used or merely mentioned (quoted, in
+    a code span, or talked about — [nightly.md](nightly.md) rule 47). A mention is still a
+    record: the capture drops nothing, it classifies. The flag log is append-only, dated like
+    the journal, and flocked like it. Its
     readers: the recent-catches block ([prompt-assembly.md](prompt-assembly.md) rule 35) surfaces
     it at the start of a turn, and the pre-speech mirror ([speech-output.md](speech-output.md)
     rule 45) appends its live fires and outcomes beside the capture's records. The nightly review
@@ -123,7 +127,7 @@ design and by rule — the review exists to break a habit, never to gate a tongu
 | `~/.local/share/deskcrab/sessions/<pid>.ckpt` | `crab checkpoint` | append-only, one line per checkpoint |
 | `${STATE_PREFIX}-sessions.log` | `session_finish`, `session_reap` | append-only journal |
 | `~/.local/share/deskcrab/journal/<date>.jsonl` | `day_journal_append` | one JSON object per finished turn |
-| `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span |
+| `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines ([nightly.md](nightly.md) rule 46, [speech-output.md](speech-output.md) rule 50) |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |

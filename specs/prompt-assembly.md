@@ -206,8 +206,12 @@ state block's own content, not for a cut.
 ### The recent-catches block
 
 35. The shelves layer MAY close with the recent-catches block: her freshest claudism flags — the
-    last few patterns, deduped, newest first — each named by its own heading in the phrase list and
-    quoted as she said it, with the flag log named as where the rest is. It exists so she sees her
+    last few patterns, deduped, newest first — each named by its own heading in the phrase list,
+    under the function the list files it in where it declares one, and
+    quoted as she said it, with the flag log named as where the rest is. Mention-class flags —
+    words quoted or talked about rather than used ([nightly.md](nightly.md) rule 47) — are not
+    shown: the block exists to catch the habit, and quoting the list is not the habit. It exists
+    so she sees her
     own habit before she writes, which is where the habit is actually cured; the pre-speech check
     and the nightly review ([speech-output.md](speech-output.md), [nightly.md](nightly.md)) pick up
     what seeing it first did not prevent. Feed-forward only: the block MUST be read from the

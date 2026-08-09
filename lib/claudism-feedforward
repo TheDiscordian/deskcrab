@@ -87,6 +87,12 @@ def recent_flags():
                     epoch = rec.get("epoch")
                     if not isinstance(epoch, (int, float)):
                         continue
+                    # A mention-class flag — the words quoted or talked
+                    # about, not used — is not shown: the block exists to
+                    # catch the habit, and quoting the list is not the
+                    # habit (specs/prompt-assembly.md rule 35).
+                    if rec.get("use") == "mention":
+                        continue
                     if now - epoch <= FRESH_HOURS * 3600 and rec.get("sentence"):
                         recs.append(rec)
         except OSError:
@@ -115,6 +121,11 @@ def main():
             continue
         seen.add(pat)
         name = rec.get("title") or titles.get(pat) or rec.get("note") or pat
+        # The function the list files this entry under, where it declares
+        # one — the move is the thing being cured, the wording is only
+        # tonight's costume for it.
+        if rec.get("function"):
+            name = "%s (the %s move)" % (name, rec["function"])
         sent = " ".join(str(rec["sentence"]).split())
         if len(sent) > 120:
             sent = sent[:119].rstrip() + "…"

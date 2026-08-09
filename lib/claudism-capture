@@ -28,6 +28,19 @@ file owns it; a replace line belongs to the entry above it, is compiled
 case-insensitively like the trigger, and is never itself a trigger. The
 capture only carries them — nothing here ever applies one.
 
+Three more lines an entry may carry, each riding the entry above it like a
+replace line: `- function: <slug>` names the rhetorical move the entry
+performs, so several entries can be one family (specs/nightly.md rule 46);
+`- fix: delete|resay` says what a true correction looks like (unset: delete
+where the entry has replace lines, resay otherwise); `- live: no` keeps the
+entry off the speech path — capture and nightly review only, never a mirror
+hold (specs/speech-output.md rule 50).
+
+A match is classed use or mention (specs/nightly.md rule 47): words that are
+quoted, in a code span, or in a sentence about the list itself are being
+talked about, not said. A mention is still a record — the capture drops
+nothing, it classifies — and the record says which it was.
+
 Flag records key on (epoch, pid) — the day journal's identity — so the
 nightly review, which is her re-reading her own log, can find the whole
 turn a sentence came from.
@@ -70,8 +83,16 @@ def load_patterns(path):
     pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
     rep_re = re.compile(r"^\s*[-*]\s*replace:\s*`(.*)`\s*->\s*`(.*)`\s*$",
                         re.IGNORECASE)
+    fn_re = re.compile(r"^\s*[-*]\s*function:\s*([a-z0-9][a-z0-9-]*)\s*$",
+                       re.IGNORECASE)
+    fix_re = re.compile(r"^\s*[-*]\s*fix:\s*(delete|resay)\s*$", re.IGNORECASE)
+    live_re = re.compile(r"^\s*[-*]\s*live:\s*(yes|no)\s*$", re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
+
+    def new_entry(rx, pat, note):
+        return {"rx": rx, "pat": pat, "note": note, "replaces": [],
+                "function": "", "fix": "", "live": True}
 
     def add_replace(m):
         # A replace line rides the entry above it and is NEVER a trigger. A
@@ -83,10 +104,36 @@ def load_patterns(path):
             bad += 1
             return
         try:
-            entries[-1][3].append((re.compile(m.group(1), re.IGNORECASE),
-                                   m.group(2)))
+            entries[-1]["replaces"].append(
+                (re.compile(m.group(1), re.IGNORECASE), m.group(2)))
         except re.error:
             bad += 1
+
+    def add_tag(raw):
+        # function/fix/live lines ride the entry above them, like a replace.
+        nonlocal bad
+        m = fn_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["function"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = fix_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["fix"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = live_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["live"] = m.group(1).lower() != "no"
+            else:
+                bad += 1
+            return True
+        return False
 
     with open(path, encoding="utf-8") as f:
         lines = f.read().splitlines()
@@ -104,6 +151,8 @@ def load_patterns(path):
             if rm:
                 add_replace(rm)
                 continue
+            if add_tag(raw):
+                continue
             pm = pat_re.match(raw)
             if not pm:
                 continue
@@ -112,8 +161,9 @@ def load_patterns(path):
                 bad += 1
                 continue
             try:
-                entries.append((re.compile(span.group(1).strip(), re.IGNORECASE),
-                                span.group(1).strip(), head, []))
+                entries.append(new_entry(
+                    re.compile(span.group(1).strip(), re.IGNORECASE),
+                    span.group(1).strip(), head))
             except re.error:
                 bad += 1
     else:
@@ -121,6 +171,8 @@ def load_patterns(path):
             rm = rep_re.match(raw.rstrip())
             if rm:
                 add_replace(rm)
+                continue
+            if add_tag(raw.rstrip()):
                 continue
             m = entry_re.match(raw.rstrip())
             if not m:
@@ -131,10 +183,48 @@ def load_patterns(path):
             pat = span.group(1).strip()
             note = span_re.sub("", m.group(1)).strip(" —-–:,.")
             try:
-                entries.append((re.compile(pat, re.IGNORECASE), pat, note, []))
+                entries.append(new_entry(re.compile(pat, re.IGNORECASE),
+                                         pat, note))
             except re.error:
                 bad += 1
+    for e in entries:
+        if not e["fix"]:
+            e["fix"] = "delete" if e["replaces"] else "resay"
     return entries, bad
+
+
+# The mention test — specs/nightly.md rule 47, specs/speech-output.md rule
+# 50. Words inside a code span or an unclosed double quote are quoted, not
+# said; a sentence that names its own entry, or that carries the vocabulary
+# of the list itself, is talking about the habit rather than having it. The
+# meta words are deliberately few and STRONG — "pattern", "flagged" and
+# "rewrite" are everyday engineering words in her mouth and are not here on
+# purpose; quoting and entry-naming carry those cases. A mention is still
+# logged and still shown in the review, so a wrong call is visible, never
+# lost.
+META_RE = re.compile(
+    r"claudism|\bban(?:ned|ning|s)?\b|phrase list|\bthe list\b|flag log|"
+    r"conduct sheet|\bthe word\b|\bforbidden\b", re.IGNORECASE)
+
+
+def classify_use(sentence, start, end, note=""):
+    """'use' when the matched words are being said; 'mention' when they are
+    quoted or talked about. start/end bound the match inside sentence; note
+    is the entry's heading, whose short name (before the em-dash) appearing
+    in the sentence is a mention of the entry itself."""
+    before = sentence[:start]
+    if before.count("`") % 2 == 1:
+        return "mention"
+    if before.count('"') % 2 == 1:
+        return "mention"
+    if before.count("“") > before.count("”"):
+        return "mention"
+    title = re.split(r"\s+—\s+", note or "")[0].strip()
+    if len(title) >= 4 and title.lower() in sentence.lower():
+        return "mention"
+    if META_RE.search(sentence):
+        return "mention"
+    return "use"
 
 
 def sentences(text):
@@ -165,19 +255,31 @@ def main(argv):
         return 0
     hits = []
     for sent in sentences(spoken):
-        for rx, pat, note, _replaces in patterns:
-            if rx.search(sent):
-                rec = {
-                    "epoch": epoch,
-                    "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "kind": kind,
-                    "pid": int(pid) if pid.isdigit() else None,
-                    "sentence": sent,
-                    "pattern": pat,
-                }
-                if note:
-                    rec["note"] = note
-                hits.append(rec)
+        for e in patterns:
+            # One record per entry and sentence, classed use or mention: a
+            # use anywhere in the sentence outranks any number of mentions.
+            cls = None
+            for m in e["rx"].finditer(sent):
+                if classify_use(sent, m.start(), m.end(), e["note"]) == "use":
+                    cls = "use"
+                    break
+                cls = "mention"
+            if cls is None:
+                continue
+            rec = {
+                "epoch": epoch,
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "kind": kind,
+                "pid": int(pid) if pid.isdigit() else None,
+                "sentence": sent,
+                "pattern": e["pat"],
+                "use": cls,
+            }
+            if e["note"]:
+                rec["note"] = e["note"]
+            if e["function"]:
+                rec["function"] = e["function"]
+            hits.append(rec)
     if hits:
         os.makedirs(flags_dir, exist_ok=True)
         day = time.strftime("%Y-%m-%d", time.localtime(epoch))
