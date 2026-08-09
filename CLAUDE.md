@@ -27,6 +27,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/common.sh` | the library: prompt, generation, conversation, delivery, sessions |
 | `lib/wake-queue.sh` | the only module that touches the wakes directory and wake units |
 | `lib/tts-streamer` | speaks the stream sentence by sentence as it is written |
+| `lib/sentence_stream.py` | the sentence chunker and replay registry both voices share (desk streamer, phone server) |
 | `lib/extract-response` | pulls the reply out of a finished stream log |
 | `lib/transcript-dedup` | collapses whisper-stream's overlapping-window repeats |
 | `lib/serve.py` | stdlib HTTP front end for the phone (`crab serve`) |

@@ -160,6 +160,12 @@ SERVE_PORT="${SERVE_PORT:-8723}"
 SERVE_BIND="${SERVE_BIND:-127.0.0.1}"
 SERVE_SECRET="${SERVE_SECRET:-}"
 SERVE_TIMEOUT="${SERVE_TIMEOUT:-600}"
+# Streaming voice granularity for the phone (specs/phone.md rule 17): 0 voices
+# one clip per completed reply block, exactly as before the knob existed; 1
+# chunks the stream's text deltas into sentences with the desk streamer's own
+# chunker, so the first clip lands seconds into the turn instead of at the
+# first block's end.
+PHONE_SENTENCE_STREAM="${PHONE_SENTENCE_STREAM:-0}"
 # TLS for the phone client. Browsers refuse microphone access over plain http
 # from anything but localhost, so a phone needs https one way or another:
 #   off  - plain http (fine behind `tailscale serve`, which terminates TLS)

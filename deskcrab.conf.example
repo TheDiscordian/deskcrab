@@ -268,6 +268,14 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 #
 # Optional: seconds a single remote turn may take before it is abandoned.
 # SERVE_TIMEOUT=600
+#
+# Optional: phone streaming voice granularity. 0 (the default) synthesises one
+# opus clip per completed reply block — first audio waits for the whole block,
+# which on a long turn can be most of a minute. 1 chunks the stream's text
+# deltas into sentences with the same chunker the desk voice uses and ships a
+# clip per sentence, so the phone starts hearing the reply while it is still
+# being written. Off by default while it beds in.
+# PHONE_SENTENCE_STREAM=1
 
 # Optional: Web Push (crab notify) — reach the phone even with the page closed.
 # Subscribe from the phone page's bell button; send with `crab notify <text>`.

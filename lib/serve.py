@@ -46,6 +46,19 @@ from urllib.parse import urlparse, parse_qs
 LIB_DIR = Path(__file__).resolve().parent
 WEBAPP_DIR = LIB_DIR / "webapp"
 
+# The desk streamer's sentence chunker, shared (specs/phone.md rule 17;
+# specs/speech-output.md's one-chunker discipline). Stdlib-only itself, so the
+# server's no-dependencies promise holds.
+sys.path.insert(0, str(LIB_DIR))
+import sentence_stream
+
+# Streaming voice granularity (PHONE_SENTENCE_STREAM in the config). Off, this
+# file behaves byte-for-byte as before the flag existed: one clip per completed
+# block. On, the text deltas already present in the turn log are chunked into
+# sentences and each becomes a clip the moment it completes; the completed
+# block then voices only the tail the deltas had not spoken.
+SENTENCE_STREAM = os.environ.get("DESKCRAB_PHONE_SENTENCE_STREAM", "") == "1"
+
 PORT = int(os.environ.get("DESKCRAB_SERVE_PORT", "8723"))
 BIND = os.environ.get("DESKCRAB_SERVE_BIND", "127.0.0.1")
 SECRET = os.environ.get("DESKCRAB_SERVE_SECRET", "")
@@ -930,6 +943,18 @@ def _progress_events(logpath, stop, emit, speaker):
     consumer — we only summarise, the TTS streamer is not involved here.
     """
     seen_tools = 0
+    # With sentence streaming on, the registry walks the text deltas through
+    # the shared chunker and the say callback feeds the Speaker one sentence
+    # at a time — the same whitespace collapse the block path applies, and
+    # crab synth strips markdown per clip exactly as it does per block. With
+    # the flag off, chunker stays None and nothing below this line changes.
+    chunker = None
+    if speaker is not None and SENTENCE_STREAM:
+        def _say_sentence(chunk):
+            said = " ".join(chunk.split())
+            if said:
+                speaker.say(said)
+        chunker = sentence_stream.BlockRegistry(_say_sentence)
     while not stop.is_set() and not os.path.exists(logpath):
         time.sleep(0.05)
     partial = ""
@@ -962,6 +987,12 @@ def _progress_events(logpath, stop, emit, speaker):
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # The streaming half, only when the flag armed a chunker: the
+                # registry replays and dedups exactly as the desk's does, so
+                # a re-emitted message or a re-read never speaks twice.
+                if chunker is not None and d.get("type") == "stream_event":
+                    chunker.stream_event(d.get("event") or {})
+                    continue
                 # NEVER stop at a result event: the usage-limit fallback
                 # APPENDS a second claude run to this same log after the
                 # refusal run's result, so a tail that returns at the first
@@ -976,7 +1007,7 @@ def _progress_events(logpath, stop, emit, speaker):
                 if d.get("is_api_error_message") or \
                         d.get("message", {}).get("model") == "<synthetic>":
                     continue
-                for block in d["message"].get("content", []):
+                for idx, block in enumerate(d["message"].get("content", [])):
                     kind = block.get("type")
                     if kind == "thinking":
                         thought = " ".join((block.get("thinking") or "").split())
@@ -994,12 +1025,23 @@ def _progress_events(logpath, stop, emit, speaker):
                         if said:
                             # Not truncated: this block IS part of the reply on
                             # the phone, appended in order, not a status line.
+                            # The text event stays per block in BOTH voice
+                            # modes — the bubble and the client's own-turn
+                            # match are built from it, and the flag is about
+                            # clips, not text.
                             emit("text", said)
                             # Speak it now, exactly as the desktop's TTS
                             # streamer does — every text block gets a voice, not
                             # just the final one.
-                            if speaker:
+                            if speaker and chunker is None:
                                 speaker.say(said)
+                        if chunker is not None:
+                            # The sentences were voiced off the deltas as they
+                            # completed; this voices only the unspoken tail,
+                            # and marks the block so a re-emitted copy adds
+                            # nothing.
+                            chunker.close_text(d["message"].get("id"), idx,
+                                               block.get("text") or "")
     except OSError:
         return
 

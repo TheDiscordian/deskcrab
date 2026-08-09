@@ -60,7 +60,16 @@ with the page closed.
 ### Voice and media
 
 17. Streaming voice MUST be emitted per completed block while the turn runs, and MUST NOT emit after
-    the completion event. The synthesiser join deadline MUST be at least the per-synthesis timeout.
+    the completion event. With `PHONE_SENTENCE_STREAM=1` the unit is the sentence instead: the text
+    deltas already present in the turn log are chunked by the desk streamer's own chunker — one
+    shared implementation (`lib/sentence_stream.py`), never a second one — each sentence becomes a
+    clip the moment it completes, and the completed block voices only the tail the deltas had not
+    already spoken. The flag defaults to off, and off MUST be byte-for-byte the per-block behaviour.
+    In either mode a sentence MUST never be voiced twice and never dropped, the display half MUST
+    never reach a clip, and rule 6's completion fallback counts clips identically — the display
+    split, the progress events, and the whole-draft mirror pass of
+    [speech-output.md](speech-output.md) rule 44 are untouched by the flag.
+    The synthesiser join deadline MUST be at least the per-synthesis timeout.
     A synthesis that produces nothing MUST leave a line in the server log, and the synthesiser MUST
     log its own it-never-ran failure too — the standing rule of
     [speech-output.md](speech-output.md) holds on this path as well. A skipped voice event with no
@@ -305,6 +314,13 @@ its exchange arrives through the watcher — stream aborted, memory forgotten, b
 inside the watchdog window; an empty bubble is filled from the record and the display card
 attached either way; a marked block, another exchange's blocks, and an idle page release nothing;
 and a reply riding a busy reset's payload is scanned and releases the same way.
+`tests/test_phone_stream.sh` drives one synthetic delta stream through two real servers, one per
+mode of rule 17's flag: with the flag on, clips are per sentence and in order, the first clip is
+emitted before the block completes, the completed event voices only the tail the deltas had not
+spoken, a re-emitted message and a duplicated completed event add nothing, and the display half
+never reaches the synthesiser; with the flag off, the same stream produces exactly the one-clip-
+per-block output of today, and the config plumbing (`PHONE_SENTENCE_STREAM` through `crab serve`
+into the server's environment) is asserted in the same file.
 `tests/test_phone_queue_wait.sh` drives rule 43 through the real server: a turn parked before its
 first output carries wait notes in its stream naming which wait it is (behind this conversation's
 previous message, or behind something else), the notes stop once real output flows and never

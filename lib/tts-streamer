@@ -38,6 +38,11 @@ import sys
 import threading
 import time
 
+# The chunker and the replay registry live in sentence_stream.py, shared with
+# the phone server (specs/phone.md rule 17) — one implementation, two voices.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sentence_stream import DELIM, BlockRegistry
+
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
 LENGTH_SCALE = os.environ.get("DESKCRAB_PIPER_LENGTH_SCALE", "").strip()
@@ -100,18 +105,11 @@ def _stderr_is_speech_log():
         return False
 _STDERR_IS_LOG = _stderr_is_speech_log()
 
-DELIM = "---DISPLAY---"
-# Hold back any trailing text that could still turn out to be the delimiter.
-DELIM_PREFIXES = [DELIM[:i] for i in range(len(DELIM), 0, -1)]
-
 # Close the piper/aplay pair after this long with nothing to say, so a turn
 # that speaks once and then runs tools for five minutes is not holding the
 # sound device open the whole time. Reopened (and the model reloaded) if she
 # starts talking again.
 VOICE_IDLE_CLOSE = float(os.environ.get("DESKCRAB_VOICE_IDLE_CLOSE", "8"))
-# Flush an unpunctuated buffer once it gets this long rather than holding a
-# sentence that may never end.
-MAX_HOLD = int(os.environ.get("DESKCRAB_TTS_MAX_HOLD", "320"))
 
 
 def speech_log(msg):
@@ -546,59 +544,6 @@ def _on_term(*_a):
 signal.signal(signal.SIGTERM, _on_term)
 
 
-# --------------------------------------------------------------------------
-# Chunking a text block into speakable sentences as it streams in.
-# --------------------------------------------------------------------------
-# Each chunk becomes one piper utterance, so a boundary here is a full
-# sentence-final fall in the voice. Only real sentence enders qualify — a colon
-# or a semicolon mid-thought would land as a full stop and sound wrong. A
-# decimal ("3.5") is already safe: the lookahead requires whitespace after the
-# dot. Abbreviations are not, hence _ABBREV below.
-_SENT = re.compile(r".*?[.!?…](?=[\s\"')\]]|$)|.*?\n", re.S)
-_ABBREV = re.compile(r"(?:^|[\s(\"'])(?:[A-Za-z]|e\.g|i\.e|etc|vs|approx"
-                     r"|[Mm]r|[Mm]rs|[Mm]s|[Dd]r|[Pp]rof|[Ss]t|[Ff]ig)\.$")
-
-
-def _hold_back(buf):
-    """How many trailing characters must not be spoken yet, because they may
-    still turn out to be the ---DISPLAY--- delimiter or an unclosed `code`
-    span (both of which are stripped, and stripping half of one is wrong)."""
-    hold = 0
-    for pre in DELIM_PREFIXES:
-        if buf.endswith(pre):
-            hold = len(pre)
-            break
-    head = buf[:len(buf) - hold] if hold else buf
-    if head.count("\x60") % 2:
-        hold = len(buf) - head.rindex("\x60")
-    return hold
-
-
-def _sentences(buf):
-    """Split off every complete sentence. Returns (chunks, remainder)."""
-    hold = _hold_back(buf)
-    head, rest = (buf[:len(buf) - hold], buf[len(buf) - hold:]) if hold else (buf, "")
-    chunks, pos, carry = [], 0, ""
-    for m in _SENT.finditer(head):
-        cand = carry + m.group(0)
-        pos = m.end()
-        # "e.g." is not the end of a sentence; hold it and keep going, or the
-        # voice comes to a full stop in the middle of a clause.
-        if _ABBREV.search(cand.rstrip()):
-            carry = cand
-            continue
-        carry = ""
-        chunks.append(cand)
-    remainder = carry + head[pos:] + rest
-    # Never hold a runaway buffer forever — say it at the last space.
-    if not chunks and len(remainder) >= MAX_HOLD:
-        cut = remainder.rfind(" ", 0, MAX_HOLD)
-        if cut > 0:
-            chunks.append(remainder[:cut])
-            remainder = remainder[cut:]
-    return chunks, remainder
-
-
 def for_speech(text):
     """Markdown strip + pronunciation fixes. Nothing here may DROP content —
     it only rewrites how words are pronounced."""
@@ -608,70 +553,12 @@ def for_speech(text):
     return text.strip()
 
 
-class Block:
-    """One streaming text block: what has arrived, and what has been said."""
-
-    def __init__(self):
-        self.raw = ""        # everything received for this block
-        self.consumed = 0    # how much of self.raw has been handed to the voice
-        self.pending = ""    # received, not yet a complete sentence
-        self.done = False    # ---DISPLAY--- reached: nothing further is spoken
-        self.fed = 0         # replay cursor: how far a re-read has walked back
-                             # through bytes this block already processed
-
-    def replay(self):
-        """This message is about to stream again — a truncation re-read, or
-        the CLI re-emitting the same message — and identical bytes are coming
-        back through add(). Point the cursor at the start of what is already
-        known so they are recognised instead of spoken a second time; the
-        completed-half dedup (closed / spoken_texts) cannot reach this half."""
-        self.fed = 0
-
-    def add(self, delta):
-        if self.fed < len(self.raw):
-            overlap = min(len(delta), len(self.raw) - self.fed)
-            if delta[:overlap] == self.raw[self.fed:self.fed + overlap]:
-                self.fed += overlap
-                delta = delta[overlap:]
-                if not delta:
-                    return
-            else:
-                # Different bytes where the replay expected its own: this is
-                # a NEW reply in this slot (a real truncation put another
-                # run's stream here), not a re-read. Start the block over.
-                self.__init__()
-        self.raw += delta
-        self.fed = len(self.raw)
-        if self.done:
-            return
-        self.pending += delta
-        head, sep, _tail = self.pending.partition(DELIM)
-        if sep:
-            self.pending = head
-            self.done = True
-        chunks, self.pending = _sentences(self.pending)
-        for c in chunks:
-            self.consumed += len(c)
-            spoken = for_speech(c)
-            if spoken:
-                VOICE.say(spoken, c)
-        if self.done:
-            self.consumed = len(self.raw)
-
-    def close(self, full_text):
-        """The completed assistant event for this block. Speak whatever the
-        streaming half did not already say — which is everything, when the CLI
-        was run without --include-partial-messages."""
-        rest = full_text[self.consumed:] if len(full_text) >= self.consumed else full_text
-        self.consumed = len(full_text)
-        if self.done:
-            return
-        head, sep, _tail = rest.partition(DELIM)
-        if sep:
-            self.done = True
-        spoken = for_speech(head)
-        if spoken:
-            VOICE.say(spoken, head)
+def _voice_chunk(chunk):
+    """What the shared chunker calls with each complete raw chunk: the desk's
+    hand-off to piper, with the raw text riding along for the mirror."""
+    spoken = for_speech(chunk)
+    if spoken:
+        VOICE.say(spoken, chunk)
 
 
 # Remember who launched us (the crab process). If it dies we get reparented —
@@ -686,18 +573,10 @@ speech_log("tailing %s" % LOG)
 while not os.path.exists(LOG):
     time.sleep(0.05)
 
-blocks = {}          # stream index -> Block, for the message in flight
-messages = {}        # message id -> that message's blocks, kept for the whole
-                     # tail: a truncation re-read or a re-emitted message_start
-                     # walks the same bytes back through add(), and the replay
-                     # cursor (Block.fed) is what keeps them off the speakers
-anon = 0             # message_start events with no id still get distinct slots
-closed = set()       # (message id, block idx) already spoken to completion —
-                     # the stream can hand us the same finished message twice,
-                     # and the second copy must not be spoken again
-spoken_texts = set() # whitespace-normalized text of every block spoken this
-                     # turn — catches the re-emit that arrives under a NEW
-                     # message id, which the id-keyed set cannot
+REG = BlockRegistry(_voice_chunk)  # every block of every message, the replay
+                     # cursors, and both dedup sets — the shared registry of
+                     # sentence_stream.py, with the desk's piper hand-off as
+                     # its voice
 held_refusal = ""    # the newest limit refusal, held off the speakers — and
                      # kept off them: refusals are never voiced, only logged;
                      # the caller notifies when a whole chain refuses
@@ -739,9 +618,7 @@ with open(LOG) as f:
                 # Whatever fragment we were holding belonged to the file that
                 # is gone; the bytes coming now are a different one.
                 partial = ""
-                for mb in messages.values():
-                    for b in mb.values():
-                        b.replay()
+                REG.replay_all()
                 continue
             # last_size is NOT set from the stat here. It counts bytes this
             # loop has actually READ, and the stat counts bytes the file HAS —
@@ -792,41 +669,16 @@ with open(LOG) as f:
             # When no run ever answers, crab's closing terminator — a result
             # with no error — ends the stream instead.
             if d.get("is_error") and _is_limit(str(d.get("result") or "")):
-                # No reset of `blocks` here: the retry's events arrive under a
-                # new message id and message_start rebinds it. See the note at
-                # the end of the completed-assistant branch for why touching
-                # this dict at all was the doubling.
+                # No reset of the registry here: the retry's events arrive
+                # under a new message id and message_start rebinds it. The
+                # BlockRegistry docstring carries why touching the block map
+                # at all was the doubling.
                 continue
             break
 
         # --- streaming half: speak each sentence the moment it is complete ---
         if kind == "stream_event":
-            ev = d.get("event") or {}
-            et = ev.get("type")
-            if et == "message_start":
-                mid = (ev.get("message") or {}).get("id")
-                if not mid:
-                    anon += 1
-                    mid = "anon-%d" % anon
-                blocks = messages.setdefault(mid, {})
-                # A message id seen before means these bytes have been here
-                # before — the CLI re-emitted the message, or a truncation
-                # sent the tail back down the file. Its blocks replay instead
-                # of speaking again.
-                for b in blocks.values():
-                    b.replay()
-            elif et == "content_block_start":
-                if (ev.get("content_block") or {}).get("type") == "text":
-                    idx = ev.get("index")
-                    if idx not in blocks:
-                        blocks[idx] = Block()
-            elif et == "content_block_delta":
-                delta = ev.get("delta") or {}
-                if delta.get("type") == "text_delta":
-                    b = blocks.get(ev.get("index"))
-                    if b is None:
-                        b = blocks[ev.get("index")] = Block()
-                    b.add(delta.get("text") or "")
+            REG.stream_event(d.get("event") or {})
             continue
 
         # --- completed half: authoritative, and the ONLY half when the run
@@ -847,58 +699,16 @@ with open(LOG) as f:
                 held_refusal = "\n".join(b.get("text", "") for b in content
                                          if b.get("type") == "text")
                 continue
+            # The dedup (by id AND by content), the content-keyed block
+            # match, and the never-reset registry invariant all live in
+            # BlockRegistry.close_text — including the history of the all-day
+            # doubling of 2026-08-07 that shaped them.
             mid = d["message"].get("id")
             idx = 0
             for block in content:
                 if block.get("type") == "text":
-                    # Dedupe by content as well as id: a retried or re-emitted
-                    # reply arrives under a fresh message id, which the
-                    # (mid, idx) guard cannot catch.
-                    fingerprint = " ".join(block.get("text", "").split())
-                    if (mid, idx) not in closed and fingerprint not in spoken_texts:
-                        closed.add((mid, idx))
-                        if fingerprint:
-                            spoken_texts.add(fingerprint)
-                        # The event's content list is NOT the stream's index
-                        # space: a thinking block holds stream index 0 and the
-                        # CLI then emits the finished text block ALONE, at
-                        # position 0 of its own event. Looked up by position,
-                        # every streamed reply behind a thinking block found a
-                        # FRESH Block with nothing consumed and was spoken a
-                        # second time — the all-day doubling of 2026-08-07.
-                        # The completed text is the streamed bytes, finished,
-                        # so the block is found by its content.
-                        text = block.get("text", "")
-                        b = None
-                        for cand in blocks.values():
-                            if (cand.raw and text
-                                    and (text.startswith(cand.raw)
-                                         or cand.raw.startswith(text))
-                                    and (b is None or len(cand.raw) > len(b.raw))):
-                                b = cand
-                        b = b or Block()
-                        b.close(text)
+                    REG.close_text(mid, idx, block.get("text", ""))
                 idx += 1
-            # `blocks` is NOT reset here, and must never be. It is the very
-            # dict `messages[mid]` holds, and `messages` is the whole of the
-            # replay protection: a truncation re-read walks the same bytes
-            # back through add(), and only a block still reachable from
-            # `messages` recognises them instead of speaking them again.
-            #
-            # This branch used to end `blocks = {}` — written when `blocks`
-            # was the only state there was, before the per-message registry
-            # existed, and left standing when it arrived. Both ways of doing
-            # it are wrong for the same reason: rebinding ORPHANS the message's
-            # map (blocks opened afterwards are unreachable from `messages`),
-            # and clearing DESTROYS it (the replay cursors go with it). And a
-            # message reaches this branch more than once — the CLI emits a
-            # completed assistant event per content block, so the thinking
-            # block's event lands here BEFORE the reply's text block has even
-            # been opened. Measured: the whole finished reply spoken a second
-            # time on the next re-read.
-            #
-            # The map ends when its message ends: message_start rebinds
-            # `blocks` to the next message's own dict, and nothing else may.
 
 if VOICE.queued_chars == 0 and held_refusal.strip():
     # Every run refused and nothing was even queued to be voiced. The refusal
