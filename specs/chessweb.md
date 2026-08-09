@@ -76,8 +76,11 @@ cannot be changed.
 7. Every move recorded to the store by the bridge is followed, in order, by: broadcast to every
    connection, game-end check, and — if the game is still on — one wake booked through
    `crab wake-at --by chessweb 1s event <reason>`, the reason carrying the game id, the user's
-   move in SAN, the FEN, the movetext so far, and the reply instruction
-   (`crab-chess move <id> <move>`). One wake per recorded user move; never a wake for her own.
+   move in SAN, the FEN, the movetext so far, the ply the store stood at when the wake was
+   booked, and the reply instruction — which carries that ply as `crab-chess move <id> <move>
+   --expect-ply <n>`, so a reply worked out from a photograph that has since gone stale is
+   refused rather than played (rule 15). One wake per recorded user move; never a wake for
+   her own.
    Serve start books the same wake if the loaded game is active with her to move (covers a
    bridge that died before booking). `$DESKCRAB_CHESSWEB_WAKE_CMD` replaces the crab invocation
    wholesale (the reason becomes its one argument) so tests never touch the live queue.
@@ -117,6 +120,16 @@ cannot be changed.
     `Restart=always` and a short `RestartSec`, and rule 10 makes every comeback lossless. The
     bridge is never run as a background child of a shell or of one of her turns — a session's
     exit reaps its children, which is a silent way to lose the listener mid-game.
+15. `crab-chess move` takes an optional `--expect-ply <n>` (and `--expect-fen <fen>`) naming the
+    position the caller believed it was answering, and refuses — non-zero, nothing written — when
+    the stored game is no longer there, naming the current ply and the SAN of everything played
+    since. A wake carrying a position is a photograph, and the queue delay between the shutter
+    and her hand is long enough for another mover, or another session of her, to have played:
+    without the guard a legal move lands on the wrong board and the game is lost to a blunder
+    nobody chose. `--expect-fen` compares the position proper only — placement, side, castling,
+    en passant — never the halfmove or fullmove counters. No expectation given, no check: every
+    existing caller keeps working. `show` and `status` print the current ply, so the value is
+    always at hand.
 
 ## KNOWN LIMITS
 

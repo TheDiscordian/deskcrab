@@ -79,3 +79,60 @@ after="$(chess status other | grep '^fen:')"
 chess status other | grep -q "engine level: 3" \
   && ok "the skill level given once is remembered" \
   || fail "engine level was not persisted"
+
+# --- the ply guard --------------------------------------------------------
+# A wake carrying a position is a photograph, and the game can move on between
+# the shutter and the move. --expect-ply is the caller saying which board it
+# thought it was answering.
+chess new stale >/dev/null
+for m in e4 e5 Nf3; do chess move stale "$m" >/dev/null; done
+
+chess status stale | grep -q "ply 3" \
+  && ok "status names the ply, so the caller can quote it back" \
+  || fail "status has no ply: $(chess status stale)"
+
+out="$(chess move stale Nc6 --expect-ply 3)"; rc=$?
+[ "$rc" -eq 0 ] && echo "$out" | grep -q "played Nc6" \
+  && ok "a move with the right expectation is played as normal" \
+  || fail "correct --expect-ply was refused: rc=$rc $out"
+
+# Two more plies land while our imaginary caller is still thinking at ply 4.
+chess move stale Bc4 >/dev/null; chess move stale Bc5 >/dev/null
+
+out="$(chess move stale Nxe5 --expect-ply 4)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "the board has moved on" \
+  && ok "a move answering a stale board is refused" \
+  || fail "stale --expect-ply was played: rc=$rc $out"
+
+echo "$out" | grep -q "Bc4 Bc5" \
+  && ok "and the refusal names what was played since" \
+  || fail "refusal did not list the moves since: $out"
+
+chess status stale | grep -q "ply 6" \
+  && ok "the refused move wrote nothing to the game" \
+  || fail "the store moved despite the refusal: $(chess status stale)"
+
+out="$(chess move stale Nxe5 --expect-ply 99)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "never happened" \
+  && ok "a ply the game has never reached is refused too" \
+  || fail "--expect-ply from the future: rc=$rc $out"
+
+fen="$(chess status stale | sed -n 's/^fen: //p')"
+out="$(chess move stale Nxe5 --expect-fen "$fen")"; rc=$?
+[ "$rc" -eq 0 ] \
+  && ok "the matching FEN is accepted as an expectation" \
+  || fail "correct --expect-fen was refused: rc=$rc $out"
+
+out="$(chess move stale Nxe5 --expect-fen "$fen")"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "the board has moved on" \
+  && ok "and the same FEN one ply later is not" \
+  || fail "stale --expect-fen was played: rc=$rc $out"
+
+# The counters are not the position: a caller quoting a FEN with the wrong
+# halfmove clock still means the board it can see.
+fen="$(chess status stale | sed -n 's/^fen: //p')"
+loose="$(echo "$fen" | awk '{print $1, $2, $3, $4, 41, 99}')"
+out="$(chess move stale Nxe5 --expect-fen "$loose")"; rc=$?
+[ "$rc" -eq 0 ] \
+  && ok "the move counters in an expected FEN are ignored" \
+  || fail "counters made a matching position look stale: rc=$rc $out"

@@ -493,12 +493,18 @@ class Hub:
                       f"History: {history}. Board: crab-chess show {gid}")
         else:
             played = f"they played {san}. " if san else ""
+            # Off the board, not the dict: the ply must name the very position
+            # this reason quotes, whatever the store has done since.
+            ply = len(board.move_stack)
             reason = (f"chessweb: your move as {self.store.her_side} against "
                       f"{g['opponent']} in game {gid} — {played}"
-                      f"FEN: {board.fen()}. History: {history}. "
-                      f"Choose your reply and play it with: crab-chess move "
-                      f"{gid} <move> — it reaches their browser within "
-                      f"seconds. See the board: crab-chess show {gid}")
+                      f"FEN: {board.fen()}. History: {history}. This is the "
+                      f"board at ply {ply}, photographed when the wake was "
+                      f"booked. Choose your reply and play it with: "
+                      f"crab-chess move {gid} <move> --expect-ply {ply} — the "
+                      f"guard refuses it if the game moved on while you "
+                      f"thought, and it reaches their browser within seconds. "
+                      f"See the board as it stands: crab-chess show {gid}")
         if self.port:
             reason += (f". Before you think, say so: curl -sf -X POST "
                        f"http://127.0.0.1:{self.port}/thinking -o /dev/null "

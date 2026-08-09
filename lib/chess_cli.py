@@ -292,6 +292,49 @@ def parse_move(board: chess.Board, text: str) -> chess.Move:
     return move
 
 
+def moves_since(g: dict, ply: int) -> str:
+    """SAN of the plies played after `ply`, for telling a stale caller what it
+    missed. Empty string when nothing was played."""
+    board = chess.Board()
+    played = []
+    for i, uci in enumerate(g["moves"]):
+        move = chess.Move.from_uci(uci)
+        if i >= ply:
+            played.append(board.san(move))
+        board.push(move)
+    return " ".join(played)
+
+
+def check_expectation(g: dict, board: chess.Board, ply, fen) -> None:
+    """Refuse to act when the caller was answering an older board.
+
+    A wake carrying a position is a photograph: by the time it reaches her the
+    game may have moved on, and a perfectly legal move against the wrong board
+    is a blunder nobody chose. See rule 15 in specs/chessweb.md.
+    """
+    have = len(g["moves"])
+    if ply is not None and ply != have:
+        if ply > have:
+            raise CliError(
+                f"{g['id']}: you expected ply {ply}, but only {have} have been "
+                f"played — that position never happened. Read the board: "
+                f"crab-chess show {g['id']}")
+        since = moves_since(g, ply) or "(nothing)"
+        raise CliError(
+            f"{g['id']}: the board has moved on — you expected ply {ply}, it "
+            f"is at ply {have}. Played since: {since}. Refusing the move. "
+            f"Read the board and think again: crab-chess show {g['id']}")
+    if fen is not None:
+        want = fen.strip()
+        # Compare the position proper; halfmove/fullmove counters and a stale
+        # en-passant square are not what the caller is claiming to have seen.
+        if want.split()[:4] != board.fen().split()[:4]:
+            raise CliError(
+                f"{g['id']}: the board has moved on — the FEN you expected is "
+                f"not the position on disk (now at ply {have}: {board.fen()}). "
+                f"Refusing the move. Read the board: crab-chess show {g['id']}")
+
+
 def history(board_moves: list[str]) -> str:
     if not board_moves:
         return "(no moves yet)"
@@ -309,7 +352,8 @@ def print_position(g: dict, board: chess.Board) -> None:
         print(f"last move: {last_board.san(board.peek())}")
     if key == "active":
         mover = "white" if board.turn == chess.WHITE else "black"
-        print(f"{desc} ({side_name(g, mover)}), move {board.fullmove_number}")
+        print(f"{desc} ({side_name(g, mover)}), move "
+              f"{board.fullmove_number}, ply {len(g['moves'])}")
     else:
         print(f"game over: {desc}  [{result}]")
 
@@ -382,6 +426,7 @@ def cmd_move(args):
         raise CliError("usage: crab-chess move [game] <move>")
     g = resolve_game(spec)
     board = build_board(g)
+    check_expectation(g, board, args.expect_ply, args.expect_fen)
     key, desc, _ = compute_state(g, board)
     if key != "active":
         raise CliError(f"{g['id']} is over ({desc}) — undo to reopen it, "
@@ -423,7 +468,7 @@ def cmd_status(args):
     if key == "active":
         mover = "white" if board.turn == chess.WHITE else "black"
         print(f"turn: {mover} ({side_name(g, mover)}), "
-              f"move {board.fullmove_number}")
+              f"move {board.fullmove_number}, ply {len(g['moves'])}")
         print(f"state: {desc}")
         claims = []
         if board.can_claim_threefold_repetition():
@@ -530,6 +575,11 @@ def main(argv=None):
 
     sp = sub.add_parser("move", help="play a move (SAN or coordinates)")
     sp.add_argument("words", nargs="+", metavar="[game] move")
+    sp.add_argument("--expect-ply", type=int, default=None, metavar="N",
+                    help="the ply count you believed you were answering; "
+                         "the move is refused if the game has moved on")
+    sp.add_argument("--expect-fen", default=None, metavar="FEN",
+                    help="likewise, but naming the position itself")
     sp.set_defaults(func=cmd_move)
 
     sp = sub.add_parser("undo", help="take back plies (or a resignation)")

@@ -296,6 +296,11 @@ def s_fresh(port, chess_dir, wake_log):
         and "crab-chess move guest-001" in wake and "e4" in wake, wake
     ok("wake booked with game id, SAN, FEN, and the reply instruction")
 
+    # The photograph must say when it was taken: one ply played, so a reply
+    # worked out from this text is only valid against ply 1.
+    assert "--expect-ply 1" in wake, wake
+    ok("and the ply it was booked at, as the guard on the reply")
+
     her_move(chess_dir, "guest-001", "e5")
     c.expect_move("e7", "e5")
     ok("her crab-chess reply mirrored to the browser")
