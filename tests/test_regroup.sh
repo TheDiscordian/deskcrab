@@ -52,14 +52,15 @@ cat > /dev/null
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"The backup finished and the archive verified clean, and the disk it landed on is nearly full."}]}}'
 printf '%s\n' '{"type":"result"}'
 EOF
-# ffmpeg has to leave a non-empty file behind here: synth_opus only reports
-# success when there is actually audio, and the phone path only publishes a
-# voice that really exists.
+# ffmpeg has to leave a plausible clip behind here: synth_opus only reports
+# success when there is actually audio — anything under 256 bytes is the
+# header-only husk a dead synthesiser leaves — and the phone path only
+# publishes a voice that really exists.
 sandbox_stub ffmpeg <<'EOF'
 #!/bin/sh
 cat > /dev/null
 for a in "$@"; do out="$a"; done
-printf 'opus' > "$out"
+head -c 4096 /dev/zero > "$out"
 EOF
 # ffprobe answers the only question the hand-off has: how long does this clip
 # play for. 12.4 seconds of audio, whatever the stub ffmpeg actually wrote.
