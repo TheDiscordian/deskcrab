@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# tiredness — the unread pile since the last sleep, as one number and one word.
+# specs/self-awareness.md rules 36–38. File facts only: counts, byte sizes and
+# clock arithmetic — no model call, no transcript content read. The same files
+# always say the same number.
+#
+#   tiredness          the raw numbers, then the score
+#   tiredness --line   one line, for the state block
+#
+# Read-only by contract: measuring the pile must not change it. The sleep
+# marker is written by the nightly pipeline and never here. Thresholds and
+# their reasoning: ~/.local/share/deskcrab/engineering/tiredness-score.md.
+set -uo pipefail
+
+STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+LAST_SLEPT_FILE="${LAST_SLEPT_FILE:-$STATE_DIR/last-slept}"
+DAY_JOURNAL_DIR="${DAY_JOURNAL_DIR:-$STATE_DIR/journal}"
+JOBS_DIR="${JOBS_DIR:-$STATE_DIR/jobs}"
+CLAUDISM_FLAGS_DIR="${CLAUDISM_FLAGS_DIR:-$STATE_DIR/claudism-flags}"
+
+NOW=$(date +%s)
+
+# The marker: epoch on line one. Missing is not zero — it means no sleep is on
+# record, and the pile is measured over everything rather than called fresh.
+SLEPT="$(head -n1 "$LAST_SLEPT_FILE" 2>/dev/null)"
+case "${SLEPT:-}" in ''|*[!0-9]*) SLEPT="" ;; esac
+NEVER=""
+[ -z "$SLEPT" ] && { NEVER=1; SLEPT=0; }
+[ "$SLEPT" -gt "$NOW" ] && SLEPT="$NOW"
+
+# Both per-day stores name their files YYYY-MM-DD.jsonl, so the file set is cut
+# by name before a line is read. Each line opens with its epoch, so the first
+# match on a line is the record's own stamp, not a number inside the text.
+SINCE_DAY="$(date -d "@$SLEPT" +%F 2>/dev/null || echo 1970-01-01)"
+count_jsonl() {  # <dir> -> "<lines since marker> <their bytes>"
+    local d="$1" f files=()
+    for f in "$d"/*.jsonl; do
+        [ -e "$f" ] || continue
+        [ "$(basename "$f" .jsonl)" \< "$SINCE_DAY" ] && continue
+        files+=("$f")
+    done
+    [ "${#files[@]}" -eq 0 ] && { echo "0 0"; return 0; }
+    awk -v cut="$SLEPT" '
+        { e = -1
+          if (match($0, /"epoch":[ ]*[0-9]+/)) {
+              e = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", e); e += 0 }
+          if (e >= cut) { n++; b += length($0) + 1 } }
+        END { printf "%d %d\n", n + 0, b + 0 }' "${files[@]}" 2>/dev/null || echo "0 0"
+}
+read -r TURNS TBYTES <<< "$(count_jsonl "$DAY_JOURNAL_DIR")"
+read -r FLAGS _ <<< "$(count_jsonl "$CLAUDISM_FLAGS_DIR")"
+
+# A job sidecar stamps finished_epoch once, however it ended — finished, failed
+# or stopped. Ended is ended, and its outcome is unread either way.
+JOBS=0
+for f in "$JOBS_DIR"/*.json; do
+    [ -e "$f" ] || break
+    fe="$(sed -n 's/.*"finished_epoch":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -n1)"
+    [ -n "$fe" ] && [ "$fe" -ge "$SLEPT" ] && JOBS=$((JOBS + 1))
+done
+
+HOURS="$(awk -v n="$NOW" -v s="$SLEPT" 'BEGIN { printf "%.1f", (n - s) / 3600 }')"
+
+# The score: five saturating ramps, weighted to 100. Each input counts up to
+# its full mark and no further, so one runaway input cannot peg the score
+# alone. The full marks are calibrated against a measured heavy day —
+# engineering/tiredness-score.md holds the numbers and the reasoning.
+read -r SCORE WORD <<< "$(awk -v t="$TURNS" -v b="$TBYTES" -v j="$JOBS" -v f="$FLAGS" -v h="$HOURS" '
+    function part(v, full, w) { r = v / full; if (r > 1) r = 1; return r * w }
+    BEGIN {
+        s = part(t, 250, 35) + part(b, 614400, 15) + part(j, 15, 15) \
+          + part(f, 40, 10) + part(h, 30, 25)
+        s = int(s + 0.5)
+        w = "rested"
+        if (s >= 20) w = "warm"
+        if (s >= 50) w = "heavy"
+        if (s >= 75) w = "overfull"
+        printf "%d %s\n", s, w
+    }')"
+
+KB=$(( TBYTES / 1024 ))
+if [ "${1:-}" = "--line" ]; then
+    if [ -n "$NEVER" ]; then
+        printf 'Tiredness: %s/100, %s — no sleep on record, so the pile is everything: %s turns, %s finished jobs, %s claudism flags (crab tired for the parts)\n' \
+            "$SCORE" "$WORD" "$TURNS" "$JOBS" "$FLAGS"
+    else
+        printf 'Tiredness: %s/100, %s — %s turns, %s finished jobs and %s claudism flags piled up since sleeping %sh ago (crab tired for the parts)\n' \
+            "$SCORE" "$WORD" "$TURNS" "$JOBS" "$FLAGS" "$HOURS"
+    fi
+    exit 0
+fi
+
+if [ -n "$NEVER" ]; then
+    printf 'No sleep on record (%s is missing or unreadable) — measuring everything on record:\n' "$LAST_SLEPT_FILE"
+else
+    printf 'Since last sleep (%s, %sh ago):\n' "$(date -d "@$SLEPT" '+%Y-%m-%d %H:%M')" "$HOURS"
+fi
+printf '  turns journaled: %s (%s KB)\n' "$TURNS" "$KB"
+printf '  detached jobs finished: %s\n' "$JOBS"
+printf '  claudism flags raised: %s\n' "$FLAGS"
+printf 'Tiredness: %s/100 — %s\n' "$SCORE" "$WORD"

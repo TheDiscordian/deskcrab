@@ -132,6 +132,25 @@ below is a fact placed before her, never a gate placed behind her.
 29. The near view MUST NOT print history under a heading that reads as live work.
 30. Anything the near view omits MUST be named as one command away, with the command.
 
+### The tiredness line
+
+36. The block MUST close with one line summarising the unread pile since the last sleep: a 0–100
+    score, its word — **rested**, **warm**, **heavy**, or **overfull** — and the counts behind it.
+    The inputs are file facts and nothing else: turns journaled since the last-slept marker and
+    their bytes, detached jobs whose sidecar says they ended since the marker, claudism flags
+    raised since the marker, and hours elapsed since it. No model is called and no transcript
+    content is read — the score is arithmetic on counts, sizes and the clock, so the same files
+    always say the same number. `crab tired` prints the same measurement with its parts, one
+    command away.
+37. The line MUST cost nothing when it fails. An unreadable marker, a missing directory or a broken
+    scorer means the block assembles without the line — never a broken block. A missing marker is
+    not zero: it means no sleep is on record, and the line says the pile is measured over
+    everything on record rather than claiming freshness.
+38. The scorer MUST NOT write anything anywhere. It reads the sleep marker; it never stamps it —
+    sleeping belongs to the nightly pipeline ([nightly.md](nightly.md)) and nothing here touches
+    it. The thresholds live in the scorer, and their reasoning in the engineering note
+    (`engineering/tiredness-score.md`); re-tuning them is a scorer change, never a sleep change.
+
 ### The block is how she sees, not how she speaks
 
 33. The block's vocabulary is her **senses, never her mouth**. The prompt MUST carry that rule, in
@@ -163,6 +182,9 @@ below is a fact placed before her, never a gate placed behind her.
 | `~/.local/share/deskcrab/wakes/ledger.log` | read and written | append-only queue-change ledger |
 | `~/.local/share/deskcrab/jobs/<id>.json` | read | job state sidecar |
 | `~/.local/share/deskcrab/account-default` | read | `token \t epoch \t why it moved` |
+| `~/.local/share/deskcrab/last-slept` | read | epoch, timestamp, records added — written by sleep, never here |
+| `~/.local/share/deskcrab/journal/*.jsonl` | read | one finished turn per line, epoch first; counted, never quoted |
+| `~/.local/share/deskcrab/claudism-flags/*.jsonl` | read | one flag per line, epoch first; counted, never quoted |
 | `~/.local/share/deskcrab/account-log` | read and written | append-only record of every default move |
 | `${STATE_PREFIX}-jobs-surfaced` | written | the once-stamp for failed-job news |
 | systemd user timers | read | joined onto the records, never the primary source |
@@ -170,7 +192,8 @@ below is a fact placed before her, never a gate placed behind her.
 ## INTERACTIONS
 
 **Self-awareness may call:** the session registry and reaper, the job status reporter, the wake
-queue's list operation, the account chain's default reader.
+queue's list operation, the account chain's default reader, the tiredness scorer
+(`lib/tiredness`).
 
 **Self-awareness may be called by:** `crab status`, prompt assembly (as layer L2), and nothing else.
 
@@ -240,3 +263,6 @@ scratch wakes directory. It never exercises the divergence between records and t
   a queue-change line.
 - `tests/test_jobs_surfaced.sh` — a silent wake must not consume the failed-job news; the next
   audible session must still see it.
+- `tests/test_tiredness.sh` — drive a scratch pile through the scorer: a fresh marker scores
+  rested, a fabricated heavy day scores mid-range, a missing marker says so rather than saying
+  zero, and a broken input costs the line and nothing else.
