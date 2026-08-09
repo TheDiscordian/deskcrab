@@ -979,3 +979,15 @@ message. This happened **twice in twenty minutes on `lib/common.sh`**. Stage exp
 `crab help` used to fall into the catch-all and be asked of her as a message. Sixteen times in one
 day a script or a hand reaching for usage started a whole desktop turn where she was told "help" with
 no context. Usage is printed, never spoken to — and a leading dash is a mistyped flag, not speech.
+
+### 2026-08-08 — a landed feature the phone never saw: `serve.py` deploys on restart, not on commit
+
+`crab play` answered "Handed to the phone" and the page showed nothing at all — no transport, no
+error. The whole handed-media path (the pointer, the `/media/` route with ranges, the transport on
+the page) was committed and correct; it had simply landed three hours after `deskcrab-serve.service`
+last started. Deployment by symlink makes the shell live at the next invocation, but `serve.py` is a
+long-lived process that reads its source once. Worse, the page IS read from disk per request, so a
+phone refresh delivered the new client against the old server: the client asked `/watch` with
+`playseen` and the server had no such channel to answer on. **After changing `lib/serve.py`, restart
+the unit** (`systemctl --user restart deskcrab-serve.service`) — and remember the half-deployed
+state looks like a client bug, because the client is the only part that updated.
