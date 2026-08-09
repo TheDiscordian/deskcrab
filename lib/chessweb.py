@@ -539,6 +539,18 @@ class Hub:
         self.conns[conn] = "seat"
         conn.send(server_msg(PLAYER, emit_fields([(1, 1)])))
         conn.send(server_msg(OPPONENT_JOINED))  # she is always present
+        # A rejoin lands on the live game (rule 3): load, never create, and
+        # replay the position at once — the seat must not need a NewGame
+        # click, which on a finished game would start a fresh one.
+        g = self.store.load()
+        if g and chess_cli.compute_state(
+                g, chess_cli.build_board(g))[0] == "active":
+            # If the poll still owes other connections a delta, a resync of
+            # everyone keeps `synced` truthful for all of them.
+            stale = self.synced is not None and self.synced != g["moves"]
+            self.synced = list(g["moves"])
+            for c in (self.joined() if stale else [conn]):
+                self.sync_conn(c, g)
 
     def on_newgame(self, conn):
         if conn is not self.seat:
@@ -730,6 +742,18 @@ class Hub:
 
 # ------------------------------------------------------------- HTTP + serve
 
+class Server(ThreadingHTTPServer):
+    # A phone roaming between networks resets sockets all night, and every
+    # reset used to print a full handler-thread traceback (rule 14). One line
+    # for the connection family; a stack trace in this log means a bug.
+    def handle_error(self, request, client_address):
+        exc = sys.exception()
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            log(f"client {client_address[0]} dropped: {exc!r}")
+            return
+        super().handle_error(request, client_address)
+
+
 def make_handler(hub, client_dir):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -863,7 +887,7 @@ def main(argv=None):
     store = Store(args.opponent, her_side, args.game)
     hub = Hub(store, default_wake_cmd(), args.poll)
 
-    httpd = ThreadingHTTPServer(("", args.port), make_handler(hub, client_dir))
+    httpd = Server(("", args.port), make_handler(hub, client_dir))
     httpd.daemon_threads = True
     port = httpd.server_address[1]
     hub.port = port
@@ -883,11 +907,16 @@ def main(argv=None):
 
     threading.Thread(target=hub.poll_store, daemon=True).start()
     threading.Thread(target=hub.keepalive, daemon=True).start()
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    return 0
+    while True:
+        try:
+            httpd.serve_forever()
+            return 0
+        except KeyboardInterrupt:
+            return 0
+        except Exception as e:
+            # Rule 14: nothing that escapes a connection may take the
+            # listener down. The socket is still bound; keep accepting.
+            log(f"serve loop survived: {e!r}")
 
 
 if __name__ == "__main__":

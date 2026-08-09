@@ -85,9 +85,41 @@ if start_bridge "$CH" "$SANDBOX/wake-fresh.log" --opponent guest; then
 fi
 stop_bridge
 
-echo "the overnight property — restart, replay, undo resync:"
+echo "the overnight property — restart, replay on join, undo resync:"
 if start_bridge "$CH" "$SANDBOX/wake-resume.log" --opponent guest; then
     scn resume "$PORT" "$CH"
+fi
+stop_bridge
+
+echo "a peer reset is never fatal — mid-request, mid-upgrade, under a broadcast:"
+CH="$SANDBOX/chess-reset"
+if start_bridge "$CH" "$SANDBOX/wake-reset.log" --opponent guest; then
+    scn reset "$PORT" "$CH"
+    if kill -0 "$BRIDGE_PID" 2>/dev/null; then
+        ok "the bridge outlived every reset"
+    else
+        sed 's/^/    serve: /' "$SANDBOX/serve.log" | tail -15
+        fail "a peer reset killed the bridge"
+    fi
+    if grep -q "Traceback" "$SANDBOX/serve.log"; then
+        sed 's/^/    serve: /' "$SANDBOX/serve.log" | tail -15
+        fail "a roaming peer left tracebacks in the serve log"
+    else
+        ok "resets logged one line each, no tracebacks"
+    fi
+fi
+stop_bridge
+
+echo "the seat drops and rejoins onto the live game; SIGKILL loses nothing:"
+CH="$SANDBOX/chess-rejoin"
+if start_bridge "$CH" "$SANDBOX/wake-rejoin.log" --opponent guest; then
+    scn rejoin "$PORT" "$CH"
+    kill -9 "$BRIDGE_PID" 2>/dev/null      # not even a chance to flush
+    wait "$BRIDGE_PID" 2>/dev/null
+    BRIDGE_PID=""
+    if start_bridge "$CH" "$SANDBOX/wake-postkill.log" --opponent guest; then
+        scn postkill "$PORT" "$CH"
+    fi
 fi
 stop_bridge
 

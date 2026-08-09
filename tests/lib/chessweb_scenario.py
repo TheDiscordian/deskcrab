@@ -199,6 +199,14 @@ class Client:
             f"move {frm}->{to} type {mtype}: wire said {got}"
 
 
+def hard_reset(sock):
+    """Close with SO_LINGER 0: the peer sees RST, not FIN — the abrupt death
+    a phone roaming off the network hands the bridge all night."""
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                    struct.pack("ii", 1, 0))
+    sock.close()
+
+
 def her_move(chess_dir, gid, move):
     """Her reply path: the real crab-chess CLI against the same store."""
     env = dict(os.environ, DESKCRAB_CHESS_DIR=chess_dir,
@@ -305,12 +313,19 @@ def s_resume(port, chess_dir):
     c.join()
     c.expect(PLAYER)
     c.expect(OPPONENT_JOINED)
-    c.send(NEWGAME)
     f = c.expect(TEAM)
     assert f.get(1, 0) == 0
     c.expect_move("e2", "e4")
     c.expect_move("e7", "e5")
-    ok("restarted bridge replayed the stored game")
+    ok("restarted bridge replayed the stored game on join alone")
+
+    c.send(NEWGAME)  # rule 4 on an active game: resync, never a fresh start
+    c.expect(TEAM)
+    c.expect_move("e2", "e4")
+    c.expect_move("e7", "e5")
+    assert sorted(os.listdir(Path(chess_dir) / "games")) == ["guest-001.json"]
+    assert game_moves(chess_dir, "guest-001") == ["e2e4", "e7e5"]
+    ok("NewGame on the active game resynced it rather than starting fresh")
 
     env = dict(os.environ, DESKCRAB_CHESS_DIR=chess_dir,
                PYTHONDONTWRITEBYTECODE="1")
@@ -325,11 +340,11 @@ def s_resume(port, chess_dir):
 
 def s_special(port, chess_dir):
     # Seeded history: white castled kingside at ply 7, en passant at ply 9.
+    # The seeded game is active, so the seat is synced on join (rule 3).
     c = Client(port)
     c.join()
     c.expect(PLAYER)
     c.expect(OPPONENT_JOINED)
-    c.send(NEWGAME)
     f = c.expect(TEAM)
     assert f.get(1, 0) == 1, "the user should be black here"
     for frm, to in [("e2", "e4"), ("g7", "g6"), ("g1", "f3"), ("f8", "g7"),
@@ -349,7 +364,6 @@ def s_promote(port, chess_dir):
     c.join()
     c.expect(PLAYER)
     c.expect(OPPONENT_JOINED)
-    c.send(NEWGAME)
     c.expect(TEAM)
     for _ in range(8):
         c.recv()  # the seeded replay; encodings proven in s_special
@@ -385,7 +399,6 @@ def s_mate(port, chess_dir, wake_log):
     c.join()
     c.expect(PLAYER)
     c.expect(OPPONENT_JOINED)
-    c.send(NEWGAME)
     c.expect(TEAM)
     for _ in range(6):
         c.recv()
@@ -404,7 +417,6 @@ def s_poller_end(port, chess_dir):
     c.join()
     c.expect(PLAYER)
     c.expect(OPPONENT_JOINED)
-    c.send(NEWGAME)
     c.expect(TEAM)
     for _ in range(3):
         c.recv()
@@ -413,6 +425,124 @@ def s_poller_end(port, chess_dir):
     f = c.expect(GAME_COMPLETE)
     assert f.get(1, 0) == 1, f"wanted BlackWin(1), got {f}"
     ok("her mating move from the CLI ends the game as BlackWin")
+
+
+def s_reset(port, chess_dir):
+    # A peer reset at every point the night of 2026-08-09 hit: mid-request,
+    # mid-upgrade, and under the poll thread's broadcast. Survival is the
+    # shell's assertion (the pid); this scenario proves play continues.
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall(b"GET / HT")
+    hard_reset(s)
+    ok("reset mid-request sent")
+
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall(b"GET / HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\n"
+              b"Connection: Upgrade\r\n"
+              b"Sec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGU=\r\n"
+              b"Sec-WebSocket-Version: 13\r\n\r\n")
+    hard_reset(s)
+    ok("reset mid-upgrade sent")
+    time.sleep(0.3)
+
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.send(NEWGAME)
+    c.expect(TEAM)
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+    obs = Client(port)
+    obs.join(player=False)
+    obs.expect(TEAM)
+    obs.expect_move("e2", "e4")
+    hard_reset(obs.sock)  # the poll's next broadcast lands on a corpse
+    her_move(chess_dir, "guest-001", "e5")
+    c.expect_move("e7", "e5")
+    ok("broadcast into a reset observer; the live seat still got the move")
+
+    c.move("g1", "f3")
+    c.expect_move("g1", "f3")
+    hard_reset(c.sock)    # now the seat itself dies under a broadcast
+    her_move(chess_dir, "guest-001", "Nc6")
+    time.sleep(0.5)
+
+    c2 = Client(port)
+    c2.join()
+    c2.expect(PLAYER)
+    c2.expect(OPPONENT_JOINED)
+    f = c2.expect(TEAM)
+    assert f.get(1, 0) == 0
+    for frm, to in [("e2", "e4"), ("e7", "e5"), ("g1", "f3"), ("b8", "c6")]:
+        c2.expect_move(frm, to)
+    ok("after every reset the bridge still serves, seats, and replays")
+
+
+def s_rejoin(port, chess_dir):
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)  # fresh store: nothing to sync yet
+    c.send(NEWGAME)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 0
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+    her_move(chess_dir, "guest-001", "e5")
+    c.expect_move("e7", "e5")
+    c.move("g1", "f3")
+    c.expect_move("g1", "f3")
+    her_move(chess_dir, "guest-001", "Nc6")
+    c.expect_move("b8", "c6")
+    hard_reset(c.sock)
+    time.sleep(0.3)
+
+    c2 = Client(port)
+    c2.join()
+    c2.expect(PLAYER)
+    c2.expect(OPPONENT_JOINED)
+    f = c2.expect(TEAM)
+    assert f.get(1, 0) == 0, "rejoin must deal the user their own colour"
+    for frm, to in [("e2", "e4"), ("e7", "e5"), ("g1", "f3"), ("b8", "c6")]:
+        c2.expect_move(frm, to)
+    ok("the rejoin was synced the full position at once, no NewGame click")
+
+    games = sorted(os.listdir(Path(chess_dir) / "games"))
+    assert games == ["guest-001.json"], f"rejoin touched the store: {games}"
+    assert game_moves(chess_dir, "guest-001") == \
+        ["e2e4", "e7e5", "g1f3", "b8c6"]
+    ok("rejoining created nothing and reset nothing")
+
+    c2.move("f1", "b5")  # white to move after four plies; the store agrees
+    c2.expect_move("f1", "b5")
+    assert game_moves(chess_dir, "guest-001")[-1] == "f1b5"
+    ok("side to move survived the rejoin: the user's Bb5 was accepted")
+
+
+def s_postkill(port, chess_dir):
+    # The bridge was SIGKILLed after s_rejoin; this is the fresh serve.
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 0
+    for frm, to in [("e2", "e4"), ("e7", "e5"), ("g1", "f3"), ("b8", "c6"),
+                    ("f1", "b5")]:
+        c.expect_move(frm, to)
+    ok("SIGKILL then restart: the same position came back on join")
+
+    games = sorted(os.listdir(Path(chess_dir) / "games"))
+    assert games == ["guest-001.json"], f"restart changed the store: {games}"
+    ok("same game id, and no second game appeared")
+
+    her_move(chess_dir, "guest-001", "a6")  # her turn after Bb5
+    c.expect_move("a7", "a6")
+    c.move("b5", "a4")
+    c.expect_move("b5", "a4")
+    assert game_moves(chess_dir, "guest-001")[-2:] == ["a7a6", "b5a4"]
+    ok("play continued in the same game after the restart")
 
 
 def main():
@@ -425,7 +555,8 @@ def main():
     rest = sys.argv[3:]
     {"http": s_http, "fresh": s_fresh, "resume": s_resume,
      "special": s_special, "promote": s_promote, "mate": s_mate,
-     "poller_end": s_poller_end}[what](port, *rest)
+     "poller_end": s_poller_end, "reset": s_reset, "rejoin": s_rejoin,
+     "postkill": s_postkill}[what](port, *rest)
 
 
 if __name__ == "__main__":

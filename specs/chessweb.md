@@ -50,10 +50,13 @@ cannot be changed.
 2. `index.html` is served with the server-address box rewritten to the request's Host. No file
    under the client directory is ever written.
 3. One user seat. The first connection to send Join(player) is seated and immediately told
-   Player{one} and OpponentJoined — her seat needs no joining, she is always present. Further
-   Join(player)s get an Error while the seat is held; a seat whose socket has died is freed for
-   the next joiner. Join(spectator) connections observe: they get Team and the replay at once,
-   and every later broadcast, but their Moves are refused.
+   Player{one} and OpponentJoined — her seat needs no joining, she is always present — and then,
+   when the store holds an active game, the same Team-and-replay sync an observer gets, so a
+   rejoin lands on the live position with the right side to move, no NewGame click needed.
+   Joining loads; it never creates or resets a game. Further Join(player)s get an Error while
+   the seat is held; a seat whose socket has died is freed for the next joiner. Join(spectator)
+   connections observe: they get Team and the replay at once, and every later broadcast, but
+   their Moves are refused.
 4. NewGame from the seat syncs the browser to the stored game: Team with the user's colour, then
    the stored move list replayed as broadcasts (a promotion replays as its Move then its
    Promote). If no game is active, one is created in the crab-chess store first — opponent from
@@ -86,10 +89,10 @@ cannot be changed.
    whether by a bridge-recorded move or noticed in the poll — every connection gets one
    GameComplete with the right result; the protocol's three results mean every draw is sent as
    Stalemate. After that, NewGame from the seat starts a fresh game (rule 4's creation path).
-10. Restart loses nothing: the bridge holds no game truth outside the store, so kill it, restart
-    it, reopen the browser, click New Game, and the position, turn, and her pending reply are
-    all as they were. This is the overnight property, and it is a consequence of rules 4 and 8
-    rather than a feature of its own.
+10. Restart loses nothing: the bridge holds no game truth outside the store, so kill it — SIGKILL
+    included — restart it, rejoin from the browser, and the same game comes back: same id, same
+    position, same side to move, her pending reply intact. This is the overnight property, and it
+    is a consequence of rules 3, 4 and 8 rather than a feature of its own.
 11. The bridge writes nothing but game files in the crab-chess store, books wakes only through
     `crab wake-at`, and runs in the crab-chess venv (the wrapper bootstraps it the same way
     `crab-chess` does).
@@ -105,6 +108,15 @@ cannot be changed.
 13. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
     up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
     drops two minutes into a think.
+14. A peer reset is never fatal, wherever it lands — mid-HTTP-request, mid-upgrade, mid-read,
+    or under a broadcast from the poll or keepalive thread. A socket error is contained to the
+    one connection that raised it; connection-family errors log one line each, never a stack
+    trace (a traceback in the serve log means a bug, not a phone roaming off the network); and
+    the accept loop itself survives anything that escapes a handler. The process is still
+    mortal, so `systemd/deskcrab-chessweb.service` runs the serve under the user manager with
+    `Restart=always` and a short `RestartSec`, and rule 10 makes every comeback lossless. The
+    bridge is never run as a background child of a shell or of one of her turns — a session's
+    exit reaps its children, which is a silent way to lose the listener mid-game.
 
 ## KNOWN LIMITS
 

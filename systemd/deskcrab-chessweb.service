@@ -1,0 +1,28 @@
+[Unit]
+Description=DeskCrab chess bridge (crab-chessweb serve)
+Documentation=https://github.com/TheDiscordian/deskcrab
+After=network-online.target
+# Same bargain as deskcrab-serve.service: never stop retrying. A port briefly
+# held by a stray manual serve must not park the unit in a failed state.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/deskcrab/crab-chessweb serve
+WorkingDirectory=%h
+# The game lives in the crab-chess store on disk; the process holds no truth,
+# so a death is a two-second gap and a rejoin, not a lost game
+# (specs/chessweb.md rules 10 and 14). This unit exists because a bridge run
+# as a background child of a session dies with the session, silently.
+Restart=always
+RestartSec=2
+# ASSISTANT_NAME for the thinking banner. systemd reads KEY="VALUE" lines and
+# skips what it cannot parse; the bridge reads nothing else from the config.
+EnvironmentFile=-%h/.config/deskcrab/deskcrab.conf
+# The bridge shells out to crab (wake-at, notify), which lives in ~/.local/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:/tmp/chessweb-live.log
+StandardError=append:/tmp/chessweb-live.log
+
+[Install]
+WantedBy=default.target

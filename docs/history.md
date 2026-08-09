@@ -632,6 +632,34 @@ Contract: [`specs/phone.md`](../specs/phone.md).
 
 ---
 
+## The chess bridge
+
+### 2026-08-09 — the bridge vanished mid-game, and the traceback was innocent
+
+Mid-game, the browser player's connection dropped and nothing was listening on 8181 afterwards; the
+serve log ended in `ConnectionResetError: [Errno 104] Connection reset by peer`, and the obvious
+reading was a crash. The archaeology said otherwise. Every reset traceback in that log came out of
+`process_request_thread` — `ThreadingHTTPServer` contains those to the one connection that raised
+them — and a phone roaming between the LAN and its tailnet address had been printing them all
+evening while the game played on. Replaying the same barrage against that exact code (hard resets,
+`SO_LINGER` 0, at mid-request, mid-upgrade, and under a poll-thread broadcast) confirmed the
+process survives every one. The log's true last words were a normal `wake booked`, then silence:
+the bridge was running as a background child of a session, and a session's exit reaps its
+children. The listener died of process management, not of a packet.
+
+The same replay against the old code did reproduce the bug that made the outage feel like data
+loss: a reconnecting seat was seated and told Player and OpponentJoined, and then nothing — a blank
+board over a game sitting intact on disk, where the only visible "fix", New Game, is exactly the
+click that starts a fresh game once the stored one has ended. Three changes came out of the night,
+each pinned by a wire-level test in `tests/test_chessweb.sh`: a seat Join now syncs the live game
+at once (rule 3); connection-family errors log one line instead of a stack trace, with a guard on
+the accept loop for anything that ever escapes a handler (rule 14); and
+`systemd/deskcrab-chessweb.service` (`Restart=always`, `RestartSec=2`) owns the process, because
+rule 10 already made restarts lossless — the suite SIGKILLs the bridge mid-game, restarts it, and
+plays on in the same game.
+
+Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 3, 10 and 14.
+
 ## Long-term memory
 
 `crab memory`, `lib/memory.py`: a sqlite-vec store at `~/.local/share/deskcrab/memory/memory.db`
