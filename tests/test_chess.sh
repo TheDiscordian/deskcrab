@@ -54,3 +54,28 @@ out="$(CRAB_CHESS_ENGINE=nosuchengine chess engine other)"
 echo "$out" | grep -q "nosuchengine is not on PATH" \
   && ok "a named engine that is absent says so by name" \
   || fail "engine with a bogus CRAB_CHESS_ENGINE: $out"
+
+# And with one present it plays for real. The stub speaks UCI and picks at
+# random, so this proves the protocol and the write-back, not the chess.
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/stubfish" <<SHIM
+#!/bin/sh
+exec "$VENV/bin/python" "$REPO/tests/lib/stub-uci-engine.py" "\$@"
+SHIM
+chmod +x "$SANDBOX/bin/stubfish"
+export PATH="$SANDBOX/bin:$PATH"
+
+before="$(chess status other | grep '^fen:')"
+out="$(CRAB_CHESS_ENGINE=stubfish chess engine other --level 3)"
+echo "$out" | grep -q "engine (skill 3) plays" \
+  && ok "a UCI engine named by CRAB_CHESS_ENGINE plays the side to move" \
+  || fail "stub engine did not move: $out"
+
+after="$(chess status other | grep '^fen:')"
+[ "$before" != "$after" ] \
+  && ok "and its move is written to the game on disk" \
+  || fail "the board did not change after the engine moved"
+
+chess status other | grep -q "engine level: 3" \
+  && ok "the skill level given once is remembered" \
+  || fail "engine level was not persisted"
