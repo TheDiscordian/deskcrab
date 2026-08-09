@@ -356,6 +356,7 @@ crab serve   →  HTTP  →  ffmpeg → whisper-cli (batch) → crab remote
 - `lib/serve.py` — stdlib HTTP front end for the remote client
 - `lib/webapp/` — the phone client (single page, installable)
 - `crab-debug` — real-time debug viewer
+- `lib/crab-chess` — persistent correspondence chess (`lib/chess_cli.py` is the program; the wrapper owns its venv)
 
 ## License
 

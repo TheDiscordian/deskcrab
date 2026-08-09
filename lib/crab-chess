@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# crab-chess — persistent correspondence chess. This wrapper owns exactly one
+# job: make sure the venv with python-chess exists, then hand over to
+# chess_cli.py. State (games and the venv) lives under the durable share dir,
+# never in this checkout.
+set -euo pipefail
+
+CHESS_DIR="${DESKCRAB_CHESS_DIR:-$HOME/.local/share/deskcrab/chess}"
+VENV="${DESKCRAB_CHESS_VENV:-$HOME/.local/share/deskcrab/chess/venv}"
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+if ! "$VENV/bin/python" -c 'import chess, chess.svg' >/dev/null 2>&1; then
+    command -v uv >/dev/null 2>&1 || {
+        echo "crab-chess: need uv to bootstrap the venv at $VENV (no pip on this box)" >&2
+        exit 1
+    }
+    mkdir -p "$(dirname "$VENV")"
+    uv venv --quiet "$VENV"
+    # pillow is only for the fallback renderer when no SVG converter is around;
+    # if its install fails the SVG path still works, so tolerate that half.
+    uv pip install --quiet --python "$VENV/bin/python" python-chess
+    uv pip install --quiet --python "$VENV/bin/python" pillow || true
+fi
+
+exec "$VENV/bin/python" "$HERE/chess_cli.py" "$@"
