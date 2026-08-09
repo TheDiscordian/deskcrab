@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# crab-chessweb — the browser board onto a crab-chess game. This wrapper owns
+# exactly one job: make sure the same venv crab-chess uses exists (python-chess
+# is the rules engine on both sides), then hand over to chessweb.py.
+# specs/chessweb.md is the contract.
+set -euo pipefail
+
+VENV="${DESKCRAB_CHESS_VENV:-$HOME/.local/share/deskcrab/chess/venv}"
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+if ! "$VENV/bin/python" -c 'import chess' >/dev/null 2>&1; then
+    command -v uv >/dev/null 2>&1 || {
+        echo "crab-chessweb: need uv to bootstrap the venv at $VENV (no pip on this box)" >&2
+        exit 1
+    }
+    mkdir -p "$(dirname "$VENV")"
+    uv venv --quiet "$VENV"
+    uv pip install --quiet --python "$VENV/bin/python" python-chess
+fi
+
+exec "$VENV/bin/python" "$HERE/chessweb.py" "$@"
