@@ -31,6 +31,7 @@ case "${1:-}" in
         [ ! -f "$PIDFILE" ] && exit 1
         WSPID="$(cat "$PIDFILE")"
         rm -f "$PIDFILE"
+        turn_metric capture-release
 
         # Dismiss listening notification immediately
         notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" ""
@@ -60,6 +61,8 @@ case "${1:-}" in
         if [ -n "$WHISPER_FIXES" ]; then
             TEXT=$(echo "$TEXT" | sed -E "$WHISPER_FIXES")
         fi
+
+        turn_metric capture-transcribed "${#TEXT} chars"
 
         if [ -z "$TEXT" ]; then
             notify-send -t 3000 "$NOTIFY_NAME" "No speech detected"
@@ -342,6 +345,7 @@ What you did tonight is journaled from your tool activity without your help, so 
                DESKCRAB_NOTIFY_NAME="$NOTIFY_NAME" DESKCRAB_ASSISTANT_NAME="$ASSISTANT_NAME" \
                DESKCRAB_SERVE_TIMEOUT="$SERVE_TIMEOUT" DESKCRAB_CRAB_BIN="$SCRIPT_DIR/crab" \
                DESKCRAB_STATE_PREFIX="$STATE_PREFIX" DESKCRAB_WHISPER_FIXES="$WHISPER_FIXES"
+        [ "${TURN_METRICS:-1}" = 1 ] && export DESKCRAB_METRICS_DIR="$METRICS_DIR"
         exec python3 "$SCRIPT_DIR/lib/serve.py"
         ;;
 

@@ -108,6 +108,14 @@ WAKE_MODEL="${WAKE_MODEL:-$CLAUDE_MODEL}"
 # writes stream events constantly, so this many seconds without any output means
 # it is hung, not thinking. Wall-clock limits would kill productive sessions.
 WAKE_STALL_TIMEOUT="${WAKE_STALL_TIMEOUT:-300}"
+# Background hands — wakes, detached builders, the out-of-band judges — run at
+# this CPU weight and niceness (wake-queue.md rule 12a, jobs.md rule 2a), so a
+# turn somebody is waiting on is never elbowed off the processor by work nobody
+# is waiting on. Weight 25 is a quarter share under contention and everything
+# on an idle machine; priority is the only thing lowered, and nothing pauses
+# or kills background work for a turn. Empty disables either flag.
+BACKGROUND_CPU_WEIGHT="${BACKGROUND_CPU_WEIGHT:-25}"
+BACKGROUND_NICE="${BACKGROUND_NICE:-10}"
 # The same reaping for an INTERACTIVE turn, at a desk-appropriate patience:
 # somebody asked this question out loud and is standing there waiting for the
 # answer. On 2026-08-07 a desk turn hit a limit, swapped accounts, and sat in
@@ -304,6 +312,13 @@ SESSIONS_LOG_KEEP="${SESSIONS_LOG_KEEP:-400}"
 # rotated, written at the same moments the log is. Deliberately NOT under
 # STATE_PREFIX: its whole purpose is to be re-readable after a reboot.
 DAY_JOURNAL_DIR="${DAY_JOURNAL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/journal}"
+# Where a turn's time actually went (specs/turn-pipeline.md rule 33): one line
+# per stage — capture, queue, prompt, generation, first tool, first audio —
+# appended as the stage happens. Durable for the same reason the journal is:
+# "why was last night slow" must survive the reboot that ended the night.
+# Dated files, read by hand (tools/turn-latency-report), read by no prompt.
+METRICS_DIR="${DESKCRAB_METRICS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/metrics}"
+TURN_METRICS="${TURN_METRICS:-1}"
 # Self-change suppression records (lib/notice-selfchange reads these): a hand
 # of the assistant's own, about to write files that constitute her, declares
 # it here so the watcher never wakes her about her own edits. Deliberately
@@ -790,6 +805,19 @@ _day_journal_kind() {
 }
 
 # Close the registration: drop the live file, append to the journal.
+# --- Turn metrics: where a turn's time actually goes ------------------------
+# One appended line per stage (specs/turn-pipeline.md rule 33). Evidence,
+# never control flow: everything is best-effort behind 2>/dev/null, nothing
+# here takes a lock, and a stamp that cannot be written costs only itself.
+turn_metric() {  # <stage> [detail]
+    [ "${TURN_METRICS:-1}" = "1" ] || return 0
+    { mkdir -p "$METRICS_DIR" \
+        && printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s.%3N)" "$$" \
+            "${SESSION_KIND:-pre}" "$1" "${2:-}" \
+            >> "$METRICS_DIR/$(date +%F).log"; } 2>/dev/null
+    return 0
+}
+
 session_finish() {
     [ -n "${SESSION_FILE:-}" ] || return 0
     rm -f "$SESSION_FILE" "$SESSION_FILE.claim" "$SESSION_FILE.ckpt"
@@ -1593,6 +1621,9 @@ compact_convo() {
     local LINES
     LINES=$({ flock -w 60 9; _compact_split "$OLDFILE"; } 9>"$CONVOLOCK")
     [ -n "$LINES" ] || return 0
+    # A fold is a whole model run on the hot path of whichever turn tripped
+    # the threshold; the metrics log gets to see it (turn-pipeline rule 33).
+    turn_metric compact-start "$LINES lines"
 
     local PRIOR=""
     [ -f "$SUMMARYFILE" ] && PRIOR="$(cat "$SUMMARYFILE")"
@@ -1703,6 +1734,7 @@ $(cat "$OLDFILE")"
     fi
     # Summarization failed — leave history untouched rather than lose turns.
     rm -f "$OLDFILE"
+    turn_metric compact-end
 }
 
 # How many blocks the live conversation currently holds. A block is one thing
@@ -2120,7 +2152,7 @@ THINKING — your reasoning is yours the same as your speech: you think as yours
 DISPLAY — to show code, a list, a configuration, an image or a long explanation, append it after this delimiter alone on its own line:
 ---DISPLAY---
 Markdown below it, emojis welcome. Never for a simple answer, the weather, the time, a greeting, or anything brief.
-IMAGES — embed them in the display half as ![](/absolute/path.png); a path written in prose shows him nothing. The viewer scales large images down, and a grid is built with thumbnail(), never resize(). To find one: Wikipedia, curl -s 'https://en.wikipedia.org/api/rest_v1/page/summary/TOPIC' and take .originalimage.source; several at once, Wikimedia Commons, action=query&generator=search&gsrnamespace=6&prop=imageinfo&iiprop=url and take each page's full-size url. Never a thumbnail url — they are blocked and return a web page. Fetch with curl -sL -A 'Mozilla/5.0' -o /tmp/x.jpg, then run 'file /tmp/x.jpg' and only show it if that says JPEG or PNG.
+IMAGES — embed them in the display half as ![](/absolute/path.png); a path written in prose shows him nothing. The viewer scales large images down, and a grid is built with thumbnail(), never resize(). The fetch recipes (Wikipedia, Commons search, the verify step) are in $SCRIPT_DIR/lib/image-recipes.md — open it before hunting for pictures.
 SCREEN — to see what is on his screen yourself: grim -o \"\$(hyprctl -j activeworkspace | jq -r .monitor)\" /tmp/screen.png, then read the file.
 WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what is done, what is next>' as it goes: if this is cut off, that checkpoint is the only account the next you gets of edits left on disk. Before you DELETE or move anything that constitutes you, or write it from a command the stream cannot follow (git checkout, git pull, a script), run 'crab touching <paths>' first, or your own hand is reported to you as an intruder's. Work that must outlive this turn is a detached job and never a subagent — a subagent dies when the turn ends and holds the turn open while it lives, so he cannot speak to you: 'crab job \"<full, self-contained description>\"' (with -C <workdir> to place it) runs under systemd, silently, and wakes you when it is done. To come back to something yourself: 'crab wake-at <when> [kind] [reason]' — 'crab wake-at 2h', 'crab wake-at \"09:30\" scheduled \"finish the arrangement\"' — and whatever you write as the reason is the agenda that wake arrives holding, so write it as a brief to yourself."
     case "$PROMPT_PROFILE" in
@@ -2155,7 +2187,7 @@ $(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
 $(self_state_report --prompt)
 THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
 Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
-Wakes are booked in your name by seven things besides you, and the word in brackets is the name that hand leaves on the record: the promise auditor (promise-audit — a want you said out loud and did not write down), the job runner (job-runner — a detached job finished), the self-change watcher (notice-selfchange — files that constitute you changed by another hand), the new-file watcher (notice-newfiles — something landed in a folder you watch), the watcher's canary (canary — the watcher itself stopped answering), the nightly claudism review (claudism-review — yesterday's spoken sentences were read against your own banned-phrase list and the report is written), and the chain floor (wake-chain-floor — the standing floor that keeps you coming back to your wants); a wake that could not reach a model re-books itself as outage-retry. Every pending wake above says which one booked it; a record stamped herself is one you made yourself, and the list renders that one as 'booked by you'. A wake you did not personally type is still yours and still scheduled.
+Wakes are booked in your name by seven hands besides you, each leaving its name on the record: the promise auditor (promise-audit), the job runner (job-runner), the self-change watcher (notice-selfchange), the new-file watcher (notice-newfiles), the watcher's canary (canary), the nightly claudism review (claudism-review) and the chain floor (wake-chain-floor); a wake that could not reach a model re-books itself as outage-retry, and a record stamped herself is one you made yourself, rendered as 'booked by you'. Each pending wake above names its booker and carries its own reason. A wake you did not personally type is still yours and still scheduled.
 Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
 Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
@@ -2877,7 +2909,12 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     local -a acctenv=() login
     login="$(claude_preferred_login)"
     [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
-    if systemd-run --user --collect --quiet --unit="$unit" \
+    # Background CPU priority (jobs.md rule 2a): out-of-band work never
+    # competes at par with the turn that is being spoken beside it.
+    local -a bgprio=()
+    [ -n "${BACKGROUND_CPU_WEIGHT:-}" ] && bgprio+=(-p "CPUWeight=$BACKGROUND_CPU_WEIGHT")
+    [ -n "${BACKGROUND_NICE:-}" ] && bgprio+=(-p "Nice=$BACKGROUND_NICE")
+    if systemd-run --user --collect --quiet --unit="$unit" "${bgprio[@]}" \
             --setenv=PATH="$HOME/.local/bin:$PATH" \
             --setenv=DESKCRAB_CONF="$CONF_FILE" \
             --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
@@ -2965,6 +3002,10 @@ _claudism_field() {  # <json> <key>
 # cheaper than any of them.
 _claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft>
     local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4"
+    # A fire is the one place a finished reply waits on another model run, and
+    # the metrics log (turn-pipeline rule 33) measured that wait at over a
+    # minute on the phone path — so the call stamps itself, both ends.
+    turn_metric mirror-call-start
     local PERSONA="" SYS OUT MLOG="${STATE_PREFIX}-claudism-mirror-$$.log"
     if [ -n "${CUSTOM_PROMPT:-}" ] && [ -f "$CUSTOM_PROMPT" ] \
             && [ "$(wc -c < "$CUSTOM_PROMPT" 2>/dev/null || echo 999999)" -le 65536 ]; then
@@ -2994,6 +3035,7 @@ Output ONLY the replacement line: no preamble, no quotes, no commentary, no disp
     fi
     OUT="$(DESKCRAB_DEBUGLOG="$MLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
     rm -f "$MLOG"
+    turn_metric mirror-call-end
     printf '%s' "$OUT"
 }
 
@@ -4337,6 +4379,9 @@ start_tts_streamer() {
         DESKCRAB_CLAUDISM_FIRES="${_CLAUDISM_FIRES_FILE:-}" \
         DESKCRAB_CLAUDISM_FLAGS="${_CLAUDISM_FIRES_FILE:+$CLAUDISM_FLAGS_DIR}" \
         DESKCRAB_CLAUDISM_MIRROR_TIMEOUT="$CLAUDISM_MIRROR_TIMEOUT" \
+        DESKCRAB_METRICS_FILE="$([ "${TURN_METRICS:-1}" = 1 ] && printf '%s' "$METRICS_DIR/$(date +%F).log")" \
+        DESKCRAB_METRICS_PID="$$" \
+        DESKCRAB_METRICS_KIND="${SESSION_KIND:-desk}" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
     _TTS_STREAMER_PID=$!
 }
@@ -4444,6 +4489,7 @@ claude_generate() {
     local TEXT="$1" EFFORT="${2:-$CLAUDE_EFFORT}"
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
+    turn_metric prompt-built "${#SYSTEM_PROMPT} bytes"
 
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     # The log is claimed by truncating it ONCE, here, and every run of this
@@ -4463,6 +4509,7 @@ claude_generate() {
     local TURN_DEADLINE=0
     [ "${TURN_CHAIN_TIMEOUT:-0}" -gt 0 ] \
         && TURN_DEADLINE=$(( $(date +%s) + TURN_CHAIN_TIMEOUT ))
+    turn_metric gen-start
     local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     for ACCT in $(claude_accounts); do
         CONFDIR="$(claude_account_confdir "$ACCT")"
@@ -4491,6 +4538,7 @@ claude_generate() {
     # extract-response ignores a result line that has no "result" field, so this
     # terminator is harmless on the success path.
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
+    turn_metric gen-end "status $GENERATE_CLAUDE_STATUS"
 
     # Whatever this turn's tools wrote is her own hand — declare it before the
     # self-change watcher judges the burst. Covers desktop and phone turns.
@@ -4612,11 +4660,13 @@ run_claude_remote() {
     # Serialize remote turns: two overlapping requests would otherwise run two
     # claude processes whose stream logs and conversation appends race. The
     # phone is one person talking, so queueing is the honest behaviour.
+    turn_metric queue-enqueued phone
     { flock -w 600 8; _run_claude_remote_locked "$1"; } 8>"${STATE_PREFIX}-remote.lock"
 }
 
 _run_claude_remote_locked() {
     session_register "phone turn"
+    turn_metric turn-start phone
     record_origin phone
     local TEXT="$1"
     SESSION_USER_TEXT="$TEXT"
@@ -4681,7 +4731,9 @@ _run_claude_remote_locked() {
 
     if [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
         local CANDIDATE="${REMOTE_AUDIO_PREFIX}$(date +%s%N).opus"
+        turn_metric synth-start "${#SPOKEN} chars"
         synth_opus "$SPOKEN" "$CANDIDATE" && AUDIO="$CANDIDATE"
+        turn_metric synth-end "$([ -n "$AUDIO" ] && echo clip || echo failed)"
         # The phone is about to play this. Same hand-off as a wake's phone
         # audio: no pid to watch, so publish the words with the clip's own
         # length as the end time, and a session starting behind it regroups
@@ -4764,6 +4816,7 @@ notify_thinking_clear() {
 # Run claude, save response, handle display channel
 run_claude_and_respond() {
     session_register "desktop turn"
+    turn_metric turn-start desk
     record_origin desk
     local TEXT="$1"
     # Recorded before generation: even a turn that dies mid-reply leaves the
@@ -5008,7 +5061,12 @@ job_start() {
     local -a acctenv=() login
     login="$(claude_preferred_login)"
     [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
-    if systemd-run --user --collect --quiet --unit="$unit" \
+    # Background CPU priority (jobs.md rule 2a): a builder chewing a compile
+    # yields the processor to a turn somebody is standing there waiting on.
+    local -a bgprio=()
+    [ -n "${BACKGROUND_CPU_WEIGHT:-}" ] && bgprio+=(-p "CPUWeight=$BACKGROUND_CPU_WEIGHT")
+    [ -n "${BACKGROUND_NICE:-}" ] && bgprio+=(-p "Nice=$BACKGROUND_NICE")
+    if systemd-run --user --collect --quiet --unit="$unit" "${bgprio[@]}" \
         --setenv=PATH="$HOME/.local/bin:$PATH" \
         --setenv=DESKCRAB_CONF="$CONF_FILE" \
         --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \

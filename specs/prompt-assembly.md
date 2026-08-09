@@ -115,6 +115,16 @@ So the total in this table is what the assembler is written to, not a promise th
 the manifest is where the truth of any given build is read. Bringing L2 inside 1,500 is a job for the
 state block's own content, not for a cut.
 
+Two of those content jobs were done on 2026-08-09, both the shelf pattern extended rather than text
+cut. The booker roster in L2's preamble still names all nine identities with a plain-language name
+beside each record word (rule 10 of [self-awareness.md](self-awareness.md), and the test that
+enumerates them from the source), but the per-hand event explanations came out — the rows beneath
+carry each wake's own reason, so the roster was explaining what the list below it already shows.
+And L1's image instructions keep the embed rule and the thumbnail rule inline while the fetch
+recipes (Wikipedia, Commons, the verify step) moved to `lib/image-recipes.md`, named in the
+paragraph by path: recipes used a few times a day were riding on every turn. Together the two are
+roughly 800 bytes off every speaking prompt, with nothing removed that a turn cannot open.
+
 12. The wake agenda MUST be the wake profile's user message. It is what this session is about, and
     it MUST obey rule 6 like any other message.
 13. A classify profile (memory judge, conversation summariser, promise audit) MUST carry no persona,

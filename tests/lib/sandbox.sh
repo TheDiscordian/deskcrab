@@ -197,6 +197,7 @@ CONF
         WAKES_DIR="$_sb_root/data/deskcrab/wakes" \
         JOBS_DIR="$_sb_root/data/deskcrab/jobs" \
         DAY_JOURNAL_DIR="$_sb_root/data/deskcrab/journal" \
+        DESKCRAB_METRICS_DIR="$_sb_root/data/deskcrab/metrics" \
         ARCHIVE_DIR="$_sb_root/data/deskcrab/archive" \
         NOTICE_STATE_DIR="$_sb_root/xdgstate/deskcrab" \
         CLAUDE_BIN="$_sb_root/bin/claude" \

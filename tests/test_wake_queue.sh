@@ -458,6 +458,16 @@ case "$argv" in
     *) fail "every wake unit carries a runtime ceiling" "$argv" ;;
 esac
 check_eq "no RuntimeMaxSec, which systemd ignores on a oneshot" "$(count_arg 'RuntimeMaxSec')" "0"
+# Background CPU priority, rule 12a: nobody is waiting on a wake, so the unit
+# yields the processor to a turn somebody IS waiting on. Priority only.
+case "$argv" in
+    *"-p CPUWeight="*) ok "the unit is booked at a background CPU weight" ;;
+    *) fail "every wake unit carries the background CPU weight (rule 12a)" "$argv" ;;
+esac
+case "$argv" in
+    *"-p Nice="*) ok "and at a background niceness" ;;
+    *) fail "every wake unit carries the background niceness (rule 12a)" "$argv" ;;
+esac
 case "$argv" in
     *"--on-active="*) ok "booked as a delay, never as a calendar spec that would repeat daily" ;;
     *) fail "a booking is a delay" "$argv" ;;

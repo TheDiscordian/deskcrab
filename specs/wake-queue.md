@@ -56,6 +56,12 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     user manager.
 12. Every wake unit MUST carry a runtime ceiling. The in-process stall watchdog cannot by
     construction reap a session that keeps emitting output; the unit-level ceiling is the backstop.
+12a. Every wake unit MUST be booked at background CPU priority — a CPU weight and a niceness,
+    configurable (`BACKGROUND_CPU_WEIGHT`, `BACKGROUND_NICE`) — so a wake never competes at par
+    for the processor with a turn somebody is standing there waiting on. Nobody is waiting on a
+    wake; that is the whole difference between the two. Priority is the ONLY thing lowered:
+    nothing may pause, kill, defer or mute a running wake because a turn arrived — an idle
+    machine still gives a wake everything it has.
 13. A scratch instance's config path and state prefix MUST travel into the unit, so its wakes fire
     back into the scratch state.
 

@@ -110,6 +110,19 @@ design and by rule — the review exists to break a habit, never to gate a tongu
     cannot parse the list, or that crashes, MUST exit quietly without touching the turn — its
     run-trace line is the only place that failure shows.
 
+### Turn metrics
+
+Somebody is waiting for a spoken reply, and "where did the time go" must be answerable from a
+file rather than re-instrumented every time the question comes up.
+
+33. Every interactive path stamps where its time went — capture released and transcribed, queue
+    entered and won, prompt built, generation started and ended, first tool call, first audio —
+    one line per stage, appended to a dated metrics log. The stamps are evidence, never control
+    flow: a stamp that cannot be written costs nothing but itself, holds no lock the turn holds,
+    and no stage may wait on one. Nothing on any prompt path reads this file; it is a
+    measurement, read by hand (`tools/turn-latency-report`). `TURN_METRICS=0` switches the
+    whole thing off.
+
 ## DATA
 
 | Path | Owner | Format |
@@ -131,6 +144,7 @@ design and by rule — the review exists to break a habit, never to gate a tongu
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |
+| `~/.local/share/deskcrab/metrics/<date>.log` | `turn_metric` (rule 33) | `epoch.ms \t pid \t kind \t stage \t detail` |
 | `voice-claude-archive/` | rotation | archived transcript and summary pairs |
 
 ## The pipeline

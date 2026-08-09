@@ -4,6 +4,13 @@ Description=DeskCrab autonomous wake
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/crab wake
+# Background CPU priority, specs/wake-queue.md rule 12a: nobody is waiting on
+# a wake, so it yields the processor to a spoken turn somebody is waiting on.
+# The transient wake units book themselves with the same two properties
+# (BACKGROUND_CPU_WEIGHT / BACKGROUND_NICE in the config); this static unit
+# carries them here. Priority only — nothing pauses or kills a running wake.
+CPUWeight=25
+Nice=10
 # Absolute last-resort backstop only. Hung sessions are reaped gracefully by
 # crab's own stall watchdog (WAKE_STALL_TIMEOUT — silence, not wall-clock);
 # this ceiling exists solely for a runaway session the watchdog can't see

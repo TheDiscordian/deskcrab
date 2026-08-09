@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Render the turn-metrics log as one line per turn.
+
+Reads the dated stage stamps written under the metrics directory
+(specs/turn-pipeline.md rule 33) and prints, per turn pid, the seconds each
+stage took relative to the turn's first stamp — queue wait, prompt build,
+generation, first tool, first audio, synthesis. The stamps written by the
+phone server (pid of the server, kind "phone-serve") are folded into whichever
+turn was in flight around them, matched on time.
+
+Usage: tools/turn-latency-report [YYYY-MM-DD]   (default: today)
+Env:   DESKCRAB_METRICS_DIR overrides the directory, same as the writer.
+"""
+import os
+import sys
+import time
+from collections import defaultdict
+
+day = sys.argv[1] if len(sys.argv) > 1 else time.strftime("%Y-%m-%d")
+mdir = os.environ.get(
+    "DESKCRAB_METRICS_DIR",
+    os.path.join(os.environ.get("XDG_DATA_HOME",
+                                os.path.expanduser("~/.local/share")),
+                 "deskcrab", "metrics"))
+path = os.path.join(mdir, day + ".log")
+if not os.path.exists(path):
+    sys.exit("no metrics for %s (%s)" % (day, path))
+
+turns = defaultdict(list)   # pid -> [(ts, kind, stage, detail)]
+serve = []                  # the server's own stamps, matched on time below
+for line in open(path):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 4:
+        continue
+    ts, pid, kind, stage = float(parts[0]), parts[1], parts[2], parts[3]
+    detail = parts[4] if len(parts) > 4 else ""
+    if kind == "phone-serve":
+        serve.append((ts, stage, detail))
+    else:
+        turns[pid].append((ts, kind, stage, detail))
+
+ORDER = ["capture-release", "capture-transcribed", "queue-enqueued",
+         "turn-start", "prompt-built", "gen-start", "first-tool",
+         "first-audio", "gen-end", "synth-start", "synth-end"]
+
+print("%-7s %-8s %-13s %s" % ("pid", "start", "kind", "stage offsets (s)"))
+for pid, stamps in sorted(turns.items(), key=lambda kv: kv[1][0][0]):
+    stamps.sort()
+    t0 = stamps[0][0]
+    tend = stamps[-1][0]
+    kind = next((k for _, k, _, _ in stamps if k not in ("pre", "")), "?")
+    got = {s: ts for ts, _, s, _ in stamps}
+    # Fold in the server's stamps that landed inside this turn's window.
+    for ts, stage, _ in serve:
+        if t0 - 1 <= ts <= tend + 120 and stage not in got:
+            got[stage] = ts
+    offs = "  ".join("%s+%.1f" % (s.replace("capture-", "").replace("-", ""),
+                                  got[s] - t0)
+                     for s in ORDER if s in got)
+    print("%-7s %-8s %-13s %s"
+          % (pid, time.strftime("%H:%M:%S", time.localtime(t0)),
+             kind.replace(" turn", ""), offs))

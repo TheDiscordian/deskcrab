@@ -15,6 +15,11 @@ back to her.
    while it lives it holds the turn open so the user cannot speak.
 2. A job MUST be dispatched to the user manager with the collect option and its own unit name, with
    a fallback to a detached session when no user manager is running.
+2a. A job unit MUST be dispatched at background CPU priority — the same weight and niceness the
+   wake queue books with ([wake-queue.md](wake-queue.md) rule 12a, `BACKGROUND_CPU_WEIGHT`,
+   `BACKGROUND_NICE`). A builder chewing a compile beside a spoken turn is the measured case: the
+   phone server alone burned 49 CPU-minutes in a 46-minute window on 2026-08-09 while turns ran
+   beside wakes and builders. Priority only — a job is never paused or killed for a turn.
 3. Dispatch MUST return immediately. The turn that asked MUST NOT wait on it.
 4. A job MUST receive every instance redirect explicitly: config path, state prefix, jobs directory,
    wakes directory, memory directory, account default file, and the current login. A user unit gets

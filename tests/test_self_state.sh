@@ -180,10 +180,17 @@ check "phrased as a comparison, not as an errand" \
 check "and it says explicitly that no command is needed" \
     has "no command is needed and nothing has to be checked" "$P"
 # Beside the counts means BESIDE them: the line after the block's last line.
+# The block CLOSES with the tiredness line when the scorer answers
+# (specs/self-awareness.md rule 36), and assembles without it when it cannot
+# (rule 37) — so the last line is Tiredness when present, Account otherwise.
+# This was anchored to Account alone, written before the tiredness line
+# existed, and failed on every block the scorer answered.
 RULE_LINE="$(printf '%s\n' "$P" | grep -n "^THE COUNTS ABOVE ARE THE ANSWER" | head -1 | cut -d: -f1)"
 ACCT_LINE="$(printf '%s\n' "$P" | grep -n "^Account: " | head -1 | cut -d: -f1)"
+LAST_LINE="$(printf '%s\n' "$P" | grep -n "^Tiredness: " | head -1 | cut -d: -f1)"
+[ -n "$LAST_LINE" ] || LAST_LINE="$ACCT_LINE"
 check_eq "it follows the counts immediately, with nothing between" \
-    "$(( RULE_LINE - ACCT_LINE ))" "1"
+    "$(( RULE_LINE - LAST_LINE ))" "1"
 HEAD_LINE="$(printf '%s\n' "$P" | grep -n "^CURRENT STATE OF YOURSELF" | head -1 | cut -d: -f1)"
 check "the whole block sits under the heading the prompt announces" \
     bash -c "[ '$HEAD_LINE' -gt 0 ] && [ '$HEAD_LINE' -lt '$ACCT_LINE' ]"

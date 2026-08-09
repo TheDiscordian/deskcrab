@@ -66,6 +66,28 @@ LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
 SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
 RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
 
+# Turn metrics (specs/turn-pipeline.md rule 33): this process is the first to
+# SEE two of the stamps the log owes — the first tool call in the stream, and
+# the first sentence handed to the synthesiser. Stamped under the launching
+# turn's pid so the reader can line them up with that turn's own stamps.
+# Best-effort like everything else here: an unwritable stamp costs nothing.
+METRICS_FILE = os.environ.get("DESKCRAB_METRICS_FILE", "").strip()
+METRICS_PID = os.environ.get("DESKCRAB_METRICS_PID", "").strip() or str(os.getppid())
+METRICS_KIND = os.environ.get("DESKCRAB_METRICS_KIND", "desk").strip()
+_METRICS_DONE = set()
+
+
+def metric_once(stage, detail=""):
+    if not METRICS_FILE or stage in _METRICS_DONE:
+        return
+    _METRICS_DONE.add(stage)
+    try:
+        with open(METRICS_FILE, "a") as fh:
+            fh.write("%.3f\t%s\t%s\t%s\t%s\n"
+                     % (time.time(), METRICS_PID, METRICS_KIND, stage, detail))
+    except Exception:
+        pass
+
 # crab redirects this process's stderr into the speech log to catch crashes
 # (a traceback is a speech failure too). When that is so, speech_log writing
 # to BOTH doubled every line — a log that says everything twice is exactly
@@ -472,6 +494,7 @@ class Voice(threading.Thread):
             # Every utterance leaves a pid-stamped trace: "who spoke this
             # twice" must be answerable from the speech log alone.
             speech_log("SAID: %s" % item[:90])
+            metric_once("first-audio", "%d chars" % len(item))
             self.spoke_chars += len(item)
             self.spoke_lines += 1
             # The receipt is written as speech happens, never only at exit: a
@@ -752,6 +775,13 @@ with open(LOG) as f:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
+
+        # A raw-substring test, deliberately: the first tool call can arrive
+        # as a stream_event (content_block_start) or as a completed assistant
+        # block, and parsing both shapes here would be structure this stamp
+        # does not need. One string check per line, first hit only.
+        if "first-tool" not in _METRICS_DONE and '"tool_use"' in line:
+            metric_once("first-tool")
 
         kind = d.get("type")
 

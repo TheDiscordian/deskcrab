@@ -56,6 +56,26 @@ NAME = os.environ.get("DESKCRAB_NOTIFY_NAME") or os.environ.get(
     "DESKCRAB_ASSISTANT_NAME", "DeskCrab"
 )
 
+# Turn metrics (specs/turn-pipeline.md rule 33). The server is the first to
+# see a phone turn's first tool call and its first synthesised clip, so those
+# two stamps are written here, under the server's own pid with the turn's
+# stream-log name as the correlator. Best-effort: a stamp that cannot be
+# written costs nothing.
+METRICS_DIR = os.environ.get("DESKCRAB_METRICS_DIR", "")
+
+
+def turn_metric(stage, detail=""):
+    if not METRICS_DIR:
+        return
+    try:
+        os.makedirs(METRICS_DIR, exist_ok=True)
+        path = os.path.join(METRICS_DIR, time.strftime("%Y-%m-%d") + ".log")
+        with open(path, "a") as fh:
+            fh.write("%.3f\t%d\t%s\t%s\t%s\n"
+                     % (time.time(), os.getpid(), "phone-serve", stage, detail))
+    except OSError:
+        pass
+
 # A remote turn is a full claude run; it can legitimately take a while.
 CERT = os.environ.get("DESKCRAB_SERVE_CERT", "")
 KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
@@ -887,6 +907,8 @@ class Speaker:
                 continue
             if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out):
                 self.voiced += 1
+                if self.voiced == 1:
+                    turn_metric("first-audio", "%d chars" % len(text))
                 self.emit("voice", {"text": text,
                                     "audio": "/audio/" + os.path.basename(out)})
             else:
@@ -962,6 +984,9 @@ def _progress_events(logpath, stop, emit, speaker):
                             emit("thinking", thought[-400:])
                     elif kind == "tool_use":
                         seen_tools += 1
+                        if seen_tools == 1:
+                            turn_metric("first-tool",
+                                        os.path.basename(logpath))
                         emit("tool", _tool_label(block))
                     elif kind == "text":
                         said = " ".join((block.get("text") or "").split())

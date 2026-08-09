@@ -411,6 +411,10 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by]
         *) when="$(printf '%s' "$when" | tr -cd '0-9')s" ;;
     esac
     local -a extra=(--collect -p "TimeoutStartSec=$WAKE_RUNTIME_MAX")
+    # Background CPU priority, wake-queue.md rule 12a: nobody is waiting on a
+    # wake, so it yields the processor to a turn somebody IS waiting on.
+    [ -n "${BACKGROUND_CPU_WEIGHT:-}" ] && extra+=(-p "CPUWeight=$BACKGROUND_CPU_WEIGHT")
+    [ -n "${BACKGROUND_NICE:-}" ] && extra+=(-p "Nice=$BACKGROUND_NICE")
     [ -n "${DESKCRAB_CONF:-}" ] && extra+=(--setenv=DESKCRAB_CONF="$DESKCRAB_CONF")
     [ -n "${DESKCRAB_STATE_PREFIX:-}" ] && extra+=(--setenv=DESKCRAB_STATE_PREFIX="$DESKCRAB_STATE_PREFIX")
     systemd-run --user --quiet --unit="$unit" "${extra[@]}" --on-active="$when" \

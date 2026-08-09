@@ -138,6 +138,15 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # there waiting (default: 120). Same two life signs as a wake.
 # TURN_STALL_TIMEOUT=120
 
+# Optional: CPU priority for background hands — wake units, detached builder
+# jobs, and the out-of-band judges (defaults: 25 and 10). A wake or a build
+# never competes at par for the processor with a turn somebody is waiting on;
+# on an idle machine background work still gets everything. Priority is the
+# only thing lowered — nothing pauses or kills background work for a turn.
+# Empty disables either flag. specs/wake-queue.md rule 12a, jobs.md rule 2a.
+# BACKGROUND_CPU_WEIGHT=25
+# BACKGROUND_NICE=10
+
 # Optional: a ceiling on a turn's WHOLE account walk in seconds (default: 900,
 # 0 = none). The stall watchdog cannot catch a session that keeps emitting
 # output forever, and the usage-limit chain runs one whole CLI session per
