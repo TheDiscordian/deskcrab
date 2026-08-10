@@ -379,6 +379,81 @@ wake_free_slot() {  # [base-delay-seconds] -> delay in seconds
     echo $(( cand - now ))
 }
 
+# --- The run lock's lanes ---------------------------------------------------
+# Only one wake session runs at a time (the run lock, taken in `crab wake` and
+# held for the life of the process), and the queue's fairness problem lives at
+# that door: an event wake has something waiting on the other end of it — a
+# move on a board, a file that landed — while a scheduled wake's hour is its
+# own. specs/wake-queue.md rules 21a and 21b. Everything here is ephemeral
+# state under $STATE_PREFIX, like the lock whose contention it measures: a
+# reboot clears the lock and clears these with it.
+#
+# The urgent lane (rule 21b). While an event wake is waiting for the run lock,
+# or has been deferred by it and is due straight back, this claim stands: one
+# file holding the epoch until which it is spoken for. A non-event wake that
+# finds an unexpired claim yields — defers itself without contending — so the
+# event wake takes the lock the moment the holder lets go, instead of racing
+# the whole queue for the next turn. The claim is advisory: it decides only
+# who takes the lock NEXT, and nothing may pause or kill the wake holding it.
+WAKE_URGENT_CLAIM="${STATE_PREFIX}-wake-urgent"
+
+wake_urgent_mark() {  # <seconds the claim should stand>
+    local till=$(( $(date +%s) + ${1:-$WAKE_EVENT_LOCK_WAIT} )) have
+    # Keep the furthest expiry: two event waiters share the one claim, and the
+    # lane stands until the LAST of them has had its chance at the lock.
+    have="$(cat "$WAKE_URGENT_CLAIM" 2>/dev/null)"
+    case "$have" in ''|*[!0-9]*) have=0 ;; esac
+    [ "$have" -gt "$till" ] && till="$have"
+    printf '%s\n' "$till" > "$WAKE_URGENT_CLAIM.tmp.$$" \
+        && mv -f "$WAKE_URGENT_CLAIM.tmp.$$" "$WAKE_URGENT_CLAIM"
+    return 0
+}
+
+wake_urgent_clear() { rm -f "$WAKE_URGENT_CLAIM"; }
+
+wake_urgent_waiting() {  # 0 = an event wake holds an unexpired claim
+    local till
+    [ -f "$WAKE_URGENT_CLAIM" ] || return 1
+    till="$(cat "$WAKE_URGENT_CLAIM" 2>/dev/null)"
+    # An expired or unreadable claim is removed on sight, never obeyed — an
+    # orphan (a waiter the unit ceiling reaped mid-wait) must not park the
+    # scheduled queue behind a wake that is never coming back.
+    case "$till" in ''|*[!0-9]*) rm -f "$WAKE_URGENT_CLAIM"; return 1 ;; esac
+    [ "$till" -gt "$(date +%s)" ] && return 0
+    rm -f "$WAKE_URGENT_CLAIM"
+    return 1
+}
+
+# The escalating backoff (rule 21a): base, doubled per consecutive deferral of
+# the same kind-and-reason, capped. Keyed by the reason as the record holds it
+# — the one identity that survives the deferral round-trip. cksum rather than
+# a stronger hash on purpose: a collision costs one wake a slightly longer
+# backoff, and nothing here is input anybody hostile controls.
+_wake_defer_count_file() {  # <kind> <reason>
+    printf '%s-wake-defer-%s' "$STATE_PREFIX" \
+        "$(printf '%s\n%s' "${1:-}" "$(_wake_reason_norm "${2:-}")" | cksum | tr ' \t' '--')"
+}
+
+wake_event_defer_next() {  # <kind> <reason>  -> prints the delay, counts the miss
+    local f n delay base="${WAKE_EVENT_DEFER_DELAY:-30}" max="${WAKE_EVENT_DEFER_MAX:-120}"
+    f="$(_wake_defer_count_file "$1" "$2")"
+    n="$(cat "$f" 2>/dev/null)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    [ "$n" -gt 6 ] && n=6  # the shift below must not outrun bash arithmetic
+    delay=$(( base << n ))
+    [ "$delay" -gt "$max" ] && delay="$max"
+    printf '%s\n' $(( n + 1 )) > "$f"
+    # Counts whose wake never came back — a game that ended, a reason that
+    # coalesced away — rot here otherwise. Only ever run on the contended path.
+    find "$(dirname "$STATE_PREFIX")" -maxdepth 1 \
+        -name "$(basename "$STATE_PREFIX")-wake-defer-*" -mmin +60 -delete 2>/dev/null
+    printf '%s\n' "$delay"
+}
+
+wake_defer_clear() {  # <kind> <reason>
+    rm -f "$(_wake_defer_count_file "$1" "$2")"
+}
+
 # A unit name nothing else is using. Timestamp + pid was not enough: a single
 # process re-booking two wakes inside one second produced the same name twice,
 # and the second systemd-run silently lost to the first. No caller builds a

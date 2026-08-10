@@ -299,10 +299,15 @@ WAKE_SLOT_SPREAD="${WAKE_SLOT_SPREAD:-180}"
 # the anti-collision spreading entirely (see wake_free_slot).
 WAKE_URGENT_DELAY="${WAKE_URGENT_DELAY:-120}"
 # An event wake has something waiting on it. It holds on for the wake lock
-# instead of bouncing, and its retry is seconds rather than the flat quarter
-# hour a scheduled wake can afford.
+# instead of bouncing, and when it still cannot have it, its retry is a short
+# escalating backoff — the base, doubling per consecutive miss, capped — never
+# the flat quarter hour a scheduled wake can afford. The base promised seconds
+# from the day it was written, but the re-book site read WAKE_DEFER_DELAY
+# instead, and a chess move wake blocked once left an opponent sitting at the
+# board for fifteen minutes (2026-08-10). specs/wake-queue.md rules 21a-21b.
 WAKE_EVENT_LOCK_WAIT="${WAKE_EVENT_LOCK_WAIT:-90}"
-WAKE_EVENT_DEFER_DELAY="${WAKE_EVENT_DEFER_DELAY:-15}"
+WAKE_EVENT_DEFER_DELAY="${WAKE_EVENT_DEFER_DELAY:-30}"
+WAKE_EVENT_DEFER_MAX="${WAKE_EVENT_DEFER_MAX:-120}"
 # Booking is check-then-act three times over — is an equivalent wake already
 # pending, is this moment free, write the record, book the timer — and several
 # sessions book at once. Two wakes finishing in the same second each asked "is a

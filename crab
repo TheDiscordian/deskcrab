@@ -197,15 +197,35 @@ case "${1:-}" in
         exec 9>"${STATE_PREFIX}-wake.lock"
         # An event wake has somebody waiting on the other end of it — a move on
         # a board, a file that landed. It WAITS for the lock rather than
-        # bouncing off it, and if it still cannot have it, it comes back in
-        # seconds, not in a quarter of an hour.
+        # bouncing off it, standing in the urgent lane while it does (rule 21b:
+        # a wake nobody is waiting on yields the next turn to it), and if it
+        # still cannot have it, it comes back in seconds on an escalating
+        # backoff — never in a quarter of an hour. The flat quarter hour was
+        # real: WAKE_EVENT_DEFER_DELAY promised a short retry from the day it
+        # was written, but the re-book below read WAKE_DEFER_DELAY instead,
+        # and a chess move wake blocked by one long session left an opponent
+        # sitting at the board for fifteen minutes (2026-08-10).
         _wake_lock_ok=0
         if [ "${WAKE_KIND:-}" = "event" ]; then
-            flock -w "${WAKE_EVENT_LOCK_WAIT:-90}" 9 && _wake_lock_ok=1
-            _wake_retry="${WAKE_EVENT_DEFER_DELAY:-15}"
+            if flock -n 9; then
+                _wake_lock_ok=1
+            else
+                wake_urgent_mark $(( ${WAKE_EVENT_LOCK_WAIT:-90} + 30 ))
+                flock -w "${WAKE_EVENT_LOCK_WAIT:-90}" 9 && _wake_lock_ok=1
+            fi
+            if [ "$_wake_lock_ok" = 1 ]; then
+                # In hand: this reason's backoff starts over, and the lane is
+                # free for the next event wake's own claim.
+                wake_urgent_clear
+                wake_defer_clear event "$WAKE_REASON"
+            fi
         else
-            flock -n 9 && _wake_lock_ok=1
-            _wake_retry="$WAKE_DEFER_DELAY"
+            # The urgent lane. An event wake is waiting for this lock right
+            # now, or was just deferred by it and is due straight back; a wake
+            # whose hour is its own does not race it for the next turn.
+            if ! wake_urgent_waiting; then
+                flock -n 9 && _wake_lock_ok=1
+            fi
         fi
         if [ "$_wake_lock_ok" != 1 ]; then
             # Push back to a moment nothing else has taken. A flat 15 minutes
@@ -219,9 +239,19 @@ case "${1:-}" in
             # destroyed — and a kind-less wake (the background timer's) is
             # still a wake somebody meant to happen. Gating this on a kind is
             # how a blanked record became a wake that simply never came back.
+            if [ "${WAKE_KIND:-}" = "event" ]; then
+                _wake_retry="$(wake_event_defer_next event "$WAKE_REASON")"
+                # The claim covers the whole round trip — this deferral plus
+                # the next wait, with slack for the booking lock — so nothing
+                # unhurried slips in between and starts a session minutes long
+                # in front of whatever is waiting.
+                wake_urgent_mark $(( _wake_retry + ${WAKE_EVENT_LOCK_WAIT:-90} + 30 ))
+            else
+                _wake_retry="$WAKE_DEFER_DELAY"
+            fi
             "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
                 ${WAKE_EFFORT_OVERRIDE:+--effort "$WAKE_EFFORT_OVERRIDE"} \
-                "${WAKE_DEFER_DELAY}s" "${WAKE_KIND:-scheduled}" "$WAKE_REASON" >/dev/null
+                "${_wake_retry}s" "${WAKE_KIND:-scheduled}" "$WAKE_REASON" >/dev/null
             exit 0
         fi
 

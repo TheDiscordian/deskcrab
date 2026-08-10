@@ -94,6 +94,27 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     work, and no dated thought, and reached the user as an indistinguishable silence.
 21. A wake blocked by the lock MUST be re-armed with its kind, reason and effort override intact,
     at a spaced slot.
+21a. An EVENT wake blocked past its lock wait MUST be re-armed on a short escalating backoff —
+    `WAKE_EVENT_DEFER_DELAY` (default 30s), doubling per consecutive deferral of the same kind and
+    reason, capped at `WAKE_EVENT_DEFER_MAX` (default 120s) — never at the scheduled deferral
+    delay. An event wake has somebody or something waiting on the other end of it, and the flat
+    quarter-hour push-back, written for shelf work nobody is waiting on, is a starvation sentence
+    there: a chess move wake blocked by one long session came back fifteen minutes later to a
+    board an opponent had been sitting at the whole time (2026-08-10) — while the config had
+    promised a seconds-scale retry since the day `WAKE_EVENT_DEFER_DELAY` was written, from a
+    variable the re-book site never read. The backoff count is ephemeral state under
+    `$STATE_PREFIX`, keyed by the kind and the reason as the record holds them, and cleared the
+    moment a wake with that identity takes the lock: contention is a property of the running
+    instance, and the reboot that clears the lock clears the count that measured it.
+21b. An event wake waiting for the run lock — or deferred by it and due straight back — MUST
+    stand in an urgent lane: it registers a claim (a marker under `$STATE_PREFIX` carrying the
+    moment the claim expires), and a NON-event wake that reaches the lock while an unexpired
+    claim stands MUST yield — defer itself under rule 21 without contending — so the event wake
+    takes the lock the moment the holder releases it instead of racing the whole queue for the
+    next turn. Priority decides only who takes the lock NEXT: nothing may pause, kill, defer or
+    mute the wake that already holds it (rule 12a's discipline holds here too). An expired or
+    unreadable claim is ignored and removed, never obeyed, and event wakes never yield to their
+    own lane — two event wakes settle it at the lock, as they always have.
 22. The wake agenda MUST be delivered as the session's user message. See
     [prompt-assembly.md](prompt-assembly.md) rule 12.
 23. When the stream held an error and no genuine model output, the wake MUST journal the failure
@@ -181,6 +202,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 | `~/.local/share/deskcrab/wakes/ledger.log` | append-only: epoch, action, unit, kind, reason, actor |
 | `${STATE_PREFIX}-wake.lock` | one wake at a time, held for the life of the process |
 | `${STATE_PREFIX}-wake-book.lock` | the booking queue, held across check-then-act |
+| `${STATE_PREFIX}-wake-urgent` | the urgent lane's claim: the epoch until which an event wake is waiting for the run lock or due back for it (rule 21b) |
+| `${STATE_PREFIX}-wake-defer-<key>` | consecutive blocked-lock deferrals of one kind-and-reason; cleared when that wake takes the lock (rule 21a) |
 | transient units `deskcrab-wake-<epoch>-<pid>[.timer]` | systemd user manager; the record's shadow |
 | `systemd/deskcrab-wake.timer` | the random background interval |
 | `systemd/deskcrab-wake-restore.service` | restore at login |
@@ -206,8 +229,8 @@ flowchart TD
   T1["background timer<br/>3h + jitter"] --> W
   B10 --> W["crab wake KIND REASON UNIT"]
   W --> W1["retire this booking's record<br/>before any early exit"]
-  W1 --> W2["take the wake lock"]
-  W2 -->|lost| W3["re-book at a spaced slot<br/>with kind and reason intact"]
+  W1 --> W2["take the wake lock<br/>event: wait, in the urgent lane<br/>other kinds: yield to an unexpired claim"]
+  W2 -->|lost| W3["re-book with kind, reason, effort intact<br/>event: escalating seconds — else a spaced slot"]
   W2 -->|held| W4["assemble the wake profile<br/>agenda is the user message"]
   W4 --> W5["generate under the account chain"]
   W5 --> G1{"stream error,<br/>no model output?"}
@@ -287,7 +310,9 @@ change it.
 
 **Existing:** `tests/test_wake_queue.sh` (spacing, coalescing, tidy semantics, with systemd stubbed),
 `tests/test_silent_wake.sh` (the delivery gates), `tests/test_regroup.sh` (a whole wake beside a live
-voice), `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_wake_reinforce.sh`.
+voice), `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_wake_reinforce.sh`,
+`tests/test_wake_lock_priority.sh` (rules 21a and 21b: the event backoff — short, escalating, capped,
+reset by a taken lock — and the urgent lane's yield, expiry and event-exemption).
 
 **To be written:**
 
