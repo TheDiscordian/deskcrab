@@ -197,7 +197,11 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     entry's own replacements), the repaired sentence is spoken and there is NO hold and NO mirror
     call: the swap is a string operation on the hand-off, and it MUST cost no more latency than
     the scan that found it. This is the only place code may alter a sentence, and only ever into
-    words she wrote.
+    words she wrote. The replacement is spliced literally and is never expanded, so a `replace:`
+    line whose replacement contains a backreference (`\1`, `\g<n>`) is INVALID and MUST be skipped
+    like any unparseable line — the entry still fires and the sentence routes to her. Honouring it
+    would make code a template engine over her speech; splicing it as written puts a backslash and
+    a digit into her mouth, which is what happened before this rule existed.
 48. The table's reach is deliberately short. A `replace:` regex MUST be narrower than the entry's
     firing pattern — it exists to strip decoration she has already ruled on, not to rewrite a
     sentence. Code may repair only what deleting a span breaks: collapsing the doubled space,
