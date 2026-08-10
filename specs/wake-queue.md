@@ -177,15 +177,16 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 
 ### The autonomous bookers
 
-41. The promise auditor (`promise-audit`), the job runner (`job-runner`), the self-change watcher
+41. The promise auditor (`promise-audit`), the promise checker (`promise-check`), the job runner
+    (`job-runner`), the self-change watcher
     (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary
     (`canary`), the nightly claudism review (`claudism-review`) and the chain floor
     (`wake-chain-floor`) all book wakes in her name. Each MUST pass its own
     identity as `booked_by`. Two further identities reach a record without being subsystems:
     `outage-retry`, when a wake that failed before the model ran re-books itself and cannot name its
     original booker, and `herself`, the default when nobody says. Any prose that enumerates the
-    bookers — here, in the other specs, or in the prompt — MUST name the whole set, and it is seven
-    hands and nine names, not four of either.
+    bookers — here, in the other specs, or in the prompt — MUST name the whole set, and it is eight
+    hands and ten names, not four of either.
 42. Each MUST route through `book()`, and therefore through the coalescing, spacing, and locking
     rules.
 43. The promise auditor MUST use the shared shelf reader. An auditor handed an empty list and told
@@ -205,6 +206,16 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     endless chain. And the auditor MUST NOT book the deferred wake when a record booked by her own
     hand already stands from the same turn: the catcher exists for the promise with no body, not
     to accuse the kept one.
+43b. The promise checker (`lib/promise-check`, [turn-pipeline.md](turn-pipeline.md) rules 32a-32c)
+    books a third class beside the auditor's two: the **unkept-commitment** wake — her reply
+    claimed a concrete action in the first person and the turn's own tool record shows nothing
+    performed or durably scheduled it. Its reason MUST open with the unkept-commitment prefix (a
+    constant in `lib/common.sh` beside the auditor's two), MUST quote the promise exactly and
+    instruct her to do the work now or book it deliberately, and MUST fire minutes out, never
+    hours — the point is to catch her while the context is still warm. The wake path MUST skip
+    its own audit for this prefix exactly as for the auditor's two. The class carries its own
+    scoped cap (rule 44), so unkept commitments neither fill nor drain the auditor's classes. It
+    cannot chain itself: only desktop turns are checked, and the follow-up fires as a wake.
 44. Any cap on the number of pending wakes a booker may hold MUST be counted from the records under
     the booking lock, and MUST **drain** as well as gate. A cap that only gates new bookings lets a
     queue five times its own size stand for hours. The drain MUST let go of the **furthest-out**

@@ -39,6 +39,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/job-runner` | detached builder, owned by systemd rather than by the turn |
 | `lib/job-status` | JSON state sidecars for detached jobs |
 | `lib/promise-audit` | did the reply state a want that is not on the shelf? |
+| `lib/promise-check` | did the reply promise an action the turn's tool record never performed? |
 | `lib/notice-newfiles` | emitter: files landing in a watched directory become a wake |
 | `lib/notice-selfchange` | emitter: another hand changed the files that constitute her |
 | `lib/canary-selfchange` | proves that watcher is still being triggered at all |

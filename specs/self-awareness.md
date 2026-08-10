@@ -41,8 +41,9 @@ below is a fact placed before her, never a gate placed behind her.
 
 8. A booking record MUST carry, at minimum: fire epoch, kind, reason, booked-at epoch, and
    **booked-by**.
-9. Booked-by MUST name the subsystem that booked it. Seven hands book wakes in her name: the promise
-   auditor (`promise-audit`), the job runner (`job-runner`), the self-change watcher
+9. Booked-by MUST name the subsystem that booked it. Eight hands book wakes in her name: the promise
+   auditor (`promise-audit`), the promise checker (`promise-check`), the job runner (`job-runner`),
+   the self-change watcher
    (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary (`canary`),
    the nightly claudism review (`claudism-review`),
    and the chain floor (`wake-chain-floor`). Two more identities reach a record without being

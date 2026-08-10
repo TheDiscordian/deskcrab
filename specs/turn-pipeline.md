@@ -110,6 +110,42 @@ design and by rule — the review exists to break a habit, never to gate a tongu
     cannot parse the list, or that crashes, MUST exit quietly without touching the turn — its
     run-trace line is the only place that failure shows.
 
+### The promise checker
+
+Her replies commit, in the first person, to concrete actions — "I am wiring it now", "I will
+restart it and tell you when it is in" — and the turn ends with the action never taken. The
+promise audit catches the promise with no booking behind it; this catches the claim with no
+work behind it, and it can, because the turn's own stream log records every tool call that
+actually happened. External and automatic on purpose: she has proven she cannot be trusted to
+audit her own follow-through, so the verdict comes from a cheap model reading the evidence,
+never from her.
+
+32a. Every desktop turn that delivered a reply MUST hand the response, the turn's stream log,
+     the durable ledger path, and the journal identity (start epoch, pid, kind) to the promise
+     checker (`lib/promise-check`) at the same out-of-band moment as the promise audit and the
+     claudism capture: detached, after the user has their answer, never a gate. The checker
+     asks a cheap model — `claude-fable-5`, then `claude-haiku-4-5-20251001` when fable
+     returns no parseable verdict; both verified against the CLI in hand on 2026-08-10 — to
+     extract every first-person commitment to a concrete action from the reply and judge each
+     against the tool calls the stream actually records. A statement about future
+     conversation, an offer still awaiting an answer, a bare want, and work the reply reports
+     as already done are not commitments.
+32b. A commitment with no tool call that plausibly performed it is UNKEPT. A call that durably
+     scheduled the work counts as performing it — a `crab wake-at` or `crab job` naming that
+     work is a kept promise, not an excuse. Every UNKEPT verdict MUST land in two places: one
+     JSON line appended to the durable ledger — timestamp, the promise quoted exactly, why the
+     record shows nothing did it, the turn's journal identity, and what became of the wake —
+     and one event wake through the queue's one door, minutes out, whose reason opens with the
+     unkept-commitment prefix and quotes the promise ([wake-queue.md](wake-queue.md) rule
+     43b).
+32c. The evidence is the stream log, and its absence is not a verdict: a checker handed no
+     readable log judges nothing, and its run trace says so — an accusation needs the record.
+     A log that exists and holds zero tool calls IS the record: a turn that ran no tools kept
+     no promise of action. Model failure is never quiet either — a refusal walks the account
+     chain like every out-of-band call ([account-fallback.md](account-fallback.md) rule 29),
+     and a login that answers with nothing parseable from either model ends the run with the
+     failure named on the trace.
+
 ### Turn metrics
 
 Somebody is waiting for a spoken reply, and "where did the time go" must be answerable from a
@@ -143,6 +179,8 @@ file rather than re-instrumented every time the question comes up.
 | `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines ([nightly.md](nightly.md) rule 46, [speech-output.md](speech-output.md) rule 50) |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32b) |
+| `${STATE_PREFIX}-promise-check.log` | `lib/promise-check` | one line per run: the verdicts, or why nothing was judged |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |
 | `~/.local/share/deskcrab/metrics/<date>.log` | `turn_metric` (rule 33) | `epoch.ms \t pid \t kind \t stage \t detail` |
 | `voice-claude-archive/` | rotation | archived transcript and summary pairs |
@@ -172,7 +210,7 @@ flowchart TD
   N -->|reply| O["append the assistant block<br/>close the in-flight record<br/>compact, record the outcome"]
   O --> P["open the display window"]
   P --> Q["wait for the streamer, bounded<br/>then the never-silent guarantee"]
-  Q --> R["out of band: memory judge, promise audit"]
+  Q --> R["out of band: memory judge, promise audit,<br/>claudism capture, promise checker"]
   N1 & N2 & R --> Z["exit trap: session finish → journal"]
   X["killed without the trap"] --> Y["reaped and journaled as interrupted"]
 ```
@@ -181,7 +219,8 @@ flowchart TD
 
 **The turn pipeline may call:** prompt assembly, the account chain, the speech streamer, the display
 window spawner, the conversation store, the memory recall block, the memory judge, the promise
-audit, the session registry, the day journal, the self-change write declaration.
+audit, the promise checker, the session registry, the day journal, the self-change write
+declaration.
 
 **The turn pipeline may be called by:** the push-to-talk binding (`crab start` / `crab stop`), the
 catch-all text query, `crab remote` (phone), and the phone server.
