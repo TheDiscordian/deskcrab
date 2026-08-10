@@ -615,6 +615,73 @@ touch_suppress() {
     return 0
 }
 
+# `touching` is a reflex — a hand declaring the write it is making right now.
+# Numbing is a decision: I am going to work on a part of myself for a while and
+# I do not want to be woken about my own hands moving. It is the same
+# suppression record underneath, held open for hours instead of minutes, plus a
+# ledger so it is visible in `crab status` and can be lifted deliberately. A
+# numb that nobody can see is just a blind spot.
+NOTICE_NUMB="${NOTICE_NUMB:-$NOTICE_STATE_DIR/notice-self.numb}"
+
+numb_set() {  # <seconds> <reason> <path>...
+    local win="$1" reason="$2" p exp; shift 2
+    [ $# -gt 0 ] || return 1
+    exp=$(( $(date +%s) + win ))
+    touch_suppress -w "$win" "$@" || return 1
+    mkdir -p "$NOTICE_STATE_DIR"
+    {
+        flock 9
+        for p in "$@"; do
+            printf '%s\t%s\t%s\n' "$exp" \
+                "$(readlink -m -- "$p" 2>/dev/null || printf '%s' "$p")" "$reason" \
+                >> "$NOTICE_NUMB"
+        done
+    } 9>>"$NOTICE_NUMB.lock"
+    return 0
+}
+
+# Live numbs only, expired rows dropped. Prints "<remaining_s>\t<path>\t<reason>".
+numb_list() {
+    [ -s "$NOTICE_NUMB" ] || return 1
+    local now exp p reason found=1
+    now="$(date +%s)"
+    while IFS="$(printf '\t')" read -r exp p reason; do
+        [ -n "$p" ] || continue
+        [ "$exp" -gt "$now" ] 2>/dev/null || continue
+        printf '%s\t%s\t%s\n' "$(( exp - now ))" "$p" "$reason"
+        found=0
+    done < "$NOTICE_NUMB"
+    return "$found"
+}
+
+# Lift a numb early: drop its rows from both the ledger and the suppression
+# file, so the watcher is loud again on the very next change.
+numb_clear() {  # [path]  — no path clears every numb
+    local want="" line exp p rest
+    [ -n "${1:-}" ] && want="$(readlink -m -- "$1" 2>/dev/null || printf '%s' "$1")"
+    local f
+    for f in "$NOTICE_NUMB" "$NOTICE_SUPPRESS"; do
+        [ -f "$f" ] || continue
+        {
+            flock 9
+            while IFS="$(printf '\t')" read -r exp p rest; do
+                [ -n "$p" ] || continue
+                if [ -z "$want" ]; then
+                    # Blanket lift only drops rows a numb actually owns; a live
+                    # `touching` from another hand of mine is not mine to cancel.
+                    [ "$f" = "$NOTICE_NUMB" ] && continue
+                    grep -qF "$(printf '\t%s\t' "$p")" "$NOTICE_NUMB" 2>/dev/null && continue
+                else
+                    [ "$p" = "$want" ] && continue
+                fi
+                printf '%s\t%s\t%s\n' "$exp" "$p" "$rest"
+            done < "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+        } 9>>"$f.lock"
+    done
+    return 0
+}
+
 # The stream log knows which files this turn's tools wrote (same mechanical
 # read as wake_work_trace, paths only) — declare them after the fact. The
 # watcher waits out a live session before judging a burst, so a record written
@@ -1240,6 +1307,18 @@ self_state_report() {
             printf '  Truncation is never the answer to growth: raise the layer budget or slim its source (specs/prompt-assembly.md rule 36).\n'
         fi
     fi
+    # A numb is a choice to be blind for a while, so it is never silent: it
+    # rides at the top of the block until it expires or is lifted, or it stops
+    # being a decision and becomes a part of me I forgot was switched off.
+    local numbs
+    if numbs="$(numb_list 2>/dev/null)"; then
+        printf 'NUMBED — you are not being woken about your own changes to these, by your own choice:\n'
+        printf '%s\n' "$numbs" | while IFS=$'\t' read -r left p reason; do
+            printf '  - %s — %s min left%s\n' "$p" "$(( left / 60 ))" "${reason:+ — $reason}"
+        done
+        printf '  Lift it early with: crab numb --off\n'
+    fi
+
     local f kind pid started epoch startt n=0 body=""
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
@@ -3202,6 +3281,12 @@ Repair the line; do not costume it. Do NOT add a verbal tic or catchphrase the d
 already have — no tacking a signature phrase onto the end to prove whose voice this is. A repair
 that reaches for the same flourish every time trains a tic that was never yours, and it will not
 show up on any list.${FIXBLOCK}
+Residue test, before you write anything (rule 56). Take the offending words out and read what is
+left. If a sentence remains that still says something, that removal IS the repair. If nothing is
+left — because certifying, absolving or promising was the sentence's entire job — then there is no
+better way to say it. Say a DIFFERENT sentence about a different thing: the state of the thing
+itself instead of your account of it, what is true now instead of what you intend. If no such
+sentence exists, give the line back with it cut.
 Output ONLY the replacement line: no preamble, no quotes, no commentary, no display section."
     : > "$MLOG"
     { printf 'Pattern that fired: %s%s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \

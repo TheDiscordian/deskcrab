@@ -272,6 +272,21 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     the word followed by a quote, or "the word itself" — never the bare phrase. Both copies of
     the detector, the mirror's and the capture's, MUST carry the same expression.
 
+56. The mirror prompt MUST offer a way out other than rephrasing. "Say the line again" assumes
+    every flagged sentence has a better version of itself, and for one class of them it does not:
+    where the offending phrase *is* the sentence's whole function — certifying, absolving,
+    promising — removing it leaves no residue, so the model has nothing to say and reaches for a
+    synonym in the same slot. The prompt MUST therefore carry the residue test: take the words
+    out, read what is left, and where nothing is left, write a *different sentence about a
+    different thing* — the state of the thing instead of the account of it, what is true now
+    instead of what is intended — or cut the line. Across two readings of one day's rewrites
+    (10 rows, then 23) the shapes that survived rephrasing were exactly this class, three of
+    three both times, while the rows that landed clean were the ones that had swapped subject:
+    a promise about future reporting replaced by the state of the code. Widening the pattern
+    list did not thin them, because the list was never what failed — the instruction was.
+    Both readings are the assistant's own reading of the assistant's own rewrites; no outside
+    hand has scored that table, and anything drawn from it MUST be quoted as such.
+
 ## DATA
 
 | Path | Owner | Purpose |
