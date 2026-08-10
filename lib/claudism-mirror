@@ -84,6 +84,13 @@ def load_patterns(path):
         if not entries:
             bad += 1
             return
+        # The replacement is spliced literally, so a backreference in it is
+        # not a backreference — it is a backslash and a digit landing in my
+        # mouth. One did, 2026-08-10 12:03: "a failure of mine\1". A line
+        # like that is skipped as unparseable and the sentence routes to me.
+        if re.search(r"\\[0-9g]", m.group(2)):
+            bad += 1
+            return
         try:
             entries[-1]["replaces"].append(
                 (re.compile(m.group(1), re.IGNORECASE), m.group(2)))
