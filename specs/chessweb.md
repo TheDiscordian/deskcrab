@@ -174,9 +174,15 @@ cannot be changed.
     CLI write from different pids. The bridge stamps `move-start` the moment a position
     becomes hers to answer (a recorded user move, a NewGame or serve start with her to move),
     then `reflex-hit` or `reflex-miss` when rule 16's lookup returns, then `similar-context`
-    (detail ending `attached` or `empty`) when the similarity note has been computed for the
+    (detail carrying `attached` or `empty`, and then `top <san> <similarity>` for the single
+    nearest stored position — `top none` on an empty store, `top error` on a broken one) when
+    the similarity note has been computed for the
     wake's reason — the stamp is written whichever way that came out, so its absence proves the
-    reflex hit short-circuited before any similarity work — then `effort` with the level rule
+    reflex hit short-circuited before any similarity work. The `top` half is recorded whether or
+    not that neighbour cleared the note's floor, because a neighbour too far to be quoted into
+    the wake is exactly the case the floor has to be judged on: paired with the `move-played`
+    stamp at the same game and ply, it says whether the move memory would have offered is the
+    move she went on to choose anyway. Then `effort` with the level rule
     16b chose and every reason that fired (`quiet` when none did, `default error` when the
     pre-check failed), which is the record the thresholds are tuned from, and absent exactly
     when a reflex hit short-circuited — then `wake-booked` when

@@ -377,6 +377,23 @@ def reason_note(board: chess.Board, k: int = None, min_sim: float = None) -> str
             "without checking it against the board in front of you.")
 
 
+def top_stamp(board: chess.Board) -> str:
+    """`top <san> <similarity>` for the single nearest stored position, or
+    `top none` when the store has nothing at all — the metrics half of rule
+    14, written whether or not the neighbour cleared MIN_SIM. It is the only
+    record of what memory *would* have said when it was not allowed to speak:
+    paired against the `move-played` stamp at the same game and ply, it is
+    what the floor is eventually tuned from. Never raises; a broken store
+    costs a stamp, not a move."""
+    try:
+        hits = similar(board.fen(), 1)
+    except Exception:
+        return "top error"
+    if not hits:
+        return "top none"
+    return f"top {hits[0]['san']} {hits[0]['similarity']:.2f}"
+
+
 if __name__ == "__main__":
     # A bare debugging entry: FEN on argv, features or neighbours on stdout.
     fen = " ".join(sys.argv[1:]) or chess.STARTING_FEN

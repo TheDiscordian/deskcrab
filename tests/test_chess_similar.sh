@@ -204,6 +204,22 @@ awk -F'\t' '$3=="chess" && $4=="reflex-miss" && $5 ~ /^miss-001 /' "$MET" \
     | grep -q . \
   && ok "the stamps say what happened: reflex-miss, then the note attached" \
   || fail "metric stamps for the miss path are wrong: $(grep miss-001 "$MET")"
+awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-001 ply 4 attached top [^ ]+ [01]\.[0-9][0-9]$/' \
+    "$MET" | grep -q . \
+  && ok "and the nearest neighbour is named in the stamp with its similarity" \
+  || fail "no top field on the miss stamp: $(grep similar-context "$MET")"
+
+# The floor silences the note, never the stamp: a neighbour too far to be
+# quoted into the wake is the one case the floor has to be judged on.
+: > "$WAKE_LOG"
+DESKCRAB_CHESS_SIMILAR_MIN=0.99 drive miss-001 >/dev/null
+grep -q "Exact memory has nothing here" "$WAKE_LOG" \
+  && fail "the floor let a distant neighbour into the wake: $(cat "$WAKE_LOG")" \
+  || ok "a neighbour under the floor is kept out of the wake's reason"
+awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-001 ply 4 empty top [^ ]+ [01]\.[0-9][0-9]$/' \
+    "$MET" | grep -q . \
+  && ok "but the stamp still records what memory would have said" \
+  || fail "below-floor stamp lost its top field: $(grep similar-context "$MET")"
 
 : > "$WAKE_LOG"
 drive hit-001 >/dev/null

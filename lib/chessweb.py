@@ -422,6 +422,59 @@ class Hub:
                          "played_at": None, "san": None}
         self.port = None
 
+    # The thinking line used to depend on her remembering to POST /thinking
+    # from inside the turn — so the board sat on "asked to move" for as long as
+    # it took a session to load its prompt and reach that command, which is the
+    # whole visible gap the user kept reporting. Her live sessions are already
+    # written to disk the moment they start; watch that instead. Mechanical,
+    # and it cannot be forgotten.
+    def watch_sessions(self):
+        sessions = os.environ.get("DESKCRAB_STATE_PREFIX",
+                                  "/tmp/deskcrab") + "-sessions"
+        while True:
+            time.sleep(self.poll_interval)
+            try:
+                with self.lock:
+                    poked = self.activity["poked_at"]
+                    if poked is None or self.activity["started_at"]:
+                        continue
+                started = self._wake_started_since(sessions, poked)
+                if started:
+                    with self.lock:
+                        if self.activity["poked_at"] == poked and \
+                                not self.activity["started_at"]:
+                            self.activity["started_at"] = started
+                            log("thinking line lit from the session record")
+            except Exception as e:
+                log(f"session watch survived: {e!r}")
+
+    @staticmethod
+    def _wake_started_since(sessions, poked):
+        """The epoch a wake session began at or after `poked`, if one has."""
+        best = None
+        try:
+            names = os.listdir(sessions)
+        except OSError:
+            return None
+        for name in names:
+            try:
+                with open(os.path.join(sessions, name)) as fh:
+                    parts = fh.readline().rstrip("\n").split("\t")
+            except OSError:
+                continue
+            # kind \t pid \t human time \t epoch \t ...
+            if len(parts) < 4 or "wake" not in parts[0]:
+                continue
+            try:
+                epoch = float(parts[3])
+            except ValueError:
+                continue
+            # A second of slack: the booking and the session that answers it
+            # can straddle the same second.
+            if epoch >= poked - 1 and (best is None or epoch < best):
+                best = epoch
+        return best
+
     # -- helpers -----------------------------------------------------------
     def human_side(self):
         return chess.BLACK if self.store.her_side == "white" else chess.WHITE
@@ -540,7 +593,8 @@ class Hub:
             note = chess_similar.reason_note(board)
             chess_cli.metric("similar-context",
                              f"{g['id']} ply {ply} "
-                             + ("attached" if note else "empty"))
+                             + ("attached" if note else "empty")
+                             + " " + chess_similar.top_stamp(board))
             return note
         except Exception as e:
             log(f"similar-position note failed, wake goes without: {e!r}")
@@ -1018,6 +1072,7 @@ def main(argv=None):
 
     threading.Thread(target=hub.poll_store, daemon=True).start()
     threading.Thread(target=hub.keepalive, daemon=True).start()
+    threading.Thread(target=hub.watch_sessions, daemon=True).start()
     while True:
         try:
             httpd.serve_forever()
