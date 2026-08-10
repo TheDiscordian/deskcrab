@@ -253,6 +253,25 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     the cure shaping the patient. The prompt names the failure, not just the prohibition, so the
     model knows which move it is being asked not to make.
 
+55. A `fix: delete` entry MUST reach the mirror as a deletion. The fired entry's `fix:` field
+    rides the fire record and the mirror call's prompt, and where it reads `delete` the prompt
+    MUST ask for the line with the offending words *removed* — a shorter line, not a
+    replacement phrase — and MUST say that a synonym in the same slot is the failure. Without
+    it the prompt says only "say the line again", which is a request for a line, so the slot
+    survives and gets refilled: over one night, every one of the five repairs the nightly
+    review judged a miss was on an entry whose declared fix was deletion, and every repair on a
+    `resay` entry landed clean. The words that vouch for a sentence are cured by their absence,
+    and a mirror that cannot ask for absence cannot cure them. An entry with no `fix:` prompts
+    exactly as before.
+
+    The mention detector MUST NOT swallow an entry whole. Its markers are for sentences
+    *about* the list, so a marker that is also an ordinary idiom silently retires whatever
+    entry uses that idiom: `the word` counted every "say the word and I'll do it" as talk
+    about the list rather than a firing of it, twelve of them in one night, and the entry it
+    disarmed was the compliance promise. Word-naming markers MUST require the naming form —
+    the word followed by a quote, or "the word itself" — never the bare phrase. Both copies of
+    the detector, the mirror's and the capture's, MUST carry the same expression.
+
 ## DATA
 
 | Path | Owner | Purpose |

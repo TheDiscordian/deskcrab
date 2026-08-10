@@ -192,7 +192,13 @@ def load_patterns(path):
 # lost. Kept identical to lib/claudism-capture's, like the parser above it.
 META_RE = re.compile(
     r"claudism|\bban(?:ned|ning|s)?\b|phrase list|\bthe list\b|flag log|"
-    r"conduct sheet|\bthe word\b|\bforbidden\b", re.IGNORECASE)
+    # "the word" marks a sentence ABOUT a word — "the word 'honest'", "the
+    # word itself". Bare, it is the idiom "say the word", which is an entry
+    # of its own: the wide form swallowed every live firing of the
+    # compliance promise and scored a night of plain uses as talk about the
+    # list (specs/speech-output.md rule 55).
+    r"conduct sheet|\bthe word [\"'“`]|\bthe word itself\b|\bforbidden\b",
+    re.IGNORECASE)
 
 
 def classify_use(sentence, start, end, note=""):
@@ -344,6 +350,8 @@ def scan(text, patterns):
                    "note": f["note"]}
             if f.get("function"):
                 rec["function"] = f["function"]
+            if f.get("fix"):
+                rec["fix"] = f["fix"]
             flags.append(rec)
     return flags
 

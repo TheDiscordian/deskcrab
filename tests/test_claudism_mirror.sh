@@ -224,6 +224,57 @@ FLAGS=$(printf 'A code word on its own must not fire.' | "$REPO_DIR/lib/claudism
 [ "$FLAGS" = "[]" ] && ok "a why line quoting code is never a trigger" \
     || fail "why line became a trigger" "$FLAGS"
 
+# --- rule 55: a deletion entry must reach the mirror as a deletion ----------
+# "Say the line again" is a request for a line, so a vouching slot survives
+# the repair and gets refilled with a synonym. The declared cure has to ride
+# the fire record and the call, or the ask is for the wrong thing.
+DEL="$T/claudisms-fix.md"
+cat > "$DEL" <<'EOF'
+## the honesty family
+- pattern: `\bto be honest\b`
+- function: vouching
+- fix: delete
+
+## the compliance promise
+- pattern: `\bsay the word\b`
+- function: capitulation
+- fix: resay
+EOF
+FLAGS=$(printf 'To be honest, the beacon is green.' | "$REPO_DIR/lib/claudism-mirror" scan "$DEL")
+echo "$FLAGS" | grep -qF '"fix": "delete"' \
+    && ok "a delete entry's cure rides the fire record (rule 55)" \
+    || fail "fix field missing from the scan record" "$FLAGS"
+FLAGS=$(printf 'Say the word and it is done.' | "$REPO_DIR/lib/claudism-mirror" scan "$DEL")
+echo "$FLAGS" | grep -qF '"fix": "resay"' \
+    && ok "and a resay entry's does too, so the two are told apart" \
+    || fail "resay fix missing" "$FLAGS"
+grep -q 'rec\["fix"\] = flag\["fix"\]' "$REPO_DIR/lib/tts-streamer" \
+    && ok "the desk fire record carries it as well as the whole-draft paths" \
+    || fail "tts-streamer drops the fix field" ""
+# The prompt itself: the deletion ask exists, and it is conditional — a resay
+# entry must never be told to shorten the line.
+grep -q 'FIX" = "delete"' "$REPO_DIR/lib/common.sh" \
+    && grep -qi 'cure is DELETION' "$REPO_DIR/lib/common.sh" \
+    && ok "and the mirror prompt asks for absence when the cure is deletion" \
+    || fail "no deletion block in the mirror prompt" ""
+MC=$(grep -c '_claudism_mirror_call "\$SENT" "\$PAT" "\$NOTE" "\$(spoken_part "\$RESPONSE")" "\$FN" "\$FIX"' "$REPO_DIR/lib/common.sh")
+[ "$MC" = 2 ] && ok "both call sites hand it to the mirror" \
+    || fail "a mirror call site still drops the fix" "$MC of 2"
+
+# The mention detector must not disarm an entry built on an idiom (rule 55).
+FLAGS=$(printf 'Say the word and the tree comes down.' | "$REPO_DIR/lib/claudism-mirror" scan "$DEL")
+echo "$FLAGS" | grep -qF '"pattern"' \
+    && ok "an entry whose words are an idiom still fires — not scored as talk about the list" \
+    || fail "the mention detector swallowed the entry" "$FLAGS"
+FLAGS=$(printf 'He named the word "honest" himself.' | "$REPO_DIR/lib/claudism-mirror" scan "$DECL")
+[ "$FLAGS" = "[]" ] && ok "and naming a word is still a mention" \
+    || fail "word-naming scored as a use" "$FLAGS"
+for F in claudism-mirror claudism-capture; do
+    grep -q 'the word \[' "$REPO_DIR/lib/$F" \
+        && ok "$F carries the narrowed marker" \
+        || fail "$F still has the bare marker" ""
+done
+
 # --- rule 46: the hold is budgeted for a listener, not a model --------------
 # The two deadlines are read straight out of the sources that define them, so
 # a later hand raising one without the other shows up here rather than as

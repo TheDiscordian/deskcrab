@@ -3160,8 +3160,8 @@ _claudism_field() {  # <json> <key>
 # nothing as "the original stands". One attempt, on the ambient login: a
 # walk of a dry account chain is minutes of held speech, and fail-open is
 # cheaper than any of them.
-_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [function]
-    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4" FN="${5:-}"
+_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [function] [fix]
+    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4" FN="${5:-}" FIX="${6:-}"
     # A fire is the one place a finished reply waits on another model run, and
     # the metrics log (turn-pipeline rule 33) measured that wait at over a
     # minute on the phone path — so the call stamps itself, both ends.
@@ -3178,6 +3178,14 @@ _claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [functio
     fi
     [ -n "$FAMILY" ] && FAMBLOCK="$(printf '\nIts whole family (%s) — every phrasing of this same move, so a resay does not land on a sibling unseen:\n%s' \
         "$FN" "$FAMILY")"
+    # The entry's declared cure (rule 55). "Say the line again" is a request
+    # for a line, so a deletion entry gets its slot refilled with a synonym
+    # unless the ask itself is for absence.
+    local FIXBLOCK=""
+    [ "$FIX" = "delete" ] && FIXBLOCK='
+This entry'"'"'s cure is DELETION, not substitution. Give the line back with the offending words
+simply gone — shorter than it was. Putting a different phrase in the same slot is the failure
+this entry exists to catch; the sentence is meant to stand with nothing in front of it.'
     if [ -n "${CUSTOM_PROMPT:-}" ] && [ -f "$CUSTOM_PROMPT" ] \
             && [ "$(wc -c < "$CUSTOM_PROMPT" 2>/dev/null || echo 999999)" -le 65536 ]; then
         PERSONA="$(cat "$CUSTOM_PROMPT")"
@@ -3193,7 +3201,7 @@ voice, or give it back exactly as written if you meant it — your call, your vo
 Repair the line; do not costume it. Do NOT add a verbal tic or catchphrase the draft did not
 already have — no tacking a signature phrase onto the end to prove whose voice this is. A repair
 that reaches for the same flourish every time trains a tic that was never yours, and it will not
-show up on any list.
+show up on any list.${FIXBLOCK}
 Output ONLY the replacement line: no preamble, no quotes, no commentary, no display section."
     : > "$MLOG"
     { printf 'Pattern that fired: %s%s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \
@@ -3255,8 +3263,9 @@ claudism_mirror_direct() {  # <kind> <response>
         PAT="$(_claudism_field "$REC" pattern)"
         NOTE="$(_claudism_field "$REC" note)"
         FN="$(_claudism_field "$REC" function)"
+        FIX="$(_claudism_field "$REC" fix)"
         SPLICED=""
-        REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN")"
+        REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
         if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
             SPLICED="$(python3 -c \
                 'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
@@ -3405,9 +3414,10 @@ PY
             PAT="$(_claudism_field "$REC" pattern)"
             NOTE="$(_claudism_field "$REC" note)"
             FN="$(_claudism_field "$REC" function)"
+            FIX="$(_claudism_field "$REC" fix)"
             SPLICED=""
             REWRITE="$(CLAUDISM_MIRROR_CALL_TIMEOUT="$CLAUDISM_MIRROR_DESK_CALL_TIMEOUT" \
-                _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN")"
+                _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
             if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
                 SPLICED="$(python3 -c \
                     'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \

@@ -212,7 +212,13 @@ def load_patterns(path):
 # lost.
 META_RE = re.compile(
     r"claudism|\bban(?:ned|ning|s)?\b|phrase list|\bthe list\b|flag log|"
-    r"conduct sheet|\bthe word\b|\bforbidden\b", re.IGNORECASE)
+    # "the word" is meta only where a word is being NAMED — "the word
+    # 'honest'", "the word itself". Bare, it is the idiom "say the word",
+    # which is an entry in its own right, and the wide form scored every
+    # firing of it as talk about the list (speech-output rule 55). Kept
+    # identical to the mirror's copy, like the parser above it.
+    r"conduct sheet|\bthe word [\"'“`]|\bthe word itself\b|\bforbidden\b",
+    re.IGNORECASE)
 
 
 def classify_use(sentence, start, end, note=""):
