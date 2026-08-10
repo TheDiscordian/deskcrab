@@ -3320,6 +3320,28 @@ Output ONLY the replacement line: no preamble, no quotes, no commentary, no disp
     printf '%s' "$OUT"
 }
 
+# The unspoken channel's gate. The streamer's hold-and-rewrite only ever
+# guards text on its way to piper, and the whole-draft mirror below fails
+# open by design — so a (quiet) bubble, which is never spoken and never
+# streamed, was the one thing she says to him with no gate on it at all.
+# He read a banned word in one. This is the deterministic half of the guard
+# — her own replace lines, no model call, no hold — run on the bubble text
+# itself. A failure leaves the text exactly as it was.
+claudism_table_only() {  # <kind> <text>
+    local KIND="$1" TEXT="$2" SWAPPED
+    { [ -x "$LIB_DIR/claudism-mirror" ] && [ -f "$CLAUDISMS_FILE" ]; } \
+        || { printf '%s' "$TEXT"; return 0; }
+    SWAPPED="$(printf '%s' "$TEXT" \
+        | "$LIB_DIR/claudism-mirror" tableswap "$CLAUDISMS_FILE" \
+            "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" 2>/dev/null)" || SWAPPED=""
+    if [ -n "$SWAPPED" ] && [ "$SWAPPED" != "$TEXT" ]; then
+        speech_log "claudism table ($KIND, unspoken): the bubble was repaired"
+        printf '%s' "$SWAPPED"
+        return 0
+    fi
+    printf '%s' "$TEXT"
+}
+
 # The whole-draft pass (rule 44): wake and phone, where the reply is complete
 # before anything is synthesised. Echoes the reply to deliver — spliced with
 # her rewrites, or exactly what it was given. Bounded in fires per turn; the
@@ -4392,6 +4414,10 @@ run_claude_wake() {
         local THOUGHTS
         THOUGHTS="$(printf '%s\n' "$SPOKEN" \
             | sed -E 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
+        # Rule 54: the bubble is the one thing she says with no gate on it —
+        # not spoken, so the streamer never sees it, and the whole-draft
+        # mirror above fails open. Her replace table runs on it here.
+        THOUGHTS="$(claudism_table_only quiet "$THOUGHTS")"
         SILENT_NOTE="$(printf '%s\n' "$THOUGHTS" | tr '\n' ' ')"
         SPOKEN=""
         # ALWAYS visible — his instruction (2026-08-07): a quiet reply shows

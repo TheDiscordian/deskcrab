@@ -166,4 +166,27 @@ wake "a test wake with nothing behind the marker"
 [ -s "$CONVOFILE" ] \
     && die "a bare (quiet) marker earned a bubble it should not have: $(cat "$CONVOFILE")"
 
-ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private, a quiet thought is a bubble"
+# Rule 54: the bubble goes through her replace table. It is never spoken, so
+# the streamer's gate never sees it, and the whole-draft mirror fails open —
+# the user read a banned word in a quiet bubble that had passed both.
+cat > "$SANDBOX/claudisms.md" <<'EOF'
+## the honesty family
+- pattern: `\bhonest(?:y|ly)?\b`
+- replace: `\b[Tt]o be honest,\s+` -> ``
+EOF
+export CLAUDISMS_FILE="$SANDBOX/claudisms.md"
+sandbox_stub claude <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"(quiet) To be honest, I lost the game."}]}}'
+printf '%s\n' '{"type":"result"}'
+EOF
+: > "$CONVOFILE"
+wake "a test wake whose quiet thought trips the table"
+
+grep -qi 'honest' "$CONVOFILE" \
+    && die "a banned word reached the quiet bubble ungated: $(cat "$CONVOFILE")"
+grep -q 'I lost the game' "$CONVOFILE" \
+    || die "the table pass ate the bubble instead of repairing it: $(cat "$CONVOFILE")"
+
+ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private, a quiet thought is a bubble, and the bubble is gated"

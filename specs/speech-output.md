@@ -241,6 +241,15 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     The desk fire record carries the fired entry's `function` so the pass in `lib/common.sh`
     can build the same block the whole-draft paths do.
 
+54. The unspoken channel is gated too. The streamer's hold-and-rewrite (rules 41–43) guards only
+    text on its way to the synthesiser, and the whole-draft mirror (rule 44) fails open by
+    design — so a `(quiet)` bubble, never spoken and never streamed, reached the user through no
+    gate at all, and he read a banned word in one. Any text delivered as a bubble instead of
+    speech MUST pass her replace table (rules 47–49) before delivery: deterministic, no model
+    call, no hold, logged as a table swap like any other. A table pass that fails leaves the
+    text exactly as it was — the bubble is delivered either way, because logging and repair are
+    never gates on delivery (rule 42).
+
 53. A lost synthesis MUST name its killer. When `synth_opus` decides there is no audio, the
     speech log line MUST carry piper's exit status, ffmpeg's exit status, whether the output
     file is missing or merely too small (with its size), and the tail of whatever the two
