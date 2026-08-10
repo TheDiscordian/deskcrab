@@ -229,21 +229,23 @@ def classify_use(sentence, start, end, note=""):
 
 
 def first_flag(text, patterns):
-    """The first entry that FIRES on this text, or None: a live entry with a
-    use-class match. A mention is not a fire and a `live: no` entry never
-    fires here (specs/speech-output.md rule 50) — the capture still records
-    both. The streamer hands one sentence at a time, so 'anywhere' is one
-    sentence. The rx and replaces keys carry the entry itself for the table
-    of rule 47; scan() rebuilds its records from the plain fields, so
-    nothing uncompilable ever reaches a JSON boundary."""
+    """The first live entry that MATCHES this text, or None. Out loud there
+    is no mention exemption: quotation marks are inaudible, so a banned word
+    said in quotes reaches his ear as the word itself (specs/speech-output.md
+    rule 50). The classifier below still runs at night, where the page shows
+    the quotes; here every match fires. A `live: no` entry never fires here —
+    the capture still records both. The streamer hands one sentence at a
+    time, so 'anywhere' is one sentence. The rx and replaces keys carry the
+    entry itself for the table of rule 47; scan() rebuilds its records from
+    the plain fields, so nothing uncompilable ever reaches a JSON
+    boundary."""
     for e in patterns:
         if not e["live"]:
             continue
-        for m in e["rx"].finditer(text):
-            if classify_use(text, m.start(), m.end(), e["note"]) == "use":
-                return {"pattern": e["pat"], "note": e["note"], "rx": e["rx"],
-                        "replaces": e["replaces"], "function": e["function"],
-                        "fix": e["fix"]}
+        if e["rx"].search(text):
+            return {"pattern": e["pat"], "note": e["note"], "rx": e["rx"],
+                    "replaces": e["replaces"], "function": e["function"],
+                    "fix": e["fix"]}
     return None
 
 
