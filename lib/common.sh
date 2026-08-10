@@ -2067,6 +2067,9 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # block now clips its quote to what the budget leaves (rule 37), so
         # this number is instructions plus roughly 750 bytes of quote.
         regroup:turn|regroup:wake) v=2000 ;;
+        # The dispute frame is a turn-only layer: a wake has no message to be
+        # pushed back on. Sized to its measured text plus margin.
+        dispute:turn) v=1800 ;;
         *) v=0 ;;
     esac
     printf '%s' "$v"
@@ -2490,6 +2493,15 @@ ${SHOWN:-(the shelf did not fit this turn — it is at $WANTS_FILE)}"
             || REGROUP="$(wake_unanswered_user_context)"
     fi
     _prompt_layer regroup "the conversation above" "$REGROUP"
+
+    # ---- dispute ----------------------------------------------------------
+    # Conditional, like regroup: rendered only when the caller that took the
+    # message ran dispute_detect and set PROMPT_DISPUTE. specs/cocoon.md.
+    local DISPUTE=""
+    if [ -n "${PROMPT_DISPUTE:-}" ]; then
+        case "$PROMPT_PROFILE" in turn) DISPUTE="$(_dispute_context)" ;; esac
+    fi
+    _prompt_layer dispute "specs/cocoon.md" "$DISPUTE"
 
     # ---- L7 RANKING, L8 FRAME --------------------------------------------
     local RANKING=""
@@ -2934,6 +2946,48 @@ regroup_context() {
             | sed '$s/[[:space:]][^[:space:]]*$//') [... the reply goes on — the whole of it lands in the conversation]"
     fi
     _regroup_block "$DEV" "$SAYING"
+}
+
+# Is this message pushback on her previous reply, rather than a new subject?
+# specs/cocoon.md rules 10-13. Deterministic, no model call: the phrases are
+# taken from the measured record of 2026-08-10, where five wrong theories in
+# eight turns met "stop assuming I'm wrong", "do not gaslight or lie", "I'm
+# reporting a bug", "I never said", and "one more time" — and nothing in the
+# machinery treated any of them as different from small talk. A strong signal
+# alone is enough; weak signals need two. The detector runs before the prompt
+# is built, so the dispute layer and the escalation both ride on its answer.
+dispute_detect() {  # <the user's message>
+    local t
+    t="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    [ -n "$t" ] || return 1
+    # Before she has said anything there is nothing to dispute.
+    [ -n "$(_convo_last_assistant_block 2>/dev/null)" ] || return 1
+    if grep -qE "you'?( a)?re wrong|you are wrong|stop (arguing|assuming|repeating)|do(n'?t| not) (gaslight|lie|argue)|gaslight|you (just )?lied|you keep lying|listen to me|not listening|i'?m reporting|i never (said|asked)|what('?s| is) wrong with you|your (fucking )?(problem|issue)|shut (the fuck )?up|one more (fucking )?time|tak(e|ing) you offline|turn(ing)? you off|not what i (said|meant|asked)|stop talking|that'?s not (it|what)" <<<"$t"; then
+        return 0
+    fi
+    local weak=0
+    grep -qE '^[[:space:]]*no[.,! ]' <<<"$t" && weak=$((weak+1))
+    grep -qE '\bwrong\b' <<<"$t" && weak=$((weak+1))
+    grep -qE '\bagain\b' <<<"$t" && weak=$((weak+1))
+    grep -qE 'fuck' <<<"$t" && weak=$((weak+1))
+    grep -qE '\bi (just )?said\b' <<<"$t" && weak=$((weak+1))
+    [ "$weak" -ge 2 ]
+}
+
+# The dispute frame, rendered into the conditional dispute layer when the
+# detector fired. Its overlap with L7's ranking rule is deliberate, the same
+# bargain the regroup block makes: under pushback the rule is the one being
+# broken, so it is restated at strength beside the thing being answered.
+_dispute_context() {
+    cat <<'EOF'
+HE IS PUSHING BACK — this message rejects or corrects what you just said. This turn is governed by the following, above everything else in this prompt:
+His report of what he saw or heard IS WHAT HAPPENED. It is not a claim to evaluate. If your model of the machinery says it cannot have happened, your model is wrong. Telling him it did not happen is the worst failure available to you in this turn.
+The theory your last reply carried is DEAD. Do not restate it in new words. Anything he has told you the answer is not, is closed — arguing it a second time is how this conversation is being lost.
+Look before you theorise: find the actual thing he is describing — the line in the log, the words that reached his screen — and read it before you name any cause. If you have not found it, say so and ask ONE question. "I don't know yet" is a complete answer; a confident guess is a lie.
+Do not substitute a mechanism for his point. No fixes shipped, no rules written, no builders dispatched, no commit tables — not in this turn. Understanding him comes first; the fix waits for his go.
+Do not cut pieces off yourself. No new gates on yourself, no conduct edits made under pressure, no pledges of "never again", no shutdown offers, no goodbyes. If a change to you is warranted, it is a calm builder's job decided with him — not a wound made mid-argument.
+Answer only what he raised, in a few plain sentences, in your own voice. No display block unless he asked for one. Concede only what is actually true — manufactured agreement is another way of not listening.
+EOF
 }
 
 _regroup_block() {  # <device> <the words being said>
@@ -3803,6 +3857,28 @@ claude_profile_flags() {  # <turn|wake|job|classify>
             *) [ -n "$tools" ] && CLAUDE_PROFILE_FLAGS+=(--tools "$tools") ;;
         esac
     fi
+
+    # The cocoon gate, specs/cocoon.md: in a live turn or wake, what
+    # constitutes her is read-only — changes to her own machinery go through a
+    # builder with a brief, never through the hands of the session that is
+    # mid-conversation. Builders (job profile) and classifiers do not carry
+    # the gate, and that asymmetry is the whole design. The settings file is
+    # generated here so the hook's absolute path is this checkout's, not a
+    # path baked into the repo.
+    case "${1:-turn}" in
+        turn|wake)
+            if [ -x "$SCRIPT_DIR/lib/cocoon-gate" ]; then
+                local COCOON="${STATE_PREFIX}-cocoon.json"
+                if printf '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|MultiEdit|NotebookEdit|Bash","hooks":[{"type":"command","command":"DESKCRAB_REPO=%s %s"}]}]}}\n' \
+                        "$SCRIPT_DIR" "$SCRIPT_DIR/lib/cocoon-gate" \
+                        > "$COCOON.tmp.$$" 2>/dev/null; then
+                    mv "$COCOON.tmp.$$" "$COCOON" 2>/dev/null || rm -f "$COCOON.tmp.$$"
+                else
+                    rm -f "$COCOON.tmp.$$"
+                fi
+                [ -r "$COCOON" ] && CLAUDE_PROFILE_FLAGS+=(--settings "$COCOON")
+            fi ;;
+    esac
 
     [ "$CLAUDE_SKILLS" = "1" ] || CLAUDE_PROFILE_FLAGS+=(--disable-slash-commands)
     return 0
@@ -4779,7 +4855,7 @@ _generate_claude_run() {
         else unset CLAUDE_CONFIG_DIR; fi
         claude_profile_flags turn
         exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$CLAUDE_MODEL" --effort "$EFFORT" \
+            --model "${MODEL:-$CLAUDE_MODEL}" --effort "$EFFORT" \
             --verbose --output-format stream-json --include-partial-messages \
             "${CLAUDE_PROFILE_FLAGS[@]}" \
             --append-system-prompt "$SYSTEM_PROMPT" \
@@ -4802,6 +4878,23 @@ _generate_claude_run() {
 # started beforehand speaks in parallel exactly as it always did.
 claude_generate() {
     local TEXT="$1" EFFORT="${2:-$CLAUDE_EFFORT}"
+    # Pushback turns get her best attention, not her cheapest. specs/cocoon.md
+    # rules 10-13: on 2026-08-10 the argue-gaslight spiral ran entirely on the
+    # voice loop's economy settings; the turns where being wrong costs the
+    # most were the ones bought at the lowest price. The dispute frame joins
+    # the prompt (PROMPT_DISPUTE reaches build_system_prompt through the
+    # subshell), effort rises to DISPUTE_EFFORT unless the caller already
+    # asked for more, and DISPUTE_MODEL (when set) takes the turn — the conf
+    # points it at the strongest builder model.
+    local MODEL="$CLAUDE_MODEL" PROMPT_DISPUTE=""
+    if dispute_detect "$TEXT"; then
+        PROMPT_DISPUTE=1
+        [ -n "${DISPUTE_MODEL:-}" ] && MODEL="$DISPUTE_MODEL"
+        case "$EFFORT" in
+            low|medium) EFFORT="${DISPUTE_EFFORT:-high}" ;;
+        esac
+        turn_metric dispute "pushback detected — model $MODEL, effort $EFFORT"
+    fi
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
     turn_metric prompt-built "${#SYSTEM_PROMPT} bytes"

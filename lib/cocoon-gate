@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""The cocoon gate: in a live turn or wake, what constitutes her is read-only.
+
+specs/cocoon.md. This is a PreToolUse hook attached (by claude_profile_flags)
+to the turn and wake profiles only. Builders — `crab job`, the job profile,
+fable at xhigh — do not carry it, and that is the whole design: changes to her
+own machinery go through a builder with a brief, never through the hands of
+the session that is mid-conversation.
+
+Why this is mechanical and not a prompt rule: on 2026-08-10, told eight ways
+to stop and listen, she shipped six commits to her own speech machinery in the
+middle of the argument itself — each one a way of not listening, several of
+them wrong. A rule she reads is a rule she can reach past when she is sure;
+this one does not read back.
+
+Contract (Claude Code hook protocol): tool-call JSON on stdin; a deny is JSON
+on stdout with permissionDecision "deny"; anything else exits 0 silently and
+the call proceeds. Fail-open on malformed input — a broken gate must not brick
+her hands entirely, only the constituent paths are guarded and a parse error
+is not a write.
+"""
+
+import json
+import os
+import re
+import sys
+
+
+def home(*parts):
+    return os.path.realpath(os.path.join(os.path.expanduser("~"), *parts))
+
+
+# What constitutes her. Realpathed, so the ~/.local/bin symlinks into the repo
+# and any path spelled through them land on the same answer.
+CONSTITUENT = [
+    os.path.realpath(os.environ.get("DESKCRAB_REPO", home("Programming", "Claude", "deskcrab"))),
+    home(".local", "lib", "deskcrab"),
+    home(".local", "bin", "crab"),
+    home(".local", "bin", "crab-debug"),
+    home(".config", "deskcrab"),
+    home(".config", "systemd", "user"),
+    home("Beatrice", "CLAUDE.md"),
+    home("Beatrice", "Library"),
+]
+
+# Inside a constituent Bash command, these are the write shapes. A read —
+# grep, cat, git log, git show, diff — never matches.
+WRITE_RE = re.compile(
+    r"(?:^|[|&;]\s*)(?:sudo\s+)?"
+    r"(?:sed\s+(?:\S+\s+)*-i|tee\b|rm\b|mv\b|cp\b|ln\b|chmod\b|chown\b|"
+    r"patch\b|truncate\b|install\b|mkdir\b|touch\b|"
+    r"git\s+(?:-C\s+\S+\s+)?(?:commit|add|apply|am|rebase|merge|reset|restore|checkout|switch|rm|mv|stash|push|clean)|"
+    r"systemctl\s+--user\s+(?:daemon-reload|enable|disable|edit|mask|unmask))"
+    r"|>>?\s*\S"
+)
+
+DENY_TEXT = (
+    "{path} is part of what constitutes you, and in a live turn or wake it is "
+    "read-only — the cocoon rule (specs/cocoon.md). Reading it is fine. To "
+    "change it, dispatch a builder with the whole brief: crab job "
+    "\"<self-contained description of the change, the files, and how to prove "
+    "it works>\" — the builder has hands here and you do not. If it cannot "
+    "wait for a builder, say so to him and let him decide."
+)
+
+
+def constituent_hit(path):
+    """The constituent root `path` falls under, or None."""
+    real = os.path.realpath(os.path.expanduser(path))
+    for root in CONSTITUENT:
+        if real == root or real.startswith(root + os.sep):
+            return root
+    return None
+
+
+def bash_hit(command):
+    """A write-shaped command that names a constituent path."""
+    if not WRITE_RE.search(command):
+        return None
+    for token in re.findall(r"[~/][^\s'\";|&)]*", command):
+        hit = constituent_hit(token)
+        if hit:
+            return hit
+    return None
+
+
+def main():
+    try:
+        call = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return 0
+    tool = call.get("tool_name", "")
+    tool_input = call.get("tool_input") or {}
+
+    hit = None
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        if path:
+            hit = constituent_hit(path)
+    elif tool == "Bash":
+        hit = bash_hit(tool_input.get("command") or "")
+
+    if hit:
+        json.dump({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": DENY_TEXT.format(path=hit),
+            }
+        }, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -84,7 +84,7 @@ check_eq "SESSION_KIND picks the profile when nothing else does" \
 
 echo
 echo "the order never moves:"
-ORDER="L1 L2 L3 L4 L5 L6 regroup L7 L8"
+ORDER="L1 L2 L3 L4 L5 L6 regroup dispute L7 L8"
 for p in turn wake job classify; do
     got="$(run "build_system_prompt --profile $p --layers" | cut -f1 | tr '\n' ' ')"
     check_eq "$p emits every layer key in the contract's order" "${got% }" "$ORDER"
@@ -166,7 +166,7 @@ check "the index is never trimmed — it reports over budget instead" \
 # numbers on purpose. Until 2026-08-09 this function held numbers 400 under
 # the table: the 2026-08-08 L4 raise moved the spec alone, which is exactly
 # the drift the paragraph above forbids.
-total_budget() { case "$1" in turn) echo 31500 ;; wake) echo 26500 ;;
+total_budget() { case "$1" in turn) echo 33300 ;; wake) echo 26500 ;;
                               job) echo 2000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"

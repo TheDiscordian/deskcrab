@@ -40,10 +40,11 @@ flowchart TD
   L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles, recent claudism catches"]
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
+  DSP["conditional DISPUTE<br/>he is pushing back — specs/cocoon.md"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
   L8["L8 TURN FRAME<br/>names the message below as the subject"]
   MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
-  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7 --> L8 --> MSG
+  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> DSP --> L7 --> L8 --> MSG
 ```
 
 6. **L8 MUST be the last thing in the system prompt, and the user's latest message MUST be the user
@@ -79,7 +80,8 @@ flowchart TD
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
-| **system-prompt total** | **≤ 31,500** | **≤ 26,500** | **≤ 2,000** | **≤ 200** |
+| conditional dispute | 1,800 | 0 | 0 | 0 |
+| **system-prompt total** | **≤ 33,300** | **≤ 26,500** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -275,6 +277,14 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     board with test reports in nobody's voice. Two days, no line anywhere; the manifest read
     `L1 … full` throughout, true of the layer and silent about the sheet; the conduct titles and
     the regroup instructions (rule 37) were being cut the same evening, just as silently.
+
+36b. **The dispute layer.** A turn whose message pushes back on her previous reply (the detector and
+    the whole discipline live in [cocoon.md](cocoon.md)) carries one more conditional layer, between
+    regroup and L7, stating the dispute rules at strength. It is turn-only — a wake has no message
+    to be pushed back on — and its deliberate overlap with L7's ranking rule is the regroup
+    bargain again: under pushback the ranking rule is the one being broken, so it is restated
+    beside the thing being answered. Sits between the conditional regroup and L7; the order above
+    is the contract.
 
 37. **In the regroup block, the quote yields and the instructions never do.** The block is
     instructions wrapped around a quote of the words being spoken; under pressure the generic
