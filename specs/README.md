@@ -50,7 +50,7 @@ The specs cite the defect dossier with these identifiers:
 | [speech-output.md](speech-output.md) | Response extraction, the display split, the TTS streamer, the speech mutex, and the never-silent guarantee |
 | [debug-view.md](debug-view.md) | The live stream viewer: which logs it follows, what it renders, and what it must never duplicate or drop |
 | [phone.md](phone.md) | The HTTP front end and the PWA: turns, the watch cursor, streaming voice, static assets, auth, Web Push |
-| [chessweb.md](chessweb.md) | The browser chess board: a SpeedyChess-protocol server over the betty-chess store — validation, the wake per user move, resume by replay |
+| [chessweb.md](chessweb.md) | The browser chess board: a SpeedyChess-protocol server over the betty-chess store — validation, the resident mover answering each user move in seconds, resume by replay |
 | [chess-reflex.md](chess-reflex.md) | Position memory for betty-chess: every finished game's moves keyed by FEN, result-weighted ranking, the gate that answers known positions without a reasoning turn, and the similarity layer that briefs an unknown one from its nearest stored neighbours |
 | [memory-recall.md](memory-recall.md) | The vector store: query composition, retrieval, the recall block, reinforcement, decay |
 | [account-fallback.md](account-fallback.md) | The chain of logins: the moving default, refusal detection, the watched runner, swap announcements |

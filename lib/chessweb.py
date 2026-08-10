@@ -6,9 +6,10 @@ HTTP and speaks its wire protocol (framed protobuf over WebSocket) on the same
 port, so the user plays in a browser while she plays through `betty-chess move`.
 The betty-chess game file is the only record: the user's moves are validated and
 appended there, moves appended there by any other hand are mirrored into the
-browser, and each recorded user move books one event wake carrying the
-position. specs/chessweb.md is the contract; run through `betty-chessweb`,
-which owns the venv.
+browser, and each recorded user move is answered in-process by the resident
+mover — reflex memory first, one minimal model call otherwise, never a wake.
+specs/chessweb.md is the contract; run through `betty-chessweb`, which owns
+the venv.
 """
 
 import argparse
@@ -31,7 +32,8 @@ import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chess_cli  # the betty-chess store: build_board, save_game, compute_state
-import chess_reflex  # position memory, asked before any wake is booked
+import chess_mover  # the resident mover: the one model call, when memory fails
+import chess_reflex  # position memory, asked before any model call
 
 # Message type = the message's index in SpeedyChess's chesspb.proto.
 PING, JOIN, NEWGAME, MOVE, ERROR, TEAM, PLAYER, \
@@ -408,7 +410,7 @@ class Store:
 class Hub:
     def __init__(self, store, wake_cmd, poll_interval=1.0):
         self.store = store
-        self.wake_cmd = wake_cmd
+        self.wake_cmd = wake_cmd  # the end-of-game wake only (rule 7)
         self.poll_interval = poll_interval
         self.lock = threading.RLock()
         self.conns = {}          # WSConn -> "seat" | "observer" | "none"
@@ -417,63 +419,12 @@ class Hub:
         self.over_announced = False
         self.pending_promo = None  # chess.Move awaiting its Promote answer
         # What the browser is told about her side of the clock. Without it a
-        # think and a bridge that never woke her look identical from the phone.
+        # think and a mover that silently died look identical from the phone.
         self.activity = {"poked_at": None, "started_at": None,
                          "played_at": None, "san": None}
         self.port = None
-
-    # The thinking line used to depend on her remembering to POST /thinking
-    # from inside the turn — so the board sat on "asked to move" for as long as
-    # it took a session to load its prompt and reach that command, which is the
-    # whole visible gap the user kept reporting. Her live sessions are already
-    # written to disk the moment they start; watch that instead. Mechanical,
-    # and it cannot be forgotten.
-    def watch_sessions(self):
-        sessions = os.environ.get("DESKCRAB_STATE_PREFIX",
-                                  "/tmp/deskcrab") + "-sessions"
-        while True:
-            time.sleep(self.poll_interval)
-            try:
-                with self.lock:
-                    poked = self.activity["poked_at"]
-                    if poked is None or self.activity["started_at"]:
-                        continue
-                started = self._wake_started_since(sessions, poked)
-                if started:
-                    with self.lock:
-                        if self.activity["poked_at"] == poked and \
-                                not self.activity["started_at"]:
-                            self.activity["started_at"] = started
-                            log("thinking line lit from the session record")
-            except Exception as e:
-                log(f"session watch survived: {e!r}")
-
-    @staticmethod
-    def _wake_started_since(sessions, poked):
-        """The epoch a wake session began at or after `poked`, if one has."""
-        best = None
-        try:
-            names = os.listdir(sessions)
-        except OSError:
-            return None
-        for name in names:
-            try:
-                with open(os.path.join(sessions, name)) as fh:
-                    parts = fh.readline().rstrip("\n").split("\t")
-            except OSError:
-                continue
-            # kind \t pid \t human time \t epoch \t ...
-            if len(parts) < 4 or "wake" not in parts[0]:
-                continue
-            try:
-                epoch = float(parts[3])
-            except ValueError:
-                continue
-            # A second of slack: the booking and the session that answers it
-            # can straddle the same second.
-            if epoch >= poked - 1 and (best is None or epoch < best):
-                best = epoch
-        return best
+        self.mover = chess_mover.Mover(self._post_model_move, log=log,
+                                       metric=chess_cli.metric)
 
     # -- helpers -----------------------------------------------------------
     def human_side(self):
@@ -511,7 +462,7 @@ class Hub:
 
     def record_move(self, g, board, move):
         """Append a validated move, broadcast it, close the game if it ended,
-        wake her if it is now her turn. The one write path for user moves."""
+        answer it if it is now her turn. The one write path for user moves."""
         msgs = wire_msgs_for_move(board, move)
         san = board.san(move)
         board.push(move)
@@ -525,9 +476,9 @@ class Hub:
         if key != "active":
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
-            self.dispatch_wake(g, board, san, over=f"{desc} [{result}]")
+            self.answer_position(g, board, san, over=f"{desc} [{result}]")
         else:
-            self.dispatch_wake(g, board, san)
+            self.answer_position(g, board, san)
 
     def notify_phone(self):
         # The board banner is only useful to someone looking at the board; a
@@ -538,11 +489,11 @@ class Hub:
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"notify failed: {e}")
 
-    def try_reflex(self, g, board):
-        """Her move from memory instead of from a wake, when the position is
-        known well enough (specs/chess-reflex.md rules 7 and 8). True means
-        the move is played, saved, and broadcast — book no wake. Any failure
-        here is a fall-through to thinking, never a lost turn."""
+    def try_reflex(self, g, board, t0):
+        """Her move from memory instead of from a model call, when the
+        position is known well enough (specs/chess-reflex.md rules 7 and 8).
+        True means the move is played, saved, and broadcast — no model call.
+        Any failure here is a fall-through to thinking, never a lost turn."""
         if os.environ.get("DESKCRAB_CHESS_REFLEX", "1") == "0":
             return False
         ply = len(board.move_stack)
@@ -565,6 +516,8 @@ class Hub:
         g["moves"].append(move.uci())
         chess_cli.save_game(g)
         chess_cli.metric("move-played", f"{g['id']} ply {ply} {san} reflex")
+        chess_cli.metric("move-latency",
+                         f"{g['id']} ply {ply} {time.time() - t0:.1f}s reflex")
         self.synced = list(g["moves"])
         for m in msgs:
             self.broadcast(m)
@@ -572,19 +525,22 @@ class Hub:
                              played_at=time.time(), san=san)
         key, desc, result = chess_cli.compute_state(g, board)
         log(f"{g['id']}: reflex played {san} from memory "
-            f"({best['n']} game(s), score {best['score']:.2f}) — no wake")
+            f"({best['n']} game(s), score {best['score']:.2f}) — no model call")
         if key != "active":
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
             # She still hears how her game ended, even when memory ended it.
-            self.dispatch_wake(g, board, san, over=f"{desc} [{result}]")
+            self.answer_position(g, board, san, over=f"{desc} [{result}]")
+        else:
+            self.spoken_move_wake(g, san, desc)
         return True
 
     def similar_note(self, g, board):
-        """The similarity layer's context for a wake the exact layer could
-        not answer (specs/chess-reflex.md rule 14): the nearest stored
+        """The similarity layer's context for a position the exact layer
+        could not answer (specs/chess-reflex.md rule 14): the nearest stored
         positions, what was played, how it went. Only ever reached after
-        try_reflex has missed; any failure is a wake without the note."""
+        try_reflex has missed; any failure is a model prompt without the
+        note."""
         if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
             return ""
         ply = len(board.move_stack)
@@ -597,75 +553,131 @@ class Hub:
                              + " " + chess_similar.top_stamp(board))
             return note
         except Exception as e:
-            log(f"similar-position note failed, wake goes without: {e!r}")
+            log(f"similar-position note failed, the prompt goes without: "
+                f"{e!r}")
             chess_cli.metric("similar-context", f"{g['id']} ply {ply} error")
             return ""
 
     def move_effort(self, g, board):
-        """How hard the wake should think (specs/chessweb.md rule 16b): the
-        chess_effort pre-check, consulted only after try_reflex has missed —
-        a remembered position costs neither a wake nor a classification.
-        Returns the effort level for the booking, or "" for a wake at the
-        config default; a classifier failure is the latter, never a lost
+        """How hard the model call should think (specs/chessweb.md rule 16b):
+        the chess_effort pre-check, consulted only after try_reflex has
+        missed — a remembered position costs neither a model call nor a
+        classification. Returns the effort level for the call, or "" for the
+        mover's default; a classifier failure is the latter, never a lost
         move. The level and every reason that fired are stamped and logged,
         because the thresholds are tuned from this record."""
         if os.environ.get("DESKCRAB_CHESS_EFFORT", "1") == "0":
             return ""
         ply = len(board.move_stack)
+        # Someone is sat at the board waiting: minutes of deliberation lose
+        # the game that matters more than the game. Every move goes at low
+        # effort unless this is unset deliberately.
+        if os.environ.get("DESKCRAB_CHESS_ALWAYS_LOW", "1") == "1":
+            chess_cli.metric("effort", f"{g['id']} ply {ply} low always-low")
+            log(f"{g['id']}: her move will think at low (always-low)")
+            return "low"
         try:
             import chess_effort
             level, reasons = chess_effort.classify(
                 board, novel=chess_effort.novelty(board.fen()))
             why = ",".join(reasons) if reasons else "quiet"
             chess_cli.metric("effort", f"{g['id']} ply {ply} {level} {why}")
-            log(f"{g['id']}: her move wake will think at {level} ({why})")
+            log(f"{g['id']}: her move will think at {level} ({why})")
             return level
         except Exception as e:
-            log(f"effort pre-check failed, wake at config default: {e!r}")
+            log(f"effort pre-check failed, the call goes at the mover "
+                f"default: {e!r}")
             chess_cli.metric("effort", f"{g['id']} ply {ply} default error")
             return ""
 
-    def dispatch_wake(self, g, board, san=None, over=None):
-        if over is None:
-            chess_cli.metric("move-start",
-                             f"{g['id']} ply {len(board.move_stack)}"
-                             + (f" after {san}" if san else ""))
-            if self.try_reflex(g, board):
-                return
+    def answer_position(self, g, board, san=None, over=None):
+        """A position that is hers to answer, or a game that just ended. Her
+        move is made in-process by the resident mover (rule 16): reflex
+        first, one minimal model call otherwise, never a wake. The end of a
+        game is the one thing still worth a wake — she should hear how it
+        finished in her own words, and nobody is waiting on that."""
         gid = g["id"]
-        history = chess_cli.history(g["moves"])
-        if over:
-            reason = (f"chessweb: the game against {g['opponent']} ({gid}) "
-                      f"just ended — {over}, after {san}. "
-                      f"History: {history}. Board: betty-chess show {gid}")
-        else:
-            played = f"they played {san}. " if san else ""
-            # Off the board, not the dict: the ply must name the very position
-            # this reason quotes, whatever the store has done since.
-            ply = len(board.move_stack)
-            reason = (f"chessweb: your move as {self.store.her_side} against "
-                      f"{g['opponent']} in game {gid} — {played}"
-                      f"FEN: {board.fen()}. History: {history}. This is the "
-                      f"board at ply {ply}, photographed when the wake was "
-                      f"booked. Choose your reply and play it with: "
-                      f"betty-chess move {gid} <move> --expect-ply {ply} — the "
-                      f"guard refuses it if the game moved on while you "
-                      f"thought, and it reaches their browser within seconds. "
-                      f"See the board as it stands: betty-chess show {gid}"
-                      + self.similar_note(g, board))
-        cmd = list(self.wake_cmd)
-        if over is None:
-            effort = self.move_effort(g, board)
-            if effort:
-                try:
-                    # Flags precede wake-at's positionals. A custom wake
-                    # command without wake-at owns its own flags and gets
-                    # none pushed into it.
-                    i = cmd.index("wake-at") + 1
-                    cmd[i:i] = ["--effort", effort]
-                except ValueError:
-                    pass
-        cmd.append(reason)
+        if over is not None:
+            history = chess_cli.history(g["moves"])
+            self.book_wake(
+                f"chessweb: the game against {g['opponent']} ({gid}) "
+                f"just ended — {over}, after {san}. "
+                f"History: {history}. Board: betty-chess show {gid}",
+                f"the end of {gid}")
+            return
+        # Off the board, not the dict: the ply and key must name the very
+        # position being answered, whatever the store does meanwhile.
+        ply = len(board.move_stack)
+        key = f"{gid}:{chess_reflex.fen_key(board.fen())}"
+        if not self.mover.claim(key):
+            return  # pending, in flight, or cooling down: not twice
+        t0 = time.time()
+        chess_cli.metric("move-start",
+                         f"{gid} ply {ply}" + (f" after {san}" if san else ""))
+        if self.try_reflex(g, board, t0):
+            self.mover.resolve(key, "posted")
+            return
+        self.mover.submit({
+            "key": key, "gid": gid, "ply": ply, "fen": board.fen(),
+            "side": self.store.her_side, "opponent": g["opponent"],
+            "history": chess_cli.history(g["moves"]),
+            "note": self.similar_note(g, board),
+            "effort": self.move_effort(g, board), "t0": t0})
+        self.activity.update(poked_at=t0, started_at=time.time(),
+                             played_at=None, san=None)
+        log(f"{gid}: thinking about ply {ply}")
+
+    def _post_model_move(self, job, move):
+        """The mover's answer, validated against the store as it stands NOW
+        (rule 16d): played only when the game still waits at the ply the
+        call was answering. True means the move landed."""
+        with self.lock:
+            g = self.store.load()
+            gid = job["gid"]
+            if g is None or g["id"] != gid:
+                chess_cli.metric("mover-stale",
+                                 f"{gid} ply {job['ply']} game gone")
+                return False
+            board = chess_cli.build_board(g)
+            if (len(g["moves"]) != job["ply"]
+                    or board.fen().split()[:4] != job["fen"].split()[:4]
+                    or chess_cli.compute_state(g, board)[0] != "active"
+                    or board.turn == self.human_side()
+                    or move not in board.legal_moves):
+                chess_cli.metric("mover-stale",
+                                 f"{gid} ply {job['ply']} now "
+                                 f"ply {len(g['moves'])}")
+                log(f"{gid}: answer for ply {job['ply']} arrived stale — "
+                    f"discarded")
+                return False
+            san = board.san(move)
+            msgs = wire_msgs_for_move(board, move)
+            board.push(move)
+            g["moves"].append(move.uci())
+            chess_cli.save_game(g)
+            took = time.time() - job["t0"]
+            chess_cli.metric("move-played",
+                             f"{gid} ply {job['ply']} {san} model")
+            chess_cli.metric("move-latency",
+                             f"{gid} ply {job['ply']} {took:.1f}s model")
+            self.synced = list(g["moves"])
+            for m in msgs:
+                self.broadcast(m)
+            self.activity.update(poked_at=None, started_at=None,
+                                 played_at=time.time(), san=san)
+            key, desc, result = chess_cli.compute_state(g, board)
+            log(f"{gid}: mover played {san} at ply {job['ply']} "
+                f"({took:.1f}s from detection)")
+            if key != "active":
+                self.over_announced = True
+                self.broadcast(self.result_msg(key, result))
+                self.answer_position(g, board, san, over=f"{desc} [{result}]")
+            else:
+                self.spoken_move_wake(g, san, desc)
+            return True
+
+    def book_wake(self, reason, what):
+        cmd = list(self.wake_cmd) + [reason]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=30)
@@ -673,14 +685,23 @@ class Hub:
                 log(f"wake failed ({r.returncode}): "
                     f"{(r.stderr or r.stdout).strip()}")
             else:
-                log(f"wake booked: her move in {gid}")
-                if over is None:
-                    chess_cli.metric("wake-booked",
-                                     f"{gid} ply {len(board.move_stack)}")
-                self.activity.update(poked_at=time.time(), started_at=None,
-                                     played_at=None, san=None)
+                log(f"wake booked: {what}")
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"wake failed: {e}")
+
+    def spoken_move_wake(self, g, san, desc):
+        """After she plays, she wakes — a consequence of the move, never a
+        gate on it or on the next one (rule 7). The queue left the play
+        path; her voice about the game did not leave with it."""
+        gid = g["id"]
+        self.book_wake(
+            f"chessweb: you played {san} in game {gid} against "
+            f"{g['opponent']} — {desc}. The move is already on their board; "
+            f"nothing waits on this wake. If you feel like it, say one "
+            f"sentence to the user about the game — the move, or banter; "
+            f"never your reasoning or plans, they hear everything you say — "
+            f"or say nothing at all. Board: betty-chess show {gid}",
+            f"her voice after {san} in {gid}")
 
     # -- protocol ----------------------------------------------------------
     def on_join(self, conn, player):
@@ -735,7 +756,7 @@ class Hub:
         log(f"{g['id']} synced to {len(self.conns)} connection(s), "
             f"{turn} to move")
         if board.turn != self.human_side():
-            self.dispatch_wake(g, board)
+            self.answer_position(g, board)
 
     def on_move(self, conn, fields):
         if conn is not self.seat:
@@ -807,9 +828,9 @@ class Hub:
         if key != "active":
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
-            self.dispatch_wake(g, board, san, over=f"{desc} [{result}]")
+            self.answer_position(g, board, san, over=f"{desc} [{result}]")
         else:
-            self.dispatch_wake(g, board, san)
+            self.answer_position(g, board, san)
 
     def on_message(self, conn, mtype, payload):
         with self.lock:
@@ -889,20 +910,28 @@ class Hub:
             self.synced = list(moves)
             self.pending_promo = None
         else:
-            # Undo or rewrite: no delta is trustworthy, so replay everything.
+            # Undo or rewrite: no delta is trustworthy, so replay everything —
+            # and every claim the mover holds is about boards that may no
+            # longer exist.
             log(f"{g['id']}: history changed on disk — full resync")
             self.synced = list(moves)
             self.pending_promo = None
             self.over_announced = False
+            self.mover.reset()
             for c in self.joined():
                 self.sync_conn(c, g)
-        key, _desc, result = chess_cli.compute_state(
-            g, chess_cli.build_board(g))
+        board = chess_cli.build_board(g)
+        key, _desc, result = chess_cli.compute_state(g, board)
         if key != "active" and not self.over_announced:
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
         elif key == "active":
             self.over_announced = False
+            if board.turn != self.human_side():
+                # Hers and unanswered: the re-offer that makes rule 16e's
+                # retry real. The mover's claim gate makes this a no-op
+                # while an answer is pending or cooling down.
+                self.answer_position(g, board)
 
 
 # ------------------------------------------------------------- HTTP + serve
@@ -1065,14 +1094,13 @@ def main(argv=None):
         key, desc, _r = chess_cli.compute_state(g, board)
         log(f"resuming {g['id']}: {desc}")
         if key == "active" and board.turn != hub.human_side():
-            hub.dispatch_wake(g, board)  # the bridge died before booking
+            hub.answer_position(g, board)  # the bridge died mid-think
     else:
         log(f"no active game against {args.opponent} yet — "
             "one is created when the user clicks New Game")
 
     threading.Thread(target=hub.poll_store, daemon=True).start()
     threading.Thread(target=hub.keepalive, daemon=True).start()
-    threading.Thread(target=hub.watch_sessions, daemon=True).start()
     while True:
         try:
             httpd.serve_forever()

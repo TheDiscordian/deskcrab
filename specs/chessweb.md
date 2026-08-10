@@ -9,8 +9,10 @@ while she keeps playing exactly as before. The bridge is a SpeedyChess-protocol 
 over HTTP and speaks its wire protocol over WebSocket upgrades on the same port. It owns no game
 state of its own — the betty-chess game file is the one record. The user's moves are validated and
 appended there; moves appended there by any other hand (hers, via `betty-chess move`) are mirrored
-into the browser; and every recorded user move books an event wake carrying the position, so she
-answers in her own words and on her own clock.
+into the browser; and every recorded user move is answered by the bridge's resident mover
+(`lib/chess_mover.py`, rule 16): reflex memory first, one minimal model call otherwise, her reply
+on the board in seconds. Her move never rides the wake queue — somebody is sitting at the board
+waiting for it, and the queue serialises behind whatever conversation is running.
 
 The SpeedyChess client is an unmodified third-party build (a Go/WASM page). The bridge never
 edits that checkout; the one server-side liberty it takes is rewriting the server-address box in
@@ -74,18 +76,23 @@ cannot be changed.
    broadcasts the Promote. A disconnect while pending abandons the unrecorded move; the next
    sync replays the position from before it, which is the store's truth.
 7. Every move recorded to the store by the bridge is followed, in order, by: broadcast to every
-   connection, game-end check, and — if the game is still on — one wake booked through
-   `crab wake-at --by chessweb 1s event <reason>`, the reason carrying the game id, the user's
-   move in SAN, the FEN, the movetext so far, the ply the store stood at when the wake was
-   booked, and the reply instruction — which carries that ply as `betty-chess move <id> <move>
-   --expect-ply <n>`, so a reply worked out from a photograph that has since gone stale is
-   refused rather than played (rule 15). One wake per recorded user move; never a wake for
-   her own.
-   Serve start books the same wake if the loaded game is active with her to move (covers a
-   bridge that died before booking). `$DESKCRAB_CHESSWEB_WAKE_CMD` replaces the crab invocation
-   wholesale (the reason becomes its one argument) so tests never touch the live queue.
-   Rule 16 stands in front of all of this: a position reflex memory knows well enough is
-   answered without any wake at all.
+   connection, game-end check, and — if the game is still on — the position handed to the
+   resident mover (rule 16), which answers it in-process. **No wake ever gates a move.** Two
+   wakes are still booked, both consequences and never preconditions, through
+   `crab wake-at --by chessweb 1s event <reason>`:
+   the **post-move wake**, after a move the bridge itself posted (reflex or model) has already
+   reached the store and the board — she wakes holding what she played, free to say one
+   sentence about the game to the user (never her reasoning or plans; the opponent hears
+   everything she says) or to say nothing, because taking the queue out of the play path must
+   not take her voice out of her own game; and the **end-of-game wake**, carrying the game id,
+   how the game ended, and the movetext, because she should hear how her game finished. Neither
+   wake is ever waited on: the next opponent move is answered whether or not the previous
+   wake has fired. Serve start hands the position to the mover the same way when the loaded
+   game is active with her to move (covers a bridge that died mid-think), and the store poll
+   re-offers the position on every tick while it stays hers and unanswered — which is what
+   turns a failed model call into a retry rather than a lost turn.
+   `$DESKCRAB_CHESSWEB_WAKE_CMD` replaces the crab invocation for both wakes wholesale
+   (the reason becomes its one argument) so tests never touch the live queue.
 8. The store is watched (a poll, at most 2s late). Moves appended by another hand are
    translated and broadcast in order, exactly as if the bridge had made them. Any other change
    — a shorter list, a rewritten prefix, an undo — forces a full resync (Team + replay) of every
@@ -98,18 +105,19 @@ cannot be changed.
     included — restart it, rejoin from the browser, and the same game comes back: same id, same
     position, same side to move, her pending reply intact. This is the overnight property, and it
     is a consequence of rules 3, 4 and 8 rather than a feature of its own.
-11. The bridge writes nothing but game files in the betty-chess store, books wakes only through
-    `crab wake-at`, and runs in the betty-chess venv (the wrapper bootstraps it the same way
-    `betty-chess` does).
-12. The browser is told where her turn stands, because a long think and a wake that never fired
-    look identical from a phone. The bridge keeps three stamps — asked (a wake was booked),
-    started (she picked the thought up), played (her move reached the board) — and serves them
-    at `GET /thinking` as JSON; `POST /thinking` sets the started stamp, and the wake reason
-    tells her to post it before she thinks. A small polling banner is injected into the served
-    `index.html` ahead of `</body>`; the client directory itself stays unmodified (rule 3), and
-    a client that never loads the banner plays exactly as before. The first `POST /thinking` of
-    a turn also sends one push notification (`crab notify`), so the user learns she has started
-    without watching the board; later posts in the same turn are silent.
+11. The bridge writes nothing but game files in the betty-chess store, books its one wake (the
+    end-of-game one, rule 7) only through `crab wake-at`, and runs in the betty-chess venv (the
+    wrapper bootstraps it the same way `betty-chess` does).
+12. The browser is told where her turn stands, because a think and a mover that silently died
+    look identical from a phone. The bridge keeps three stamps — asked, started, played — and
+    serves them at `GET /thinking` as JSON. The mover sets asked and started itself the moment
+    the model call begins and played when the move lands, so the banner is mechanical and cannot
+    be forgotten; a reflex hit sets played alone. `POST /thinking` still sets the started stamp
+    for any out-of-process thinker, and the first post of a turn still sends one push
+    notification (`crab notify`); the mover itself never pushes — a reply due in seconds does
+    not need announcing. A small polling banner is injected into the served `index.html` ahead
+    of `</body>`; the client directory itself stays unmodified (rule 3), and a client that never
+    loads the banner plays exactly as before.
 13. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
     up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
     drops two minutes into a think.
@@ -125,71 +133,101 @@ cannot be changed.
 15. `betty-chess move` takes an optional `--expect-ply <n>` (and `--expect-fen <fen>`) naming the
     position the caller believed it was answering, and refuses — non-zero, nothing written — when
     the stored game is no longer there, naming the current ply and the SAN of everything played
-    since. A wake carrying a position is a photograph, and the queue delay between the shutter
-    and her hand is long enough for another mover, or another session of her, to have played:
+    since. Any position handed out of process is a photograph, and the delay between the shutter
+    and the reply is long enough for another mover, or another session of her, to have played:
     without the guard a legal move lands on the wrong board and the game is lost to a blunder
-    nobody chose. `--expect-fen` compares the position proper only — placement, side, castling,
+    nobody chose. The resident mover applies the same guard in-process (rule 16d); this flag is
+    for every out-of-process caller — a reasoning session, a hand at the CLI. `--expect-fen` compares the position proper only — placement, side, castling,
     en passant — never the halfmove or fullmove counters. No expectation given, no check: every
     existing caller keeps working. `show` and `status` print the current ply, so the value is
     always at hand.
-16. Before booking any wake for her move, the bridge asks reflex memory
-    (`chess_reflex.best_move`, specs/chess-reflex.md) whether the position is already known well
-    enough to answer. A hit is played immediately: recorded through `chess_cli.save_game` like
-    any move, broadcast to every connection, stamped as played in the `/thinking` state, and
-    logged as `reflex played <san> from memory` — and the wake is never booked, which is the
-    point: a remembered opening costs no reasoning turn. A miss, an unconfident position, or any
-    reflex failure books the wake exactly as rule 7 says. A reflex move that ends the game still
-    broadcasts GameComplete (rule 9) and books the end-of-game wake, because she should hear how
-    her game finished. `DESKCRAB_CHESS_REFLEX=0` disables the auto-play; recording of finished
-    games is unconditional. When the wake *is* booked for her move, the bridge appends the
-    similarity layer's note (`chess_similar.reason_note`, chess-reflex.md rule 14) to the
-    reason: the nearest stored positions, what was played from them, and how those games ended —
-    context for the reasoning turn, never a move the bridge plays itself. The note runs only
-    after the exact layer has missed; a hit returns before any similarity work. An empty note or
-    a similarity failure books the wake bare, and `DESKCRAB_CHESS_SIMILAR=0` switches the note
-    off.
-16b. When rule 16's lookup has missed and a wake is about to be booked for her move, the bridge
-    asks the effort pre-check (`lib/chess_effort.py`) how hard that wake should think — pure
-    python-chess arithmetic, **no engine, ever**, here as everywhere in her chess — and books
-    the wake with the answer as its effort override (`crab wake-at --effort`,
-    [wake-queue.md](wake-queue.md) rule 13a). Someone is waiting at the board and most positions
-    are quiet manoeuvring, so the default verdict is `low`; only a fired alarm raises it to
-    `high`. The alarms: the side to move in check, or a check available to either side; one of
-    her pieces (never a pawn, never the king) en prise by a simple attackers-versus-defenders
-    count; a capture worth a minor piece or more available to either side; a pawn on its
-    seventh rank, either side; her king's pawn shield broken or an open or half-open file
-    bearing on her king while the opponent still has a rook or queen to use it; eight or fewer
-    legal moves; and nearest similarity neighbours all beyond the distance floor when the store
-    is deep enough to judge — genuinely new ground, worth real thought precisely because no
-    memory helps. An exact reflex hit plays before the classifier is ever consulted (rule 16),
-    so a remembered position costs neither a wake nor a classification. A classifier failure —
-    and `DESKCRAB_CHESS_EFFORT=0` — books the wake with no override, at the config default,
-    exactly as before the pre-check existed. The thresholds are tunable:
-    `DESKCRAB_CHESS_EFFORT_FORCED` (legal-move ceiling, default 8),
+16. **The resident mover** (`lib/chess_mover.py`). The bridge answers her positions itself,
+    in-process, the moment they appear — never through the wake queue, never behind the
+    conversation lock, never behind a phone turn. It went through the queue once: every user
+    move booked an event wake into the same single-session lane as the user's own conversation,
+    so the person waiting at the board pushed her reply back every time they *talked* to her,
+    and each move also rebuilt her whole prompt — state block, memory, conduct — to pick one
+    chess move. Measured cost: two to five minutes per move. The mover's whole budget is
+    seconds: a book move on the board inside 10, a reasoned move inside 30. Per position, in
+    order:
+    a. Reflex first (`chess_reflex.best_move`, specs/chess-reflex.md): a position memory knows
+       well enough is played with **no model call at all** — recorded through
+       `chess_cli.save_game` like any move, broadcast to every connection, stamped as played in
+       the `/thinking` state, and logged as `reflex played <san> from memory` — her own played
+       positions and the seeded book, recalled, not a bypass of her. A reflex move books the
+       post-move wake like any move of hers (rule 7); one that ends the game broadcasts
+       GameComplete (rule 9) and books the end-of-game wake instead. `DESKCRAB_CHESS_REFLEX=0`
+       disables the auto-play; recording of finished games is unconditional.
+    b. Otherwise **one minimal model call**. The prompt is purpose-built and tiny: the FEN, the
+       side to move, the legal moves, the movetext so far, and the similarity layer's note when
+       there is one (`chess_similar.reason_note`, chess-reflex.md rule 14 — computed only after
+       the exact layer has missed; an empty note or a similarity failure means a bare prompt,
+       and `DESKCRAB_CHESS_SIMILAR=0` switches it off). Nothing of deskcrab's prompt assembly
+       rides along: no state block, no memory retrieval, no conduct sheet, no persona. The
+       invocation is the measured minimal shape (tools/context-probe-results.md): `--tools ""`
+       with `--strict-mcp-config --mcp-config lib/empty-mcp.json`, `--disable-slash-commands`,
+       a two-line `--system-prompt`, `-p` with the prompt on stdin, a sterile cwd, auto-memory
+       off. Model `$DESKCRAB_CHESS_MOVER_MODEL` (default `$CLAUDE_MODEL`, else `sonnet`);
+       effort per rule 16b; per-attempt ceiling `$DESKCRAB_CHESS_MOVER_TIMEOUT` (default 90s).
+    c. There is no queue. At most one position is ever being answered: a newer position arriving
+       while a call is in flight kills the flight and takes the slot, and positions are
+       deduplicated by `fen_key`, so the same position is never answered twice concurrently and
+       a stale think is abandoned, never played.
+    d. The answer is validated before it is played: parsed as UCI (SAN accepted as a fallback),
+       checked legal, and posted under the hub lock only after the store has been re-read and
+       still stands at the ply the call was answering — rule 15's photograph guard, applied
+       in-process. A stale answer is discarded and the newest position stands to be answered.
+    e. A failed attempt — a limit refusal, a timeout, no legal move in the reply — walks the
+       login chain (the recorded account default first, then `$CLAUDE_FALLBACK_CONFIG_DIR` in
+       order) within the same detection. A position whose every attempt failed is retried on a
+       cooldown (`$DESKCRAB_CHESS_MOVER_RETRY`, default 20s) by the store poll, indefinitely:
+       every failure is logged, and a turn is never silently lost.
+    f. `$DESKCRAB_CHESS_MOVER_CMD` replaces the model invocation wholesale for tests — the
+       prompt arrives on stdin, the reply is its stdout — so no test thinks with a real model.
+16b. When rule 16a has missed and the model call is about to be made, the bridge asks the effort
+    pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
+    arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
+    the call's `--effort`. Someone is waiting at the board, so by default the classifier is not
+    even consulted: `DESKCRAB_CHESS_ALWAYS_LOW` (default 1) pins every move to `low`, and only
+    unsetting it deliberately buys positions the classifier's judgement. The alarms, when it is
+    consulted: the side to move in check; a check available to either side that also wins
+    material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
+    prise by a simple attackers-versus-defenders count; a capture worth a rook or more available
+    to either side; a pawn on its seventh rank, either side; her king's pawn shield broken or an
+    open or half-open file bearing on her king while the opponent still has a rook or queen to
+    use it; eight or fewer legal moves; and nearest similarity neighbours all beyond the
+    distance floor when the store is deep enough to judge — genuinely new ground, worth real
+    thought precisely because no memory helps. An exact reflex hit plays before the classifier
+    is ever consulted, so a remembered position costs neither a model call nor a
+    classification. A classifier failure — and `DESKCRAB_CHESS_EFFORT=0` — makes the call at
+    the mover's default (`low`), exactly as the always-low pin does. The thresholds are
+    tunable: `DESKCRAB_CHESS_EFFORT_FORCED` (legal-move ceiling, default 8),
+    `DESKCRAB_CHESS_EFFORT_CAPTURE` (capture-alarm floor, default 5),
     `DESKCRAB_CHESS_EFFORT_NOVEL_ROWS` (vector rows before novelty may be judged, default 500),
     `DESKCRAB_CHESS_EFFORT_NOVEL_MIN` (the similarity floor, default 0.75).
 17. The move path stamps where its time went, into the same dated turn-metrics log as every
     other path (turn-pipeline.md rule 33), kind `chess`, every line's detail opening with
     `<game id> ply <n>` so one move's stamps correlate across processes — the bridge and the
-    CLI write from different pids. The bridge stamps `move-start` the moment a position
-    becomes hers to answer (a recorded user move, a NewGame or serve start with her to move),
-    then `reflex-hit` or `reflex-miss` when rule 16's lookup returns, then `similar-context`
-    (detail carrying `attached` or `empty`, and then `top <san> <similarity>` for the single
-    nearest stored position — `top none` on an empty store, `top error` on a broken one) when
-    the similarity note has been computed for the
-    wake's reason — the stamp is written whichever way that came out, so its absence proves the
-    reflex hit short-circuited before any similarity work. The `top` half is recorded whether or
-    not that neighbour cleared the note's floor, because a neighbour too far to be quoted into
-    the wake is exactly the case the floor has to be judged on: paired with the `move-played`
-    stamp at the same game and ply, it says whether the move memory would have offered is the
-    move she went on to choose anyway. Then `effort` with the level rule
-    16b chose and every reason that fired (`quiet` when none did, `default error` when the
-    pre-check failed), which is the record the thresholds are tuned from, and absent exactly
-    when a reflex hit short-circuited — then `wake-booked` when
-    rule 7's wake is handed to the queue; a reflex move stamps `move-played` with source
-    `reflex` when it is saved. `betty-chess move` stamps `move-played` with source `cli` when
-    a move by her side lands in the store, whoever called it — that is the stamp the wake's
-    reasoning turn produces. Rule 33's whole discipline applies: the stamps are evidence,
+    CLI write from different pids. The stages, in the order one move produces them:
+    `move-start` the moment a position becomes hers to answer (a recorded user move, a NewGame,
+    serve start or a poll tick with her to move — detection); then `reflex-hit` or
+    `reflex-miss` when rule 16a's lookup returns (the book verdict); on a miss,
+    `similar-context` (detail carrying `attached` or `empty`, and then `top <san> <similarity>`
+    for the single nearest stored position — `top none` on an empty store, `top error` on a
+    broken one) when the note has been computed for the model prompt — written whichever way
+    that came out, so its absence proves the reflex hit short-circuited before any similarity
+    work; the `top` half is recorded whether or not that neighbour cleared the note's floor,
+    because a neighbour too far to be quoted is exactly the case the floor has to be judged on.
+    Then `effort` with the level rule 16b chose and every reason that fired (`quiet` when none
+    did, `always-low` under the pin, `default error` when the pre-check failed) — the record
+    the thresholds are tuned from, absent exactly when a reflex hit short-circuited or
+    `DESKCRAB_CHESS_EFFORT=0`. Then the model call's own brackets: `model-start` (detail
+    naming the effort and the login attempt) and `model-end` (the elapsed seconds and the
+    outcome — `ok`, or why not). A move that lands stamps `move-played` with its source —
+    `reflex` from memory, `model` from the mover's call, `cli` from `betty-chess move`
+    whoever ran it — and `move-latency` with the seconds from detection to the store write,
+    which is the number the whole redesign is accountable to. A stale answer discarded by rule
+    16d stamps `mover-stale`. Rule 33's whole discipline applies: the stamps are evidence,
     never control flow, best-effort behind their own error handling, and `TURN_METRICS=0`
     switches them off. `tools/turn-latency-report` renders the chess section per move.
 

@@ -68,10 +68,16 @@ esac
 check_eq "two bare kings: high for the narrow tree ALONE — the king-danger \
 alarms hold their tongue with no heavy piece left to exploit anything" \
     "$(verdict '7k/8/8/8/8/8/8/K7 w - - 0 1')" "high forced:3"
-out="$(verdict 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4')"
+# A check merely EXISTING is not an alarm any more: in a middlegame some
+# spite check is nearly always in the air, and firing on it made every move
+# expensive (browser-003, 2026-08-10). Only a check that also wins material,
+# or one in a tree narrow enough to be forcing, rings the bell.
+check_eq "an Italian with a mere Bxf7+ spite check in the air stays low" \
+    "$(verdict 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4')" "low -"
+out="$(verdict 'r1b1kbnr/pppp1qpp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1')"
 case "$out" in
-  high*check-available*) ok "an Italian with Bxf7+ in the air: high" ;;
-  *) fail "check available" "$out" ;;
+  high*check-available*) ok "a check that also wins the queen: high" ;;
+  *) fail "material-winning check" "$out" ;;
 esac
 out="$(verdict 'rnb1kbnr/pppppppp/8/8/6q1/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 1')"
 case "$out" in
@@ -220,9 +226,10 @@ grep -q -- "--effort medium" "$SANDBOX_CLAUDE_LOG" \
 rm -f "$W"/*.wake
 
 # --- the bridge: reflex first, then the classifier picks the level --------
-# Hub.dispatch_wake driven directly, the queue a stub that logs its argv. The
-# stub carries a wake-at marker because that is where the bridge is allowed
-# to push flags; the effort metric stamp is the tuning record rule 17 owes.
+# Hub.answer_position driven directly; the model call is a stub that logs its
+# prompt and answers from a reply map. The effort metric stamp is the tuning
+# record rule 17 owes; model-start names the effort the call actually went
+# out at, which is how the level provably reaches the invocation.
 HUBDIR="$T/chess-hub"
 mkdir -p "$HUBDIR/games"
 WAKE_LOG="$T/wake.log"
@@ -232,6 +239,22 @@ cat > "$WAKE_STUB" <<SH
 printf '%s\n' "\$*" >> "$WAKE_LOG"
 SH
 chmod +x "$WAKE_STUB"
+MOVER_LOG="$T/mover.log"
+MOVER_REPLIES="$T/mover-replies.tsv"
+MOVER_STUB="$T/mover-stub"
+cat > "$MOVER_STUB" <<SH
+#!/bin/bash
+prompt="\$(cat)"
+printf '%s\n----\n' "\$prompt" >> "$MOVER_LOG"
+while IFS=\$'\t' read -r pat reply; do
+    [ -n "\$pat" ] || continue
+    case "\$prompt" in *"\$pat"*) printf '%s\n' "\$reply"; exit 0 ;; esac
+done < "$MOVER_REPLIES"
+exit 0
+SH
+chmod +x "$MOVER_STUB"
+printf 'game quiet-001\tc2c4\ngame quiet-002\tc2c4\ngame quiet-003\tc2c4\ngame danger-001\tb1c3\n' \
+    > "$MOVER_REPLIES"
 MET="$DESKCRAB_METRICS_DIR/$(date +%F).log"
 
 seed_hub_game() { # <id> <moves json array>
@@ -242,60 +265,90 @@ seed_hub_game() { # <id> <moves json array>
 JSON
 }
 # Two finished e4 wins open the reflex gate at the start position. The quiet
-# and danger games stand on ground the store has never walked exactly.
+# and danger games stand on ground the store has never walked exactly; the
+# quiet position is seeded once per drive because a drive now plays into it.
 seed_hub_game won-001 '["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"]'
 seed_hub_game won-002 '["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"]'
 seed_hub_game quiet-001 '["d2d4", "d7d5"]'
+seed_hub_game quiet-002 '["d2d4", "d7d5"]'
+seed_hub_game quiet-003 '["d2d4", "d7d5"]'
 seed_hub_game danger-001 '["e2e4", "e7e5", "d1h5", "g8f6"]'
 seed_hub_game hit-001 '[]'
 DESKCRAB_CHESS_DIR="$HUBDIR" chess reflex --backfill >/dev/null
 
-drive() { # <game id> — dispatch_wake for that game's live board
-  DESKCRAB_CHESS_DIR="$HUBDIR" "$PY" -B - "$1" <<EOF
+drive() { # <game id> — answer_position for that game's live board. The
+          # always-low pin is off here so the classifier itself is on trial;
+          # the one check that wants the pin sets ALWAYS_LOW=1.
+  DESKCRAB_CHESS_DIR="$HUBDIR" DESKCRAB_CHESS_MOVER_CMD="$MOVER_STUB" \
+  DESKCRAB_CHESS_ALWAYS_LOW="${ALWAYS_LOW:-0}" \
+      "$PY" -B - "$1" <<EOF
 import sys
 sys.path.insert(0, "$REPO/lib")
 import chess_cli, chessweb
 store = chessweb.Store("hub", "white", game_id=sys.argv[1])
-hub = chessweb.Hub(store, ["$WAKE_STUB", "wake-at", "--by", "chessweb",
-                           "1s", "event"])
+hub = chessweb.Hub(store, ["$WAKE_STUB"])
 g = store.load()
-hub.dispatch_wake(g, chess_cli.build_board(g))
+hub.answer_position(g, chess_cli.build_board(g))
+hub.mover.wait_idle(60)
 EOF
 }
 
 echo
-echo "the bridge books quiet positions cheap and alarmed ones dear:"
-: > "$WAKE_LOG"
+echo "the bridge thinks about quiet positions cheap and alarmed ones dear:"
+: > "$MOVER_LOG"
 drive quiet-001 >/dev/null
-grep -q "wake-at --effort low --by chessweb" "$WAKE_LOG" \
-  && ok "a quiet middlegame books its wake at LOW" \
-  || fail "quiet booking" "$(cat "$WAKE_LOG")"
 awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 low quiet"' "$MET" \
     | grep -q . \
-  && ok "and stamps the level with 'quiet' — the tuning record for a silent alarm" \
+  && ok "a quiet middlegame classifies LOW, stamped with 'quiet'" \
   || fail "quiet effort stamp" "$(grep quiet-001 "$MET")"
+awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-001 ply 2 effort low /' "$MET" \
+    | grep -q . \
+  && ok "and the model call went out at low — the level reached the invocation" \
+  || fail "quiet model-start" "$(grep model-start "$MET" | tail -3)"
+awk -F'\t' '$3=="chess" && $4=="move-played" && $5 == "quiet-001 ply 2 c4 model"' "$MET" \
+    | grep -q . \
+  && ok "and the stub's answer was validated and played into the store" \
+  || fail "quiet move-played" "$(grep quiet-001 "$MET")"
 
-: > "$WAKE_LOG"
+: > "$MOVER_LOG"
 drive danger-001 >/dev/null
-grep -q "wake-at --effort high --by chessweb" "$WAKE_LOG" \
-  && ok "a hanging queen books its wake at HIGH" \
-  || fail "danger booking" "$(cat "$WAKE_LOG")"
 awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^danger-001 ply 4 high .*en-prise:h5/' "$MET" \
     | grep -q . \
-  && ok "and the stamp names every alarm that fired" \
+  && ok "a hanging queen classifies HIGH, and the stamp names every alarm" \
   || fail "danger effort stamp" "$(grep danger-001 "$MET")"
+awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^danger-001 ply 4 effort high /' "$MET" \
+    | grep -q . \
+  && ok "and its model call went out at high" \
+  || fail "danger model-start" "$(grep model-start "$MET" | tail -3)"
 
-: > "$WAKE_LOG"
+: > "$MOVER_LOG"
 drive hit-001 >/dev/null
-[ ! -s "$WAKE_LOG" ] \
-  && ok "a position reflex knows books no wake at all" \
-  || fail "reflex hit booked a wake" "$(cat "$WAKE_LOG")"
+[ ! -s "$MOVER_LOG" ] \
+  && ok "a position reflex knows makes no model call at all" \
+  || fail "reflex hit reached the model" "$(cat "$MOVER_LOG")"
 awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^hit-001 /' "$MET" | grep -q . \
   && fail "the classifier ran on the exact-hit path" "$(grep hit-001 "$MET")" \
   || ok "and left no effort stamp: the reflex hit bypassed the classifier entirely"
 
-: > "$WAKE_LOG"
-DESKCRAB_CHESS_EFFORT=0 drive quiet-001 >/dev/null
-grep -q "wake-at --by chessweb" "$WAKE_LOG" && ! grep -q -- "--effort" "$WAKE_LOG" \
-  && ok "DESKCRAB_CHESS_EFFORT=0 books the wake with no override at all" \
-  || fail "the off switch" "$(cat "$WAKE_LOG")"
+: > "$MOVER_LOG"
+DESKCRAB_CHESS_EFFORT=0 drive quiet-002 >/dev/null
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^quiet-002 /' "$MET" | grep -q . \
+  && fail "DESKCRAB_CHESS_EFFORT=0 still classified" "$(grep quiet-002 "$MET")" \
+  || true
+awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-002 ply 2 effort low /' "$MET" \
+    | grep -q . \
+  && ok "DESKCRAB_CHESS_EFFORT=0 skips the classifier; the call goes at the mover default (low)" \
+  || fail "the off switch" "$(grep quiet-002 "$MET")"
+
+: > "$MOVER_LOG"
+ALWAYS_LOW=1 drive quiet-003 >/dev/null
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-003 ply 2 low always-low"' "$MET" \
+    | grep -q . \
+  && awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-003 ply 2 effort low /' "$MET" \
+    | grep -q . \
+  && ok "the always-low pin (the live default) sends every call at low, stamped as the pin" \
+  || fail "always-low" "$(grep quiet-003 "$MET")"
+
+grep -q "you played" "$WAKE_LOG" && ! grep -q "your move" "$WAKE_LOG" \
+  && ok "the only wakes are post-move consequences — the queue never gated a move" \
+  || fail "wake log" "$(cat "$WAKE_LOG")"

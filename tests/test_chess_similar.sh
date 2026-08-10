@@ -145,8 +145,9 @@ out="$(DESKCRAB_CHESS_DIR="$EMPTY" chess similar "$START")"; rc=$?
   || fail "empty store: rc=$rc $out"
 
 # --- the bridge: exact first, similarity only on a miss -------------------
-# Hub.dispatch_wake is driven directly; the wake queue is a stub that logs
-# the reason. The metric stamps are the evidence (chessweb.md rule 17): a
+# Hub.answer_position is driven directly; the model call is a stub that logs
+# its prompt and answers from a reply map, so what the model was TOLD is the
+# evidence. The metric stamps are the rest of it (chessweb.md rule 17): a
 # similar-context stamp is written whenever the note is computed, empty or
 # not, so its absence on the hit path proves the short-circuit.
 HUBDIR="$SANDBOX/chess-hub"
@@ -158,6 +159,22 @@ cat > "$WAKE_STUB" <<SH
 printf '%s\n' "\$1" >> "$WAKE_LOG"
 SH
 chmod +x "$WAKE_STUB"
+MOVER_LOG="$SANDBOX/mover.log"
+MOVER_REPLIES="$SANDBOX/mover-replies.tsv"
+MOVER_STUB="$SANDBOX/mover-stub"
+cat > "$MOVER_STUB" <<SH
+#!/bin/bash
+prompt="\$(cat)"
+printf '%s\n----\n' "\$prompt" >> "$MOVER_LOG"
+while IFS=\$'\t' read -r pat reply; do
+    [ -n "\$pat" ] || continue
+    case "\$prompt" in *"\$pat"*) printf '%s\n' "\$reply"; exit 0 ;; esac
+done < "$MOVER_REPLIES"
+exit 0
+SH
+chmod +x "$MOVER_STUB"
+printf 'game miss-001\tg1f3\ngame miss-002\tg1f3\ngame miss-003\tg1f3\n' \
+    > "$MOVER_REPLIES"
 MET="$DESKCRAB_METRICS_DIR/$(date +%F).log"
 
 seed_hub_game() { # <id> <moves json array>
@@ -168,36 +185,41 @@ seed_hub_game() { # <id> <moves json array>
 JSON
 }
 # Two finished e4 wins open the reflex gate at the start position; the miss
-# game stands four plies down a road the store has never walked exactly.
+# games stand four plies down a road the store has never walked exactly —
+# one per drive, because a drive now PLAYS the answer into its game.
 seed_hub_game won-001 '["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"]'
 seed_hub_game won-002 '["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"]'
 seed_hub_game miss-001 '["e2e4", "e7e5", "f1c4", "d7d6"]'
+seed_hub_game miss-002 '["e2e4", "e7e5", "f1c4", "d7d6"]'
+seed_hub_game miss-003 '["e2e4", "e7e5", "f1c4", "d7d6"]'
 seed_hub_game hit-001 '[]'
 DESKCRAB_CHESS_DIR="$HUBDIR" chess reflex --backfill >/dev/null
 
-drive() { # <game id> — dispatch_wake for that game's live board
-  DESKCRAB_CHESS_DIR="$HUBDIR" "$PY" -B - "$1" <<EOF
+drive() { # <game id> — answer_position for that game's live board
+  DESKCRAB_CHESS_DIR="$HUBDIR" DESKCRAB_CHESS_MOVER_CMD="$MOVER_STUB" \
+      "$PY" -B - "$1" <<EOF
 import sys
 sys.path.insert(0, "$REPO/lib")
 import chess_cli, chessweb
 store = chessweb.Store("hub", "white", game_id=sys.argv[1])
 hub = chessweb.Hub(store, ["$WAKE_STUB"])
 g = store.load()
-hub.dispatch_wake(g, chess_cli.build_board(g))
+hub.answer_position(g, chess_cli.build_board(g))
+hub.mover.wait_idle(60)
 EOF
 }
 
-: > "$WAKE_LOG"
+: > "$MOVER_LOG"
 drive miss-001 >/dev/null
-grep -q "your move as white" "$WAKE_LOG" \
-  && ok "an unknown position still books the wake" \
-  || fail "no wake for the miss game: $(cat "$WAKE_LOG")"
-grep -q "Exact memory has nothing here" "$WAKE_LOG" \
-  && ok "and the wake's reason carries the similar-positions note" \
-  || fail "reason has no similarity note: $(cat "$WAKE_LOG")"
-grep -q "never a move to copy" "$WAKE_LOG" \
+grep -q "game miss-001" "$MOVER_LOG" \
+  && ok "an unknown position still goes to the model" \
+  || fail "no model call for the miss game: $(cat "$MOVER_LOG")"
+grep -q "Exact memory has nothing here" "$MOVER_LOG" \
+  && ok "and the model prompt carries the similar-positions note" \
+  || fail "prompt has no similarity note: $(cat "$MOVER_LOG")"
+grep -q "never a move to copy" "$MOVER_LOG" \
   && ok "which names itself context, not a command" \
-  || fail "the note does not disclaim itself: $(cat "$WAKE_LOG")"
+  || fail "the note does not disclaim itself: $(cat "$MOVER_LOG")"
 awk -F'\t' '$3=="chess" && $4=="reflex-miss" && $5 ~ /^miss-001 /' "$MET" \
     | grep -q . \
   && awk -F'\t' '$3=="chess" && $4=="similar-context" && $5 ~ /^miss-001 ply 4 attached/' "$MET" \
@@ -208,24 +230,31 @@ awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-001 ply 4 attached top [^ ]+ [0
     "$MET" | grep -q . \
   && ok "and the nearest neighbour is named in the stamp with its similarity" \
   || fail "no top field on the miss stamp: $(grep similar-context "$MET")"
+"$PY" -B -c "
+import json; g = json.load(open('$HUBDIR/games/miss-001.json'))
+raise SystemExit(0 if g['moves'][-1] == 'g1f3' else 1)" \
+  && ok "and the stub's answer was validated and played into the store" \
+  || fail "miss game's moves: $(cat "$HUBDIR/games/miss-001.json")"
 
 # The floor silences the note, never the stamp: a neighbour too far to be
-# quoted into the wake is the one case the floor has to be judged on.
-: > "$WAKE_LOG"
-DESKCRAB_CHESS_SIMILAR_MIN=0.99 drive miss-001 >/dev/null
-grep -q "Exact memory has nothing here" "$WAKE_LOG" \
-  && fail "the floor let a distant neighbour into the wake: $(cat "$WAKE_LOG")" \
-  || ok "a neighbour under the floor is kept out of the wake's reason"
-awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-001 ply 4 empty top [^ ]+ [01]\.[0-9][0-9]$/' \
+# quoted into the prompt is the one case the floor has to be judged on.
+: > "$MOVER_LOG"
+DESKCRAB_CHESS_SIMILAR_MIN=0.99 drive miss-002 >/dev/null
+grep -q "Exact memory has nothing here" "$MOVER_LOG" \
+  && fail "the floor let a distant neighbour into the prompt: $(cat "$MOVER_LOG")" \
+  || ok "a neighbour under the floor is kept out of the model prompt"
+awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-002 ply 4 empty top [^ ]+ [01]\.[0-9][0-9]$/' \
     "$MET" | grep -q . \
   && ok "but the stamp still records what memory would have said" \
   || fail "below-floor stamp lost its top field: $(grep similar-context "$MET")"
 
+: > "$MOVER_LOG"
 : > "$WAKE_LOG"
 drive hit-001 >/dev/null
-[ ! -s "$WAKE_LOG" ] \
-  && ok "a position reflex knows books no wake at all" \
-  || fail "reflex hit still booked a wake: $(cat "$WAKE_LOG")"
+[ ! -s "$MOVER_LOG" ] && ! grep -q "your move" "$WAKE_LOG" \
+  && grep -q "you played" "$WAKE_LOG" \
+  && ok "a position reflex knows costs no model call; only her post-move voice wakes" \
+  || fail "reflex hit path: $(cat "$MOVER_LOG" "$WAKE_LOG")"
 "$PY" -B -c "
 import json; g = json.load(open('$HUBDIR/games/hit-001.json'))
 raise SystemExit(0 if g['moves'] == ['e2e4'] else 1)" \
@@ -236,10 +265,10 @@ awk -F'\t' '$3=="chess" && $4=="similar-context" && $5 ~ /^hit-001 /' "$MET" \
   && fail "similarity work ran on the exact-hit path" \
   || ok "and no similar-context stamp exists: the hit short-circuited first"
 
-# The switch: DESKCRAB_CHESS_SIMILAR=0 books the wake bare.
-: > "$WAKE_LOG"
-DESKCRAB_CHESS_SIMILAR=0 drive miss-001 >/dev/null
-grep -q "your move as white" "$WAKE_LOG" \
-  && grep -vq "Exact memory has nothing here" "$WAKE_LOG" \
-  && ok "DESKCRAB_CHESS_SIMILAR=0 leaves the wake reason bare" \
-  || fail "the off switch: $(cat "$WAKE_LOG")"
+# The switch: DESKCRAB_CHESS_SIMILAR=0 sends the prompt bare.
+: > "$MOVER_LOG"
+DESKCRAB_CHESS_SIMILAR=0 drive miss-003 >/dev/null
+grep -q "game miss-003" "$MOVER_LOG" \
+  && ! grep -q "Exact memory has nothing here" "$MOVER_LOG" \
+  && ok "DESKCRAB_CHESS_SIMILAR=0 leaves the model prompt bare" \
+  || fail "the off switch: $(cat "$MOVER_LOG")"

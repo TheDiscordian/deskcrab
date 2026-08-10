@@ -2,13 +2,13 @@
 
 ## PURPOSE
 
-She plays correspondence chess by being woken with a position and spending a full model reasoning
-turn on it. Most positions are not new: openings repeat, and so do the traps opponents fall into.
-This module (`lib/chess_reflex.py`) remembers every move of every *finished* game, keyed by the FEN
-of the position the move was made from, together with how that game ended — so a position met
-before can be answered from memory in milliseconds, and a wake (a whole reasoning turn) is only
-spent on positions that are actually new. The chessweb bridge consults it before booking her wake;
-`betty-chess reflex` exposes the same memory by hand.
+She plays correspondence chess by answering each position with a model call. Most positions are
+not new: openings repeat, and so do the traps opponents fall into. This module
+(`lib/chess_reflex.py`) remembers every move of every *finished* game, keyed by the FEN of the
+position the move was made from, together with how that game ended — so a position met before can
+be answered from memory in milliseconds, and a model call is only spent on positions that are
+actually new. The chessweb bridge's resident mover (chessweb.md rule 16) consults it before any
+model call; `betty-chess reflex` exposes the same memory by hand.
 
 Memory is not judgement: a move is only replayed when it has been played enough times and its
 games ended well enough. A move that kept losing is remembered too — as a reason to think instead.
@@ -33,7 +33,7 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    no-longer-true result back out of the memory.
 3. A reflex failure never blocks chess. `sync_game` catches everything and warns on stderr; the
    game file is already saved before it runs. The bridge treats a lookup error as "unknown
-   position" and books the wake as before.
+   position" and makes the model call as before.
 4. `betty-chess reflex --backfill` ingests every finished game already in the games directory —
    the retroactive path for records written before this module existed, or written around
    `save_game` by another hand. Active games are counted and left out. Running it twice is
@@ -61,13 +61,13 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    score below `min_score` veto the book, and she thinks instead. Experience always outranks
    theory, and theory only speaks where experience is silent. Otherwise the answer is None and
    the caller thinks as it always did.
-8. The wiring (chessweb.md rule 16): every path in the bridge that would book a wake for her move
-   first asks `chess_reflex.best_move`. A hit is played straight into the store through the same
-   write path as any move, broadcast to the browser, and logged as
-   `reflex played <san> from memory` — and no wake is booked, which is the point. A miss books
-   the wake exactly as before. A reflex move that *ends* the game still books the end-of-game
-   wake, because she should hear how her game finished. `DESKCRAB_CHESS_REFLEX=0` turns the
-   auto-play off; recording is unconditional.
+8. The wiring (chessweb.md rule 16): every position the bridge's mover would answer with a model
+   call first asks `chess_reflex.best_move`. A hit is played straight into the store through the
+   same write path as any move, broadcast to the browser, and logged as
+   `reflex played <san> from memory` — and no model call is made, which is the point. A miss
+   goes to the model exactly as chessweb.md rule 16b says. A reflex move that *ends* the game
+   still books the end-of-game wake, because she should hear how her game finished.
+   `DESKCRAB_CHESS_REFLEX=0` turns the auto-play off; recording is unconditional.
 
 9. `betty-chess reflex --seed-book` writes the opening book: mainline theory replayed with
    python-chess, one `source='book'` game per line, `game_id` prefixed `book-`, `result` `'*'`,
@@ -112,13 +112,13 @@ like, what was played, and how those games ended". It informs; it never plays.
     neighbour (similarity 1.0), flagged `exact`.
 14. The wiring (chessweb.md rule 16): only after the exact layer has missed — never before, and
     never instead — the bridge asks `chess_similar.reason_note(board)` and appends what comes
-    back to the wake's reason, at most `$DESKCRAB_CHESS_SIMILAR_K` (default 3) neighbours at or
-    above `$DESKCRAB_CHESS_SIMILAR_MIN` similarity (default 0.75), each with its move, the
+    back to the model call's prompt, at most `$DESKCRAB_CHESS_SIMILAR_K` (default 3) neighbours
+    at or above `$DESKCRAB_CHESS_SIMILAR_MIN` similarity (default 0.75), each with its move, the
     mover's record, and where it came from. The note names itself as context: similar is not
     same, and nothing in this layer is ever auto-played. An empty store, thin neighbours, or any
-    failure is a wake without the note, exactly as before. `DESKCRAB_CHESS_SIMILAR=0` switches
-    the note off. `betty-chess similar <fen> [-k N]` exposes the same retrieval by hand and
-    refuses loudly when the table is empty.
+    failure is a model call without the note, exactly as before. `DESKCRAB_CHESS_SIMILAR=0`
+    switches the note off. `betty-chess similar <fen> [-k N]` exposes the same retrieval by hand
+    and refuses loudly when the table is empty.
 
 ## KNOWN LIMITS
 

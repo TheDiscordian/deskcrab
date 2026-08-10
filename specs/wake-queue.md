@@ -66,7 +66,9 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     back into the scratch state.
 13a. A booking MAY carry an **effort override** — `crab wake-at --effort <level>` — naming the
     reasoning effort the fired session runs at, for a booker that already knows how hard its wake
-    will need to think (today: the chess bridge's move wakes, [chessweb.md](chessweb.md) rule 16b).
+    will need to think. (The chess bridge's move wakes were the first such booker; the resident
+    mover — [chessweb.md](chessweb.md) rule 16 — has since taken chess moves off the queue
+    entirely, and the mechanism stands ready for the next booker that knows its wake's weight.)
     The override is the record's sixth field and the fired unit's sixth argument, so it survives
     exactly what the record survives: restore re-arms with it, tidy's re-book keeps it, and the
     blocked-lock deferral re-books with it intact. The level MUST be one of the CLI's effort names

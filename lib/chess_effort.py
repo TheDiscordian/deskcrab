@@ -33,6 +33,10 @@ MINOR_VALUE = 3
 # narrow tree is where one careless reply is the game.
 FORCED_MAX = int(os.environ.get("DESKCRAB_CHESS_EFFORT_FORCED", "8"))
 
+# A capture is only an alarm when it is worth a rook or more. Any minor-piece
+# capture qualifying meant near enough every middlegame position escalated.
+CAPTURE_MIN = int(os.environ.get("DESKCRAB_CHESS_EFFORT_CAPTURE", "5"))
+
 # The novelty gate. A position is "genuinely new ground" only when the vector
 # store is big enough to have an opinion (fewer rows than NOVEL_ROWS and every
 # position would look novel, making every wake expensive — the opposite of the
@@ -146,25 +150,30 @@ def classify(board: chess.Board, novel=None) -> tuple[str, list[str]]:
     my_moves = list(board.legal_moves)
 
     if not board.is_check():
-        if any(board.gives_check(m) for m in my_moves):
+        # A check merely EXISTING is not an alarm — in a normal middlegame
+        # some spite check is nearly always available, and firing on it made
+        # every move expensive (browser-003, every ply of it, 2026-08-10).
+        # Only a check that also wins material, or one in a position narrow
+        # enough to be forcing, is worth the deliberate turn.
+        def _sharp(b):
+            narrow = len(list(b.legal_moves)) <= FORCED_MAX
+            return any(b.gives_check(m)
+                       and (narrow or _capture_value(b, m) >= MINOR_VALUE)
+                       for m in b.legal_moves)
+
+        if _sharp(board) or _sharp(_their_view(board)):
             reasons.append("check-available")
-        else:
-            # Their checks are only worth a null-move scan when ours came up
-            # empty — one reason per alarm is enough to escalate.
-            flipped = _their_view(board)
-            if any(flipped.gives_check(m) for m in flipped.legal_moves):
-                reasons.append("check-available")
 
     loose = _en_prise(board, us)
     if loose:
         reasons.append("en-prise:" + ",".join(loose))
 
     big = max((_capture_value(board, m) for m in my_moves), default=0)
-    if big < MINOR_VALUE and not board.is_check():
+    if big < CAPTURE_MIN and not board.is_check():
         flipped = _their_view(board)
         big = max((_capture_value(flipped, m) for m in flipped.legal_moves),
                   default=0)
-    if big >= MINOR_VALUE:
+    if big >= CAPTURE_MIN:
         reasons.append(f"capture-worth:{big}")
 
     if (board.pieces(chess.PAWN, chess.WHITE) & chess.BB_RANK_7) or \

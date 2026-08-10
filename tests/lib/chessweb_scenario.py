@@ -189,8 +189,8 @@ class Client:
     def join(self, player=True):
         self.send(JOIN, self.enc([(1, int(player))]))
 
-    def expect_move(self, frm, to, mtype=0):
-        f = self.expect(MOVE)
+    def expect_move(self, frm, to, mtype=0, timeout=5.0):
+        f = self.expect(MOVE, timeout)
         fx, fy = self.xy(frm)
         tx, ty = self.xy(to)
         got = (f.get(1, 0), f.get(2, 0), f.get(3, 0), f.get(4, 0),
@@ -252,7 +252,7 @@ def s_http(port):
     ok("path traversal refused")
 
 
-def s_fresh(port, chess_dir, wake_log):
+def s_fresh(port, chess_dir, wake_log, mover_log):
     c = Client(port)
     c.join()
     f = c.expect(PLAYER)
@@ -282,28 +282,33 @@ def s_fresh(port, chess_dir, wake_log):
     assert game_moves(chess_dir, "guest-001") == ["e2e4"]
     ok("e4 validated, recorded, echoed")
 
+    # The mover's stub is sleeping on its delay, so this window is hers.
     c.move("d2", "d4")
     f = c.expect(ERROR)
     assert f[1] == b"It's not your turn."
     ok("moving on her turn refused")
 
+    c.expect_move("e7", "e5", timeout=20)
+    assert game_moves(chess_dir, "guest-001") == ["e2e4", "e7e5"]
+    ok("her reply arrived from the mover, seconds after e4")
+
+    prompt = Path(mover_log).read_text()
+    assert "game guest-001" in prompt and "Position (FEN)" in prompt \
+        and "ply 1" in prompt and "e7e5" in prompt \
+        and "1. e4" in prompt, prompt
+    assert "state block" not in prompt.lower() and len(prompt) < 4000, \
+        f"the mover prompt is not minimal: {len(prompt)} bytes"
+    ok("the model was asked with the FEN, the legal moves, and the history "
+       "— nothing else")
+
     deadline = time.time() + 5
     wake = ""
-    while time.time() < deadline and "guest-001" not in wake:
+    while time.time() < deadline and "you played" not in wake:
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
-    assert "guest-001" in wake and "FEN:" in wake \
-        and "betty-chess move guest-001" in wake and "e4" in wake, wake
-    ok("wake booked with game id, SAN, FEN, and the reply instruction")
-
-    # The photograph must say when it was taken: one ply played, so a reply
-    # worked out from this text is only valid against ply 1.
-    assert "--expect-ply 1" in wake, wake
-    ok("and the ply it was booked at, as the guard on the reply")
-
-    her_move(chess_dir, "guest-001", "e5")
-    c.expect_move("e7", "e5")
-    ok("her betty-chess reply mirrored to the browser")
+    assert "your move" not in wake, f"a wake gated her move: {wake}"
+    assert "you played e5" in wake, wake
+    ok("no wake gated the move; the post-move wake carries what she played")
 
     obs = Client(port)
     obs.join(player=False)
@@ -432,11 +437,11 @@ def s_poller_end(port, chess_dir):
     ok("her mating move from the CLI ends the game as BlackWin")
 
 
-def s_reflex(port, chess_dir, wake_log):
+def s_reflex(port, chess_dir, wake_log, mover_log):
     # Two finished fool's mates were backfilled into reflex memory before the
     # bridge started. The user walks into the same trap: both of her replies
-    # must come back from memory — instantly, with no thinking wake booked —
-    # and the mate she remembers ends the game (specs/chess-reflex.md rule 8).
+    # must come back from memory — instantly, with no model call made — and
+    # the mate she remembers ends the game (specs/chess-reflex.md rule 8).
     c = Client(port)
     c.join()
     c.expect(PLAYER)
@@ -467,8 +472,15 @@ def s_reflex(port, chess_dir, wake_log):
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
     assert "your move" not in wake, f"a thinking wake was booked: {wake}"
+    assert "you played e5" in wake, wake
     assert "ended" in wake and "checkmate" in wake, wake
-    ok("no thinking wake was spent; the end-of-game wake still fired")
+    ok("no thinking wake was spent; her post-move voice and the "
+       "end-of-game wake still fired")
+
+    calls = Path(mover_log).read_text() if Path(mover_log).exists() else ""
+    assert calls.strip() == "", f"a model call was made for a remembered " \
+                                f"position: {calls}"
+    ok("and the model was never consulted: memory answered everything")
 
     import sqlite3
     n = sqlite3.connect(Path(chess_dir) / "reflex.db").execute(
@@ -476,6 +488,47 @@ def s_reflex(port, chess_dir, wake_log):
     ).fetchone()[0]
     assert n == 1, "the game reflex just finished never entered the memory"
     ok("and the game reflex finished was itself ingested at game end")
+
+
+def s_supersede(port, chess_dir, mover_log):
+    # The no-queue rule (specs/chessweb.md rule 16c): while the mover is
+    # mid-think about one position, the board is rewritten under it — the
+    # stale think must be abandoned and only the newest position answered.
+    # The stub sleeps long enough for the undo to land mid-flight, and its
+    # reply map holds an answer only for the d4 position, so even a think
+    # that survives the kill has nothing stale to say.
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.send(NEWGAME)
+    c.expect(TEAM)
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+    ok("e4 recorded; the mover is now thinking about it")
+
+    env = dict(os.environ, DESKCRAB_CHESS_DIR=chess_dir,
+               PYTHONDONTWRITEBYTECODE="1")
+    r = subprocess.run([VENV_PY, str(REPO / "lib/chess_cli.py"),
+                        "undo", "guest-001"],
+                       capture_output=True, text=True, env=env, timeout=30)
+    assert r.returncode == 0, r.stderr
+    c.expect(TEAM, timeout=10)  # the poll's full resync after the rewrite
+    ok("the undo landed mid-think and forced a resync")
+
+    c.move("d2", "d4")
+    c.expect_move("d2", "d4")
+    c.expect_move("d7", "d5", timeout=25)
+    moves = game_moves(chess_dir, "guest-001")
+    assert moves == ["d2d4", "d7d5"], moves
+    ok("only the newest position was answered: d4 got its reply")
+
+    time.sleep(1.0)
+    moves = game_moves(chess_dir, "guest-001")
+    assert "e7e5" not in moves, f"the stale think was played: {moves}"
+    prompt = Path(mover_log).read_text()
+    assert "1. d4" in prompt, prompt
+    ok("and the abandoned e4 think never reached the board")
 
 
 def s_reset(port, chess_dir):
@@ -607,7 +660,8 @@ def main():
     {"http": s_http, "fresh": s_fresh, "resume": s_resume,
      "special": s_special, "promote": s_promote, "mate": s_mate,
      "poller_end": s_poller_end, "reset": s_reset, "rejoin": s_rejoin,
-     "postkill": s_postkill, "reflex": s_reflex}[what](port, *rest)
+     "postkill": s_postkill, "reflex": s_reflex,
+     "supersede": s_supersede}[what](port, *rest)
 
 
 if __name__ == "__main__":

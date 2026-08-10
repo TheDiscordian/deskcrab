@@ -37,15 +37,45 @@ printf '%s\n' "$1" >> "$CHESSWEB_WAKE_LOG"
 SH
 chmod +x "$WAKE_STUB"
 
+# The mover's model call, stubbed (specs/chessweb.md rule 16f): the prompt
+# arrives on stdin and is kept as evidence; the reply is looked up by
+# substring in a per-scenario map, so which position was answered is always
+# deterministic — a killed and restarted think can never replay a stale line.
+MOVER_STUB="$SANDBOX/mover-stub"
+cat > "$MOVER_STUB" <<'SH'
+#!/bin/bash
+[ -n "${CHESSWEB_MOVER_DELAY:-}" ] && sleep "$CHESSWEB_MOVER_DELAY"
+prompt="$(cat)"
+printf '%s\n----\n' "$prompt" >> "$CHESSWEB_MOVER_LOG"
+[ -f "${CHESSWEB_MOVER_REPLIES:-}" ] || exit 0
+while IFS=$'\t' read -r pat reply; do
+    [ -n "$pat" ] || continue
+    case "$prompt" in *"$pat"*) printf '%s\n' "$reply"; exit 0 ;; esac
+done < "$CHESSWEB_MOVER_REPLIES"
+exit 0
+SH
+chmod +x "$MOVER_STUB"
+
 BRIDGE_PID=""
 PORT=""
+MOVER_LOG=""
+REPLIES=""
+DELAY=""
 start_bridge() { # <chess dir> <wake log> [serve args...]
     local dir="$1" wakelog="$2"
     shift 2
     : > "$wakelog"
     : > "$SANDBOX/serve.log"
+    [ -n "$MOVER_LOG" ] || MOVER_LOG="$SANDBOX/mover-quiet.log"
+    [ -n "$REPLIES" ] || REPLIES="$SANDBOX/mover-replies-empty.tsv"
+    : > "$MOVER_LOG"
+    touch "$REPLIES"
     DESKCRAB_CHESS_DIR="$dir" CHESSWEB_WAKE_LOG="$wakelog" \
         DESKCRAB_CHESSWEB_WAKE_CMD="$WAKE_STUB" \
+        DESKCRAB_CHESS_MOVER_CMD="$MOVER_STUB" \
+        CHESSWEB_MOVER_LOG="$MOVER_LOG" \
+        CHESSWEB_MOVER_REPLIES="$REPLIES" \
+        CHESSWEB_MOVER_DELAY="$DELAY" \
         "$VENV_PY" -B "$REPO/lib/chessweb.py" serve --port 0 \
         --client "$CLIENT" --poll 0.2 "$@" >> "$SANDBOX/serve.log" 2>&1 &
     BRIDGE_PID=$!
@@ -86,23 +116,45 @@ chess_stamp() { # <stage> <detail prefix>
         "$MET" 2>/dev/null
 }
 
-echo "a fresh game — seat, validation, the wake, her reply, an observer:"
+echo "a fresh game — seat, validation, the mover's reply, an observer:"
 CH="$SANDBOX/chess-fresh"
+MOVER_LOG="$SANDBOX/mover-fresh.log"
+REPLIES="$SANDBOX/mover-replies-fresh.tsv"
+printf '1. e4\te7e5\n' > "$REPLIES"
+DELAY=2   # holds the stub long enough to prove turn enforcement mid-think
 if start_bridge "$CH" "$SANDBOX/wake-fresh.log" --opponent guest; then
     scn http "$PORT"
-    scn fresh "$PORT" "$CH" "$SANDBOX/wake-fresh.log"
+    scn fresh "$PORT" "$CH" "$SANDBOX/wake-fresh.log" "$MOVER_LOG"
     check "move-start stamped when e4 made the position hers (rule 17)" \
         chess_stamp move-start "guest-001 ply 1 after e4"
-    check "reflex-miss stamped before the wake on an unknown position" \
+    check "reflex-miss stamped before the model on an unknown position" \
         chess_stamp reflex-miss "guest-001 ply 1"
-    check "wake-booked stamped when the wake went to the queue" \
-        chess_stamp wake-booked "guest-001 ply 1"
-    check "her betty-chess reply stamped move-played (cli)" \
-        chess_stamp move-played "guest-001 ply 1 e5 cli"
+    check "model-start stamped when the call began, at low effort" \
+        chess_stamp model-start "guest-001 ply 1 effort low"
+    check "model-end stamped when the call returned" \
+        chess_stamp model-end "guest-001 ply 1 "
+    check "her reply stamped move-played (model)" \
+        chess_stamp move-played "guest-001 ply 1 e5 model"
+    check "move-latency stamped: detection to store write, in seconds" \
+        chess_stamp move-latency "guest-001 ply 1 "
 fi
 stop_bridge
+MOVER_LOG="" REPLIES="" DELAY=""
+
+echo "a newer position abandons the think in flight — no queue, no stale move:"
+CH="$SANDBOX/chess-super"
+MOVER_LOG="$SANDBOX/mover-super.log"
+REPLIES="$SANDBOX/mover-replies-super.tsv"
+printf '1. d4\td7d5\n' > "$REPLIES"
+DELAY=4   # long enough for the undo to land while the e4 think is in flight
+if start_bridge "$CH" "$SANDBOX/wake-super.log" --opponent guest; then
+    scn supersede "$PORT" "$CH" "$MOVER_LOG"
+fi
+stop_bridge
+MOVER_LOG="" REPLIES="" DELAY=""
 
 echo "the overnight property — restart, replay on join, undo resync:"
+CH="$SANDBOX/chess-fresh"
 if start_bridge "$CH" "$SANDBOX/wake-resume.log" --opponent guest; then
     scn resume "$PORT" "$CH"
 fi
@@ -124,6 +176,8 @@ if start_bridge "$CH" "$SANDBOX/wake-reset.log" --opponent guest; then
     else
         ok "resets logged one line each, no tracebacks"
     fi
+    check "a reply through betty-chess still stamps move-played (cli)" \
+        chess_stamp move-played "guest-001 ply 1 e5 cli"
 fi
 stop_bridge
 
@@ -175,14 +229,15 @@ if start_bridge "$CH" "$SANDBOX/wake-fools.log" --opponent guest; then
 fi
 stop_bridge
 
-echo "a known position is answered from reflex memory, not a wake:"
+echo "a known position is answered from reflex memory, no model call:"
 CH="$SANDBOX/chess-reflex"
 seed "$CH" rival-001 rival black f2f3 e7e5 g2g4 d8h4
 seed "$CH" rival-002 rival black f2f3 e7e5 g2g4 d8h4
 DESKCRAB_CHESS_DIR="$CH" PYTHONDONTWRITEBYTECODE=1 \
     "$VENV_PY" -B "$REPO/lib/chess_cli.py" reflex --backfill >/dev/null
+MOVER_LOG="$SANDBOX/mover-reflex.log"
 if start_bridge "$CH" "$SANDBOX/wake-reflex.log" --opponent guest; then
-    scn reflex "$PORT" "$CH" "$SANDBOX/wake-reflex.log"
+    scn reflex "$PORT" "$CH" "$SANDBOX/wake-reflex.log" "$MOVER_LOG"
     if grep -q "reflex played" "$SANDBOX/serve.log"; then
         ok "the serve log says the moves came from memory, not thought"
     else
@@ -193,5 +248,11 @@ if start_bridge "$CH" "$SANDBOX/wake-reflex.log" --opponent guest; then
         chess_stamp reflex-hit "guest-001 ply 1 e7e5"
     check "the memory's answer stamped move-played (reflex)" \
         chess_stamp move-played "guest-001 ply 1 e5 reflex"
+    awk -F'\t' '$3=="chess" && $4=="move-latency" \
+        && $5 ~ /^guest-001 ply 1 .*reflex$/' "$MET" | grep -q . \
+      && ok "move-latency stamped for the reflex answer too" \
+      || fail "no reflex-sourced move-latency stamp" \
+              "$(grep move-latency "$MET" 2>/dev/null | tail -3)"
 fi
 stop_bridge
+MOVER_LOG=""

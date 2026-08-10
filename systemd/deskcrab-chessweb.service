@@ -19,7 +19,11 @@ RestartSec=2
 # ASSISTANT_NAME for the thinking banner. systemd reads KEY="VALUE" lines and
 # skips what it cannot parse; the bridge reads nothing else from the config.
 EnvironmentFile=-%h/.config/deskcrab/deskcrab.conf
-# The bridge shells out to crab (wake-at, notify), which lives in ~/.local/bin.
+# The bridge shells out to crab (the end-of-game wake, notify) and to claude
+# (the resident mover's one minimal model call, specs/chessweb.md rule 16);
+# both live in ~/.local/bin. The EnvironmentFile above also carries the model
+# and login-chain settings the mover reads (CLAUDE_MODEL,
+# CLAUDE_FALLBACK_CONFIG_DIR).
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 StandardOutput=append:/tmp/chessweb-live.log
 StandardError=append:/tmp/chessweb-live.log

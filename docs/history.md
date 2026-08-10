@@ -634,6 +634,31 @@ Contract: [`specs/phone.md`](../specs/phone.md).
 
 ## The chess bridge
 
+### 2026-08-10 — the move that waited in line behind the conversation
+
+Her chess moves used to be wakes: the bridge booked an event wake per user move, the wake queue
+ran it through the single-session lane, and the session rebuilt her entire prompt — state block,
+memory retrieval, conduct — to pick one chess move. Every part of that machinery was built for
+work nobody is waiting on, and chess is the one thing in the system where somebody is *sitting
+there*: each time the user talked to her on the phone, their own conversation pushed her chess
+reply further back. Measured cost, 2–5 minutes per move; the user asked repeatedly for it to be
+fixed, and the earlier patches (event-lane priority, effort overrides, an always-low pin) only
+shaved the queue — they never removed it.
+
+The redesign removed it. The bridge now owns a resident mover (`lib/chess_mover.py`,
+specs/chessweb.md rule 16): reflex memory answers known positions with no model call at all, and
+an unknown position costs exactly one minimal `claude -p` — FEN, legal moves, history, the
+similarity note, ~200 tokens of context in the measured no-tools shape — posted back under the
+hub's own lock after re-reading the store, so a stale answer is discarded by the same photograph
+logic as `--expect-ply`. There is no queue anywhere in the path: one slot, newest position wins,
+an in-flight call for a superseded board is killed. The wake queue keeps only the end-of-game
+announcement, which is the one chess event nobody is waiting on. First live move after the
+rewrite: a book reply in 4 milliseconds; first reasoned move, seconds. The general lesson got
+learned twice on this machine (the phone server answers turns itself rather than booking them):
+a queue built for patience must never carry anything a person is waiting on.
+
+Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 7, 12, 16, 16b and 17.
+
 ### 2026-08-09 — the bridge vanished mid-game, and the traceback was innocent
 
 Mid-game, the browser player's connection dropped and nothing was listening on 8181 afterwards; the
