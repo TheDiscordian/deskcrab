@@ -67,12 +67,13 @@ def load_patterns(path):
                        re.IGNORECASE)
     fix_re = re.compile(r"^\s*[-*]\s*fix:\s*(delete|resay)\s*$", re.IGNORECASE)
     live_re = re.compile(r"^\s*[-*]\s*live:\s*(yes|no)\s*$", re.IGNORECASE)
+    why_re = re.compile(r"^\s*[-*]\s*why:\s*(.*\S)\s*$", re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
 
     def new_entry(rx, pat, note):
         return {"rx": rx, "pat": pat, "note": note, "replaces": [],
-                "function": "", "fix": "", "live": True}
+                "function": "", "fix": "", "live": True, "why": ""}
 
     def add_replace(m):
         # A replace line rides the entry above it and is NEVER a trigger. A
@@ -110,6 +111,13 @@ def load_patterns(path):
         if m:
             if entries:
                 entries[-1]["live"] = m.group(1).lower() != "no"
+            else:
+                bad += 1
+            return True
+        m = why_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["why"] = m.group(1).strip()
             else:
                 bad += 1
             return True
@@ -288,13 +296,18 @@ def flag_row(kind, pid, rec, outcome, rewrite=None):
 def family_lines(patterns, function):
     """Every entry of one function family — the fired sibling included, and
     the live: no wide net too, since a sibling invisible at resay time is
-    the one that gets reached for (rule 52). Plain lines, not JSON: the
-    reader is the model, mid-call."""
+    the one that gets reached for (rule 52). Each entry carries its why:
+    the heading alone is a word list, and a word list is answered with a
+    synonym — the reason is what makes the resay leave the slot instead of
+    refilling it. Plain lines, not JSON: the reader is the model,
+    mid-call."""
     out = []
     for e in patterns:
         if e["function"] == function:
             out.append("- %s%s" % (e["pat"],
                                    " — " + e["note"] if e["note"] else ""))
+            if e.get("why"):
+                out.append("  why: " + e["why"])
     return out
 
 

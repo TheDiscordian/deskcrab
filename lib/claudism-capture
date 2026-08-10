@@ -87,12 +87,13 @@ def load_patterns(path):
                        re.IGNORECASE)
     fix_re = re.compile(r"^\s*[-*]\s*fix:\s*(delete|resay)\s*$", re.IGNORECASE)
     live_re = re.compile(r"^\s*[-*]\s*live:\s*(yes|no)\s*$", re.IGNORECASE)
+    why_re = re.compile(r"^\s*[-*]\s*why:\s*(.*\S)\s*$", re.IGNORECASE)
     entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
     span_re = re.compile(r"`([^`]+)`")
 
     def new_entry(rx, pat, note):
         return {"rx": rx, "pat": pat, "note": note, "replaces": [],
-                "function": "", "fix": "", "live": True}
+                "function": "", "fix": "", "live": True, "why": ""}
 
     def add_replace(m):
         # A replace line rides the entry above it and is NEVER a trigger. A
@@ -130,6 +131,13 @@ def load_patterns(path):
         if m:
             if entries:
                 entries[-1]["live"] = m.group(1).lower() != "no"
+            else:
+                bad += 1
+            return True
+        m = why_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["why"] = m.group(1).strip()
             else:
                 bad += 1
             return True
