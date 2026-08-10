@@ -75,6 +75,51 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    row is a position and not a side's victory. Idempotent — seeding deletes the `book-` rows and
    rewrites them, and it never touches a played game.
 
+## THE SIMILARITY LAYER
+
+The exact layer only answers positions already met move for move. Most middlegames never repeat,
+but they *rhyme* — the same structures, the same kind of king, the same imbalance. The second
+layer (`lib/chess_similar.py`) remembers every played position as a hand-built feature vector, so
+a position never seen exactly can still be answered with "here is what positions like this looked
+like, what was played, and how those games ended". It informs; it never plays.
+
+10. Alongside `games` and `moves`, reflex.db carries a `vectors` table: one row per ply of every
+    finished **played** game — the full FEN, its `fen_key`, the feature vector (little-endian
+    float32s, `struct`-packed as in memory.py), the move made from the position (UCI), the colour
+    that made it (the side to move), the game's `result`, the mover's `outcome`
+    (`win`/`draw`/`loss`), `ply`, and `game_id`. Book lines never enter it: a vector row answers
+    "how did this go", and theory has no result.
+11. The features come from python-chess arithmetic alone — **no engine, ever**; Stockfish and any
+    other engine assistance are forbidden in this layer as everywhere in her chess. The module's
+    `FEATURES` list is the order of record (64 names); every value is normalised into [0,1], and
+    the paired features are computed from the mover's perspective — `us` is the side to move —
+    so "similar" means "a similar situation for the player who must now choose". Groups:
+    material and phase; pawn structure (isolated, doubled, passed, open and half-open files,
+    advancement); king safety (shield, open files by the king, ring attackers, back rank);
+    activity (mobility by piece type, centre, outposts, rooks on open files and the seventh
+    rank, space, development); state (check, castling rights, which colour is to move).
+    Extraction is deterministic: the same position yields the same bytes, across processes.
+12. Ingestion and retraction ride the exact layer's own: `_ingest` writes the vector rows in the
+    same transaction as the `moves` rows, retraction deletes by `game_id`, so rule 2's
+    idempotence and the undo path cover both tables at once, and `reflex --backfill` fills both.
+    A similarity failure is contained — the exact rows still land when the vector ones fail, and
+    a store from before this layer grows the table on first touch.
+13. `chess_similar.similar(fen, k)` is the one retrieval function; metric and ranking live behind
+    it so the store can be swapped without touching a caller. Today it is brute force: euclidean
+    distance over the whole table on the normalised vectors, reported as similarity
+    `1 / (1 + distance)`, neighbours aggregated by `(fen_key, move)` with the mover's W-D-L
+    across their games, nearest first. An exact-key row, when one exists, is simply the nearest
+    neighbour (similarity 1.0), flagged `exact`.
+14. The wiring (chessweb.md rule 16): only after the exact layer has missed — never before, and
+    never instead — the bridge asks `chess_similar.reason_note(board)` and appends what comes
+    back to the wake's reason, at most `$DESKCRAB_CHESS_SIMILAR_K` (default 3) neighbours at or
+    above `$DESKCRAB_CHESS_SIMILAR_MIN` similarity (default 0.75), each with its move, the
+    mover's record, and where it came from. The note names itself as context: similar is not
+    same, and nothing in this layer is ever auto-played. An empty store, thin neighbours, or any
+    failure is a wake without the note, exactly as before. `DESKCRAB_CHESS_SIMILAR=0` switches
+    the note off. `betty-chess similar <fen> [-k N]` exposes the same retrieval by hand and
+    refuses loudly when the table is empty.
+
 ## KNOWN LIMITS
 
 - The memory is only as good as the games in it. Six losses to the same trap will stop the gate
@@ -86,3 +131,8 @@ games ended well enough. A move that kept losing is remembered too — as a reas
 - Results are per-game, so early opening moves inherit the fate of the whole game. That is the
   design: an opening that keeps ending in losses *should* stop being played on reflex, even if
   ply 40 was where it actually went wrong.
+- The similarity layer is only as wide as the store. With a handful of games every neighbour is
+  thin and the note will often be empty or near-duplicate — that is expected, not broken, until a
+  few hundred games are in. The features are hand-built heuristics, not evaluation: two positions
+  can sit close in this space and demand different moves, which is why the layer may only ever
+  inform the reasoning turn.

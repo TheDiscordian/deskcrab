@@ -619,6 +619,30 @@ def cmd_reflex(args):
               f"{chess_reflex.MIN_SCORE:.2f}; think instead")
 
 
+def cmd_similar(args):
+    fen = " ".join(args.fen).strip()
+    if not fen:
+        raise CliError("usage: betty-chess similar <fen> [-k N]")
+    try:
+        board = chess.Board(fen)
+    except ValueError as e:
+        raise CliError(f"cannot read that as a FEN: {e}")
+    import chess_similar
+    hits = chess_similar.similar(board.fen(), k=args.k)
+    if not hits:
+        raise CliError("no stored positions to compare against — finish a "
+                       "game, or run: betty-chess reflex --backfill")
+    for h in hits:
+        tag = "exact" if h["exact"] else f"{h['similarity']:.2f} "
+        print(f"{tag:<6} {h['san']:<8} as {h['colour']:<6} "
+              f"{h['wins']}-{h['draws']}-{h['losses']}  "
+              f"{h['game_id']} ply {h['ply']}")
+    note = chess_similar.reason_note(board)
+    if not note:
+        print("(nothing near enough to brief a wake with — expected while "
+              "the store is small)")
+
+
 # ---------------------------------------------------------------- entry
 
 def main(argv=None):
@@ -693,6 +717,15 @@ def main(argv=None):
     sp.add_argument("--seed-book", action="store_true",
                     help="(re)write the opening book of mainline theory")
     sp.set_defaults(func=cmd_reflex)
+
+    sp = sub.add_parser("similar",
+                        help="stored positions most like a FEN "
+                             "(specs/chess-reflex.md rules 10-14)")
+    sp.add_argument("fen", nargs="*",
+                    help="a FEN, quoted or not; neighbours come back nearest "
+                         "first with the move played and the mover's W-D-L")
+    sp.add_argument("-k", type=int, default=6, help="how many (default 6)")
+    sp.set_defaults(func=cmd_similar)
 
     args = p.parse_args(argv)
     try:

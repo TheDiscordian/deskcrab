@@ -141,13 +141,22 @@ cannot be changed.
     reflex failure books the wake exactly as rule 7 says. A reflex move that ends the game still
     broadcasts GameComplete (rule 9) and books the end-of-game wake, because she should hear how
     her game finished. `DESKCRAB_CHESS_REFLEX=0` disables the auto-play; recording of finished
-    games is unconditional.
+    games is unconditional. When the wake *is* booked for her move, the bridge appends the
+    similarity layer's note (`chess_similar.reason_note`, chess-reflex.md rule 14) to the
+    reason: the nearest stored positions, what was played from them, and how those games ended —
+    context for the reasoning turn, never a move the bridge plays itself. The note runs only
+    after the exact layer has missed; a hit returns before any similarity work. An empty note or
+    a similarity failure books the wake bare, and `DESKCRAB_CHESS_SIMILAR=0` switches the note
+    off.
 17. The move path stamps where its time went, into the same dated turn-metrics log as every
     other path (turn-pipeline.md rule 33), kind `chess`, every line's detail opening with
     `<game id> ply <n>` so one move's stamps correlate across processes — the bridge and the
     CLI write from different pids. The bridge stamps `move-start` the moment a position
     becomes hers to answer (a recorded user move, a NewGame or serve start with her to move),
-    then `reflex-hit` or `reflex-miss` when rule 16's lookup returns, then `wake-booked` when
+    then `reflex-hit` or `reflex-miss` when rule 16's lookup returns, then `similar-context`
+    (detail ending `attached` or `empty`) when the similarity note has been computed for the
+    wake's reason — the stamp is written whichever way that came out, so its absence proves the
+    reflex hit short-circuited before any similarity work — then `wake-booked` when
     rule 7's wake is handed to the queue; a reflex move stamps `move-played` with source
     `reflex` when it is saved. `betty-chess move` stamps `move-played` with source `cli` when
     a move by her side lands in the store, whoever called it — that is the stamp the wake's

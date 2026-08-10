@@ -527,6 +527,26 @@ class Hub:
             self.dispatch_wake(g, board, san, over=f"{desc} [{result}]")
         return True
 
+    def similar_note(self, g, board):
+        """The similarity layer's context for a wake the exact layer could
+        not answer (specs/chess-reflex.md rule 14): the nearest stored
+        positions, what was played, how it went. Only ever reached after
+        try_reflex has missed; any failure is a wake without the note."""
+        if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
+            return ""
+        ply = len(board.move_stack)
+        try:
+            import chess_similar
+            note = chess_similar.reason_note(board)
+            chess_cli.metric("similar-context",
+                             f"{g['id']} ply {ply} "
+                             + ("attached" if note else "empty"))
+            return note
+        except Exception as e:
+            log(f"similar-position note failed, wake goes without: {e!r}")
+            chess_cli.metric("similar-context", f"{g['id']} ply {ply} error")
+            return ""
+
     def dispatch_wake(self, g, board, san=None, over=None):
         if over is None:
             chess_cli.metric("move-start",
@@ -553,7 +573,8 @@ class Hub:
                       f"betty-chess move {gid} <move> --expect-ply {ply} — the "
                       f"guard refuses it if the game moved on while you "
                       f"thought, and it reaches their browser within seconds. "
-                      f"See the board as it stands: betty-chess show {gid}")
+                      f"See the board as it stands: betty-chess show {gid}"
+                      + self.similar_note(g, board))
         if self.port:
             reason += (f". Before you think, say so: curl -sf -X POST "
                        f"http://127.0.0.1:{self.port}/thinking -o /dev/null "

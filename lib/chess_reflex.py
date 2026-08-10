@@ -106,6 +106,12 @@ def game_result(g: dict, board: chess.Board) -> str:
 def _retract(conn: sqlite3.Connection, game_id: str) -> None:
     conn.execute("DELETE FROM moves WHERE game_id = ?", (game_id,))
     conn.execute("DELETE FROM games WHERE game_id = ?", (game_id,))
+    try:
+        import chess_similar
+        chess_similar.retract(conn, game_id)
+    except Exception as e:  # the similarity layer is a passenger, never a brake
+        print(f"chess-similar: retract of {game_id} skipped: {e}",
+              file=sys.stderr)
 
 
 def _ingest(conn: sqlite3.Connection, g: dict, board_final: chess.Board,
@@ -128,6 +134,12 @@ def _ingest(conn: sqlite3.Connection, g: dict, board_final: chess.Board,
             " VALUES (?, ?, ?, ?, ?, ?)",
             (board.fen(), fen_key(board.fen()), uci, colour, ply, g["id"]))
         board.push(chess.Move.from_uci(uci))
+    try:
+        import chess_similar
+        chess_similar.ingest(conn, g, result)
+    except Exception as e:  # rule 12: the exact rows land even when these fail
+        print(f"chess-similar: vectors for {g.get('id')} skipped: {e}",
+              file=sys.stderr)
 
 
 def sync_game(g: dict) -> None:
