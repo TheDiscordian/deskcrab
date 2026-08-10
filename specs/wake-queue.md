@@ -140,6 +140,33 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     - A wake the night held MUST say so in its journal line, in those words. Journalled as ordinary
       silence, the held words read to the next session — and to the since-your-last-reply anchor,
       which reads the same journal — as an hour in which she had nothing to say.
+27a. A wake's output that has **no spoken half** — a `(quiet)` bubble, a display section on its own
+     — MUST be held while the conversation is HOT, and MUST come back through the queue once the
+     heat has passed. Hot is measurable and is one number: the last message from him is younger
+     than `CONVO_HOT_WINDOW`, read from the origin record that every desk and phone turn stamps at
+     the moment a message arrives.
+     - **Why this is not rule 27 over again.** The user-busy gate asks the sound card a question —
+       is the microphone open, is a voice on the speakers *at this instant* — and between two
+       messages of an argument the honest answer to both is no. 2026-08-10, 12:32:12: a quiet chess
+       note ("Lost browser-006 — mated by a promoted pawn while my knights admired themselves")
+       landed in the conversation between "stop assuming I'm wrong" at 12:31:46 and "I'm reporting
+       a genuine bug" at 12:33:04. Every gate was working and every gate said the room was quiet,
+       because for four seconds it was. A lull between two messages of a fight is not a quiet room,
+       and an aside arriving in one reads as her attention being somewhere else.
+     - **Why this is not rule 29 either, and the boundary is the whole design.** Nothing here reads
+       what the reply SAYS. It reads the clock, and it reads one decision she already made while
+       writing: that these words were not worth opening her mouth for. A wake that chose to speak
+       has something it judges worth saying out loud and that choice stands whatever the clock
+       says — rule 29 is untouched. What is held is a note, and a note keeps.
+     - **Held, never dropped.** The words go back through the queue's one door as an event wake
+       `WAKE_HOT_RETRY` out — comfortably past the hot window, so the retry is not a second
+       interruption — with the held words in the reason, so she meets them again in a quiet minute
+       and decides afresh with the conversation in front of her. The booking is capped
+       (`WAKE_HOT_HOLD_CAP`, scoped to the held-reason prefix): a stack of held asides all landing
+       on the first quiet minute is the same storm one delay later.
+     - **Said in those words in the journal**, exactly as the night's hold and the busy hold are,
+       and for the same reason — a wake the heat held is not a wake that had nothing to say, and
+       the next session and the since-your-last-reply anchor both read that line.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence.
 29. No mechanism may judge a wake's written reply after the fact and decide it is not worth voicing.
@@ -182,11 +209,12 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary
     (`canary`), the nightly claudism review (`claudism-review`) and the chain floor
     (`wake-chain-floor`) all book wakes in her name. Each MUST pass its own
-    identity as `booked_by`. Two further identities reach a record without being subsystems:
+    identity as `booked_by`. Three further identities reach a record without being subsystems:
     `outage-retry`, when a wake that failed before the model ran re-books itself and cannot name its
-    original booker, and `herself`, the default when nobody says. Any prose that enumerates the
-    bookers — here, in the other specs, or in the prompt — MUST name the whole set, and it is eight
-    hands and ten names, not four of either.
+    original booker, `hot-hold`, when a wake's own non-urgent output was held for a hot
+    conversation and books itself back past the heat (rule 27a), and `herself`, the default when
+    nobody says. Any prose that enumerates the bookers — here, in the other specs, or in the prompt
+    — MUST name the whole set, and it is eight hands and eleven names, not four of either.
 42. Each MUST route through `book()`, and therefore through the coalescing, spacing, and locking
     rules.
 43. The promise auditor MUST use the shared shelf reader. An auditor handed an empty list and told
@@ -347,7 +375,11 @@ voice), `tests/test_wake_filler.sh` (measured from the speaker side), `tests/tes
 reset by a taken lock — and the urgent lane's yield, expiry and event-exemption),
 `tests/test_promise_deferred.sh` (rules 43a and the scoped cap of 44: a reply that commits to later
 work books the alarm, an already-done reply books nothing, a kept promise is left alone, and neither
-audit class counts or drains the other's bookings).
+audit class counts or drains the other's bookings),
+`tests/test_wake_hot_hold.sh` (rule 27a: a quiet bubble into a hot conversation reaches no bubble,
+no notifier and no conversation and books itself back with its words in the reason; the same wake
+into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
+sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue).
 
 **To be written:**
 

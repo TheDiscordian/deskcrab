@@ -49,9 +49,77 @@ which share every stage except capture and delivery.
 15. A reply MUST be spoken, shown, appended to the conversation, and journaled — in that order of
     guarantee, not of timing. Speech may begin before the reply is complete; the conversation write
     happens once, after the reply text exists.
+
+**Delivery order.** Turns run concurrently — one process per push-to-talk — so until rule 15a
+existed a reply was delivered whenever its own generation happened to finish, and the order of his
+conversation was decided by which question was cheaper to answer. Measured 2026-08-10 from the day
+journal and the metrics log: his 12:31:15 message took 149 seconds to answer and his 12:31:46 one
+took 69, so the answer to the SECOND reached him at 12:32:39 and the answer to the first at
+12:33:31 — a quotation-marks theory arriving 105 seconds after he had said, in those words, that it
+was not about quotation marks. He read it as her answer to what he had just said, because that is
+what it looked like, and two minutes later he took her offline. A reply landing in a newer message's
+slot is the loudest statement this machine can make that it was not listening.
+
+15a. Every interactive turn MUST take a place in one delivery queue at turn start, in arrival order,
+     on the desk and the phone alike. He is one person having one conversation and which handset he
+     reached for does not change the order he said things in. The place is taken before the prompt
+     is built and released when the reply has been delivered — or by the session's exit trap, so a
+     turn killed anywhere cannot hold a place the next reply queues behind.
+15b. A reply MUST NOT be delivered while an earlier turn is still owed its delivery. The wait is
+     bounded by `TURN_ORDER_WAIT`; past the bound the reply goes out and the session outcome says
+     it went out of order. A reply held forever is the failure this rule exists to prevent, not an
+     acceptable price for preventing it.
+15c. A message from him that is **pushback** (`dispute_detect`, [cocoon.md](cocoon.md) rules 10-13)
+     SUPERSEDES every turn still in flight behind it. A superseded reply answers a question he has
+     since closed, and it MUST NOT be spoken, shown, or synthesised, and MUST NOT be announced as
+     though it were a reply. The turn MAY raise one notification saying that a reply was held —
+     nothing here happens silently — provided it carries none of the held words. It MUST be appended
+     to the conversation marked as a reply she wrote and did not say, and it MUST be journaled in
+     full with an outcome naming the message that closed it. This is the regroup bargain made at
+     delivery instead of at drafting: one voice, one reply, and the reply that stands is the one
+     answering what he last said. The words are never lost — the next turn's prompt reads them as
+     something withheld and may carry them forward if they still stand.
+15d. Nothing waits on a superseded turn. Waiting for a reply that will never be spoken would delay
+     a live answer behind a dead theory, which is how ordering becomes a latency regression instead
+     of a fix.
+15e. A superseded turn's VOICE MUST be stopped at the moment it is superseded, not when it
+     finishes. The streamer speaks sentence by sentence as the model writes, so a turn that only
+     learns at delivery time that its moment has passed may already have said the whole thing —
+     which would leave rule 15c holding the transcript and nothing else, and it was never the
+     transcript he heard. The pushback message is him talking over her, and `crab start` has always
+     stopped speech the moment he does (rule 1); this is that same policy aimed at the one voice
+     his message closed. It MUST be aimed by the pid in the ticket — the streamer is a child of the
+     turn's shell — and MUST NOT be a process-wide kill of speech, which would cut off a turn
+     nobody rejected. The superseded turn also MUST NOT run the never-silent guarantee, which would
+     read the empty receipt as a broken speech path and say the whole held reply aloud. Being
+     superseded also means not delivered, so the out-of-band work that judges what he was TOLD —
+     the promise audit, the promise checker, the claudism capture — does not run for it; the memory
+     judge does, because a memory that shaped the reply shaped it whether or not it was spoken.
+
 16. A turn that produced no text MUST report itself: a notification and a session outcome line. It
     MUST NEVER be silent in the way a wake is silent. Answering a question with nothing is a
     failure and is recorded as one.
+16a. A session that ends before delivering MUST say so in the day journal, and MUST hand over
+     whatever reply exists. A killed turn never reaches any of its own branches, so its reply and
+     its outcome are both empty and the journal writes `"reply": ""` with no outcome — the same row
+     a turn whose model produced nothing writes, and the same row a turn nobody ever answered
+     writes. Three different failures, one indistinguishable record, and no way to tell from the
+     day afterwards that anything went missing. Measured 2026-08-10: the 12:33:04 turn was the one
+     that found the right answer to the bug he was reporting and committed the fix; its shell was
+     killed at 12:35:35, its CLI finished writing that answer into the stream log ten seconds
+     later, and the journal row for it says `"reply": ""`. So the exit trap MUST read the turn's
+     own stream log on its way out and journal what it finds — with an outcome saying plainly that
+     it was recovered and never delivered — and when there is nothing to find, MUST say THAT rather
+     than leaving the row blank. The empty reply with no explanation is not a state this pipeline
+     may reach.
+     - The record MUST claim only what it can support. "Delivered" and "heard" are different
+       questions: the streamer speaks while the model is still writing, so a turn killed at the end
+       may genuinely have said most of its reply aloud and still delivered nothing anywhere else.
+       The outcome states the delivery facts it owns (nothing shown, nothing added to the
+       conversation) and reports the speakers from the streamer's own receipt — including saying
+       that no receipt was left, which is an honest answer where "it was never spoken" would be a
+       guess. A record that overclaims is the failure this rule was written against wearing better
+       clothes.
 17. A turn whose every account refused over a usage limit MUST NOT speak the refusal, MUST NOT
     append it to the conversation, and MUST surface it through the notification, the session
     outcome, and the phone's `error` field.
@@ -171,6 +239,10 @@ file rather than re-instrumented every time the question comes up.
 | `${STATE_PREFIX}-debug-<pid>.log` | the turn | stream-json, one file per session |
 | `${STATE_PREFIX}-debug.log` | `claim_debuglog` | symlink to the newest session log |
 | `${STATE_PREFIX}-live-turn` | turn | `epoch \t device \t status \t user text \t reply` |
+| `${STATE_PREFIX}-turn-order/<seq>.ticket` | `turn_order_take` (rule 15a) | `pid \t proc-start \t epoch \t device`; zero-padded seq, so glob order is arrival order |
+| `${STATE_PREFIX}-turn-order/<seq>.superseded` | `turn_order_take` (rule 15c) | `superseding-seq \t the message that closed it` |
+| `${STATE_PREFIX}-turn-order/next` | `turn_order_take` | the monotonic ticket counter |
+| `${STATE_PREFIX}-turn-order.lock` | every queue operation | flock, on fd 6 — never 9, which is the conversation lock in one hand and the wake lock in another |
 | `~/.local/share/deskcrab/sessions/<pid>` | session registry | `kind \t pid \t started \t epoch \t proc-start` |
 | `~/.local/share/deskcrab/sessions/<pid>.claim` | `crab claim` | one line, advisory |
 | `~/.local/share/deskcrab/sessions/<pid>.ckpt` | `crab checkpoint` | append-only, one line per checkpoint |
@@ -257,6 +329,17 @@ catch-all text query, `crab remote` (phone), and the phone server.
   to decide whether a reply may be spoken.
 - **"The user is busy" means the user, never another of her own sessions.** That test used to count
   her own voice, and it is exactly how a wake beside a desk reply lost its whole output.
+- **The delivery queue is ordered, and supersession is the only thing that lets a turn skip the
+  wait.** Ordering alone would have made 2026-08-10 worse, not better: the good reply was ready at
+  12:32:39 and the stale one not until 12:33:36, so a strict queue would have delayed the answer he
+  needed by another minute to preserve the order of one he had already thrown away. The two rules
+  only work as a pair — earlier replies go first, and a reply he has already rejected is not an
+  earlier reply, it is one that is never going out.
+- **The delivery queue lives under `$STATE_PREFIX`, so a reboot empties it.** A ticket that outlived
+  its process would be an earlier turn every later reply waits on, and the wait bound would become
+  the floor on every answer.
+- **The ticket carries the process start time as well as the pid.** A recycled pid keeps a dead
+  turn looking like one still owed an answer, exactly as it does in the session registry.
 
 ## KNOWN DEFECTS
 
@@ -271,12 +354,24 @@ catch-all text query, `crab remote` (phone), and the phone server.
 | `MIN-17` | The overlap collapser can swallow a genuinely repeated phrase; it tolerates a quarter of the words mismatching and caps its hypothesis at thirty words. |
 | Recommendation §4.2 | The "Thinking" notification is dismissed only after generation returns, so a stalled turn leaves it stuck on screen. |
 | Recommendation §4.6 | Detached children do not inherit the current login, so they always fire at the ambient account and fail quietly. |
+| Rule 15b, speech half | Ordering covers DELIVERY — the conversation, the journal, the window, the notification, the phone's audio. It does not cover the desk streamer, which speaks as the model writes, so two ordinary questions can still be answered aloud in the order they finished rather than the order they were asked. The case that mattered is closed by rule 15e: a rejected theory is silenced the instant he rejects it, and whatever was already out of her mouth was said before his message existed. Two ordinary answers heard out of order are both still wanted, which is why this is a defect and not a fire. Closing it means holding a non-head turn's streamer until it reaches the head — `claim_debuglog` split from `start_tts_streamer`, the streamer started late, safe only because it tails from the top of the file. |
 
 ## TESTS
 
 **Existing:** `tests/test_convo_compaction.sh`, `tests/test_convo_stamps.sh`,
 `tests/test_regroup.sh`, `tests/test_silent_wake.sh`, `tests/test_turn_reinforce.sh`,
 `tests/test_no_project_memory.sh`.
+
+`tests/test_turn_order.sh` — rules 15a-15e: a slow first turn and a fast second one deliver in
+arrival order; a pushback message supersedes the turn in flight behind it, whose reply is written
+to the transcript marked unsaid, journalled in full, and never spoken; nothing waits on a
+superseded ticket; a ticket whose process is gone is swept rather than waited on; the bound expires
+and the outcome says so; `TURN_ORDER_WAIT=0` restores the old behaviour exactly.
+
+`tests/test_undelivered_reply.sh` — rule 16a: a turn killed mid-generation whose stream log holds a
+finished reply journals that reply with the undelivered outcome; killed with nothing in the log, it
+journals the interrupted outcome; a turn that delivered normally is untouched; the empty-reply,
+no-outcome row of 2026-08-10 is unreachable.
 
 **To be written:**
 

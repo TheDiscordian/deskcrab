@@ -154,6 +154,31 @@ WAKE_COALESCE_WINDOW="${WAKE_COALESCE_WINDOW:-900}"
 # saying them twice. This is the seconds-scale window in which the other
 # reply still counts as "being said right now". 0 disables the block.
 LIVE_SPEECH_WINDOW="${LIVE_SPEECH_WINDOW:-180}"
+# Delivery order. Turns run concurrently — one process per push-to-talk — and
+# until this existed a reply was delivered whenever its own generation
+# happened to finish, which is not the order he said things in. Measured
+# 2026-08-10: his 12:31:15 message took 149s to answer and his 12:31:46 one
+# took 69s, so the SECOND answer reached him at 12:32:39 and the first at
+# 12:33:31 — a theory he had already rejected, arriving 105 seconds after he
+# rejected it, wearing the face of an answer to what he had just said. A reply
+# now waits for every earlier turn to deliver before it delivers. This is the
+# bound on that wait: past it the reply goes out anyway and the turn records
+# that it did. 0 disables ordering entirely.
+TURN_ORDER_WAIT="${TURN_ORDER_WAIT:-180}"
+# How hot the conversation is. A message from him younger than this and he is
+# mid-exchange: he is still typing, still angry, still owed the answer to the
+# last thing he said. Two mechanisms read it — a reply whose moment has passed
+# (above) and a wake's non-urgent output (below) — because both failures on
+# 2026-08-10 were the same failure: something arriving in a conversation that
+# had moved on without it. 0 disables both readings.
+CONVO_HOT_WINDOW="${CONVO_HOT_WINDOW:-120}"
+# A wake whose output was held for a hot conversation comes back through the
+# queue this far out — comfortably past CONVO_HOT_WINDOW, so the retry is not
+# a second interruption. It holds at most WAKE_HOT_HOLD_CAP notes at a time;
+# past that the oldest are drained, because a queue of held asides is itself a
+# storm waiting for a quiet minute.
+WAKE_HOT_RETRY="${WAKE_HOT_RETRY:-300}"
+WAKE_HOT_HOLD_CAP="${WAKE_HOT_HOLD_CAP:-3}"
 
 # Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
 SERVE_PORT="${SERVE_PORT:-8723}"
@@ -910,9 +935,74 @@ turn_metric() {  # <stage> [detail]
     return 0
 }
 
+# The last thing a dying session can still say. specs/turn-pipeline.md rule
+# 16a: a session killed while generating never reaches any of its own
+# branches, so SESSION_REPLY and SESSION_OUTCOME are both empty and the day
+# journal writes `"reply": ""` with no outcome at all — the same row a turn
+# whose model produced no text writes, and the same row a turn that was never
+# answered writes. Three different failures, one indistinguishable record.
+#
+# Measured 2026-08-10. The 12:33:04 turn (pid 167071) was the one that found
+# the right answer to the bug he was reporting — "a quiet block never goes to
+# the speakers, so the thing that holds banned words back never looks at it" —
+# and committed the fix. Its shell was killed at 12:35:35; the CLI ran on and
+# finished writing that reply into the stream log at 12:35:45, ten seconds
+# after the only process that would ever have read it was gone. The journal
+# row for that turn says reply "". The answer he had been asking for all
+# morning existed on disk and nothing has ever said so.
+#
+# So the trap looks in the stream log on its way out. Whatever is there is
+# journalled as the reply, with an outcome that says plainly it was never
+# delivered — and when there is nothing there, the row says THAT instead of
+# being silently blank. Bounded and best-effort by construction: this runs in
+# an exit trap, and a rescue that hangs is a session that never finishes.
+_session_rescue_undelivered() {
+    [ -z "$(printf '%s' "${SESSION_REPLY:-}${SESSION_OUTCOME:-}" | tr -d '[:space:]')" ] || return 0
+    local TEXT=""
+    if [ -s "${DEBUGLOG:-}" ] && [ -x "$LIB_DIR/extract-response" ]; then
+        TEXT="$(timeout 15 env DESKCRAB_DEBUGLOG="$DEBUGLOG" \
+            "$LIB_DIR/extract-response" 2>/dev/null || true)"
+    fi
+    if [ -n "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ]; then
+        SESSION_REPLY="$TEXT"
+        SESSION_OUTCOME="(undelivered — this session ended before its reply reached him; the words below were recovered from its own stream log ${DEBUGLOG:-}, and nothing was shown or added to the conversation. $(_session_rescue_speech_note))"
+    else
+        SESSION_OUTCOME="(interrupted — this session ended before any reply existed; nothing was delivered and there was nothing in ${DEBUGLOG:-its stream log} to recover)"
+    fi
+    return 0
+}
+
+# How much of it he actually heard, which is NOT the same question as whether
+# the turn delivered. The streamer speaks sentence by sentence while the model
+# is still writing, so a turn killed at the end may have said most of its reply
+# out loud and still never delivered a word of it anywhere else. Claiming
+# flatly that a recovered reply "was never spoken" is a claim this function
+# cannot support — and a record that overclaims is the thing this whole rule
+# exists to stop. So it says what the receipt says, including when the receipt
+# is missing.
+_session_rescue_speech_note() {
+    local CHARS
+    if [ -f "${_TTS_RECEIPT:-}" ]; then
+        CHARS="$(sed -n 's/^chars=//p' "$_TTS_RECEIPT" 2>/dev/null | head -1)"
+        case "$CHARS" in ''|*[!0-9]*) CHARS=0 ;; esac
+        if [ "$CHARS" -gt 0 ]; then
+            printf 'The streamer had put %s characters of it on the speakers before the end, so he heard some of this.' "$CHARS"
+        else
+            printf 'The speech receipt is empty, so none of it reached the speakers.'
+        fi
+    else
+        printf 'No speech receipt was left, so how much of it reached the speakers is not known.'
+    fi
+}
+
 session_finish() {
     [ -n "${SESSION_FILE:-}" ] || return 0
     rm -f "$SESSION_FILE" "$SESSION_FILE.claim" "$SESSION_FILE.ckpt"
+    # Never hold a place in the delivery queue past this point: a turn killed
+    # anywhere at all would otherwise be an earlier ticket every later reply
+    # queues behind until the bound runs out.
+    turn_order_release
+    _session_rescue_undelivered
     local NOW; NOW=$(date +%s)
     {
         flock -w 10 9
@@ -1700,9 +1790,19 @@ convo_append_user() { convo_append 'User [%s]: %s\n' "$(convo_stamp)" "$1"; }
 # --wake marks the block as one she wrote to herself, unprompted. Every wake
 # that delivers words goes through this, so the marker cannot be written on one
 # path and forgotten on another.
-convo_append_assistant() {  # [--wake] <text>
+# --held marks a reply she WROTE and did not say: a turn whose moment passed
+# while it was generating (specs/turn-pipeline.md rule 15c). It belongs in the
+# transcript — the words existed, and a record that drops them is the
+# empty-reply hole under another name — but it must never read as something
+# he heard. The next turn's prompt sees a block she did not deliver and can
+# carry it forward if it still stands; without the marker it would see a reply
+# he has read and answered, and defend it.
+convo_append_assistant() {  # [--wake|--held] <text>
     local mark=""
-    [ "${1:-}" = "--wake" ] && { mark=" (autonomous wake)"; shift; }
+    case "${1:-}" in
+        --wake) mark=" (autonomous wake)"; shift ;;
+        --held) mark=" ($TURN_HELD_MARK)"; shift ;;
+    esac
     convo_append 'Assistant [%s]%s: %s\n\n' "$(convo_stamp)" "$mark" "$1"
 }
 
@@ -2372,7 +2472,7 @@ $(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
 $(self_state_report --prompt)
 THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
 Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
-Wakes are booked in your name by seven hands besides you, each leaving its name on the record: the promise auditor (promise-audit), the job runner (job-runner), the self-change watcher (notice-selfchange), the new-file watcher (notice-newfiles), the watcher's canary (canary), the nightly claudism review (claudism-review) and the chain floor (wake-chain-floor); a wake that could not reach a model re-books itself as outage-retry, and a record stamped herself is one you made yourself, rendered as 'booked by you'. Each pending wake above names its booker and carries its own reason. A wake you did not personally type is still yours and still scheduled.
+Wakes are booked in your name by seven hands besides you, each leaving its name on the record: the promise auditor (promise-audit), the job runner (job-runner), the self-change watcher (notice-selfchange), the new-file watcher (notice-newfiles), the watcher's canary (canary), the nightly claudism review (claudism-review) and the chain floor (wake-chain-floor); a wake that could not reach a model re-books itself as outage-retry, a wake whose quiet note landed in a hot conversation books itself back as hot-hold, and a record stamped herself is one you made yourself, rendered as 'booked by you'. Each pending wake above names its booker and carries its own reason. A wake you did not personally type is still yours and still scheduled.
 Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
 Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
@@ -2592,6 +2692,30 @@ user_busy() {
     return 1
 }
 
+# Is the conversation HOT — is he mid-exchange right now? user_busy above asks
+# about this instant at the hardware: is the microphone open, is a voice on the
+# speakers. That is a much smaller question than the one that matters, and the
+# gap between them is measurable. 2026-08-10, 12:32:12: an autonomous wake
+# delivered "(quiet) Lost browser-006 — mated by a promoted pawn while my
+# knights admired themselves" into the middle of an argument, between "stop
+# assuming I'm wrong" (12:31:46) and "I'm reporting a genuine bug" (12:33:04).
+# user_busy was correct and said no: nothing was recording, nothing was
+# speaking, there was a lull of a few seconds between two of his messages. A
+# lull between two messages of a fight is not a quiet room, and a chess aside
+# arriving in one reads as her attention being somewhere else entirely.
+#
+# So the second question, in his terms rather than the sound card's: how long
+# since he last said something. record_origin stamps that at the start of
+# every desk and phone turn, which is exactly the moment a message arrives.
+convo_hot() {
+    [ "${CONVO_HOT_WINDOW:-0}" -gt 0 ] || return 1
+    local LAST NOW
+    LAST="$(last_origin_epoch)"
+    case "$LAST" in ''|*[!0-9]*) return 1 ;; esac
+    NOW=$(date +%s)
+    [ $(( NOW - LAST )) -lt "$CONVO_HOT_WINDOW" ]
+}
+
 # One-shot TTS for autonomous wakes (no streaming): markdown-strip + TTS_FIXES,
 # then pipe through piper exactly like the streamer does.
 speak_once() {
@@ -2680,6 +2804,235 @@ live_turn_begin() {  # <device> <user-text>
 live_turn_end() {  # <device> <user-text> <spoken-reply>
     printf '%s\t%s\tanswered\nUser: %s\nAssistant: %s\n' "$(date +%s)" "$1" "$2" "$3" > "$LIVE_TURN_FILE.tmp" \
         && mv "$LIVE_TURN_FILE.tmp" "$LIVE_TURN_FILE"
+}
+
+# --- Delivery order: replies leave in the order he said things ---------------
+# specs/turn-pipeline.md rules 15a-15e. A turn is one process per push-to-talk,
+# and nothing used to hold them in any order at all: each one delivered the
+# instant its own generation finished, so the ordering of his conversation was
+# decided by which question happened to be cheaper to answer.
+#
+# The measurement, 2026-08-10, from the day journal and the metrics log:
+#
+#   12:31:15  pid 150479 starts   ("you told me I never heard honest from you")
+#   12:31:46  pid 155969 starts   ("you didn't have it in fucking quotations")
+#   12:32:39  pid 155969 SPEAKS   — the answer to the SECOND message
+#   12:33:31  pid 150479 SPEAKS   — the answer to the first, 105 seconds after
+#                                   he had explicitly rejected what it says
+#
+# Both replies were about quotation marks. He had spent the intervening minute
+# telling her it was not about quotation marks. The second one landed as though
+# it were her answer to that, and he read it — correctly — as not being
+# listened to. Stale replies dropping into newer slots is the single worst
+# amplifier available to this machine, and it cost nothing to build and
+# everything to leave alone.
+#
+# So: a ticket at turn start, in arrival order, and a reply waits at delivery
+# for every earlier ticket to clear. The queue is a directory of tickets under
+# $STATE_PREFIX, which means a reboot clears it — a stale ticket cannot wedge
+# tomorrow's conversation.
+TURN_ORDER_DIR="${TURN_ORDER_DIR:-${STATE_PREFIX}-turn-order}"
+TURN_ORDER_LOCK="${TURN_ORDER_LOCK:-${STATE_PREFIX}-turn-order.lock}"
+# The marker a superseded ticket carries, and the header of the transcript
+# block a held reply lands in. Named once: the tests assert on these strings
+# and so does the journal reader.
+TURN_HELD_MARK="held — not spoken"
+
+# Is the process that owns this ticket still alive AS THE SAME PROCESS? Pids
+# are recycled, and a recycled pid keeps a dead turn looking like one still
+# owed an answer — the same trap the session registry carries its process
+# start time for.
+_turn_ticket_alive() {  # <ticket file>
+    local pid startt
+    IFS=$'\t' read -r pid startt _ < "$1" 2>/dev/null || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$(_proc_starttime "$pid")" = "${startt:-0}" ]
+}
+
+# Her last reply wherever it stands, rather than only when it is the final
+# block. _convo_last_assistant_block answers the stricter question — is her
+# reply the LAST thing in the transcript — which is the right guard for the
+# dispute layer (was this a reply to what she just said?) and the wrong one
+# for the delivery queue. By the time a second turn arrives, the FIRST turn
+# has already appended his earlier message, so her reply is no longer the last
+# block and the stricter question answers no for every concurrent message.
+# Measured while building this: the 12:31:46 pushback superseded nothing,
+# because a turn was in flight above it — precisely the case the queue exists
+# for.
+_convo_last_assistant_anywhere() {
+    [ -f "$CONVOFILE" ] || return 0
+    awk -v bre="$CONVO_BLOCK_RE" -v are="$CONVO_ASSISTANT_RE" '
+        $0 ~ bre {
+            if ($0 ~ are) { line = $0; sub(are, "", line); buf = line; keep = 1 }
+            else { keep = 0 }
+            next
+        }
+        keep { buf = buf "\n" $0 }
+        END { if (length(buf)) print buf }
+    ' "$CONVOFILE" 2>/dev/null
+}
+
+# Is this message pushback, asked the way the delivery queue needs it asked?
+# Every pattern and every weight is dispute_detect's — the cocoon's detector,
+# called through, so the two can never drift — with only its
+# is-her-reply-the-last-block guard widened to is-there-a-reply-at-all. The
+# widening is done by handing the detector a one-block transcript holding her
+# most recent reply, so it sees exactly what it expects to see.
+_turn_order_is_pushback() {  # <the user's message>
+    local LAST RC TMP
+    LAST="$(_convo_last_assistant_anywhere)"
+    [ -n "$(printf '%s' "$LAST" | tr -d '[:space:]')" ] || return 1
+    if [ -n "$(printf '%s' "$(_convo_last_assistant_block 2>/dev/null)" | tr -d '[:space:]')" ]; then
+        dispute_detect "$1"
+        return $?
+    fi
+    TMP="$(mktemp "${STATE_PREFIX}-dispute-XXXXXX.txt" 2>/dev/null)" || return 1
+    printf 'Assistant: %s\n' "$LAST" > "$TMP"
+    local SAVED="$CONVOFILE"
+    CONVOFILE="$TMP"
+    dispute_detect "$1"
+    RC=$?
+    CONVOFILE="$SAVED"
+    rm -f "$TMP"
+    return $RC
+}
+
+# Silence a superseded turn's voice, NOW rather than when it finishes. The
+# streamer speaks sentence by sentence as the model writes, so a turn that
+# learns at delivery time that it has been superseded may already have said
+# most of it — which leaves rule 15c holding only the transcript, and it was
+# never the transcript he heard. The message that supersedes it is him talking
+# over her, and `crab start` has always stopped speech the moment he does; this
+# is the same policy aimed at the one voice his message closed rather than at
+# every voice on the box.
+#
+# By the pid in the ticket: the streamer is a direct child of the turn's shell,
+# and piper and aplay are children of the streamer. Nothing global — no
+# `stop_tts`, which would cut off a turn nobody rejected.
+_turn_order_silence() {  # <the superseded turn's pid>
+    local pid="$1" child cmd
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    command -v pgrep >/dev/null 2>&1 || return 0
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+        cmd="$(tr '\0' ' ' < "/proc/$child/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *tts-streamer*)
+                pkill -P "$child" 2>/dev/null
+                kill "$child" 2>/dev/null
+                ;;
+        esac
+    done
+    return 0
+}
+
+# Take this turn's place in the queue. Called at turn start, on the desk and
+# the phone alike — he is one person in one conversation, and which device he
+# reached for does not change the order he said things in.
+#
+# The second half is the release valve, and it is what keeps ordering from
+# making things worse: when THIS message is pushback, every earlier turn still
+# in flight is marked superseded. Its answer is to a question he has since
+# rejected, so nothing waits for it and it will not be spoken — see
+# turn_order_wait and the held path in the turn.
+#
+# Its own file descriptor (6). Nothing else here uses it, and that matters:
+# fd 9 is the conversation lock in one hand and the wake lock — held open for
+# the LIFE of the process — in another, so a queue operation borrowing 9 would
+# either drop a lock somebody was standing on or wait on itself.
+turn_order_take() {  # <device> <user-text>
+    TURN_SEQ=""
+    [ "${TURN_ORDER_WAIT:-0}" -gt 0 ] || return 0
+    mkdir -p "$TURN_ORDER_DIR" 2>/dev/null || return 0
+    # A braced group, not a subshell: the sequence number has to survive into
+    # the caller's scope, and `( ... )` would take it to the grave.
+    {
+        if flock -w 10 6; then
+            local next f seq
+            next="$(cat "$TURN_ORDER_DIR/next" 2>/dev/null)"
+            case "$next" in ''|*[!0-9]*) next=0 ;; esac
+            next=$(( next + 1 ))
+            printf '%s\n' "$next" > "$TURN_ORDER_DIR/next"
+            # Zero-padded so the shell's glob order IS the arrival order.
+            printf '%s\t%s\t%s\t%s\n' "$$" "$(_proc_starttime $$)" "$(date +%s)" "$1" \
+                > "$(printf '%s/%09d.ticket' "$TURN_ORDER_DIR" "$next")"
+            if _turn_order_is_pushback "$2"; then
+                for f in "$TURN_ORDER_DIR"/[0-9]*.ticket; do
+                    [ -e "$f" ] || continue
+                    seq="$(basename "$f" .ticket)"
+                    [ "$((10#$seq))" -lt "$next" ] || continue
+                    _turn_ticket_alive "$f" || continue
+                    printf '%s\t%s\n' "$next" "$2" > "${f%.ticket}.superseded"
+                    _turn_order_silence "$(cut -f1 "$f")"
+                done
+            fi
+            TURN_SEQ="$next"
+        fi
+    } 6>"$TURN_ORDER_LOCK"
+    turn_metric turn-order-taken "${TURN_SEQ:-none}"
+    return 0
+}
+
+# Has a later message rejected what this turn is answering? Prints that
+# message when it has.
+turn_order_superseded() {
+    [ -n "${TURN_SEQ:-}" ] || return 1
+    local f
+    f="$(printf '%s/%09d.superseded' "$TURN_ORDER_DIR" "$TURN_SEQ")"
+    [ -s "$f" ] || return 1
+    cut -f2- "$f"
+    return 0
+}
+
+# Give up this turn's place. Idempotent, and called from session_finish so a
+# turn that dies anywhere — signal, watchdog, a hand with pkill — cannot leave
+# a ticket the next reply queues behind forever.
+turn_order_release() {
+    [ -n "${TURN_SEQ:-}" ] || return 0
+    local base
+    base="$(printf '%s/%09d' "$TURN_ORDER_DIR" "$TURN_SEQ")"
+    rm -f "$base.ticket" "$base.superseded" 2>/dev/null
+    TURN_SEQ=""
+    return 0
+}
+
+# Wait for every earlier turn to have delivered. Returns 0 when the way is
+# clear, 1 when the bound ran out — the caller delivers anyway and says so,
+# because a reply held forever is the failure this whole mechanism exists to
+# prevent, not an acceptable cost of preventing it.
+#
+# Three things end the wait for a given earlier ticket, and all three are
+# "that reply is never arriving to be overtaken":
+#   * it delivered and released its ticket;
+#   * its process is gone, so it never will (the ticket is swept here);
+#   * it was superseded, so it is not going to be spoken at all — waiting for
+#     a held reply would delay a live one behind a dead theory, which is how
+#     ordering turns into the latency regression it was supposed to fix.
+turn_order_wait() {
+    [ -n "${TURN_SEQ:-}" ] || return 0
+    local DEADLINE=$(( $(date +%s) + TURN_ORDER_WAIT )) f seq waiting
+    while :; do
+        waiting=""
+        for f in "$TURN_ORDER_DIR"/[0-9]*.ticket; do
+            [ -e "$f" ] || continue
+            seq="$(basename "$f" .ticket)"
+            [ "$((10#$seq))" -lt "$((10#$TURN_SEQ))" ] || continue
+            [ -s "${f%.ticket}.superseded" ] && continue
+            if ! _turn_ticket_alive "$f"; then
+                rm -f "$f" "${f%.ticket}.superseded" 2>/dev/null
+                continue
+            fi
+            waiting="$seq"
+            break
+        done
+        [ -n "$waiting" ] || { turn_metric turn-order-clear "$TURN_SEQ"; return 0; }
+        if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+            turn_metric turn-order-timeout "waited ${TURN_ORDER_WAIT}s on $waiting"
+            speech_log "delivery order: gave up after ${TURN_ORDER_WAIT}s waiting on turn $waiting — delivering out of order"
+            return 1
+        fi
+        sleep 0.2
+    done
 }
 
 # --- Live speech: the words another session of me is saying RIGHT NOW --------
@@ -4365,6 +4718,29 @@ wake_claude_run_chain() {
 # Every reader in here (extract_response, wake_stream_failed, wake_work_trace,
 # notice_own_writes, claude_limit_fallback_due) goes through $DEBUGLOG, so the
 # per-session name is all it takes. tests/test_silent_wake.sh holds the line.
+# The reason a held note comes back under. A prefix, so the fired wake can be
+# recognised — by the cap that bounds how many may be waiting at once, and by
+# anyone reading the queue and wondering why a chess aside is booked for
+# twenty past.
+WAKE_HELD_REASON_PREFIX="You had this to say while he was mid-conversation and it was held:"
+
+# Put a held note back on the queue (specs/wake-queue.md rule 27a). Through
+# the module's one door — nothing here mints a unit or touches the wakes
+# directory — with a cap scoped to this prefix, because a stack of held asides
+# all landing on the first quiet minute is the storm the hold was avoiding,
+# one delay later.
+wake_hold_for_heat() {  # <the held words>
+    local WORDS
+    WORDS="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 600)"
+    [ -n "$(printf '%s' "$WORDS" | tr -d '[:space:]')" ] || return 0
+    "$SCRIPT_DIR/crab" wake-at --by hot-hold \
+        --cap "$WAKE_HOT_HOLD_CAP" --cap-prefix "$WAKE_HELD_REASON_PREFIX" \
+        "${WAKE_HOT_RETRY}s" event \
+        "$WAKE_HELD_REASON_PREFIX $WORDS — the conversation has had a chance to cool since. Say it now if it still stands, and let it go if it does not." \
+        >/dev/null 2>&1
+    return 0
+}
+
 run_claude_wake() {
     session_register "autonomous wake"
     # Nobody spoke, so the day journal's "user" slot carries the wake's
@@ -4622,6 +4998,31 @@ $DISPLAY_PART"
         session_outcome "(muted — user was mid-interaction) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         return 0
     fi
+    # And the same question one level up from the hardware: is the
+    # CONVERSATION hot (wake-queue.md rule 27a)? user_busy asks whether the
+    # microphone is open or a voice is on the speakers at this instant, and
+    # between two messages of an argument the honest answer to both is no.
+    # 2026-08-10, 12:32:12: a quiet chess note — "Lost browser-006 — mated by
+    # a promoted pawn while my knights admired themselves" — landed in the
+    # conversation between "stop assuming I'm wrong" and "I'm reporting a
+    # genuine bug", in a lull of a few seconds, with every existing gate
+    # correctly saying the room was quiet.
+    #
+    # NARROW ON PURPOSE, and the narrowness is rule 29's: nothing here judges
+    # what the reply SAYS. It judges only the moment, and only for output she
+    # already decided not to speak — a quiet bubble, a display section. A wake
+    # that chose to open its mouth has something it thinks is worth saying out
+    # loud, and that choice still stands whatever the clock says. What is held
+    # is a note, and a note keeps.
+    #
+    # Held, not dropped: the words go back through the queue's one door as an
+    # event wake past the heat, so she comes back to it in a quiet minute and
+    # decides again with the conversation in front of her.
+    if [ -z "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && convo_hot; then
+        session_outcome "(held — the conversation was hot, nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}"
+        wake_hold_for_heat "${SILENT_NOTE:-${DISPLAY_PART:+a display section it built}}"
+        return 0
+    fi
 
     # No echo-window mute here any more: a wake that fired beside an
     # interactive turn was shown the exchange in its prompt
@@ -4794,6 +5195,28 @@ wait_tts_streamer() {
         WAITED=$((WAITED + 1))
     done
     wait "$_TTS_STREAMER_PID" 2>/dev/null
+    return 0
+}
+
+# Take back a voice whose moment has passed (specs/turn-pipeline.md rule 15e).
+# The streamer speaks sentence by sentence as the model writes, so by the time
+# a turn learns it has been superseded some of the reply may already be on its
+# way to the speakers. This stops the rest of it.
+#
+# OUR OWN streamer and nothing else. Not `stop_tts`, which pkills every piper
+# and aplay on the box and would cut another turn off mid-sentence; not the
+# shutup marker, which is shared state and would stand the never-silent
+# guarantee down for whichever turn is speaking next. The same discipline as
+# "no process-wide kill of any prior streamer when a turn starts", for the
+# same reason: this is one turn's voice, not the machine's.
+turn_hold_voice() {
+    [ -n "${_TTS_STREAMER_PID:-}" ] || return 0
+    kill "$_TTS_STREAMER_PID" 2>/dev/null
+    wait_tts_streamer
+    # And retract the notice, so the next session does not regroup against
+    # words that were never said.
+    live_speech_end "$_TTS_STREAMER_PID"
+    rm -f "${_TTS_RECEIPT:-}" 2>/dev/null
     return 0
 }
 
@@ -5099,6 +5522,12 @@ _run_claude_remote_locked() {
     # Mark the exchange in flight: a wake firing beside this turn reads it
     # and is told the message is already being answered.
     live_turn_begin phone "$TEXT"
+    # The same place in the same queue as a desk turn (specs/turn-pipeline.md
+    # rule 15a). The remote lock already orders phone turns against each
+    # other; this is what orders them against the desk, and he is one person
+    # having one conversation — which handset he picked up does not change
+    # the order he said things in.
+    turn_order_take phone "$TEXT"
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
     # crab serve sets DESKCRAB_REMOTE_LOG when it wants to tail this stream and
@@ -5128,12 +5557,36 @@ _run_claude_remote_locked() {
         # or voiced. Fails open to the draft as written.
         RESPONSE="$(claudism_mirror_direct phone "$RESPONSE")"
         SESSION_REPLY="$RESPONSE"
-        convo_append_assistant "$RESPONSE"
-        # Delivered: a job that ended badly has now been reported to somebody.
-        jobs_news_delivered
-        live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
-        compact_convo
-        session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+        # Delivery order, exactly as the desk turn takes it (rules 15a-15e).
+        local ORDERED=1 SUPERSEDER="" ORDER_NOTE=""
+        turn_order_wait || ORDERED=0
+        SUPERSEDER="$(turn_order_superseded || true)"
+        if [ -n "$SUPERSEDER" ]; then
+            # Held: written down, marked as unsaid, never synthesised. The
+            # client is told plainly through the one field it has for a turn
+            # that arrived holding nothing playable, and /watch shows the
+            # transcript block as words she wrote and did not say.
+            convo_append_assistant --held "$RESPONSE"
+            live_turn_end phone "$TEXT" ""
+            compact_convo
+            session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $(spoken_part "$RESPONSE"))"
+            turn_metric turn-held "superseded"
+            turn_order_release
+            ERROR="held — you had already moved past what this answered; it is in the transcript, unspoken"
+            RESPONSE=""
+        else
+            [ "$ORDERED" = 1 ] || \
+                ORDER_NOTE="(delivered out of order — waited ${TURN_ORDER_WAIT}s on an earlier turn that never finished) "
+            convo_append_assistant "$RESPONSE"
+            # Delivered: a job that ended badly has now been reported to somebody.
+            jobs_news_delivered
+            live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
+            compact_convo
+            session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+            # Delivered — see the desk turn: the place goes back now, not at
+            # process exit, so nobody queues behind the synthesiser.
+            turn_order_release
+        fi
     else
         # He asked and nothing came back. Reported as the failure it is: the
         # phone used to receive {"spoken":"", ...} with no error at all, which
@@ -5251,6 +5704,11 @@ run_claude_and_respond() {
     # Mark the exchange in flight: a wake firing beside this turn reads it
     # and is told the message is already being answered.
     live_turn_begin desk "$TEXT"
+    # This turn's place in the order he said things in — taken here, at
+    # arrival, so nothing downstream can decide it (specs/turn-pipeline.md
+    # rule 15a). Also the moment a pushback message closes the theories
+    # already in flight behind it.
+    turn_order_take desk "$TEXT"
 
     convo_append_user "$TEXT"
 
@@ -5304,12 +5762,60 @@ run_claude_and_respond() {
         # stands. A clean draft returns immediately, untouched.
         RESPONSE="$(claudism_mirror_desk "$RESPONSE")"
         SESSION_REPLY="$RESPONSE"
+
+        # Delivery order (specs/turn-pipeline.md rules 15a-15e). Two questions
+        # before a word of this goes out:
+        #
+        #   1. Has every message he sent BEFORE this one been answered yet?
+        #      If not, wait — his conversation reads in the order he had it,
+        #      and a reply arriving in somebody else's slot is the loudest way
+        #      this machine has of saying it was not listening.
+        #   2. Has a message he sent SINCE closed the question this answers?
+        #      Then this reply is a theory he has already rejected, and saying
+        #      it now — 105 seconds late, on 2026-08-10 — is the failure
+        #      itself. It is written down and it is not said.
+        local ORDERED=1 SUPERSEDER="" ORDER_NOTE=""
+        turn_order_wait || ORDERED=0
+        SUPERSEDER="$(turn_order_superseded || true)"
+        if [ -n "$SUPERSEDER" ]; then
+            # Held. The words land in the transcript marked as words she did
+            # not say, so nothing is lost and nothing reads as delivered:
+            # the next turn's prompt sees a reply she wrote and withheld, and
+            # can carry it forward if it still stands. One voice, one reply —
+            # the regroup bargain, made at delivery instead of at drafting.
+            turn_hold_voice
+            convo_append_assistant --held "$RESPONSE"
+            live_turn_end desk "$TEXT" ""
+            compact_convo
+            session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $(spoken_part "$RESPONSE"))"
+            notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+                "held a reply that answered a question you had already closed — it is in the transcript, not spoken" 2>/dev/null
+            turn_metric turn-held "superseded"
+            claudism_mirror_cleanup
+            turn_order_release
+            # The memory judge still runs — a memory that shaped a reply
+            # shaped it whether or not the reply was spoken. The promise audit,
+            # the promise checker and the claudism capture do not: all three
+            # judge what he was TOLD, and he was told none of this.
+            fire_memory_judge "$TEXT" "$RESPONSE" "$(wake_work_trace)"
+            echo "$RESPONSE"
+            return 0
+        fi
+        [ "$ORDERED" = 1 ] || \
+            ORDER_NOTE="(delivered out of order — waited ${TURN_ORDER_WAIT}s on an earlier turn that never finished) "
+
         convo_append_assistant "$RESPONSE"
         # Delivered: a job that ended badly has now been reported to somebody.
         jobs_news_delivered
         live_turn_end desk "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
-        session_outcome "asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+        session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+        # Delivered — the place in the queue is given up HERE, not at process
+        # exit. What comes after this line is the window, the streamer wait
+        # and the out-of-band judges, and none of it is the reply: making the
+        # next turn queue behind a summarising model call and a memory judge
+        # would turn ordering into a stall.
+        turn_order_release
 
         local DISPLAY_PART
         DISPLAY_PART=$(display_part "$RESPONSE")
