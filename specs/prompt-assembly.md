@@ -236,7 +236,11 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
 35. The shelves layer MAY close with the recent-catches block: her freshest claudism flags — the
     last few patterns, deduped, newest first — each named by its own heading in the phrase list,
     under the function the list files it in where it declares one, and
-    quoted as she said it, with the flag log named as where the rest is. Mention-class flags —
+    quoted as she wrote it, with the flag log named as where the rest is. Each quoted line MUST
+    carry whether it reached him: a live-stage flag whose outcome was a rewrite or a table-swap
+    died at the gate and was never spoken, and the block MUST say so rather than present it as
+    something she said — otherwise she apologises for words he never heard and reads the banned
+    wording back as her own. Mention-class flags —
     words quoted or talked about rather than used ([nightly.md](nightly.md) rule 47) — are not
     shown: the block exists to catch the habit, and quoting the list is not the habit. It exists
     so she sees her

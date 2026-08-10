@@ -129,7 +129,16 @@ def main():
         sent = " ".join(str(rec["sentence"]).split())
         if len(sent) > 120:
             sent = sent[:119].rstrip() + "…"
-        shown.append("- %s: \"%s\" (%s)" % (name, sent, when(rec)))
+        # A live-stage row that was repaired never reached him: the draft
+        # died at the gate. Saying "as you said it" of a killed draft makes
+        # her apologise for words he never heard, and hands her the banned
+        # wording as though it were hers (2026-08-10).
+        if rec.get("stage") == "live" and rec.get("outcome") in (
+                "rewrite", "table-swap"):
+            shown.append("- %s: \"%s\" (%s — caught at the gate, never "
+                         "spoken)" % (name, sent, when(rec)))
+        else:
+            shown.append("- %s: \"%s\" (%s — spoken)" % (name, sent, when(rec)))
         if len(shown) >= SHOW_N:
             break
     if not shown:
