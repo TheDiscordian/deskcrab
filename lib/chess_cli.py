@@ -574,6 +574,23 @@ def cmd_engine(args):
     print_position(g, board)
 
 
+def board_from_args(words: list[str], usage: str) -> chess.Board:
+    """A FEN if it reads as one, otherwise a game id/opponent (or nothing at
+    all, meaning the one active game). Every other subcommand takes a game id;
+    reflex and similar refusing to was a step I skipped because it errored."""
+    spec = " ".join(words).strip()
+    if spec:
+        try:
+            return chess.Board(spec)
+        except ValueError as fen_error:
+            try:
+                return build_board(resolve_game(spec))
+            except CliError:
+                raise CliError(f"cannot read that as a FEN ({fen_error}), and "
+                               f"no game matches '{spec}' — {usage}")
+    return build_board(resolve_game(None))
+
+
 def cmd_reflex(args):
     if args.backfill:
         done, active = chess_reflex.backfill(load_all())
@@ -587,14 +604,9 @@ def cmd_reflex(args):
               f"positions {r['positions_before']} -> {r['positions_after']} "
               f"({chess_reflex.db_path()})")
         return
-    if not args.fen:
-        raise CliError("usage: betty-chess reflex <fen> | reflex --backfill"
-                       " | reflex --seed-book")
-    fen = " ".join(args.fen).strip()
-    try:
-        board = chess.Board(fen)
-    except ValueError as e:
-        raise CliError(f"cannot read that as a FEN: {e}")
+    board = board_from_args(
+        args.fen, "usage: betty-chess reflex [<fen>|<game>] | reflex "
+                  "--backfill | reflex --seed-book")
     candidates = chess_reflex.lookup(board.fen())
     if not candidates:
         raise CliError("no memory of this position")
@@ -620,13 +632,8 @@ def cmd_reflex(args):
 
 
 def cmd_similar(args):
-    fen = " ".join(args.fen).strip()
-    if not fen:
-        raise CliError("usage: betty-chess similar <fen> [-k N]")
-    try:
-        board = chess.Board(fen)
-    except ValueError as e:
-        raise CliError(f"cannot read that as a FEN: {e}")
+    board = board_from_args(
+        args.fen, "usage: betty-chess similar [<fen>|<game>] [-k N]")
     import chess_similar
     hits = chess_similar.similar(board.fen(), k=args.k)
     if not hits:
@@ -711,7 +718,8 @@ def main(argv=None):
                         help="what memory says about a position "
                              "(specs/chess-reflex.md)")
     sp.add_argument("fen", nargs="*",
-                    help="a FEN, quoted or not; candidates come back ranked")
+                    help="a FEN or a game id/opponent (default: the active game); "
+                         "candidates come back ranked")
     sp.add_argument("--backfill", action="store_true",
                     help="ingest every finished game already on disk")
     sp.add_argument("--seed-book", action="store_true",
@@ -722,7 +730,8 @@ def main(argv=None):
                         help="stored positions most like a FEN "
                              "(specs/chess-reflex.md rules 10-14)")
     sp.add_argument("fen", nargs="*",
-                    help="a FEN, quoted or not; neighbours come back nearest "
+                    help="a FEN or a game id/opponent (default: the active "
+                         "game); neighbours come back nearest "
                          "first with the move played and the mover's W-D-L")
     sp.add_argument("-k", type=int, default=6, help="how many (default 6)")
     sp.set_defaults(func=cmd_similar)

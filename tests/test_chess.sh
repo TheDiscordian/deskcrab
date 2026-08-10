@@ -275,3 +275,26 @@ chess reflex --seed-book >/dev/null
 [ "$(chess reflex "$START")" = "$before" ] \
   && ok "reseeding the book is idempotent and leaves played games standing" \
   || fail "reseed changed the memory: $(chess reflex "$START")"
+
+# --- a game id where a FEN goes (specs/chess-reflex.md rule 5) -------------
+# Every other subcommand takes a game id; reflex and similar erroring on one
+# is how a pre-move lookup quietly stops being run at all.
+chess new bookworm >/dev/null
+for m in e4 c5 Nf3; do chess move bookworm "$m" >/dev/null; done
+SICILIAN="rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"
+[ "$(chess status bookworm | sed -n 's/^fen: //p')" = "$SICILIAN" ] \
+  && ok "the seeded game is where the test thinks it is" \
+  || fail "seeded game is elsewhere: $(chess status bookworm | sed -n 's/^fen: //p')"
+by_id="$(chess reflex bookworm)"
+[ -n "$by_id" ] && [ "$by_id" = "$(chess reflex "$SICILIAN")" ] \
+  && ok "reflex reads a game id as that game's current position" \
+  || fail "reflex by id disagreed with reflex by fen: $by_id"
+
+out="$(chess similar bookworm)"; rc=$?
+[ $rc -eq 0 ] && ok "similar takes a game id too" || fail "similar by id: $out"
+
+out="$(chess reflex not-a-fen-nor-a-game)"; rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -q "no game matches" \
+  && echo "$out" | grep -q "FEN" \
+  && ok "a word that is neither names both failures" \
+  || fail "unhelpful error for a bad argument: $out"

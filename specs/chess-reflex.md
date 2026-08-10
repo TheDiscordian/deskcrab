@@ -38,7 +38,9 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    the retroactive path for records written before this module existed, or written around
    `save_game` by another hand. Active games are counted and left out. Running it twice is
    harmless (rule 2's idempotence).
-5. `betty-chess reflex <fen>` prints the candidate moves for the side to move, best first, each
+5. `betty-chess reflex [<fen>|<game>]` takes either a FEN or, like every other subcommand, a game
+   id or opponent name (inferred when exactly one game is active) and reads that game's current
+   position. A word that is neither is an error naming both failures. It prints the candidate moves for the side to move, best first, each
    with its played-games count, W-D-L from the mover's perspective, how many book lines contain
    it (`book N`, omitted at zero), and score; then a verdict line —
    `would play <san>` when the gate passes, `not confident enough` when known but thin, and a
@@ -117,8 +119,9 @@ like, what was played, and how those games ended". It informs; it never plays.
     mover's record, and where it came from. The note names itself as context: similar is not
     same, and nothing in this layer is ever auto-played. An empty store, thin neighbours, or any
     failure is a model call without the note, exactly as before. `DESKCRAB_CHESS_SIMILAR=0`
-    switches the note off. `betty-chess similar <fen> [-k N]` exposes the same retrieval by hand
-    and refuses loudly when the table is empty.
+    switches the note off. `betty-chess similar [<fen>|<game>] [-k N]` exposes the same retrieval by
+    hand, accepting a game id on the same terms as rule 5, and refuses loudly when the table is
+    empty.
 
 ## KNOWN LIMITS
 
