@@ -195,10 +195,10 @@ cannot be changed.
 16b. When rule 16a has missed and the model call is about to be made, the bridge asks the effort
     pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
     arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
-    the call's `--effort`. Someone is waiting at the board, so by default the classifier is not
-    even consulted: `DESKCRAB_CHESS_ALWAYS_LOW` (default 1) pins every move to `low`, and only
-    unsetting it deliberately buys positions the classifier's judgement. The alarms, when it is
-    consulted: the side to move in check; a check available to either side that also wins
+    the call's `--effort`. The classifier is consulted by default: a quiet position goes at
+    `medium` and an alarming one at `high`. Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
+    move to `low` instead, skipping the classifier — for when reply latency matters more than
+    the move. The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
     prise by a simple attackers-versus-defenders count; a capture worth a rook or more available
     to either side; a pawn on its seventh rank, either side; her king's pawn shield broken or an

@@ -132,8 +132,8 @@ if start_bridge "$CH" "$SANDBOX/wake-fresh.log" --opponent guest; then
         chess_stamp move-start "guest-001 ply 1 after e4"
     check "reflex-miss stamped before the model on an unknown position" \
         chess_stamp reflex-miss "guest-001 ply 1"
-    check "model-start stamped when the call began, at low effort" \
-        chess_stamp model-start "guest-001 ply 1 effort low"
+    check "model-start stamped when the call began, at medium effort" \
+        chess_stamp model-start "guest-001 ply 1 effort medium"
     check "model-end stamped when the call returned" \
         chess_stamp model-end "guest-001 ply 1 "
     check "her reply stamped move-played (model)" \

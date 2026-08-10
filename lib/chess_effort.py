@@ -23,7 +23,9 @@ import os
 
 import chess
 
-LOW, HIGH = "low", "high"
+# The quiet default is medium, not low: the per-move minutes were the queue
+# in front of the call, not the thinking inside it.
+LOW, HIGH = "medium", "high"
 
 PIECE_VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
                chess.ROOK: 5, chess.QUEEN: 9}

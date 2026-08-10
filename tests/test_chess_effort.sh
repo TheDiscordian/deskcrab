@@ -45,10 +45,10 @@ EOF
 }
 
 echo "the alarms, on positions built for each of them:"
-check_eq "the start position is quiet manoeuvring: low, no reasons" \
-    "$(verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')" "low -"
+check_eq "the start position is quiet manoeuvring: medium, no reasons" \
+    "$(verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')" "medium -"
 check_eq "a closed queen's-pawn opening is quiet too" \
-    "$(verdict 'rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2')" "low -"
+    "$(verdict 'rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2')" "medium -"
 
 out="$(verdict 'rnb1kbnr/pppp1ppp/4p3/3Q4/8/8/PPPP1PPP/RNB1KBNR w KQkq - 0 1')"
 case "$out" in
@@ -72,8 +72,8 @@ alarms hold their tongue with no heavy piece left to exploit anything" \
 # spite check is nearly always in the air, and firing on it made every move
 # expensive (browser-003, 2026-08-10). Only a check that also wins material,
 # or one in a tree narrow enough to be forcing, rings the bell.
-check_eq "an Italian with a mere Bxf7+ spite check in the air stays low" \
-    "$(verdict 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4')" "low -"
+check_eq "an Italian with a mere Bxf7+ spite check in the air stays quiet" \
+    "$(verdict 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4')" "medium -"
 out="$(verdict 'r1b1kbnr/pppp1qpp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1')"
 case "$out" in
   high*check-available*) ok "a check that also wins the queen: high" ;;
@@ -96,10 +96,10 @@ print(chess_effort.classify(chess.Board(), novel=False)[0])
 EOF
 )"
 check_eq "a confident 'new ground' alone turns a quiet position high; \
-an unsure or negative store verdict leaves it low" \
+an unsure or negative store verdict leaves it quiet" \
     "$out" "novel
-low
-low"
+medium
+medium"
 
 # The forced threshold is an env knob, read where the spec says it is.
 out="$(DESKCRAB_CHESS_EFFORT_FORCED=30 verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')"
@@ -297,13 +297,13 @@ echo
 echo "the bridge thinks about quiet positions cheap and alarmed ones dear:"
 : > "$MOVER_LOG"
 drive quiet-001 >/dev/null
-awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 low quiet"' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 medium quiet"' "$MET" \
     | grep -q . \
   && ok "a quiet middlegame classifies LOW, stamped with 'quiet'" \
   || fail "quiet effort stamp" "$(grep quiet-001 "$MET")"
-awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-001 ply 2 effort low /' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-001 ply 2 effort medium /' "$MET" \
     | grep -q . \
-  && ok "and the model call went out at low — the level reached the invocation" \
+  && ok "and the model call went out at medium — the level reached the invocation" \
   || fail "quiet model-start" "$(grep model-start "$MET" | tail -3)"
 awk -F'\t' '$3=="chess" && $4=="move-played" && $5 == "quiet-001 ply 2 c4 model"' "$MET" \
     | grep -q . \
@@ -346,7 +346,7 @@ awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-003 ply 2 low always-low
     | grep -q . \
   && awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-003 ply 2 effort low /' "$MET" \
     | grep -q . \
-  && ok "the always-low pin (the live default) sends every call at low, stamped as the pin" \
+  && ok "the always-low pin sends every call at low, stamped as the pin" \
   || fail "always-low" "$(grep quiet-003 "$MET")"
 
 grep -q "you played" "$WAKE_LOG" && ! grep -q "your move" "$WAKE_LOG" \

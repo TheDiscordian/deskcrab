@@ -577,10 +577,12 @@ class Hub:
         if os.environ.get("DESKCRAB_CHESS_EFFORT", "1") == "0":
             return ""
         ply = len(board.move_stack)
-        # Someone is sat at the board waiting: minutes of deliberation lose
-        # the game that matters more than the game. Every move goes at low
-        # effort unless this is unset deliberately.
-        if os.environ.get("DESKCRAB_CHESS_ALWAYS_LOW", "1") == "1":
+        # Someone is sat at the board waiting — but the minutes per move were
+        # never the thinking, they were the queue in front of it, and with
+        # that gone a medium call still lands in seconds (2026-08-10). So the
+        # blanket pin to low is off by default and the classifier decides;
+        # set this to 1 to force every move low again.
+        if os.environ.get("DESKCRAB_CHESS_ALWAYS_LOW", "0") == "1":
             chess_cli.metric("effort", f"{g['id']} ply {ply} low always-low")
             log(f"{g['id']}: her move will think at low (always-low)")
             return "low"
