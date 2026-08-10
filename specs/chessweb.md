@@ -62,7 +62,8 @@ cannot be changed.
 4. NewGame from the seat syncs the browser to the stored game: Team with the user's colour, then
    the stored move list replayed as broadcasts (a promotion replays as its Move then its
    Promote). If no game is active, one is created in the betty-chess store first — opponent from
-   `--opponent`, her side from the complement of `--human-side` (default: the user is white).
+   `--opponent`, her side from the complement of `--human-side`, which defaults to `random` — a fresh coin flip per
+   new game, not once per process, so a long-lived server does not hand out one colour forever.
    `--game` pins a specific game id instead of newest-active-against-opponent.
 5. An incoming user Move or Promote is translated to UCI and validated against the stored game's
    board with python-chess before anything else happens. Illegal, out-of-turn, or unseated

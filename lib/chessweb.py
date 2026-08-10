@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import os
+import random
 import re
 import shlex
 import socket
@@ -365,7 +366,10 @@ class Store:
 
     def __init__(self, opponent, her_side, game_id=None):
         self.opponent = opponent
-        self.her_side = her_side  # "white" or "black"
+        # "random" means: flip a fresh coin for every NEW game, not once at
+        # startup — otherwise one service run hands out the same colour forever.
+        self.random_side = her_side == "random"
+        self.her_side = "white" if self.random_side else her_side
         self.game_id = game_id
 
     def load(self):
@@ -389,6 +393,8 @@ class Store:
         return None
 
     def create(self):
+        if self.random_side:
+            self.her_side = random.choice(("white", "black"))
         slug = chess_cli.slugify(self.opponent)
         taken = {g["id"] for g in chess_cli.load_all()}
         n = 1
@@ -1066,8 +1072,8 @@ def main(argv=None):
                                                "8181")))
     sp.add_argument("--opponent", default="browser",
                     help="who the user is in the betty-chess store")
-    sp.add_argument("--human-side", choices=["white", "black"],
-                    default="white", help="the user's colour in a NEW game")
+    sp.add_argument("--human-side", choices=["white", "black", "random"],
+                    default="random", help="the user's colour in a NEW game")
     sp.add_argument("--game", default=None,
                     help="pin a betty-chess game id instead of newest-active")
     sp.add_argument("--client", default=None,
@@ -1077,7 +1083,8 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     client_dir = find_client_dir(args.client)
-    her_side = "black" if args.human_side == "white" else "white"
+    her_side = ("random" if args.human_side == "random"
+                else "black" if args.human_side == "white" else "white")
     store = Store(args.opponent, her_side, args.game)
     hub = Hub(store, default_wake_cmd(), args.poll)
 
