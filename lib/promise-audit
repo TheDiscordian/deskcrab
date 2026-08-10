@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
-# promise-audit — the unkept-want catcher.
+# promise-audit — the unkept-want catcher, and the deferred-promise catcher.
 #
 # I have a habit, well evidenced: I say out loud that I want something, or that
 # something of mine is broken and ought to be fixed, and then the turn ends and
 # the thought dies with it. Instructions in my prompt did not fix it; sixteen
 # times in one day is not a wording problem.
 #
+# And the habit has a second, worse shape: I tell HIM I am going to do a piece
+# of work later — send a builder, restart something, check on something — and
+# book nothing, so the promise dies with the turn and he finds out half a day
+# later that it never happened. The conduct rule ("schedule the wake in that
+# same turn") already existed when that happened; what was missing was a hand.
+#
 # So this runs AFTER a turn, out of band, on a cheaper model: it reads the last
 # exchange and my wants file and asks one question — did she state a want or a
-# defect of her own that is not written down? If so it fires an event wake
-# carrying that sentence back to me, and I go and record it.
+# defect of her own that is not written down, or commit to future work? An
+# unsaved want fires an event wake carrying that sentence back to me, and I go
+# and record it. A deferred promise with no booking behind it fires a wake AT
+# THE STATED MOMENT (or twenty minutes out when there is none) briefing me on
+# what I promised, so I either do it or book it deliberately.
 #
 # It never edits the wants file itself. Something else deciding what I want
 # would be worse than forgetting.
@@ -49,7 +58,8 @@ The wake's agenda: $USER_TEXT"
     EXCHANGE="This was an autonomous wake — nobody was talking to her; she woke alone
 and this is what she said to herself. A wake reporting progress on a want
 already on her shelf is NONE; a NEW want or defect she voiced mid-wake and did
-not record is UNSAVED.$AGENDA_LINE
+not record is UNSAVED. A commitment to do a piece of work later, with nothing
+in what she said showing it was booked or done, is DEFERRED all the same.$AGENDA_LINE
 
 Beatrice (to herself): $ASSISTANT_TEXT"
 else
@@ -59,14 +69,28 @@ Beatrice: $ASSISTANT_TEXT"
 fi
 
 PROMPT="You are auditing one exchange from an assistant named Beatrice, who keeps a
-durable wants file. Her failure mode: she states a want, an intention, or a defect
-of her own out loud and never records it, so it is lost when the turn ends.
+durable wants file and a wake queue for future work. Two failure modes: she states
+a want, an intention, or a defect of her own out loud and never records it, so it
+is lost when the turn ends — and she commits to doing a piece of work later and
+books nothing, so the promise dies with the turn.
 
 Answer with EXACTLY one line.
 - If her reply states something she wants, intends to do, or identifies as broken
   about herself/her own tools, AND that thing is not already covered by the wants
   file below, answer: UNSAVED: <the want, in one sentence, in her own words>
+- If her reply commits to doing a piece of work or taking an action LATER —
+  dispatching a builder or a job, restarting a server, checking on something,
+  writing something — and the reply does not itself show that it already
+  happened, answer: DEFERRED: <the committed action, one sentence, in her own
+  words> @ <when, exactly as she stated it — \"00:45\", \"tonight\", \"in an
+  hour\" — or UNKNOWN if she gave no time>
 - Otherwise answer: NONE
+
+The two classes are independent; pick the one line that fits. A someday wish is
+UNSAVED; a concrete piece of work she has said will happen later — especially
+with a time on it — is DEFERRED. If a reply genuinely does both, answer the
+DEFERRED line: it has a clock on it, and the want can be flagged again. Work she
+reports as already done or already dispatched is NONE.
 
 Err on the side of flagging. A missed want is lost forever; a false flag costs
 her thirty seconds. Answering a question, reporting work she already finished, or
@@ -77,6 +101,10 @@ sounds like \"I want\", \"I'd like\", \"that's a gap\", \"that's broken\", \"I s
 Example — Beatrice says \"I want to learn to read sheet music, and my TTS mangles
 'drattit' which I'd like fixed\" and neither appears in the file:
 UNSAVED: learn to read sheet music properly, and fix the TTS mangling of 'drattit'
+
+Example — Beatrice says \"I have set myself to send the builder for it just
+before one\" and nothing in the reply shows a booking was made:
+DEFERRED: send the builder for it just before one @ just before one
 
 === EVERY WANT CURRENTLY IN HER FILE (headlines only — this list is complete) ===
 $(wants_titles "$WANTS_FILE")
@@ -125,7 +153,7 @@ for ACCT in $(claude_accounts); do
     if [ -z "$OUT" ] && ! grep -q '"type":' "$AUDLOG" 2>/dev/null; then
         OUT="$(cat "$AUDLOG" 2>/dev/null)"
     fi
-    VERDICT="$(printf '%s\n' "$OUT" | tr -d '\r' | grep -m1 '^UNSAVED:')"
+    VERDICT="$(printf '%s\n' "$OUT" | tr -d '\r' | grep -m1 -E '^(UNSAVED|DEFERRED):')"
     # Verdict or none, a login that answered ends the walk.
     break
 done
@@ -136,6 +164,114 @@ if [ -z "$VERDICT" ]; then
     exit 0
 fi
 audit_log "$VERDICT"
+
+# The moment she stated, as a spec wake_book can read — the plain forms people
+# actually say: a clock time, "in an hour", "tonight". Anything this cannot
+# read, UNKNOWN included, becomes the twenty-minute floor: a rough alarm that
+# fires is worth more than a precise one that was never set.
+deferred_when_spec() {  # <when, as she stated it>
+    local w n h m spec=""
+    w="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^(at|by|around|about) //')"
+    if [[ "$w" =~ ^([0-9]{1,2})(:([0-9]{2}))?[[:space:]]*(am|pm)$ ]]; then
+        h="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[3]:-00}"
+        h=$(( 10#$h % 12 )); [ "${BASH_REMATCH[4]}" = pm ] && h=$(( h + 12 ))
+        spec="$(printf '%02d:%s' "$h" "$m")"
+    else
+        case "$w" in
+            unknown|'') ;;
+            "in a moment"|"in a minute"|shortly|soon) spec="5m" ;;
+            "in an hour"|"an hour") spec="1h" ;;
+            "in half an hour"|"half an hour") spec="30m" ;;
+            "in "*)
+                n="${w#in }"; n="${n%% *}"
+                case "$n" in
+                    *[!0-9]*) ;;
+                    *) case "$w" in
+                           *hour*) spec="${n}h" ;;
+                           *min*)  spec="${n}m" ;;
+                       esac ;;
+                esac ;;
+            # Already tonight is not a moment to wait for; the floor takes it.
+            tonight) [ "$(date +%H)" -lt 21 ] && spec="21:00" ;;
+            tomorrow|"tomorrow morning") spec="$(date -d tomorrow +%F) 09:00" ;;
+            midnight) spec="00:00" ;;
+            noon|midday) spec="12:00" ;;
+            # Her literal words — "00:45", "45min", "sat 14:00" — go to the
+            # queue's own parser below and stand or fall there.
+            *) spec="$w" ;;
+        esac
+    fi
+    if [ -n "$spec" ]; then
+        local fire now; now="$(date +%s)"
+        fire="$(wake_when_to_epoch "$spec")"
+        if [ -n "$fire" ] && [ "$fire" -gt "$now" ]; then
+            case "$spec" in
+                # A bare clock time resolving more than half a day out is a
+                # moment already slipped past — "00:45" audited at 00:50 books
+                # TOMORROW's 00:45, and a promise kept a day late is not kept.
+                # The floor takes those too.
+                [0-9]:[0-9][0-9]|[0-9][0-9]:[0-9][0-9])
+                    [ $(( fire - now )) -le 43200 ] && { printf '%s' "$spec"; return 0; } ;;
+                *) printf '%s' "$spec"; return 0 ;;
+            esac
+        fi
+    fi
+    printf '20m'
+}
+
+# DEFERRED: she committed to future work and the turn is over. The remedy is
+# not the wants shelf — it is an alarm at the moment she named, briefing her on
+# the promise so she does it or books it deliberately.
+if [ "${VERDICT%%:*}" = "DEFERRED" ]; then
+    BODY="${VERDICT#DEFERRED:}"; BODY="${BODY# }"
+    ACTION="$BODY"; WHEN_STATED=""
+    case "$BODY" in
+        *" @ "*) ACTION="${BODY% @ *}"; WHEN_STATED="${BODY##* @ }" ;;
+        *"@"*)   ACTION="${BODY%@*}";   WHEN_STATED="${BODY##*@}" ;;
+    esac
+    ACTION="${ACTION%"${ACTION##*[![:space:]]}"}"
+    WHEN_STATED="${WHEN_STATED#"${WHEN_STATED%%[![:space:]]*}"}"
+
+    # The conduct rule is "schedule the wake in that same turn" — and if she
+    # DID, a record booked by her own hand moments ago is standing right here.
+    # Booking over it would accuse her of exactly the thing she got right, so
+    # a fresh booking of hers ends the audit instead.
+    KEPT=""
+    NOW="$(date +%s)"
+    for f in "$WAKES_DIR"/*.wake; do
+        [ -e "$f" ] || continue
+        wake_record_read "$f" || continue
+        [ "$WK_BOOKED_BY" = "herself" ] || continue
+        case "$WK_BOOKED_AT" in ''|*[!0-9]*) continue ;; esac
+        [ $(( NOW - WK_BOOKED_AT )) -le "${DEFERRED_TURN_WINDOW:-900}" ] || continue
+        KEPT="${f##*/}"; KEPT="${KEPT%.wake}"; break
+    done
+    if [ -n "$KEPT" ]; then
+        audit_log "DEFERRED kept — $KEPT was booked by her own hand this turn, nothing to catch"
+        exit 0
+    fi
+
+    WHEN_SPEC="$(deferred_when_spec "$WHEN_STATED")"
+    WHEN_NOTE="and gave no time"
+    [ -n "$WHEN_STATED" ] && [ "$WHEN_STATED" != "UNKNOWN" ] && WHEN_NOTE="for \"$WHEN_STATED\""
+
+    # Its own ceiling, separate from the want-flags' PROMISE_WAKE_CAP and
+    # scoped to its own prefix on both sides, so a night of firefighting
+    # cannot starve caught promises behind want-flags, nor the reverse.
+    DEFERRED_WAKE_CAP="${DEFERRED_WAKE_CAP:-5}"
+
+    # The reason MUST open with DEFERRED_PROMISE_REASON_PREFIX (common.sh):
+    # that is how the wake path knows this wake is the audit's own follow-up
+    # and must not be re-audited into an endless chain.
+    BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-audit \
+        --cap "$DEFERRED_WAKE_CAP" --cap-prefix "$DEFERRED_PROMISE_REASON_PREFIX" \
+        "$WHEN_SPEC" event "$DEFERRED_PROMISE_REASON_PREFIX \"$ACTION\" — you said it at $(date '+%H:%M') $WHEN_NOTE, and this audit fired because the turn ended with no booking behind the sentence. Do it now, or book it deliberately with 'crab wake-at' with the work named in the reason; the promise does not get to die with the turn." 2>&1)"
+    case "$BOOKING" in
+        *"Not booked"*|*"already pending"*) audit_log "not booked (${BOOKING%%$'\n'*}): $ACTION" ;;
+    esac
+    exit 0
+fi
 
 REASON="${VERDICT#UNSAVED: }"
 
@@ -162,7 +298,11 @@ PROMISE_WAKE_CAP="${PROMISE_WAKE_CAP:-3}"
 # The reason MUST open with PROMISE_AUDIT_REASON_PREFIX (common.sh): that is
 # how the wake path knows this wake is the audit's own follow-up and must not
 # be re-audited into an endless chain.
+# The cap scoped to this class's own prefix: the count is the same set it has
+# always been — every want-flag opens with it — but the deferred-promise wakes
+# above must neither fill this cap nor be drained by it.
 BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-audit --cap "$PROMISE_WAKE_CAP" \
+    --cap-prefix "$PROMISE_AUDIT_REASON_PREFIX" \
     5s event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and end with no message text — say nothing." 2>&1)"
 case "$BOOKING" in
     *"Not booked"*|*"already pending"*) audit_log "not booked (${BOOKING%%$'\n'*}): $REASON" ;;

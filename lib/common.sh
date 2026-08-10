@@ -3179,10 +3179,23 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
 # band, never on the hot path. A want stated on the phone or spoken to nobody
 # during a wake is exactly as lost as one stated at the desk.
 #
-# The auditor's follow-up is an event wake whose reason opens with this prefix.
-# The wake path recognises it and skips its own audit — that wake exists to
-# record one already-caught sentence, and auditing it would chain forever.
+# The auditor's follow-ups are event wakes whose reasons open with one of these
+# prefixes. The wake path recognises both and skips its own audit — those wakes
+# exist to make good on one already-caught sentence, and auditing them would
+# chain forever. The first is the unsaved want; the second is the deferred
+# promise — she committed to doing a piece of work later and the turn ended
+# with nothing on the queue behind the sentence.
 PROMISE_AUDIT_REASON_PREFIX="You said this and did not write it down:"
+DEFERRED_PROMISE_REASON_PREFIX="You promised him and nothing was booked:"
+
+# Is this wake's reason one of the audit's own follow-ups, and so exempt from
+# re-auditing? One question, asked wherever a wake decides whether to audit.
+promise_audit_own_reason() {  # <wake reason>
+    case "${1:-}" in
+        "$PROMISE_AUDIT_REASON_PREFIX"*|"$DEFERRED_PROMISE_REASON_PREFIX"*) return 0 ;;
+    esac
+    return 1
+}
 
 fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
     [ "${PROMISE_AUDIT:-1}" = "1" ] || return 0
@@ -4431,12 +4444,11 @@ $DISPLAY_PART"
     # Out of band, now that the wake's outcome is written: a wake talking to
     # nobody still forms wants, and a silent wake's are the easiest to lose —
     # so this fires before the speak/display decisions can return early. The
-    # audit's own follow-up wake is recognised by its reason and skipped, or
-    # each audit wake would audit itself into an endless chain.
-    case "${WAKE_REASON:-}" in
-        "$PROMISE_AUDIT_REASON_PREFIX"*) ;;
-        *) fire_promise_audit --wake "${WAKE_REASON:-}" "$RESPONSE" ;;
-    esac
+    # audit's own follow-up wakes — both classes — are recognised by their
+    # reasons and skipped, or each audit wake would audit itself into an
+    # endless chain.
+    promise_audit_own_reason "${WAKE_REASON:-}" ||
+        fire_promise_audit --wake "${WAKE_REASON:-}" "$RESPONSE"
     # The claudism capture rides the same moment, and unconditionally: a
     # wake spoken to nobody is still her voice, audit follow-ups included.
     fire_claudism_capture wake "$RESPONSE"

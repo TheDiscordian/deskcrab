@@ -190,11 +190,30 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     rules.
 43. The promise auditor MUST use the shared shelf reader. An auditor handed an empty list and told
     the list is complete flags everything.
+43a. The auditor books two classes of follow-up, and each opens with its own reason prefix (both
+    constants in `lib/common.sh`): the unsaved-want wake, and the **deferred-promise** wake — her
+    reply committed to doing a piece of work later and the turn ended with nothing on the queue.
+    On 2026-08-09 she told the user a builder would be sent "just before one", booked nothing, and
+    the promise died with the turn; the conduct rule ("schedule the wake in that same turn")
+    already existed, so the missing piece was a hand, not another sentence. A deferred-promise
+    wake MUST fire at the moment she stated when it parses (the plain forms: a clock time, "in an
+    hour", "tonight"), and twenty minutes out when she gave none or the parse fails. A stated
+    clock time that resolves more than half a day away is a moment already slipped past, and takes
+    the twenty-minute floor too. Its reason MUST brief her on what she promised, when she said it,
+    and that the audit caught it because nothing was booked — never the wants-shelf wording. The
+    wake path MUST skip its own audit for BOTH prefixes, or each follow-up audits itself into an
+    endless chain. And the auditor MUST NOT book the deferred wake when a record booked by her own
+    hand already stands from the same turn: the catcher exists for the promise with no body, not
+    to accuse the kept one.
 44. Any cap on the number of pending wakes a booker may hold MUST be counted from the records under
     the booking lock, and MUST **drain** as well as gate. A cap that only gates new bookings lets a
     queue five times its own size stand for hours. The drain MUST let go of the **furthest-out**
     bookings and keep the nearest: draining from the near end cancels the work about to happen and
-    keeps hours of stale promises, which is the inversion of what a cap is for.
+    keeps hours of stale promises, which is the inversion of what a cap is for. A cap MAY be scoped
+    to a reason prefix — `--cap-prefix` on the one door — so one booker holds separately-capped
+    classes of follow-up; a scoped cap counts and drains only its own class. The auditor's two
+    classes MUST be capped separately, so a night of want-flags cannot starve caught promises of
+    their bookings, nor the reverse.
 
 ## DATA
 
@@ -314,7 +333,10 @@ change it.
 `tests/test_silent_wake.sh` (the delivery gates), `tests/test_regroup.sh` (a whole wake beside a live
 voice), `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_wake_reinforce.sh`,
 `tests/test_wake_lock_priority.sh` (rules 21a and 21b: the event backoff — short, escalating, capped,
-reset by a taken lock — and the urgent lane's yield, expiry and event-exemption).
+reset by a taken lock — and the urgent lane's yield, expiry and event-exemption),
+`tests/test_promise_deferred.sh` (rules 43a and the scoped cap of 44: a reply that commits to later
+work books the alarm, an already-done reply books nothing, a kept promise is left alone, and neither
+audit class counts or drains the other's bookings).
 
 **To be written:**
 

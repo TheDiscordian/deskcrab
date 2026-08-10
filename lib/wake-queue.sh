@@ -512,7 +512,8 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
 # Book a wake. THE door: coalescing, spacing, the record, the timer, the
 # rollback and the ledger line all live behind it.
 #
-#   wake_book [--by <origin>] [--cap <n>] [--effort <level>] <when> [kind] [reason]
+#   wake_book [--by <origin>] [--cap <n>] [--cap-prefix <reason-prefix>]
+#             [--effort <level>] <when> [kind] [reason]
 #
 # --by names the subsystem doing the booking, and it is not decoration: six
 # non-conversational hands book wakes in her name — the promise auditor, the job
@@ -523,15 +524,20 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
 # RECORDS, under this lock, and it drains as well as gates. A cap that only
 # refused new bookings let a queue five to six times its own size stand for
 # hours while the auditor logged "capped" over and over.
+# --cap-prefix scopes that cap to reasons opening with the prefix, so one
+# booker can hold separately-capped classes of follow-up (rule 44): the
+# auditor's want-flags must not count against — or drain — its caught
+# promises, nor the reverse.
 # --effort pins the fired session's reasoning effort (rule 13a). Refused here,
 # at booking time, when it is not a level the CLI knows — a bad value carried
 # to the claude invocation would fail hours later with nobody watching.
 wake_book() {
-    local by="" cap="" effort=""
+    local by="" cap="" capprefix="" effort=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --by)  by="${2:-}"; shift 2 || return 1 ;;
             --cap) cap="${2:-}"; shift 2 || return 1 ;;
+            --cap-prefix) capprefix="${2:-}"; shift 2 || return 1 ;;
             --effort) effort="${2:-}"; shift 2 || return 1 ;;
             *) break ;;
         esac
@@ -544,11 +550,11 @@ wake_book() {
     [ -n "$by" ] || by="${DESKCRAB_WAKE_ORIGIN:-herself}"
     # One booker at a time, for the WHOLE check-then-act. Two wakes finishing
     # in the same second each found no pending floor and each booked one.
-    _wake_under_lock "wake_book" _wake_book_locked "$by" "$cap" "$effort" "$@"
+    _wake_under_lock "wake_book" _wake_book_locked "$by" "$cap" "$capprefix" "$effort" "$@"
 }
 
-_wake_book_locked() {  # <by> <cap> <effort> <when> [kind] [reason]
-    local by="$1" cap="$2" effort="$3" when="${4:-}" kind="${5:-scheduled}" reason="${6:-}"
+_wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <when> [kind] [reason]
+    local by="$1" cap="$2" capprefix="$3" effort="$4" when="${5:-}" kind="${6:-scheduled}" reason="${7:-}"
     [ -n "$when" ] || { echo "wake_book: no moment given."; return 1; }
     mkdir -p "$WAKES_DIR"
     _wake_norm "$kind" "$reason"; kind="$WK_N_KIND"; reason="$WK_N_REASON"
@@ -560,7 +566,7 @@ _wake_book_locked() {  # <by> <cap> <effort> <when> [kind] [reason]
         return 1
     fi
 
-    [ -n "$cap" ] && ! _wake_cap_admits "$by" "$cap" && return 0
+    [ -n "$cap" ] && ! _wake_cap_admits "$by" "$cap" "$capprefix" && return 0
 
     local existing
     if existing="$(wake_pending_equivalent "$fire" "$kind" "$reason")"; then
@@ -595,9 +601,11 @@ _wake_book_locked() {  # <by> <cap> <effort> <when> [kind] [reason]
 }
 
 # The cap, counted from the records under the booking lock, draining first.
-# Returns 0 when there is room for one more.
-_wake_cap_admits() {  # <booked-by> <cap>
-    local by="$1" cap="$2" now f u n=0 _line
+# Returns 0 when there is room for one more. A prefix, when given, scopes the
+# whole count — and the drain — to reasons opening with it, so one booker's
+# separately-capped classes of follow-up never count against each other.
+_wake_cap_admits() {  # <booked-by> <cap> [reason-prefix]
+    local by="$1" cap="$2" prefix="${3:-}" now f u n=0 _line
     case "$cap" in ''|*[!0-9]*) return 0 ;; esac
     now=$(date +%s)
     # SOONEST FIRST, so that the ones past the cap — the tail of this list —
@@ -619,6 +627,9 @@ _wake_cap_admits() {  # <booked-by> <cap>
                  [ -e "$f" ] || continue
                  wake_record_read "$f" || continue
                  [ "$WK_BOOKED_BY" = "$by" ] || continue
+                 if [ -n "$prefix" ]; then
+                     case "$WK_REASON" in "$prefix"*) ;; *) continue ;; esac
+                 fi
                  [ "$WK_FIRE" -gt "$now" ] || continue
                  u="${f##*/}"
                  printf '%s\t%s\n' "$WK_FIRE" "${u%.wake}"
