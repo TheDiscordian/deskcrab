@@ -140,6 +140,13 @@
           background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
   #send { padding: 12px 16px; font: inherit; color: var(--fg); background: var(--panel);
           border: 1px solid var(--border); border-radius: 10px; }
+  /* The brake (spec rules 47-50): visible whenever a turn is in flight, in
+     the page's danger colours — stopping her must never require hunting. */
+  #stop { padding: 14px; font: inherit; font-size: 16px; font-weight: 600;
+          color: #ffdada; background: #3a1414; border: 1px solid #a33;
+          border-radius: 12px; }
+  /* A message sent while a turn runs: visibly queued, never dropped. */
+  .reply.queued { color: var(--dim); }
 </style>
 </head>
 <body>
@@ -155,6 +162,7 @@
   <audio id="music" controls playsinline></audio>
 </div>
 <footer>
+  <button id="stop" hidden>◼ Stop</button>
   <button id="talk">Hold to talk</button>
   <div class="row">
     <input id="text" placeholder="…or type" autocomplete="off" enterkeyhint="send">
@@ -400,6 +408,20 @@ function closeMedia() {
 $("media-close").addEventListener("click", closeMedia);
 
 async function deliver(res, replyEl, meta) {
+  if (res.stopped) {
+    // The brake's completion (spec rule 47): a chosen stop, not a failure —
+    // no error styling, and the bubble says plainly what happened to it.
+    if (replyEl.textContent) {
+      const note = document.createElement("div");
+      note.className = "thought";
+      note.textContent = "◼ stopped";
+      replyEl.parentNode.append(note);
+    } else {
+      replyEl.textContent = "◼ stopped";
+    }
+    setStatus("stopped — ready");
+    return;
+  }
   if (res.error) {
     setStatus(res.error, "err");
     // Never overwrite what she already said. A reply that streamed in full and
@@ -682,6 +704,7 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
   // reply's clips play while the turn is still running — tap-to-stop must
   // keep working exactly then. startRec's own busy guard blocks recording.
   busy = true; talk.classList.add("busy");
+  showStop(true);
   lastTurnProgress = Date.now();
   const seq = ++turnSeq;
   const disarmWatchdog = armTurnWatchdog(seq);
@@ -736,6 +759,7 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
     // ten-minute bound measure from the latest reload, so a reload storm
     // could pick a dead turn back up forever.
     const tid = resumeTid || randomHex(32);
+    activeTid = tid;   // what ◼ Stop reaches (spec rule 47)
     rememberTurn(tid, text, resumeAt);
     const res = await streamTurn(text, turn, tid, !!resumeTid, seq);
     // Null means the watcher ended this turn first (rule 42): the bubble,
@@ -762,8 +786,14 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
     if (turnSeq === seq) {
       forgetTurn();
       liveTurn = null;
+      activeTid = null;
       busy = false; talk.classList.remove("busy");
+      showStop(false);
       updateTalkBtn();
+      // A message queued while this turn ran attaches now — within a beat of
+      // the end, so its run (which only takes the lock when this one's run
+      // exits) cannot have voiced anything before the page is listening.
+      pumpQueue();
     }
   }
 }
@@ -837,9 +867,12 @@ function armTurnWatchdog(seq) {
     clearInterval(timer);
     if (turnCtl) turnCtl.abort();
     busy = false;
+    activeTid = null;
     talk.classList.remove("busy");
+    showStop(false);
     updateTalkBtn();
     setStatus("the turn stalled — ready again", "err");
+    pumpQueue();
   }, poll);
   return () => clearInterval(timer);
 }
@@ -954,11 +987,87 @@ talk.addEventListener("pointermove", e => {
     stopRec();
   }));
 
+// --- The brake, and the queue that means a send never blocks -----------------
+// (spec rules 47-50). Two controls, and he holds both. Send freely: a message
+// typed while a turn runs is queued and posted at once, never refused and
+// never dropped — the old guard cleared the input and threw the text away,
+// worse than blocking. Stop explicitly: ◼ Stop kills the turn in flight on
+// the laptop — processes, synthesis, and the one-mind lock with them — and
+// takes the queue with it. A new message is deliberately NOT an interrupt:
+// only pushback supersedes a reply in flight (the pipeline's own doctrine),
+// and a destructive task deserves a deliberate brake, not an accidental one.
+const sendQueue = [];
+let activeTid = null;
+const stopBtn = $("stop");
+
+function showStop(on) { stopBtn.hidden = !on; }
+
+function seedTurn(text, tid) {
+  // The message reaches the laptop NOW, under the id the later attach will
+  // re-use — rule 1 makes the re-post an attach, never a second run — so a
+  // page that dies with a queue never loses a word: the turn still runs and
+  // the reply lands in the record. The stream is hung up as soon as the
+  // server answers; the buffer holds the turn, and a failure here costs
+  // nothing because the attach re-posts the same id anyway.
+  const ctl = new AbortController();
+  const guard = setTimeout(() => ctl.abort(), 8000);
+  fetch("/say", { method: "POST", credentials: "same-origin",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ text, turn: tid }),
+                  signal: ctl.signal })
+    .then(() => ctl.abort())
+    .catch(() => {})
+    .finally(() => clearTimeout(guard));
+}
+
+function queueTurn(text) {
+  const tid = randomHex(32);
+  const bubble = addTurn(text);
+  bubble.reply.classList.add("queued");
+  bubble.reply.textContent = "⏳ queued — she's still on the last one";
+  sendQueue.push({ text, tid, at: Date.now(), el: bubble.reply.parentNode });
+  seedTurn(text, tid);
+  setStatus("queued — ◼ Stop cuts in", "busy");
+}
+
+function pumpQueue() {
+  if (busy || !sendQueue.length) return;
+  const m = sendQueue.shift();
+  // runTurn draws the live bubble; the queued placeholder goes first. The
+  // attach happens within a beat of the previous turn's end, so the queued
+  // run — which only takes the lock when the previous run exits — cannot
+  // have voiced anything yet.
+  if (m.el) m.el.remove();
+  runTurn(null, null, m.text, m.tid, m.at);
+}
+
+async function stopTurn() {
+  if (!busy && !sendQueue.length) return;
+  // The brake silences in the same gesture: a killed reply's clips playing
+  // on would be the stream outliving the stop.
+  stopSpeech();
+  const tids = [];
+  if (activeTid) tids.push(activeTid);
+  for (const m of sendQueue) { tids.push(m.tid); if (m.el) m.el.remove(); }
+  sendQueue.length = 0;
+  setStatus("stopping…", "busy");
+  const results = await Promise.all(tids.map(tid =>
+    post("/stop", JSON.stringify({ turn: tid }),
+         { "Content-Type": "application/json" }, 15000)
+      .then(() => true).catch(() => false)));
+  if (results.some(r => !r))
+    setStatus("stop did not reach the server", "err");
+  // The stopped turn's own stream delivers its done event (marked stopped),
+  // which hands the button back through the ordinary path.
+}
+stopBtn.addEventListener("click", stopTurn);
+
 function sendTyped() {
   const v = $("text").value.trim();
   if (!v) return;
   $("text").value = "";
   unlockAudio();
+  if (busy) { queueTurn(v); return; }
   runTurn(null, null, v);
 }
 $("send").addEventListener("click", sendTyped);
@@ -1207,10 +1316,13 @@ function releaseTurn(t) {
   }
   forgetTurn();
   pendingReply = null;
+  activeTid = null;
   busy = false;
   talk.classList.remove("busy");
+  showStop(false);
   updateTalkBtn();
   setStatus("the reply arrived through the conversation — ready");
+  pumpQueue();
 }
 
 // One filter for every block the watcher delivers. It holds the own-turn

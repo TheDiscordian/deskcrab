@@ -262,6 +262,7 @@ async function testWatchdog() {
     talk: { classList: { remove: () => {} } },
     updateTalkBtn: () => {},
     setStatus: s => statuses.push(s),
+    activeTid: "aa", showStop: () => {}, pumpQueue: () => {},
   };
   const body = lift("function armTurnWatchdog")
       .replace("7 * 60 * 1000", "250")    // the stall ceiling
@@ -698,6 +699,7 @@ function turnCtx(streamImpl) {
     busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
     pendingUser: null, pendingReply: null,
     awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
+    activeTid: null, showStop: () => {}, pumpQueue: () => {},
     sttSid: null, sttChain: Promise.resolve(), sttFailed: false,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
@@ -1047,6 +1049,7 @@ async function testWatcherReleasesTurn() {
     busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
     pendingUser: null, pendingReply: null,
     awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
+    activeTid: null, showStop: () => {}, pumpQueue: () => {},
     turnCtl: null, turnKicked: false, turnVoiced: false, STREAM_IDLE_MS: 60000,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
@@ -1159,6 +1162,7 @@ async function testReleasedTailKeepsPlaying() {
     busy: false, turnSeq: 0, lastTurnProgress: 0, voiceMuted: false,
     pendingUser: null, pendingReply: null,
     awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
+    activeTid: null, showStop: () => {}, pumpQueue: () => {},
     turnCtl: null, turnKicked: false, turnVoiced: false, STREAM_IDLE_MS: 60000,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
@@ -1307,6 +1311,7 @@ async function testReleaseGuards() {
     talk: { classList: { remove() {} } },
     updateTalkBtn: () => {}, setStatus: () => {},
     attachDisplay: () => {}, foldThoughts: () => {},
+    activeTid: null, showStop: () => {}, pumpQueue: () => {},
   };
   const api = build(["function releaseTurn"], ctx);
   api.releaseTurn({ text: "too late" });
@@ -1367,6 +1372,124 @@ async function testResetPayloadReleases() {
   else bad("the deferral must survive the scan", "needReseed=" + ctx.needReseed);
 }
 
+// --- rules 47-50: the brake, and the queue that means a send never blocks ---
+//
+// Written against 2026-08-10: with a turn in flight the phone had no way to
+// send and no way to stop — sendTyped's busy guard cleared the input and
+// threw the message away, and no stop control existed anywhere.
+
+async function testQueuedSendNeverDropped() {
+  console.log("");
+  console.log("rules 49-50 — a send while busy is queued and posted, never dropped:");
+  const posts = [];
+  const runs = [];
+  const removed = [];
+  const bubble = () => ({
+    you: {},
+    reply: { classList: { add() {} }, textContent: "",
+             parentNode: { remove: () => removed.push("bubble") } },
+  });
+  const ctx = {
+    busy: true,
+    sendQueue: [],
+    randomHex: () => "feed01feed01feed01feed01feed01fe",
+    addTurn: () => bubble(),
+    setStatus: () => {},
+    unlockAudio: () => {},
+    queueTurnSpy: null,
+    fetch: (url, opts) => {
+      posts.push({ url, body: opts && opts.body });
+      return Promise.resolve({ ok: true });
+    },
+    runTurn: (b, c, text, tid, at) => runs.push({ text, tid, at }),
+    $: () => ({ value: " also, one more thing " }),
+  };
+  const api = build(["function seedTurn", "function queueTurn",
+                     "function pumpQueue"], ctx);
+
+  api.queueTurn("also, one more thing");
+  await sleep(20);
+  if (ctx.sendQueue.length === 1 && ctx.sendQueue[0].text === "also, one more thing")
+    ok("the message is queued, not discarded");
+  else bad("a send while busy must queue", JSON.stringify(ctx.sendQueue));
+  const posted = posts.find(p => p.url === "/say");
+  if (posted && /also, one more thing/.test(posted.body)
+      && /feed01feed01/.test(posted.body))
+    ok("and posted to the server at once, under its own turn id");
+  else bad("the laptop must hold the message from the moment it is typed",
+           JSON.stringify(posts));
+  if (runs.length === 0) ok("without starting a second client stream mid-turn");
+  else bad("the queue must wait for the slot", JSON.stringify(runs));
+
+  ctx.busy = false;
+  api.pumpQueue();
+  if (runs.length === 1 && runs[0].tid === "feed01feed01feed01feed01feed01fe"
+      && runs[0].text === "also, one more thing")
+    ok("the turn ends and the queued message attaches under the SAME id");
+  else bad("pumpQueue must run the queued message", JSON.stringify(runs));
+  if (removed.length === 1) ok("the queued placeholder makes way for the live bubble");
+  else bad("the placeholder must be removed on pump", removed.length);
+  if (ctx.sendQueue.length === 0) ok("and the queue is drained");
+  else bad("the queue must empty", ctx.sendQueue.length);
+}
+
+async function testStopControl() {
+  console.log("");
+  console.log("rule 47 — the stop control reaches the active turn and the queue behind it:");
+  const stops = [];
+  let silenced = 0;
+  const removed = [];
+  const ctx = {
+    busy: true,
+    activeTid: "cafe11cafe11cafe11cafe11cafe11ca",
+    sendQueue: [{ text: "queued one", tid: "beef22beef22beef22beef22beef22be",
+                  at: 1, el: { remove: () => removed.push("q") } }],
+    stopSpeech: () => { silenced++; },
+    setStatus: () => {},
+    post: (url, body) => { stops.push({ url, body }); return Promise.resolve({ ok: true }); },
+  };
+  const api = build(["async function stopTurn"], ctx);
+  await api.stopTurn();
+
+  if (silenced === 1) ok("the brake silences the voice in the same gesture");
+  else bad("stopSpeech must run with the stop", silenced);
+  const tids = stops.filter(s => s.url === "/stop").map(s => JSON.parse(s.body).turn);
+  if (tids.includes("cafe11cafe11cafe11cafe11cafe11ca"))
+    ok("the active turn is stopped on the server");
+  else bad("/stop must name the active turn", JSON.stringify(stops));
+  if (tids.includes("beef22beef22beef22beef22beef22be"))
+    ok("and the queued turn behind it — a brake is a full stop");
+  else bad("/stop must reach the queue too", JSON.stringify(stops));
+  if (ctx.sendQueue.length === 0 && removed.length === 1)
+    ok("the queue is cleared and its placeholder taken down");
+  else bad("the queue must clear on stop",
+           "queue=" + ctx.sendQueue.length + " removed=" + removed.length);
+}
+
+async function testSendTypedDispatch() {
+  console.log("");
+  console.log("rule 49 — sendTyped queues when busy, runs when free:");
+  const queued = [];
+  const ran = [];
+  const ctx = {
+    busy: true,
+    $: () => ({ value: " hello there " }),
+    unlockAudio: () => {},
+    queueTurn: t => queued.push(t),
+    runTurn: (b, c, t) => ran.push(t),
+  };
+  const api = build(["function sendTyped"], ctx);
+  api.sendTyped();
+  if (queued.join(",") === "hello there" && ran.length === 0)
+    ok("busy: the message is queued — the old guard threw it away");
+  else bad("a typed message must never be dropped",
+           "queued=" + queued.join(",") + " ran=" + ran.join(","));
+  ctx.busy = false;
+  api.sendTyped();
+  if (ran.join(",") === "hello there") ok("free: the message runs at once");
+  else bad("an idle page must run the message", ran.join(","));
+}
+
 (async () => {
   await testStreamTurn();
   await testDeadline();
@@ -1378,6 +1501,9 @@ async function testResetPayloadReleases() {
   await testResumePending();
   await testResumeKeepsOriginalClock();
   await testQueueWaitLine();
+  await testQueuedSendNeverDropped();
+  await testStopControl();
+  await testSendTypedDispatch();
   await testResumeReplayIsQuiet();
   await testForegroundKick();
   await testDeadMicReacquired();

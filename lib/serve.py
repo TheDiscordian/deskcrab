@@ -204,6 +204,12 @@ def _on_sigterm(signum, frame):
 TURN_BUFFER_TTL = int(os.environ.get("DESKCRAB_SERVE_TURN_TTL", "3600"))
 
 
+class TurnStopped(Exception):
+    """The user pulled the brake on this turn (spec rule 47). Raised by run()
+    so a killed subprocess is never mistaken for a reply, and caught in
+    run_turn, where it becomes the turn's one completion event."""
+
+
 class Turn:
     def __init__(self, tid):
         self.tid = tid
@@ -211,6 +217,14 @@ class Turn:
         self.done = False
         self.created = time.time()
         self.cond = threading.Condition()
+        # The brake (spec rules 47-48). `stopped` is set by /stop before any
+        # signal is sent, so a process that races the kill — or has not been
+        # spawned yet — still dies at the next checkpoint in run(). `procs`
+        # holds the pids of the live process GROUPS this turn started (crab
+        # remote, crab synth): run() gives every child its own group, so each
+        # pid here is a pgid and a killpg reaches the whole tree under it.
+        self.stopped = False
+        self.procs = set()
 
     def emit(self, kind, payload):
         with self.cond:
@@ -258,6 +272,48 @@ def _clean_tid(raw):
     """Client-supplied turn id, hex only. Empty/absent -> fresh server id."""
     tid = re.sub(r"[^a-f0-9]", "", (raw or "").lower())[:64]
     return tid or uuid.uuid4().hex
+
+
+# The brake (spec rules 47-48). SIGTERM first so bash and the CLI get to die
+# cleanly, then SIGKILL after a short grace for anything that ignored it. The
+# grace is short on purpose: a stop is the user saying NOW.
+STOP_GRACE = float(os.environ.get("DESKCRAB_SERVE_STOP_GRACE", "2"))
+
+
+def stop_turn(turn):
+    """Genuinely kill a turn in flight: the crab remote run behind the reply
+    and any synthesis beside it, each as a whole process group.
+
+    Marking `stopped` comes before the first signal, so a child that races the
+    sweep — or has not been spawned yet — still dies at run()'s checkpoints.
+    The one-mind lock needs no step of its own: crab remote holds it on an
+    open descriptor, and the kernel releases it with the process. The turn's
+    completion event is not emitted here — run_turn's thread owns it (rule 6,
+    exactly one), and TurnStopped carries it there the moment the wait on the
+    killed child returns.
+
+    Returns False when the turn was already done, True when a stop was set in
+    motion."""
+    with turn.cond:
+        if turn.done:
+            return False
+        turn.stopped = True
+        pgids = list(turn.procs)
+    for pg in pgids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pg, signal.SIGTERM)
+    deadline = time.time() + STOP_GRACE
+    while time.time() < deadline:
+        with turn.cond:
+            if not turn.procs:
+                break
+        time.sleep(0.05)
+    for pg in pgids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pg, signal.SIGKILL)
+    print("stop: turn %s stopped by hand — %d process group(s) signalled"
+          % (turn.tid[:8], len(pgids)), file=sys.stderr, flush=True)
+    return True
 
 
 # Playback truth (specs/phone.md rules 44-46). The completion event proves the
@@ -378,10 +434,10 @@ def run_turn(turn, text):
             threading.Thread(target=_queue_watch, args=(turn, stop),
                              daemon=True).start()
             try:
-                speaker = Speaker(turn.emit)
+                speaker = Speaker(turn.emit, turn)
                 reply = ask(text,
                             on_event=lambda kind, msg: turn.emit(kind, {"text": msg}),
-                            speaker=speaker)
+                            speaker=speaker, turn=turn)
             finally:
                 stop.set()
             # The reply clip the turn itself synthesised is the never-silent
@@ -409,6 +465,16 @@ def run_turn(turn, text):
             # errored turn is already surfaced by its error field.
             if reply.get("spoken", "").strip() and not reply.get("error"):
                 arm_silence_alarm(turn.tid, speaker.voiced + (1 if audio else 0))
+    except TurnStopped:
+        # The brake (spec rule 47): the turn was killed by hand. Still exactly
+        # one completion event (rule 6), marked so the client can tell a
+        # chosen stop from a failure. give_up() fires only for turns hours
+        # overdue, so this guard is belt only.
+        with turn.cond:
+            already = turn.done
+        if not already:
+            turn.emit("done", {"spoken": "", "display_html": "", "audio": "",
+                               "error": "stopped by hand", "stopped": True})
     except Exception as exc:  # noqa: BLE001 — the client must hear about it
         turn.emit("done", {"spoken": "", "display_html": "", "audio": "",
                            "error": str(exc)[:300]})
@@ -468,8 +534,15 @@ def publish_local_images(html):
     return IMG_RE.sub(sub, html)
 
 
-def run(cmd, **kw):
+def run(cmd, turn=None, **kw):
     """Captured subprocess that waits on the PROCESS — never on its pipes.
+
+    With `turn`, the child's process group is registered on the turn for the
+    life of the wait, so a /stop (spec rule 47) can reach and kill it — and
+    the stop is honoured at three checkpoints: before spawning (a stopped
+    turn starts nothing new), just after (a stop that raced the spawn kills
+    the child it could not have seen), and after the wait (a killed child's
+    output is never mistaken for a reply). Each raises TurnStopped.
 
     Two waits wedged here, and both were waits for EOF on a pipe rather than
     for the child. The first: subprocess.run kills only the direct child at
@@ -489,9 +562,21 @@ def run(cmd, **kw):
     ends the moment the child exits, whoever still holds the descriptor
     (tests/test_phone_done_after_exit.sh drives exactly this shape).
     """
+    if turn is not None and turn.stopped:
+        raise TurnStopped()
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         p = subprocess.Popen(cmd, stdout=out, stderr=err,
                              start_new_session=True, **kw)
+        if turn is not None:
+            with turn.cond:
+                stopped = turn.stopped
+                if not stopped:
+                    turn.procs.add(p.pid)
+            if stopped:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(p.pid, signal.SIGKILL)
+                p.wait()
+                raise TurnStopped()
         try:
             p.wait(timeout=TURN_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -499,6 +584,12 @@ def run(cmd, **kw):
                 os.killpg(p.pid, signal.SIGKILL)
             p.wait()
             raise
+        finally:
+            if turn is not None:
+                with turn.cond:
+                    turn.procs.discard(p.pid)
+        if turn is not None and turn.stopped:
+            raise TurnStopped()
         out.seek(0)
         err.seek(0)
         return subprocess.CompletedProcess(cmd, p.returncode,
@@ -967,8 +1058,9 @@ class Speaker:
     sequentially — a reply spoken out of order is worse than one spoken late.
     """
 
-    def __init__(self, emit):
+    def __init__(self, emit, turn=None):
         self.emit = emit
+        self.turn = turn  # so /stop can reach a synthesis in flight (rule 47)
         self.queue = queue.Queue()
         self.voiced = 0  # clips actually emitted; the completion event offers
                          # the turn's own reply clip only when this stayed zero
@@ -976,6 +1068,10 @@ class Speaker:
         self.thread.start()
 
     def say(self, text):
+        # A stopped turn's remaining sentences are not spoken (rule 47) — the
+        # brake would otherwise fall silent for one clip and talk on.
+        if self.turn is not None and self.turn.stopped:
+            return
         self.queue.put(text)
 
     def _work(self):
@@ -991,7 +1087,11 @@ class Speaker:
             # 2026-08-08 went that way and the cause could no longer be
             # established afterwards. A speech failure always leaves a line.
             try:
-                r = run([CRAB_BIN, "synth", out, text])
+                r = run([CRAB_BIN, "synth", out, text], turn=self.turn)
+            except TurnStopped:
+                # The brake, not a failure: drain what is queued and wait for
+                # the finish marker — silence here is chosen, not lost.
+                continue
             except Exception as exc:  # noqa: BLE001 — a dead worker is silence
                 print("speech: crab synth did not run for %d chars: %s"
                       % (len(text), exc), file=sys.stderr, flush=True)
@@ -1135,7 +1235,7 @@ def _tool_label(block):
     return name
 
 
-def ask(text, on_event=None, speaker=None):
+def ask(text, on_event=None, speaker=None, turn=None):
     """One turn through the real assistant. Returns the crab remote JSON.
 
     With on_event, progress is reported live while the turn runs. With speaker,
@@ -1147,7 +1247,7 @@ def ask(text, on_event=None, speaker=None):
     cannot recognise its own turn coming back around in /watch.
     """
     if on_event is None:
-        r = run([CRAB_BIN, "remote", text])
+        r = run([CRAB_BIN, "remote", text], turn=turn)
     else:
         # Under STATE_PREFIX, never a bare /tmp name: crab-debug follows
         # <prefix>-turn-*.log, and a scratch instance (the test suite) writing
@@ -1161,7 +1261,7 @@ def ask(text, on_event=None, speaker=None):
         watcher.start()
         env = dict(os.environ, DESKCRAB_REMOTE_LOG=logpath)
         try:
-            r = run([CRAB_BIN, "remote", text], env=env)
+            r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
         finally:
             stop.set()
             watcher.join(timeout=1)
@@ -1458,6 +1558,26 @@ class Handler(BaseHTTPRequestHandler):
                         "turn %s clip %s%s"
                         % (tid[:8], clip, " — " + detail if detail else ""))
             return self._json(200, {"ok": True})
+
+        if url.path == "/stop":
+            # The brake (spec rules 47-48): genuinely kill a turn in flight —
+            # the crab remote run and any synthesis beside it — releasing the
+            # one-mind lock with the process that held it. The turn's own
+            # thread emits the stopped completion event; this answer only
+            # says the kill is in motion.
+            try:
+                doc = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return self._json(400, {"error": "bad json"})
+            tid = re.sub(r"[^a-f0-9]", "",
+                         str(doc.get("turn", "")).lower())[:64]
+            t, _ = get_turn(tid)
+            if t is None:
+                return self._json(404, {"error": "unknown turn"})
+            if not stop_turn(t):
+                return self._json(200, {"ok": True, "done": True})
+            turn_metric("turn-stop", "turn %s by hand" % tid[:8])
+            return self._json(200, {"ok": True, "stopped": True})
 
         if url.path in ("/push/subscribe", "/push/unsubscribe"):
             # The browser's PushSubscription, stored so `crab notify` can reach

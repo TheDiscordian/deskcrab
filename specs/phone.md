@@ -228,6 +228,50 @@ says so.
     its turns are recorded in the metrics as silent but MUST NOT be notified — an old client
     degrading into a nightly page of the house is exactly the noise rule 26 exists to prevent.
 
+### Brakes and reach — the user can always get a word in
+
+Until 2026-08-10 the phone had no brakes at all. The server exposed `/say`, `/turn`, `/img`,
+`/audio`, `/media` — and nothing that could end a turn. With a turn in flight the client refused
+new messages too, and the typed path was worse than a refusal: it cleared the input and dropped
+the text on the floor. If she started a long — or destructive — task, the user was stuck waiting
+with no way to intervene, and a new message parked behind the lock's ten-minute wait. Reported by
+the user in exactly those terms. A mind he cannot interrupt is not an assistant; it is a machine
+he is locked out of.
+
+47. `POST /stop {turn}` MUST end a turn in flight by genuinely killing it: every process the turn
+    started — the remote run behind the reply and any synthesis still in flight — is signalled as
+    a process group, politely first and then absolutely after a short grace. The one-mind lock
+    rides down with the run that held it (a flock dies with its holder, so there is no unlock step
+    to forget), and the next turn in line proceeds at once. Genuine means process gone: a turn
+    merely detached from its stream keeps running, keeps the lock, and keeps every brake-shaped
+    promise broken. The stopped turn still ends in exactly one completion event (rule 6), marked
+    `stopped`, so every attached tail ends and the client's button comes back through the ordinary
+    path. Stopping a turn already done is a no-op answered truthfully, and an unknown turn is a
+    404, not a guess.
+48. The brake reaches exactly what this server started, and all of it — the running turn and any
+    turn parked behind the lock alike (killing a parked run releases the user's place in line, it
+    does not touch what holds the lock). A desk turn or a wake holding the mind is another hand's
+    process and is not the phone's to kill; rule 43's notes already name that kind of wait.
+    Detached jobs are dispatched out of the turn's process group by design and survive a stop —
+    the brake stops her answering, not work already handed to the job runner.
+49. A message sent while a turn is in flight MUST be accepted, never refused and never dropped.
+    Typed while busy, the message is posted at once under its own turn identifier — the laptop
+    holds it durably from that moment, and rule 1 makes the later attach the same turn, never a
+    second run — drawn as queued where the user can see it beside a live stop control, and
+    attached when the slot frees. The lock keeps its meaning — one mind, turns in the order he
+    said things (rule 2) — but waiting is a thing the page shows (rule 43), never a thing a send
+    dies on. The voice path keeps rule 5's refusal to record mid-turn (the microphone would eat
+    her own clips); its reach is the brake — one tap to stop, then talk.
+50. A new message is NOT an interrupt. The explicit stop is the only brake, deliberately: the
+    pipeline already has a doctrine for what a newer message means to a reply in flight —
+    supersession holds a superseded reply as written-not-spoken, and only pushback supersedes; an
+    ordinary follow-up queues and both are answered. Barge-in (new-message-kills-the-turn) would
+    make every follow-up a kill: an "also—" mid-task would cut down the very long task he asked
+    for, and a destructive task deserves a deliberate brake, not an accidental one. So control
+    runs in both directions: send freely (never blocked), stop explicitly (immediate). A stop is a
+    full stop — it takes the queued messages with it, and it silences the voice in the same
+    gesture; a killed reply's clips playing on would be the stream outliving the brake.
+
 ## DATA
 
 | Path | Role |
@@ -322,6 +366,7 @@ block itself. The turn it spawns does that.
 | `MIN-26` | Web Push is wired but called by no code. With the page closed the phone receives nothing. |
 | `C12` | The hold-to-talk button sat grey past any patience: the transcription fetches had no bound at all (a hang held the refusal until a seventeen-minute watchdog), a reload mid-turn orphaned the running turn behind the lock so the next attempt showed nothing either, and the give-up ladder was tuned in tens of minutes. Three reloads in four minutes on 2026-08-08, reported twice that evening. **Resolved:** rules 39-41 — bounded transcription, re-attach across reload, a foreground kick, and the ladder brought down to single minutes; held by the abnormal-end cases in `tests/phone_client_test.js`. |
 | `C14` | The rule 42 release cut the turn's stream as soon as any clip had sounded, on the belief that a voiced turn had no sound left to deliver. Sentence streaming (rule 17) made that belief false: the conversation append runs one to two seconds ahead of the synthesiser's tail, so on 2026-08-09 16:54–16:55 three replies in a row lost every sentence past the second — synthesised, emitted, never fetched, the clips left on disk with no listener. The user heard each reply stop mid-thought. **Resolved:** the release never aborts the stream; it always becomes a voice tail that plays the clips still arriving and ends at the turn's own completion event. Held by the released-tail case in `tests/phone_client_test.js` and the voice-before-done ordering pin in `tests/test_phone_stream.sh`. |
+| `C15` | No brakes. The server had no stop route at all — `/say`, `/turn`, `/img`, `/audio`, `/media`, and nothing that could end a turn — and the client refused new messages while one was in flight, the typed path silently discarding the text after clearing the input. A long or destructive task, once started, could not be stopped from the phone, and a new message parked behind the lock's ten-minute wait. Reported by the user 2026-08-10. **Resolved:** rules 47-50 — a `/stop` route that kills the turn's process groups and releases the lock with them, a stopped-marked completion event, a client stop control, and queued-not-dropped sends; held by `tests/test_phone_stop.sh` and the queue/stop cases in `tests/phone_client_test.js`. |
 | `C13` | A phone turn whose answer reached the conversation file before its stream's completion event left the button grey with the answer already on screen, drawn as a turn from the laptop. Structural, twice over: the mirror pass rewrites the draft after the raw text has streamed, so the stored block no longer matches the own-turn filter; and compaction — a whole model run — sits between the conversation append and the process exit that emits the completion event, so the stream carries nothing but keepalives while the record already holds the reply. Measured live on 2026-08-08: the mirror rewrite logged at 23:42:30, the reply delivered by the watcher by 23:42:55, the page reloaded by hand at 23:43:29, and the completion event not possible before ~23:43:35. **Resolved:** rule 42 — a watcher-delivered reply ends the turn well inside the watchdog window; held by the watcher-release cases in `tests/phone_client_test.js`. |
 
 ## TESTS
@@ -376,6 +421,16 @@ previous message, or behind something else), the notes stop once real output flo
 follow the completion event, and a turn that starts promptly never sees one. The client half
 lives in `tests/phone_client_test.js`: wait notes draw one line updated in place with the status
 following, and rule 39's resume carries the original clock rather than restamping it.
+`tests/test_phone_stop.sh` drives rules 47-50 through the real server with a stub crab that takes
+the real remote lock: a `/stop` against a long turn kills the remote run's process group and the
+synthesis child beside it — both pids observed dead, not inferred from a status code — the
+stopped turn ends in exactly one completion event marked `stopped`, a message posted mid-turn is
+accepted and streaming wait notes at once rather than blocking on the lock, and the killed turn's
+lock is released to the one behind it, whose reply arrives in seconds rather than at the lock's
+ten-minute bound. A wrong turn id and a missing key are both refused. The client half lives in
+`tests/phone_client_test.js`: a typed send while busy is queued and posted to the server
+immediately rather than dropped, the queue pumps into a real turn when the current one ends, and
+the stop control stops the active turn and the queue behind it.
 
 **To be written:**
 
