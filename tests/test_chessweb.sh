@@ -61,6 +61,8 @@ PORT=""
 MOVER_LOG=""
 REPLIES=""
 DELAY=""
+# --human-side is pinned to white because the scenarios' colour assertions
+# predate the per-game coin flip; a scenario's own args can still override it.
 start_bridge() { # <chess dir> <wake log> [serve args...]
     local dir="$1" wakelog="$2"
     shift 2
@@ -77,7 +79,8 @@ start_bridge() { # <chess dir> <wake log> [serve args...]
         CHESSWEB_MOVER_REPLIES="$REPLIES" \
         CHESSWEB_MOVER_DELAY="$DELAY" \
         "$VENV_PY" -B "$REPO/lib/chessweb.py" serve --port 0 \
-        --client "$CLIENT" --poll 0.2 "$@" >> "$SANDBOX/serve.log" 2>&1 &
+        --client "$CLIENT" --poll 0.2 --human-side white "$@" \
+        >> "$SANDBOX/serve.log" 2>&1 &
     BRIDGE_PID=$!
     PORT=""
     for _ in $(seq 1 100); do
@@ -226,6 +229,14 @@ CH="$SANDBOX/chess-fools"
 seed "$CH" fools-001 guest black f2f3 e7e5 g2g4
 if start_bridge "$CH" "$SANDBOX/wake-fools.log" --opponent guest; then
     scn poller_end "$PORT" "$CH"
+fi
+stop_bridge
+
+echo "the shipped client page — rewrite, native banner, no injection:"
+CH="$SANDBOX/chess-shipped"
+if start_bridge "$CH" "$SANDBOX/wake-shipped.log" --opponent guest \
+        --client "$REPO/lib/chessweb_client"; then
+    scn shipped "$PORT"
 fi
 stop_bridge
 

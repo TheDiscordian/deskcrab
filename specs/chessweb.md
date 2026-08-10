@@ -14,8 +14,11 @@ into the browser; and every recorded user move is answered by the bridge's resid
 on the board in seconds. Her move never rides the wake queue — somebody is sitting at the board
 waiting for it, and the queue serialises behind whatever conversation is running.
 
-The SpeedyChess client is an unmodified third-party build (a Go/WASM page). The bridge never
-edits that checkout; the one server-side liberty it takes is rewriting the server-address box in
+The page it serves is the shipped client (`lib/chessweb_client/` — see THE SHIPPED CLIENT), a
+plain HTML/CSS/JS board that speaks the stock wire byte for byte. The stock SpeedyChess build (a
+Go/WASM page) still plays unmodified: point `--client` or `$DESKCRAB_CHESSWEB_CLIENT` at its
+checkout and the protocol is the same one. Whichever directory serves, the bridge never writes a
+file under it; the one server-side liberty it takes is rewriting the server-address box in
 `index.html`, in memory, to the Host the page was fetched from, so connecting is one click.
 
 ## THE WIRE, AS THE STOCK CLIENT SPEAKS IT
@@ -46,9 +49,10 @@ cannot be changed.
 1. `betty-chessweb serve` listens on one port (`--port`, else `$DESKCRAB_CHESSWEB_PORT`, else
    8181) and answers both plain HTTP GETs — static files from the client directory — and
    WebSocket upgrades — the game protocol. The client directory is `--client`, else
-   `$DESKCRAB_CHESSWEB_CLIENT`, else `~/.local/share/deskcrab/chessweb/client`; if none exists
-   the serve refuses to start and says what to symlink where. `--port 0` picks a free port and
-   prints it.
+   `$DESKCRAB_CHESSWEB_CLIENT`, else the shipped client at `lib/chessweb_client/` in the
+   checkout, else `~/.local/share/deskcrab/chessweb/client`; if none exists the serve refuses to
+   start and says what to symlink where. Explicit choices win over the shipped default, so a
+   stock-client fan loses nothing. `--port 0` picks a free port and prints it.
 2. `index.html` is served with the server-address box rewritten to the request's Host. No file
    under the client directory is ever written.
 3. One user seat. The first connection to send Join(player) is seated and immediately told
@@ -111,14 +115,17 @@ cannot be changed.
     wrapper bootstraps it the same way `betty-chess` does).
 12. The browser is told where her turn stands, because a think and a mover that silently died
     look identical from a phone. The bridge keeps three stamps — asked, started, played — and
-    serves them at `GET /thinking` as JSON. The mover sets asked and started itself the moment
+    serves them at `GET /thinking` as JSON, alongside the assistant's display name (a native
+    banner has no server-side template to hand it one). The mover sets asked and started itself the moment
     the model call begins and played when the move lands, so the banner is mechanical and cannot
     be forgotten; a reflex hit sets played alone. `POST /thinking` still sets the started stamp
     for any out-of-process thinker, and the first post of a turn still sends one push
     notification (`crab notify`); the mover itself never pushes — a reply due in seconds does
     not need announcing. A small polling banner is injected into the served `index.html` ahead
     of `</body>`; the client directory itself stays unmodified (rule 3), and a client that never
-    loads the banner plays exactly as before.
+    loads the banner plays exactly as before. A page whose bytes already carry `crab-thinking` —
+    the shipped client renders the same state natively — is served uninjected: the marker's
+    presence is the whole test, so a page that owns the banner is never given a second one.
 13. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
     up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
     drops two minutes into a think.
@@ -231,6 +238,49 @@ cannot be changed.
     16d stamps `mover-stale`. Rule 33's whole discipline applies: the stamps are evidence,
     never control flow, best-effort behind their own error handling, and `TURN_METRICS=0`
     switches them off. `tools/turn-latency-report` renders the chess section per move.
+18. `GET /state` answers a read-only JSON photograph of the stored game, taken under the hub
+    lock on every request, never cached: the game id (or `game: null` before one exists), the
+    ply, the FEN, the side to move, `your_turn` for the seat's human side, the state
+    key/description/result, the last move, and — while the game is active — every legal move as
+    its UCI, from- and to-square, wire move type (rule: THE WIRE) and a promotion flag. It
+    exists so a page can dress the board — legal-target highlighting on pickup, a snap-back
+    before a doomed send, the material panels — without growing a rules engine of its own:
+    python-chess remains the one judge of chess on this machine. The endpoint is advisory and
+    changes nothing; rule 5's validation of the recorded wire message stays the rules, and a
+    client that never fetches it (the stock one) plays exactly as before.
+
+## THE SHIPPED CLIENT — lib/chessweb_client/
+
+A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
+the default client. It speaks the stock wire exactly — client framing out (one-byte lengths,
+bare Ping), server framing in (uvarint lengths, bare Ping) — so the bridge cannot tell it from
+the stock page. What it owes beyond the protocol:
+
+- **Echo-driven truth.** The client applies Moves and Promotes only as server broadcasts arrive;
+  its own send is never applied optimistically. A dragged piece may *rest* on its target while
+  the send is in flight, but the game state moves only on the echo, and a server Error — or a
+  quiet three seconds — slides it home again. What is on screen is what the store holds, plus at
+  most the stock two-phase promotion pawn.
+- **The stock flow, kept.** The serveraddr box (`id="serveraddr"`, rewritten by rule 2), Connect,
+  Join (player), New Game, in that order, plus Watch for rule 3's spectator join. Team sets the
+  seat's colour and the board's orientation; observers watch from white's side.
+- **Graveyards.** Both sides of the board: each side's captured pieces in value order with a
+  running point count, and the material differential badged on the side that leads. Captures are
+  read from the applied broadcasts (a regular Move onto an occupied square, the pawn an
+  en-passant wire names), a Promote re-values material from the board, and a Team resync rebuilds
+  both panels from zero — so a rejoin's graveyards match the store's game, always.
+- **Movement.** Drag-and-drop and click-click both work, mouse or touch. Pickup highlights the
+  legal targets rule 18 names; an illegal drop snaps back — refused locally when the legal list
+  is current for the shown ply, by the server's Error otherwise. Promotion is the stock two-phase
+  picker, answering with the rune of the chosen piece in the seat's colour.
+- **Presentation.** Dark palette, animated piece travel and capture fades, and a layout that
+  reflows for a phone (the graveyards become strips above and below the board). The console
+  panel stays: every server Error and game event lands there in words. The thinking banner is
+  native — the page carries its own `crab-thinking` element polling `/thinking`, which is what
+  switches rule 12's injection off.
+- **Self-contained.** No fetched fonts, no third-party assets; the pieces are the page's own
+  inline SVG. Everything under `lib/chessweb_client/` is the repo's to edit — rule 3's
+  never-write rule is about the *serving* bridge, not about this checkout.
 
 ## KNOWN LIMITS
 

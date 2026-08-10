@@ -234,11 +234,21 @@ def seed(chess_dir, gid, opponent, my_side, moves):
 
 # ---------------------------------------------------------------- scenarios
 
+def state_json(port):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/state",
+                                timeout=10) as r:
+        assert r.headers["Content-Type"] == "application/json"
+        return json.loads(r.read().decode())
+
+
 def s_http(port):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as r:
         page = r.read().decode()
     assert f'value="127.0.0.1:{port}"' in page, "serveraddr not rewritten"
     ok("index.html server box rewritten to the request host")
+    st = state_json(port)
+    assert st == {"game": None}, st
+    ok("/state answers game null before a game exists (rule 18)")
     req = urllib.request.Request(f"http://127.0.0.1:{port}/chess.wasm")
     with urllib.request.urlopen(req, timeout=10) as r:
         assert r.headers["Content-Type"] == "application/wasm"
@@ -317,6 +327,14 @@ def s_fresh(port, chess_dir, wake_log, mover_log):
     obs.expect_move("e7", "e5")
     ok("an observer gets the replay at once")
 
+    st = state_json(port)
+    assert st["game"] == "guest-001" and st["ply"] == 2 \
+        and st["turn"] == "white" and st["your_turn"] is True \
+        and st["state"] == "active" and st["last"] == "e7e5", st
+    assert {"uci": "g1f3", "from": "g1", "to": "f3", "type": 0,
+            "promotion": False} in st["legal"], st["legal"]
+    ok("/state photographs the game: ply, turn, the legal list (rule 18)")
+
 
 def s_resume(port, chess_dir):
     c = Client(port)
@@ -368,6 +386,11 @@ def s_special(port, chess_dir):
     c.expect_move("e5", "d5", mtype=1)
     ok("en passant replayed carrying the captured pawn's square")
 
+    st = state_json(port)
+    assert any(m["uci"] == "e8g8" and m["type"] == 3 for m in st["legal"]), \
+        st["legal"]
+    ok("/state marks black's kingside castle with its wire type")
+
 
 def s_promote(port, chess_dir):
     c = Client(port)
@@ -377,6 +400,11 @@ def s_promote(port, chess_dir):
     c.expect(TEAM)
     for _ in range(8):
         c.recv()  # the seeded replay; encodings proven in s_special
+
+    st = state_json(port)
+    promos = [m for m in st["legal"] if m["from"] == "b7" and m["promotion"]]
+    assert promos and all(m["type"] == 0 for m in promos), st["legal"]
+    ok("/state flags the b7 promotions")
 
     c.move("b7", "a8")  # pawn takes the rook, promotion pending
     c.expect_move("b7", "a8")
@@ -402,6 +430,23 @@ def s_promote(port, chess_dir):
     assert f.get(3, 0) == 0x2655
     assert game_moves(chess_dir, "promo-001")[-1] == "b7a8q"
     ok("promotion recorded as b7a8q and broadcast with the rune")
+
+
+def s_shipped(port):
+    # The bridge here serves lib/chessweb_client, the shipped page.
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as r:
+        page = r.read().decode()
+    assert f'value="127.0.0.1:{port}"' in page, "serveraddr not rewritten"
+    ok("shipped index.html server box rewritten to the request host")
+    assert page.count("crab-thinking") == 1, \
+        f"crab-thinking appears {page.count('crab-thinking')} times"
+    ok("the native banner suppressed the injected one (rule 12)")
+    for name, ctype in [("board.js", "text/javascript"),
+                        ("style.css", "text/css")]:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/{name}",
+                                    timeout=10) as r:
+            assert r.headers["Content-Type"] == ctype, (name, ctype)
+    ok("board.js and style.css served with their content types")
 
 
 def s_mate(port, chess_dir, wake_log):
@@ -661,7 +706,7 @@ def main():
      "special": s_special, "promote": s_promote, "mate": s_mate,
      "poller_end": s_poller_end, "reset": s_reset, "rejoin": s_rejoin,
      "postkill": s_postkill, "reflex": s_reflex,
-     "supersede": s_supersede}[what](port, *rest)
+     "supersede": s_supersede, "shipped": s_shipped}[what](port, *rest)
 
 
 if __name__ == "__main__":

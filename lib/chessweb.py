@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """betty-chessweb: the browser board onto a betty-chess game.
 
-A SpeedyChess-protocol server. It serves the stock SpeedyChess web client over
-HTTP and speaks its wire protocol (framed protobuf over WebSocket) on the same
-port, so the user plays in a browser while she plays through `betty-chess move`.
+A SpeedyChess-protocol server. It serves a web client over HTTP — the shipped
+page in lib/chessweb_client by default, the stock SpeedyChess build if one is
+pointed at — and speaks the stock wire protocol (framed protobuf over
+WebSocket) on the same port, so the user plays in a browser while she plays
+through `betty-chess move`.
 The betty-chess game file is the only record: the user's moves are validated and
 appended there, moves appended there by any other hand are mirrored into the
 browser, and each recorded user move is answered in-process by the resident
@@ -972,6 +974,9 @@ def make_handler(hub, client_dir):
             if self.path.split("?", 1)[0] == "/thinking":
                 self.thinking_state()
                 return
+            if self.path.split("?", 1)[0] == "/state":
+                self.game_state()
+                return
             self.static()
 
         def do_POST(self):
@@ -993,7 +998,51 @@ def make_handler(hub, client_dir):
             with hub.lock:
                 state = dict(hub.activity)
             state["now"] = time.time()
+            # The shipped client's native banner has no server-side template
+            # to hand it the name, so the JSON carries it.
+            state["name"] = ASSISTANT_NAME
             self.json_body(state)
+
+        def game_state(self):
+            """Rule 18: a read-only photograph of the stored game, for the
+            page's chrome — highlighting, snap-back, the material panels.
+            Advisory only; rule 5's validation stays the rules."""
+            with hub.lock:
+                g = hub.store.load()
+                if g is None:
+                    self.json_body({"game": None})
+                    return
+                board = chess_cli.build_board(g)
+                key, desc, result = chess_cli.compute_state(g, board)
+                human = hub.human_side()
+                legal = []
+                if key == "active":
+                    for mv in board.legal_moves:
+                        if board.is_castling(mv):
+                            wire = (CASTLE_LEFT
+                                    if chess.square_file(mv.to_square) < 4
+                                    else CASTLE_RIGHT)
+                        elif board.is_en_passant(mv):
+                            wire = EN_PASSANT
+                        else:
+                            wire = REGULAR
+                        legal.append(
+                            {"uci": mv.uci(),
+                             "from": chess.square_name(mv.from_square),
+                             "to": chess.square_name(mv.to_square),
+                             "type": wire,
+                             "promotion": bool(mv.promotion)})
+                self.json_body(
+                    {"game": g["id"], "ply": len(g["moves"]),
+                     "fen": board.fen(),
+                     "turn": ("white" if board.turn == chess.WHITE
+                              else "black"),
+                     "your_turn": key == "active" and board.turn == human,
+                     "human_side": ("white" if human == chess.WHITE
+                                    else "black"),
+                     "state": key, "desc": desc, "result": result,
+                     "legal": legal,
+                     "last": g["moves"][-1] if g["moves"] else None})
 
         def json_body(self, obj):
             body = json.dumps(obj).encode()
@@ -1028,8 +1077,11 @@ def make_handler(hub, client_dir):
                 body = re.sub(
                     rb'(id="serveraddr"\s+value=")[^"]*(")',
                     lambda m: m.group(1) + host.encode() + m.group(2), body)
-                body = body.replace(b"</body>", THINKING_WIDGET + b"</body>",
-                                    1)
+                # A page that owns the banner (the shipped client) is never
+                # given a second one (rule 12): the marker is the whole test.
+                if b"crab-thinking" not in body:
+                    body = body.replace(b"</body>",
+                                        THINKING_WIDGET + b"</body>", 1)
             self.send_response(200)
             self.send_header("Content-Type", CONTENT_TYPES.get(
                 target.suffix, "application/octet-stream"))
@@ -1041,15 +1093,18 @@ def make_handler(hub, client_dir):
 
 
 def find_client_dir(arg):
+    # Explicit choices first, then the shipped client, then the stock
+    # SpeedyChess symlink spot (rule 1).
     candidates = [arg, os.environ.get("DESKCRAB_CHESSWEB_CLIENT"),
+                  Path(__file__).resolve().parent / "chessweb_client",
                   Path.home() / ".local/share/deskcrab/chessweb/client"]
     for c in candidates:
         if c and (Path(c) / "index.html").is_file():
             return Path(c)
-    sys.exit("chessweb: no SpeedyChess client directory. Build the client "
-             "(make config && make in its checkout), then point --client or "
-             "$DESKCRAB_CHESSWEB_CLIENT at it, or symlink it to "
-             "~/.local/share/deskcrab/chessweb/client")
+    sys.exit("chessweb: no client directory. The shipped client should be at "
+             "lib/chessweb_client in the checkout; for the stock SpeedyChess "
+             "page, point --client or $DESKCRAB_CHESSWEB_CLIENT at its build "
+             "or symlink it to ~/.local/share/deskcrab/chessweb/client")
 
 
 def default_wake_cmd():

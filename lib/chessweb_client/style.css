@@ -1,0 +1,473 @@
+/* The shipped chessweb client (specs/chessweb.md — THE SHIPPED CLIENT).
+   Dark-first palette; every colour lives here so a reskin never touches JS. */
+
+:root {
+	--bg: #14121b;
+	--panel: #1e1b28;
+	--panel-edge: #2c2838;
+	--text: #e8e2f0;
+	--text-dim: #9a92a8;
+	--accent: #d8b36a;
+	--accent-soft: rgba(216, 179, 106, 0.35);
+	--good: #7fc98f;
+	--bad: #d98080;
+	--sq-light: #b5a894;
+	--sq-dark: #77685a;
+	--sq-last: rgba(216, 179, 106, 0.42);
+	--sq-check: rgba(217, 128, 128, 0.55);
+	--pc-w-fill: #f2efe7;
+	--pc-w-line: #46403a;
+	--pc-b-fill: #2e2a33;
+	--pc-b-line: #b9b0c4;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	min-height: 100vh;
+	padding: 0.75rem clamp(0.5rem, 2vw, 1.5rem) 2rem;
+}
+
+/* ------------------------------------------------------------- header */
+.top {
+	display: flex;
+	align-items: baseline;
+	gap: 1rem;
+	flex-wrap: wrap;
+	padding: 0.25rem 0.25rem 0.5rem;
+}
+
+.top h1 {
+	margin: 0;
+	font-size: 1.35rem;
+	font-weight: 650;
+	letter-spacing: 0.04em;
+}
+
+#turnline {
+	color: var(--text-dim);
+	font-size: 0.95rem;
+	min-height: 1.4em;
+}
+
+#crab-thinking {
+	color: var(--accent);
+	font-size: 0.95rem;
+	font-weight: 600;
+}
+
+/* ------------------------------------------------------------- connection */
+#connbox {
+	background: var(--panel);
+	border: 1px solid var(--panel-edge);
+	border-radius: 10px;
+	padding: 0.45rem 0.8rem;
+	margin-bottom: 1rem;
+}
+
+#connbox summary {
+	cursor: pointer;
+	color: var(--text-dim);
+	font-size: 0.9rem;
+	user-select: none;
+}
+
+.conn-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+	padding: 0.6rem 0 0.25rem;
+}
+
+.addr {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	color: var(--text-dim);
+	font-size: 0.9rem;
+}
+
+input#serveraddr {
+	background: var(--bg);
+	border: 1px solid var(--panel-edge);
+	border-radius: 7px;
+	color: var(--text);
+	font: inherit;
+	padding: 0.35rem 0.6rem;
+	width: 13em;
+}
+
+input#serveraddr:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+button {
+	background: var(--panel-edge);
+	border: 1px solid transparent;
+	border-radius: 7px;
+	color: var(--text);
+	font: inherit;
+	font-size: 0.92rem;
+	padding: 0.35rem 0.9rem;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+button:hover:not(:disabled) {
+	background: #3a3450;
+	border-color: var(--accent-soft);
+}
+
+button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.dot {
+	width: 0.65em;
+	height: 0.65em;
+	border-radius: 50%;
+	background: var(--bad);
+	display: inline-block;
+	margin-left: 0.25rem;
+	transition: background 0.3s;
+}
+
+.dot.on { background: var(--good); }
+
+/* ------------------------------------------------------------- arena */
+.arena {
+	display: grid;
+	grid-template-columns: minmax(9.5rem, 1fr) min(86vmin, 40rem) minmax(9.5rem, 1fr);
+	grid-template-areas: "gyw board gyb";
+	gap: 1rem;
+	justify-content: center;
+	align-items: start;
+}
+
+#gy-w { grid-area: gyw; }
+#gy-b { grid-area: gyb; }
+#boardwrap { grid-area: board; position: relative; }
+
+/* ------------------------------------------------------------- board */
+#board {
+	position: relative;
+	width: 100%;
+	aspect-ratio: 1 / 1;
+	border-radius: 8px;
+	overflow: hidden;
+	box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.square {
+	position: absolute;
+	width: 12.5%;
+	height: 12.5%;
+	background: var(--sq-light);
+}
+
+.square.darksq { background: var(--sq-dark); }
+
+/* coordinate labels, set by board.js on the edge squares */
+.square::before, .square::after {
+	position: absolute;
+	font-size: clamp(8px, 1.4vmin, 12px);
+	font-weight: 650;
+	opacity: 0.65;
+	pointer-events: none;
+}
+
+.square.darksq::before, .square.darksq::after { color: var(--sq-light); }
+.square:not(.darksq)::before, .square:not(.darksq)::after { color: var(--sq-dark); }
+
+.square[data-file]::after {
+	content: attr(data-file);
+	right: 5%;
+	bottom: 2%;
+}
+
+.square[data-rank]::before {
+	content: attr(data-rank);
+	left: 6%;
+	top: 3%;
+}
+
+.square.last { box-shadow: inset 0 0 0 100vmax var(--sq-last); }
+.square.check { box-shadow: inset 0 0 0 100vmax var(--sq-check); }
+
+.square.sel { box-shadow: inset 0 0 0 3px var(--accent); }
+
+/* a legal quiet target: a soft dot */
+.square.hint::after {
+	content: "";
+	left: 50%;
+	top: 50%;
+	width: 26%;
+	height: 26%;
+	transform: translate(-50%, -50%);
+	border-radius: 50%;
+	background: rgba(20, 18, 27, 0.35);
+	right: auto;
+	bottom: auto;
+	opacity: 1;
+}
+
+/* a legal capture target: a ring */
+.square.cap::after {
+	content: "";
+	left: 50%;
+	top: 50%;
+	width: 86%;
+	height: 86%;
+	transform: translate(-50%, -50%);
+	border-radius: 50%;
+	border: 3px solid rgba(20, 18, 27, 0.4);
+	background: none;
+	right: auto;
+	bottom: auto;
+	opacity: 1;
+}
+
+.square.refuse { animation: refuse 0.3s; }
+
+@keyframes refuse {
+	0%, 100% { box-shadow: none; }
+	50% { box-shadow: inset 0 0 0 4px var(--bad); }
+}
+
+/* ------------------------------------------------------------- pieces */
+.piece {
+	position: absolute;
+	width: 12.5%;
+	height: 12.5%;
+	left: 0;
+	top: 0;
+	transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1), opacity 0.28s;
+	will-change: transform;
+	pointer-events: none;
+}
+
+.piece svg {
+	width: 100%;
+	height: 100%;
+	display: block;
+	transition: transform 0.15s;
+	filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35));
+}
+
+.piece.w svg { fill: var(--pc-w-fill); stroke: var(--pc-w-line); }
+.piece.b svg { fill: var(--pc-b-fill); stroke: var(--pc-b-line); }
+
+.piece svg * { stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+
+.piece.w svg .ink { fill: var(--pc-w-line); }
+.piece.b svg .ink { fill: var(--pc-b-line); }
+.piece svg .line { fill: none; }
+
+.piece.drag {
+	transition: none;
+	z-index: 30;
+}
+
+.piece.drag svg { transform: scale(1.14); }
+
+.piece.lift { z-index: 20; }
+
+.piece.dying { opacity: 0; z-index: 5; }
+.piece.dying svg { transform: scale(0.4); }
+
+/* ------------------------------------------------------------- graveyards */
+.graveyard {
+	background: var(--panel);
+	border: 1px solid var(--panel-edge);
+	border-radius: 10px;
+	padding: 0.7rem 0.8rem;
+	min-height: 7rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+
+.gy-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+
+.gy-title {
+	font-size: 0.82rem;
+	font-weight: 650;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--text-dim);
+}
+
+.gy-badge {
+	background: var(--accent);
+	color: #14121b;
+	font-size: 0.8rem;
+	font-weight: 700;
+	border-radius: 999px;
+	padding: 0.05rem 0.55rem;
+}
+
+.gy-pieces {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.1rem;
+	flex: 1;
+	align-content: flex-start;
+	min-height: 2.2rem;
+}
+
+.gy-pieces .tomb {
+	width: 1.9rem;
+	height: 1.9rem;
+	animation: arrive 0.3s;
+}
+
+@keyframes arrive {
+	from { transform: scale(0.3); opacity: 0; }
+	to { transform: scale(1); opacity: 1; }
+}
+
+.gy-pieces svg { width: 100%; height: 100%; display: block; }
+.gy-pieces .tomb.w svg { fill: var(--pc-w-fill); stroke: var(--pc-w-line); }
+.gy-pieces .tomb.b svg { fill: var(--pc-b-fill); stroke: var(--pc-b-line); }
+.gy-pieces svg * { stroke-width: 1.4; stroke-linejoin: round; }
+.gy-pieces .tomb.w svg .ink { fill: var(--pc-w-line); }
+.gy-pieces .tomb.b svg .ink { fill: var(--pc-b-line); }
+.gy-pieces svg .line { fill: none; }
+
+.gy-score {
+	font-size: 0.85rem;
+	color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------- overlays */
+#promo, #banner {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(10, 9, 14, 0.55);
+	z-index: 40;
+	border-radius: 8px;
+}
+
+#promo[hidden], #banner[hidden] { display: none; }
+
+.promo-card {
+	background: var(--panel);
+	border: 1px solid var(--panel-edge);
+	border-radius: 12px;
+	padding: 0.9rem 1.1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	align-items: center;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+.promo-title {
+	font-size: 0.85rem;
+	color: var(--text-dim);
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+}
+
+#promo-choices { display: flex; gap: 0.4rem; }
+
+#promo-choices button {
+	width: 3.4rem;
+	height: 3.4rem;
+	padding: 0.25rem;
+	background: var(--bg);
+}
+
+#promo-choices button:hover { border-color: var(--accent); }
+
+#promo-choices svg { width: 100%; height: 100%; display: block; }
+#promo-choices .w svg { fill: var(--pc-w-fill); stroke: var(--pc-w-line); }
+#promo-choices .b svg { fill: var(--pc-b-fill); stroke: var(--pc-b-line); }
+#promo-choices svg * { stroke-width: 1.4; stroke-linejoin: round; }
+
+#banner {
+	pointer-events: none;
+}
+
+#banner .banner-card {
+	background: var(--panel);
+	border: 1px solid var(--accent-soft);
+	color: var(--text);
+	font-size: 1.15rem;
+	font-weight: 650;
+	border-radius: 12px;
+	padding: 0.8rem 1.6rem;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* ------------------------------------------------------------- console */
+.consolebox {
+	max-width: 46rem;
+	margin: 1.2rem auto 0;
+	background: var(--panel);
+	border: 1px solid var(--panel-edge);
+	border-radius: 10px;
+	padding: 0.6rem 0.9rem;
+}
+
+.consolebox h2 {
+	margin: 0 0 0.3rem;
+	font-size: 0.82rem;
+	font-weight: 650;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--text-dim);
+}
+
+#console {
+	margin: 0;
+	max-height: 9.5rem;
+	overflow-y: auto;
+	font: 0.85rem/1.5 ui-monospace, "Cascadia Code", Menlo, monospace;
+	color: var(--text-dim);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* ------------------------------------------------------------- phone */
+@media (max-width: 760px) {
+	body { padding: 0.5rem 0.5rem 1.5rem; }
+
+	.arena {
+		grid-template-columns: 1fr;
+		grid-template-areas: "gyw" "board" "gyb";
+		gap: 0.6rem;
+	}
+
+	/* strips over and under the board, not columns beside it */
+	.graveyard {
+		flex-direction: row;
+		align-items: center;
+		min-height: 0;
+		padding: 0.4rem 0.7rem;
+	}
+
+	.gy-head { flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+	.gy-pieces { min-height: 1.7rem; }
+	.gy-pieces .tomb { width: 1.5rem; height: 1.5rem; }
+	.gy-score { white-space: nowrap; }
+}
