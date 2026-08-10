@@ -148,6 +148,26 @@ cannot be changed.
     after the exact layer has missed; a hit returns before any similarity work. An empty note or
     a similarity failure books the wake bare, and `DESKCRAB_CHESS_SIMILAR=0` switches the note
     off.
+16b. When rule 16's lookup has missed and a wake is about to be booked for her move, the bridge
+    asks the effort pre-check (`lib/chess_effort.py`) how hard that wake should think — pure
+    python-chess arithmetic, **no engine, ever**, here as everywhere in her chess — and books
+    the wake with the answer as its effort override (`crab wake-at --effort`,
+    [wake-queue.md](wake-queue.md) rule 13a). Someone is waiting at the board and most positions
+    are quiet manoeuvring, so the default verdict is `low`; only a fired alarm raises it to
+    `high`. The alarms: the side to move in check, or a check available to either side; one of
+    her pieces (never a pawn, never the king) en prise by a simple attackers-versus-defenders
+    count; a capture worth a minor piece or more available to either side; a pawn on its
+    seventh rank, either side; her king's pawn shield broken or an open or half-open file
+    bearing on her king while the opponent still has a rook or queen to use it; eight or fewer
+    legal moves; and nearest similarity neighbours all beyond the distance floor when the store
+    is deep enough to judge — genuinely new ground, worth real thought precisely because no
+    memory helps. An exact reflex hit plays before the classifier is ever consulted (rule 16),
+    so a remembered position costs neither a wake nor a classification. A classifier failure —
+    and `DESKCRAB_CHESS_EFFORT=0` — books the wake with no override, at the config default,
+    exactly as before the pre-check existed. The thresholds are tunable:
+    `DESKCRAB_CHESS_EFFORT_FORCED` (legal-move ceiling, default 8),
+    `DESKCRAB_CHESS_EFFORT_NOVEL_ROWS` (vector rows before novelty may be judged, default 500),
+    `DESKCRAB_CHESS_EFFORT_NOVEL_MIN` (the similarity floor, default 0.75).
 17. The move path stamps where its time went, into the same dated turn-metrics log as every
     other path (turn-pipeline.md rule 33), kind `chess`, every line's detail opening with
     `<game id> ply <n>` so one move's stamps correlate across processes — the bridge and the
@@ -156,7 +176,10 @@ cannot be changed.
     then `reflex-hit` or `reflex-miss` when rule 16's lookup returns, then `similar-context`
     (detail ending `attached` or `empty`) when the similarity note has been computed for the
     wake's reason — the stamp is written whichever way that came out, so its absence proves the
-    reflex hit short-circuited before any similarity work — then `wake-booked` when
+    reflex hit short-circuited before any similarity work — then `effort` with the level rule
+    16b chose and every reason that fired (`quiet` when none did, `default error` when the
+    pre-check failed), which is the record the thresholds are tuned from, and absent exactly
+    when a reflex hit short-circuited — then `wake-booked` when
     rule 7's wake is handed to the queue; a reflex move stamps `move-played` with source
     `reflex` when it is saved. `betty-chess move` stamps `move-played` with source `cli` when
     a move by her side lands in the store, whoever called it — that is the stamp the wake's

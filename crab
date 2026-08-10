@@ -157,6 +157,15 @@ case "${1:-}" in
         # Which subsystem booked this wake, carried through so a deferral keeps
         # its provenance instead of re-booking as an anonymous one.
         WAKE_BOOKED_BY="${5:-unknown}"
+        # The booking's effort override (specs/wake-queue.md rule 13a). Applied
+        # by reassigning WAKE_EFFORT before run_claude_wake reads it; anything
+        # unrecognised is ignored rather than handed to a claude invocation
+        # that would refuse the whole wake over it.
+        WAKE_EFFORT_OVERRIDE="${6:-}"
+        case "$WAKE_EFFORT_OVERRIDE" in
+            low|medium|high) WAKE_EFFORT="$WAKE_EFFORT_OVERRIDE" ;;
+            *) WAKE_EFFORT_OVERRIDE="" ;;
+        esac
 
         # This booking has fired: retire its durable record before anything can
         # exit early, or wake-restore would resurrect a wake that already ran.
@@ -211,6 +220,7 @@ case "${1:-}" in
             # still a wake somebody meant to happen. Gating this on a kind is
             # how a blanked record became a wake that simply never came back.
             "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
+                ${WAKE_EFFORT_OVERRIDE:+--effort "$WAKE_EFFORT_OVERRIDE"} \
                 "${WAKE_DEFER_DELAY}s" "${WAKE_KIND:-scheduled}" "$WAKE_REASON" >/dev/null
             exit 0
         fi
@@ -420,7 +430,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # This is a door onto the module, not a second implementation of it.
         shift
         if [ -z "${1:-}" ]; then
-            echo "Usage: crab wake-at [--by <who>] [--cap <n>] <when> [kind] [reason]"
+            echo "Usage: crab wake-at [--by <who>] [--cap <n>] [--effort <low|medium|high>] <when> [kind] [reason]"
             echo "       (when: 2h, 45min, \"09:30\", \"Sat 14:00\"; kind: scheduled|event)"
             echo "       Anything unrecognised in the kind slot is read as the reason."
             exit 1

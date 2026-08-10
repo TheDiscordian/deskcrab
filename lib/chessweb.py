@@ -547,6 +547,30 @@ class Hub:
             chess_cli.metric("similar-context", f"{g['id']} ply {ply} error")
             return ""
 
+    def move_effort(self, g, board):
+        """How hard the wake should think (specs/chessweb.md rule 16b): the
+        chess_effort pre-check, consulted only after try_reflex has missed —
+        a remembered position costs neither a wake nor a classification.
+        Returns the effort level for the booking, or "" for a wake at the
+        config default; a classifier failure is the latter, never a lost
+        move. The level and every reason that fired are stamped and logged,
+        because the thresholds are tuned from this record."""
+        if os.environ.get("DESKCRAB_CHESS_EFFORT", "1") == "0":
+            return ""
+        ply = len(board.move_stack)
+        try:
+            import chess_effort
+            level, reasons = chess_effort.classify(
+                board, novel=chess_effort.novelty(board.fen()))
+            why = ",".join(reasons) if reasons else "quiet"
+            chess_cli.metric("effort", f"{g['id']} ply {ply} {level} {why}")
+            log(f"{g['id']}: her move wake will think at {level} ({why})")
+            return level
+        except Exception as e:
+            log(f"effort pre-check failed, wake at config default: {e!r}")
+            chess_cli.metric("effort", f"{g['id']} ply {ply} default error")
+            return ""
+
     def dispatch_wake(self, g, board, san=None, over=None):
         if over is None:
             chess_cli.metric("move-start",
@@ -575,11 +599,19 @@ class Hub:
                       f"thought, and it reaches their browser within seconds. "
                       f"See the board as it stands: betty-chess show {gid}"
                       + self.similar_note(g, board))
-        if self.port:
-            reason += (f". Before you think, say so: curl -sf -X POST "
-                       f"http://127.0.0.1:{self.port}/thinking -o /dev/null "
-                       f"— it lights the thinking line on the user's board")
-        cmd = self.wake_cmd + [reason]
+        cmd = list(self.wake_cmd)
+        if over is None:
+            effort = self.move_effort(g, board)
+            if effort:
+                try:
+                    # Flags precede wake-at's positionals. A custom wake
+                    # command without wake-at owns its own flags and gets
+                    # none pushed into it.
+                    i = cmd.index("wake-at") + 1
+                    cmd[i:i] = ["--effort", effort]
+                except ValueError:
+                    pass
+        cmd.append(reason)
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=30)

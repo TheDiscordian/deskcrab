@@ -64,6 +64,15 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     machine still gives a wake everything it has.
 13. A scratch instance's config path and state prefix MUST travel into the unit, so its wakes fire
     back into the scratch state.
+13a. A booking MAY carry an **effort override** — `crab wake-at --effort <level>` — naming the
+    reasoning effort the fired session runs at, for a booker that already knows how hard its wake
+    will need to think (today: the chess bridge's move wakes, [chessweb.md](chessweb.md) rule 16b).
+    The override is the record's sixth field and the fired unit's sixth argument, so it survives
+    exactly what the record survives: restore re-arms with it, tidy's re-book keeps it, and the
+    blocked-lock deferral re-books with it intact. The level MUST be one of the CLI's effort names
+    (low, medium, high) — anything else is refused at booking time, not carried into a claude
+    invocation that will refuse it later with nobody watching. Absent, the wake runs at
+    `WAKE_EFFORT` from config, exactly as before the field existed.
 
 ### Argument arity
 
@@ -83,7 +92,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 20. An active interaction MUST NOT defer the session. The session runs; the output decision is made
     at the end. Deferring the session meant a wake during any conversation did no reading, no want
     work, and no dated thought, and reached the user as an indistinguishable silence.
-21. A wake blocked by the lock MUST be re-armed with its kind and reason intact, at a spaced slot.
+21. A wake blocked by the lock MUST be re-armed with its kind, reason and effort override intact,
+    at a spaced slot.
 22. The wake agenda MUST be delivered as the session's user message. See
     [prompt-assembly.md](prompt-assembly.md) rule 12.
 23. When the stream held an error and no genuine model output, the wake MUST journal the failure
@@ -167,7 +177,7 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/wakes/<unit>.wake` | `fire \t kind \t reason \t booked_at \t booked_by` |
+| `~/.local/share/deskcrab/wakes/<unit>.wake` | `fire \t kind \t reason \t booked_at \t booked_by [\t effort]` |
 | `~/.local/share/deskcrab/wakes/ledger.log` | append-only: epoch, action, unit, kind, reason, actor |
 | `${STATE_PREFIX}-wake.lock` | one wake at a time, held for the life of the process |
 | `${STATE_PREFIX}-wake-book.lock` | the booking queue, held across check-then-act |
@@ -177,7 +187,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 
 Record fields are tab separated with a fixed order. A reader MUST tolerate a record with only the
 first three fields — every record already on disk has that shape — and MUST fill the missing fields
-with "unknown" rather than shifting the ones it has.
+with "unknown" rather than shifting the ones it has. The sixth field, the effort override, is
+optional and empty on every record booked without one; a reader treats absent and empty alike.
 
 ## The lifecycle
 
