@@ -351,3 +351,37 @@ rm -f "${DESKCRAB_STATE_PREFIX}-live-speech"
 
 ok "another voice -> regroup block -> one folded reply, nothing dropped"
 ok "a voice he has answered is not another voice — no restatement pressure"
+
+# --- rule 37: the quote yields, the instructions never do -------------------
+# The block is instructions wrapped around a quote; under the old sizing a
+# long reply pushed the CLOSING instructions off the layer and the generic
+# trim cut them mid-sentence. Now the quote clips itself to what the budget
+# leaves, on a word, saying the reply goes on — and the block never outgrows
+# the layer.
+(
+    set +eu
+    # shellcheck disable=SC1090
+    source "$REPO/lib/common.sh"
+    sleep 60 & SPEAKER=$!
+    LONG="$(seq 1 400 | tr '\n' ' ')"
+    live_speech_begin desk "$LONG" "$SPEAKER"
+    BLOCK="$(regroup_context)"
+    printf '%s' "$BLOCK" | grep -q "silence is never announced" \
+        || fail "a long quote pushed the closing instruction off the block"
+    printf '%s' "$BLOCK" | grep -qF "[... the reply goes on" \
+        || fail "the clipped quote does not say the reply goes on"
+    BYTES=$(printf '%s' "$BLOCK" | wc -c)
+    BUDGET=$(_prompt_budget regroup turn)
+    [ "$BYTES" -le "$BUDGET" ] \
+        || fail "the block outgrew the layer anyway ($BYTES of $BUDGET)"
+    # A quote that fits is delivered whole, with no marker claiming otherwise.
+    live_speech_begin desk "a short reply" "$SPEAKER"
+    BLOCK="$(regroup_context)"
+    printf '%s' "$BLOCK" | grep -qF "a short reply" \
+        || fail "a short quote did not arrive verbatim"
+    printf '%s' "$BLOCK" | grep -qF "[... the reply goes on" \
+        && fail "a short quote was marked as clipped"
+    kill "$SPEAKER" 2>/dev/null
+    rm -f "${DESKCRAB_STATE_PREFIX}-live-speech"
+    ok "rule 37 — a long quote clips on a word; the instructions stand whole"
+)

@@ -162,7 +162,11 @@ check "the index is never trimmed — it reports over budget instead" \
 # overrun is added to the allowance and everything else has to fit under it.
 # A profile whose sum drifts fails here and the table is what it is measured
 # against; if the assembler is right, the table moves, in the same commit.
-total_budget() { case "$1" in turn) echo 28800 ;; wake) echo 23800 ;;
+# These are the TABLE's totals, verbatim — §11 says the two state the same
+# numbers on purpose. Until 2026-08-09 this function held numbers 400 under
+# the table: the 2026-08-08 L4 raise moved the spec alone, which is exactly
+# the drift the paragraph above forbids.
+total_budget() { case "$1" in turn) echo 31500 ;; wake) echo 26500 ;;
                               job) echo 2000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"
@@ -273,3 +277,28 @@ refute "a reasonless wake says nothing about an agenda it does not have" \
     contains "$MSG" "That is this session's agenda"
 check "and it still knows where it came from" \
     contains "$MSG" "from a wake you scheduled yourself"
+
+echo
+echo "a cut is never silent (rule 36):"
+# The exact mechanism of 2026-08-09: a conf override pins L1 under the sheet,
+# the fit drops sections, and for two days nothing outside the prompt said so.
+# 5,000 leaves the ~3,400-byte identity header room for only a little sheet.
+run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn' >/dev/null
+check "the cut build left the cuts record" \
+    [ -s "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" ]
+check "naming the persona sections it dropped" \
+    contains "$(cat "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" 2>/dev/null || true)" \
+             "persona sections dropped"
+state="$(run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn --layers' \
+         | awk -F'\t' '$1 == "L1" { print $4 }')"
+check_eq "the manifest calls a section-cut sheet cut, never full" "$state" "cut"
+check "the next build's state block renders the record" \
+    contains "$(run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn')" \
+             "PROMPT CUT SHORT"
+# The override removed — the code default again — the fit is clean, and the
+# record goes with it.
+run 'build_system_prompt --profile turn' >/dev/null
+check "a clean build removes the record" \
+    [ ! -s "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" ]
+refute "and the prompt after it carries no warning" \
+    contains "$(run 'build_system_prompt --profile turn')" "PROMPT CUT SHORT"

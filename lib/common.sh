@@ -200,6 +200,20 @@ SUMMARYFILE="${STATE_PREFIX}-convo-summary.txt"
 # nothing — a new conversation starting does not erase the fact an old one
 # ended.
 SEAMFILE="${STATE_PREFIX}-convo-seam.txt"
+# The prompt-cuts record, specs/prompt-assembly.md rule 36. A speaking build
+# that cut ANY layer writes what it cut here; a build that fits whole removes
+# it; the state block renders it — which puts the fact in every later speaking
+# prompt and in `crab status` until the cause is fixed. Truncation is a
+# failsafe, never a solution: this record exists because a cut was once
+# invisible for two days — a stale conf override pinned L1 below the persona
+# sheet, every turn spoke without its Continuity section, and no line anywhere
+# said so.
+PROMPT_CUTS_FILE="${STATE_PREFIX}-prompt-cuts.txt"
+# The persona fit's channel into that record: _persona_fit runs inside a
+# command substitution, so the names of the sections it dropped come back to
+# the assembler through this file — written on a cut fit, removed on a clean
+# one.
+PERSONA_DROP_FILE="${STATE_PREFIX}-persona-drop.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
 # of the worst silence in this thing. A wake firing beside a desktop turn ran
@@ -1198,6 +1212,29 @@ self_state_report() {
     local brief=0
     [ "${1:-}" = "--prompt" ] && brief=1
     session_reap
+    # The cuts record, specs/prompt-assembly.md rule 36: if the last speaking
+    # prompt could not fit everything it carries, that fact leads this block —
+    # in every prompt and in `crab status` — until a build assembles clean.
+    # Truncation is a failsafe, never a solution: a cut that shows up here
+    # every day is a budget or a source that needs fixing, and the two days
+    # this ran silent cost her the section of herself that keeps the
+    # machinery's vocabulary out of her mouth.
+    if [ -s "$PROMPT_CUTS_FILE" ]; then
+        local cuts_body
+        cuts_body="$(awk -F'\t' 'NF == 2 {
+                name = $1
+                if ($1 == "L1") name = "persona (L1)"
+                else if ($1 == "L3") name = "memory (L3)"
+                else if ($1 == "L4") name = "shelves (L4)"
+                else if ($1 == "L7") name = "ranking (L7)"
+                else if ($1 == "L8") name = "frame (L8)"
+                printf "  - %s: %s\n", name, $2
+            }' "$PROMPT_CUTS_FILE" 2>/dev/null)"
+        if [ -n "$cuts_body" ]; then
+            printf 'PROMPT CUT SHORT — the last assembled prompt could not fit everything it carries:\n%s' "$cuts_body"
+            printf '  Truncation is never the answer to growth: raise the layer budget or slim its source (specs/prompt-assembly.md rule 36).\n'
+        fi
+    fi
     local f kind pid started epoch startt n=0 body=""
     for f in "$SESSIONS_DIR"/*; do
         [ -e "$f" ] || continue
@@ -1913,10 +1950,14 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
         L2:turn|L2:wake) v=1500 ;;
         L3:turn|L3:wake) v=3200 ;;
-        # 2,400 since 2026-08-08: the recent-catches block (prompt-assembly
-        # rule 35) is sized inside the layer, and inside the old 2,000 it
-        # could only be paid for by wants titles coming off the shelf.
-        L4:turn|L4:wake) v=2400 ;;
+        # 4,000 since 2026-08-09, measured at 3,347 live: her conduct index
+        # had grown past the 2,400 of 2026-08-08 and every turn was cutting
+        # rule titles off the shelf mid-list — rules she could no longer
+        # consult. (2,400 was itself the 2026-08-08 raise for the
+        # recent-catches block, prompt-assembly rule 35.) The margin is for
+        # the shelves to grow; when they outgrow it, the cuts record (rule 36)
+        # says so, rather than nothing saying so.
+        L4:turn|L4:wake) v=4000 ;;
         # The spec's table read 600 here until 2026-08-08 and the assembler has
         # always set 1,000; the table was corrected to the shipped number rather
         # than the other way round, because rule 22 names nine drawers the index
@@ -1934,7 +1975,14 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # being answered. specs/prompt-assembly.md §11's L8 row and its profile
         # totals need the same number.
         L8:turn|L8:wake) v=900 ;;  L8:job|L8:classify) v=200 ;;
-        regroup:turn|regroup:wake) v=1300 ;;
+        # 2,000 since 2026-08-09; 1,300 before, which was set without ever
+        # measuring the block's own instructions — they are 1,174 bytes, so
+        # 126 remained for the words being spoken, any real reply overflowed,
+        # and the generic trim cut the INSTRUCTIONS off the end: don't
+        # restate, don't queue, silence is allowed — the operative half. The
+        # block now clips its quote to what the budget leaves (rule 37), so
+        # this number is instructions plus roughly 750 bytes of quote.
+        regroup:turn|regroup:wake) v=2000 ;;
         *) v=0 ;;
     esac
     printf '%s' "$v"
@@ -1953,8 +2001,8 @@ _prompt_trim() {  # <text> <budget> <where the rest is>
 }
 
 # Emit one layer: measure it, trim it if it is over, record what happened.
-_prompt_layer() {  # <key> <where the rest is> <text>
-    local key="$1" where="$2" text="$3" budget bytes state=full
+_prompt_layer() {  # <key> <where the rest is> <text> [<state when otherwise full>]
+    local key="$1" where="$2" text="$3" claim="${4:-}" budget bytes state=full
     budget="$(_prompt_budget "$key" "$PROMPT_PROFILE")"
     if [ "$budget" -le 0 ] || [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ]; then
         PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t0\t%s\tabsent' "$key" "$budget")
@@ -1975,6 +2023,12 @@ _prompt_layer() {  # <key> <where the rest is> <text>
                bytes=$(printf '%s' "$text" | wc -c); state=trimmed ;;
         esac
     fi
+    # A layer whose content was already cut to fit BEFORE it arrived here — the
+    # persona fit — measures under budget and would read "full". The caller
+    # says otherwise and the manifest carries it: "full" must mean everything
+    # is there, or the manifest is how a cut stays invisible (rule 36's whole
+    # story).
+    [ "$state" = full ] && [ -n "$claim" ] && state="$claim"
     PROMPT_BODY="$PROMPT_BODY$text
 "
     PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t%s\t%s\t%s' "$key" "$bytes" "$budget" "$state")
@@ -1992,14 +2046,29 @@ _prompt_layer() {  # <key> <where the rest is> <text>
 # The right fix is upstream: three files were restating the persona, the
 # silence rule and the display contract in different words. What survives here
 # should be persona and nothing else.
+# The subshell half of the persona record: the fit runs inside $(), so the
+# names of the sections it dropped travel to the assembler by file. Written
+# whole and renamed — a prompt assembling in another session must never read
+# it half-written.
+_persona_drop_mark() {  # <dropped section names>
+    if printf 'dropped=%s\n' "$1" > "$PERSONA_DROP_FILE.tmp.$$" 2>/dev/null; then
+        mv "$PERSONA_DROP_FILE.tmp.$$" "$PERSONA_DROP_FILE" 2>/dev/null \
+            || rm -f "$PERSONA_DROP_FILE.tmp.$$"
+    else
+        rm -f "$PERSONA_DROP_FILE.tmp.$$"
+    fi
+}
+
 _persona_fit() {  # <text> <room> <path>
     local text="$1" room="$2" path="$3"
-    [ "$(printf '%s' "$text" | wc -c)" -le "$room" ] && { printf '%s' "$text"; return 0; }
+    [ "$(printf '%s' "$text" | wc -c)" -le "$room" ] && {
+        rm -f "$PERSONA_DROP_FILE"; printf '%s' "$text"; return 0; }
     # Room for the sentence that says what was left behind. Without this the
     # notice pushes the layer back over its budget and the generic trim cuts it
     # mid-line, which is the blind cut this whole function exists to avoid.
     room=$(( room - 320 ))
     if [ "$room" -lt 300 ]; then
+        _persona_drop_mark "the whole sheet"
         printf 'Your persona sheet is in %s. It did not fit in this turn — read it when the turn is about who you are.' "$path"
         return 0
     fi
@@ -2029,8 +2098,24 @@ _persona_fit() {  # <text> <room> <path>
         fi
     fi
     printf '%s' "$kept"
-    [ -n "$dropped" ] && printf '(not in this prompt, and still yours — %s. They are in %s; open it when the turn is about who you are.)' \
-        "$dropped" "$path"
+    if [ -n "$dropped" ]; then
+        _persona_drop_mark "$dropped"
+        local notice
+        notice="$(printf '(not in this prompt, and still yours — %s. They are in %s; open it when the turn is about who you are.)' \
+            "$dropped" "$path")"
+        # The room reserved above for this sentence is 320 bytes. A drop list
+        # longer than that — many sections at once — used to push the layer
+        # back over its budget and hand the WHOLE sheet to the blind mid-line
+        # trim this function exists to avoid. Past the reserve the notice
+        # carries the count; the cuts record still carries every name.
+        if [ "$(printf '%s' "$notice" | wc -c)" -gt 320 ]; then
+            notice="$(printf '(not in this prompt, and still yours — %s sections. They are in %s; open it when the turn is about who you are.)' \
+                "$(printf '%s' "$dropped" | awk -F', ' '{ print NF }')" "$path")"
+        fi
+        printf '%s' "$notice"
+    else
+        rm -f "$PERSONA_DROP_FILE"
+    fi
 }
 
 # Where her drawers live. Everything she owns is a sibling of the wants shelf,
@@ -2174,13 +2259,20 @@ WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what i
             && [ "$PROMPT_PROFILE" != classify ] && [ "$PROMPT_PROFILE" != job ]; then
         CUSTOM_CONTEXT="$(cat "$CUSTOM_PROMPT")"
     fi
-    local L1="$IDENT"
+    local L1="$IDENT" L1_STATE=""
     if [ -n "$CUSTOM_CONTEXT" ]; then
         local ROOM=$(( $(_prompt_budget L1 "$PROMPT_PROFILE") - $(printf '%s' "$IDENT" | wc -c) - 1 ))
         L1="$L1
 $(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
+        # The fit just ran, so the marker's presence is THIS build's verdict —
+        # and a sheet the fit had to cut must not be manifested as full.
+        [ -s "$PERSONA_DROP_FILE" ] && L1_STATE=cut
+    else
+        # No sheet on a speaking profile: nothing to cut, and a marker left by
+        # an earlier build would be stale news in the cuts record below.
+        case "$PROMPT_PROFILE" in turn|wake) rm -f "$PERSONA_DROP_FILE" ;; esac
     fi
-    _prompt_layer L1 "${CUSTOM_PROMPT:-the persona sheet}" "$L1"
+    _prompt_layer L1 "${CUSTOM_PROMPT:-the persona sheet}" "$L1" "$L1_STATE"
 
     # ---- L2 STATE ---------------------------------------------------------
     # specs/self-awareness.md, verbatim, with no per-profile edits to its
@@ -2320,6 +2412,42 @@ ${SHOWN:-(the shelf did not fit this turn — it is at $WANTS_FILE)}"
     case "$PROMPT_PROFILE" in turn|wake) RANKING="$(_prompt_layer_ranking)" ;; esac
     _prompt_layer L7 "your conduct" "$RANKING"
     _prompt_layer L8 "the layer above" "$(_prompt_layer_frame)"
+
+    # The cuts record, rule 36. A speaking build that cut anything says so
+    # where the OUTSIDE can read it: the state block renders this file into
+    # `crab status` and into every later prompt until a build assembles clean.
+    # The in-layer notices already tell HER (rule 4); this is for the causes,
+    # which all live outside the prompt — a budget, a conf override, a source
+    # that grew. One build of lag is inherent (the record a state block
+    # renders is the previous build's) and does not matter to a standing
+    # condition. L6 is design, not damage: its window slides by construction
+    # and the archive holds the rest, so only trimmed/cut states land here.
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+        local CUT_KEYS
+        CUT_KEYS="$(printf '%s' "$PROMPT_MANIFEST" \
+            | awk -F'\t' '$4 == "trimmed" || $4 == "cut" { print $1 }')"
+        if [ -n "$CUT_KEYS" ]; then
+            local CUT_LINES="" CUT_K
+            while IFS= read -r CUT_K; do
+                if [ "$CUT_K" = L1 ] && [ -s "$PERSONA_DROP_FILE" ]; then
+                    CUT_LINES="${CUT_LINES}L1	persona sections dropped: $(sed -n 's/^dropped=//p' "$PERSONA_DROP_FILE" | head -n 1)
+"
+                else
+                    CUT_LINES="${CUT_LINES}${CUT_K}	trimmed to its budget
+"
+                fi
+            done <<< "$CUT_KEYS"
+            if printf 'profile=%s\n%s' "$PROMPT_PROFILE" "$CUT_LINES" \
+                    > "$PROMPT_CUTS_FILE.tmp.$$" 2>/dev/null; then
+                mv "$PROMPT_CUTS_FILE.tmp.$$" "$PROMPT_CUTS_FILE" 2>/dev/null \
+                    || rm -f "$PROMPT_CUTS_FILE.tmp.$$"
+            else
+                rm -f "$PROMPT_CUTS_FILE.tmp.$$"
+            fi
+        else
+            rm -f "$PROMPT_CUTS_FILE"
+        fi
+    fi
 
     [ -n "$MANIFEST_FILE" ] && printf '%s' "$PROMPT_MANIFEST" > "$MANIFEST_FILE"
     if [ "$LAYERS_ONLY" = 1 ]; then printf '%s' "$PROMPT_MANIFEST"
@@ -2705,6 +2833,27 @@ regroup_context() {
     if ! _live_speech_watched; then
         _regroup_already_in_transcript "$SAYING" && return 0
     fi
+    # Rule 37: the QUOTE fits itself to the budget; the instructions are never
+    # cut. The static text below is 1,174 bytes — most of the layer — so a
+    # long reply being spoken used to push the closing instructions (don't
+    # restate, don't queue, silence is allowed) off the end, and the generic
+    # trim cut them mid-sentence. The words being said are material; the
+    # instructions are the block. So the quote is clipped, on a word, with a
+    # marker saying it goes on — the whole reply lands in the conversation the
+    # moment it is delivered, so nothing is lost, only deferred.
+    local RG_BUDGET STATIC ROOM
+    RG_BUDGET="$(_prompt_budget regroup "${PROMPT_PROFILE:-turn}")"
+    STATIC="$(_regroup_block "$DEV" "" | wc -c)"
+    ROOM=$(( RG_BUDGET - STATIC - 72 ))
+    if [ "$ROOM" -gt 0 ] && [ "$(printf '%s' "$SAYING" | wc -c)" -gt "$ROOM" ]; then
+        SAYING="$(printf '%s' "$SAYING" | head -c "$ROOM" \
+            | sed '$s/[[:space:]][^[:space:]]*$//') [... the reply goes on — the whole of it lands in the conversation]"
+    fi
+    _regroup_block "$DEV" "$SAYING"
+}
+
+_regroup_block() {  # <device> <the words being said>
+    local DEV="$1" SAYING="$2"
     cat <<EOF
 ANOTHER OF YOU IS SPEAKING RIGHT NOW — a second session of you (on the ${DEV:-desk}) is mid-utterance as you begin. These are its exact words, already reaching the user or about to:
 --- being said now ---

@@ -73,13 +73,13 @@ flowchart TD
 | L1 identity | 10,400 | 10,400 | 800 | 0 |
 | L2 state | 1,500 | 1,500 | 0 | 0 |
 | L3 memory | 3,200 | 3,200 | 0 | 0 |
-| L4 shelves | 2,400 | 2,400 | 0 | 0 |
+| L4 shelves | 4,000 | 4,000 | 0 | 0 |
 | L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
-| conditional regroup | 1,300 | 1,300 | 0 | 0 |
-| **system-prompt total** | **≤ 29,200** | **≤ 24,200** | **≤ 2,000** | **≤ 200** |
+| conditional regroup | 2,000 | 2,000 | 0 | 0 |
+| **system-prompt total** | **≤ 31,500** | **≤ 26,500** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -105,6 +105,18 @@ L8 read 300 until the turn frame took on the register rule — the state block i
 how she speaks ([self-awareness.md](self-awareness.md) rules 33 and 34) — which is an instruction
 about how to say the answer and therefore belongs beside the thing being answered, or nowhere. The
 frame measures about 640 bytes with it. The turn and wake totals move by the same 600.
+
+L4 read 2,400 until 2026-08-09, and her conduct index had grown past it: every turn was cutting
+rule titles off the shelf mid-list — rules she could no longer consult — and rule 36 records how
+long nothing said so. Measured at 3,347 that evening; 4,000 buys it back with room to grow, and the
+cuts record is what speaks when it outgrows that too. The regroup row read 1,300, a number set
+without ever measuring the block's own instructions: they are 1,174 bytes, so 126 bytes remained
+for the words being spoken, any real reply overflowed the layer, and the generic trim cut the
+INSTRUCTIONS — don't restate, don't queue, silence is allowed — off the end mid-sentence. Rule 37
+inverts who yields: 2,000 is the instructions plus roughly 750 bytes of quote, and it is the quote
+that clips. The two speaking totals move by the same 2,300 — and this table and
+`tests/test_prompt_profiles.sh` state the same totals on purpose: the 2026-08-08 raise moved this
+table alone, and until 2026-08-09 the test was quietly asserting numbers 400 under it.
 
 The two exempt layers of rule 4 are counted here at their budget, and neither is held to it. Measured
 on an idle scratch instance on 2026-08-08, after the moves above: L1 3,431 with no persona sheet
@@ -238,9 +250,40 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     open away — while in the emitted layer the catches close it, beside the conduct they belong
     with.
 
+36. **A cut is never silent, anywhere, and truncation is never the answer to growth.** Rule 4
+    already makes every trim announce itself INSIDE the layer — to her. That is not enough,
+    because every cause of a cut lives OUTSIDE the prompt: a budget in this table, an override in
+    the conf, a source that grew. So a speaking build that trimmed or section-cut any layer MUST
+    leave `${STATE_PREFIX}-prompt-cuts.txt` naming what was cut (for L1, the persona sections by
+    name, carried out of the fit through `${STATE_PREFIX}-persona-drop.txt`), a build that fits
+    whole MUST remove it, and the state block MUST render the record while it stands — which puts
+    the fact in `crab status` and in every later speaking prompt until the cause is fixed. The
+    manifest MUST NOT call a section-cut sheet `full`: it reads `cut`, because "full" that means
+    "what survived the cut" is how a cut stays invisible. One build of lag in the rendered record
+    is inherent and acceptable; a standing condition does not mind it. L6 is the one deliberate
+    exception: its window slides by construction and the archive holds the rest — that is design,
+    not damage, and it does not land in the record. The record is a tripwire, not a licence: a
+    cut that shows up in it every day is a budget or a source that needs fixing, never a working
+    state. Evidence for all of this: a `PROMPT_BUDGET_L1_TURN=9600` conf override, correct when
+    written on 2026-08-07, outlived the 2026-08-08 raise to 10,400; from then until 2026-08-09
+    every turn dropped the sheet's Continuity section — the one that keeps the machinery's
+    vocabulary out of her mouth and her thinking — and she answered a question about her chess
+    board with test reports in nobody's voice. Two days, no line anywhere; the manifest read
+    `L1 … full` throughout, true of the layer and silent about the sheet; the conduct titles and
+    the regroup instructions (rule 37) were being cut the same evening, just as silently.
+
+37. **In the regroup block, the quote yields and the instructions never do.** The block is
+    instructions wrapped around a quote of the words being spoken; under pressure the generic
+    trim used to cut from the end, which is exactly the operative half — don't restate, don't
+    queue, silence is allowed. The block MUST size its quote to what the budget leaves after its
+    static text, clip on a word with a marker saying the reply goes on, and emit the instructions
+    whole. Nothing is lost by the clip: the whole reply lands in the conversation the moment it
+    is delivered.
+
 ## DATA
 
-The assembler reads; it owns no state of its own.
+The assembler reads; the one state it owns is the cuts record of rule 36, written because the
+assembler is the only place a cut is known the moment it happens.
 
 | Source | Layer | Notes |
 |---|---|---|
@@ -256,6 +299,8 @@ The assembler reads; it owns no state of its own.
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
+| `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build that cut, removed by one that fit, rendered by the state block |
+| `${STATE_PREFIX}-persona-drop.txt` | — | rule 36: the fit's channel for the dropped section names, out of its command substitution |
 
 ## INTERACTIONS
 
@@ -267,7 +312,9 @@ the regroup context builder.
 classifier. It MUST also be callable directly from a shell for inspection.
 
 **Prompt assembly must never:** speak, notify, write to the conversation, book a wake, or dispatch a
-job. It is a pure function of the state it reads.
+job. It is a pure function of the state it reads, with one owned write: the cuts record of rule 36 —
+a cut that waited for a caller to notice was once invisible for two days, and the assembler is the
+only place it is known the moment it happens.
 
 ## VERIFIED-CORRECT RULES
 
@@ -504,16 +551,17 @@ herself, and a transcript whose last block is the previous night's note written 
 carries, its own byte ceiling, and a sweep of all four assembled profiles for text that models the
 word her conduct bans),
 `tests/test_wants_titles.sh` (one shelf reader), `tests/test_no_project_memory.sh` (persona
-separation on every invocation), `tests/test_regroup.sh` (the conditional block),
-`tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges).
+separation on every invocation), `tests/test_regroup.sh` (the conditional block, and rule 37's
+clip: a long quote yields, the instructions never do),
+`tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges),
+`tests/test_prompt_profiles.sh` (each profile's layers, order, measured sizes, the totals against
+the table above, the user's message never embedded in the system prompt — and rule 36: a cut build
+leaves the record naming the persona sections, the manifest reads `cut`, the state block renders
+it, and a clean build clears it),
+`tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
+assembled through the real assembler and graded against its assertions).
 
 **To be written:**
-
-- `tests/test_prompt_profiles.sh` — for each profile: which layers are present, in what order, the
-  measured size of each layer, the total against the budget table, and that the user's message is
-  the user message and not embedded in the system prompt.
-- `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` — the sixteen cases above, each
-  fixture assembled through the real assembler and graded against its assertions.
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
   nightly tidy writes is named in the index.
 - `tests/test_conduct_index.sh` — the binding test line is present verbatim, the titles are
