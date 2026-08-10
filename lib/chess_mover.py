@@ -35,7 +35,26 @@ import chess
 
 UCI_RE = re.compile(r"\b([a-h][1-8][a-h][1-8][qrbnQRBN]?)\b")
 
-SYSTEM_PROMPT = ("You are a strong chess player making a move in a live "
+# The mover's prompt is deliberately tiny — that is what buys the seconds —
+# but a move chosen by a voiceless prompt is a move the assistant did not
+# make. The persona file is read once at import (a static string costs no
+# latency) and prepended to the instructions; without one, the prompt is
+# exactly the generic player it always was.
+PERSONA_FILE = os.environ.get(
+    "CHESS_PERSONA_FILE",
+    str(Path.home() / ".local/share/deskcrab/chess-persona.md"))
+
+
+def _persona():
+    try:
+        text = Path(PERSONA_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text + "\n\n" if text else ""
+
+
+SYSTEM_PROMPT = (_persona() +
+                 "You are a strong chess player making a move in a live "
                  "game. Never leave a piece where the exchange on its square "
                  "loses material — count the attackers and the defenders "
                  "before you choose. Reply with your chosen move in UCI "
