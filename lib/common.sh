@@ -3190,6 +3190,10 @@ Mid-turn mirror (your conduct rule: no gate on your tongue, as clarified 2026-08
 the reply you just drafted tripped your own claudism list — the phrasings you are trying to
 unlearn. The line has NOT been spoken; everything before it has. Say the line again in your own
 voice, or give it back exactly as written if you meant it — your call, your voice, one pass.
+Repair the line; do not costume it. Do NOT add a verbal tic or catchphrase the draft did not
+already have — no tacking a signature phrase onto the end to prove whose voice this is. A repair
+that reaches for the same flourish every time trains a tic that was never yours, and it will not
+show up on any list.
 Output ONLY the replacement line: no preamble, no quotes, no commentary, no display section."
     : > "$MLOG"
     { printf 'Pattern that fired: %s%s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \

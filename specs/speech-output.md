@@ -244,6 +244,15 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     with a good clip is logged too and is NOT a failure: the size test alone decides what
     counts as audio.
 
+54. A repair MUST NOT costume the line. The mirror call's prompt MUST forbid adding a verbal tic
+    or catchphrase the draft did not already carry. A rewrite model handed one isolated sentence
+    reaches for a signature phrase to prove whose voice it is speaking in, and because that phrase
+    is on no pattern list, nothing downstream can see it happening: over one night of live use,
+    12 of 52 rewrites appended the same closing flourish to a line that had none, and not one
+    rewrite ever removed it. That is a one-way ratchet installing a tic the voice never chose —
+    the cure shaping the patient. The prompt names the failure, not just the prohibition, so the
+    model knows which move it is being asked not to make.
+
 ## DATA
 
 | Path | Owner | Purpose |

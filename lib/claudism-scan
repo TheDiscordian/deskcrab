@@ -545,6 +545,61 @@ def substitution_watch(day, phrases, history):
     return notes
 
 
+def tic_drift(day):
+    """Rule 54's watch: phrasings the mirror's rewrites ADD and never remove.
+    A rewrite model handed one isolated sentence reaches for a signature
+    flourish, and because that flourish is on no pattern list nothing else
+    in this file can see it. So compare each rewrite's before against its
+    after, count the word-trigrams that appear only in the after, and report
+    any that were added repeatedly and never once taken away. Reads the flag
+    log and never writes it."""
+    path = os.path.join(FLAGS_DIR, day + ".jsonl")
+    added, removed = {}, {}
+    pairs = 0
+    try:
+        f = open(path, encoding="utf-8")
+    except OSError:
+        return []
+    with f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            before, after = row.get("before") or "", row.get("after") or ""
+            if not before or not after:
+                continue
+            pairs += 1
+
+            # Two and three words both: the tics that matter are short, and
+            # a trigram alone misses them because the words on either side
+            # of the flourish change with every line it is bolted onto.
+            def grams(text, n):
+                w = re.findall(r"[a-z']+", text.lower())
+                return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+            for n in (2, 3):
+                b, a = grams(before, n), grams(after, n)
+                for g in a - b:
+                    added[g] = added.get(g, 0) + 1
+                for g in b - a:
+                    removed[g] = removed.get(g, 0) + 1
+    if pairs < 5:
+        return []
+    ratchets = [(n, g) for g, n in added.items()
+                if n >= 3 and not removed.get(g)]
+    if not ratchets:
+        return []
+    ratchets.sort(reverse=True)
+    return ["the rewrites added “%s” to %d of %d repaired lines and "
+            "never once removed it — a one-way ratchet, and it is on no "
+            "list here." % (g, n, pairs)
+            for n, g in ratchets[:5]]
+
+
 def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
                  rewrites, substituted, note, corr, tonight, history,
                  fn_tonight, fn_history):
@@ -603,6 +658,11 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
     if watch:
         lines += ["", "## The substitution watch", ""]
         lines += ["- %s" % w for w in watch]
+    drift = tic_drift(day)
+    if drift:
+        lines += ["", "## The cure shaping the voice (rule 54)", "",
+                  "Phrasings the repairs put IN and never took out:", ""]
+        lines += ["- %s" % d for d in drift]
     if corr:
         lines += ["", "## Mid-turn substitutions — the live mirror, corroborated", "",
                   "A hold that was answered mid-turn, where the reply that went",
