@@ -295,9 +295,9 @@ STREAM=$(grep -o 'DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "[0-9]*' "$REPO_DIR/lib/tts
     && ok "the desk hold stays inside what a listener will sit through" \
     || fail "the desk would go silent mid-reply for too long" "call=$CALL"
 
-# --- rule 50: a mention is not a fire; the wide net stays off this path -----
+# --- rule 50: no mention exemption out loud; the wide net stays off this path
 echo
-echo "a mention is not a fire, and a review-only entry never arms (rule 50):"
+echo "quotes are inaudible so every match fires; review-only never arms (rule 50):"
 TLIST="$T/tagged-list.md"
 cat > "$TLIST" <<'LIST'
 ## the honesty family
@@ -315,8 +315,8 @@ OUT="$(printf 'Honestly, the kettle is on.' | "$REPO_DIR/lib/claudism-mirror" sc
 check "a plain use still fires the scan" contains "$OUT" "the kettle is on"
 check "and the record carries its function" contains "$OUT" '"function": "vouching"'
 OUT="$(printf 'He told me to drop "honestly" from the line.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
-check_eq "a quoted word is a mention, never a fire" "$OUT" "[]"
+check "a quoted word still fires out loud — quotes are inaudible" contains "$OUT" '"function": "vouching"'
 OUT="$(printf 'The honesty family fired twice at his desk yesterday.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
-check_eq "naming the entry is a mention, never a fire" "$OUT" "[]"
+check "naming the entry still fires out loud" contains "$OUT" '"function": "vouching"' 
 OUT="$(printf 'I made sure the door was shut.' | "$REPO_DIR/lib/claudism-mirror" scan "$TLIST")"
 check_eq "a live: no entry never reaches the speech path" "$OUT" "[]"

@@ -214,11 +214,14 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     in the nightly reading, where she is the one who revokes an entry that read badly. A swap that
     cannot be logged MUST NOT be applied: the sentence holds instead, or, if that too fails,
     speaks untouched under rule 42.
-50. A mention is not a fire, and the wide net stays off the speech path. The mirror MUST NOT
-    hold, swap, or route a sentence whose matched words are quoted, inside a code span, or
-    talked about rather than said — the same mention test the capture applies
-    ([nightly.md](nightly.md) rule 47): quoting her own list back to herself is not the habit,
-    and a hold there is dead air spent on nothing. An entry marked `- live: no` arms only the
+50. Out loud there is no mention exemption; the wide net stays off the speech path. Quotation
+    marks are inaudible: a banned word spoken inside quotes reaches the ear as the word itself,
+    indistinguishable from using it, and the user reported hearing exactly that while the mirror
+    reported a clean gate. The mirror MUST therefore fire on every match of a live entry,
+    quoted, code-spanned, or talked about alike. The mention test of
+    ([nightly.md](nightly.md) rule 47) belongs to the capture and the nightly review, where the
+    page shows the quotes and nothing is spoken. A word she must quote goes in the display half.
+    An entry marked `- live: no` arms only the
     turn-close capture and the nightly review, never the mirror — the broad, urge-shaped
     patterns that make the night's scoring honest would make the speech path stutter, so the
     list carries both kinds and each half reads its own.
