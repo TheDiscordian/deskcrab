@@ -136,7 +136,11 @@ check_eq "the model was consulted (once, sonnet answered)" "$(claude_n)" "1"
 check "the model was asked at the configured sonnet default" \
     grep -q -- "--model sonnet" "$SANDBOX_CLAUDE_LOG"
 check "the model was handed the tool record as evidence" \
-    grep -q "THE TURN'S TOOL RECORD" "$T/model-stdin"
+    grep -q "THIS TURN'S OWN TOOL RECORD" "$T/model-stdin"
+check "and the other-sessions section, present and empty — a bare window is still strict" \
+    grep -q "(no other session ran in the window)" "$T/model-stdin"
+check "and the jobs section, present and empty" \
+    grep -q "(no job was dispatched or finished in the window)" "$T/model-stdin"
 check_eq "one ledger line landed" "$(ledger_n)" "1"
 check "quoting the promise exactly" \
     grep -q '"promise": "I am wiring the greenhouse fan into the config now"' "$T/ledger.jsonl"
@@ -187,6 +191,111 @@ check "and was shown the Write call that did the work" \
 check_eq "no ledger line" "$(ledger_n)" "0"
 check_eq "no wake booked" "$(records)" "0"
 check "the trace records a kept verdict" grep -q "1 kept, 0 unkept" "$CHECK_LOG"
+
+echo
+echo "a job dispatched in the turn's window backs every action-claim — no model, no wake:"
+reset
+NOW_E="$(date +%s)"
+cat > "$JOBS_DIR/20990101-000000-1.json" <<EOF
+{"id": "20990101-000000-1", "description": "wire the greenhouse fan into the config", "started_epoch": $(( NOW_E - 60 )), "state": "running", "unit": "x"}
+EOF
+"$T/repo/lib/promise-check" turn desktop "$NOW_E" 4249 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I'll wire the greenhouse fan into the config now." >/dev/null 2>&1
+check_eq "the model was never called" "$(claude_n)" "0"
+check_eq "nothing ledgered, nothing booked" "$(ledger_n)$(records)" "00"
+check "the trace names the backing job" \
+    grep -q "backed: job 20990101-000000-1" "$CHECK_LOG"
+rm -f "$JOBS_DIR"/*.json
+
+echo
+echo "a chess-move announcement the mover's record shows played books nothing:"
+reset
+mkdir -p "$DESKCRAB_METRICS_DIR"
+MDAY="$DESKCRAB_METRICS_DIR/$(date +%F).log"
+printf '%s.000\t4321\tchess\tmove-played\tbrowser-042 ply 31 Rd3 model\n' \
+    "$(date +%s)" > "$MDAY"
+"$T/repo/lib/promise-check" turn wake "$(date +%s)" 4250 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "Rd3 — I'm answering the rook lift on the d-file." >/dev/null 2>&1
+check_eq "the model was never called" "$(claude_n)" "0"
+check_eq "nothing ledgered, nothing booked" "$(ledger_n)$(records)" "00"
+check "the trace credits the mover's record" \
+    grep -q "backed: the mover's record shows Rd3 played" "$CHECK_LOG"
+
+echo
+echo "but a reply that ALSO promises other work is still judged in full:"
+reset
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"UNKEPT: \"I'"'"'ll restart the phone server now\" | no record touches the server"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" turn wake "$(date +%s)" 4251 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "Rd3 is my answer. And I'll restart the phone server now." >/dev/null 2>&1
+check_eq "the mover's record did not silence the judge — the model ran" "$(claude_n)" "1"
+check_eq "and the unfulfilled half was still caught: one ledger line, one wake" \
+    "$(ledger_n)$(records)" "11"
+rm -f "$MDAY"
+
+echo
+echo "another session's record and the jobs ledger reach the judge as labelled evidence:"
+reset
+OTHER_LOG="$DESKCRAB_STATE_PREFIX-debug-99999.log"
+cat > "$OTHER_LOG" <<'EOF'
+{"type":"assistant","message":{"model":"real","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/home/nobody/.config/greenhouse/fan.conf","content":"on"}}]}}
+EOF
+NOW_E="$(date +%s)"
+cat > "$JOBS_DIR/20990101-000000-2.json" <<EOF
+{"id": "20990101-000000-2", "description": "sort the drip-line valve wiring", "started_epoch": $(( NOW_E - 1200 )), "state": "running", "unit": "x"}
+EOF
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"KEPT: wired the greenhouse fan | session 99999 wrote fan.conf"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" turn desktop "$NOW_E" 4252 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I've wired the greenhouse fan into the config." >/dev/null 2>&1
+check_eq "the model was consulted — a 20-minute-old job is evidence, not a short-circuit" \
+    "$(claude_n)" "1"
+check "the other session's section reached the judge" \
+    grep -q "OTHER SESSIONS IN THE LAST 30 MINUTES" "$T/model-stdin"
+check "labelled with its session id" grep -q -- "--- session 99999" "$T/model-stdin"
+check "carrying the Write that did the work" \
+    grep -q "Write: /home/nobody/.config/greenhouse/fan.conf" "$T/model-stdin"
+check "the jobs section reached the judge" \
+    grep -q "JOBS DISPATCHED OR FINISHED RECENTLY" "$T/model-stdin"
+check "carrying the builder's brief" \
+    grep -q "sort the drip-line valve wiring" "$T/model-stdin"
+check_eq "and the kept verdict books nothing" "$(ledger_n)$(records)" "00"
+check "the trace counts what was gathered" \
+    grep -q "evidence: own record, 1 other session(s), 1 job(s)" "$CHECK_LOG"
+rm -f "$OTHER_LOG" "$JOBS_DIR"/*.json
+
+echo
+echo "gathering that fails falls back to the own-record judgement, and says so:"
+reset
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"UNKEPT: \"I am wiring the greenhouse fan into the config now\" | no tool call touched any config"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+PROMISE_CHECK_EVIDENCE_WINDOW=bogus \
+    "$T/repo/lib/promise-check" turn desktop "$(date +%s)" 4253 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I am wiring the greenhouse fan into the config now." >/dev/null 2>&1
+check_eq "the model still ran" "$(claude_n)" "1"
+check "on the narrow prompt — the pre-widening header" \
+    grep -q "=== THE TURN'S TOOL RECORD ===" "$T/model-stdin"
+check_eq "with no widened section offered" \
+    "$(sandbox_count_in 'OTHER SESSIONS' "$T/model-stdin")" "0"
+check_eq "and the flag still lands: one ledger line, one wake" \
+    "$(ledger_n)$(records)" "11"
+check "the failure is on the trace, not swallowed" \
+    grep -q "evidence gathering failed" "$CHECK_LOG"
 
 echo
 echo "the side door holds the same gate — no commitment shape, no model:"

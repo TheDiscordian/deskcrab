@@ -215,9 +215,16 @@ ledger.
      claim of completed work ("I've written it to the log") — the completed claim is
      precisely the lie this checker exists for, and unlike the audit it holds the record that
      can refute it. A statement about future conversation, an offer still awaiting an answer,
-     and a bare want are not commitments. A commitment with no tool call that plausibly
-     performed it is UNKEPT; a call that durably scheduled the work counts as performing it —
-     a `crab wake-at` or `crab job` naming that work is a kept promise, not an excuse.
+     and a bare want are not commitments. The record the judge holds is wider than the turn's
+     own calls ([wake-queue.md](wake-queue.md) rule 43b): she runs several hands at once and
+     the announced work is often performed by a parallel session or a dispatched builder, so
+     the judge is handed the other sessions' recent tool records and the jobs ledger's recent
+     dispatches beside the turn's own, each as a labelled section, and anything in any of them
+     that plausibly performed the commitment makes it KEPT. A commitment nothing anywhere
+     performed is UNKEPT; a call that durably scheduled the work counts as performing it —
+     a `crab wake-at` or `crab job` naming that work is a kept promise, not an excuse — and
+     two cheap backed short-circuits (a job dispatched in the turn's window; a chess-move
+     announcement the mover's record shows played) spare the model call entirely.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the
@@ -234,7 +241,11 @@ ledger.
 32d. The evidence is the stream log, and its absence is not a verdict: a checker handed no
      readable log judges nothing, and its run trace says so — an accusation needs the record.
      A log that exists and holds zero tool calls IS the record: a turn that ran no tools kept
-     no promise of action. Model failure is never quiet either — a refusal walks the account
+     no promise of action itself, and only the wider window's records (rule 32b) can keep it
+     for her. Gathering that wider record is allowed to fail; the failure MUST land on the
+     run trace and the judgement falls back to the turn's own record alone — the strict
+     pre-widening behaviour, never a silent skip and never a silent acquittal. Model failure
+     is never quiet either — a refusal walks the account
      chain like every out-of-band call ([account-fallback.md](account-fallback.md) rule 29),
      an answer with no parseable verdict falls to the fallback model on the same login, and a
      run that gets nothing from either ends with the failure named on the trace. A missing or

@@ -275,8 +275,26 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     to accuse the kept one.
 43b. The promise checker (`lib/promise-check`, [turn-pipeline.md](turn-pipeline.md) rules 32a-32d)
     books a third class beside the auditor's two: the **unkept-commitment** wake — her reply
-    claimed a concrete action in the first person and the turn's own tool record shows nothing
-    performed or durably scheduled it. Its reason MUST open with the unkept-commitment prefix (a
+    claimed a concrete action in the first person and nothing in the turn's evidence shows it
+    performed or durably scheduled. The turn's evidence is wider than the turn's own hands, by
+    design: she runs several sessions at once and the work a reply announces is often performed
+    by a dispatched builder or a parallel session minutes later, so a judge shown only the
+    announcing turn's record manufactures false accusations (twenty in one night, 2026-08-10/11,
+    every adjudicated one false). The live judge MUST therefore be handed, as separately
+    labelled records: the turn's own tool record, the tool records other sessions' and builders'
+    stream logs hold from the last `PROMISE_CHECK_EVIDENCE_WINDOW` (default 30) minutes, and the
+    jobs ledger's dispatches and finishes from that same window — and a commitment ANYTHING in
+    that wider evidence plausibly performed counts as KEPT, exactly as the night sweep has
+    always ruled a promise fulfilled by a later session's record. Each pasted record MUST be
+    bounded (bounded per call and per file, with any clip marked — never a raw byte cut, per
+    the DATA section's one-trim rule). Two backed short-circuits spare the model entirely: a
+    `crab job` dispatched during the turn or within `PROMISE_CHECK_JOB_BACKED_WINDOW` (default
+    15 minutes) before it backs every action-claim by definition, and a reply whose only
+    commitment is announcing a chess move that the mover's own play record shows played around
+    the turn is the mover's work landing as designed. Evidence gathering that fails MUST fall
+    back to judging on the turn's own record alone — the pre-widening behaviour, an accusation
+    rather than a silence — and MUST name the failure on the check log: the widening may make
+    the checker fairer, never quietly absent. Its reason MUST open with the unkept-commitment prefix (a
     constant in `lib/common.sh` beside the auditor's two), MUST quote the promise exactly and
     instruct her to do the work now or book it deliberately, and MUST fire minutes out, never
     hours — the point is to catch her while the context is still warm. It MUST be booked with
@@ -441,7 +459,10 @@ audit class counts or drains the other's bookings),
 `tests/test_promise_check.sh` (rule 43b: the unkept-commitment wake is an event wake in the
 checker's own name, effort low on the record, prefix on the reason and the promise quoted verbatim;
 the audit skips the prefix; the rebook bound and the auditor's deferred wake each stop a duplicate
-booking),
+booking; the widened evidence — a job dispatched in the turn's window and a mover-played chess
+announcement each short-circuit the model, another session's record and the jobs ledger reach the
+judge as labelled sections, an empty window still flags, and a gathering failure falls back to the
+own-record judgement with the failure on the trace),
 `tests/test_wake_hot_hold.sh` (rule 27a: a quiet bubble into a hot conversation reaches no bubble,
 no notifier and no conversation and books itself back with its words in the reason; the same wake
 into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
