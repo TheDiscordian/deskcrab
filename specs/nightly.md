@@ -36,6 +36,16 @@ which fails silently is worse than one that does not exist.
 14. The rot threshold is two nights. Past it, the status command reports rot and exits non-zero, and
     something MUST read that.
 
+14a. The stamp records coverage beside yield. Yield alone can hide a truncated night — "added=8"
+    reads the same whether the ingest weighed the whole day or died after its first pass — so the
+    stamp's third line carries, beside `added=`, whatever the night's log states of its own size:
+    `chunks=` and `chars=` from the ingest header, and `passes=` from the header's pass count,
+    counted from the per-pass lines where the header predates stating it. All on ONE
+    space-separated line, so every reader of the third line keeps working and a legacy added-only
+    stamp still reads fine. Coverage is evidence, never a gate: a field the log does not state is
+    omitted, not invented, and a log with no header at all still stamps and still counts as slept
+    (rule 9) — the stamp MUST NOT be stricter than the night it records.
+
 ### Tidy — shelf maintenance
 
 15. Tidy is the one process that moves lines between the wants shelf, conduct, and the engineering
@@ -257,7 +267,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 
 | Path | Owner | Role |
 |---|---|---|
-| `~/.local/share/deskcrab/last-slept` | sleep | epoch, timestamp, records added |
+| `~/.local/share/deskcrab/last-slept` | sleep | epoch, timestamp, then yield and coverage on one line: added, chunks, chars, passes (rule 14a) |
 | `~/.local/share/deskcrab/sleep/<date>.log` | sleep | the night's ingest output |
 | `~/.local/share/deskcrab/wants.md`, `wants/` | tidy | the shelf and its bodies |
 | `~/.local/share/deskcrab/conduct/` | tidy | conduct and its per-rule files |
@@ -336,6 +346,10 @@ running job; validation skips null-shaped briefs, thin briefs, and threads alrea
 NOTHING verdict with nothing of tonight's running ends the drain early; a blocked job door ends it
 for the night; the cutoff stops dispatch; and a drain that cannot even parse its cutoff never
 unstamps the night (exercised through `sleep-nightly run`).
+`tests/test_sleep_stamp_coverage.sh` — rule 14a: the header parsed to chunks, chars and passes;
+the pass-count fallback where the header predates stating it; a field the log never states is
+omitted; a log with no header still stamps and still counts as slept; and the status command
+renders a widened and a legacy added-only stamp alike.
 
 **To be written:**
 

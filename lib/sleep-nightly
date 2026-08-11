@@ -24,6 +24,36 @@ LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Two nights is the threshold at which I should feel it rather than be told.
 ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
 
+# coverage_fields <night log> — the coverage half of the stamp's third line.
+#
+# Yield alone can hide a truncated night: "added=8" reads the same whether the
+# ingest weighed the whole day or died after its first pass. The ingest header
+# states the night's own size — "ingest: 461 new chunks, 499751 chars ->
+# sonnet for judgement in 4 passes..." — so the stamp carries that claim too:
+# "chunks=461 chars=499751 passes=4", printed with no leading space, or less
+# where the log says less. tail -1 of the matching lines, exactly as the
+# added= parse takes its number. Older headers predate the pass count
+# ("... -> sonnet for judgement..."), so passes falls back to counting the
+# "pass i/N:" lines; a field the log never states is omitted, never invented.
+# A log with no header at all prints nothing and exits 0 — the night still
+# stamps and still counts as slept, because a stamp stricter than the night it
+# records would unmake rule 9 of specs/nightly.md.
+coverage_fields() {
+    local log="$1" header chunks chars passes out=""
+    header="$(grep -E '^ingest: [0-9]+ new chunks' "$log" 2>/dev/null | tail -1)"
+    chunks="$(printf '%s\n' "$header" | grep -oE '[0-9]+ new chunks' | head -1 | grep -oE '[0-9]+' || true)"
+    chars="$(printf '%s\n' "$header" | grep -oE '[0-9]+ chars' | head -1 | grep -oE '[0-9]+' || true)"
+    passes="$(printf '%s\n' "$header" | grep -oE 'in [0-9]+ pass(es)?' | grep -oE '[0-9]+' || true)"
+    if [ -z "$passes" ]; then
+        passes="$(grep -cE '^[[:space:]]*pass [0-9]+/[0-9]+:' "$log" 2>/dev/null)"
+        [ "${passes:-0}" -gt 0 ] 2>/dev/null || passes=""
+    fi
+    [ -n "$chunks" ] && out="chunks=$chunks"
+    [ -n "$chars" ]  && out="${out:+$out }chars=$chars"
+    [ -n "$passes" ] && out="${out:+$out }passes=$passes"
+    printf '%s' "$out"
+}
+
 cmd_run() {
     mkdir -p "$LOG_DIR"
     local night log
@@ -44,13 +74,17 @@ cmd_run() {
 
     # Stamp only a night that actually happened. "nothing new since last
     # cursor" still counts: there was nothing to learn, and I did look.
-    local added
+    local added coverage
     added="$(grep -oE '^ingest: [0-9]+ added' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+    # Coverage beside yield, on the SAME line: the third line stays the one
+    # place a reader looks, so cmd_status's `sed -n 3p` and a legacy
+    # added-only stamp both keep reading fine.
+    coverage="$(coverage_fields "$log")"
     printf '%s\n%s\n%s\n' \
         "$(date +%s)" \
         "$(date -Iseconds)" \
-        "added=${added:-0}" > "$STAMP"
-    echo "sleep: stamped $STAMP (added=${added:-0})"
+        "added=${added:-0}${coverage:+ $coverage}" > "$STAMP"
+    echo "sleep: stamped $STAMP (added=${added:-0}${coverage:+ $coverage})"
 
     # The claudism review, over the day that just ended — detection and
     # review only, never a gate (specs/nightly.md rules 39-45). Only after a
@@ -93,18 +127,26 @@ cmd_status() {
     then="$(head -1 "$STAMP")"
     now="$(date +%s)"
     hours=$(( (now - then) / 3600 ))
-    local when added
+    # Line 3 is yield and coverage together — "added=49 chunks=461
+    # chars=499751 passes=4" — printed verbatim, so a legacy stamp that
+    # carries only "added=N" reads exactly as it always did.
+    local when detail
     when="$(sed -n 2p "$STAMP")"
-    added="$(sed -n 3p "$STAMP")"
+    detail="$(sed -n 3p "$STAMP")"
     if [ "$hours" -ge "$ROT_HOURS" ]; then
-        echo "last slept ${hours}h ago ($when, $added) — that is rot, ingest is overdue"
+        echo "last slept ${hours}h ago ($when, $detail) — that is rot, ingest is overdue"
         return 1
     fi
-    echo "last slept ${hours}h ago ($when, $added)"
+    echo "last slept ${hours}h ago ($when, $detail)"
 }
 
-case "${1:-status}" in
-    run)    cmd_run ;;
-    status) cmd_status ;;
-    *)      echo "Usage: sleep-nightly {run|status}" >&2; exit 2 ;;
-esac
+# Sourceable for tests: `source lib/sleep-nightly` defines the functions and
+# dispatches nothing, so coverage_fields can be exercised on fixture logs
+# without running a real ingest. Executed, the case below is the CLI.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    case "${1:-status}" in
+        run)    cmd_run ;;
+        status) cmd_status ;;
+        *)      echo "Usage: sleep-nightly {run|status}" >&2; exit 2 ;;
+    esac
+fi
