@@ -7,12 +7,14 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from argparse import Namespace
 from datetime import datetime, timedelta
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -567,10 +569,11 @@ def days_ago(n):
 
 
 def fake_row(kind="note", sim=0.8, conf=1.0, created_days=0, used_days=None,
-             uses=0, text="x", rec_id=1):
+             uses=0, text="x", rec_id=1, occurred_days=None):
     return (rec_id, text, kind, 0, "self", "", conf, days_ago(created_days),
             days_ago(0), sim,
-            None if used_days is None else days_ago(used_days), uses)
+            None if used_days is None else days_ago(used_days), uses,
+            None if occurred_days is None else days_ago(occurred_days))
 
 
 class TestScoreFormula(unittest.TestCase):
@@ -722,40 +725,233 @@ class TestSearchScoring(StoreCase):
         self.assertTrue(order(rows))
 
 
-class TestBlockCap(unittest.TestCase):
-    def test_block_truncates_notes_first_and_says_so(self):
-        directives = [fake_row(kind="directive", rec_id=i,
-                               text=f"rule {i} " + "d" * 120)
-                      for i in range(5)]
-        notes = [fake_row(rec_id=100 + i, text=f"note {i} " + "n" * 200)
-                 for i in range(30)]
-        block = memory.format_block(directives + notes)
-        self.assertLessEqual(
-            len(block), memory.BLOCK_TOKEN_CAP * memory.CHARS_PER_TOKEN)
-        self.assertIn("TRUNCATED", block)
-        for r in directives:  # notes drop first; his rules survive
-            self.assertIn(r[1], block)
+class TestBlockWhole(unittest.TestCase):
+    """The block is NEVER truncated (memory-recall.md rule 14). It held a
+    ~800-token cap that popped rows from the tail and stamped 'TRUNCATED to
+    fit' in the header — a trim a subagent wrote into the spec, which the
+    user never asked for and ordered out on 2026-08-11. Size is retrieval's
+    business; an over-budget prompt is the assembler's warning to raise."""
 
-    def test_small_block_is_not_marked_truncated(self):
-        block = memory.format_block([fake_row(text="short note")])
-        self.assertNotIn("TRUNCATED", block)
-
-    def test_kept_rows_match_the_block(self):
-        # The judge sidecar must list exactly what reached the prompt: a note
-        # truncated out of the block must not be judgeable.
+    def test_every_retrieved_row_reaches_the_block(self):
         directives = [fake_row(kind="directive", rec_id=i,
                                text=f"rule {i} " + "d" * 120)
                       for i in range(5)]
         notes = [fake_row(rec_id=100 + i, text=f"note {i} " + "n" * 200)
                  for i in range(30)]
         block, kept = memory.build_block(directives + notes)
-        self.assertLess(len(kept), 35)
-        for r in kept:
+        self.assertEqual(len(kept), 35)
+        for r in directives + notes:
             self.assertIn(r[1], block)
-        dropped = [r for r in directives + notes if r not in kept]
-        self.assertTrue(dropped)
-        for r in dropped:
-            self.assertNotIn(r[1], block)
+        self.assertNotIn("TRUNCATED", block)
+
+    def test_no_block_is_ever_marked_truncated(self):
+        block = memory.format_block([fake_row(text="short note")])
+        self.assertNotIn("TRUNCATED", block)
+
+    def test_when_ness_is_relative_never_a_bare_stamp(self):
+        # A known occurred speaks for the thing itself; without one the
+        # write date speaks, named as the write date. No YYYY-MM-DD anywhere.
+        rows = [fake_row(rec_id=1, text="the fan was replaced",
+                         created_days=9, occurred_days=3),
+                fake_row(rec_id=2, text="the disk is a Samsung",
+                         created_days=3)]
+        block = memory.format_block(rows)
+        self.assertIn("the fan was replaced (three days ago)", block)
+        self.assertIn("the disk is a Samsung (recorded three days ago)", block)
+        self.assertIsNone(re.search(r"\b20\d\d-\d\d-\d\d\b", block))
+
+    def test_directive_when_ness_reads_standing_since(self):
+        rows = [fake_row(kind="directive", rec_id=1,
+                         text="always use Celsius", occurred_days=2),
+                fake_row(kind="directive", rec_id=2,
+                         text="never guess a date", created_days=1)]
+        block = memory.format_block(rows)
+        self.assertIn("always use Celsius (standing since two days ago)", block)
+        self.assertIn("never guess a date (recorded yesterday)", block)
+
+
+class TestRelativeWhen(unittest.TestCase):
+    def phrase(self, days):
+        return memory.relative_when(days_ago(days))
+
+    def test_the_ladder(self):
+        self.assertEqual(self.phrase(0), "earlier today")
+        self.assertEqual(self.phrase(1), "yesterday")
+        self.assertEqual(self.phrase(3), "three days ago")
+        self.assertEqual(self.phrase(8), "about a week ago")
+        self.assertEqual(self.phrase(15), "about two weeks ago")
+        self.assertEqual(self.phrase(31), "about a month ago")
+        self.assertEqual(self.phrase(64), "about two months ago")
+        self.assertEqual(self.phrase(400), "about a year ago")
+        self.assertEqual(self.phrase(800), "about two years ago")
+
+    def test_a_bare_date_parses(self):
+        # occurred is usually a day, not an instant.
+        date = (datetime.now().astimezone() - timedelta(days=2)).date()
+        self.assertEqual(memory.relative_when(date.isoformat()),
+                         "two days ago")
+
+    def test_unknown_renders_as_nothing(self):
+        self.assertEqual(memory.relative_when(None), "")
+        self.assertEqual(memory.relative_when("not a date"), "")
+
+
+class TestOccurredScoring(unittest.TestCase):
+    """Recency-of-relevance: when the described thing happened matters,
+    gently — and directives are exempt, because the user's rules never age
+    out (memory-recall.md)."""
+
+    def setUp(self):
+        self.now = datetime.now().astimezone()
+
+    def test_fresh_occurred_outranks_stale_at_equal_similarity(self):
+        fresh = memory.score_row(fake_row(sim=0.8, occurred_days=0), self.now)
+        stale = memory.score_row(fake_row(sim=0.8, occurred_days=300), self.now)
+        self.assertGreater(fresh, stale)
+
+    def test_the_floor_holds_so_age_alone_never_buries(self):
+        fresh = memory.score_row(fake_row(sim=0.8, occurred_days=0), self.now)
+        ancient = memory.score_row(fake_row(sim=0.8, occurred_days=3000),
+                                   self.now)
+        self.assertGreaterEqual(ancient / fresh, memory.OCCURRED_FLOOR * 0.99)
+
+    def test_unknown_occurred_takes_no_factor(self):
+        self.assertAlmostEqual(
+            memory.score_row(fake_row(sim=0.8), self.now),
+            memory.score_row(fake_row(sim=0.8, occurred_days=None), self.now))
+        self.assertAlmostEqual(memory.score_row(fake_row(sim=0.8), self.now),
+                               0.8, places=2)
+
+    def test_directives_never_take_the_factor(self):
+        row = fake_row(kind="directive", sim=0.6, occurred_days=3000)
+        self.assertEqual(memory.score_row(row, self.now), 0.6)
+
+
+class TestOccurredStore(StoreCase):
+    def test_occurred_stored_distinct_from_created(self):
+        rec_id = self.store.insert("The fan was replaced.", occurred="2026-08-03")
+        occurred, created = self.store.db.execute(
+            "SELECT occurred, created FROM memories WHERE id=?",
+            (rec_id,)).fetchone()
+        self.assertEqual(occurred, "2026-08-03")
+        self.assertNotEqual(occurred, created[:10])
+
+    def test_unknown_occurred_stays_null(self):
+        rec_id = self.store.insert("The disk is a Samsung.")
+        self.assertIsNone(self.store.db.execute(
+            "SELECT occurred FROM memories WHERE id=?", (rec_id,)).fetchone()[0])
+
+    def test_migration_adds_the_column_to_an_old_store(self):
+        # A store born before temporal grounding — the schema as it shipped,
+        # no occurred column — reopens with the column added and its data
+        # intact.
+        old = tempfile.mkdtemp(prefix="memtest-old-")
+        try:
+            db = memory.sqlite3.connect(os.path.join(old, "memory.db"))
+            db.enable_load_extension(True)
+            memory.sqlite_vec.load(db)
+            db.enable_load_extension(False)
+            db.executescript(f"""
+                CREATE TABLE memories (
+                    id         INTEGER PRIMARY KEY,
+                    text       TEXT NOT NULL,
+                    kind       TEXT NOT NULL CHECK (kind IN ('directive','note')),
+                    pinned     INTEGER NOT NULL DEFAULT 0,
+                    source     TEXT NOT NULL DEFAULT 'self',
+                    topics     TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    status     TEXT NOT NULL DEFAULT 'active'
+                               CHECK (status IN ('active','superseded','retired')),
+                    supersedes INTEGER REFERENCES memories(id),
+                    created    TEXT NOT NULL,
+                    last_seen  TEXT NOT NULL,
+                    last_used_at TEXT,
+                    use_count  INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE VIRTUAL TABLE memories_vec USING vec0(
+                    embedding float[{memory.EMBED_DIM}] distance_metric=cosine
+                );
+            """)
+            db.execute(
+                "INSERT INTO memories (text, kind, created, last_seen)"
+                " VALUES ('A record from before temporal grounding.',"
+                " 'note', ?, ?)", (memory.now_iso(), memory.now_iso()))
+            db.commit()
+            db.close()
+            reopened = memory.Store(old)
+            try:
+                cols = {r[1] for r in reopened.db.execute(
+                    "PRAGMA table_info(memories)")}
+                self.assertIn("occurred", cols)
+                text, occurred = reopened.db.execute(
+                    "SELECT text, occurred FROM memories WHERE id=1").fetchone()
+                self.assertEqual(text,
+                                 "A record from before temporal grounding.")
+                self.assertIsNone(occurred)
+            finally:
+                reopened.db.close()
+        finally:
+            shutil.rmtree(old, ignore_errors=True)
+
+    def test_duplicate_with_a_date_fills_an_unknown(self):
+        _, rec_id = self.store.add_deduped("The lux sensor lives on the i2c bus.")
+        action, dup_id = self.store.add_deduped(
+            "The lux sensor lives on the i2c bus.", occurred="2026-08-05")
+        self.assertEqual((action, dup_id), ("duplicate", rec_id))
+        self.assertEqual(self.store.db.execute(
+            "SELECT occurred FROM memories WHERE id=?",
+            (rec_id,)).fetchone()[0], "2026-08-05")
+        # A known date is never overwritten by a later duplicate.
+        self.store.add_deduped("The lux sensor lives on the i2c bus.",
+                               occurred="2026-08-09")
+        self.assertEqual(self.store.db.execute(
+            "SELECT occurred FROM memories WHERE id=?",
+            (rec_id,)).fetchone()[0], "2026-08-05")
+
+
+class TestBackfill(StoreCase):
+    """The one-time temporal backfill: the record's own text naming exactly
+    one calendar date is the only source that is not a guess. Everything
+    else is left unknown, which is the point."""
+
+    def bare_row(self, text):
+        cur = self.store.db.execute(
+            "INSERT INTO memories (text, kind, created, last_seen)"
+            " VALUES (?, 'note', ?, ?)",
+            (text, memory.now_iso(), memory.now_iso()))
+        self.store.db.commit()
+        return cur.lastrowid
+
+    def occurred_of(self, rec_id):
+        return self.store.db.execute(
+            "SELECT occurred FROM memories WHERE id=?", (rec_id,)).fetchone()[0]
+
+    def test_one_date_fills_two_dates_and_none_stay_unknown(self):
+        one = self.bare_row("The wake fired twice on 2026-08-02 and I fixed it.")
+        two = self.bare_row("Broken on 2026-08-02, fixed on 2026-08-04.")
+        none = self.bare_row("The disk is a Samsung.")
+        future = self.bare_row("The dentist is on 2036-01-15.")
+        memory.cmd_backfill_occurred(self.store, Namespace(dry_run=False))
+        self.assertEqual(self.occurred_of(one), "2026-08-02")
+        self.assertIsNone(self.occurred_of(two))
+        self.assertIsNone(self.occurred_of(none))
+        self.assertIsNone(self.occurred_of(future))
+
+    def test_impossible_dates_are_not_dates(self):
+        rec = self.bare_row("The log said 2026-13-40, which is nonsense.")
+        memory.cmd_backfill_occurred(self.store, Namespace(dry_run=False))
+        self.assertIsNone(self.occurred_of(rec))
+
+    def test_dry_run_writes_nothing_and_a_filled_row_is_left_alone(self):
+        rec = self.bare_row("Fixed on 2026-08-02.")
+        memory.cmd_backfill_occurred(self.store, Namespace(dry_run=True))
+        self.assertIsNone(self.occurred_of(rec))
+        memory.cmd_backfill_occurred(self.store, Namespace(dry_run=False))
+        self.store.db.execute("UPDATE memories SET occurred='2026-08-01'"
+                              " WHERE id=?", (rec,))
+        self.store.db.commit()
+        memory.cmd_backfill_occurred(self.store, Namespace(dry_run=False))
+        self.assertEqual(self.occurred_of(rec), "2026-08-01")
 
 
 class TestIngest(StoreCase):

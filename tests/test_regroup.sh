@@ -352,12 +352,13 @@ rm -f "${DESKCRAB_STATE_PREFIX}-live-speech"
 ok "another voice -> regroup block -> one folded reply, nothing dropped"
 ok "a voice he has answered is not another voice — no restatement pressure"
 
-# --- rule 37: the quote yields, the instructions never do -------------------
-# The block is instructions wrapped around a quote; under the old sizing a
-# long reply pushed the CLOSING instructions off the layer and the generic
-# trim cut them mid-sentence. Now the quote clips itself to what the budget
-# leaves, on a word, saying the reply goes on — and the block never outgrows
-# the layer.
+# --- rule 37: the quote and the instructions are both emitted whole ---------
+# The block is instructions wrapped around a quote. In the trim era a long
+# reply pushed the CLOSING instructions off the layer mid-sentence, and the
+# fix of that era clipped the quote instead. Nothing clips any more, anywhere
+# (rule 4): the whole quote and the whole instructions ride, and a reply long
+# enough to push the layer past its budget is the manifest's and rule 36's
+# business, never a licence to shorten.
 (
     set +eu
     # shellcheck disable=SC1090
@@ -368,20 +369,17 @@ ok "a voice he has answered is not another voice — no restatement pressure"
     BLOCK="$(regroup_context)"
     printf '%s' "$BLOCK" | grep -q "silence is never announced" \
         || fail "a long quote pushed the closing instruction off the block"
+    # The whole quote, first word to last, with no clip marker anywhere.
+    printf '%s' "$BLOCK" | grep -qF "399 400" \
+        || fail "the end of a long quote is missing — something still clips"
     printf '%s' "$BLOCK" | grep -qF "[... the reply goes on" \
-        || fail "the clipped quote does not say the reply goes on"
-    BYTES=$(printf '%s' "$BLOCK" | wc -c)
-    BUDGET=$(_prompt_budget regroup turn)
-    [ "$BYTES" -le "$BUDGET" ] \
-        || fail "the block outgrew the layer anyway ($BYTES of $BUDGET)"
-    # A quote that fits is delivered whole, with no marker claiming otherwise.
+        && fail "a whole quote was marked as clipped"
+    # A short quote is likewise verbatim.
     live_speech_begin desk "a short reply" "$SPEAKER"
     BLOCK="$(regroup_context)"
     printf '%s' "$BLOCK" | grep -qF "a short reply" \
         || fail "a short quote did not arrive verbatim"
-    printf '%s' "$BLOCK" | grep -qF "[... the reply goes on" \
-        && fail "a short quote was marked as clipped"
     kill "$SPEAKER" 2>/dev/null
     rm -f "${DESKCRAB_STATE_PREFIX}-live-speech"
-    ok "rule 37 — a long quote clips on a word; the instructions stand whole"
+    ok "rule 37 — the quote and the instructions both stand whole"
 )

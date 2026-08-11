@@ -279,26 +279,50 @@ check "and it still knows where it came from" \
     contains "$MSG" "from a wake you scheduled yourself"
 
 echo
-echo "a cut is never silent (rule 36):"
-# The exact mechanism of 2026-08-09: a conf override pins L1 under the sheet,
-# the fit drops sections, and for two days nothing outside the prompt said so.
-# 5,000 leaves the ~3,400-byte identity header room for only a little sheet.
-run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn' >/dev/null
-check "the cut build left the cuts record" \
-    [ -s "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" ]
-check "naming the persona sections it dropped" \
-    contains "$(cat "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" 2>/dev/null || true)" \
-             "persona sections dropped"
+echo "nothing is ever cut, and over budget is said out loud (rules 4 and 36):"
+# The 2026-08-09 mechanism — a conf override pins L1 under the sheet — must
+# now cost NOTHING: the sheet rides whole, the manifest says `over`, and no
+# warning fires while the total still fits. 5,000 is well under the
+# ~3,400-byte identity header plus the fixture's 40-section sheet.
+BODY="$(run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn')"
+check "a layer past its budget still carries its whole content" \
+    contains "$BODY" "## Section 40"
+refute "and no trim marker appears anywhere in the body" \
+    contains "$BODY" "[trimmed to fit"
 state="$(run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn --layers' \
          | awk -F'\t' '$1 == "L1" { print $4 }')"
-check_eq "the manifest calls a section-cut sheet cut, never full" "$state" "cut"
+check_eq "the manifest calls it over — never trimmed, never cut" "$state" "over"
+check "a layer over its budget alone leaves no standing record while the total fits" \
+    [ ! -s "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" ]
+man="$(run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn --layers')"
+refute "no manifest state anywhere reads trimmed or cut" \
+    grep -qE '	(trimmed|cut)$' <<<"$man"
+
+# The TOTAL running past the profile's target is the warned condition: the
+# prompt itself opens with the fact, the record stands for the outside, and
+# still nothing is cut.
+SQUEEZE='PROMPT_BUDGET_L1_TURN=500 PROMPT_BUDGET_L2_TURN=100 PROMPT_BUDGET_L4_TURN=100 PROMPT_BUDGET_L5_TURN=100 PROMPT_BUDGET_L6_TURN=1000 PROMPT_BUDGET_L7_TURN=100 PROMPT_BUDGET_L8_TURN=100'
+BODY="$(run "$SQUEEZE build_system_prompt --profile turn")"
+check "an over-budget total is announced inside the prompt" \
+    contains "$BODY" "PROMPT OVER BUDGET"
+check "the warning says nothing was cut" \
+    contains "$BODY" "Nothing was cut"
+check "and names the largest layers" \
+    contains "$BODY" "The largest layers:"
+check "the whole persona sheet is still in the over-budget prompt" \
+    contains "$BODY" "## Section 40"
+check "the over-budget build left the standing record" \
+    [ -s "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" ]
+check "which carries the measured total" \
+    contains "$(cat "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" 2>/dev/null || true)" \
+             "total="
 check "the next build's state block renders the record" \
-    contains "$(run 'PROMPT_BUDGET_L1_TURN=5000 build_system_prompt --profile turn')" \
-             "PROMPT CUT SHORT"
-# The override removed — the code default again — the fit is clean, and the
+    contains "$(run "$SQUEEZE build_system_prompt --profile turn")" \
+             "PROMPT OVER BUDGET — the last assembled prompt"
+# The overrides removed — the code defaults again — the build fits, and the
 # record goes with it.
 run 'build_system_prompt --profile turn' >/dev/null
-check "a clean build removes the record" \
+check "a build inside the target removes the record" \
     [ ! -s "$DESKCRAB_STATE_PREFIX-prompt-cuts.txt" ]
 refute "and the prompt after it carries no warning" \
-    contains "$(run 'build_system_prompt --profile turn')" "PROMPT CUT SHORT"
+    contains "$(run 'build_system_prompt --profile turn')" "PROMPT OVER BUDGET"

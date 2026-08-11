@@ -68,10 +68,26 @@ NEAR_DUP_SIM = 0.92
 DECAY_HALF_LIFE_DAYS = 90
 REINFORCE_WEIGHT = 0.15
 REINFORCE_MAX_BOOST = 2.0
-# Recall-block size (13:15 revision): ~800 tokens; when it truncates, the
-# header says so. Lowest-ranked notes drop first, directives only after.
-BLOCK_TOKEN_CAP = 800
-CHARS_PER_TOKEN = 4
+# The recall block is NEVER truncated. It held a ~800-token cap that popped
+# rows and stamped 'TRUNCATED to fit' in the header — a trim a subagent wrote
+# into the spec, which the user never asked for and ordered out on 2026-08-11:
+# a memory retrieved and then lost to a size cut is amnesia wearing a header.
+# The block's size is governed by RETRIEVAL — TOP_K, DIRECTIVE_CAP and the
+# pinned tier bound what is fetched — and a block that outgrows its prompt
+# layer is the assembler's over-budget warning to raise, never this module's
+# to cut (specs/prompt-assembly.md rule 4).
+#
+# Temporal grounding (2026-08-11): every record may carry `occurred` — when
+# the thing it DESCRIBES happened, distinct from `created`, when the record
+# was written about it. The block renders that when-ness in relative human
+# terms ("three days ago"), never as a bare stamp; a row with no occurred
+# renders its write date named as exactly that ("recorded three days ago")
+# rather than passing it off as the event's. Notes with a known occurred take
+# a gentle recency-of-relevance factor in scoring, floored so an old note
+# that is genuinely the best match is never buried by age alone; directives
+# are untouched — never decayed, never buried, exactly as before.
+OCCURRED_HALF_LIFE_DAYS = 45
+OCCURRED_FLOOR = 0.6
 # What the EMBEDDER will take, which is a different and much smaller number
 # than what the prompt will take. nomic-embed-text's trained context is 2048
 # tokens (`ollama show nomic-embed-text`), and ollama answers anything longer
@@ -180,11 +196,17 @@ def parse_iso(ts):
 
 
 def score_row(row, now):
-    """The 13:15 scoring formula. Notes:
-    cosine × confidence × decay(last use) × (1 + log(1+use_count) × 0.15),
-    decay exponential with a DECAY_HALF_LIFE_DAYS half-life counted from
-    last_used_at (falling back to creation for a note never yet used), boost
-    capped at REINFORCE_MAX_BOOST. Directives: raw cosine, untouched."""
+    """The 13:15 scoring formula, with temporal grounding. Notes:
+    cosine × confidence × decay(last use) × (1 + log(1+use_count) × 0.15)
+    × recency(occurred), decay exponential with a DECAY_HALF_LIFE_DAYS
+    half-life counted from last_used_at (falling back to creation for a note
+    never yet used), boost capped at REINFORCE_MAX_BOOST. The recency factor
+    reads `occurred` — when the described thing happened — and is FLOORED at
+    OCCURRED_FLOOR, so what mattered recently surfaces first while an old
+    note that is genuinely the best match is dimmed, never buried; a row
+    whose occurred is unknown takes no factor at all, because an unknown left
+    unknown must not read as either fresh or stale. Directives: raw cosine,
+    untouched — the user's rules do not age out."""
     sim = row[9]
     if row[2] != "note":
         return sim
@@ -193,7 +215,13 @@ def score_row(row, now):
     decay = 0.5 ** (days / DECAY_HALF_LIFE_DAYS)
     boost = min(1.0 + math.log1p(row[11] or 0) * REINFORCE_WEIGHT,
                 REINFORCE_MAX_BOOST)
-    return sim * row[6] * decay * boost
+    occurred = parse_iso(row[12]) if len(row) > 12 and row[12] else None
+    recency = 1.0
+    if occurred:
+        odays = max(0.0, (now - occurred).total_seconds() / 86400)
+        recency = OCCURRED_FLOOR + (1.0 - OCCURRED_FLOOR) \
+            * 0.5 ** (odays / OCCURRED_HALF_LIFE_DAYS)
+    return sim * row[6] * decay * boost * recency
 
 
 def pack(vec):
@@ -356,26 +384,39 @@ class Store:
                 -- via fire_memory_judge), never on mere retrieval. Read by
                 -- score_row.
                 last_used_at TEXT,
-                use_count  INTEGER NOT NULL DEFAULT 0
+                use_count  INTEGER NOT NULL DEFAULT 0,
+                -- Temporal grounding (2026-08-11): when the thing this
+                -- record DESCRIBES happened — distinct from `created`, when
+                -- the record was written about it. NULL means unknown, and
+                -- unknown is left unknown rather than guessed. Rendered in
+                -- relative human terms by the recall block; read by
+                -- score_row's recency-of-relevance factor (notes only).
+                occurred   TEXT
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
                 embedding float[{EMBED_DIM}] distance_metric=cosine
             );
         """)
+        # Stores born before temporal grounding: add the column in place.
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(memories)")}
+        if "occurred" not in cols:
+            self.db.execute("ALTER TABLE memories ADD COLUMN occurred TEXT")
+            self.db.commit()
 
     def embed_text(self, rec_text, topics=""):
         body = rec_text if not topics else f"{rec_text} [topics: {topics}]"
         return embed([body])[0]
 
     def insert(self, text, kind="note", pinned=False, source="self",
-               topics="", vec=None):
+               topics="", vec=None, occurred=None):
         if vec is None:
             vec = self.embed_text(text, topics)
         now = now_iso()
         cur = self.db.execute(
-            "INSERT INTO memories (text, kind, pinned, source, topics, created, last_seen)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (text, kind, 1 if pinned else 0, source, topics, now, now))
+            "INSERT INTO memories (text, kind, pinned, source, topics, created,"
+            " last_seen, occurred) VALUES (?,?,?,?,?,?,?,?)",
+            (text, kind, 1 if pinned else 0, source, topics, now, now,
+             occurred or None))
         self.db.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?,?)",
                         (cur.lastrowid, pack(vec)))
         self.db.commit()
@@ -394,7 +435,7 @@ class Store:
         rows = self.db.execute(
             "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
             "       m.confidence, m.created, m.last_seen, 1.0 - v.distance AS sim,"
-            "       m.last_used_at, m.use_count"
+            "       m.last_used_at, m.use_count, m.occurred"
             " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
             " WHERE v.embedding MATCH ? AND v.k = ? AND m.status = 'active'"
             " ORDER BY sim DESC",
@@ -465,10 +506,14 @@ class Store:
             self.db.commit()
         return picked, (t1 - t0) * 1000, (t2 - t1) * 1000
 
-    def add_deduped(self, text, kind="note", pinned=False, source="self", topics=""):
+    def add_deduped(self, text, kind="note", pinned=False, source="self",
+                    topics="", occurred=None):
         """Insert with the ingest rules: same-kind exact text -> skip and bump
         last_seen; same-kind similar-but-different -> the new record
-        supersedes the old. Returns (action, id)."""
+        supersedes the old. Returns (action, id). A duplicate that arrives
+        knowing WHEN fills an existing record's unknown `occurred` — new
+        knowledge about an old record, not a new record — and never overwrites
+        one already known."""
         vec = self.embed_text(text, topics)
         best = None
         for row in self.knn(vec, 5):
@@ -478,22 +523,27 @@ class Store:
         if best and " ".join(best[1].split()).lower() == " ".join(text.split()).lower():
             self.db.execute("UPDATE memories SET last_seen=? WHERE id=?",
                             (now_iso(), best[0]))
+            if occurred and not best[12]:
+                self.db.execute("UPDATE memories SET occurred=? WHERE id=?",
+                                (occurred, best[0]))
             self.db.commit()
             return "duplicate", best[0]
         if best and best[9] >= SUPERSEDE_SIM:
-            new_id = self.insert(text, kind, pinned, source, topics, vec=vec)
+            new_id = self.insert(text, kind, pinned, source, topics, vec=vec,
+                                 occurred=occurred)
             self.db.execute(
                 "UPDATE memories SET status='superseded' WHERE id=?", (best[0],))
             self.db.execute(
                 "UPDATE memories SET supersedes=? WHERE id=?", (best[0], new_id))
             self.db.commit()
             return "superseded", new_id
-        return "added", self.insert(text, kind, pinned, source, topics, vec=vec)
+        return "added", self.insert(text, kind, pinned, source, topics, vec=vec,
+                                    occurred=occurred)
 
     def pinned_rows(self):
         return self.db.execute(
             "SELECT id, text, kind, pinned, source, topics, confidence,"
-            "       created, last_seen, 1.0, last_used_at, use_count"
+            "       created, last_seen, 1.0, last_used_at, use_count, occurred"
             " FROM memories WHERE status='active' AND pinned=1"
             " ORDER BY kind DESC, id").fetchall()
 
@@ -789,36 +839,91 @@ def recall_log(path, line):
         pass
 
 
+_NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+              "eight", "nine", "ten", "eleven", "twelve"]
+
+
+def _num_word(n):
+    return _NUM_WORDS[n] if 0 <= n < len(_NUM_WORDS) else str(n)
+
+
+def relative_when(ts, now=None):
+    """A stamp's when-ness in the words a person uses — 'yesterday', 'three
+    days ago', 'about two months ago' — because a bare timestamp retrieved
+    into a prompt is arithmetic she has to do while answering, and mostly
+    does not. Calendar days, not 24-hour buckets, so last night reads
+    'yesterday' the moment the date turns. Empty string for a stamp that
+    does not parse: an unknown is rendered as nothing, never guessed at."""
+    then = parse_iso(ts)
+    if not then:
+        return ""
+    now = now or datetime.now().astimezone()
+    days = (now.date() - then.astimezone().date()).days
+    if days <= 0:
+        return "earlier today"
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"{_num_word(days)} days ago"
+    if days < 11:
+        return "about a week ago"
+    if days < 28:
+        return f"about {_num_word(max(2, round(days / 7)))} weeks ago"
+    if days < 320:
+        months = round(days / 30.44)
+        return "about a month ago" if months <= 1 \
+            else f"about {_num_word(months)} months ago"
+    if days < 550:
+        return "about a year ago"
+    return f"about {_num_word(max(2, round(days / 365.25)))} years ago"
+
+
 def build_block(rows, warning=""):
-    """The recall block plus the rows that actually made it in — truncation
-    drops rows, and the reinforcement judge must only ever see records that
-    genuinely reached the prompt."""
+    """The recall block, whole, plus the rows in it — which is ALL of them:
+    nothing here drops a row, so the reinforcement judge's sidecar and the
+    block state the same records by construction. A ~800-token cap used to
+    pop rows from the tail and stamp 'TRUNCATED to fit' in the header; that
+    cut entered the spec by a subagent's hand, not the user's, and he ordered
+    it out on 2026-08-11 — a memory retrieved and then lost to a size cut is
+    amnesia wearing a header. The block's size is bounded by RETRIEVAL
+    (TOP_K, DIRECTIVE_CAP, the pinned tier), and a block that outgrows its
+    prompt layer is the assembler's over-budget warning to raise
+    (specs/prompt-assembly.md rules 4 and 36), never this module's to trim.
+
+    Temporal grounding: every row renders its when-ness in relative human
+    terms. A known `occurred` speaks for the thing itself ('three days
+    ago'); a row without one has its write date speak, named as exactly that
+    ('recorded three days ago') rather than passed off as the event's."""
     if not rows and not warning:
         return "", []
+    now = datetime.now().astimezone()
+
+    def when(r, directive=False):
+        occurred = r[12] if len(r) > 12 else None
+        if occurred:
+            rel = relative_when(occurred, now)
+            if rel:
+                return f"standing since {rel}" if directive else rel
+        rel = relative_when(r[7], now)
+        return f"recorded {rel}" if rel else ""
+
+    def line(r, directive=False):
+        stamp = when(r, directive)
+        return f"- {r[1]} ({stamp})" if stamp else f"- {r[1]}"
+
     directives = [r for r in rows if r[2] == "directive"]
     notes = [r for r in rows if r[2] == "note"]
-    # ~BLOCK_TOKEN_CAP-token cap (13:15 revision): if it truncates, the header
-    # says so. Lowest-ranked notes drop first; directives are expensive to
-    # miss, so they go only when notes are already gone.
-    truncated = False
-    while True:
-        out = ["## What I remember (retrieved, not exhaustive"
-               + (", TRUNCATED to fit" if truncated else "")
-               + " — 'crab memory search <query>' for more)"]
-        if warning:
-            out.append(f"\n{warning}")
-        if directives:
-            out.append("\nWhat I hold to:")
-            out.extend(f"- {r[1]} ({r[7][:10]})" for r in directives)
-        if notes:
-            out.append("\nWhat I know from my own time:")
-            out.extend(f"- {r[1]} ({r[7][:10]})" for r in notes)
-        block = "\n".join(out)
-        if len(block) <= BLOCK_TOKEN_CAP * CHARS_PER_TOKEN \
-                or not (notes or directives):
-            return block, directives + notes
-        truncated = True
-        (notes or directives).pop()
+    out = ["## What I remember (retrieved, not exhaustive"
+           " — 'crab memory search <query>' for more)"]
+    if warning:
+        out.append(f"\n{warning}")
+    if directives:
+        out.append("\nWhat I hold to:")
+        out.extend(line(r, directive=True) for r in directives)
+    if notes:
+        out.append("\nWhat I know from my own time:")
+        out.extend(line(r) for r in notes)
+    return "\n".join(out), directives + notes
 
 
 def format_block(rows, warning=""):
@@ -887,8 +992,15 @@ Do NOT record: transient state, step-by-step narration, anything scoped to a \
 single conversation, greetings, weather, or anything a file on disk already \
 answers. Few good records beat many weak ones; an empty day is a valid answer.
 
+When a record describes something that HAPPENED — an event, a decision, a \
+discovery, a correction given on a day — add "occurred": the date it happened \
+as YYYY-MM-DD. The material's own headers carry each chunk's date; use them. \
+A standing fact with no event behind it, or a date you are not sure of, gets \
+NO "occurred" field at all: an unknown left unknown beats a guess.
+
 Reply with ONLY a JSON array (no prose, no code fence):
-[{"text": "...", "kind": "directive"|"note", "topics": "comma,separated"}]
+[{"text": "...", "kind": "directive"|"note", "topics": "comma,separated", \
+"occurred": "YYYY-MM-DD"}]
 
 MATERIAL:
 """
@@ -1137,11 +1249,18 @@ def cmd_ingest(store, args):
         if not text or kind not in ("directive", "note"):
             counts["rejected"] += 1
             continue
+        # `occurred` rides when the distiller dated the thing; a stamp that
+        # does not parse is dropped rather than stored broken — the record
+        # itself is still worth keeping, its when-ness just stays unknown.
+        occurred = (cand.get("occurred") or "").strip() or None
+        if occurred and not parse_iso(occurred):
+            occurred = None
         action, rec_id = store.add_deduped(
             text, kind=kind, source=cand.get("source", "conversation"),
-            topics=cand.get("topics", ""))
+            topics=cand.get("topics", ""), occurred=occurred)
         counts[action] += 1
-        print(f"  {action} #{rec_id} [{kind}] {text[:80]}")
+        print(f"  {action} #{rec_id} [{kind}]"
+              + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
 
     if not args.dry_run:
         with open(cursor_path, "w") as f:
@@ -1249,13 +1368,20 @@ def cmd_add(store, args):
     text = " ".join(args.text).strip()
     if not text:
         sys.exit("memory add: empty text")
+    occurred = (args.occurred or "").strip() or None
+    if occurred and not parse_iso(occurred):
+        sys.exit(f"memory add: --occurred {occurred!r} is not a date I can "
+                 "parse (use YYYY-MM-DD; leave it off when unknown)")
     if args.no_dedup:
-        rec_id = store.insert(text, args.kind, args.pin, args.source, args.topics)
+        rec_id = store.insert(text, args.kind, args.pin, args.source,
+                              args.topics, occurred=occurred)
         action = "added"
     else:
         action, rec_id = store.add_deduped(text, args.kind, args.pin,
-                                           args.source, args.topics)
-    print(f"{action} #{rec_id} [{args.kind}]")
+                                           args.source, args.topics,
+                                           occurred=occurred)
+    print(f"{action} #{rec_id} [{args.kind}]"
+          + (f" occurred={occurred}" if occurred else ""))
     return 0
 
 
@@ -1296,7 +1422,8 @@ def cmd_dump(store, args):
     # for. Everything, superseded and retired included.
     rows = store.db.execute(
         "SELECT id, text, kind, pinned, source, topics, confidence, status,"
-        "       supersedes, created, last_seen FROM memories ORDER BY id").fetchall()
+        "       supersedes, created, last_seen, occurred"
+        " FROM memories ORDER BY id").fetchall()
     for r in rows:
         print(f"#{r[0]} [{r[2]}]{' PINNED' if r[3] else ''} "
               f"status={r[7]} confidence={r[6]:g} source={r[4]}")
@@ -1304,10 +1431,66 @@ def cmd_dump(store, args):
             print(f"  topics: {r[5]}")
         if r[8]:
             print(f"  supersedes: #{r[8]}")
-        print(f"  created {r[9]}  last_seen {r[10]}")
+        print(f"  created {r[9]}  last_seen {r[10]}"
+              + (f"  occurred {r[11]}" if r[11] else ""))
         print(f"  {r[1]}")
         print()
     print(f"-- {len(rows)} records in {store.path}")
+    return 0
+
+
+# A calendar date the record's own text names, for the one-time temporal
+# backfill. Only the unambiguous ISO shape counts: prose dates ('March 16')
+# are a guess about wording, and a guess is exactly what backfill must not
+# write.
+TEXT_DATE_RE = re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)\b")
+
+
+def cmd_backfill_occurred(store, args):
+    """Fill `occurred` on rows that predate temporal grounding, from the one
+    source that is not a guess: the record's own text naming exactly one
+    calendar date. Two dates is ambiguous and left alone; a future date is a
+    schedule, not an event, and left alone; no date at all stays unknown —
+    the recall block then renders the write date, named as the write date.
+    Idempotent: only rows whose occurred is NULL are touched, and a filled
+    row is never revisited."""
+    today = datetime.now().astimezone().date()
+    rows = store.db.execute(
+        "SELECT id, text FROM memories WHERE occurred IS NULL"
+        " ORDER BY id").fetchall()
+    filled = ambiguous = dateless = 0
+    for rec_id, text in rows:
+        dates = set()
+        for m in TEXT_DATE_RE.finditer(text):
+            try:
+                d = datetime(int(m.group(1)), int(m.group(2)),
+                             int(m.group(3))).date()
+            except ValueError:
+                continue
+            if d <= today:
+                dates.add(d.isoformat())
+        if not dates:
+            dateless += 1
+            continue
+        if len(dates) > 1:
+            ambiguous += 1
+            print(f"  left #{rec_id} unknown: names {len(dates)} dates "
+                  f"({', '.join(sorted(dates))})")
+            continue
+        date = dates.pop()
+        filled += 1
+        if args.dry_run:
+            print(f"  would set #{rec_id} occurred={date}")
+        else:
+            store.db.execute("UPDATE memories SET occurred=? WHERE id=?",
+                             (date, rec_id))
+            print(f"  set #{rec_id} occurred={date}")
+    if not args.dry_run:
+        store.db.commit()
+    print(f"backfill: {filled} filled from the records' own text, "
+          f"{ambiguous} ambiguous and left unknown, "
+          f"{dateless} dateless and left unknown"
+          + (" (dry run — nothing written)" if args.dry_run else ""))
     return 0
 
 
@@ -1339,6 +1522,10 @@ def main():
     p.add_argument("--pin", action="store_true")
     p.add_argument("--source", default="conversation")
     p.add_argument("--topics", default="")
+    p.add_argument("--occurred", default="",
+                   help="when the thing this record describes happened "
+                        "(YYYY-MM-DD) — distinct from when the record is "
+                        "written; leave off when unknown, never guess")
     p.add_argument("--no-dedup", action="store_true")
     p.add_argument("text", nargs="+")
     p.set_defaults(fn=cmd_add)
@@ -1355,6 +1542,13 @@ def main():
 
     p = sub.add_parser("dump", help="whole store as readable text")
     p.set_defaults(fn=cmd_dump)
+
+    p = sub.add_parser("backfill-occurred",
+                       help="one-time temporal backfill: fill `occurred` "
+                            "from a single date the record's own text names; "
+                            "leave everything else unknown")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_backfill_occurred)
 
     p = sub.add_parser("forget", help="retire a record by id")
     p.add_argument("id", type=int)
