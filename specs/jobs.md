@@ -83,6 +83,28 @@ back to her.
     There MUST be a force flag for a deliberate retry inside the window.
 18. The completion wake for a blocked job MUST say plainly that the task is still undone, rather
     than sending the next wake to audit an empty log.
+18a. A blocked job's brief MUST NOT wait on the user noticing it. When a job lands blocked, the
+    runner arms one transient timer for the retry window plus a margin — past the marker's own
+    expiry — and when it fires, the recorded brief is re-dispatched in the recorded workdir,
+    through the same preflight as any dispatch, at the login the chain prefers **at fire time**.
+    The login that refused is deliberately not forwarded into the timer's unit: the whole point
+    of firing after the window is that the chain has since moved.
+18b. The retry is exactly one per brief, never a loop. The re-dispatch stamps `retry_of` on the
+    new sidecar and `retry` on the origin's; the fire side refuses any sidecar whose `retry` is
+    already spent, and the runner never arms a timer for a job that itself carries `retry_of`.
+    A retry that blocks too is announced and left, exactly as every blocked job was before this
+    rule existed.
+18c. Only a job that never began is re-fired. The fire side requires state `blocked` exactly: a
+    `failed` job ran, its log holds real work to read, and re-dispatching it would repeat that
+    work on the strength of nobody having looked yet.
+18d. A job older than `JOB_RETRY_MAX_AGE` when the timer fires is abandoned rather than
+    re-fired, and the abandonment is written to both the sidecar and the job's log. A brief
+    that has sat blocked for hours describes a tree the user may since have changed by hand.
+18e. The retry MUST NOT arm and MUST NOT fire from a scratch jobs directory — the same guard
+    the completion wake stands behind — and its fire-time dispatch honours
+    `DESKCRAB_NO_DISPATCH` like any other.
+18f. The re-dispatched job MUST appear in `crab jobs` as its own entry naming the job it came
+    from.
 
 ### Context
 
@@ -123,11 +145,12 @@ back to her.
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than the field simply lack it |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit, retry, retry_of}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than the field simply lack it. `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
+| systemd unit `deskcrab-job-retry-<id>` | the one-shot timer that re-dispatches a blocked job's brief once the hold expires (rule 18a) |
 
 ## The lifecycle
 
@@ -151,6 +174,8 @@ flowchart TD
   O --> Od["stopped — termination trap"]
   Oa & Ob & Oc & Od --> J8["sidecar + day journal"]
   J8 --> J9["one event wake carrying the outcome"]
+  Oc --> RT["one transient retry timer,<br/>JOB_BLOCK_RETRY + margin (rule 18a)"]
+  RT -->|"still blocked, retry unspent,<br/>younger than JOB_RETRY_MAX_AGE"| R1
   X["hard kill, no trap"] --> R["report reaps it:<br/>unit inactive + process gone = died"]
 ```
 
@@ -202,7 +227,11 @@ the substitution-artifact refusal of rule 1a, and requeue reading description an
 sidecar — rule 7a);
 `tests/test_job_livelog.sh` (rule 26: the log fills while the builder runs, a stopped job keeps its
 partial output, the pipeline preserves the CLI's exit code, and the empty-but-running and unknown-id
-answers of `crab job log`).
+answers of `crab job log`);
+`tests/test_job_block_retry.sh` (rules 18a–18f: the runner arms the one retry timer for a blocked
+job and never for a failed, scratch, or already-retried one; the fire side re-dispatches once from
+the sidecar, naming its origin, and refuses a spent, stale, failed, scratch, artifact-brief, or
+workdir-less record).
 
 **To be written:**
 

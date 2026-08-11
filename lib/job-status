@@ -3,10 +3,15 @@
 
 Each job is one small JSON file <id>.json beside its log <id>.log:
     {id, description, workdir, started, started_epoch, unit, state,
-     pid, pidstart, finished, finished_epoch, exit}
+     pid, pidstart, finished, finished_epoch, exit, retry, retry_of}
 state: running | finished | failed | stopped | died | blocked
        blocked is a run that never began — the CLI refused before any work was
        attempted — and it is deliberately not the same outcome as failed.
+retry / retry_of: the one automatic re-dispatch of a blocked job (specs/jobs.md
+       rules 18a-18f). retry on the origin's sidecar is the spent shot — the
+       new job's id, or "fired"/"abandoned" when nothing dispatched — and
+       retry_of on the new one names the blocked job it came from, so every
+       report prints the lineage (rule 18f).
 
     job-status new <dir> <id> <description> <unit> [workdir]
     job-status set <file> key=value [key=value ...]
@@ -87,6 +92,15 @@ def fmt_dur(secs):
 def one_line(desc, limit=140):
     desc = " ".join(str(desc).split())
     return desc if len(desc) <= limit else desc[:limit - 1] + "…"
+
+
+def ident(job):
+    """The id as every report prints it: a retry names the job it came from
+    (specs/jobs.md rule 18f), so a re-dispatched brief never reads as new
+    work that appeared out of nowhere."""
+    if job.get("retry_of"):
+        return "%s (retry of %s)" % (job.get("id", "?"), job["retry_of"])
+    return job.get("id", "?")
 
 
 def cmd_new(argv):
@@ -198,7 +212,7 @@ def cmd_report(argv):
     if live:
         lines = ["  - running (%s so far)  %s — %s" % (
             fmt_dur(now - j.get("started_epoch", now)),
-            j.get("id", "?"), one_line(j.get("description", ""), 100))
+            ident(j), one_line(j.get("description", ""), 100))
             for j in running]
         if not lines:
             lines.append("  (none running)")
@@ -215,7 +229,7 @@ def cmd_report(argv):
                 elif state == "failed":
                     state = "failed (exit %s)" % j.get("exit", "?")
                 lines.append("  - ENDED SINCE YOUR LAST TURN: %s  %s — %s" % (
-                    state, j.get("id", "?"), one_line(j.get("description", ""), 90)))
+                    state, ident(j), one_line(j.get("description", ""), 90)))
         print("\n".join(lines))
         return
 
@@ -223,7 +237,7 @@ def cmd_report(argv):
     for j in running:
         lines.append("  - running (%s so far)  %s — %s" % (
             fmt_dur(now - j.get("started_epoch", now)),
-            j.get("id", "?"), one_line(j.get("description", ""))))
+            ident(j), one_line(j.get("description", ""))))
     for j in done:
         ran = ""
         if j.get("finished_epoch") and j.get("started_epoch"):
@@ -236,7 +250,7 @@ def cmd_report(argv):
             state = "blocked (never ran)"
         lines.append("  - %s %s%s  %s — %s" % (
             state, (j.get("finished") or "?")[:16], ran,
-            j.get("id", "?"), one_line(j.get("description", ""))))
+            ident(j), one_line(j.get("description", ""))))
     print("\n".join(lines) if lines else "  (none)")
 
 

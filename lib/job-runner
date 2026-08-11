@@ -220,7 +220,54 @@ fi
 # and what it may SPEND says nothing about who it may INTERRUPT. A run that is
 # not the live jobs directory does not get to reach the live me.
 LIVE_JOBS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
+SCRATCH_RUN=""
 if [ -n "${DESKCRAB_NO_DISPATCH:-}" ] || [ "$JOBS_DIR" != "$LIVE_JOBS_DIR" ]; then
+    SCRATCH_RUN=1
+fi
+
+# A blocked job's brief must not wait on her happening to notice (jobs.md rules
+# 18a-18f). The wake above ANNOUNCES that the task is still undone, but until
+# now nothing re-dispatched it: the block marker expired on its own and the
+# brief sat in the sidecar until a hand found it. So: one transient timer, for
+# the retry window plus a margin — past the marker's own expiry, so the fired
+# dispatch is the retry probe and not another refusal at the preflight. The
+# fire side (lib/job-block-retry) re-reads the sidecar and does every check
+# there, where the facts will be current, not here, where they are guesses
+# about the future. Never armed for a job that is itself a retry: a brief gets
+# exactly one automatic shot, or two dry accounts would volley it forever.
+if [ "$STATE" = blocked ]; then
+    ORIGIN_OF="$("$LIB_DIR/job-status" get "$STATUS" retry_of 2>/dev/null)"
+    if [ -n "$SCRATCH_RUN" ]; then
+        echo "job-runner: scratch run ($JOBS_DIR) — block retry not armed" >> "$LOG"
+    elif [ -n "$ORIGIN_OF" ]; then
+        echo "job-runner: this job was itself the one automatic retry (of $ORIGIN_OF) — not arming another; the task stays undone for a hand to notice" >> "$LOG"
+    else
+        RETRY_IN=$(( JOB_BLOCK_RETRY + 60 ))
+        # CLAUDE_CONFIG_DIR is deliberately NOT forwarded into the timer's
+        # unit: the fired dispatch must ask claude_preferred_login at fire
+        # time, so the brief goes out on whatever account the chain has since
+        # rotated to — never pinned to the login that just refused.
+        if systemd-run --user --collect --quiet --unit="deskcrab-job-retry-$ID" \
+            --on-active="${RETRY_IN}s" \
+            --setenv=PATH="$HOME/.local/bin:$PATH" \
+            --setenv=DESKCRAB_CONF="$CONF_FILE" \
+            --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
+            --setenv=JOBS_DIR="$JOBS_DIR" \
+            --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+            --setenv=JOB_MODEL="$JOB_MODEL" \
+            --setenv=JOB_EFFORT="$JOB_EFFORT" \
+            "$LIB_DIR/job-block-retry" "$ID" 2>/dev/null; then
+            echo "job-runner: the brief re-dispatches itself once, in $(( RETRY_IN / 60 )) min (unit deskcrab-job-retry-$ID)" >> "$LOG"
+        else
+            # No user manager: the same shape job_start falls back to.
+            ( setsid bash -c 'sleep "$1"; exec "$2" "$3"' _ "$RETRY_IN" \
+                "$LIB_DIR/job-block-retry" "$ID" >/dev/null 2>&1 </dev/null & )
+            echo "job-runner: the brief re-dispatches itself once, in $(( RETRY_IN / 60 )) min (setsid — no user manager)" >> "$LOG"
+        fi
+    fi
+fi
+
+if [ -n "$SCRATCH_RUN" ]; then
     echo "job-runner: scratch run ($JOBS_DIR) — event wake suppressed: $WAKE_REASON" >> "$LOG"
 elif [ -n "$WANTS_FILE" ]; then
     "$SCRIPT_DIR/crab" wake-at --by job-runner 5s event "$WAKE_REASON" >/dev/null 2>&1

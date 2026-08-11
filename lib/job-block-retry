@@ -1,0 +1,111 @@
+#!/bin/bash
+# The one automatic retry of a job that landed blocked (specs/jobs.md rules
+# 18a-18f). Fired by the transient timer lib/job-runner arms when a job's whole
+# account chain refused before any work began — the timer is set for the block
+# hold plus a margin, so by the time this runs the marker has expired and the
+# dispatch below is the retry probe.
+#
+# Why this exists: a blocked job used to be ANNOUNCED and then dropped. The
+# runner booked a wake saying the task was still undone and held further
+# dispatches for JOB_BLOCK_RETRY seconds — and then nothing re-sent the brief.
+# It sat in its sidecar waiting on the user happening to notice, which on
+# 2026-08-07 left three real briefs stranded for days.
+#
+# Every judgement here is made at FIRE time, off the sidecar, not at arm time:
+# the sidecar is the record that will still be true half an hour later.
+#   - only state `blocked` is re-fired — a failed job RAN, and its log holds
+#     real work to read (rule 18c);
+#   - a spent `retry` field, or a job that is itself a retry, refuses — one
+#     automatic shot per brief, never a loop (rule 18b);
+#   - a brief older than JOB_RETRY_MAX_AGE is abandoned, and says so in the
+#     job's own log (rule 18d);
+#   - a scratch jobs directory never fires — the same guard the runner's
+#     completion wake stands behind (rule 18e).
+# The dispatch itself goes through job_start like any other, so the preflight,
+# the substitution-artifact refusal and DESKCRAB_NO_DISPATCH all apply, and the
+# new job starts on the login the chain prefers NOW — not the one that refused.
+#
+# Usage (fired by the deskcrab-job-retry-<id> unit, not by hand):
+#   job-block-retry <id>
+
+set -u
+ID="${1:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+STATUS="$JOBS_DIR/$ID.json"
+LOG="$JOBS_DIR/$ID.log"
+note() { printf 'job-block-retry: %s\n' "$*" >> "$LOG" 2>/dev/null; }
+
+[ -n "$ID" ] && [ -e "$STATUS" ] || {
+    echo "job-block-retry: no sidecar for '${ID:-}' in $JOBS_DIR" >&2
+    exit 1
+}
+
+# Rule 18e: a scratch instance's retry stays imaginary. Same comparison as the
+# runner's wake guard — a run that is not the live jobs directory does not get
+# to start real builders.
+LIVE_JOBS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
+if [ "$JOBS_DIR" != "$LIVE_JOBS_DIR" ]; then
+    note "scratch jobs directory ($JOBS_DIR) — no re-dispatch"
+    exit 0
+fi
+
+# Rule 18c: only a job that never began. Anything else — failed, finished,
+# stopped, died — ran, and re-firing it would repeat work.
+STATE="$("$LIB_DIR/job-status" get "$STATUS" state 2>/dev/null)"
+if [ "$STATE" != blocked ]; then
+    note "state is '$STATE', not blocked — only a job that never began is re-fired"
+    exit 0
+fi
+
+# Rule 18b, both halves: a retry never begets a retry, and a spent shot stays
+# spent even if this unit somehow fires twice.
+RETRY_OF="$("$LIB_DIR/job-status" get "$STATUS" retry_of 2>/dev/null)"
+if [ -n "$RETRY_OF" ]; then
+    note "this job is itself the one retry of $RETRY_OF — not fired again"
+    exit 0
+fi
+PRIOR="$("$LIB_DIR/job-status" get "$STATUS" retry 2>/dev/null)"
+if [ -n "$PRIOR" ]; then
+    note "retry already spent ($PRIOR) — a brief gets exactly one"
+    exit 0
+fi
+
+# Rule 18d: a brief that has sat for hours describes a tree the user may have
+# since changed by hand. Abandon it, on the record, rather than re-firing.
+STARTED="$("$LIB_DIR/job-status" get "$STATUS" started_epoch 2>/dev/null)"
+case "$STARTED" in ''|*[!0-9]*) STARTED=0 ;; esac
+AGE=$(( $(date +%s) - STARTED ))
+if [ "$STARTED" = 0 ] || [ "$AGE" -gt "$JOB_RETRY_MAX_AGE" ]; then
+    "$LIB_DIR/job-status" set "$STATUS" retry=abandoned
+    note "abandoned: dispatched $(( AGE / 3600 ))h ago, past JOB_RETRY_MAX_AGE ($(( JOB_RETRY_MAX_AGE / 3600 ))h) — too stale to re-fire; the task stays undone"
+    exit 0
+fi
+
+# The sidecar is the authority for WHAT to fire, exactly as `crab job requeue`
+# reads it (rule 7a): the description and the workdir come off the record, and
+# a record requeue would refuse, this refuses too — on the record.
+DESC="$("$LIB_DIR/job-status" get "$STATUS" description 2>/dev/null)"
+case "$(printf '%s' "$DESC" | tr -d '[:space:]')" in
+    ''|null|None|undefined)
+        "$LIB_DIR/job-status" set "$STATUS" retry=abandoned
+        note "no usable description ('$DESC') — a substitution artifact is not a brief; nothing to re-fire"
+        exit 0 ;;
+esac
+WORKDIR="$("$LIB_DIR/job-status" get "$STATUS" workdir 2>/dev/null)"
+if [ -z "$WORKDIR" ]; then
+    "$LIB_DIR/job-status" set "$STATUS" retry=abandoned
+    note "the sidecar has no workdir on record — not guessing a directory to build in"
+    exit 0
+fi
+
+# Claim the shot BEFORE firing: if the dispatch below is refused — a fresh
+# block from some other job holding the preflight shut — that refusal was
+# still this brief's one automatic attempt, and nothing re-arms it. job_start
+# overwrites the claim with the new job's id when the dispatch actually lands
+# (the -O stamp in lib/common.sh).
+"$LIB_DIR/job-status" set "$STATUS" retry=fired
+OUT="$(job_start -C "$WORKDIR" -O "$ID" "$DESC" 2>&1)"
+note "re-dispatch: $OUT"

@@ -305,6 +305,11 @@ JOBS_KEEP_DAYS="${JOBS_KEEP_DAYS:-14}"
 # further dispatches for a while rather than firing them into the same wall.
 JOBS_BLOCKED_FILE="${JOBS_BLOCKED_FILE:-$JOBS_DIR/blocked}"
 JOB_BLOCK_RETRY="${JOB_BLOCK_RETRY:-1800}"
+# ...and one automatic re-dispatch of the blocked brief once that hold expires
+# (lib/job-block-retry, jobs.md rules 18a-18f). A brief older than this when
+# the retry timer fires is abandoned rather than re-fired: it may describe a
+# tree the user has since changed by hand.
+JOB_RETRY_MAX_AGE="${JOB_RETRY_MAX_AGE:-14400}"
 # Durable wake bookings. A transient timer lives only inside the running user
 # manager — a reboot or logout erases it with no trace — so every wake-at also
 # writes one record here (fire-epoch \t kind \t reason) and `crab wake-restore`
@@ -6280,11 +6285,16 @@ job_stop() {
 }
 
 job_start() {
-    local workdir="$PROJECT_DIR" force=""
+    local workdir="$PROJECT_DIR" force="" origin=""
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
             -f) force=1; shift ;;
+            # -O names the blocked job this dispatch is the automatic retry of
+            # (lib/job-block-retry, jobs.md rule 18b). Internal, not offered in
+            # the usage line: the stamps it writes below are what make the
+            # retry once-only and legible in `crab jobs`.
+            -O) origin="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # Any other flag is a mistake, not a task description — once, a
             # stray --help was dispatched as a real job that ran `claude --help`.
             -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [-f] <description of the work>"; return 1 ;;
@@ -6319,7 +6329,7 @@ job_start() {
     # — one of which fired a completion wake at me, seven hours later, about a
     # job whose scratch log had long since been deleted.
     if [ -n "${DESKCRAB_NO_DISPATCH:-}" ]; then
-        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task"
+        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}"
         return 0
     fi
     local id unit
@@ -6328,6 +6338,15 @@ job_start() {
     id="$(date +%Y%m%d-%H%M%S)-$$"
     unit="deskcrab-job-$id"
     "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "$unit" "$workdir" || return 1
+    if [ -n "$origin" ]; then
+        # jobs.md rules 18b and 18f: the new sidecar names the blocked job it
+        # came from — `crab jobs` shows it, and job-runner reads it to never
+        # arm a second retry — and the origin's records that its one automatic
+        # retry is spent, as the id of the job that spent it.
+        "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" retry_of="$origin"
+        [ -e "$JOBS_DIR/$origin.json" ] && \
+            "$LIB_DIR/job-status" set "$JOBS_DIR/$origin.json" retry="$id"
+    fi
     # CLAUDE_CONFIG_DIR is forwarded ONLY when it is actually set. Passing it
     # empty is not the same as not passing it: the unit then runs with the
     # variable defined-but-blank, the CLI looks for a login in "" and every
