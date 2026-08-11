@@ -131,6 +131,18 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     with the exit code and error text, append nothing to the conversation, skip the audit and all
     output, and re-book a kinded wake so the agenda survives the outage.
 24. A wake that produced no output on a clean exit MUST be journaled as silence, not as a crash.
+24a. A wake whose CLI exited **non-zero** with no genuine model output is rule 23's outage in
+    different clothes, and MUST be treated the same way: journal the failure and re-book the kinded
+    wake so the agenda survives. Rule 23 cannot catch it, because its judgement reads the CLI's own
+    error events — and this launcher died before the CLI could write any: bubblewrap unable to
+    build the cocoon (it cannot nest inside another namespace), the cocoon-refused note, a loader
+    crash, a stall reap. The stream then holds no `is_error` event at all, only the launcher's own
+    complaint in plain text. The journal line MUST therefore carry the exit code **and the
+    launcher's last words** from the stream — its non-event lines and deskcrab's own notes, never
+    the session-registration note — because "claude exit 1" alone sends whoever reads it digging
+    through archived streams for a reason the log already held. Until 2026-08-11 this shape kept
+    its journal line and silently lost its agenda: reported as a death, never retried, which for a
+    wake with a purpose is the same loss the outage re-book exists to prevent.
 25. Every wake MUST journal what it did, from its own tool activity, not from its reply. A silent
     reply is a speech decision, not a work record.
 
@@ -419,7 +431,12 @@ booking),
 `tests/test_wake_hot_hold.sh` (rule 27a: a quiet bubble into a hot conversation reaches no bubble,
 no notifier and no conversation and books itself back with its words in the reason; the same wake
 into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
-sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue).
+sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue),
+`tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
+with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
+writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own
+last words — a bwrap complaint in the stream — reach the journal line; a clean silent wake books
+no failure retry).
 
 **To be written:**
 

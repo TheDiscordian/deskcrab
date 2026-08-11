@@ -19,6 +19,17 @@ out" — it is ten minutes of silence with nothing on screen explaining it.
    re-runs the account that just refused, and the true primary is never tried.
 3. A walk MUST return the whole chain, rotated to start at the current default.
 4. A walk MUST ride each refusal to the next login and fail only when every login has refused.
+4a. A walk MUST make at least one attempt, whatever the configuration holds. The account list MUST
+    yield at least the primary token even when nothing is configured and the default record is
+    missing or stale, and a walk handed an empty list anyway MUST fall through to exactly one
+    attempt on the current default login — never to zero. Zero attempts is a failure mode, not a
+    degenerate success: a run that never invoked the CLI completes with an **empty stream**, and an
+    empty stream reads as clean everywhere downstream — the refusal detector finds no refusal, the
+    failed-stream judgement finds no error event — so the session exits 0 having done nothing and
+    said nothing about it. The 2026-08-11 hunt for exactly that silence established that the list
+    cannot in fact go empty as coded (the primary token is a constant, and a stored default outside
+    the chain resets to it), so this rule pins a guarantee that was real but unstated, and the
+    fall-through stands guard against any future edit to the rotation.
 5. Resolved directories SHOULD be de-duplicated, so a chain that names the same login twice does not
    pay two refusals for it.
 
@@ -151,8 +162,11 @@ refusal to audio.
 
 ## TESTS
 
-**Existing:** `tests/test_limit_fallback.sh` — 61 assertions, green, and green partly because the
-harness removes an environment variable the code should remove itself.
+**Existing:** `tests/test_limit_fallback.sh` — green, and no longer green because of harness
+stripping (the run helper presets `CLAUDE_CONFIG_DIR` on purpose and the code unsets it). Also
+holds rule 4a: with nothing configured and no default record the chain still yields the primary,
+and a wake walk handed a forcibly emptied list still makes exactly one attempt, on the default
+login, with the fall-through named in its own stream.
 `tests/test_convo_compaction.sh` — the summariser's own judgement, at both exit codes: a summary
 whose text is full of the signature's words is committed and folds its blocks away and stamps nobody
 dry, while a stream carrying the CLI's synthetic refusal and no genuine output skips the compaction,

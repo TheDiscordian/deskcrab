@@ -52,9 +52,15 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # which copies the stream into ~/.local/state/deskcrab/streams and PRUNES
     # that directory to NOTICE_STREAM_KEEP — a test run would delete real
     # forensic streams and append to her live declaration log.
+    # COCOON_BWRAP is pinned to the pass-through wrap (test-harness rule 3a):
+    # the wake-walk cases below launch the stub CLI through the real cocoon
+    # otherwise, and from inside an already-cocooned session nested bwrap dies
+    # before it can exec — the stub is never called and every walk case fails
+    # for a reason that is the invoking environment's, not the chain's.
     DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
         ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
+        COCOON_BWRAP="$REPO_DIR/tests/lib/cocoon-passthru" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
         env ${envs[@]+"${envs[@]}"} \
@@ -158,6 +164,14 @@ out="$(run 'claude_limit_record "" x; '"$ACCTS")"
 [ "$out" = "-," ] && ok "no fallback configured: the one account still runs" \
     || fail "a lone account must keep running" "$out"
 rm -f "$T/state-account-default"
+
+# Rule 4a: the chain is NEVER empty. Nothing configured, no default record —
+# the primary still leads, alone. A walk over an empty list is a session that
+# invokes no model and exits 0 with an empty stream nothing downstream reads
+# as failure, which is why this is pinned rather than assumed.
+out="$(run "$ACCTS")"
+[ "$out" = "-," ] && ok "nothing configured at all: the chain still holds the primary" \
+    || fail "an unconfigured chain must still hold the primary (rule 4a)" "$out"
 
 echo "the shared signature — session-limit wordings match, prose does not:"
 for line in \
@@ -357,6 +371,39 @@ n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "-" ] \
     && ok "a fully spent chain wraps the default back to the primary" \
     || fail "the rotation must wrap at the end" "$(cut -f1 "$T/state-account-default" 2>/dev/null)"
+
+# Rule 4a's walk half: a chain handed a forcibly emptied account list still
+# makes exactly one attempt, on the current default login, and names the
+# fall-through in its own stream. claude_accounts cannot actually go empty —
+# the case above pins that — so the list is emptied the only way it can be:
+# by overriding the function, which is precisely the future edit this guard
+# exists to survive. Zero calls here is the 2026-08-11 silent no-op shape:
+# no model, no error, exit 0.
+rm -f "$T/calls" "$T/state-account-default"
+out="$(run STUB_OK_DIR=/never CLAUDE_BIN="$T/claude-stream" '
+    claude_accounts() { :; }
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    echo "attempts=$WAKE_CHAIN_ATTEMPTS"
+    grep -c "empty-account-chain" "$DEBUGLOG"')"
+# The expected login is whatever pin this invoking process holds:
+# claude_preferred_login reads CLAUDE_CONFIG_DIR when there is no record, by
+# design ("the pin this process is holding is the best evidence there is"),
+# and this file runs unsandboxed — a session dispatched from a fallback login
+# carries that pin in its environment.
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:${CLAUDE_CONFIG_DIR:-primary}" ] \
+    && ok "an empty list still makes exactly one attempt, on the default login" \
+    || fail "an empty list must fall through to one attempt, never zero" \
+            "$(cat "$T/calls" 2>/dev/null | tr '\n' ' ')"
+case "$out" in
+    *"attempts=1"*) ok "and the walk counts it as the one attempt it was" ;;
+    *) fail "the fall-through must be counted as an attempt" "$out" ;;
+esac
+case "$out" in
+    *1) ok "and the stream names the fall-through, once" ;;
+    *) fail "the empty chain must be legible in the stream, not inferred" "$out" ;;
+esac
 
 echo "job-runner — a limited primary is retried, not recorded blocked:"
 # Same scaffold as test_job_block.sh: copied runner, symlinked common.sh, fake

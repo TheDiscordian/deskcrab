@@ -19,6 +19,18 @@ during the very investigation that produced these specs.
 3. The helper MUST stub every desktop tool from **one list**, in one place: the notifier, the
    synthesiser, the audio player, the window manager control, the markdown renderer, the media
    tools, the transcriber, and the CLI itself.
+3a. The helper MUST pin the cocoon. The run functions wrap the CLI in a bubblewrap mount namespace
+   (`cocoon_wrap_build`), and namespaces do not nest on this machine: from inside a cocooned
+   session — hers, whenever she runs the suite herself — the inner `bwrap` dies before it can exec
+   ("setting up uid map: Read-only file system"), the stub CLI is never invoked, and the suite
+   convicts the code of a defect it does not have. Measured 2026-08-11 on one tree:
+   `tests/test_prompt_profiles.sh` reported 81 passed 4 failed from inside a wrap and 85 passed 0
+   failed outside it — a verdict that depends on where the suite was invoked is not a verdict. So
+   the sandbox points `COCOON_BWRAP` at a pass-through wrap (`tests/lib/cocoon-passthru`) that
+   strips the mount flags and execs the wrapped command. No isolation is lost: the CLI behind the
+   wrap is already the spend-gate stub. The wall itself stays proven by `tests/test_cocoon_wrap.sh`,
+   the ONE file that opts back into the real bubblewrap, and that file MUST skip — say so and exit
+   77 — where a namespace cannot be built, rather than fail.
 4. The helper MUST start from a clean environment rather than inheriting the developer's, on the
    model of the existing watcher test.
 5. The helper MUST create its own temporary root and remove it on exit, including on failure.
@@ -44,8 +56,18 @@ during the very investigation that produced these specs.
    - A path that APPEARED counts as much as one that changed. The photograph dropped new paths
      beside the live prefix until 2026-08-08, on the reasoning that a new file there might belong to
      somebody else — and a state file re-hardcoded to a live path, the defect the harness's own
-     sweep exists for, creates a file rather than editing one. The gate was blind to the shape it
+     sweep existed for, creates a file rather than editing one. The gate was blind to the shape it
      was written to catch.
+   - The photograph is the harness's ONLY hand on live state: it reads, compares, and accuses. It
+     MUST NOT delete, rewrite, or "restore" a live path, however sure it is of the author. A new
+     file under the live prefix is ambiguous by construction — the live phone server mints reply
+     clips under that prefix on its own schedule, whenever somebody is talking to it — and on
+     2026-08-11 a sweep here that removed new `deskcrab-remote-*.opus` files as presumed leaks
+     deleted three clips the live server had synthesised and not yet served: the spoken reply cut
+     out mid-sentence on the phone, with a replay control pointing at a file this suite had
+     destroyed. A real leak surfaces through the diff and is cleaned by a hand that read it; a
+     stray clip is collected by the live instance's own hourly sweep. Held by
+     `tests/test_sandbox_live_clips.sh`.
 10. **Spend.** A test MUST NOT start a real model session. The stub must be asserted as the **first**
     check of any test that dispatches work, so a configuration that overwrites the CLI path is caught
     before the money is spent.
@@ -105,6 +127,7 @@ during the very investigation that produced these specs.
 |---|---|
 | `tests/lib/sandbox.sh` | the one sandbox helper (to be written) |
 | `tests/lib/stubs/` | the one stub list, one file per stubbed tool (to be written) |
+| `tests/lib/cocoon-passthru` | the sandbox's pass-through cocoon wrap (rule 3a) |
 | `tests/run.sh` | the suite runner (to be written) |
 | `tests/prompt-cases/` | fixtures for the intent-case acceptance criteria (to be written) |
 | `tests/conftest.py` | selects the correct interpreter up front, so the framework cannot re-execute silently (to be written) |

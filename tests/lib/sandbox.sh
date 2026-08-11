@@ -201,6 +201,7 @@ CONF
         ARCHIVE_DIR="$_sb_root/data/deskcrab/archive" \
         NOTICE_STATE_DIR="$_sb_root/xdgstate/deskcrab" \
         CLAUDE_BIN="$_sb_root/bin/claude" \
+        COCOON_BWRAP="$_sb_lib/cocoon-passthru" \
         DESKCRAB_ALLOW_SCRATCH_BOOKING=1 \
         MEMORY_PYTHON="$_sb_venv" \
         SANDBOX_SYSTEMD_LOG="$_sb_root/witness/systemd-run.log" \

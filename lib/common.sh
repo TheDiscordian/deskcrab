@@ -4174,6 +4174,30 @@ sys.exit(0 if err and not real else 1)
 PY
 }
 
+# The launcher's own last words, for a stream the model never reached
+# (specs/wake-queue.md rule 24a). A CLI that dies before the model — bubblewrap
+# unable to build the cocoon inside another namespace, the cocoon-refused note,
+# a loader crash — leaves its complaint as the only non-event text in the
+# stream log, and a journal line reading "claude exit 1" alone sends whoever
+# reads it digging through archived streams for a reason the log already held.
+# Deskcrab's own note lines count (rendered note: detail); the
+# session-registration note does not, or every crash would be attributed to
+# its own boot line. Prints nothing when the stream holds only real events.
+wake_stream_last_words() {
+    [ -s "${DEBUGLOG:-}" ] || return 0
+    awk '
+        /^\{"type":"deskcrab_note"/ {
+            n = $0; sub(/.*"note":"/, "", n); sub(/".*/, "", n)
+            if (n == "session") next
+            d = $0; sub(/.*"detail":"/, "", d); sub(/".*/, "", d)
+            last = n ": " d; next
+        }
+        /^\{/ { next }
+        /[^[:space:]]/ { last = $0 }
+        END { if (last != "") print last }' "$DEBUGLOG" 2>/dev/null \
+        | head -c 160
+}
+
 # The fallback logins, in the order they should be tried, one per line. The
 # config value is a CHAIN — whitespace- or colon-separated — because a second
 # subscription runs out exactly the way the first one did, and a run that gives
@@ -4615,12 +4639,23 @@ claude_limit_record() {
 # answered, the first boot succeeds, and it costs a refusal, never a timer,
 # to change which login leads.
 claude_accounts() {
-    { printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs; } \
+    # Rule 4a (specs/account-fallback.md): this list is NEVER empty. As coded
+    # it cannot be — the primary token is a constant and a stored default
+    # outside the chain resets to it — but a walk over an empty list is a
+    # session that invokes no model, leaves an empty stream that every
+    # downstream judgement reads as clean, and exits 0 having done nothing
+    # and said nothing (the 2026-08-11 silence hunt). The guarantee is worth
+    # more than the two lines it costs, so it is pinned here for every walk
+    # site at once rather than trusted to the rotation below staying whole.
+    local CHAIN
+    CHAIN="$({ printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs; } \
         | awk -v d="$(claude_account_default)" '
             $0 == d {found = 1}
             found   {print; next}
                     {held = held $0 "\n"}
-            END     {printf "%s", held}'
+            END     {printf "%s", held}')"
+    [ -n "$CHAIN" ] || CHAIN="${CLAUDE_PRIMARY_TOKEN:--}"
+    printf '%s\n' "$CHAIN"
 }
 
 # What did the wake actually DO? A silent reply is the model's SPEECH
@@ -4828,6 +4863,7 @@ _wake_claude_run() {
 # the single run it replaced.
 wake_claude_run_chain() {
     local ACCT CONFDIR PREV="" ATT=0 REFUSAL
+    WAKE_CHAIN_ATTEMPTS=0
     for ACCT in $(claude_accounts); do
         CONFDIR="$(claude_account_confdir "$ACCT")"
         # Marker only on this path — claude_swap_announce keeps the desktop
@@ -4839,11 +4875,26 @@ wake_claude_run_chain() {
         # default moves onto an account that never refused anything.
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
+        WAKE_CHAIN_ATTEMPTS=$(( WAKE_CHAIN_ATTEMPTS + 1 ))
         _wake_claude_run "$CONFDIR"
         REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" || break
         claude_limit_record "$CONFDIR" "$REFUSAL"
         PREV="$ACCT"
     done
+    # Rule 4a (specs/account-fallback.md): zero attempts is not an outcome. A
+    # loop over an empty list runs no CLI at all, and downstream that reads as
+    # a CLEAN stream — no refusal, no error event — so the wake exits 0 having
+    # done nothing and said nothing about it. claude_accounts guards its own
+    # emptiness now, so this branch should never run; if the rotation is ever
+    # broken again, the wake still makes exactly one attempt on the current
+    # default login, with a stream note naming the fall-through so the walk's
+    # absence is legible in the log rather than inferred from silence.
+    if [ "$WAKE_CHAIN_ATTEMPTS" -eq 0 ]; then
+        claude_stream_note "empty-account-chain" \
+            "the account list came back empty — one attempt on the default login"
+        _wake_claude_run "$(claude_preferred_login)"
+        WAKE_CHAIN_ATTEMPTS=1
+    fi
 }
 
 # Autonomous wake: run claude with NO live TTS streamer and decide afterwards
@@ -4982,7 +5033,19 @@ run_claude_wake() {
             # own evidence.
             fire_memory_judge --wake "${WAKE_REASON:-}" "" "$TRACE"
         else
-            session_outcome "(wake produced no output — claude exit $CLAUDE_STATUS)"
+            # Rule 24a (specs/wake-queue.md): this is the outage branch above
+            # in different clothes. The CLI died before it could write its own
+            # error shape — bwrap refusing to nest, the cocoon-refused note, a
+            # crash, a stall reap — so wake_stream_failed saw no error event
+            # and fell through to here, which used to journal the death and
+            # silently lose the agenda. The launcher's last words go into the
+            # journal line (a bare exit code explains nothing), and the wake
+            # re-books exactly as the outage branch does, kind gate and all.
+            local LAST_WORDS
+            LAST_WORDS="$(wake_stream_last_words)"
+            session_outcome "(wake produced no output — claude exit $CLAUDE_STATUS${LAST_WORDS:+: $LAST_WORDS})"
+            "$SCRIPT_DIR/crab" wake-at --by "${WAKE_BOOKED_BY:-outage-retry}" \
+                1800s "${WAKE_KIND:-scheduled}" "${WAKE_REASON:-}" >/dev/null
             rm -f "${STATE_PREFIX}-memory-injected-$$.json"
         fi
         return 0

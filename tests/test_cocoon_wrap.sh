@@ -14,6 +14,15 @@ set -u
 refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
 
 command -v bwrap >/dev/null 2>&1 || sandbox_skip "bubblewrap is not installed"
+# This is the ONE file that judges the wall itself (specs/test-harness.md rule
+# 3a), so it opts back out of the sandbox's pass-through wrap and into the
+# real bubblewrap — and skips where a namespace cannot be built at all, which
+# is what running the suite from inside an already-cocooned session looks
+# like: nested bwrap dies at its uid map before it can exec anything, and from
+# there this file could only measure the nesting, never the wall.
+export COCOON_BWRAP=bwrap
+bwrap --die-with-parent --ro-bind / / --dev-bind /dev /dev -- /bin/true 2>/dev/null \
+    || sandbox_skip "bubblewrap cannot build a namespace here — an already-cocooned session"
 # The probes below judge the real checkout through the wrap, which only means
 # something where the checkout sits outside the wrap's writable set. A copy
 # under /tmp is inside the rw /tmp bind by design — /tmp holds the turn's own
