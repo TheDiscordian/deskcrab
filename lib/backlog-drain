@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+# backlog-drain — the night spends itself on the open engineering threads.
+#
+# Part of sleep, run after the stamp and before the promise sweep
+# (specs/nightly.md rules 54-61). The engineering threads accumulate faster
+# than waking hours spend them, and the stretch between the night's stamp and
+# the morning is machine time nobody is using. This turns that stretch into
+# builders: each round, one model call reads the open threads beside the job
+# list and the drain's own ledger, picks what is GENUINELY actionable — never
+# a note, never settled work, never a duplicate of a job running or already
+# dispatched — and writes a self-contained brief per pick. Each brief goes
+# through the job door (`crab job`), never around it, so every builder
+# carries the whole jobs contract. Then the drain waits, re-reads what is
+# still open, and goes again — until the wall-clock cutoff, at which point
+# dispatch stops, in-flight builders are left to finish, and the sleep
+# pipeline carries on so the night ends idle and available.
+#
+#   backlog-drain run     drain until the cutoff, the cap permitting
+#
+# Every failure path exits 0 with a trace line on stdout (the night's log):
+# a broken drain costs the drain, never the night.
+#
+# Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
+#   BACKLOG_DRAIN=0                 switch the phase off
+#   BACKLOG_DRAIN_CUTOFF=04:00      local wall clock; no new dispatch at or
+#                                   past it ("@<epoch>" is the test's spelling)
+#   BACKLOG_DRAIN_CAP=4             max RUNNING jobs, counting everyone's —
+#                                   the cap protects the machine
+#   BACKLOG_DRAIN_POLL=300          seconds between rounds
+#   BACKLOG_DRAIN_WINDOW_MAX=21600  a start further than this from the next
+#                                   cutoff drains nothing (the noon catch-up)
+#   BACKLOG_DRAIN_ROUNDS_MAX=0      0 = rounds bounded by the cutoff alone
+#   BACKLOG_DRAIN_MODEL=opus        the selector; picking work is judgement
+#   BACKLOG_DRAIN_FALLBACK_MODEL=sonnet
+#   BACKLOG_DRAIN_TIMEOUT=600       seconds per selection call
+#   BACKLOG_DRAIN_THREADS_FILE / _THREADS_DIR / _LEDGER   the material paths
+#   DESKCRAB_NO_DISPATCH=1          dry-run: real selection, nothing started,
+#                                   no ledger written (rule 61)
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+THREADS_FILE="${BACKLOG_DRAIN_THREADS_FILE:-$DATA_DIR/engineering.md}"
+THREADS_DIR="${BACKLOG_DRAIN_THREADS_DIR:-$DATA_DIR/engineering}"
+LEDGER="${BACKLOG_DRAIN_LEDGER:-$DATA_DIR/backlog-drain/dispatched.tsv}"
+CUTOFF_SPEC="${BACKLOG_DRAIN_CUTOFF:-04:00}"
+CAP="${BACKLOG_DRAIN_CAP:-4}"
+POLL="${BACKLOG_DRAIN_POLL:-300}"
+WINDOW_MAX="${BACKLOG_DRAIN_WINDOW_MAX:-21600}"
+ROUNDS_MAX="${BACKLOG_DRAIN_ROUNDS_MAX:-0}"
+DRAIN_MODEL="${BACKLOG_DRAIN_MODEL:-opus}"
+DRAIN_FALLBACK_MODEL="${BACKLOG_DRAIN_FALLBACK_MODEL:-sonnet}"
+CRAB="${CRAB_BIN:-$SCRIPT_DIR/crab}"
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+
+say() { printf 'backlog-drain: %s\n' "$1"; }
+
+# One selection question under the ACCOUNT CHAIN — promise-check's walk, with
+# the drain's models. A login that answers but yields no line matching the
+# verdict pattern is retried once on the fallback model before the round gives
+# up. Reads the prompt on stdin; prints the answering model's output. Returns
+# 1 when every login refused or nothing parseable came back.
+classify_walk() {  # <verdict-line-ERE>
+    local VERDICT_RE="$1" PROMPT ACCT CONFDIR MODEL OUT REFUSAL
+    PROMPT="$(cat)"
+    local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-drain-stream-XXXXXX")"
+    for ACCT in $(claude_accounts); do
+        CONFDIR="$(claude_account_confdir "$ACCT")"
+        for MODEL in "$DRAIN_MODEL" "$DRAIN_FALLBACK_MODEL"; do
+            : > "$CLOG"
+            printf '%s' "$PROMPT" | (
+                if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
+                else unset CLAUDE_CONFIG_DIR; fi
+                CLAUDE_CLASSIFY_TIMEOUT="${BACKLOG_DRAIN_TIMEOUT:-600}" \
+                CLAUDE_CLASSIFY_STREAM=1 \
+                    claude_classify "$MODEL" \
+                        "Answer in exactly the form asked for, nothing else."
+            ) >"$CLOG" 2>&1
+            if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
+                say "refused by ${CONFDIR:-primary} — trying the next login"
+                claude_limit_record "$CONFDIR" "$REFUSAL"
+                continue 2
+            fi
+            OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
+            if [ -z "$OUT" ] && ! grep -q '"type":' "$CLOG" 2>/dev/null; then
+                OUT="$(cat "$CLOG" 2>/dev/null)"
+            fi
+            if printf '%s\n' "$OUT" | tr -d '\r' | grep -qE "$VERDICT_RE"; then
+                rm -f "$CLOG"
+                printf '%s\n' "$OUT" | tr -d '\r'
+                return 0
+            fi
+            say "$MODEL answered with nothing parseable$( [ "$MODEL" = "$DRAIN_MODEL" ] && printf ' — falling to %s' "$DRAIN_FALLBACK_MODEL")"
+        done
+        break
+    done
+    rm -f "$CLOG"
+    return 1
+}
+
+running_jobs() {  # every sidecar whose state is running — the whole box's, not ours
+    local f n=0
+    for f in "$JOBS_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        [ "$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)" = running ] \
+            && n=$(( n + 1 ))
+    done
+    printf '%s' "$n"
+}
+
+cmd_run() {
+    if [ "${BACKLOG_DRAIN:-1}" != 1 ]; then
+        say "off (BACKLOG_DRAIN=${BACKLOG_DRAIN:-})"; return 0
+    fi
+    if [ ! -x "$CLAUDE_BIN" ]; then
+        say "no claude binary — nothing selected, nothing dispatched"; return 0
+    fi
+    if [ ! -s "$THREADS_FILE" ] && [ ! -d "$THREADS_DIR" ]; then
+        say "no engineering threads — nothing to drain"; return 0
+    fi
+
+    local NOW CUTOFF
+    NOW="$(date +%s)"
+    case "$CUTOFF_SPEC" in
+        @*) CUTOFF="${CUTOFF_SPEC#@}"
+            case "$CUTOFF" in ''|*[!0-9]*)
+                say "cannot parse BACKLOG_DRAIN_CUTOFF '$CUTOFF_SPEC'"; return 2 ;;
+            esac ;;
+        *)  if ! CUTOFF="$(date -d "today $CUTOFF_SPEC" +%s 2>/dev/null)"; then
+                say "cannot parse BACKLOG_DRAIN_CUTOFF '$CUTOFF_SPEC'"; return 2
+            fi
+            # The cutoff names a time of night, and sleep starts before it:
+            # 03:10 against an 04:00 cutoff is today, 23:50 against it is
+            # tomorrow. `date -d tomorrow`, not +86400: DST nights are why.
+            [ "$CUTOFF" -le "$NOW" ] \
+                && CUTOFF="$(date -d "tomorrow $CUTOFF_SPEC" +%s 2>/dev/null)"
+            ;;
+    esac
+
+    # The daylight guard (rule 56): Persistent=true means a machine that was
+    # off at 03:10 sleeps at noon, and a noon drain would fill the day's
+    # working hours with builders. A caught-up night still sleeps; it does
+    # not drain.
+    if [ $(( CUTOFF - NOW )) -gt "$WINDOW_MAX" ]; then
+        say "next cutoff ($CUTOFF_SPEC) is $(( (CUTOFF - NOW) / 60 )) min away — outside the ${WINDOW_MAX}s drain window; a daylight catch-up drains nothing"
+        return 0
+    fi
+
+    local DRY=""
+    [ -n "${DESKCRAB_NO_DISPATCH:-}" ] && DRY=1 && say "dry-run (DESKCRAB_NO_DISPATCH) — selection is real, dispatch and the ledger are not"
+
+    local WORK; WORK="$(mktemp -d "${TMPDIR:-/tmp}/deskcrab-drain-XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$WORK'" EXIT
+
+    local ROUNDS=0 DISPATCHED=0 OUR_IDS="" REASON=""
+    while :; do
+        NOW="$(date +%s)"
+        if [ "$NOW" -ge "$CUTOFF" ]; then
+            REASON="the cutoff ($CUTOFF_SPEC) — in-flight builders finish on their own"
+            break
+        fi
+        if [ "$ROUNDS_MAX" -gt 0 ] 2>/dev/null && [ "$ROUNDS" -ge "$ROUNDS_MAX" ]; then
+            REASON="the round cap (BACKLOG_DRAIN_ROUNDS_MAX=$ROUNDS_MAX)"
+            break
+        fi
+        ROUNDS=$(( ROUNDS + 1 ))
+
+        # `crab jobs` first — the reporting path reaps hard-killed workers,
+        # so the count below is of jobs actually running — and its text is
+        # the duplicate-evidence the selector reads.
+        local JOBS_TEXT RUNNING FREE
+        JOBS_TEXT="$("$CRAB" jobs 2>/dev/null | head -c 6000)"
+        RUNNING="$(running_jobs)"
+        FREE=$(( CAP - RUNNING ))
+        if [ "$FREE" -le 0 ]; then
+            say "round $ROUNDS: cap full ($RUNNING running, cap $CAP) — waiting"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        local THREADS OPENF INDEXF LISTING LEDGER_TAIL
+        THREADS="$(head -c 24000 "$THREADS_FILE" 2>/dev/null)"
+        OPENF="$(head -c 12000 "$THREADS_DIR/OPEN.md" 2>/dev/null)"
+        INDEXF="$(head -c 2000 "$THREADS_DIR/INDEX.md" 2>/dev/null)"
+        LISTING="$(ls -1 "$THREADS_DIR" 2>/dev/null | head -80)"
+        LEDGER_TAIL="$(tail -n 40 "$LEDGER" 2>/dev/null)"
+        [ -n "$LEDGER_TAIL" ] || LEDGER_TAIL="(none yet)"
+
+        local PROMPT="You are the nightly backlog drain of a desktop assistant: while she sleeps,
+open engineering threads become detached builder jobs. Below are her
+engineering threads (a newest-first prose log, the open list, the index and
+the thread directory listing), then the current job list, then the ledger of
+threads this drain has ALREADY dispatched on earlier rounds and nights.
+
+Pick AT MOST $FREE threads that are genuinely actionable engineering work
+right now, and write a builder's brief for each. Skip, without exception:
+- notes, incident write-ups, decisions and diary entries with no work left;
+- anything the threads themselves record as done, landed, fixed, verified;
+- anything a RUNNING or recently finished job already covers — match the job
+  list below by substance, not wording;
+- every thread already on the drain's ledger below;
+- anything that waits on the user's decision, and anything the threads say is
+  deliberately parked, held for a quiet moment, or claimed by another hand.
+Fewer is better: an unnecessary builder burns a night's tokens. If nothing
+qualifies, answer with the NOTHING line.
+
+Each brief must be fully self-contained — the builder arrives knowing ONLY
+the brief's text. It must name: the repository or directory to work in by
+absolute path (take it from the thread material), the thread it came from,
+the concrete work, the constraints the thread names, and how the builder
+must verify its work before reporting done. Never write a brief that only
+waits on, watches, or coordinates other work: a builder must carry its own
+work. Answer in exactly this form and nothing else:
+
+TASK: <thread-key-slug> | <absolute workdir, or -> | <one-line title>
+BRIEF:
+<the full brief, as many lines as it needs>
+END
+
+(repeat the TASK/BRIEF/END block per pick, at most $FREE)
+or, when nothing qualifies, exactly:
+NOTHING: <one line saying why>
+
+=== THE THREAD LOG (newest first) ===
+$THREADS
+
+=== THE OPEN LIST ===
+$OPENF
+
+=== THE INDEX ===
+$INDEXF
+
+=== THE THREAD DIRECTORY ===
+$LISTING
+
+=== THE JOB LIST (running and recently finished) ===
+$JOBS_TEXT
+
+=== ALREADY DISPATCHED BY THIS DRAIN (night, thread key, job id, title) ===
+$LEDGER_TAIL"
+
+        local OUT
+        if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(TASK|NOTHING)\b')"; then
+            REASON="no selection from $DRAIN_MODEL or $DRAIN_FALLBACK_MODEL — nothing more can be judged tonight"
+            break
+        fi
+
+        # Parse the TASK/BRIEF/END blocks into $WORK/<n>.{key,wd,title,brief}.
+        rm -f "$WORK"/*.key "$WORK"/*.wd "$WORK"/*.title "$WORK"/*.brief 2>/dev/null
+        local N=0 INBRIEF=0 LINE REST TKEY TWD TTITLE
+        while IFS= read -r LINE; do
+            case "$LINE" in
+                TASK:*)
+                    N=$(( N + 1 )); INBRIEF=0
+                    REST="${LINE#TASK:}"
+                    IFS='|' read -r TKEY TWD TTITLE <<< "$REST"
+                    # IFS='|' leaves each field padded with the spaces around
+                    # the separators; trim them before the tr below, which
+                    # would otherwise turn them into leading and trailing
+                    # hyphens on the key. (TWD strips all whitespace, TTITLE
+                    # trims its own — only the key needs the guard.)
+                    printf '%s' "$TKEY" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+                        | tr '[:upper:] ' '[:lower:]-' \
+                        | tr -cd 'a-z0-9-' | head -c 80 > "$WORK/$N.key"
+                    printf '%s' "$TWD" | tr -d ' \t' > "$WORK/$N.wd"
+                    printf '%s' "$TTITLE" | sed 's/^ *//; s/ *$//' | tr -d '\t' \
+                        | head -c 200 > "$WORK/$N.title"
+                    ;;
+                BRIEF:*) INBRIEF=1; : > "$WORK/$N.brief" ;;
+                END)     INBRIEF=0 ;;
+                *)  [ "$INBRIEF" = 1 ] && [ "$N" -gt 0 ] \
+                        && printf '%s\n' "$LINE" >> "$WORK/$N.brief" ;;
+            esac
+        done <<< "$OUT"
+
+        local I SENT_THIS_ROUND=0 BLOCKED=""
+        for I in $(seq 1 "$N"); do
+            [ "$SENT_THIS_ROUND" -ge "$FREE" ] && break
+            local KEY WD TITLE BRIEF SQUEEZED
+            KEY="$(cat "$WORK/$I.key" 2>/dev/null)"
+            WD="$(cat "$WORK/$I.wd" 2>/dev/null)"
+            TITLE="$(cat "$WORK/$I.title" 2>/dev/null)"
+            BRIEF="$(cat "$WORK/$I.brief" 2>/dev/null)"
+            if [ -z "$KEY" ]; then
+                say "round $ROUNDS: pick $I has no usable thread key — skipped"
+                continue
+            fi
+            # The null-brief guard, held here as well as at the door: a brief
+            # that is empty, null-shaped, or too thin to act on is nobody's
+            # work (rule 60; the door's own guard is the backstop).
+            SQUEEZED="$(printf '%s' "$BRIEF" | tr -d '[:space:]')"
+            case "$SQUEEZED" in
+                ''|null|None|undefined)
+                    say "round $ROUNDS: '$KEY' came back with a null-shaped brief — skipped"
+                    continue ;;
+            esac
+            if [ "${#SQUEEZED}" -lt 80 ]; then
+                say "round $ROUNDS: '$KEY' came back with a brief too thin to act on (${#SQUEEZED} chars) — skipped"
+                continue
+            fi
+            if awk -F'\t' -v k="$KEY" '$2 == k { found = 1 } END { exit !found }' \
+                    "$LEDGER" 2>/dev/null; then
+                say "round $ROUNDS: '$KEY' is already on the ledger — skipped"
+                continue
+            fi
+
+            BRIEF="Nightly backlog drain, from the open engineering thread '$KEY': $TITLE
+
+$BRIEF"
+            # The dry-run stops HERE, before the door: rule 61 promises real
+            # selection with nothing started and no ledger written, so the
+            # dispatch call itself must never happen.
+            if [ -n "$DRY" ]; then
+                say "round $ROUNDS: would dispatch '$KEY' — $TITLE"
+                SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+                DISPATCHED=$(( DISPATCHED + 1 ))
+                continue
+            fi
+            local OUTPUT RC JOB_ID
+            if [ -n "$WD" ] && [ "$WD" != "-" ] && [ -d "$WD" ]; then
+                OUTPUT="$("$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
+            else
+                OUTPUT="$("$CRAB" job "$BRIEF" 2>&1)"; RC=$?
+            fi
+            if [ "$RC" -ne 0 ]; then
+                case "$OUTPUT" in
+                    *"the last job never began"*)
+                        say "the job door is blocked — ${OUTPUT%%$'\n'*}"
+                        BLOCKED=1; break ;;
+                    *)  say "round $ROUNDS: dispatch refused for '$KEY' — ${OUTPUT%%$'\n'*}"
+                        continue ;;
+                esac
+            fi
+            JOB_ID="$(printf '%s\n' "$OUTPUT" | sed -n 's/^Job \([^ ]*\) dispatched.*/\1/p' | head -1)"
+            [ -n "$JOB_ID" ] || JOB_ID="?"
+            # The ledger is the drain's one write, declared before made
+            # (rules 6 and 59) so her own night never reads as an
+            # intruder's hand.
+            mkdir -p "$(dirname "$LEDGER")"
+            touch_suppress "$(dirname "$LEDGER")" 2>/dev/null
+            printf '%s\t%s\t%s\t%s\n' "$(date +%F)" "$KEY" "$JOB_ID" "$TITLE" >> "$LEDGER"
+            OUR_IDS="$OUR_IDS $JOB_ID"
+            say "round $ROUNDS: dispatched '$KEY' as job $JOB_ID — $TITLE"
+            SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+            DISPATCHED=$(( DISPATCHED + 1 ))
+        done
+        if [ -n "$BLOCKED" ]; then
+            REASON="the job door's block marker — no builder can begin, so none is asked to"
+            break
+        fi
+
+        # Dry backlog: the selector found nothing and nothing of tonight's is
+        # still running, so later rounds have nothing to wait for (rule 58).
+        if [ "$SENT_THIS_ROUND" -eq 0 ]; then
+            local ID ANY=""
+            for ID in $OUR_IDS; do
+                [ "$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$ID.json" state 2>/dev/null)" = running ] \
+                    && ANY=1 && break
+            done
+            if [ -z "$ANY" ]; then
+                REASON="the backlog is dry — nothing actionable, nothing of tonight's still running"
+                break
+            fi
+        fi
+
+        NOW="$(date +%s)"
+        local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+        [ "$S" -lt 1 ] && S=1
+        sleep "$S"
+    done
+
+    say "done — $DISPATCHED job(s) dispatched over $ROUNDS round(s); stopped at ${REASON:-the cutoff}"
+    return 0
+}
+
+case "${1:-}" in
+    run) cmd_run ;;
+    *)   echo "Usage: backlog-drain run" >&2; exit 2 ;;
+esac
