@@ -3451,7 +3451,7 @@ $SAYING
 --- end ---
 He hears one voice, not two, and two replies seconds apart about the same moment reads as malfunction. So REGROUP, the way a person does when they find they have two things to say at once: stop, take what that other reply is saying and what you have to add, and compose ONE conversational reply that covers both — a single natural utterance, not two stitched together, not a preamble about the other session.
 Do NOT queue your point for later — later never comes, and a thought deferred here is a thought lost. Do NOT default to silence because someone else is talking; you have the floor next and you are expected to use it. Do NOT restate, rephrase or re-deliver what is above as if it were news — fold it in as something already said, and carry it forward.
-Say nothing — end with no message text at all — only if, having read the above, you genuinely have nothing to add to it. That is a real option, not the polite one; silence is never announced.
+Say nothing — end with no message text at all — only if, having read the above, you genuinely have nothing to add to it. That is a real option, not the polite one, and when that other reply already covers you it is the DEFAULT — and silence is never announced: not 'No message', not 'the other session already said its piece', not one word about there being nothing to say. The empty reply IS the reply; any sentence explaining it is read aloud into his room, the exact interruption the silence was for.
 EOF
 }
 
@@ -3483,14 +3483,14 @@ wake_concurrent_turn_context() {
 CONCURRENT CONVERSATION — as this wake begins, the user has just spoken to another session of you (from the $DEV), and that session is answering him RIGHT NOW. Its reply reaches him before anything you say. What he said:
 $EXCHANGE
 That message is being answered — it is not yours to answer over again, even though it may look unanswered in the conversation above. But whatever YOU came here with does not get dropped for that. REGROUP: take what you have and what is already being said to him, and make it ONE reply — a single natural thing to say next, carrying your point forward from where that answer leaves off, never re-answering his message and never repeating the other session's words back at him.
-Say nothing — end with no message text at all — only if, having read the above, you genuinely have nothing to add to it. Not because someone else is talking; silence here is a judgement about content, and it is never announced.
+Say nothing — end with no message text at all — only if, having read the above, you genuinely have nothing to add to it. Not because someone else is talking; silence here is a judgement about content. When that reply already covers what you came with, the empty reply is the DEFAULT ending, and it is never announced: 'No message — the other session already said its piece' is the exact failure, not a politeness — every word of it is read aloud at his desk, which is the one interruption the silence was for. Nothing to say means ZERO message text, and the wanting-to-explain goes in your journal by itself.
 EOF
     else
         cat <<EOF
 CONCURRENT CONVERSATION — moments ago the user spoke to another session of you (from the $DEV), and that session has already answered him. The exchange, which he has just heard:
 $EXCHANGE
 You have, in effect, just heard yourself say that. Never restate, rephrase or re-answer any of it — hearing it again seconds later reads as malfunction. What you came here with still stands, though: REGROUP it into ONE reply that follows on from what was just said, as a person does who has more to add a moment after answering — no preamble about the other session, no summary of it, just the next thing.
-Say nothing — end with no message text at all — only if everything you had is genuinely covered by that exchange. Silence is a judgement about content, never a courtesy to the other session, and it is never announced.
+Say nothing — end with no message text at all — only if everything you had is genuinely covered by that exchange. Silence is a judgement about content, never a courtesy to the other session — and when the exchange HAS covered it, the empty reply is the DEFAULT ending, never announced: no 'No message', no 'the other session already said its piece', not one sentence about there being nothing to say. Any such line is read aloud into his room, the exact interruption the silence was for; ZERO message text is the whole of it.
 EOF
     fi
 }
@@ -5157,7 +5157,11 @@ $DISPLAY_PART"
 
     # The same backstop for the other way silence gets narrated: a whole reply
     # that is nothing but "Nothing to say." / "No message." / "Nothing to
-    # report." A wake with nothing to say must produce ZERO output, and that
+    # report." — or, since 2026-08-10, the same sentence wearing a reason:
+    # "No message — the other session already said its piece." (spoken aloud
+    # at the desk more than once before the gate learned the two-clause
+    # shape; specs/wake-queue.md rule 29a, specs/speech-output.md MAJ-4).
+    # A wake with nothing to say must produce ZERO output, and that
     # filler was instead reaching the speakers and being read aloud — the
     # interruption the silence existed to prevent, wearing the words of the
     # thing that was supposed to prevent it. Muted whole here, before any
@@ -5708,10 +5712,18 @@ display_part() {
 # Deliberately NARROW, and the narrowness is the point. It matches only a
 # short reply whose ENTIRE content is that sentence — an optional lead-in
 # ("I have", "there's", "well"), a no-op core, an optional tail ("right now",
-# "today"), and punctuation. Anything carrying real content alongside it
-# ("Nothing to report on the build, but two tests fail") is not filler and is
-# never touched. Muting one real reply is a worse failure than voicing one
-# stray no-op, so every ambiguous case must fall through to speech.
+# "today"), an optional silence-justification clause, and punctuation.
+# Anything carrying real content alongside it ("Nothing to report on the
+# build, but two tests fail") is not filler and is never touched. Muting one
+# real reply is a worse failure than voicing one stray no-op, so every
+# ambiguous case must fall through to speech.
+#
+# The justification clause is the second half the single-clause gate used to
+# let through (specs/speech-output.md MAJ-4, closed 2026-08-10 after "No
+# message — the other session already said its piece." was read aloud at the
+# desk more than once): a reason FOR the silence, never a fact about the
+# world. It is recognised on either side of the no-op core, and standing
+# alone as the whole reply. The contract is specs/wake-queue.md rule 29a.
 wake_reply_is_filler() {  # <spoken-text>
     local T CORE TAIL PREV
     # Normalise to bare lowercase words: markdown emphasis, bullets, quotes,
@@ -5723,8 +5735,11 @@ wake_reply_is_filler() {  # <spoken-text>
     # Empty is not this gate's business — an empty spoken reply is already
     # silence and the caller has always handled it.
     [ -z "$T" ] && return 1
-    # Filler is a sentence, never a paragraph. A long reply is content.
-    [ "$(printf '%s\n' "$T" | wc -w)" -gt 12 ] && return 1
+    # Filler is a sentence or two, never a paragraph. A long reply is content.
+    # (Was 12 words when the gate knew only the single clause; the two-clause
+    # shape — no-op core plus its excuse — runs longer, and every pattern
+    # below is anchored whole, so the cap is a cheap bail, not the judgement.)
+    [ "$(printf '%s\n' "$T" | wc -w)" -gt 24 ] && return 1
 
     # Strip conversational lead-ins so "well, I have nothing to add" is judged
     # on the part that carries the meaning. Never strip a leading "no" — that
@@ -5750,7 +5765,50 @@ wake_reply_is_filler() {  # <spoken-text>
     CORE="$CORE|undefined|null"
     TAIL='( (here|now|right now|today|tonight|yet|for now|at the moment|at present|from me|on my end|this time|this wake|either|though|really|so far))*'
 
-    printf '%s\n' "$T" | grep -Eq "^($CORE)$TAIL\$"
+    # The single clause: the whole utterance is the no-op.
+    printf '%s\n' "$T" | grep -Eq "^($CORE)$TAIL\$" && return 0
+
+    # The justification clause — a reason FOR the silence, never a fact about
+    # the world. Four families, each anchored into the whole-line match below
+    # so a trailing word of real content ("nothing has changed his mind",
+    # "the other session said the tests were green, but…") breaks the match
+    # and the reply speaks. Punctuation is already spaces, so "No message —
+    # the other session already said its piece" arrives here as one flat line.
+    local WHO OBJ ADV J_OTHER J_DONE J_CHANGE SINCE J_HEARD JUSTIFY ALONE CONN
+    # …the other session already said it. WHO is only ever another voice of
+    # hers; a subject outside this list (the disk, the job, the embedder) is
+    # the world, and the reply speaks.
+    WHO='((the|that|his|her|my|your|another|an|a) )?(other|desk|phone|live|first|earlier|previous|second|concurrent|interactive) (session|conversation|turn|voice|reply|answer|exchange)( of (you|me|us|her|him|mine|yours))?'
+    # A closed set of contentless objects. "said the disk is full" is content
+    # and never matches.
+    OBJ='(its piece|it all|it|that|this|him|everything|all of it|the point|my point|the question|the same( thing| ground)?|what (was|is) needed|what needed saying|there first|me to it|care of it)'
+    ADV='( (already|first|just now|moments ago|a moment ago|seconds ago|earlier|for me|right now|now))*'
+    J_OTHER="($WHO) ((has|had|is|was|s) )?((already|just) )?(said|covered|answered|addressed|handled|delivered|raised|repeated|beat|got|took|saying|answering|covering|handling)( $OBJ)?$ADV"
+    # …it was already said. Speech verbs only: "it was handled" or "already
+    # done" can be real news about real work, and they fall through.
+    J_DONE="((it|that|this|everything|all of it) )((s|is|was|has been|had been) )?(all )?((already|just) )?(been )?(said|covered|answered|addressed)( already)?( (by|at|on|in|from) ((the|that) )?((other|desk|phone|live|first|earlier|previous|second) )?(session|conversation|turn|voice|end|side))?"
+    J_DONE="$J_DONE|(already|all) (been )?(said|covered|answered|addressed) (by|at|on|in|from) ((the|that) )?((other|desk|phone|live|first|earlier|previous|second) )?(session|conversation|turn|voice|end|side)"
+    # …nothing has changed since.
+    SINCE='( since (then|his last (message|word)|the last (wake|turn|check|time|one)|last (wake|turn|check|time|night)|we (last )?spoke|yesterday|this (morning|afternoon|evening)|earlier))?'
+    J_CHANGE="nothing ((has|had|s) )?changed$SINCE|no changes?$SINCE|nothing new$SINCE"
+    # …he already heard it. "already" or a from-phrase is required: "she read
+    # it" alone could be real news, and it speaks.
+    J_HEARD="(he|she|the user) ((has|had|s) )?already (heard|seen|read|got) (it|that|this|it all|all of it|everything)( already)?( (from|at|on) ((the|that) )?((other|desk|phone) )?(session|conversation|turn|voice|end|side))?"
+    J_HEARD="$J_HEARD|(he|she|the user) ((has|had|s) )?(heard|seen|read|got) (it|that|this|it all|all of it|everything) (from|at|on) ((the|that) )?((other|desk|phone) )?(session|conversation|turn|voice|end|side)"
+    JUSTIFY="$J_OTHER|$J_DONE|$J_CHANGE|$J_HEARD"
+    CONN='( (because|since|as|so|and|but))?'
+
+    # Two clauses: the no-op core wearing its excuse, either way round.
+    printf '%s\n' "$T" | grep -Eq "^($CORE)$TAIL$CONN ($JUSTIFY)\$" && return 0
+    printf '%s\n' "$T" | grep -Eq "^($JUSTIFY)$CONN ($CORE)$TAIL\$" && return 0
+
+    # The excuse standing alone as the whole reply — "The other session
+    # already said its piece." — is still only an announcement of silence.
+    # J_DONE is restricted here to its by-phrase form: a bare "that was
+    # covered" with no no-op core beside it is ambiguous, and ambiguity
+    # speaks.
+    ALONE="$J_OTHER|(it|that|this|everything|all of it) ((s|is|was|has been|had been) )?(all )?((already|just) )?(been )?(said|covered|answered|addressed) (by|at|on|in|from) ((the|that) )?((other|desk|phone|live|first|earlier|previous|second) )?(session|conversation|turn|voice|end|side)|$J_CHANGE|$J_HEARD"
+    printf '%s\n' "$T" | grep -Eq "^($ALONE)\$"
 }
 
 

@@ -369,7 +369,7 @@ book a wake, or dispatch a job.
 | `MAJ-1` | `stop_tts` cannot silence the streamer; it kills the synthesiser and the streamer opens a new one. The two callers that mean "stop talking" both use it. |
 | `MAJ-2` | Stopping kills by global pattern across sessions, defeating the speech mutex design and truncating a phone turn's audio file while the size check still passes. |
 | `MAJ-3` | The filler gate is called once, after the reply exists, while the streamer has been speaking for minutes. It cannot work where it stands. |
-| `MAJ-4` | The filler gate matches only a single clause, so a two-clause no-op is spoken. |
+| `MAJ-4` | The filler gate matches only a single clause, so a two-clause no-op is spoken. **Resolved 2026-08-10:** "No message — the other session already said its piece." was spoken aloud at the desk, repeatedly. The gate now matches the no-op core with a silence-justification clause on either side (the other session already said/covered/answered it; nothing changed; he already heard it), and the justification standing alone; the muted words still ride the journal line, and anything carrying real content still falls through to speech. The contract is [wake-queue.md](wake-queue.md) rule 29a; held by `tests/test_wake_filler.sh`. |
 | `MAJ-5` | A reply made of inline code has no audio, and the guarantee cannot repair it because the replay applies the identical strip and returns. |
 | `MAJ-6` | A fenced code block stalls all speech and is then read aloud, fence included. |
 | `MAJ-7` | The display delimiter is matched as a bare substring on the speakers and anchored in the text. An indented delimiter silently mutes the tail and hides it from the guarantee. |

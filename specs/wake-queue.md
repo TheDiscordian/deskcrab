@@ -179,6 +179,25 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     restate it, never queue its own thought for later, and never default to silence.
 29. No mechanism may judge a wake's written reply after the fact and decide it is not worth voicing.
     Silence is chosen while writing or not at all.
+29a. The one standing exception, on the user's instruction (2026-08-07, reaffirmed 2026-08-10): a
+     spoken reply whose ENTIRE content is the announcement that there is nothing to say is muted
+     whole, on every channel. That includes the announcement wearing a reason — "No message — the
+     other session already said its piece", "Nothing to add; nothing has changed" — and the reason
+     standing alone as the whole reply ("The other session already covered it."). This is not a
+     judgement of worth, which rule 29 forbids: the reply names ITSELF contentless, and voicing it
+     is the exact interruption the silence existed to prevent, wearing the words of the thing that
+     was supposed to prevent it.
+     - The gate MUST stay narrow: an optional no-op core, an optional silence-justification clause
+       (the other session already said/covered/answered it; nothing changed; he already heard it),
+       and nothing else, matched whole and anchored. A reply carrying real content alongside the
+       announcement ("Nothing to report on the build, but two tests fail") MUST fall through to
+       speech — muting one real reply is a worse failure than voicing one stray no-op.
+     - The muted words are never lost: they ride the wake's journal line (rule 25's), which is where
+       a wake nobody heard has always belonged.
+     - The gate is the backstop, never the instruction. The wake prompt MUST name the silent exit —
+       ZERO message text, an empty reply — as the required ending when there is nothing to say, MUST
+       state it as the DEFAULT when another session already covered it or nothing has changed, and
+       MUST name the announcement shapes (reason-bearing form included) as forbidden.
 
 ### Restore and tidy
 

@@ -270,10 +270,37 @@ is not worth voicing; silence is chosen while writing or not at all.
 > **This no longer describes the code as shipped.** The same commit that removed the overlap mute
 > introduced a narrow replacement, `wake_reply_is_filler`, which mutes a reply whose entire content
 > is an announcement of silence ("Nothing to say.", "No message."). It is deliberately narrow and
-> falls through to speech on any ambiguity, but it is still a post-hoc gate.
-> [`specs/speech-output.md`](../specs/speech-output.md) records it as defects `MAJ-3` and `MAJ-4` —
-> called once, after the reply exists, while the streamer has been speaking for minutes, and matching
-> only a single clause. See [`tests/test_wake_filler.sh`](../tests/test_wake_filler.sh).
+> falls through to speech on any ambiguity, but it is still a post-hoc gate — now authorized in the
+> contract as [`specs/wake-queue.md`](../specs/wake-queue.md) rule 29a.
+> [`specs/speech-output.md`](../specs/speech-output.md) records `MAJ-3` — called once, after the
+> reply exists, while the streamer has been speaking for minutes — and `MAJ-4`, the single-clause
+> match, closed 2026-08-10 (below). See [`tests/test_wake_filler.sh`](../tests/test_wake_filler.sh).
+
+### 2026-08-10 — the announcement of silence learned to bring an excuse
+
+"No message — the other session already said its piece." — spoken aloud at the desk, from an
+autonomous wake, more than once. The single-clause filler gate knew "No message." and let the
+two-clause form through on the excuse: the justification clause was outside every pattern, so the
+whole line reached the synthesiser. The user called it what it is — meta-narration where silence
+was asked for; a wake with nothing to say must produce NO spoken output, never a sentence
+explaining that there is nothing to say.
+
+Three moves, one shape (`specs/wake-queue.md` rule 29a):
+
+- `wake_reply_is_filler` now matches the no-op core with a **silence-justification clause** on
+  either side — the other session already said/covered/answered it, nothing has changed, he already
+  heard it — and the justification standing alone as the whole reply. The clause families are
+  anchored whole, with closed object sets, so a justification-shaped opening followed by real
+  content ("The other session said the tests were green, but they are not") still speaks. The muted
+  words still ride the journal line, as they always have.
+- The wake agenda and all three concurrent-session blocks (`wake_concurrent_turn_context`, both
+  branches, and `_regroup_block`) now state the empty reply as the **default** when another session
+  already covered it or nothing has changed, and name the reason-bearing form as the failure — the
+  gate is the backstop, the prompt is the instruction.
+- `tests/test_wake_filler.sh` holds all of it: the two-clause corpus, the justification-alone
+  corpus, the real-content counter-corpus, the exact reported sentence through the real wake path,
+  the silent exit (an empty reply delivers nothing and journals as silence), and the prompt
+  wording in the agenda and all three blocks.
 
 ### An API failure was spoken aloud in her own voice
 

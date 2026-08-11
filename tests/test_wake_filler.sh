@@ -10,6 +10,16 @@
 # two. The shortest, most contentless replies were the only ones it could never
 # reach.
 #
+# And then he heard the two-clause cousin (2026-08-10, recurring): "No message
+# — the other session already said its piece." The single-clause gate let it
+# through on the excuse. specs/wake-queue.md rule 29a now owns the shape: the
+# no-op core with a silence-justification clause on either side, and the
+# justification standing alone, all mute whole — while a justification-shaped
+# opening followed by real content still speaks. The silent EXIT is covered
+# here too: a wake that ends with no message text at all delivers nothing on
+# any channel and is journalled as silence, because the empty reply is the
+# documented default when another session already covered it.
+#
 # So this holds the whole path to the promise, from both ends:
 #
 #   1. the corpus, at unit level — every filler shape mutes, and every real
@@ -111,6 +121,23 @@ fail() { die "$*"; }
         # text arrived as an assistant text block holding the literal word
         # "undefined", and it was spoken aloud through the desk.
         "undefined" "Undefined."
+        # The two-clause shape (rule 29a): the no-op core wearing a reason.
+        # The first is the exact sentence he heard spoken aloud, 2026-08-10.
+        "No message — the other session already said its piece."
+        "Nothing to say — the other session covered it."
+        "Nothing to add; nothing has changed since the last wake."
+        "Nothing new — he already heard it."
+        "Staying quiet — the desk session is answering him right now."
+        "No message; everything was already said."
+        "Nothing to say, that was already covered by the other session."
+        "Nothing from me — the other session said it all."
+        "Quiet — the other session beat me to it."
+        "Well, nothing to add — the other session got there first."
+        # …and the reason standing alone as the whole reply.
+        "The other session already said its piece."
+        "The other session already covered it."
+        "Nothing changed."
+        "Nothing has changed since then."
     )
     # Real speech that merely CONTAINS the words. Muting any of these is the
     # failure this gate must never become — several are shorter than the
@@ -147,6 +174,22 @@ fail() { die "$*"; }
         "I am quiet about it because the test failed."
         "The config value is undefined."
         "Undefined is what the recall block returned."
+        # Justification-shaped openings with real content behind them. The
+        # two-clause gate must break on the content and speak every one.
+        "The other session answered him, but the job it mentioned has since failed."
+        "The other session missed the point — the disk is still full."
+        "The other session said the tests were green, but they are not."
+        "Nothing to say about the merge — the rebase broke two tests."
+        "Nothing has changed his mind."
+        "Nothing changed the outcome."
+        "It was already said to be flaky before tonight."
+        "Everything was covered in dust after the build."
+        "He already heard back from the recruiter."
+        # Contentless-looking but ambiguous: could be a real report of real
+        # work, and ambiguity falls to speech.
+        "Already done."
+        "It was handled."
+        "Done."
     )
     for t in "${FILLER[@]}"; do
         wake_reply_is_filler "$t" || fail "filler would be spoken aloud: $t"
@@ -172,7 +215,9 @@ CONVO="${DESKCRAB_STATE_PREFIX}-convo.txt"
 JOURNAL="${DESKCRAB_STATE_PREFIX}-sessions.log"
 
 for t in "Nothing to say." "Nothing to report." "No update." "Quiet here." \
-         "Nothing new." "No message." "Silence." "Nothing." ; do
+         "Nothing new." "No message." "Silence." "Nothing." \
+         "No message — the other session already said its piece." \
+         "The other session already covered it." ; do
     run_wake "$t"
     [ -f "$WORK/spoken.txt" ] \
         && { echo "--- synthesized ---"; cat "$WORK/spoken.txt"; \
@@ -186,7 +231,7 @@ for t in "Nothing to say." "Nothing to report." "No update." "Quiet here." \
         fail "filler was appended to the conversation as a bubble: $t"
     fi
 done
-ok "8 fillers through the real wake path — nothing spoken, no bubble"
+ok "10 fillers through the real wake path — nothing spoken, no bubble"
 
 # The words are muted, not lost: the journal is where a wake nobody heard has
 # always belonged, and losing the trace would make the mute unauditable.
@@ -196,7 +241,25 @@ grep -q "filler" "$JOURNAL" \
          fail "the journal does not record what the mute swallowed"; }
 grep -qF "Nothing to say." "$JOURNAL" \
     || fail "the swallowed words themselves are not in the journal"
+grep -qF "already said its piece" "$JOURNAL" \
+    || fail "the suppressed meta-narration is not in the journal — the mute lost the note"
 ok "the muted words survive in the session journal"
+
+# --- 2a: the silent EXIT — no message text at all ---------------------------
+# The documented default when another session already covered it: the wake
+# ends with an EMPTY reply. Nothing may reach any channel, and the journal
+# must record it as silence — the wake's own choice, not a crash.
+run_wake ""
+[ -f "$WORK/spoken.txt" ] && fail "a silent exit still reached the speakers"
+[ -f "$WORK/notified.txt" ] && fail "a silent exit still raised a notification"
+[ -f "$WORK/displayed.txt" ] && fail "a silent exit still opened a window"
+grep -q "Assistant" "$CONVO" 2>/dev/null \
+    && { echo "--- conversation ---"; cat "$CONVO"; \
+         fail "a silent exit still left a bubble in the conversation"; }
+grep -q "(silent — " "$JOURNAL" \
+    || { echo "--- journal ---"; cat "$JOURNAL"; \
+         fail "the silent exit was not journalled as silence"; }
+ok "the silent exit: an empty reply delivers nothing and journals as silence"
 
 # --- 3: a genuine reply must still be spoken, bubbled and shown -------------
 # The word "nothing" is in it on purpose. This is the case he has been burned
@@ -236,6 +299,51 @@ grep -q "ZERO message text" "$WORK/argv.txt" \
     || fail "the wake prompt no longer asks for zero message text"
 grep -q "Nothing to say" "$WORK/argv.txt" \
     || fail "the wake prompt no longer forbids the filler sentence by name"
+grep -q "already said its piece" "$WORK/argv.txt" \
+    || fail "the wake prompt no longer names the reason-bearing filler shape"
+grep -q "DEFAULT" "$WORK/argv.txt" \
+    || fail "the wake prompt no longer states the empty reply as the default"
 ok "the wake prompt asks for silence in words, not just in code"
+
+# --- 5: the concurrent-session blocks say it too ----------------------------
+# The regroup layer is where the meta-narration was born: a wake shown another
+# session's exchange answered it with a sentence ABOUT the exchange. Both
+# branches of the concurrent-turn block, and the mid-utterance regroup block,
+# must name the silent exit as the default when the other reply covers it and
+# forbid announcing it — rule 29a's last clause.
+(
+    set +eu
+    # shellcheck disable=SC1090
+    source "$REPO/lib/common.sh"
+    LIVE_TURN_FILE="$WORK/live-turn"
+
+    printf '%s\tdesk\tanswering\nUser: is the build green?\n' "$(date +%s)" \
+        > "$LIVE_TURN_FILE"
+    B1="$(wake_concurrent_turn_context)"
+    printf '%s' "$B1" | grep -q "no message text at all" \
+        || fail "the answering-branch block no longer offers the silent exit"
+    printf '%s' "$B1" | grep -q "already said its piece" \
+        || fail "the answering-branch block no longer names the announcement shape as the failure"
+    printf '%s' "$B1" | grep -q "DEFAULT" \
+        || fail "the answering-branch block no longer states silence as the default when covered"
+
+    printf '%s\tdesk\tanswered\nUser: is the build green?\nAssistant: it is.\n' "$(date +%s)" \
+        > "$LIVE_TURN_FILE"
+    B2="$(wake_concurrent_turn_context)"
+    printf '%s' "$B2" | grep -q "no message text at all" \
+        || fail "the answered-branch block no longer offers the silent exit"
+    printf '%s' "$B2" | grep -q "already said its piece" \
+        || fail "the answered-branch block no longer forbids the announcement by name"
+    printf '%s' "$B2" | grep -q "DEFAULT" \
+        || fail "the answered-branch block no longer states silence as the default when covered"
+
+    B3="$(_regroup_block desk "the words being spoken right now")"
+    printf '%s' "$B3" | grep -q "already said its piece" \
+        || fail "the regroup block no longer forbids the announcement by name"
+    printf '%s' "$B3" | grep -q "DEFAULT" \
+        || fail "the regroup block no longer states silence as the default when covered"
+
+    ok "all three concurrent-session blocks name the silent exit as the default and forbid announcing it"
+) || exit 1
 
 ok "silence is silent — filler muted whole, real speech untouched"
