@@ -508,6 +508,28 @@ async function streamTurn(text, turn, tid, resuming, seq) {
   const GIVE_UP_MS = 6 * 60 * 1000;
   let deadline = Date.now() + GIVE_UP_MS;
   const giveUp = { error: "gave up: no progress in 6 minutes" };
+  // Hidden time is not silence (spec rule 41, C18): the deadline above is
+  // wall clock, and while the screen is locked the OS freezes the page's
+  // timers and rots its sockets, so no progress CAN arrive. Uncorrected, a
+  // lock longer than the window guaranteed the give-up on the first check
+  // after unlock — without one reconnect attempt — while the finished turn
+  // sat buffered on the laptop, one /turn/<id>?from=<n> fetch away
+  // (2026-08-11 09:17). So the clock is corrected before it is believed:
+  // every hidden span that ended since the deadline was last set is added
+  // back, and a resume the span accounting never saw is still granted one
+  // pass — at the loop top that pass IS the reconnect fetch — before any
+  // give-up can return. The 404 path above stays untouched on purpose: a
+  // server that genuinely restarted still says the reply was lost.
+  let hiddenSeen = hiddenTotal, resumeSeen = resumeCount;
+  const pastDeadline = () => {
+    if (hiddenTotal > hiddenSeen) {
+      deadline += hiddenTotal - hiddenSeen;
+      hiddenSeen = hiddenTotal;
+    }
+    if (Date.now() <= deadline) return false;
+    if (resumeCount > resumeSeen) { resumeSeen = resumeCount; return false; }
+    return true;
+  };
   for (;;) {
     // Ended from outside by the conversation watcher (rule 42): this loop's
     // turn is over. Reconnecting would re-tail a buffer nobody is waiting on
@@ -518,7 +540,7 @@ async function streamTurn(text, turn, tid, resuming, seq) {
     // byte held `busy` forever: recording refused, the reset redraw refused,
     // and nothing short of a manual reload got the page back. There were 74
     // hand reloads in 28 hours.
-    if (Date.now() > deadline)
+    if (pastDeadline())
       return giveUp;
     const ctl = new AbortController();
     turnCtl = ctl;
@@ -559,6 +581,10 @@ async function streamTurn(text, turn, tid, resuming, seq) {
           seen++; delay = 1000;
           lastTurnProgress = Date.now();
           deadline = lastTurnProgress + GIVE_UP_MS;
+          // The deadline was just rebuilt from now, so hidden spans already
+          // ended are inside it — forgiving them again would double-count.
+          // A resume that led to progress owes no grace either.
+          hiddenSeen = hiddenTotal; resumeSeen = resumeCount;
           if (ev.kind === "done") return ev;
           if (ev.kind === "voice") {
             if (Date.now() >= voiceGateUntil)
@@ -573,7 +599,7 @@ async function streamTurn(text, turn, tid, resuming, seq) {
         // permanent "thinking…", ended by a hand reload. So the deadline is
         // consulted on every read as well, which also holds where a
         // backgrounded tab throttles every timer.
-        if (Date.now() > deadline) return giveUp;
+        if (pastDeadline()) return giveUp;
       }
       // Stream ended without a done event: the connection was cut, not the
       // turn. Fall through to reconnect.
@@ -877,6 +903,16 @@ let liveTurn = null;
 // Set by the foreground kick just before it aborts a stale attempt, read by
 // streamTurn's catch: this cut asks for an immediate reconnect, not backoff.
 let turnKicked = false;
+// Hidden time is not silence (spec rule 41, C18). While the screen is off no
+// event CAN arrive, so lastTurnProgress stops moving while Date.now() does
+// not — and a lock longer than the give-up window used to guarantee "gave
+// up: no progress in 6 minutes" on the first check after unlock, without one
+// reconnect attempt (2026-08-11 09:17). hiddenAt marks the span in progress;
+// hiddenTotal accumulates, monotonically, every span that has ended, so each
+// running stream can add the hidden time back to its own deadline; and
+// resumeCount rises on every return to the foreground, so a resume whose
+// hidden span was never observed is still worth one reconnect.
+let hiddenAt = 0, hiddenTotal = 0, resumeCount = 0;
 
 function armTurnWatchdog(seq) {
   // Seven minutes, one past the stream's own give-up so the polite path
@@ -886,7 +922,12 @@ function armTurnWatchdog(seq) {
   const limit = 7 * 60 * 1000, poll = 5 * 1000;
   const timer = setInterval(() => {
     if (!busy || turnSeq !== seq) { clearInterval(timer); return; }
-    if (Date.now() - lastTurnProgress < limit) return;
+    // While the page is hidden the silence clock reads the moment the screen
+    // went dark, not now: a tick on a throttled-but-not-frozen background
+    // tab must not count the lock as stall (rule 41's hidden-time clause).
+    // On resume the reference itself is pushed forward by the span, so only
+    // awake silence ever accumulates.
+    if ((hiddenAt || Date.now()) - lastTurnProgress < limit) return;
     clearInterval(timer);
     if (turnCtl) turnCtl.abort();
     busy = false;
@@ -912,9 +953,27 @@ function kickStaleTurn() {
   if (Date.now() - lastTurnProgress < STREAM_IDLE_MS) return;
   if (turnCtl) { turnKicked = true; turnCtl.abort(); }
 }
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) kickStaleTurn();
-});
+// The visibility watcher (rule 41). Going dark stamps the span's start;
+// coming back closes it and forgives it: the kick first — it judges
+// staleness on the RAW clock, because a socket that carried nothing across
+// a lock has rotted and must be cut now, not at the idle timer's leisure —
+// then the hidden span lands in hiddenTotal for the stream's deadline, the
+// watchdog's reference moves forward by the same span (clamped: it never
+// lands in the future), and resumeCount rises so a resume whose hidden span
+// was never observed still buys one reconnect before any give-up.
+function onVisibility() {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  const span = hiddenAt ? Date.now() - hiddenAt : 0;
+  hiddenAt = 0;
+  kickStaleTurn();
+  if (span > 0) {
+    hiddenTotal += span;
+    if (busy)
+      lastTurnProgress = Math.min(lastTurnProgress + span, Date.now());
+  }
+  resumeCount++;
+}
+document.addEventListener("visibilitychange", onVisibility);
 
 // Set on press (past the hold threshold), cleared on release. getUserMedia can
 // resolve after a very quick release — without this check the recorder would

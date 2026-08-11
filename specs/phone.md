@@ -156,8 +156,19 @@ with the page closed.
     indistinguishable from one held forever.
 41. When the page returns to the foreground with a turn in flight and no recent progress, the
     client MUST abort the current attempt and reconnect immediately rather than waiting out
-    throttled timers. And when the microphone stream's tracks died while the page was away, the
-    next hold MUST re-acquire the microphone rather than record silence into a "too short".
+    throttled timers. Hidden time is not silence: while the screen is off the OS freezes the
+    page's timers and rots its sockets, so no progress CAN arrive — rule 4's give-up deadline
+    and the watchdog's reference MUST count only time the page was awake and getting nothing.
+    The client MUST track each hidden span through visibility changes and, on return to
+    visible, push both clocks forward by the span just ended; and a resume MUST be granted at
+    least one reconnect attempt before any give-up can return, even when the hidden span was
+    never observed. The give-up itself stays — it was added against a real failure — and the
+    404 path is unchanged: a server that genuinely restarted still reports the reply lost. A
+    screen locked longer than the window used to guarantee "gave up: no progress in 6 minutes"
+    on the first check after unlock, without one reconnect attempt, while the finished turn sat
+    buffered on the laptop one `/turn/<id>?from=<n>` fetch away (2026-08-11 09:17, `C18`). And
+    when the microphone stream's tracks died while the page was away, the next hold MUST
+    re-acquire the microphone rather than record silence into a "too short".
 42. A reply that arrives through the conversation watcher ends the turn that is waiting for it.
     This is an ordinary arrival, not a broken one: the mirror pass can rewrite the draft after its
     raw text has streamed, so the stored block no longer matches what the page heard, and
@@ -414,6 +425,7 @@ block itself. The turn it spawns does that.
 | `C15` | No brakes. The server had no stop route at all — `/say`, `/turn`, `/img`, `/audio`, `/media`, and nothing that could end a turn — and the client refused new messages while one was in flight, the typed path silently discarding the text after clearing the input. A long or destructive task, once started, could not be stopped from the phone, and a new message parked behind the lock's ten-minute wait. Reported by the user 2026-08-10. **Resolved:** rules 47-50 — a `/stop` route that kills the turn's process groups and releases the lock with them, a stopped-marked completion event, a client stop control, and queued-not-dropped sends; held by `tests/test_phone_stop.sh` and the queue/stop cases in `tests/phone_client_test.js`. |
 | `C16` | A clip whose source failed to load was reported as an autoplay refusal, against the wrong clip: the element's error event advances the queue, then the dead clip's own play() rejection lands and was blamed on whichever clip is current by then — clearing that clip's playing flag underneath it — and the ▶ recovery button was offered wired to the very source that cannot load, so tapping it did nothing. Measured live 2026-08-11 00:22: a harness sweep deleted three just-synthesised clips out of the live /tmp (the server side of the incident is test-harness.md rule 9's), the fetches answered 404, the reply cut out mid-sentence, and the page offered a dead play button beside three misattributed `autoplay refused` reports. **Resolved:** the rejection handler acts only for its own clip and only on a genuine `NotAllowedError`; a source that failed to load is owned by the element's error event, reported as the media error it is against its own index, and never offers the button. Held by the dead-source and refusal cases in `tests/phone_client_test.js`. |
 | `C17` | A message sent mid-turn was queued but unheard until the turn ended: the runner parked it behind the remote lock and nothing surfaced it to the run in flight, so a course correction sent during a long tool chain arrived after the course had been run — and the hold-to-talk control refused to record at all while busy, so a spoken message could not even be queued. Reported by the user 2026-08-11 in exactly those terms. **Resolved:** rules 5 and 49 (the control stays usable; a mid-turn recording transcribes into the same queue, with the page's own playback paused while the microphone is open) and rules 51-52 (the mid-turn spool, read by the running turn at its next tool-call boundary through the per-run PostToolUse hook, delivered exactly once and never echoed to its own turn); held by `tests/test_phone_midturn.sh` and `tests/phone_client_midturn_test.js`. |
+| `C18` | The give-up clock counted the time the phone was asleep: `streamTurn`'s deadline and the watchdog's reference were wall clock, and a screen locked longer than the six-minute window guaranteed "gave up: no progress in 6 minutes" on the first check after unlock — without one reconnect attempt — while the finished turn sat buffered on the laptop under its id, one `/turn/<id>?from=<n>` fetch away. Hit by the user 2026-08-11 09:17: the page used to hand back the reply after a lock, and handed back the error instead. **Resolved:** rule 41's hidden-time clause — hidden spans are tracked through visibility changes and added back to both clocks on resume, so the six minutes mean six minutes awake and getting nothing, and a resume is granted one reconnect before any give-up can return; the awake-and-silent give-up and the 404 path are untouched. Held by the hidden-turn cases in `tests/phone_client_test.js`. |
 | `C13` | A phone turn whose answer reached the conversation file before its stream's completion event left the button grey with the answer already on screen, drawn as a turn from the laptop. Structural, twice over: the mirror pass rewrites the draft after the raw text has streamed, so the stored block no longer matches the own-turn filter; and compaction — a whole model run — sits between the conversation append and the process exit that emits the completion event, so the stream carries nothing but keepalives while the record already holds the reply. Measured live on 2026-08-08: the mirror rewrite logged at 23:42:30, the reply delivered by the watcher by 23:42:55, the page reloaded by hand at 23:43:29, and the completion event not possible before ~23:43:35. **Resolved:** rule 42 — a watcher-delivered reply ends the turn well inside the watchdog window; held by the watcher-release cases in `tests/phone_client_test.js`. |
 
 ## TESTS
@@ -441,7 +453,12 @@ carries the recovery cases of rules 39-41: a turn that ends in an error, a throw
 transcription fetch always hands the button back; a remembered turn is re-attached with the same
 identifier on the next load, is skipped when the record already shows the exchange or the memory
 has aged out, and does not re-sound the replayed clip backlog; and the foreground kick aborts a
-stale attempt so the reconnect happens now rather than after a throttled timer. It also carries
+stale attempt so the reconnect happens now rather than after a throttled timer. The same file
+holds rule 41's hidden-time cases (`C18`): a turn hidden past the give-up window that resumes
+into its buffered done event shows the reply, not the error; a resume whose hidden span was
+never observed is still granted exactly one reconnect before the give-up can return; a watchdog
+tick while the screen is dark does not count the lock as stall; and the awake-and-silent stream
+still ends at the ceiling. It also carries
 rule 42's watcher-release cases: a turn whose stream hangs on keepalives is released the moment
 its exchange arrives through the watcher — memory forgotten, button back, well inside the
 watchdog window, and the stream left open as a voice tail in every case; a released turn whose

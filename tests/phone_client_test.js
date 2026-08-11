@@ -68,6 +68,7 @@ async function testStreamTurn() {
     showThought: () => {},
     enqueueVoice: () => {},
     turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     fetch: null,
   };
   const fast = new Function("ctx", "with (ctx) {\n" +
@@ -132,6 +133,7 @@ async function testDeadline() {
     showThought: () => {},
     enqueueVoice: () => {},
     turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     // Answers cleanly every time, forever: nothing ever throws, so a deadline
     // that is only read inside the catch is never read at all.
     fetch: async () => ({
@@ -176,6 +178,7 @@ async function testPingsAreNotProgress() {
     showThought: () => {},
     enqueueVoice: () => {},
     turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     // Pings forever: bytes keep arriving, no frame ever parses to an event.
     fetch: async () => ({
       ok: true, status: 200,
@@ -216,6 +219,7 @@ async function testProgressExtendsDeadline() {
     showThought: () => {},
     enqueueVoice: () => {},
     turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     // Eight thinking events 100 ms apart — 800 ms of turn against a 400 ms
     // ceiling — then the reply. Only a deadline measured from the LAST event
     // lets this finish.
@@ -258,6 +262,7 @@ async function testWatchdog() {
     busy: true,
     turnSeq: 1,
     lastTurnProgress: Date.now(),
+    hiddenAt: 0,
     turnCtl: { abort: () => { aborted++; } },
     talk: { classList: { remove: () => {} } },
     updateTalkBtn: () => {},
@@ -925,6 +930,7 @@ async function testResumeReplayIsQuiet() {
     showThought: () => {},
     enqueueVoice: u => voiced.push(u),
     turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     fetch: async (url, opts) => {
       posts.push({ url, body: opts && opts.body });
       return { ok: true, status: 200, body: { getReader: () => ({
@@ -1025,6 +1031,203 @@ async function testDeadMicReacquired() {
            "stopped=" + stopped + " acquired=" + acquired);
 }
 
+// --- rule 41's hidden-time clause (C18) — a locked screen is not silence ----
+//
+// Measured live 2026-08-11 09:17: the phone screen locked mid-turn for longer
+// than the give-up window. The deadline was wall clock, so the first check
+// after unlock returned "gave up: no progress in 6 minutes" without a single
+// reconnect attempt — while the finished turn sat buffered on the laptop,
+// one /turn/<id>?from=<n> fetch away. Hidden spans must be added back to the
+// deadline on resume, so the six minutes mean six minutes awake.
+
+async function testHiddenTurnResumesToReply() {
+  console.log("");
+  console.log("rule 41 — a turn hidden past the give-up window resumes into its reply (C18):");
+  const enc = new TextEncoder();
+  let attempts = 0;
+  const statuses = [];
+  const ctx = {
+    IDLE_MS: 60000,                    // the idle abort must NOT be the rescue
+    KICK_MS: 100,                      // the kick's staleness bar, test-sized
+    randomHex: () => "abc123",
+    setStatus: s => statuses.push(s),
+    showThought: () => {},
+    enqueueVoice: () => {},
+    busy: true,
+    document: { hidden: false },
+    turnCtl: null, lastTurnProgress: Date.now(), turnKicked: false,
+    releasedSeq: 0, hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
+    fetch: async (url, opts) => {
+      attempts++;
+      if (attempts === 1)
+        // The lock's socket: delivers nothing, dies only on the abort.
+        return { ok: true, status: 200, body: { getReader: () => ({
+          read: () => new Promise((res, rej) => {
+            opts.signal.addEventListener("abort",
+              () => rej(new Error("aborted")));
+          }),
+        }) } };
+      // The reconnect after unlock: the whole buffered turn, done included.
+      return { ok: true, status: 200, body: { getReader: () => ({
+        read: async () => ({ value: enc.encode(
+            'data: {"kind":"done","spoken":"the buffered reply"}\n\n'),
+            done: false }),
+      }) } };
+    },
+  };
+  const body = [
+    lift("async function streamTurn")
+        .replace("6 * 60 * 1000", "800")     // the give-up window, test-sized
+        .replace(/STREAM_IDLE_MS/g, "IDLE_MS"),
+    lift("function kickStaleTurn").replace(/STREAM_IDLE_MS/g, "KICK_MS"),
+    lift("function onVisibility"),
+  ].join("\n");
+  const api = new Function("ctx", "with (ctx) {\n" + body +
+                           "\nreturn {streamTurn, onVisibility};\n}")(ctx);
+
+  const p = api.streamTurn("hello", {});
+  await sleep(100);
+  ctx.document.hidden = true;  api.onVisibility();   // the screen locks…
+  await sleep(1200);                                 // …for longer than the window
+  ctx.document.hidden = false; api.onVisibility();   // and comes back
+
+  const res = await Promise.race([
+    p, sleep(5000).then(() => ({ error: "HARNESS TIMEOUT" })),
+  ]);
+  if (res && res.spoken === "the buffered reply")
+    ok("the buffered reply is shown, not the give-up");
+  else bad("hidden time must be forgiven, not counted as silence",
+           (res && (res.error || JSON.stringify(res))) || "nothing");
+  if (attempts === 2) ok("the resume reconnected exactly once and it sufficed");
+  else bad("the resume must reconnect", attempts + " attempts");
+  if (statuses.some(s => /reconnecting/.test(s)))
+    ok("the kick's cut was reported as a reconnect, not an error");
+  else bad("the cut should say reconnecting", statuses.join(" | ") || "no status");
+}
+
+// Belt and braces: some locks never deliver the hide event at all, so the
+// span is never measured and the deadline is honestly past on resume. The
+// resume itself must still buy one reconnect before any give-up can return —
+// and only one: a dead server still ends in the give-up.
+
+async function testUnseenResumeStillReconnects() {
+  console.log("");
+  console.log("rule 41 — a resume whose hidden span was never seen still gets one reconnect:");
+  const enc = new TextEncoder();
+  let attempts = 0;
+  const mk = deliver => ({
+    IDLE_MS: 150,                      // the dead socket is cut by the idle abort
+    randomHex: () => "abc123",
+    setStatus: () => {},
+    showThought: () => {},
+    enqueueVoice: () => {},
+    busy: true,
+    document: { hidden: false },
+    turnCtl: null, lastTurnProgress: Date.now(), turnKicked: false,
+    releasedSeq: 0, hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
+    fetch: async (url, opts) => {
+      attempts++;
+      if (deliver && attempts >= 2)
+        return { ok: true, status: 200, body: { getReader: () => ({
+          read: async () => ({ value: enc.encode(
+              'data: {"kind":"done","spoken":"saved by the grace"}\n\n'),
+              done: false }),
+        }) } };
+      return { ok: true, status: 200, body: { getReader: () => ({
+        read: () => new Promise((res, rej) => {
+          opts.signal.addEventListener("abort", () => rej(new Error("aborted")));
+        }),
+      }) } };
+    },
+  });
+  const make = ctx => new Function("ctx", "with (ctx) {\n" + [
+    lift("async function streamTurn")
+        .replace("6 * 60 * 1000", "250")
+        .replace(/STREAM_IDLE_MS/g, "IDLE_MS"),
+    lift("function kickStaleTurn").replace(/STREAM_IDLE_MS/g, "IDLE_MS"),
+    lift("function onVisibility"),
+  ].join("\n") + "\nreturn {streamTurn, onVisibility};\n}")(ctx);
+
+  let ctx = mk(true);
+  let p = make(ctx);
+  let run = p.streamTurn("hello", {});
+  await sleep(400);
+  p.onVisibility();                    // visible-fire; no hide was ever recorded
+  let res = await Promise.race([
+    run, sleep(6000).then(() => ({ error: "HARNESS TIMEOUT" })),
+  ]);
+  if (res && res.spoken === "saved by the grace")
+    ok("the granted reconnect fetched the reply");
+  else bad("a resume must get one reconnect before the give-up",
+           (res && (res.error || JSON.stringify(res))) || "nothing");
+
+  attempts = 0;
+  ctx = mk(false);
+  p = make(ctx);
+  run = p.streamTurn("hello", {});
+  await sleep(400);
+  p.onVisibility();
+  res = await Promise.race([
+    run, sleep(8000).then(() => ({ error: "HARNESS TIMEOUT" })),
+  ]);
+  if (res && /gave up/.test(res.error || "") && !/HARNESS/.test(res.error || ""))
+    ok("a dead server still ends in the give-up — the guard stands");
+  else bad("the grace is one reconnect, not immortality",
+           (res && (res.error || JSON.stringify(res))) || "nothing");
+  if (attempts === 2) ok("exactly one reconnect was spent before giving up");
+  else bad("the resume owes one reconnect, no more", attempts + " attempts");
+}
+
+async function testWatchdogForgivesHiddenTime() {
+  console.log("");
+  console.log("the watchdog — a dark screen is not a stall (rule 41):");
+  let aborted = 0;
+  const now = Date.now();
+  const ctx = {
+    busy: true, turnSeq: 1,
+    // 20 ms of awake silence, then the screen went dark and stayed dark for
+    // ten seconds — far past the test ceiling on the raw clock.
+    lastTurnProgress: now - 10000,
+    hiddenAt: now - 9980,
+    hiddenTotal: 0, resumeCount: 0,
+    document: { hidden: false },
+    STREAM_IDLE_MS: 60000,             // the kick stays quiet in this test
+    turnCtl: { abort: () => { aborted++; } },
+    turnKicked: false,
+    talk: { classList: { remove: () => {} } },
+    updateTalkBtn: () => {},
+    setStatus: () => {},
+    activeTid: "aa", showStop: () => {}, pumpQueue: () => {},
+  };
+  const body = [
+    lift("function armTurnWatchdog")
+        .replace("7 * 60 * 1000", "250")
+        .replace("5 * 1000", "50"),
+    lift("function kickStaleTurn"),
+    lift("function onVisibility"),
+  ].join("\n");
+  const api = new Function("ctx", "with (ctx) {\n" + body +
+                           "\nreturn {armTurnWatchdog, onVisibility};\n}")(ctx);
+  api.armTurnWatchdog(1);
+
+  await sleep(300);
+  if (ctx.busy) ok("ticks while the screen is dark never count the lock as stall");
+  else bad("the watchdog must not fire on hidden time", "busy cleared while hidden");
+
+  // The screen comes back: the real handler closes the span and pushes the
+  // reference forward, so only awake silence accumulates from here.
+  api.onVisibility();
+  await sleep(120);
+  if (ctx.busy) ok("the pushed reference starts a fresh awake clock");
+  else bad("the resume must move the watchdog's reference", "fired at once on resume");
+
+  await sleep(500);
+  if (!ctx.busy && aborted === 1)
+    ok("and real awake silence past the ceiling still fires it");
+  else bad("the watchdog must still fire on awake silence",
+           "busy=" + ctx.busy + " aborted=" + aborted);
+}
+
 // --- 6: rule 42 — a reply arriving through the watcher ends the turn --------
 //
 // Written against 2026-08-08 23:42: the mirror rewrote the draft after its raw
@@ -1054,6 +1257,7 @@ async function testWatcherReleasesTurn() {
     awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
     activeTid: null, showStop: () => {}, pumpQueue: () => {},
     turnCtl: null, turnKicked: false, turnVoiced: false, STREAM_IDLE_MS: 60000,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
     setStatus: s => statuses.push(s),
@@ -1167,6 +1371,7 @@ async function testReleasedTailKeepsPlaying() {
     awaitedUserSeen: false, liveTurn: null, releasedSeq: 0,
     activeTid: null, showStop: () => {}, pumpQueue: () => {},
     turnCtl: null, turnKicked: false, turnVoiced: false, STREAM_IDLE_MS: 60000,
+    hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     talk: { classList: { add: c => cls.add(c), remove: c => cls.delete(c),
                          contains: c => cls.has(c) } },
     setStatus: () => {},
@@ -1639,6 +1844,9 @@ async function testRealRefusalStillOffersButton() {
   await testResumeReplayIsQuiet();
   await testForegroundKick();
   await testDeadMicReacquired();
+  await testHiddenTurnResumesToReply();
+  await testUnseenResumeStillReconnects();
+  await testWatchdogForgivesHiddenTime();
   await testWatcherReleasesTurn();
   await testReleasedTailKeepsPlaying();
   await testWatchFilterIdentity();
