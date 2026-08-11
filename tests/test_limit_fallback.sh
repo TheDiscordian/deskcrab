@@ -405,6 +405,116 @@ case "$out" in
     *) fail "the empty chain must be legible in the stream, not inferred" "$out" ;;
 esac
 
+echo "claude_stream_limit_cut — a limit that stops a run MID-FLIGHT is a cut:"
+# The observed shape (CLI 2.1.219, the wake of 2026-08-11 00:17): genuine tool
+# calls, then a synthetic assistant message carrying the limit text, then a
+# final result line with is_error and NO type field at all. Heredoc-quoted:
+# the refusal text holds an apostrophe.
+cat > "$T/fix-cut" <<'FIX'
+{"type":"assistant","message":{"model":"claude","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"true"}}]}}
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your session limit · resets 1:30am"}]}}
+{"is_error":true,"duration_api_ms":31572,"num_turns":9}
+FIX
+out="$(run 'claude_stream_limit_cut "'"$T"'/fix-cut" || echo NOCUT')"
+case "$out" in
+    *"hit your session limit"*) ok "the observed 00:17 shape is a cut, and the matched text comes back" ;;
+    *) fail "the mid-flight limit must read as a cut" "$out" ;; esac
+
+# Disjoint from the plain refusal, both ways: a cut has genuine output, so it
+# is never rule 12's refusal — and a run that never began is never a cut.
+out="$(run 'claude_stream_refusal "'"$T"'/fix-cut" >/dev/null && echo REFUSAL || echo no')"
+[ "$out" = no ] && ok "a cut is not a refusal — the no-genuine-output rule stands" \
+    || fail "genuine output must keep the cut out of claude_stream_refusal" "$out"
+out="$(run 'claude_stream_limit_cut "'"$T"'/fix-refusal" && echo CUT || echo no')"
+[ "$out" = no ] && ok "a run that never began is a refusal, not a cut" \
+    || fail "no genuine output means no cut" "$out"
+
+# A later account answering clears the cut: the stream reads as that answer.
+{ cat "$T/fix-cut"; reply_stream "FALLBACK CARRIED IT"; } > "$T/fix-cut-reply"
+out="$(run 'claude_stream_limit_cut "'"$T"'/fix-cut-reply" && echo CUT || echo no')"
+[ "$out" = no ] && ok "a genuine reply after the cut clears it" \
+    || fail "an answered stream must never read as a cut" "$out"
+
+# An auth failure mid-run is not a cut: the signature decides, and an invalid
+# key would fail every other login too.
+cat > "$T/fix-cut-auth" <<'FIX'
+{"type":"assistant","message":{"model":"claude","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"true"}}]}}
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Invalid API key"}]}}
+{"is_error":true}
+FIX
+out="$(run 'claude_stream_limit_cut "'"$T"'/fix-cut-auth" && echo CUT || echo no')"
+[ "$out" = no ] && ok "a mid-run auth failure is not a cut and surfaces as itself" \
+    || fail "only the limit signature may move the walk" "$out"
+
+# Rule 12b, the echo trap: the SUCCESS result event repeats her final text
+# block verbatim, so a genuine reply that quotes a limit phrase must not read
+# as a cut off the back of its own echo.
+cat > "$T/fix-cut-quote" <<'FIX'
+{"type":"assistant","message":{"model":"claude","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"true"}}]}}
+{"type":"assistant","message":{"model":"claude","content":[{"type":"text","text":"The CLI said you have hit your session limit, and I told him so."}]}}
+{"type":"result","result":"The CLI said you have hit your session limit, and I told him so."}
+FIX
+out="$(run 'claude_stream_limit_cut "'"$T"'/fix-cut-quote" && echo CUT || echo no')"
+[ "$out" = no ] && ok "a reply quoting the limit phrase is not gagged by its result echo" \
+    || fail "the success result's text must never be read for the cut" "$out"
+
+# Rule 14 still holds: each attempt is judged on its own bytes. A cut left by
+# attempt one must not condemn attempt two's silent network death.
+cat "$T/fix-cut" > "$T/fix-cut-hist"
+off="$(wc -c < "$T/fix-cut-hist")"
+printf '%s\n' 'curl: (6) could not resolve host' >> "$T/fix-cut-hist"
+out="$(run 'claude_stream_limit_cut "'"$T"'/fix-cut-hist" '"$off"' && echo CUT || echo no')"
+[ "$out" = no ] && ok "an earlier attempt's cut never marks a later network death" \
+    || fail "the offset must scope the judgement" "$out"
+
+# Rule 12d: the type-less is_error line alone reads as the error it is.
+printf '%s\n' '{"is_error":true,"duration_api_ms":5}' > "$T/fix-onlyerr"
+out="$(run 'DEBUGLOG="'"$T"'/fix-onlyerr"; wake_stream_failed && echo FAILED || echo no')"
+[ "$out" = FAILED ] && ok "wake_stream_failed reads the type-less error result" \
+    || fail "an error result without its type field must still count" "$out"
+
+echo "the wake and turn walks ride a cut to the next login:"
+# A stream-mode stub that CUTS instead of refusing: every login is cut off
+# mid-run except the one named in STUB_OK_DIR (unset = the first fallback).
+reply_stream "WAKE FALLBACK REPLY" > "$T/fixture-cut-reply"
+cat > "$T/claude-cutstream" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-primary}" >> "$T/calls"
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "\${STUB_OK_DIR:-$T/fb}" ]; then
+    cat "$T/fixture-cut-reply"
+    exit 0
+fi
+cat "$T/fix-cut"
+exit 1
+EOF
+chmod +x "$T/claude-cutstream"
+
+rm -f "$T/calls" "$T/state-account-default"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-cutstream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "a cut wake re-runs on the fallback and the thought gets said" \
+    || fail "the wake walk must ride a cut to the next login" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
+CALL:$T/fb" ] && ok "cut wake: primary was cut, fallback was tried at once" \
+    || fail "a cut must move the walk exactly as a refusal" "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)"
+[ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "$T/fb" ] \
+    && ok "the cut moves the durable default like a refusal" \
+    || fail "a cut account must be stamped dry" "$(cat "$T/state-account-default" 2>/dev/null || echo "no record")"
+
+rm -f "$T/calls" "$T/state-account-default"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-cutstream" \
+    'claude_generate "hello" low')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "a cut turn re-runs on the fallback and the answer arrives" \
+    || fail "the turn walk must ride a cut to the next login" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
+CALL:$T/fb" ] && ok "cut turn: primary was cut, fallback was tried at once" \
+    || fail "a cut must move the turn walk exactly as a refusal" "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)"
+rm -f "$T/state-account-default"
+
 echo "job-runner — a limited primary is retried, not recorded blocked:"
 # Same scaffold as test_job_block.sh: copied runner, symlinked common.sh, fake
 # crab, isolated journal — nothing here may reach the live instance.
@@ -496,6 +606,37 @@ out="$("$REPO_DIR/lib/job-status" get "$T/jobs/nofb.json" state)"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "no fallback: a single attempt" || fail "must not retry without a fallback" "$n calls"
 
+echo "job-runner — a build the limit cut off finishes on the fallback:"
+# Four builders died this way on the night of 2026-08-11: each one journalled
+# "failed (exit 1)" with the session-limit line standing as its closing words,
+# and no account was ever retried (specs/jobs.md rule 15a).
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
+run_runner cutjob CLAUDE_BIN="$T/claude-cutstream" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb"
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/cutjob.json" state)"
+[ "$out" = finished ] && ok "a cut build is carried to completion by the fallback" \
+    || fail "the job walk must ride a cut to the next login" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 2 ] && ok "cut build: primary was cut, fallback was tried at once" \
+    || fail "a cut must move the job walk exactly as a refusal" "$n calls"
+[ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "$T/fb" ] \
+    && ok "the cut build moves the durable default" \
+    || fail "a cut account must be stamped dry for the next dispatch" \
+            "$(cat "$T/state-account-default" 2>/dev/null || echo "no record")"
+
+# Every account cut: a build that RAN and was killed is failed, never blocked —
+# work was attempted and the log holds it (specs/jobs.md rules 15 and 15a).
+rm -f "$T/calls" "$T/jobs/blocked" "$T/state-account-default"
+run_runner allcut CLAUDE_BIN="$T/claude-cutstream" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_OK_DIR=/never
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/allcut.json" state)"
+[ "$out" = failed ] && ok "a chain cut everywhere is failed, not blocked" \
+    || fail "a cut build attempted work, so blocked would hide it" "$out"
+[ ! -e "$T/jobs/blocked" ] && ok "no block marker for a cut build" \
+    || fail "a cut must not hold future dispatches as a block" "$(cat "$T/jobs/blocked")"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 2 ] && ok "each login was still tried exactly once" \
+    || fail "the walk must ride every cut to the end of the chain" "$n calls"
+rm -f "$T/state-account-default"
+
 echo "a wholly-refused desk turn is notified — never spoken, never conversed:"
 # The measured failure: with every login out, extract_response reports the
 # refusal as the reply, it landed in the conversation as her words, and the
@@ -521,6 +662,25 @@ grep -q "usage credits" "$T/spoken" 2>/dev/null \
 grep -qi "limit" "$T/notifies" 2>/dev/null \
     && ok "the notification carries the outage instead" \
     || fail "the outage must be notified" "$(cat "$T/notifies" 2>/dev/null || echo "no notification")"
+
+echo "a desk turn cut off mid-run on every account fails the same way:"
+# The 00:17 class at the desk: genuine tool calls, then the limit — on every
+# login the chain could offer. The CLI's complaint must not become her reply
+# in the conversation or on the speakers; the journal and the notification
+# carry the failure (specs/account-fallback.md rule 12c).
+rm -f "$T/spoken" "$T/notifies" "$T/state-account-default" "$T/state-convo.txt"
+run PATH="$T/bin:$PATH" CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_OK_DIR=/never \
+    CLAUDE_BIN="$T/claude-cutstream" LAST_ORIGIN_FILE="$T/state-last-origin" \
+    'run_claude_and_respond "still there" >/dev/null' >/dev/null 2>&1
+grep -qi "session limit" "$T/state-convo.txt" 2>/dev/null \
+    && fail "the cut's refusal entered the conversation as her reply" "$(grep -i "session limit" "$T/state-convo.txt")" \
+    || ok "the cut never enters the conversation"
+grep -qi "session limit" "$T/spoken" 2>/dev/null \
+    && fail "the cut's refusal reached the speakers" "$(cat "$T/spoken")" \
+    || ok "the cut never reaches the speakers"
+grep -qi "limit" "$T/notifies" 2>/dev/null \
+    && ok "the cut is notified as the outage it is" \
+    || fail "the cut must be notified" "$(cat "$T/notifies" 2>/dev/null || echo "no notification")"
 
 echo
 echo "an inherited CLAUDE_CONFIG_DIR is not the primary login:"

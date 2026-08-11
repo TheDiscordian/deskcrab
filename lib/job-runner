@@ -167,8 +167,17 @@ for ACCT in $(claude_accounts); do
     # patterns — and then exited non-zero for any reason look like an account
     # refusal: the durable default rotated and every further dispatch was held
     # for half an hour, on the strength of a file the builder opened.
-    # claude_stream_refusal is the same judgement the turn and wake chains use.
-    REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" || break
+    # claude_stream_refusal is the same judgement the turn and wake chains use
+    # — and so is the mid-build CUT (specs/jobs.md rule 15a, account-fallback
+    # rule 12a): a limit that stops a builder half-way through its work moves
+    # the build to the next login at once, exactly as a refusal does, instead
+    # of journalling the CLI's complaint as the builder's closing words. Four
+    # builders died that way inside ten minutes on the night of 2026-08-11.
+    # A final attempt that ends cut stays a real failure, never blocked — the
+    # blocked judgement below still demands no genuine output at all.
+    REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" \
+        || REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")" \
+        || break
     claude_limit_record "$CONFDIR" "$REFUSAL"
 done
 trap - TERM
