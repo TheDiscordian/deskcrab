@@ -698,6 +698,30 @@ def s_postkill(port, chess_dir):
     ok("play continued in the same game after the restart")
 
 
+def s_wakecap(port, chess_dir, gid, exchanges):
+    # Rule 7's per-game cap: moves at browser speed, each of her replies
+    # booking the post-move wake through whatever wake command the shell
+    # gave the bridge. This scenario only drives the exchanges and proves
+    # the store kept up; the flag assertions are the shell's, made on the
+    # full argv the recording wake stub wrote down.
+    plan = [("e2", "e4", "e7", "e5"), ("g1", "f3", "b8", "c6"),
+            ("f1", "c4", "g8", "f6")][:int(exchanges)]
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.send(NEWGAME)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 0, "the user should be white"
+    for frm, to, rf, rt in plan:
+        c.move(frm, to)
+        c.expect_move(frm, to)
+        c.expect_move(rf, rt, timeout=20)
+    want = [uci for x in plan for uci in (x[0] + x[1], x[2] + x[3])]
+    assert game_moves(chess_dir, gid) == want, game_moves(chess_dir, gid)
+    ok(f"{len(plan)} exchange(s) recorded in {gid} at browser speed")
+
+
 def main():
     what = sys.argv[1]
     if what == "seed":
@@ -710,7 +734,8 @@ def main():
      "special": s_special, "promote": s_promote, "mate": s_mate,
      "poller_end": s_poller_end, "reset": s_reset, "rejoin": s_rejoin,
      "postkill": s_postkill, "reflex": s_reflex,
-     "supersede": s_supersede, "shipped": s_shipped}[what](port, *rest)
+     "supersede": s_supersede, "shipped": s_shipped,
+     "wakecap": s_wakecap}[what](port, *rest)
 
 
 if __name__ == "__main__":

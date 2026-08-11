@@ -94,12 +94,28 @@ cannot be changed.
    played or whose turn it is. Byte-identical reasons are the queue's own coalescing key
    ([wake-queue.md](wake-queue.md) rule 10), so while one post-move wake for a game is still
    pending — or bouncing off the run lock on the event backoff — the next move's booking and
-   every deferral re-book fold into it instead of stacking behind it: at most one post-move
-   wake per game stands at a time. The move-per-wake shape was measured on 2026-08-10: a wake
-   per move into a lane that runs minutes per session held several bookings for one game at
-   once, kept two of them cycling for eight minutes after that game had ended, and every san
-   a reason carried was stale by delivery. The board is the truth she is pointed at, and it is
-   the only copy that cannot be stale. And the **end-of-game wake**, carrying the game id,
+   every deferral re-book fold into it instead of stacking behind it. The move-per-wake shape
+   was measured on 2026-08-10: a wake per move into a lane that runs minutes per session held
+   several bookings for one game at once, kept two of them cycling for eight minutes after
+   that game had ended, and every san a reason carried was stale by delivery. The board is
+   the truth she is pointed at, and it is the only copy that cannot be stale. But coalescing
+   alone is NOT the one-per-game bound, and the same evening proved it: it folds only into a
+   booking that is still PENDING, and this wake fires one second after it is booked, so a
+   game played at browser speed books one wake per move anyway — each fired into a hot
+   conversation, was held, and re-booked itself minutes out under hot-hold, until the ledger
+   held 314 chessweb bookings out of 774 lines and the one wake somebody was actually waiting
+   on (a finished detached job's, ringing the same queue) arrived inside that crowd. So the
+   post-move booking also carries the queue's scoped per-booker cap
+   ([wake-queue.md](wake-queue.md) rule 44): `--cap 1 --cap-prefix <the unique per-game head
+   of the reason sentence>` — **at most one pending post-move wake per game**, counted and
+   drained within that game's class alone, so one game's cap never costs another game its
+   voice. Rule 44's cap drains as well as gates, soonest-first: the pending far end is
+   cancelled and the booking about to fire is kept — the right end for a board, since the
+   reason names no move and cannot go stale. The cap flags are inserted immediately after the
+   wake command's literal `wake-at` element, ahead of the when/kind positionals (`wake_book`
+   parses flags first); a `$DESKCRAB_CHESSWEB_WAKE_CMD` override that carries no `wake-at`
+   has no queue to cap and is handed the reason alone, untouched. And the **end-of-game
+   wake**, carrying the game id,
    how the game ended, and the movetext, because she should hear how her game finished. Neither
    wake is ever waited on: the next opponent move is answered whether or not the previous
    wake has fired. Serve start hands the position to the mover the same way when the loaded

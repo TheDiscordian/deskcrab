@@ -686,8 +686,19 @@ class Hub:
                 self.spoken_move_wake(g, san, desc)
             return True
 
-    def book_wake(self, reason, what):
-        cmd = list(self.wake_cmd) + [reason]
+    def book_wake(self, reason, what, cap_prefix=None):
+        """cap_prefix, when given, asks the queue to hold at most ONE
+        pending wake whose reason opens with it (wake-queue.md rule 44).
+        The flags go immediately after the command's own 'wake-at'
+        element, ahead of the when/kind positionals, because wake_book
+        parses flags first. A wake command with no literal 'wake-at' —
+        an overridden $DESKCRAB_CHESSWEB_WAKE_CMD in the tests — has no
+        queue to cap and is handed the reason alone, untouched."""
+        cmd = list(self.wake_cmd)
+        if cap_prefix and "wake-at" in cmd:
+            at = cmd.index("wake-at") + 1
+            cmd[at:at] = ["--cap", "1", "--cap-prefix", cap_prefix]
+        cmd = cmd + [reason]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=30)
@@ -712,7 +723,18 @@ class Hub:
         of 2026-08-10 booked a wake per move into a lane that runs minutes
         per session: several wakes stood for one game at once, two kept
         cycling for eight minutes after the game had ended, and every san
-        was stale by delivery. The board she is pointed at cannot be."""
+        was stale by delivery. The board she is pointed at cannot be.
+
+        And the booking is CAPPED at one pending per game, because
+        coalescing alone was not the bound (chessweb.md rule 7): it folds
+        only into a booking still PENDING, and this wake fires one second
+        after it is booked, so a game at browser speed booked one wake per
+        move anyway — each held hot and re-booking itself under hot-hold,
+        314 of the ledger's 774 lines the same evening, a crowd a finished
+        job's one wake had to arrive through. The cap prefix is the unique
+        per-game head of this very sentence, so the cap counts and drains
+        one game's wakes alone (wake-queue.md rule 44, soonest-first: the
+        far end is cancelled, the one about to fire is kept)."""
         gid = g["id"]
         self.book_wake(
             f"chessweb: you played a move in game {gid} against "
@@ -721,7 +743,8 @@ class Hub:
             f"the user about the game — the position, or banter; never your "
             f"reasoning or plans, they hear everything you say — or say "
             f"nothing at all. Board: betty-chess show {gid}",
-            f"her voice after {san} in {gid}")
+            f"her voice after {san} in {gid}",
+            cap_prefix=f"chessweb: you played a move in game {gid}")
 
     # -- protocol ----------------------------------------------------------
     def on_join(self, conn, player):
