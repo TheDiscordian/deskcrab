@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Turn a builder's stream-json into the human job log, live.
+
+Reads the CLI's stream events on stdin and writes prose to stdout the moment
+each event arrives. lib/extract-response does this same conversion for a
+FINISHED stream; this exists because a job's log used to be assembled from the
+stream only after the attempt ended, so `crab job log` on a running or stopped
+job read as empty — and half-done work was misread, over and over, as "the job
+produced nothing". job-runner pipes the builder through here, behind a tee
+that keeps the raw stream byte-identical for the viewer and the refusal
+slices, so the log fills as the builder writes and a stopped job keeps
+whatever it had said (specs/jobs.md rule 26).
+
+What is kept, in arrival order:
+  - a line that is not JSON at all — standard error, or the CLI's own usage
+    complaint: a run that died on a bad flag must not read as one that said
+    nothing;
+  - every assistant text block, synthetic ones included. The post-hoc pass
+    could drop a refusal once something real had been said; live, what has
+    been written cannot be unwritten — and in a job log an api error that
+    happened mid-build is worth seeing anyway;
+  - a result event's text, unless it merely repeats the last block — some
+    sessions emit a result and no assistant events at all.
+
+Every write is flushed: the reader is somebody running `crab job log` while
+the builder is still alive.
+"""
+
+import json
+import sys
+
+last_block = ""
+
+
+def emit(text):
+    global last_block
+    text = text.strip()
+    if not text:
+        return
+    print(text, end="\n\n", flush=True)
+    last_block = text
+
+
+for line in sys.stdin:
+    stripped = line.strip()
+    if not stripped:
+        continue
+    try:
+        event = json.loads(stripped)
+    except json.JSONDecodeError:
+        print(stripped, flush=True)
+        continue
+    if not isinstance(event, dict):
+        continue
+    if event.get("type") == "assistant":
+        for block in event.get("message", {}).get("content", []):
+            if (isinstance(block, dict) and block.get("type") == "text"
+                    and str(block.get("text", "")).strip()):
+                emit(block["text"])
+    elif event.get("type") == "result" and isinstance(event.get("result"), str):
+        if event["result"].strip() != last_block:
+            emit(event["result"])

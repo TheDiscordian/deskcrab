@@ -138,23 +138,27 @@ for ACCT in $(claude_accounts); do
         # work needs. See claude_profile_flags; --tools without the empty MCP
         # config is the shape that TRIPLES the context.
         claude_profile_flags job
-        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        # $LOG fills AS the builder writes, not at completion. This used to
+        # exec straight into $STREAMLOG and turn the attempt's slice back into
+        # prose only after the CLI exited, so for a running job `crab job log`
+        # showed nothing, a stopped one kept nothing, and both were read, over
+        # and over, as "the job produced nothing". The tee keeps $STREAMLOG
+        # byte-identical for the viewer and the refusal slices below; the
+        # filter (lib/job-log-stream) writes the human report event by event,
+        # so a job killed mid-build leaves exactly what it had said by then.
+        # The subshell's exit code must stay the CLI's own — tee and the
+        # filter exit 0 whatever happened in front of them.
+        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
             --verbose --output-format stream-json \
             "${CLAUDE_PROFILE_FLAGS[@]}" \
             --append-system-prompt "$SYS" \
-            "$TASK" >> "$STREAMLOG" 2>&1
+            "$TASK" 2>&1 \
+            | tee -a "$STREAMLOG" \
+            | "$LIB_DIR/job-log-stream" >> "$LOG"
+        exit "${PIPESTATUS[0]}"
     )
     RC=$?
-    # This attempt, turned back into prose for $LOG. A line that is not JSON is
-    # standard error or the CLI's own usage complaint, and a turn that died on a
-    # bad flag must not read as a turn that said nothing — those lines are kept
-    # verbatim, ahead of whatever the model actually wrote.
-    ATTSLICE="$(mktemp "${TMPDIR:-/tmp}/deskcrab-jobatt-XXXXXX")"
-    tail -c +$(( ATT_OFF + 1 )) "$STREAMLOG" > "$ATTSLICE" 2>/dev/null
-    grep -vE '^[[:space:]]*(\{|$)' "$ATTSLICE" >> "$LOG" 2>/dev/null
-    DESKCRAB_DEBUGLOG="$ATTSLICE" "$LIB_DIR/extract-response" >> "$LOG" 2>/dev/null
-    rm -f "$ATTSLICE"
     [ "$RC" -ne 0 ] || break
     # Judged on the CLI's OWN events in this attempt's slice, never on its raw
     # bytes. A stream carries every byte of every tool result, so grepping it

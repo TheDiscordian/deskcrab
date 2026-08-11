@@ -95,13 +95,22 @@ back to her.
     [self-awareness.md](self-awareness.md) rules 31 and 32.
 25. `crab jobs` MUST list running, finished, and failed jobs. `crab job log <id>` MUST show a job's
     output.
+26. The human log MUST fill as the builder writes, never only at completion. It used to be
+    assembled from the stream after each attempt ended, so `crab job log` on a running or stopped
+    job read as empty, and "the job produced nothing" was the natural — and wrong — reading of work
+    that was half done. The worker pipes the builder's live stream through a filter into the log
+    (behind a tee that keeps the raw stream byte-identical for the viewer and the per-attempt
+    refusal slices), so a running job shows its partial report and a stopped one keeps whatever it
+    had said. `crab job log <id>` on a running job whose log is still empty MUST say so explicitly
+    rather than print nothing, and an id with no sidecar MUST be an error — never dispatched as a
+    job whose task begins with the word `log`, the trap `job stop` fell into once.
 
 ## DATA
 
 | Path | Format |
 |---|---|
 | `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit}` |
-| `~/.local/share/deskcrab/jobs/<id>.log` | the worker's raw output |
+| `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
@@ -170,7 +179,10 @@ dispatching turn holds.
 
 ## TESTS
 
-**Existing:** `tests/test_job_block.sh` (blocked-versus-failed, the retry window, the force flag).
+**Existing:** `tests/test_job_block.sh` (blocked-versus-failed, the retry window, the force flag);
+`tests/test_job_livelog.sh` (rule 26: the log fills while the builder runs, a stopped job keeps its
+partial output, the pipeline preserves the CLI's exit code, and the empty-but-running and unknown-id
+answers of `crab job log`).
 
 **To be written:**
 

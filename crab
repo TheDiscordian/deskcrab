@@ -415,8 +415,29 @@ What you did tonight is journaled from your tool activity without your help, so 
         # finishes. `crab job log <id>` shows a job's output; anything else
         # after `job` is the description of the work itself.
         shift
-        if [ "${1:-}" = "log" ] && [ -n "${2:-}" ] && [ -e "$JOBS_DIR/$2.json" ]; then
-            if [ -f "$JOBS_DIR/$2.log" ]; then cat "$JOBS_DIR/$2.log"; else echo "Job $2 has produced no output yet."; fi
+        if [ "${1:-}" = "log" ]; then
+            # `log` owns its word outright: before this, a mistyped id fell
+            # through to dispatch and could start a real builder on the task
+            # "log 20260810-…" — the same trap `job stop` fell into once.
+            if [ -z "${2:-}" ] || [ ! -e "$JOBS_DIR/$2.json" ]; then
+                echo "No such job: ${2:-<id missing>}   (ids: crab jobs)"
+                exit 1
+            fi
+            if [ -s "$JOBS_DIR/$2.log" ]; then
+                cat "$JOBS_DIR/$2.log"
+            else
+                # An empty log is an answer, not a blank. The log fills live
+                # while a builder runs (specs/jobs.md rule 26), but early in a
+                # run there may be nothing in it yet — and printing nothing
+                # was read, every time, as "the job produced nothing" rather
+                # than "not yet".
+                JOBSTATE="$("$LIB_DIR/job-status" get "$JOBS_DIR/$2.json" state 2>/dev/null)"
+                if [ "$JOBSTATE" = running ]; then
+                    echo "Job $2 is still running — no output captured yet. The log fills as the builder writes: $JOBS_DIR/$2.log"
+                else
+                    echo "Job $2 (${JOBSTATE:-unknown}) captured no output. Log path: $JOBS_DIR/$2.log"
+                fi
+            fi
             exit 0
         fi
         if [ "${1:-}" = "stop" ]; then
