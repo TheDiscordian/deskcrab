@@ -241,6 +241,18 @@ def state_json(port):
         return json.loads(r.read().decode())
 
 
+def post_json(port, path, obj=None):
+    data = json.dumps(obj).encode() if obj is not None else b""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=data,
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
+
+
 def s_http(port):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as r:
         page = r.read().decode()
@@ -698,6 +710,82 @@ def s_postkill(port, chess_dir):
     ok("play continued in the same game after the restart")
 
 
+def s_resign(port, chess_dir, wake_log):
+    # Seeded: resign-001 against guest, her side black, e4 e5 played — the
+    # user is white with the move. The browser resigns the user's side
+    # through POST /resign (rule 19), and New Game then deals the next game
+    # with the colours swapped (rule 4).
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 0, "the user should be white"
+    c.expect_move("e2", "e4")
+    c.expect_move("e7", "e5")
+
+    status, j = post_json(port, "/resign", {"game": "resign-999"})
+    assert status == 409 and "error" in j, (status, j)
+    assert game_moves(chess_dir, "resign-001") == ["e2e4", "e7e5"]
+    with open(Path(chess_dir) / "games" / "resign-001.json") as fh:
+        assert json.load(fh)["resigned_by"] is None
+    ok("a mismatched game id is refused, nothing written")
+
+    status, j = post_json(port, "/resign", {"game": "resign-001"})
+    assert status == 200 and j.get("ok"), (status, j)
+    assert j["result"] == "0-1", j
+    f = c.expect(GAME_COMPLETE)
+    assert f.get(1, 0) == 1, f"wanted BlackWin(1), got {f}"
+    ok("the user's resign is announced to the board as BlackWin")
+    with open(Path(chess_dir) / "games" / "resign-001.json") as fh:
+        assert json.load(fh)["resigned_by"] == "white"
+    ok("resigned_by records the user's side, never hers")
+    st = state_json(port)
+    assert st["state"] == "resigned" and st["result"] == "0-1", st
+    ok("/state shows the finished result for the page's chrome")
+
+    status, j = post_json(port, "/resign")
+    assert status == 409 and "error" in j, (status, j)
+    ok("a finished game cannot be resigned twice")
+    wake = Path(wake_log).read_text()
+    assert "resign-001" in wake and "resigned" in wake and "ended" in wake
+    ok("the end-of-game wake says how the game ended")
+
+    c.send(NEWGAME)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 1, "colours should swap: the user plays black now"
+    ok("New Game after the resign deals a fresh game, colours swapped")
+    st = state_json(port)
+    assert st["game"] == "guest-001" and st["state"] == "active", st
+    assert st["human_side"] == "black", st
+    ok("/state answers for the new game, the user black")
+
+
+def s_newgame_active(port, chess_dir):
+    # Seeded: live-001 against guest, active, e4 on the board. New Game on a
+    # live game must create nothing — and must not be silent (rule 4).
+    games = Path(chess_dir) / "games"
+    before = sorted(p.name for p in games.glob("*.json"))
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.expect(TEAM)
+    c.expect_move("e2", "e4")
+
+    c.send(NEWGAME)
+    f = c.expect(ERROR)
+    text = bytes(f.get(1, b"")).decode()
+    assert "live-001" in text and "Resign" in text, text
+    ok("New Game on a live game answers an Error naming the way out")
+    c.expect(TEAM)          # the sync still follows, stock clients need it
+    c.expect_move("e2", "e4")
+    ok("the sync still follows the refusal")
+    after = sorted(p.name for p in games.glob("*.json"))
+    assert after == before, (before, after)
+    ok("no game was created or replaced by the refused click")
+
+
 def s_wakecap(port, chess_dir, gid, exchanges):
     # Rule 7's per-game cap: moves at browser speed, each of her replies
     # booking the post-move wake through whatever wake command the shell
@@ -735,6 +823,7 @@ def main():
      "poller_end": s_poller_end, "reset": s_reset, "rejoin": s_rejoin,
      "postkill": s_postkill, "reflex": s_reflex,
      "supersede": s_supersede, "shipped": s_shipped,
+     "resign": s_resign, "newgame_active": s_newgame_active,
      "wakecap": s_wakecap}[what](port, *rest)
 
 

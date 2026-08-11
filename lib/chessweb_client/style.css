@@ -130,6 +130,21 @@ button:disabled {
 	cursor: default;
 }
 
+/* The Resign button: red-edged at rest, unmistakable once armed. */
+button.danger { border-color: rgba(217, 128, 128, 0.45); }
+
+button.danger:hover:not(:disabled) {
+	background: #4a2f35;
+	border-color: var(--bad);
+}
+
+button.armed,
+button.armed:hover:not(:disabled) {
+	background: var(--bad);
+	border-color: var(--bad);
+	color: #14121b;
+}
+
 .dot {
 	width: 0.65em;
 	height: 0.65em;

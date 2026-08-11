@@ -396,7 +396,17 @@ class Store:
 
     def create(self):
         if self.random_side:
-            self.her_side = random.choice(("white", "black"))
+            # "random" alternates (rule 4): the user gets the colour they
+            # did not have in the most recent game against this opponent,
+            # whatever its state; only the very first game is a coin flip.
+            prev = [g for g in chess_cli.load_all()
+                    if chess_cli.slugify(g["opponent"])
+                    == chess_cli.slugify(self.opponent)]
+            if prev:
+                self.her_side = ("black" if prev[-1]["my_side"] == "white"
+                                 else "white")
+            else:
+                self.her_side = random.choice(("white", "black"))
         slug = chess_cli.slugify(self.opponent)
         taken = {g["id"] for g in chess_cli.load_all()}
         n = 1
@@ -746,6 +756,48 @@ class Hub:
             f"her voice after {san} in {gid}",
             cap_prefix=f"chessweb: you played a move in game {gid}")
 
+    def resign_human(self, want_gid=None):
+        """POST /resign (rule 19): the user gives up their own side of the
+        loaded game — never hers. Records resigned_by exactly as
+        `betty-chess resign <id> --side <their colour>` would, tells every
+        board, and books the end-of-game wake. want_gid, when the client
+        sends one, must match the loaded game: a board left open on
+        yesterday's game must not resign today's."""
+        with self.lock:
+            g = self.store.load()
+            if g is None:
+                return {"error": "No game to resign."}, 409
+            if want_gid and g["id"] != want_gid:
+                return {"error": f"The board shows {want_gid} but the "
+                                 f"live game is {g['id']} — reload the "
+                                 f"page first."}, 409
+            board = chess_cli.build_board(g)
+            if chess_cli.compute_state(g, board)[0] != "active":
+                desc = chess_cli.compute_state(g, board)[1]
+                return {"error": f"{g['id']} is already over ({desc})."}, 409
+            human = ("white" if self.human_side() == chess.WHITE
+                     else "black")
+            g["resigned_by"] = human
+            chess_cli.save_game(g)
+            self.synced = list(g["moves"])
+            self.pending_promo = None
+            self.over_announced = True
+            key, desc, result = chess_cli.compute_state(g, board)
+            self.broadcast(self.result_msg(key, result))
+            self.activity.update(poked_at=None, started_at=None,
+                                 played_at=None, san=None)
+            log(f"{g['id']}: the user resigned as {human} from the "
+                f"browser [{result}]")
+            self.book_wake(
+                f"chessweb: the game against {g['opponent']} ({g['id']}) "
+                f"just ended — {desc} [{result}]: the user resigned from "
+                f"the browser board. "
+                f"History: {chess_cli.history(g['moves'])}. "
+                f"Board: betty-chess show {g['id']}",
+                f"the end of {g['id']}")
+            return {"ok": True, "game": g["id"], "desc": desc,
+                    "result": result}, 200
+
     # -- protocol ----------------------------------------------------------
     def on_join(self, conn, player):
         if not player:
@@ -787,8 +839,14 @@ class Hub:
             return
         self.pending_promo = None
         g = self.store.load()
-        if g is None or chess_cli.compute_state(
-                g, chess_cli.build_board(g))[0] != "active":
+        if g is not None and chess_cli.compute_state(
+                g, chess_cli.build_board(g))[0] == "active":
+            # A New Game click is never silent (rule 4): the live game
+            # stays, and the seat is told the way out.
+            conn.send(msg_error(
+                f"{g['id']} is still going — Resign ends it, then "
+                f"New Game deals the next."))
+        else:
             g = self.store.create()
         self.synced = list(g["moves"])
         self.over_announced = False
@@ -1015,7 +1073,11 @@ def make_handler(hub, client_dir):
             self.static()
 
         def do_POST(self):
-            if self.path.split("?", 1)[0] != "/thinking":
+            path = self.path.split("?", 1)[0]
+            if path == "/resign":
+                self.resign()
+                return
+            if path != "/thinking":
                 self.send_error(404)
                 return
             length = int(self.headers.get("Content-Length") or 0)
@@ -1028,6 +1090,20 @@ def make_handler(hub, client_dir):
             if first:
                 hub.notify_phone()
             self.json_body({"ok": True})
+
+        def resign(self):
+            """POST /resign (rule 19): the whole body is an optional
+            {"game": "<id>"} guard; the verdict comes from the hub."""
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            want = None
+            if body:
+                try:
+                    want = json.loads(body).get("game")
+                except (ValueError, AttributeError):
+                    want = None
+            obj, status = hub.resign_human(want)
+            self.json_body(obj, status)
 
         def thinking_state(self):
             with hub.lock:
@@ -1079,9 +1155,9 @@ def make_handler(hub, client_dir):
                      "legal": legal,
                      "last": g["moves"][-1] if g["moves"] else None})
 
-        def json_body(self, obj):
+        def json_body(self, obj, status=200):
             body = json.dumps(obj).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))

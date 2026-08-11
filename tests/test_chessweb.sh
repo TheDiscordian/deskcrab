@@ -62,7 +62,8 @@ MOVER_LOG=""
 REPLIES=""
 DELAY=""
 # --human-side is pinned to white because the scenarios' colour assertions
-# predate the per-game coin flip; a scenario's own args can still override it.
+# predate the per-game colour choice (the flip, now the alternation);
+# a scenario's own args can still override it.
 start_bridge() { # <chess dir> <wake log> [serve args...]
     local dir="$1" wakelog="$2"
     shift 2
@@ -221,6 +222,23 @@ seed "$CH" mate-001 guest black \
     e2e4 e7e5 f1c4 b8c6 d1h5 g8f6
 if start_bridge "$CH" "$SANDBOX/wake-mate.log" --opponent guest; then
     scn mate "$PORT" "$CH" "$SANDBOX/wake-mate.log"
+fi
+stop_bridge
+
+echo "resign from the browser; New Game deals the next, colours swapped:"
+CH="$SANDBOX/chess-resign"
+seed "$CH" resign-001 guest black e2e4 e7e5
+if start_bridge "$CH" "$SANDBOX/wake-resign.log" --opponent guest \
+        --human-side random; then
+    scn resign "$PORT" "$CH" "$SANDBOX/wake-resign.log"
+fi
+stop_bridge
+
+echo "New Game on a live game creates nothing, and is never silent:"
+CH="$SANDBOX/chess-nglive"
+seed "$CH" live-001 guest black e2e4
+if start_bridge "$CH" "$SANDBOX/wake-nglive.log" --opponent guest; then
+    scn newgame_active "$PORT" "$CH"
 fi
 stop_bridge
 

@@ -66,9 +66,15 @@ cannot be changed.
 4. NewGame from the seat syncs the browser to the stored game: Team with the user's colour, then
    the stored move list replayed as broadcasts (a promotion replays as its Move then its
    Promote). If no game is active, one is created in the betty-chess store first — opponent from
-   `--opponent`, her side from the complement of `--human-side`, which defaults to `random` — a fresh coin flip per
-   new game, not once per process, so a long-lived server does not hand out one colour forever.
-   `--game` pins a specific game id instead of newest-active-against-opponent.
+   `--opponent`, her side from the complement of `--human-side`, which defaults to `random`.
+   `random` alternates: the user gets the colour they did not have in the most recent game
+   against this opponent, whatever its state, so the colours swap game after game; only the
+   first game against an opponent is a coin flip. Either way the choice is made per new game,
+   not once per process, so a long-lived server does not hand out one colour forever.
+   NewGame while the stored game is still active creates nothing — and is never silent: the
+   seat gets an Error naming the way out (Resign ends the game, then New Game deals the next),
+   and the sync still follows, so a stock client that leans on NewGame as its sync loses
+   nothing. `--game` pins a specific game id instead of newest-active-against-opponent.
 5. An incoming user Move or Promote is translated to UCI and validated against the stored game's
    board with python-chess before anything else happens. Illegal, out-of-turn, or unseated
    attempts get an Error and change nothing — on disk or on any board. The bridge's judgement,
@@ -283,6 +289,16 @@ cannot be changed.
     python-chess remains the one judge of chess on this machine. The endpoint is advisory and
     changes nothing; rule 5's validation of the recorded wire message stays the rules, and a
     client that never fetches it (the stock one) plays exactly as before.
+19. `POST /resign` resigns the **user's** side of the loaded game — never hers: the browser can
+    only give up its own seat's game. Under the hub lock the stored game is re-read; when it is
+    missing or already over — or when the request body names a game (`{"game": "<id>"}`) that is
+    not the one loaded, a board left open on yesterday's game — the answer is a refusal (HTTP
+    409, `{"error": ...}`) and nothing is written. Otherwise `resigned_by` is recorded through
+    `chess_cli.save_game`, exactly what `betty-chess resign <id> --side <the user's colour>`
+    would write, every connection gets its GameComplete (rule 9), and the end-of-game wake is
+    booked (rule 7) saying the user resigned from the browser. The endpoint rides HTTP like
+    `/state` because the stock wire has no Resign message; the LAN-trust posture (KNOWN LIMITS)
+    covers it exactly as it covers the seat itself.
 
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 
@@ -304,6 +320,12 @@ the stock page. What it owes beyond the protocol:
   read from the applied broadcasts (a regular Move onto an occupied square, the pawn an
   en-passant wire names), a Promote re-values material from the board, and a Team resync rebuilds
   both panels from zero — so a rejoin's graveyards match the store's game, always.
+- **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
+  It never fires on one click: the first click arms it and says so on its own label, a second
+  click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on
+  its own. The finish then arrives like any other — GameComplete off the wire, the words and
+  result off `/state` — because the resign endpoint answers the store, and the store answers
+  every board.
 - **Movement.** Drag-and-drop and click-click both work, mouse or touch. Pickup highlights the
   legal targets rule 18 names; an illegal drop snaps back — refused locally when the legal list
   is current for the shown ply, by the server's Error otherwise. Promotion is the stock two-phase
