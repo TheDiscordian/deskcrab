@@ -93,9 +93,14 @@ snapshot() {
         # Deliberately NOT jobs/, wakes/, archive/, webpush/, venv/ — plumbing
         # that churns on every session and would drown the signal.
         find "$DATA_DIR" -maxdepth 1 -type f -name '*.md' -printf '%s.%T@\t%p\n' 2>/dev/null
+        # Some of these drawers are git repositories of their own (conduct
+        # is). The commits are the record; the plumbing under .git — refs,
+        # logs, index, COMMIT_EDITMSG — is noise, so prune it, the same
+        # invisibility `git ls-files` gives the code repo below.
         local d
         for d in wants conduct engineering journal; do
-            [ -d "$DATA_DIR/$d" ] && find "$DATA_DIR/$d" -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+            [ -d "$DATA_DIR/$d" ] \
+                && find "$DATA_DIR/$d" -name .git -prune -o -type f -printf '%s.%T@\t%p\n' 2>/dev/null
         done
         [ -f "$DATA_DIR/memory/memory.db" ] \
             && stat --printf '%s.%Y\t%n\n' "$DATA_DIR/memory/memory.db" 2>/dev/null
@@ -111,8 +116,10 @@ snapshot() {
         local IFS=':'
         for d in $SELF_WATCH_EXTRA; do
             # A plain file counts too — a single context file is as much a part
-            # of her as a directory of them.
-            [ -d "$d" ] && find "$d" -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+            # of her as a directory of them. And an extra directory may be a
+            # git repository of its own too — same .git prune as the drawers.
+            [ -d "$d" ] \
+                && find "$d" -name .git -prune -o -type f -printf '%s.%T@\t%p\n' 2>/dev/null
             [ -f "$d" ] && stat --printf '%s.%Y\t%n\n' "$d" 2>/dev/null
         done
     } | sort -t "$TAB" -k2

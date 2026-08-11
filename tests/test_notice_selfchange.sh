@@ -201,3 +201,25 @@ mkdir -p "$T/repo/ignored-stuff"
 echo "scratch" > "$T/repo/ignored-stuff/scratch.txt"
 run
 check "ignored file fires nothing" [ "$(wakes)" = 13 ]
+
+echo "== .git internals under a watched drawer are invisible (the drawer is a repo of its own) =="
+# The incident of 2026-08-11: conduct is a git repository, and a commit made
+# there by her own hand woke her thirteen minutes later about refs/heads,
+# logs/HEAD, COMMIT_EDITMSG and the index. The commits are the record; the
+# plumbing is noise (spec rule 25a).
+git -C "$T/data/deskcrab/conduct" init -q -b main
+run
+check "a drawer growing its own .git fires nothing" [ "$(wakes)" = 13 ]
+git -C "$T/data/deskcrab/conduct" -c user.email=t@t -c user.name=t add -- new-rule.md older-rule.md
+git -C "$T/data/deskcrab/conduct" -c user.email=t@t -c user.name=t commit -qm "rules committed"
+run
+check "a commit's .git plumbing fires nothing" [ "$(wakes)" = 13 ]
+# The extra watch set gets the same treatment. A creation under the library
+# could hide behind a lingering weak-directory record, so the teeth are in the
+# MODIFICATION: weak records never excuse those, only the prune keeps it quiet.
+mkdir -p "$T/library/.git"
+echo "index bytes" > "$T/library/.git/index"
+run
+echo "more index bytes" >> "$T/library/.git/index"
+run
+check "extra-dir .git internals fire nothing either" [ "$(wakes)" = 13 ]
