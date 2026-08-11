@@ -349,9 +349,13 @@ trim that may have cut into a multibyte character MUST drop the partial characte
 write its leading bytes. There MUST be exactly ONE implementation of that trim — `utf8_trim` in
 lib/common.sh — and every bounded cut of a one-line text field goes through it: this ledger's
 reason, the sessions log outcome, checkpoints, the account log reason, the held-note words, the
-stream last-words tail, notification bodies. The incident above was fixed here first and found
-five more unguarded copies of the same byte cut the same night; a private copy of the pipeline is
-how the next one appears.
+stream last-words tail, notification bodies. A byte-bounded cut of MULTI-LINE material — a
+document handed whole into a prompt, where the flatten a one-line field wants would destroy the
+structure the reader needs — takes the identical repair through `utf8_head` beside it, the
+document-shaped counterpart with the newlines kept; the backlog drain's selection material
+([nightly.md](nightly.md) rule 58a) is its callers. The incident above was fixed here first and
+found five more unguarded copies of the same byte cut the same night, and four more in the drain's
+document cuts the same week; a private copy of the pipeline is how the next one appears.
 
 ## The lifecycle
 

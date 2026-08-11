@@ -431,6 +431,24 @@ utf8_trim() {  # <text> <max bytes>
     fi
 }
 
+# The same repair for a document-shaped cut. Some material is bounded by
+# bytes while staying multi-line — a whole file handed into a model prompt,
+# where utf8_trim's flatten would destroy the very structure the reader
+# needs — and a bare `head -c` on it leaves the same stray lead byte, this
+# time inside the prompt and the stream log that records it (specs/nightly.md
+# rule 58a; the backlog drain's selection material is the callers). So the
+# document-shaped counterpart: the byte cut, then the identical
+# explicit-charset iconv pass, newlines kept. Reads the named file, or stdin
+# without one; without iconv the byte cut is, as above, still better than
+# nothing.
+utf8_head() {  # <max bytes> [file]
+    if command -v iconv >/dev/null 2>&1; then
+        head -c "$1" "${@:2}" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null
+    else
+        head -c "$1" "${@:2}"
+    fi
+}
+
 # --- Self-awareness: who else is running right now -------------------------
 # Every claude invocation registers itself here so that any one of them can see
 # the others. Without this an interactive turn has no idea a wake is working in

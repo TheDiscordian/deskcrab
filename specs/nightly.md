@@ -242,6 +242,15 @@ and then the night finishes normally, so the assistant ends it idle and availabl
     never a decision that is the user's to make, and never a thread that names a hand already on
     it. When nothing qualifies and nothing the drain dispatched tonight is still running, the
     drain ends; it MUST NOT poll an empty backlog to the cutoff.
+58a. The material the selector reads — the thread log, the open list, the index, the job list — is
+    bounded by bytes, and every one of those cuts MUST fall on a character boundary, through
+    `utf8_head`, the document-shaped counterpart of the one shared trim
+    ([wake-queue.md](wake-queue.md) DATA): a bare `head -c` on prose people wrote splits whatever
+    multibyte character straddles the budget, and the lone lead byte it leaves lands in the
+    selector's prompt and the night's stream log as invalid UTF-8 — the same defect that made grep
+    read the entire wake ledger as binary. The partial character is dropped whole, characters
+    clear of the boundary are content and survive, and the prompt handed to the selector MUST be
+    valid UTF-8 whatever lands on any of the four budgets.
 59. Every dispatch lands on a durable ledger — night, thread key, job id, title — and the ledger is
     read back into every later round and every later night, so the drain never re-dispatches a
     thread on its own initiative. The ledger is the drain's one write and MUST be declared
@@ -346,6 +355,10 @@ running job; validation skips null-shaped briefs, thin briefs, and threads alrea
 NOTHING verdict with nothing of tonight's running ends the drain early; a blocked job door ends it
 for the night; the cutoff stops dispatch; and a drain that cannot even parse its cutoff never
 unstamps the night (exercised through `sleep-nightly run`).
+`tests/test_backlog_drain_utf8.sh` — rule 58a: with an em-dash straddling every one of the four
+byte budgets at once, the prompt the selector receives is valid UTF-8, plain grep — no `-a` —
+still reads it, each split character is dropped whole at its boundary, an em-dash clear of the
+boundary survives intact, and the budgets themselves still hold.
 `tests/test_sleep_stamp_coverage.sh` — rule 14a: the header parsed to chunks, chars and passes;
 the pass-count fallback where the header predates stating it; a field the log never states is
 omitted; a log with no header still stamps and still counts as slept; and the status command

@@ -173,7 +173,7 @@ cmd_run() {
         # so the count below is of jobs actually running — and its text is
         # the duplicate-evidence the selector reads.
         local JOBS_TEXT RUNNING FREE
-        JOBS_TEXT="$("$CRAB" jobs 2>/dev/null | head -c 6000)"
+        JOBS_TEXT="$("$CRAB" jobs 2>/dev/null | utf8_head 6000)"
         RUNNING="$(running_jobs)"
         FREE=$(( CAP - RUNNING ))
         if [ "$FREE" -le 0 ]; then
@@ -184,10 +184,14 @@ cmd_run() {
             continue
         fi
 
+        # utf8_head, never a bare `head -c`, for every one of these — a byte
+        # cut through a multibyte character would hand the selector and the
+        # night's stream log invalid UTF-8 (rule 58a; the wake ledger's
+        # incident, in prompt form).
         local THREADS OPENF INDEXF LISTING LEDGER_TAIL
-        THREADS="$(head -c 24000 "$THREADS_FILE" 2>/dev/null)"
-        OPENF="$(head -c 12000 "$THREADS_DIR/OPEN.md" 2>/dev/null)"
-        INDEXF="$(head -c 2000 "$THREADS_DIR/INDEX.md" 2>/dev/null)"
+        THREADS="$(utf8_head 24000 "$THREADS_FILE" 2>/dev/null)"
+        OPENF="$(utf8_head 12000 "$THREADS_DIR/OPEN.md" 2>/dev/null)"
+        INDEXF="$(utf8_head 2000 "$THREADS_DIR/INDEX.md" 2>/dev/null)"
         LISTING="$(ls -1 "$THREADS_DIR" 2>/dev/null | head -80)"
         LEDGER_TAIL="$(tail -n 40 "$LEDGER" 2>/dev/null)"
         [ -n "$LEDGER_TAIL" ] || LEDGER_TAIL="(none yet)"
