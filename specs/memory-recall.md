@@ -85,8 +85,14 @@ rule: degradation must never be as quiet as working.
 28. Deduplication MUST be by measured thresholds: an exact normalised match of the same kind bumps
     last-seen; a very close match with different text supersedes, newer winning, with the old record
     left readable and excluded from retrieval; anything below simply adds.
-29. **Ingest MUST NOT tail-clamp its input.** A day's journal larger than the input cap means the
-    day's earliest material is never ingested at all. Chunk it.
+29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
+    would lose its earliest material to a tail-clamp, so the chunk list is split into successive
+    windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a
+    single chunk longer than the cap gets a window of its own and still travels whole. The
+    distiller runs once per window, in order, and the candidate lists are concatenated before
+    deduplication, which already absorbs overlap between passes. The run MUST say what it did: the
+    total character count always, and, when there is more than one window, how many passes and the
+    size of each — a long day is visibly slept through, never quietly cut.
 30. The ingest session and the turn-end judge MUST run under the account chain, like every other
     model call. Both reach the CLI through this module's own runner, so the chain is walked there;
     one shot at the login handed in loses a whole turn's reinforcement the moment that account goes
@@ -193,7 +199,7 @@ judge), `crab memory`, and the nightly sleep.
 | `MAJ-20` | The suppression declaration ignores every isolation knob and is written unconditionally when the store opens. Scratch store paths are in the live declaration file. |
 | `MAJ-22` | The wake query boundary is exclusive where it should be inclusive, so an agenda exactly at the budget composes an empty query. Latent today — live agendas are far under the budget — but it is the boundary the first long agenda hits, and the belief that it was firing was itself the harm. |
 | `MAJ-26` | Retrieval alone resets the decay clock, so a note that is surfaced constantly and credited never is frozen at full confidence forever. |
-| `MAJ-32` | Ingest tail-clamps a single prompt, and the cap is saturated against the current journal, so the day's earliest material is never ingested. |
+| `MAJ-32` | Ingest tail-clamped a single prompt with the cap saturated against the live journal, so the day's earliest material was never ingested. Closed 2026-08-11 by rule 29's windowing: one distiller pass per whole-chunk window, candidates concatenated, every pass reported. |
 | `MIN-27` | Closed 2026-08-11 by rule 14's rewrite: block truncation no longer exists to pop anything. |
 | `MIN-28` | The block's fail-safe does not catch a malformed embedder response, and the caller discards the warning. The prompt loses both. |
 | `H3` / `RC-6` | The store's model calls do not walk the account chain and have no limit detection. Closed for the judge and the ingest distiller on 2026-08-08: both go through one runner, which walks the chain on a limit-shaped refusal and logs which login answered. The embedder is a different daemon and has no chain. |
@@ -205,7 +211,10 @@ the account chain — a refused login moves to the next, a chain that is entirel
 judgement and says so in the judge log, and a failure that is not a refusal spends no second login —
 and, since 2026-08-11, the whole-block cases of rule 14, the relative-when ladder and rendering of
 rule 36, the recency factor and its floor of rule 37, the schema migration for `occurred`, the
-duplicate fill of rule 39, and the backfill edges of rule 40),
+duplicate fill of rule 39, the backfill edges of rule 40, and the ingest windowing of rule 29 — one
+window when the day fits, whole-chunk windows when it does not, an oversized chunk surviving alone
+and whole, and a multi-window ingest handing every window to the distiller with its passes reported
+and nothing lost),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).
@@ -224,4 +233,3 @@ reinforce, end to end, including a wordless wake).
 - `tests/test_memory_block.py` — a malformed embedder response degrades to the pinned tier and
   emits the warning. (The pinned-survives-truncation half died with truncation itself: rule 14, and
   the whole-block cases now in `tests/test_memory.py`.)
-- `tests/test_memory_ingest.py` — a journal larger than the input cap is ingested in full.

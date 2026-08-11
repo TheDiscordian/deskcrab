@@ -1051,6 +1051,27 @@ def transcript_delta(transcripts_dir, cursor, cap=20000):
     return chunks
 
 
+def window_chunks(chunks, max_chars):
+    """Split a chunk list into successive windows, each at most max_chars once
+    joined with the ingest separator, breaking only on whole chunk boundaries.
+    A single chunk longer than max_chars gets a window of its own and still
+    travels whole: the cap bounds one distiller pass, it never cuts material
+    (memory-recall.md rule 29 — ingest windows, it does not trim)."""
+    windows = []
+    current, length = [], 0
+    for chunk in chunks:
+        cost = len(chunk) + (2 if current else 0)  # 2 for the "\n\n" join
+        if current and length + cost > max_chars:
+            windows.append(current)
+            current, length = [chunk], len(chunk)
+        else:
+            current.append(chunk)
+            length += cost
+    if current:
+        windows.append(current)
+    return windows
+
+
 def claude_bin():
     claude = os.environ.get("CLAUDE_BIN") or "claude"
     if not any(os.access(os.path.join(p, claude), os.X_OK)
@@ -1237,10 +1258,21 @@ def cmd_ingest(store, args):
         if not chunks:
             print("ingest: nothing new since last cursor")
             return 0
-        material = "\n\n".join(chunks)[-args.max_chars:]
-        print(f"ingest: {len(chunks)} new chunks, {len(material)} chars "
-              f"-> {args.model} for judgement...")
-        candidates = extract_candidates(material, args.model)
+        # Rule 29: never trim. A day past the cap is distilled in successive
+        # whole-chunk windows, in order, every pass reported — add_deduped
+        # below absorbs any overlap between passes.
+        materials = ["\n\n".join(w)
+                     for w in window_chunks(chunks, args.max_chars)]
+        total = sum(len(m) for m in materials)
+        print(f"ingest: {len(chunks)} new chunks, {total} chars "
+              f"-> {args.model} for judgement"
+              + (f" in {len(materials)} passes" if len(materials) > 1 else "")
+              + "...")
+        candidates = []
+        for i, material in enumerate(materials, 1):
+            if len(materials) > 1:
+                print(f"  pass {i}/{len(materials)}: {len(material)} chars")
+            candidates += extract_candidates(material, args.model)
 
     counts = {"added": 0, "duplicate": 0, "superseded": 0, "rejected": 0}
     for cand in candidates:

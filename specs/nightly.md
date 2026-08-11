@@ -315,7 +315,7 @@ reaches her through an event wake or through a record she reads.
 | `MAJ-23` | The tidy units are not in the repository. The one nightly process that moves lines between the shelf, conduct and the engineering threads, and deletes orphaned want documents, lives as an embedded command string with no test and no review path. |
 | `MAJ-24` | The engineering threads are maintained nightly and named in no prompt path. |
 | `MAJ-25` | The rot check has no caller. The stamp is write-only, so a stalled ingest surfaces nowhere. |
-| `MAJ-32` | Ingest tail-clamps its input against a journal several times the cap, so the day's earliest material is never ingested. |
+| `MAJ-32` | Ingest tail-clamped its input against a journal several times the cap, so the day's earliest material was never ingested. Closed 2026-08-11: the ingest now windows on whole chunk boundaries and runs the distiller once per window, reporting each pass ([memory-recall.md](memory-recall.md) rule 29). |
 | `MIN-30` | A stray file duplicates the engineering namespace: unreachable by every reader, and inside the watcher's glob. |
 | `MIN-31` | The tidy prompt asks for a dated prose line in a machine-written record, where the journal reader skips it and the ingest drops it. Tidy's own record never survives. |
 | `MIN-32` | The canary reports the path unit disabled and only revives it in-session, so it will not come back after a reboot. |

@@ -4,7 +4,9 @@
 # ranking, and warm embeds cost ~20 ms each. Run with the store's venv:
 #   ~/.local/share/deskcrab/venv/bin/python -m unittest tests/test_memory.py -v
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -954,7 +956,73 @@ class TestBackfill(StoreCase):
         self.assertEqual(self.occurred_of(rec), "2026-08-01")
 
 
+class TestWindowChunks(unittest.TestCase):
+    """memory-recall.md rule 29: ingest windows, it does not trim. The
+    windows break only on whole chunk boundaries, and joined with the
+    ingest separator each stays within the cap — except a single chunk
+    larger than the cap, which gets a window of its own and travels whole."""
+
+    def test_one_window_when_it_fits(self):
+        chunks = ["aa", "bb", "cc"]
+        self.assertEqual(memory.window_chunks(chunks, 100), [chunks])
+
+    def test_a_long_day_becomes_several_windows_and_loses_nothing(self):
+        chunks = [f"chunk {i} " + "x" * 40 for i in range(9)]
+        windows = memory.window_chunks(chunks, 120)
+        self.assertGreater(len(windows), 1)
+        for w in windows:
+            self.assertLessEqual(len("\n\n".join(w)), 120)
+        # No chunk split, lost, or reordered.
+        self.assertEqual(sum(windows, []), chunks)
+
+    def test_an_oversized_single_chunk_survives_whole(self):
+        big = "y" * 500
+        windows = memory.window_chunks(["aa", big, "bb"], 100)
+        self.assertEqual(windows, [["aa"], [big], ["bb"]])
+
+    def test_no_chunks_no_windows(self):
+        self.assertEqual(memory.window_chunks([], 100), [])
+
+
 class TestIngest(StoreCase):
+    def test_ingest_windows_a_long_day_instead_of_trimming(self):
+        """Rule 29 through cmd_ingest itself: a day past the cap reaches the
+        distiller in whole-chunk windows, in order, every pass reported."""
+        jdir = os.path.join(self.dir, "journal")
+        os.makedirs(jdir)
+        with open(os.path.join(jdir, "2026-08-10.jsonl"), "w") as f:
+            for i in range(12):
+                f.write(json.dumps(
+                    {"time": f"2026-08-10T{i:02d}:00:00-0400",
+                     "kind": "desktop", "user": f"turn {i} " + "x" * 60,
+                     "reply": "noted"}) + "\n")
+        seen = []
+        real = memory.extract_candidates
+        memory.extract_candidates = \
+            lambda material, model: (seen.append(material), [])[1]
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = memory.cmd_ingest(self.store, Namespace(
+                    dry_run=True, from_json=None, journal_dir=jdir,
+                    transcripts_dir=os.path.join(self.dir, "none"),
+                    model="stub", max_chars=300))
+        finally:
+            memory.extract_candidates = real
+        self.assertEqual(rc, 0)
+        self.assertGreater(len(seen), 1,
+                           "a single pass means the cap trimmed the day")
+        for material in seen:
+            self.assertLessEqual(len(material), 300)
+        # Joined back together, the passes are the whole day, in order.
+        self.assertEqual("\n\n".join(seen),
+                         "\n\n".join(memory.journal_delta(jdir, {})))
+        report = out.getvalue()
+        self.assertIn(f"in {len(seen)} passes", report)
+        for i, material in enumerate(seen, 1):
+            self.assertIn(f"pass {i}/{len(seen)}: {len(material)} chars",
+                          report)
+
     def test_journal_delta_and_cursor(self):
         jdir = os.path.join(self.dir, "journal")
         os.makedirs(jdir)
