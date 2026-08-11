@@ -1023,6 +1023,48 @@ class TestIngest(StoreCase):
             self.assertIn(f"pass {i}/{len(seen)}: {len(material)} chars",
                           report)
 
+    def test_dry_run_writes_nothing_and_still_names_the_candidate(self):
+        """Rule 41 (MAJ-33) end to end: a dry run whose distiller returns a
+        REAL candidate leaves the store untouched — no record, no cursor —
+        while the report still says what it would have added. Before the rule
+        the flag guarded decay and the cursor only, and the add loop wrote
+        every candidate into whatever store it was pointed at."""
+        seeded = self.store.insert("The lux sensor lives on the i2c bus.",
+                                   vec=[0.1] * memory.EMBED_DIM)
+        jdir = os.path.join(self.dir, "journal")
+        os.makedirs(jdir)
+        with open(os.path.join(jdir, "2026-08-10.jsonl"), "w") as f:
+            f.write(json.dumps(
+                {"time": "2026-08-10T09:00:00-0400", "kind": "desktop",
+                 "user": "the deadline moved to Friday",
+                 "reply": "noted"}) + "\n")
+        cands = [{"text": "The deadline moved to Friday.", "kind": "note",
+                  "topics": "scheduling", "occurred": "2026-08-10"}]
+        stub = os.path.join(self.dir, "claude-stub")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '"
+                    + json.dumps(cands) + "'\n")
+        os.chmod(stub, 0o755)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   XDG_RUNTIME_DIR=self.dir, CLAUDE_BIN=stub)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "ingest", "--dry-run", "--journal-dir", jdir,
+             "--transcripts-dir", os.path.join(self.dir, "none"),
+             "--model", "stub"],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("would add [note] (2026-08-10) "
+                      "The deadline moved to Friday.", proc.stdout)
+        self.assertIn("nothing written", proc.stdout)
+        rows = self.store.db.execute(
+            "SELECT id, text FROM memories").fetchall()
+        self.assertEqual(rows, [(seeded, "The lux sensor lives on the i2c bus.")],
+                         "a dry run wrote into the store")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.dir, "ingest-cursor.json")),
+            "a dry run advanced the cursor")
+
     def test_journal_delta_and_cursor(self):
         jdir = os.path.join(self.dir, "journal")
         os.makedirs(jdir)

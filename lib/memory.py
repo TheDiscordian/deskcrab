@@ -1275,6 +1275,7 @@ def cmd_ingest(store, args):
             candidates += extract_candidates(material, args.model)
 
     counts = {"added": 0, "duplicate": 0, "superseded": 0, "rejected": 0}
+    would = 0
     for cand in candidates:
         text = (cand.get("text") or "").strip()
         kind = cand.get("kind", "note")
@@ -1287,6 +1288,14 @@ def cmd_ingest(store, args):
         occurred = (cand.get("occurred") or "").strip() or None
         if occurred and not parse_iso(occurred):
             occurred = None
+        if args.dry_run:
+            # Rule 41 (MAJ-33): a dry run mutates nothing. The dedup verdict
+            # only exists on the far side of add_deduped's writes, so the
+            # rehearsal names the surviving candidate and withholds the store.
+            would += 1
+            print(f"  would add [{kind}]"
+                  + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
+            continue
         action, rec_id = store.add_deduped(
             text, kind=kind, source=cand.get("source", "conversation"),
             topics=cand.get("topics", ""), occurred=occurred)
@@ -1294,12 +1303,15 @@ def cmd_ingest(store, args):
         print(f"  {action} #{rec_id} [{kind}]"
               + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
 
-    if not args.dry_run:
-        with open(cursor_path, "w") as f:
-            json.dump(cursor, f, indent=1)
+    if args.dry_run:
+        print(f"ingest: dry run — {would} would be offered to the store, "
+              f"{counts['rejected']} rejected; nothing written, "
+              "cursor not advanced")
+        return 0
+    with open(cursor_path, "w") as f:
+        json.dump(cursor, f, indent=1)
     print(f"ingest: {counts['added']} added, {counts['superseded']} superseded, "
-          f"{counts['duplicate']} duplicates, {counts['rejected']} rejected"
-          + (" (dry run — cursor not advanced)" if args.dry_run else ""))
+          f"{counts['duplicate']} duplicates, {counts['rejected']} rejected")
     return 0
 
 

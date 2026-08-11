@@ -97,6 +97,12 @@ rule: degradation must never be as quiet as working.
     model call. Both reach the CLI through this module's own runner, so the chain is walked there;
     one shot at the login handed in loses a whole turn's reinforcement the moment that account goes
     dry, and loses it silently, because a judgement that cannot be made is skipped by design.
+41. **Ingest's `--dry-run` MUST NOT mutate the store at all** — no records added, no decay run, no
+    cursor advanced; the only product is the report. The distiller still runs, and every candidate
+    that survives validation is printed as what the pass WOULD add, so a dry run stays a real
+    rehearsal of the judgement with only the write withheld. The flag used to guard the decay pass
+    and the cursor write and nothing else, so a dry run against the live store wrote its
+    candidates in anyway (`MAJ-33`) — a flag whose name promises harmlessness delivers all of it.
 
 ### Temporal grounding
 
@@ -200,6 +206,7 @@ judge), `crab memory`, and the nightly sleep.
 | `MAJ-22` | The wake query boundary is exclusive where it should be inclusive, so an agenda exactly at the budget composes an empty query. Latent today — live agendas are far under the budget — but it is the boundary the first long agenda hits, and the belief that it was firing was itself the harm. |
 | `MAJ-26` | Retrieval alone resets the decay clock, so a note that is surfaced constantly and credited never is frozen at full confidence forever. |
 | `MAJ-32` | Ingest tail-clamped a single prompt with the cap saturated against the live journal, so the day's earliest material was never ingested. Closed 2026-08-11 by rule 29's windowing: one distiller pass per whole-chunk window, candidates concatenated, every pass reported. |
+| `MAJ-33` | Ingest's `--dry-run` guarded the decay pass and the cursor write but not the add loop, so a dry run with real distiller candidates wrote records into the live store. Closed 2026-08-11 by rule 41: a dry run adds nothing, decays nothing, advances nothing, and prints what it would have added. |
 | `MIN-27` | Closed 2026-08-11 by rule 14's rewrite: block truncation no longer exists to pop anything. |
 | `MIN-28` | The block's fail-safe does not catch a malformed embedder response, and the caller discards the warning. The prompt loses both. |
 | `H3` / `RC-6` | The store's model calls do not walk the account chain and have no limit detection. Closed for the judge and the ingest distiller on 2026-08-08: both go through one runner, which walks the chain on a limit-shaped refusal and logs which login answered. The embedder is a different daemon and has no chain. |
@@ -211,10 +218,12 @@ the account chain — a refused login moves to the next, a chain that is entirel
 judgement and says so in the judge log, and a failure that is not a refusal spends no second login —
 and, since 2026-08-11, the whole-block cases of rule 14, the relative-when ladder and rendering of
 rule 36, the recency factor and its floor of rule 37, the schema migration for `occurred`, the
-duplicate fill of rule 39, the backfill edges of rule 40, and the ingest windowing of rule 29 — one
+duplicate fill of rule 39, the backfill edges of rule 40, the ingest windowing of rule 29 — one
 window when the day fits, whole-chunk windows when it does not, an oversized chunk surviving alone
 and whole, and a multi-window ingest handing every window to the distiller with its passes reported
-and nothing lost),
+and nothing lost — and the dry-run guard of rule 41: real candidates from a stubbed distiller, the
+record count unchanged afterwards, no cursor written, and the would-add report naming the
+candidate),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).
