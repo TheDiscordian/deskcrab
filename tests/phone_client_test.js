@@ -1493,6 +1493,135 @@ async function testSendTypedDispatch() {
   else bad("an idle page must run the message", ran.join(","));
 }
 
+// --- the voice queue's failure attribution (spec rule 44, C16) --------------
+//
+// A source that fails to load signals twice: the element fires its error
+// event (which reports the media error and advances the queue), and the dead
+// clip's play() promise rejects a beat later. The rejection handler used to
+// treat every rejection as an autoplay refusal — blamed on whichever clip was
+// current by the time it landed, clearing that clip's playing flag underneath
+// it — and offered the ▶ button wired to the source that cannot load.
+// Measured live 2026-08-11 00:22: three 404'd clips, "autoplay refused"
+// reported against the wrong indices, and a button that did nothing.
+
+function liftBetween(a, b) {
+  const s = src.indexOf(a);
+  if (s < 0) throw new Error("not found in index.html: " + a);
+  const e = src.indexOf(b, s);
+  if (e < 0) throw new Error("no end marker after " + a + ": " + b);
+  return src.slice(s, e + b.length);
+}
+
+function voiceCtx() {
+  const reports = [], offered = [], listeners = {};
+  const ctx = {
+    voiceQueue: [], voicePlaying: false, voiceMuted: false,
+    playerMeta: null, playerStarted: false,
+    plays: [],                        // one scripted play() result per clip
+    reportPlay: (meta, event, detail) =>
+      reports.push({ clip: meta && meta.clip, event, detail: detail || "" }),
+    updateTalkBtn: () => {},
+    offerPlay: (u) => offered.push(u),
+    player: {
+      src: "", error: null,
+      addEventListener: (k, fn) => {
+        (listeners[k] = listeners[k] || []).push(fn);
+      },
+      load() {},
+      play() {
+        const r = ctx.plays.shift();
+        return r ? r() : Promise.resolve();
+      },
+    },
+    _reports: reports, _offered: offered,
+    _fire: (k) => (listeners[k] || []).forEach((f) => f()),
+  };
+  // The real handlers: both queue functions, and the page-level ended/error
+  // listeners that own completion and load failure. The listener block is
+  // lifted by its own markers — both listeners end with the same advance
+  // line, so the slice runs from the ended registration to the end of the
+  // error registration.
+  const lstart = src.indexOf('player.addEventListener("ended"');
+  if (lstart < 0) throw new Error("ended listener not found in index.html");
+  const lbody = liftBetween('player.addEventListener("error"',
+                            "playNextVoice(); updateTalkBtn();\n});");
+  const body = lift("function enqueueVoice") + "\n" +
+               lift("function playNextVoice") + "\n" +
+               liftBetween('player.addEventListener("ended"',
+                           'player.addEventListener("error"')
+                 .replace(/player\.addEventListener\("error"$/, "") + "\n" +
+               lbody;
+  ctx._api = new Function("ctx",
+      "with (ctx) {\n" + body + "\nreturn {enqueueVoice, playNextVoice};\n}"
+  )(ctx);
+  return ctx;
+}
+
+async function testDeadSourceIsNotAutoplay() {
+  console.log("");
+  console.log("the voice queue — a dead source is a media error on its own clip, not a refusal:");
+  const ctx = voiceCtx();
+  let deadReject = null;
+  ctx.plays = [
+    () => Promise.resolve(),                                     // clip 0
+    () => new Promise((_, rej) => { deadReject = rej; }),        // clip 1: dead
+    () => Promise.resolve(),                                     // clip 2
+  ];
+  ctx._api.enqueueVoice("/audio/c0.opus", { tid: "t1", clip: "0" });
+  ctx._api.enqueueVoice("/audio/c1.opus", { tid: "t1", clip: "1" });
+  ctx._api.enqueueVoice("/audio/c2.opus", { tid: "t1", clip: "2" });
+  await sleep(10);
+  ctx._fire("ended");                    // clip 0 finished; clip 1 loads dead
+  await sleep(10);
+  ctx.player.error = { code: 4 };
+  ctx._fire("error");                    // the element reports the dead source
+  deadReject({ name: "NotSupportedError" });   // …and play() rejects a beat later
+  await sleep(20);
+  ctx._fire("ended");                    // clip 2 finished
+  await sleep(10);
+
+  const err1 = ctx._reports.filter(r => r.clip === "1" && r.event === "error");
+  if (err1.length === 1 && err1[0].detail === "media error 4")
+    ok("the dead clip is reported once, as the media error it is, on its own index");
+  else bad("a dead source must be one media error on its own clip",
+           JSON.stringify(err1));
+  const refused = ctx._reports.filter(r => r.detail === "autoplay refused");
+  if (refused.length === 0)
+    ok("no autoplay refusal is invented for a source that failed to load");
+  else bad("a load failure must not be reported as an autoplay refusal",
+           JSON.stringify(refused));
+  const wrong = ctx._reports.filter(r => r.clip === "2" && r.event === "error");
+  if (wrong.length === 0 &&
+      ctx._reports.some(r => r.clip === "2" && r.event === "completed"))
+    ok("the next clip plays to completion, untouched by the dead one's rejection");
+  else bad("the rejection must not land on the clip that came after",
+           JSON.stringify(ctx._reports));
+  if (ctx._offered.length === 0)
+    ok("no ▶ button is offered on a source that cannot play");
+  else bad("the recovery button must not point at a dead source",
+           JSON.stringify(ctx._offered));
+  if (!ctx.voicePlaying) ok("the queue ends idle");
+  else bad("voicePlaying must clear when the queue drains", ctx.voicePlaying);
+}
+
+async function testRealRefusalStillOffersButton() {
+  console.log("");
+  console.log("the voice queue — a genuine autoplay refusal still offers the working button:");
+  const ctx = voiceCtx();
+  ctx.plays = [() => Promise.reject({ name: "NotAllowedError" })];
+  ctx._api.enqueueVoice("/audio/r0.opus", { tid: "t2", clip: "0" });
+  await sleep(20);
+  const refused = ctx._reports.filter(r => r.detail === "autoplay refused");
+  if (refused.length === 1 && refused[0].clip === "0")
+    ok("the refusal is reported for the refused clip");
+  else bad("a real refusal must be reported against its own clip",
+           JSON.stringify(ctx._reports));
+  if (ctx._offered.join(",") === "/audio/r0.opus")
+    ok("and the ▶ button is offered on the clip the tap can actually play");
+  else bad("the button must be offered for a real refusal",
+           JSON.stringify(ctx._offered));
+}
+
 (async () => {
   await testStreamTurn();
   await testDeadline();
@@ -1524,6 +1653,8 @@ async function testSendTypedDispatch() {
   await testReseedQuietWhenNothingNew();
   await testReseedRepeatedTurns();
   await testReseedEmptyPage();
+  await testDeadSourceIsNotAutoplay();
+  await testRealRefusalStillOffersButton();
   console.log("");
   console.log(PASS + " passed, " + FAIL + " failed");
   process.exit(FAIL === 0 ? 0 : 1);

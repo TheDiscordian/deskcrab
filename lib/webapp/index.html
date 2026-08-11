@@ -333,7 +333,16 @@ function playNextVoice() {
   player.src = next.url;
   player.load();
   const p = player.play();
-  if (p) p.catch(() => {
+  if (p) p.catch((err) => {
+    // Own clip, genuine refusal, or nothing (spec rule 44, C16). A source
+    // that failed to load signals twice: the element's error event — which
+    // reports the media error and advances the queue — and then this
+    // rejection, a beat later. Acting here blamed whichever clip was current
+    // by then, cleared voicePlaying underneath it (so the next enqueue
+    // replaced its src mid-sentence), and offered the ▶ button wired to the
+    // very source that cannot load — a control that did nothing.
+    if (playerMeta !== next.meta) return;
+    if (!err || err.name !== "NotAllowedError") return;
     reportPlay(playerMeta, "error", "autoplay refused");
     voicePlaying = false; updateTalkBtn(); offerPlay(next.url);
   });
