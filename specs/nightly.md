@@ -163,6 +163,32 @@ which fails silently is worse than one that does not exist.
     2026-08-08 offered "Intermittent is the kind of hard" and "what was surfaced, what with it"
     as the lines she should have said.
 
+### The promise sweep — part of sleep
+
+The promise checker's live pass ([turn-pipeline.md](turn-pipeline.md) rules 32a-32d) is
+deliberately cheap: a pattern pre-check gates the model, so a commitment phrased outside the
+patterns is never judged, and a wake the checker booked may itself have come to nothing. The
+night is where the day's promises are settled honestly, from the whole record at once.
+
+51. After a night that happened — ingest succeeded, stamp written — sleep runs the promise
+    sweep (`lib/promise-check sweep`) over the day that just ended: the day's journal, every
+    channel's replies with the outcome and work trace each session left, beside the day's
+    promise ledger. One model call, the checker's own model and fallback, under the account
+    chain (rule 13 applies).
+52. The sweep surfaces only genuine end-of-day misses. A commitment fulfilled later in the day
+    — promised at noon, visibly done by a later session's record — is reconciled and dropped,
+    whether or not the live checker caught it; a commitment never caught during the day and
+    never performed is a miss exactly as a caught one is. The journal is the sweep's whole
+    evidence, so it errs toward surfacing: a fulfilment the record cannot show is a miss the
+    morning can dismiss in a sentence, where a miss the night dropped is a promise that died
+    twice.
+53. Every miss lands as a sweep record on the durable ledger, and the day's misses are
+    surfaced together as ONE morning event wake through the queue's one door, in the checker's
+    own identity (`promise-check`), quoting the missed promises. A clean day books nothing —
+    the sweep is a debt collector, not an exercise, and its run-trace line is its record. The
+    sweep's failure MUST NOT unstamp or fail the night: the stamp and the exit stay the
+    ingest's own (rules 8 and 10), exactly as the claudism review's failure must not.
+
 The same engine is runnable by hand: `lib/claudism-corpus` scores an archived conversation
 directory (the rotation's transcript format — [turn-pipeline.md](turn-pipeline.md) DATA) against
 the list, bucketed by date, uses and mentions apart, per function per thousand spoken words — so
@@ -188,6 +214,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
 | `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase, uses only |
 | `~/.local/share/deskcrab/claudisms/functions.tsv` | the claudism review | one line per night and function: uses, mentions, spoken words |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) | live catches and end-of-day misses ([turn-pipeline.md](turn-pipeline.md) DATA) |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
 service, the self-change path and service, the transcription path and service, the canary timer and
@@ -241,7 +268,9 @@ reaches her through an event wake or through a record she reads.
 suite, and the model for every other test. `tests/test_claudism_scan.sh` — the review reads the
 spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
 skip; the wake is booked through the door in the review's own name; a dead model still writes the
-report with the rewrites marked missing.
+report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep
+hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
+as a ledger record and one morning wake in the checker's name, and books nothing on a clean day.
 
 **To be written:**
 

@@ -126,8 +126,8 @@ slot is the loudest statement this machine can make that it was not listening.
 18. A CLI error text MUST NEVER be voiced in her own voice on any path.
 19. The display window MUST open as soon as the display half is known, and MUST NOT wait for speech
     to finish.
-20. Out-of-band work (memory judge, promise audit) MUST run after the user has their answer, MUST be
-    detached, and MUST NOT hold any lock the turn held.
+20. Out-of-band work (memory judge, promise audit, promise checker, claudism capture) MUST run
+    after the user has their answer, MUST be detached, and MUST NOT hold any lock the turn held.
 21. Every detached child MUST inherit the full set of instance redirects: config path, state prefix,
     memory directory, jobs directory, wakes directory, account default file, and the current
     login. A child that inherits some of them writes into the live instance from a scratch one.
@@ -180,39 +180,63 @@ design and by rule — the review exists to break a habit, never to gate a tongu
 
 ### The promise checker
 
-Her replies commit, in the first person, to concrete actions — "I am wiring it now", "I will
-restart it and tell you when it is in" — and the turn ends with the action never taken. The
-promise audit catches the promise with no booking behind it; this catches the claim with no
-work behind it, and it can, because the turn's own stream log records every tool call that
-actually happened. External and automatic on purpose: she has proven she cannot be trusted to
-audit her own follow-through, so the verdict comes from a cheap model reading the evidence,
-never from her.
+Her replies claim, in the first person, concrete actions — "I am wiring it now", "I've written
+it to the log", "I will restart it and tell you when it is in" — and the turn ends with the
+action never taken. The promise audit catches the promise with no booking behind it; this
+catches the claim with no work behind it, and it can, because the turn's own stream log
+records every tool call that actually happened. External and automatic on purpose: she has
+proven she cannot be trusted to audit her own follow-through, so the verdict comes from a
+cheap model reading the evidence, never from her. And because the live check is deliberately
+cheap and gated, the nightly sleep pass sweeps the whole day behind it
+([nightly.md](nightly.md) rules 51-53): the checker is the fast hand, the night is the honest
+ledger.
 
-32a. Every desktop turn that delivered a reply MUST hand the response, the turn's stream log,
-     the durable ledger path, and the journal identity (start epoch, pid, kind) to the promise
-     checker (`lib/promise-check`) at the same out-of-band moment as the promise audit and the
-     claudism capture: detached, after the user has their answer, never a gate. The checker
-     asks a cheap model — `claude-fable-5`, then `claude-haiku-4-5-20251001` when fable
-     returns no parseable verdict; both verified against the CLI in hand on 2026-08-10 — to
-     extract every first-person commitment to a concrete action from the reply and judge each
-     against the tool calls the stream actually records. A statement about future
-     conversation, an offer still awaiting an answer, a bare want, and work the reply reports
-     as already done are not commitments.
-32b. A commitment with no tool call that plausibly performed it is UNKEPT. A call that durably
-     scheduled the work counts as performing it — a `crab wake-at` or `crab job` naming that
-     work is a kept promise, not an excuse. Every UNKEPT verdict MUST land in two places: one
-     JSON line appended to the durable ledger — timestamp, the promise quoted exactly, why the
-     record shows nothing did it, the turn's journal identity, and what became of the wake —
-     and one event wake through the queue's one door, minutes out, whose reason opens with the
-     unkept-commitment prefix and quotes the promise ([wake-queue.md](wake-queue.md) rule
-     43b).
-32c. The evidence is the stream log, and its absence is not a verdict: a checker handed no
+32a. Every turn that delivered a reply — the desk, the phone, and the autonomous wake alike;
+     every channel she speaks on — MUST run the checker's presence pre-check over the reply at
+     the same out-of-band moment as the promise audit and the claudism capture. The pre-check
+     is a pattern match for the shape of a first-person commitment (`promise_precheck` in
+     `lib/common.sh`, one shared function): it costs a grep and MUST NOT call any model. Most
+     replies carry no commitment, and for them the whole feature is that grep and one
+     run-trace line — no child spawned, no stream copied, no model invoked. Only a reply the
+     pre-check flags is handed on to `lib/promise-check`, detached, after the user has their
+     answer, never a gate — with the response, a private snapshot of the turn's stream log
+     (taken at fire time, because the phone turn deletes its log moments later and a detached
+     child racing that deletion judges nothing), the durable ledger path, and the journal
+     identity (start epoch, pid, kind).
+32b. The checker asks a cheap verifier — `PROMISE_CHECK_MODEL`, default `sonnet` (the conf
+     convention of `MEMORY_JUDGE_MODEL`), with `PROMISE_CHECK_FALLBACK_MODEL` (default
+     `haiku`) standing in when the verifier answers with nothing parseable — to extract every
+     first-person commitment to a concrete action from the reply and judge each against the
+     tool calls the stream actually records. Three shapes are in scope: the present
+     commitment ("I am wiring it now"), the immediate future ("I'll restart it"), and the
+     claim of completed work ("I've written it to the log") — the completed claim is
+     precisely the lie this checker exists for, and unlike the audit it holds the record that
+     can refute it. A statement about future conversation, an offer still awaiting an answer,
+     and a bare want are not commitments. A commitment with no tool call that plausibly
+     performed it is UNKEPT; a call that durably scheduled the work counts as performing it —
+     a `crab wake-at` or `crab job` naming that work is a kept promise, not an excuse.
+32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
+     ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
+     turn's journal identity, and what became of the wake — and one event wake through the
+     queue's one door, minutes out (`PROMISE_CHECK_WAKE_DELAY`, default 3m — the point is to
+     catch her while the context is still warm), booked at effort **low** through the
+     rule-13a override, so the fired session runs at the wake path's own model — opus — at
+     low effort: cheap enough to fire freely, strong enough to actually do the thing. Its
+     reason opens with the unkept-commitment prefix and quotes the promise verbatim
+     ([wake-queue.md](wake-queue.md) rule 43b). Two bounds keep an accusation from becoming a
+     storm: a promise the auditor's deferred wake already covers from this same turn is
+     ledgered as covered and not booked twice, and one verbatim promise may earn at most
+     `PROMISE_CHECK_REBOOK_MAX` (default 2) wakes a day — past that the ledger line still
+     lands and the night sweep takes it.
+32d. The evidence is the stream log, and its absence is not a verdict: a checker handed no
      readable log judges nothing, and its run trace says so — an accusation needs the record.
      A log that exists and holds zero tool calls IS the record: a turn that ran no tools kept
      no promise of action. Model failure is never quiet either — a refusal walks the account
      chain like every out-of-band call ([account-fallback.md](account-fallback.md) rule 29),
-     and a login that answers with nothing parseable from either model ends the run with the
-     failure named on the trace.
+     an answer with no parseable verdict falls to the fallback model on the same login, and a
+     run that gets nothing from either ends with the failure named on the trace. A missing or
+     broken checker costs the check, never the turn: every failure path exits quietly with a
+     trace line, and nothing here may hold, edit, or veto a reply.
 
 ### Turn metrics
 
@@ -251,8 +275,9 @@ file rather than re-instrumented every time the question comes up.
 | `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines ([nightly.md](nightly.md) rule 46, [speech-output.md](speech-output.md) rule 50) |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
-| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32b) |
-| `${STATE_PREFIX}-promise-check.log` | `lib/promise-check` | one line per run: the verdicts, or why nothing was judged |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's records ([nightly.md](nightly.md) rule 53) |
+| `${STATE_PREFIX}-promise-check.log` | `fire_promise_check`, `lib/promise-check` | one line per run: the pre-check's verdict, the model's verdicts, or why nothing was judged |
+| `${STATE_PREFIX}-promise-evidence-*` | `fire_promise_check` (rule 32a) | the turn's stream log, snapshotted for the detached checker, removed by it |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |
 | `~/.local/share/deskcrab/metrics/<date>.log` | `turn_metric` (rule 33) | `epoch.ms \t pid \t kind \t stage \t detail` |
 | `voice-claude-archive/` | rotation | archived transcript and summary pairs |
@@ -372,6 +397,15 @@ and the outcome says so; `TURN_ORDER_WAIT=0` restores the old behaviour exactly.
 finished reply journals that reply with the undelivered outcome; killed with nothing in the log, it
 journals the interrupted outcome; a turn that delivered normally is untouched; the empty-reply,
 no-outcome row of 2026-08-10 is unreachable.
+
+`tests/test_promise_check.sh` — rules 32a-32d and [nightly.md](nightly.md) rules 51-53: a reply
+with a commitment whose work is absent lands on the ledger and books the opus-low wake with the
+promise quoted verbatim; a commitment the tool record shows performed books nothing; a reply with
+no commitment never reaches the model (the pre-check's gate is proven from the CLI witness log); a
+missing stream snapshot judges nothing; the auditor's deferred wake and the per-promise rebook
+bound each stop a duplicate booking; the sweep hands the model the whole day and its reconciling
+evidence, surfaces an end-of-day miss as a ledger record and one morning wake, and a clean day
+books nothing.
 
 **To be written:**
 

@@ -68,7 +68,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     reasoning effort the fired session runs at, for a booker that already knows how hard its wake
     will need to think. (The chess bridge's move wakes were the first such booker; the resident
     mover — [chessweb.md](chessweb.md) rule 16 — has since taken chess moves off the queue
-    entirely, and the mechanism stands ready for the next booker that knows its wake's weight.)
+    entirely, and the promise checker's unkept-commitment wake — rule 43b, booked at low — is
+    the standing hand the mechanism was kept ready for.)
     The override is the record's sixth field and the fired unit's sixth argument, so it survives
     exactly what the record survives: restore re-arms with it, tidy's re-book keeps it, and the
     blocked-lock deferral re-books with it intact. The level MUST be one of the CLI's effort names
@@ -234,16 +235,25 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     endless chain. And the auditor MUST NOT book the deferred wake when a record booked by her own
     hand already stands from the same turn: the catcher exists for the promise with no body, not
     to accuse the kept one.
-43b. The promise checker (`lib/promise-check`, [turn-pipeline.md](turn-pipeline.md) rules 32a-32c)
+43b. The promise checker (`lib/promise-check`, [turn-pipeline.md](turn-pipeline.md) rules 32a-32d)
     books a third class beside the auditor's two: the **unkept-commitment** wake — her reply
     claimed a concrete action in the first person and the turn's own tool record shows nothing
     performed or durably scheduled it. Its reason MUST open with the unkept-commitment prefix (a
     constant in `lib/common.sh` beside the auditor's two), MUST quote the promise exactly and
     instruct her to do the work now or book it deliberately, and MUST fire minutes out, never
-    hours — the point is to catch her while the context is still warm. The wake path MUST skip
-    its own audit for this prefix exactly as for the auditor's two. The class carries its own
-    scoped cap (rule 44), so unkept commitments neither fill nor drain the auditor's classes. It
-    cannot chain itself: only desktop turns are checked, and the follow-up fires as a wake.
+    hours — the point is to catch her while the context is still warm. It MUST be booked with
+    the effort override **low** (rule 13a), so the fired session runs at the wake path's own
+    model — opus — at low effort: enough hands to do one named piece of work, cheap enough to
+    fire for every catch. The checker fires on every channel, wakes included, so its own
+    follow-up is not exempt from the evidence test — a wake that claims again and again does
+    nothing is caught again — and the chain is bounded instead of exempted: the wake path MUST
+    skip the promise AUDIT for this prefix exactly as for the auditor's two (the agenda quotes
+    the promise, and an audited quote books deferred wakes forever), one verbatim promise may
+    earn at most `PROMISE_CHECK_REBOOK_MAX` wakes a day past which the ledger line lands and the
+    night sweep takes it, and the class carries its own scoped cap (rule 44), so unkept
+    commitments neither fill nor drain the auditor's classes. The checker's sweep
+    ([nightly.md](nightly.md) rules 51-53) books through the same door under the same identity:
+    one morning event wake naming the day's genuine misses, none on a clean day.
 44. Any cap on the number of pending wakes a booker may hold MUST be counted from the records under
     the booking lock, and MUST **drain** as well as gate. A cap that only gates new bookings lets a
     queue five times its own size stand for hours. The drain MUST let go of the **furthest-out**
@@ -376,6 +386,10 @@ reset by a taken lock — and the urgent lane's yield, expiry and event-exemptio
 `tests/test_promise_deferred.sh` (rules 43a and the scoped cap of 44: a reply that commits to later
 work books the alarm, an already-done reply books nothing, a kept promise is left alone, and neither
 audit class counts or drains the other's bookings),
+`tests/test_promise_check.sh` (rule 43b: the unkept-commitment wake is an event wake in the
+checker's own name, effort low on the record, prefix on the reason and the promise quoted verbatim;
+the audit skips the prefix; the rebook bound and the auditor's deferred wake each stop a duplicate
+booking),
 `tests/test_wake_hot_hold.sh` (rule 27a: a quiet bubble into a hot conversation reaches no bubble,
 no notifier and no conversation and books itself back with its words in the reason; the same wake
 into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
