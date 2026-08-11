@@ -29,7 +29,10 @@
 # agenda is the event reason (empty for a timer wake), never a faked user line.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# readlink -f before dirname, or the deployed symlink's logical `..` walks
+# into ~/.local/lib and sources a lib/common.sh that does not exist
+# (specs/nightly.md rule 6a; dead in production until 2026-08-11).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 

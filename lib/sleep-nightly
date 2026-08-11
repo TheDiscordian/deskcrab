@@ -19,7 +19,10 @@ STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
 STAMP="$STATE_DIR/last-slept"
 LOG_DIR="$STATE_DIR/sleep"
 CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
-LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolved through readlink -f (specs/nightly.md rule 6a): executed as the
+# deployed ~/.local/lib/deskcrab/sleep-nightly this is the checkout's lib/,
+# so the phases below are invoked at their real paths, not the symlink's.
+LIB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Two nights is the threshold at which I should feel it rather than be told.
 ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
@@ -52,6 +55,32 @@ coverage_fields() {
     [ -n "$chars" ]  && out="${out:+$out }chars=$chars"
     [ -n "$passes" ] && out="${out:+$out }passes=$passes"
     printf '%s' "$out"
+}
+
+# run_phase <log-prefix> <human name> <cmd...> — one post-stamp phase, its
+# output streamed into the night log as it is written. Two complaints, both
+# landing IN the log as well as on stderr, and neither ever the night's
+# verdict (rules 8 and 10 of specs/nightly.md): a phase that exits non-zero
+# "did not finish", and a phase whose stretch of the log carries no line
+# opening with its own name is PHASE SILENT — it could not even start (a bad
+# SCRIPT_DIR, a missing binary), and a phase that cannot start must not look
+# like a phase with nothing to do. Both nightly phases were dead in
+# production exactly this way, complaining only to a stderr the log never
+# carried, while the night stamped green (2026-08-11; rule 14b).
+run_phase() {
+    local prefix="$1" human="$2"; shift 2
+    local before rc
+    before="$(wc -c < "$log" 2>/dev/null || echo 0)"
+    "$@" 2>&1 | tee -a "$log"
+    rc="${PIPESTATUS[0]}"
+    if [ "$rc" -ne 0 ]; then
+        echo "sleep: the $human did not finish — the night still counts. See $log" \
+            | tee -a "$log" >&2
+    fi
+    if ! tail -c "+$((before + 1))" "$log" 2>/dev/null | grep -q "^$prefix:"; then
+        echo "sleep: PHASE SILENT — the $human ($prefix, rc=$rc) left no line of its own in the night log; a phase that cannot start must not look like a phase with nothing to do. See $log" \
+            | tee -a "$log" >&2
+    fi
 }
 
 cmd_run() {
@@ -90,10 +119,7 @@ cmd_run() {
     # review only, never a gate (specs/nightly.md rules 39-45). Only after a
     # night that happened, and never the night's verdict: it surfaces its own
     # failures through its own wake, and the exit below stays the ingest's.
-    "$LIB_DIR/claudism-scan" run 2>&1 | tee -a "$log"
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        echo "sleep: the claudism review did not finish — the night still counts. See $log" >&2
-    fi
+    run_phase claudism-scan "claudism review" "$LIB_DIR/claudism-scan" run
 
     # The backlog drain: the stretch between the stamp and the morning is
     # machine time nobody is using, so the open engineering threads become
@@ -101,20 +127,14 @@ cmd_run() {
     # cutoff — and then the night finishes normally so she ends it idle and
     # available (specs/nightly.md rules 54-61). Same bargain as the review:
     # never the night's verdict.
-    "$LIB_DIR/backlog-drain" run 2>&1 | tee -a "$log"
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        echo "sleep: the backlog drain did not finish — the night still counts. See $log" >&2
-    fi
+    run_phase backlog-drain "backlog drain" "$LIB_DIR/backlog-drain" run
 
     # The promise sweep, over the same day: the journal beside the promise
     # ledger, promises fulfilled later reconciled, only the genuine
     # end-of-day misses surfaced (specs/nightly.md rules 51-53). The live
     # checker is a cheap pattern gate and misses; this is the honest pass.
     # Same bargain as the review: never the night's verdict.
-    "$LIB_DIR/promise-check" sweep 2>&1 | tee -a "$log"
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        echo "sleep: the promise sweep did not finish — the night still counts. See $log" >&2
-    fi
+    run_phase promise-check "promise sweep" "$LIB_DIR/promise-check" sweep
     return 0
 }
 

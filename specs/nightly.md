@@ -23,6 +23,15 @@ which fails silently is worse than one that does not exist.
 6. Every scheduled process that writes files she is watched for MUST declare its writes, or it
    reports its own hand to her as an intruder's.
 
+6a. Deployment is by symlink — every unit and every phase invokes the deployed path
+    (`~/.local/lib/deskcrab`, a directory symlink into the checkout's `lib/`) — so every script
+    that locates the checkout from its own path MUST resolve that path through `readlink -f`
+    before taking `dirname`. A `cd ..` from the symlink's logical path walks into `~/.local/lib`,
+    not out of the checkout, and the script sources a `lib/common.sh` that does not exist; both
+    post-stamp nightly phases ran exactly that way in production — dead, and the night stamping
+    green over them — until 2026-08-11. The suite MUST invoke at least one script through a
+    symlinked directory and assert it sources the library and runs.
+
 ### Sleep — the nightly ingest
 
 7. Sleep runs the ingest and then stamps the last-slept record.
@@ -45,6 +54,17 @@ which fails silently is worse than one that does not exist.
     stamp still reads fine. Coverage is evidence, never a gate: a field the log does not state is
     omitted, not invented, and a log with no header at all still stamps and still counts as slept
     (rule 9) — the stamp MUST NOT be stricter than the night it records.
+
+14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-stamp
+    phase — the claudism review, the backlog drain, the promise sweep — owes the night log at
+    least one line opening with its own name (`claudism-scan:`, `backlog-drain:`,
+    `promise-check:`); sleep watches each phase's stretch of the log, and when a phase exits
+    leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
+    its exit status — in the night log itself as well as on stderr. A phase's non-zero exit is
+    likewise named in the log, not on stderr alone, where only the journal would carry it. The
+    complaint is evidence, never a gate: the stamp and the night's exit stay the ingest's own
+    (rules 8 and 10) — a night is not unmade by a phase that could not speak, it is only never
+    silent about one.
 
 ### Tidy — shelf maintenance
 
@@ -211,6 +231,12 @@ night is where the day's promises are settled honestly, from the whole record at
     the sweep is a debt collector, not an exercise, and its run-trace line is its record. The
     sweep's failure MUST NOT unstamp or fail the night: the stamp and the exit stay the
     ingest's own (rules 8 and 10), exactly as the claudism review's failure must not.
+53a. The sweep owes the night log its closing line. Every path out of the sweep — no journal, no
+    replies, no verdict, clean, or misses booked — prints one line in the checker's own name
+    (`promise-check: sweep <day>: …`) to stdout beside the run-trace record of rule 53, so the
+    night log shows the sweep reached its own end and rule 14b's detector can tell a sweep that
+    ran from one that never started. The guards ahead of the mode dispatch (no CLI, no python)
+    still exit silently on purpose: a sweep that cannot start is exactly what rule 14b flags.
 
 ### The backlog drain — part of sleep
 
@@ -363,6 +389,16 @@ boundary survives intact, and the budgets themselves still hold.
 the pass-count fallback where the header predates stating it; a field the log never states is
 omitted; a log with no header still stamps and still counts as slept; and the status command
 renders a widened and a legacy added-only stamp alike.
+`tests/test_symlink_deploy.sh` — rule 6a: the deployed shape rebuilt as a directory symlink into
+the checkout's `lib/`; the nightly phases and the promise auditor invoked through it source the
+library and answer, the sweep runs through it to its own closing line (rule 53a), and a whole
+night run through the symlink stamps with every phase speaking for itself — no phase sourcing a
+`lib/common.sh` that does not exist, no unbound variable, no `PHASE SILENT` complaint.
+`tests/test_sleep_phase_silence.sh` — rules 14b and 53a: a chatty night carries no complaint; a
+phase that exits zero saying nothing is named `PHASE SILENT` in the night log itself; a phase
+that dies leaving only noise in another voice draws both complaints, did-not-finish landing in
+the log file too; a phase that fails after speaking draws only did-not-finish — and every such
+night still stamps and still exits with the ingest's zero.
 
 **To be written:**
 
