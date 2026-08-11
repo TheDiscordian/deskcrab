@@ -13,6 +13,13 @@ back to her.
 
 1. Background work MUST be a detached job, never a subagent. A subagent dies with its turn, and
    while it lives it holds the turn open so the user cannot speak.
+1a. A task whose whitespace-stripped form is empty, or is exactly `null`, `None`, or `undefined`,
+   MUST be refused before any sidecar or unit exists. Those strings are what a broken command
+   substitution says, never what work sounds like: on 2026-08-11 a re-dispatch loop read `.task`
+   out of sidecars whose field is `.description`, jq answered the literal word `null` three times,
+   and three real builders woke with no brief and burned tokens investigating their own emptiness.
+   The refusal MUST say the task looks like a broken substitution, not a brief, and MUST name the
+   real field.
 2. A job MUST be dispatched to the user manager with the collect option and its own unit name, with
    a fallback to a detached session when no user manager is running.
 2a. A job unit MUST be dispatched at background CPU priority — the same weight and niceness the
@@ -29,6 +36,13 @@ back to her.
 6. A job MUST be silent by contract: no speech, no notifications, no windows.
 7. A job's only channel back to her is one event wake on completion, carrying the outcome as its
    reason.
+7a. `crab job requeue <id>` MUST re-dispatch a recorded job from its own sidecar: the description
+   and the workdir come off the record, so neither a human nor a session ever retypes a field name
+   — the failure mode of rule 1a cannot arise. To make that possible, dispatch MUST record the
+   workdir in the sidecar. A missing sidecar, a description rule 1a would refuse, or a sidecar with
+   no recorded workdir (one written before the field existed) MUST be an error, never a dispatch.
+   Requeue goes through the same preflight as any other dispatch: the block marker still holds it,
+   and the redispatch is a new job with its own id.
 
 ### State
 
@@ -109,7 +123,7 @@ back to her.
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit}` |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than the field simply lack it |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar |
@@ -119,7 +133,11 @@ back to her.
 
 ```mermaid
 flowchart TD
-  J0["crab job, optional workdir, optional force"] --> J1{"block marker<br/>younger than the retry window?"}
+  J0["crab job, optional workdir, optional force"] --> G{"task empty, or a substitution<br/>artifact: null / None / undefined?"}
+  R0["crab job requeue &lt;id&gt;"] --> R1["description + workdir<br/>read from the sidecar"]
+  R1 --> G
+  G -->|yes| Gr["refuse: a broken command<br/>substitution, not a brief"]
+  G -->|no| J1{"block marker<br/>younger than the retry window?"}
   J1 -->|yes, and no -f| J1b["refuse: the last one never began"]
   J1 -->|no| J2["sidecar: state=running"]
   J2 --> J3["systemd-run --collect --unit=deskcrab-job-&lt;id&gt;"]
@@ -179,7 +197,9 @@ dispatching turn holds.
 
 ## TESTS
 
-**Existing:** `tests/test_job_block.sh` (blocked-versus-failed, the retry window, the force flag);
+**Existing:** `tests/test_job_block.sh` (blocked-versus-failed, the retry window, the force flag,
+the substitution-artifact refusal of rule 1a, and requeue reading description and workdir off the
+sidecar — rule 7a);
 `tests/test_job_livelog.sh` (rule 26: the log fills while the builder runs, a stopped job keeps its
 partial output, the pipeline preserves the CLI's exit code, and the empty-but-running and unknown-id
 answers of `crab job log`).

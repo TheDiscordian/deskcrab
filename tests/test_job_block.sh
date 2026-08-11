@@ -82,6 +82,50 @@ out="$(run 'job_block_record "x"; job_start -C /tmp -f "w" 2>&1 | head -n1')"
 case "$out" in *"Would dispatch (DESKCRAB_NO_DISPATCH set) in /tmp:"*) ok "-C composes with -f" ;;
     *) fail "-C -f should reach dispatch, in the given workdir" "$out" ;; esac
 
+echo "job_start — a substitution artifact is not a brief (2026-08-11):"
+# On 2026-08-11 a re-dispatch loop read `.task` out of sidecars whose field is
+# `.description`; jq's answer for a missing field is the literal word "null",
+# it passed the non-empty check, and three real builders woke with no task.
+for bad in null None undefined "  null  "; do
+    out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_start "'"$bad"'" 2>&1 | head -n1')"
+    case "$out" in *"broken command substitution"*) ok "refuses: '$bad'" ;;
+        *) fail "must refuse '$bad'" "$out" ;; esac
+done
+# The refusal happens before the block preflight and before any sidecar or
+# dispatch — even the DESKCRAB_NO_DISPATCH line must never be reached.
+out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_start null 2>&1')"
+case "$out" in *"Would dispatch"*) fail "a refused task must never reach dispatch" "$out" ;;
+    *) ok "the refusal comes before dispatch" ;; esac
+# And the word inside a real sentence must still pass: the guard is for a bare
+# artifact, not for briefs about null pointers.
+out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_start "investigate the null pointer crash" 2>&1 | head -n1')"
+case "$out" in *"Would dispatch"*) ok "'null' inside a sentence still dispatches" ;;
+    *) fail "a real brief mentioning null must pass" "$out" ;; esac
+
+echo "job requeue — the sidecar is the authority:"
+out="$(run 'job_requeue no-such-job 2>&1 | head -n1')"
+case "$out" in *"No such job"*) ok "a missing sidecar is an error, not a dispatch" ;;
+    *) fail "requeue of an unknown id must error" "$out" ;; esac
+# A sidecar that recorded its workdir: requeue must reach dispatch with the
+# recorded description IN the recorded directory, reading .description itself.
+"$REPO_DIR/lib/job-status" new "$T/jobs" rqtest "rebuild the widget" "" "/tmp/rqproj"
+out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_requeue rqtest 2>&1 | head -n1')"
+case "$out" in *"Would dispatch (DESKCRAB_NO_DISPATCH set) in /tmp/rqproj: rebuild the widget"*)
+        ok "requeue reads description and workdir off the record" ;;
+    *) fail "requeue should redispatch the recorded brief in the recorded dir" "$out" ;; esac
+# A sidecar whose description is the artifact itself — the three 2026-08-11
+# corpses look exactly like this — must be refused by requeue too.
+"$REPO_DIR/lib/job-status" new "$T/jobs" rqnull "null" "" "/tmp/rqproj"
+out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_requeue rqnull 2>&1 | head -n1')"
+case "$out" in *"no usable description"*) ok "requeue refuses a 'null' description" ;;
+    *) fail "requeue must refuse an artifact description" "$out" ;; esac
+# A sidecar from before the workdir field existed: refuse rather than guess a
+# directory to run a builder in.
+"$REPO_DIR/lib/job-status" new "$T/jobs" rqold "an old but real brief" ""
+out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_requeue rqold 2>&1 | head -n1')"
+case "$out" in *"before sidecars carried a workdir"*) ok "requeue refuses to guess a workdir" ;;
+    *) fail "requeue of a pre-workdir sidecar must error" "$out" ;; esac
+
 echo "report — a blocked job does not read as a failed build:"
 mkdir -p "$T/rep"
 python3 - "$T/rep/j.json" <<'PY'

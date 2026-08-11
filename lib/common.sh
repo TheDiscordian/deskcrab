@@ -6339,6 +6339,19 @@ job_start() {
     done
     local task="$*"
     [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [-f] <description of the work>"; return 1; }
+    # A non-empty task can still be nobody's brief. On 2026-08-11 a re-dispatch
+    # loop pulled `.task` out of job sidecars whose field is `.description`;
+    # jq's answer for a missing field is the literal word "null", which sailed
+    # past the check above three times, and three real builders woke to a
+    # one-word task and burned tokens investigating their own emptiness. The
+    # strings below are what broken command substitutions say, never what work
+    # sounds like — refuse them before anything exists to clean up.
+    case "$(printf '%s' "$task" | tr -d '[:space:]')" in
+        ''|null|None|undefined)
+            echo "Not dispatched — '$task' looks like a broken command substitution, not a brief."
+            echo "  (A job sidecar's field is .description, not .task. To redo a recorded job: crab job requeue <id>)"
+            return 1 ;;
+    esac
     local block
     if [ -z "$force" ] && block="$(job_block_active)"; then
         echo "Not dispatched — the last job never began: ${block#*	}"
@@ -6360,7 +6373,7 @@ job_start() {
     # must not collide on the id or the unit name.
     id="$(date +%Y%m%d-%H%M%S)-$$"
     unit="deskcrab-job-$id"
-    "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "$unit" || return 1
+    "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "$unit" "$workdir" || return 1
     # CLAUDE_CONFIG_DIR is forwarded ONLY when it is actually set. Passing it
     # empty is not the same as not passing it: the unit then runs with the
     # variable defined-but-blank, the CLI looks for a login in "" and every
@@ -6401,6 +6414,36 @@ job_start() {
         echo "Job $id dispatched (setsid — no systemd user manager) — detached."
     fi
     echo "  log: $JOBS_DIR/$id.log    list: crab jobs"
+}
+
+# Re-dispatch a recorded job from its own sidecar: `crab job requeue <id>`.
+# The description and the workdir come off the record, so neither a human nor
+# a session ever retypes a field name to get them — which is the whole point.
+# On 2026-08-11 a re-dispatch loop typed `.task` where the sidecar's field is
+# `.description`, jq answered "null" three times, and three builders were
+# dispatched on that one word. The sidecar is the authority here, or the
+# requeue does not happen. The redispatch is a new job with its own id, and it
+# walks through job_start so every dispatch guard — the substitution-artifact
+# refusal, the block marker — applies to it like any other.
+job_requeue() {
+    local id="$1"
+    [ -n "$id" ] || { echo "Usage: crab job requeue <id>   (ids: crab jobs)"; return 1; }
+    local sidecar="$JOBS_DIR/$id.json"
+    [ -e "$sidecar" ] || { echo "No such job: $id   (ids: crab jobs)"; return 1; }
+    local desc workdir
+    desc="$("$LIB_DIR/job-status" get "$sidecar" description 2>/dev/null)"
+    case "$(printf '%s' "$desc" | tr -d '[:space:]')" in
+        ''|null|None|undefined)
+            echo "Job $id has no usable description ('${desc}') — nothing to requeue."
+            return 1 ;;
+    esac
+    workdir="$("$LIB_DIR/job-status" get "$sidecar" workdir 2>/dev/null)"
+    if [ -z "$workdir" ]; then
+        echo "Job $id was recorded before sidecars carried a workdir, so where it ran is not on record."
+        echo "  Redispatch by hand: crab job -C <workdir> \"$desc\""
+        return 1
+    fi
+    job_start -C "$workdir" "$desc"
 }
 
 # One line per job, running first, recent finishes last — read by `crab jobs`

@@ -529,8 +529,11 @@ Contract: [`specs/self-awareness.md`](../specs/self-awareness.md).
 
 ## Detached jobs
 
-`crab job [-C <dir>] "<description>"` / `crab jobs` / `crab job log <id>` — work that must survive the
-end of the turn that launched it.
+`crab job [-C <dir>] "<description>"` / `crab jobs` / `crab job log <id>` / `crab job requeue <id>`
+— work that must survive the end of the turn that launched it. Requeue re-dispatches a recorded job
+from its own sidecar (description and workdir come off the record), added 2026-08-11 after a
+re-dispatch loop typed `.task` where the sidecar's field is `.description` and dispatched three
+builders on jq's literal answer "null".
 
 A subagent dies with its turn, and while it runs it holds the turn open so the user cannot
 push-to-talk. Both wrong, so background work is never a subagent. A job is dispatched via

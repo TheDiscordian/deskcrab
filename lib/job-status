@@ -2,13 +2,13 @@
 """Status files for DeskCrab's detached background jobs (crab job / crab jobs).
 
 Each job is one small JSON file <id>.json beside its log <id>.log:
-    {id, description, started, started_epoch, unit, state,
+    {id, description, workdir, started, started_epoch, unit, state,
      pid, pidstart, finished, finished_epoch, exit}
 state: running | finished | failed | stopped | died | blocked
        blocked is a run that never began — the CLI refused before any work was
        attempted — and it is deliberately not the same outcome as failed.
 
-    job-status new <dir> <id> <description> <unit>
+    job-status new <dir> <id> <description> <unit> [workdir]
     job-status set <file> key=value [key=value ...]
     job-status get <file> <key>
     job-status report <dir> [show-finished] [keep-days] [--live] [--failed-since EPOCH]
@@ -90,17 +90,24 @@ def one_line(desc, limit=140):
 
 
 def cmd_new(argv):
-    d, jid, desc, unit = argv
+    # workdir is optional and recorded verbatim: `crab job requeue` reads it
+    # back so a redispatch runs where the original ran, without any hand
+    # retyping a field name (specs/jobs.md rule 7a).
+    d, jid, desc, unit = argv[:4]
+    workdir = argv[4] if len(argv) > 4 else ""
     os.makedirs(d, exist_ok=True)
     now = time.time()
-    write(os.path.join(d, jid + ".json"), {
+    data = {
         "id": jid,
         "description": desc,
         "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
         "started_epoch": int(now),
         "unit": unit,
         "state": "running",
-    })
+    }
+    if workdir:
+        data["workdir"] = workdir
+    write(os.path.join(d, jid + ".json"), data)
 
 
 def cmd_set(argv):
