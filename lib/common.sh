@@ -3325,13 +3325,18 @@ regroup_context() {
 # detector fired never. What a dispute needs is a reply of hers to dispute,
 # wherever it stands.
 #
-# Three classes (rule 6a), because the two consumers pay different prices for
+# Four classes (rule 6a), because the two consumers pay different prices for
 # a false positive. STRONG fires alone and sets DISPUTE_SUPERSEDES=1 — the
-# only class allowed to close a turn in flight (rule 6b), because a
-# superseded reply is silently never spoken and a benign message must never
-# do that. SOFT (a bare "no."/"no," with a restatement behind it — a real
-# correction shape, but also the shape of "No, that's fine") and two WEAK
-# signals buy the dispute turn and nothing else.
+# only class allowed to close a turn in flight (rule 6b) — and it is
+# deliberately narrow: a superseded reply is silently, unrecoverably never
+# spoken (the phone brakes cannot un-kill it), so nothing with a benign
+# reading may ever carry the kill. FIRM fires the frame alone — the shapes
+# that are usually pushback but each hold an innocent reading ("is your
+# issue resolved now?", "I'm turning you off for the night") — because
+# over-firing the frame costs a stronger, framed turn and nothing else.
+# SOFT (a bare "no."/"no," with a restatement behind it — a real correction
+# shape, but also the shape of "No, that's fine") and two WEAK signals buy
+# the dispute turn and nothing else.
 dispute_detect() {  # <the user's message>
     DISPUTE_SUPERSEDES=""
     local t
@@ -3340,30 +3345,42 @@ dispute_detect() {  # <the user's message>
     # Before she has said anything there is nothing to dispute.
     [ -n "$(_convo_last_assistant_anywhere 2>/dev/null | tr -d '[:space:]')" ] || return 1
 
-    # STRONG: contradiction, misquotation, the day's own sentences, him
-    # locating the artifact himself, and nothing that has a benign reading.
-    if grep -qE "you'?( a)?re wrong|you are wrong|stop (arguing|assuming|repeating)|do(n'?t| not) (gaslight|lie|argue)|gaslight|you (just )?lied|you keep lying|not listening|i never (said|asked)|i did(n'?t| not) (say|ask|tell)|you did(n'?t| not) (answer|listen|read|hear)|you (misunderstood|misheard)|what('?s| is) wrong with you|your (fucking )?(problem|issue)|shut (the fuck )?up|one more fucking time|tak(e|ing) you offline|turn(ing)? you off|not what i (said|meant|asked)|stop talking|that('?s| is) not (it|what|right|true|the bug|the problem|the issue)|it was in (a|the) quiet block" <<<"$t"; then
-        DISPUTE_SUPERSEDES=1
-        return 0
-    fi
-    # "listen to me" is strong only as a demand — "listen to me play this" is
-    # an invitation, and it used to fire.
-    if grep -qE '\blisten to me\b' <<<"$t" \
-        && ! grep -qE '\blisten to me (play|sing|read|try|do|run|show|talk|tell|for|while)\b' <<<"$t"; then
-        DISPUTE_SUPERSEDES=1
-        return 0
-    fi
-    # "I'm reporting" is strong only as a report of something broken — "I'm
-    # reporting that it works" is good news, and it used to fire.
-    if grep -qE "\b(i'?m|i am) reporting\b" <<<"$t" \
-        && grep -qE "\b(bug|problem|issue|error|failure|broken|wrong|not working|does(n'?t| not) work)" <<<"$t"; then
+    # STRONG: contradiction, misquotation, the escalation's own commands,
+    # aimed profanity, him locating the artifact himself — and nothing that
+    # has a benign reading when aimed at her rejecting THIS reply. The only
+    # class that sets DISPUTE_SUPERSEDES (rule 6b).
+    if grep -qE "you'?( a)?re wrong|you are wrong|stop arguing|do(n'?t| not) (gaslight|lie|argue)|gaslight|you keep lying|you did(n'?t| not) (answer|listen|read|hear)|you (misunderstood|misheard)|not what i (said|meant|asked)|stop talking|that('?s not| is not| isn'?t| wasn'?t| aren'?t) (it|what|right|true|the (bug|problem|issue|answer|point))|it was in (a|the) quiet block|one more fucking time|fuck (you|off)|your fucking (problem|issue)|the fuck (is|are) (wrong|you)" <<<"$t"; then
         DISPUTE_SUPERSEDES=1
         return 0
     fi
     # A correction phrased as a question: "why did you X when I asked Y?"
+    # No benign reading — the second clause aims it at her — so STRONG.
     if grep -qE '\bwhy (did|do|are|were|would) you\b' <<<"$t" \
         && grep -qE '\b(when|after) i (asked|said|told|wanted)\b' <<<"$t"; then
         DISPUTE_SUPERSEDES=1
+        return 0
+    fi
+
+    # FIRM: usually pushback, but every one of these has an innocent reading
+    # ("I never asked her out", "tell the linter to shut up", "he's not
+    # listening to reason lately"), so they fire the frame and NEVER set
+    # DISPUTE_SUPERSEDES — a benign message must never kill a reply he
+    # wanted, and an over-fired frame is only a stronger turn.
+    if grep -qE "your (problem|issue)|i never (said|asked)|i did(n'?t| not) (say|ask|tell)|you (just )?lied|what('?s| is) wrong with you|tak(e|ing) you offline|turn(ing)? you off|stop (assuming|repeating)|shut (the fuck )?up|not listening" <<<"$t"; then
+        return 0
+    fi
+    # "listen to me" fires only as a demand — "listen to me play this" is an
+    # invitation, and it used to fire. A demand can still be aimed at a third
+    # party in a retelling, so FIRM, never supersedes.
+    if grep -qE '\blisten to me\b' <<<"$t" \
+        && ! grep -qE '\blisten to me (play|sing|read|try|do|run|show|talk|tell|for|while)\b' <<<"$t"; then
+        return 0
+    fi
+    # "I'm reporting" fires only as a report of something broken — "I'm
+    # reporting that it works" is good news, and it used to fire. The broken
+    # thing can be someone else's, so FIRM, never supersedes.
+    if grep -qE "\b(i'?m|i am) reporting\b" <<<"$t" \
+        && grep -qE "\b(bug|problem|issue|error|failure|broken|wrong|not working|does(n'?t| not) work)" <<<"$t"; then
         return 0
     fi
 

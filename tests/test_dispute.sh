@@ -117,13 +117,35 @@ passes "a report of success" "I'm reporting that it works"
 passes "lone profanity" "fuck"
 
 echo
-echo "only STRONG closes a turn in flight (rule 6b):"
+echo "only STRONG closes a turn in flight (rule 6b), and STRONG is narrow:"
 supersedes "a direct contradiction supersedes" "you are wrong. stop arguing with me."
-supersedes "the misquotation supersedes" "I never said that"
+supersedes "the misquotation supersedes" "that's not what I said"
+supersedes "the contraction contradiction supersedes" "that isn't the bug"
+supersedes "and the past-tense contraction" "that wasn't the point"
+supersedes "and the answer noun" "that's not the answer"
+supersedes "the unanswered question supersedes" "you didn't answer my question"
+supersedes "the bare stop-arguing supersedes" "stop arguing"
+supersedes "the mishearing supersedes" "you misheard"
 holds_fire "a bare no. fires the frame but kills nothing" \
     "no. the ticket was about the logs"
 holds_fire "two weak signals fire the frame but kill nothing" \
     "no way, that reads wrong to me"
+
+echo
+echo "benign-readable pushback fires the frame and NEVER supersedes (rule 6b):"
+holds_fire "a support question about his own issue" "is your issue resolved now?"
+holds_fire "a retelling about someone else" "I never asked her out, we're just friends"
+holds_fire "an untold secret" "I didn't tell her yet"
+holds_fire "a plea about his brother" "please stop assuming the worst about my brother"
+holds_fire "poker-table banter" "you lied to me in poker last night lol"
+holds_fire "laughing banter" "haha what is wrong with you 😂"
+holds_fire "the goodnight shutdown" "I'm turning you off for the night"
+holds_fire "shut up aimed at the linter" "tell the linter to shut up"
+holds_fire "gossip about a third party" "he's not listening to reason lately"
+holds_fire "the misquotation with a benign reading" "I never said that"
+holds_fire "the demand shape of listen to me" "you need to listen to me here"
+holds_fire "the bug report fires the frame only" \
+    "I'm reporting a genuine bug to you. where it said Quiet."
 # And the queue asks the detector through its own door.
 check "the queue's pushback question requires STRONG" \
     run '_turn_order_is_pushback "you are wrong. stop arguing with me."'

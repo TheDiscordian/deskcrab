@@ -87,25 +87,41 @@ moved from a regex that reads commands to a mount namespace that does not.
    her reply is never the final block — the original final-block guard meant the detector fired
    on no production turn, ever, while its tests fed it transcripts no turn ever sees. Before she
    has said anything at all there is still nothing to dispute, and the detector says no.
-6a. The patterns are three classes, because the detector's two consumers pay different prices
-   for a false positive. STRONG fires alone: direct contradiction ("you're wrong", "that's not
-   right", "that's not the bug"); what she did to his words ("not what I said", "I didn't say
-   that", "I never said", "you misunderstood", "you didn't answer my question", "I didn't ask
-   for a fix"); the day's own sentences ("stop arguing/assuming", "do not gaslight", "you're
-   not listening", "I'm reporting a bug", "taking you offline", "one more fucking time", "what
-   is wrong with you"); him locating the artifact himself ("it was in a quiet block"); and a
-   correction phrased as a question ("why did you X when I asked Y"). SOFT fires the dispute
-   turn but supersedes nothing: a bare "no."/"no," with a restatement behind it is a real
+6a. The patterns are four classes, because the detector's two consumers pay different prices
+   for a false positive. STRONG is the only class that supersedes (rule 6b), and it is
+   deliberately narrow: nothing in it has a benign reading when aimed at her rejecting the
+   reply in flight. Direct contradiction ("you're wrong", "stop arguing", "stop talking",
+   "that's not / that is not / that isn't / that wasn't — it, what…, right, true, the bug, the
+   problem, the issue, the answer, the point"); what she did to his words ("not what I
+   said/meant/asked", "you misunderstood", "you misheard", "you didn't answer/listen/read/
+   hear"); the argument's own escalation ("do not gaslight/lie/argue", "gaslight", "you keep
+   lying", "one more fucking time"); profanity aimed at her ("fuck you", "fuck off", "your
+   fucking problem/issue", "the fuck is/are wrong/you"); him locating the artifact himself
+   ("it was in a quiet block"); and a correction phrased as a question ("why did you X when I
+   asked/said/told Y"). FIRM fires the dispute frame alone and supersedes nothing: the shapes
+   that are usually pushback but each carry an innocent reading — "your problem/issue" without
+   profanity ("is your issue resolved now?"), "I never said/asked" ("I never asked her out"),
+   "I didn't say/ask/tell" ("I didn't tell her yet"), "you lied" ("you lied to me in poker
+   last night lol"), "what is wrong with you" ("haha what is wrong with you"), "taking you
+   offline"/"turning you off" ("I'm turning you off for the night"), "stop assuming/repeating"
+   ("please stop assuming the worst about my brother"), "shut up" ("tell the linter to shut
+   up"), "not listening" ("he's not listening to reason lately"), the "listen to me" demand
+   (never the invitation — "listen to me play this" does not fire at all), and "I'm reporting"
+   beside something broken (never "I'm reporting that it works"). Over-firing FIRM is the
+   tolerable cost: it buys a stronger, framed turn and kills nothing. SOFT fires the dispute
+   turn too and supersedes nothing: a bare "no."/"no," with a restatement behind it is a real
    correction shape, but it is also the shape of "No, that's fine". WEAK signals need two and
    also never supersede: a leading "no", "wrong", "again", "I said", and profanity only when it
    is aimed ("the fuck", "fuck you", "you're fucking…") — profanity as colour ("that was
    fucking great") counts nothing. The benign kin the first cut tripped on are excluded by
-   construction and held by test: "one more time" alone, "run it one more time", "listen to me
-   play this", "I'm reporting that it works", lone profanity, "no worries".
+   construction and held by test: "one more time" alone, "run it one more time", lone
+   profanity, "no worries".
 6b. Superseding a turn still in flight ([turn-pipeline.md](turn-pipeline.md) rule 15c) requires
-   the STRONG class. The dispute frame and the escalation may ride on SOFT or two WEAK —
-   over-applying them costs a stronger turn — but a superseded reply is silently never spoken,
-   which he cannot recover, so nothing that could be benign may ever do it.
+   the STRONG class, and STRONG must stay narrow enough to deserve it: a superseded reply is
+   silently and unrecoverably never spoken — no brake on any channel can un-kill it — so
+   nothing that could be a benign message may EVER supersede. The dispute frame and the
+   escalation may ride on FIRM, SOFT, or two WEAK — over-applying them costs a stronger turn,
+   which is a price the design accepts.
 7. A dispute turn is bought at strength, not at the voice loop's economy price: effort rises to
    `DISPUTE_EFFORT` (default high) unless the caller already asked for more, and when
    `DISPUTE_MODEL` is set, that model takes the turn. The 2026-08-10 spiral ran entirely on the
