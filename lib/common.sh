@@ -1801,7 +1801,18 @@ convo_append_assistant() {  # [--wake|--held] <text>
     local mark=""
     case "${1:-}" in
         --wake) mark=" (autonomous wake)"; shift ;;
-        --held) mark=" ($TURN_HELD_MARK)"; shift ;;
+        --held)
+            # The mark must tell the truth about what he heard. On the desk the
+            # streamer has usually already spoken most of the reply by the time
+            # a pushback holds it, so "not spoken" would be a lie the next
+            # turn's prompt reads and acts on; turn_hold_voice leaves the count
+            # of characters that actually reached the speakers.
+            if [ "${_TURN_HELD_SPOKEN_CHARS:-0}" -gt 0 ] 2>/dev/null; then
+                mark=" (held — partly spoken; $_TURN_HELD_SPOKEN_CHARS characters had reached the speakers)"
+            else
+                mark=" ($TURN_HELD_MARK)"
+            fi
+            shift ;;
     esac
     convo_append 'Assistant [%s]%s: %s\n\n' "$(convo_stamp)" "$mark" "$1"
 }
@@ -3711,7 +3722,18 @@ PROMISE_LEDGER="${PROMISE_LEDGER:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/
 # live catch (the night sweep reads the whole day without this gate) — but a
 # pattern, not a model: rule 32a's whole point is that most turns cost
 # nothing. Both apostrophes, because the model writes the curly one.
-PROMISE_COMMIT_RE="\bI('|’)ll\b|\bI will\b|\bI('|’)m ((now|just|already) )?[a-z]+ing\b|\bI am ((now|just|already) )?[a-z]+ing\b|\bI('|’)ve\b|\bI have (just |now |already )?[a-z]+(ed|en|wn|ne|t)\b|\blet me\b|\bI('|’)m (going|about) to\b|\bI am (going|about) to\b|\bI just [a-z]+(ed|t)\b|\bI (booked|wrote|sent|set|ran|made|did|fixed|wired|built|committed|pushed|logged|filed|noted|saved|moved|added|removed|updated|restarted|recorded|scheduled|dispatched|deployed|installed|started|stopped|created|cancelled|cleared|patched)\b"
+# Widened 2026-08-10 after an adversarial review: the first cut modelled a
+# textbook first-person she measurably does not speak — a closed 30-verb list
+# and mandatory "I" pronoun missed 31/31 oblique completion shapes ("Done — the
+# fan config is wired", "On it", "consider it done", "I already restarted it",
+# and bare past verbs like rebooted/merged/killed), and her real journals are
+# full of exactly those. A completed-work claim is the lie the checker exists
+# to catch, and for it the night cannot recover what this gate drops (desk/phone
+# journals carry no tool trace), so the gate must be wide here. False positives
+# are cost only — the sonnet judge does not accuse a reply with no matching tool
+# call — so this errs loose. The adverb-anchored "I already/just/also VERBed"
+# catches completions without matching bare chat ("I asked", "I tried").
+PROMISE_COMMIT_RE="\bI('|’)ll\b|\bI will\b|\bI('|’)m ((now|just|already) )?[a-z]+ing\b|\bI am ((now|just|already) )?[a-z]+ing\b|\bI('|’)ve\b|\bI have (just |now |already )?[a-z]+(ed|en|wn|ne|t)\b|\blet me\b|\bI('|’)m (going|about) to\b|\bI am (going|about) to\b|\bgonna\b|\bI (just|already|also|then) [a-z]+(ed|t|d)\b|\bI (booked|wrote|sent|set|ran|made|did|fixed|wired|built|committed|pushed|logged|filed|noted|saved|moved|added|removed|updated|restarted|recorded|scheduled|dispatched|deployed|installed|started|stopped|created|cancelled|cleared|patched|rebooted|merged|killed|put|turned|switched|told|took|swept|queued|emailed|reverted|disabled|renamed|bumped|checked|handled|sorted|flagged|synced|reset|tuned)\b|\bdone\b|\bon it\b|\bconsider it( done)?\b|\b(it|that|this)('|’)?s (done|wired|set|in|live|running|up|fixed|written|logged|booked|scheduled|sorted|handled)\b|\bis (wired|set|going in|running|live|up|in the log)\b"
 
 # Does this reply plausibly contain a first-person commitment to a concrete
 # action? A pattern match and nothing else — no model call on any path.
@@ -5438,12 +5460,23 @@ wait_tts_streamer() {
 # "no process-wide kill of any prior streamer when a turn starts", for the
 # same reason: this is one turn's voice, not the machine's.
 turn_hold_voice() {
+    _TURN_HELD_SPOKEN_CHARS=0
     [ -n "${_TTS_STREAMER_PID:-}" ] || return 0
     kill "$_TTS_STREAMER_PID" 2>/dev/null
     wait_tts_streamer
     # And retract the notice, so the next session does not regroup against
     # words that were never said.
     live_speech_end "$_TTS_STREAMER_PID"
+    # How many characters actually reached the speakers before the kill. The
+    # desk streamer speaks sentence by sentence AS the model writes, so by the
+    # time a superseding pushback holds this reply he has usually already heard
+    # most of it — a record that then calls it "not spoken" is the
+    # records-lying failure that started the 2026-08-10 crisis wearing the held
+    # marker. Read the receipt before removing it.
+    if [ -f "${_TTS_RECEIPT:-}" ]; then
+        _TURN_HELD_SPOKEN_CHARS="$(sed -n 's/^chars=//p' "$_TTS_RECEIPT" 2>/dev/null | head -1)"
+        case "$_TURN_HELD_SPOKEN_CHARS" in ''|*[!0-9]*) _TURN_HELD_SPOKEN_CHARS=0 ;; esac
+    fi
     rm -f "${_TTS_RECEIPT:-}" 2>/dev/null
     return 0
 }
@@ -6035,9 +6068,15 @@ run_claude_and_respond() {
             convo_append_assistant --held "$RESPONSE"
             live_turn_end desk "$TEXT" ""
             compact_convo
-            session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $(spoken_part "$RESPONSE"))"
-            notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
-                "held a reply that answered a question you had already closed — it is in the transcript, not spoken" 2>/dev/null
+            if [ "${_TURN_HELD_SPOKEN_CHARS:-0}" -gt 0 ] 2>/dev/null; then
+                session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | reply partly spoken, $_TURN_HELD_SPOKEN_CHARS chars out: $(spoken_part "$RESPONSE"))"
+                notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+                    "held a reply to a question you had already closed — you heard part of it; the rest is in the transcript, not repeated" 2>/dev/null
+            else
+                session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $(spoken_part "$RESPONSE"))"
+                notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+                    "held a reply that answered a question you had already closed — it is in the transcript, not spoken" 2>/dev/null
+            fi
             turn_metric turn-held "superseded"
             claudism_mirror_cleanup
             turn_order_release
