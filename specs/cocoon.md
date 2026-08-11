@@ -72,7 +72,14 @@ moved from a regex that reads commands to a mount namespace that does not.
    namespace with full hands. That asymmetry is rule 2's design, not a leak: the session that is
    mid-conversation cannot edit her with its own hands, and the deliberate, out-of-band brief
    keeps every hand it ever had. A bare `systemd-run` aimed at a constituent path is the same
-   act without the brief, and the signpost denies it by name.
+   act without the brief, and the signpost denies it by name — as it denies the same call
+   spelled as raw D-Bus (`busctl`, `dbus-send`, or `gdbus` driving the manager's
+   `StartTransientUnit`), since the wrap leaves `XDG_RUNTIME_DIR` writable and the manager's
+   socket is on it. Be plain about what those denials are: a signpost, not the wall. The
+   kernel does not — by design — seal this door (sealing it would close the builder road with
+   it), and no text hook can close it either: text has infinitely many spellings, and a D-Bus
+   call that names no constituent path in its own words walks past any pattern. This is the
+   one open road rule 4 knowingly keeps, named here so nobody rediscovers it as a hole.
 5. The hook fails open on malformed input — broken advice must not brick her hands, and the wall
    does not depend on it — and stays silent on every allowed call: no output, no log, no drag.
 

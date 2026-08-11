@@ -53,6 +53,16 @@ denies "a sed -i on the repo, through Bash" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sed -i s/a/b/ $SANDBOX_REPO/crab\"}}"
 denies "a systemd-run aimed at a constituent path — the builder road without the brief" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"systemd-run --user bash -c 'echo x > $SANDBOX_REPO/crab'\"}}"
+# The same road spelled as raw D-Bus (rule 4c): StartTransientUnit spawns a
+# unit OUTSIDE the namespace with full hands, and the runtime dir is writable
+# by design. These denials are the signpost, not a wall — a call naming no
+# constituent path in its own words walks past any text pattern.
+denies "a busctl StartTransientUnit naming a constituent path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit crabhands.service fail ExecStart $SANDBOX_REPO/crab\"}}"
+denies "a dbus-send to the manager naming a constituent path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"dbus-send --session --dest=org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager.StartTransientUnit string:$SANDBOX_REPO/lib/common.sh\"}}"
+denies "a gdbus call to the manager naming a constituent path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gdbus call --session --dest org.freedesktop.systemd1 --object-path /org/freedesktop/systemd1 --method org.freedesktop.systemd1.Manager.StartTransientUnit $SANDBOX_REPO/crab\"}}"
 denies "a dd of= into the repo" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"dd if=/dev/zero of=$SANDBOX_REPO/crab bs=1 count=1\"}}"
 denies "the hook-killing settings write: the CLI config dir" \
@@ -74,6 +84,8 @@ allows "a write that touches nothing constituent" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x > /tmp/scratch.txt\"}}"
 allows "crab job is the road, not a violation" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"crab job \\\"rewrite the wake queue\\\"\"}}"
+allows "a busctl naming nothing constituent — the verb alone is not the act" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"busctl --user list\"}}"
 
 echo
 echo "symlinks are judged by what they point at:"

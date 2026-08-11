@@ -75,12 +75,21 @@ if os.environ.get("CLAUDE_CONFIG_DIR"):
 # Inside a constituent Bash command, these are the write shapes. A read —
 # grep, cat, git log, git show, diff — never matches. `systemd-run` is a write
 # shape here because aiming the user manager at a constituent path is the
-# builder road without the brief (specs/cocoon.md rule 4c); `dd` only in its
-# of= form, since dd reading a constituent file is a read like any other.
+# builder road without the brief (specs/cocoon.md rule 4c), and `busctl`,
+# `dbus-send` and `gdbus` are the same road spelled as raw D-Bus: the wrap
+# leaves XDG_RUNTIME_DIR writable because the CLI and `crab job` both need
+# the manager's socket, so a StartTransientUnit over it spawns a unit OUTSIDE
+# the namespace with full hands. Be plain about what matching them buys: a
+# SIGNPOST, not a wall. The kernel does not — by design — seal that door,
+# and no text hook can: text has infinitely many spellings, and a D-Bus call
+# that names no constituent path in its own words walks past any pattern.
+# `dd` only in its of= form, since dd reading a constituent file is a read
+# like any other.
 WRITE_RE = re.compile(
     r"(?:^|[|&;]\s*)(?:sudo\s+)?"
     r"(?:sed\s+(?:\S+\s+)*-i|tee\b|rm\b|mv\b|cp\b|ln\b|chmod\b|chown\b|"
     r"patch\b|truncate\b|install\b|mkdir\b|touch\b|systemd-run\b|"
+    r"busctl\b|dbus-send\b|gdbus\b|"
     r"git\s+(?:-C\s+\S+\s+)?(?:commit|add|apply|am|rebase|merge|reset|restore|checkout|switch|rm|mv|stash|push|clean)|"
     r"systemctl\s+--user\s+(?:daemon-reload|enable|disable|edit|mask|unmask))"
     r"|>>?\s*\S"
