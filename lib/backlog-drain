@@ -269,8 +269,8 @@ $LEDGER_TAIL"
                         | tr '[:upper:] ' '[:lower:]-' \
                         | tr -cd 'a-z0-9-' | head -c 80 > "$WORK/$N.key"
                     printf '%s' "$TWD" | tr -d ' \t' > "$WORK/$N.wd"
-                    printf '%s' "$TTITLE" | sed 's/^ *//; s/ *$//' | tr -d '\t' \
-                        | head -c 200 > "$WORK/$N.title"
+                    utf8_trim "$(printf '%s' "$TTITLE" | sed 's/^ *//; s/ *$//')" 200 \
+                        > "$WORK/$N.title"
                     ;;
                 BRIEF:*) INBRIEF=1; : > "$WORK/$N.brief" ;;
                 END)     INBRIEF=0 ;;

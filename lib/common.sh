@@ -407,6 +407,30 @@ _proc_starttime() {
         "/proc/$1/stat" 2>/dev/null || echo 0
 }
 
+# --- The one string cut -----------------------------------------------------
+# Cut text to a byte budget without splitting a character in half. `head -c`
+# counts BYTES, and a multibyte character straddling the boundary leaves its
+# leading bytes behind alone: one stray 0xE2 — the first third of an em-dash —
+# made grep classify the WHOLE wake ledger as binary, so every query on every
+# record answered nothing and exited 0 (2026-08-11 02:22; specs/wake-queue.md,
+# DATA), and the same fragment makes glib refuse to marshal a notification
+# over D-Bus, dropping it whole with the error swallowed. The iconv pass
+# drops whatever partial character the byte cut leaves, and names the charset
+# explicitly so it holds even in a C-locale systemd unit, where GNU `cut -c`
+# and bash's ${var:0:N} both still count bytes. Without iconv the byte cut is
+# still better than nothing. Newlines and tabs flatten to spaces — every
+# caller is bounding a one-line field. Every bounded cut of one-line user
+# text goes through here; a fresh bare `head -c` on words anyone wrote is the
+# defect this helper exists to end.
+utf8_trim() {  # <text> <max bytes>
+    local t; t="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c "$2")"
+    if command -v iconv >/dev/null 2>&1; then
+        printf '%s' "$t" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null
+    else
+        printf '%s' "$t"
+    fi
+}
+
 # --- Self-awareness: who else is running right now -------------------------
 # Every claude invocation registers itself here so that any one of them can see
 # the others. Without this an interactive turn has no idea a wake is working in
@@ -442,7 +466,7 @@ session_register() {
 # the failure it does not catch is concluding "I did no work" when an earlier
 # session already finished the work and exited.
 session_outcome() {
-    SESSION_OUTCOME="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 300)"
+    SESSION_OUTCOME="$(utf8_trim "$1" 300)"
 }
 
 # --- Work claims -----------------------------------------------------------
@@ -542,7 +566,7 @@ CKPT_KEEP_DAYS="${CKPT_KEEP_DAYS:-7}"
 
 session_checkpoint() {
     local what owner
-    what="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 500)"
+    what="$(utf8_trim "$1" 500)"
     [ -n "$what" ] || { echo "Usage: crab checkpoint <intent / progress / what is next>"; return 1; }
     owner="$(_claim_owner_pid $PPID)" || owner="$(_claim_owner_pid $$)" || {
         echo "No registered session in this process's ancestry — nothing to checkpoint against."
@@ -4190,7 +4214,7 @@ PY
 # its own boot line. Prints nothing when the stream holds only real events.
 wake_stream_last_words() {
     [ -s "${DEBUGLOG:-}" ] || return 0
-    awk '
+    utf8_trim "$(awk '
         /^\{"type":"deskcrab_note"/ {
             n = $0; sub(/.*"note":"/, "", n); sub(/".*/, "", n)
             if (n == "session") next
@@ -4199,8 +4223,7 @@ wake_stream_last_words() {
         }
         /^\{/ { next }
         /[^[:space:]]/ { last = $0 }
-        END { if (last != "") print last }' "$DEBUGLOG" 2>/dev/null \
-        | head -c 160
+        END { if (last != "") print last }' "$DEBUGLOG" 2>/dev/null)" 160
 }
 
 # The fallback logins, in the order they should be tried, one per line. The
@@ -4632,7 +4655,7 @@ claude_limit_record() {
     [ "$to" = "$CLAUDE_PRIMARY_TOKEN" ] && to="primary"
     log_append_bounded "$ACCOUNT_LOG" "$ACCOUNT_LOG_KEEP" \
         "$(printf '%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$(basename "$from")" "$(basename "$to")" \
-            "$(printf '%s' "${2:-limit refusal}" | tr '\n\t' '  ' | head -c 120)" \
+            "$(utf8_trim "${2:-limit refusal}" 120)" \
             "${SESSION_KIND:-session}")"
     return 0
 }
@@ -4935,7 +4958,7 @@ WAKE_HELD_REASON_PREFIX="You had this to say while he was mid-conversation and i
 # one delay later.
 wake_hold_for_heat() {  # <the held words>
     local WORDS
-    WORDS="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c 600)"
+    WORDS="$(utf8_trim "$1" 600)"
     [ -n "$(printf '%s' "$WORDS" | tr -d '[:space:]')" ] || return 0
     "$SCRIPT_DIR/crab" wake-at --by hot-hold \
         --cap "$WAKE_HOT_HOLD_CAP" --cap-prefix "$WAKE_HELD_REASON_PREFIX" \
@@ -5002,7 +5025,7 @@ run_claude_wake() {
     # Journal the failure instead, and re-book a wake that had a purpose so
     # its agenda survives to a retry after the outage clears.
     if wake_stream_failed; then
-        session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(printf '%s' "$RESPONSE" | tr '\n\t' '  ' | head -c 160))"
+        session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(utf8_trim "$RESPONSE" 160))"
         # A free slot, not a flat half hour: an outage fails every wake it
         # touches, and a fixed retry stacks all of them onto the same second
         # (wake_book does the spacing, under the booking lock).
@@ -5988,20 +6011,13 @@ _run_claude_remote_locked() {
 # The "Thinking..." toast, and its dismissal — paired, and idempotent so the
 # dismissal can be called from a trap AND on the straight line without a
 # second empty notification flashing past.
-# A notification body, cut to fit without splitting a character in half.
-# `head -c 140` counts BYTES: an em dash whose three bytes straddle the
-# boundary leaves a fragment behind, glib refuses to marshal invalid UTF-8 over
-# D-Bus, and the notification is dropped whole — with its error swallowed by
-# the `2>/dev/null` every caller has, so the desk simply goes quiet. iconv -c
-# drops whatever the cut broke; without iconv the byte cut is still better than
-# nothing.
+# A notification body, cut to fit without splitting a character in half: glib
+# refuses to marshal invalid UTF-8 over D-Bus, and the notification is dropped
+# whole — with its error swallowed by the `2>/dev/null` every caller has, so
+# the desk simply goes quiet. The cut itself is utf8_trim's; this keeps only
+# the notification default of 140 bytes.
 _notify_body() {  # <text> [max bytes]
-    local t; t="$(printf '%s' "$1" | tr '\n\t' '  ' | head -c "${2:-140}")"
-    if command -v iconv >/dev/null 2>&1; then
-        printf '%s' "$t" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null
-    else
-        printf '%s' "$t"
-    fi
+    utf8_trim "$1" "${2:-140}"
 }
 
 _THINKING_SHOWN=0

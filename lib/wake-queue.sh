@@ -66,16 +66,16 @@ WAKE_LIVE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes"
 # `head -c 200` cuts on bytes, and an em-dash straddling byte 200 left its
 # lone leading 0xE2 in the live ledger — one byte that made grep classify the
 # WHOLE file as binary and answer every query with nothing, exit 0
-# (2026-08-11 02:22; specs/wake-queue.md, DATA). The iconv pass drops
-# whatever partial character the byte cut left. It names the charset
-# explicitly, so it holds even in a C-locale systemd unit, where GNU
+# (2026-08-11 02:22; specs/wake-queue.md, DATA). utf8_trim (lib/common.sh) is
+# that incident's repair, hoisted to the one place every bounded field is cut:
+# it drops whatever partial character the byte cut leaves, with the charset
+# named explicitly so it holds even in a C-locale systemd unit, where GNU
 # `cut -c` and bash's ${var:0:200} both still count bytes.
 wake_ledger() {  # <action> <unit> <kind> <reason> <actor>
     mkdir -p "$WAKES_DIR" 2>/dev/null
     log_append_bounded "$WAKE_LEDGER" "$WAKE_LEDGER_KEEP" \
         "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$1" "${2:-}" "${3:-}" \
-            "$(printf '%s' "${4:-}" | tr '\n\t' '  ' | head -c 200 \
-                | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)" "${5:-unknown}")"
+            "$(utf8_trim "${4:-}" 200)" "${5:-unknown}")"
     return 0
 }
 

@@ -328,7 +328,12 @@ classify the ENTIRE file as binary — every query on every record answers nothi
 which reads as bookings that never happened. Found live on 2026-08-11: a split em-dash on a single
 hot-hold line hid all 958 records at once, in the exact file read to adjudicate promise flags. A
 trim that may have cut into a multibyte character MUST drop the partial character rather than
-write its leading bytes.
+write its leading bytes. There MUST be exactly ONE implementation of that trim — `utf8_trim` in
+lib/common.sh — and every bounded cut of a one-line text field goes through it: this ledger's
+reason, the sessions log outcome, checkpoints, the account log reason, the held-note words, the
+stream last-words tail, notification bodies. The incident above was fixed here first and found
+five more unguarded copies of the same byte cut the same night; a private copy of the pipeline is
+how the next one appears.
 
 ## The lifecycle
 
@@ -445,6 +450,10 @@ sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held q
 the 200-character trim boundary lands as valid UTF-8 with the partial character dropped whole,
 plain grep — no `-a` — still finds the record, an em-dash short of the boundary survives intact,
 and the 200 limit itself still holds),
+`tests/test_utf8_trim.sh` (the one shared trim behind every bounded field: a character straddling
+the byte budget is dropped whole, the result is valid UTF-8, a file built from such trims stays
+text to a plain grep, characters clear of the boundary survive, newlines and tabs flatten to
+spaces, and the budget itself still holds),
 `tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own
