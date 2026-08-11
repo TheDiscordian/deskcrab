@@ -56,8 +56,8 @@ out" — it is ten minutes of silence with nothing on screen explaining it.
 ### One watched runner
 
 17. There MUST be exactly one function that invokes the CLI, and every path MUST use it: the desk
-    turn, the phone turn, the wake, the job, the summariser, the judge, the ingest, and the promise
-    audit.
+    turn, the phone turn, the wake, the job, the summariser, the judge, the ingest, the promise
+    audit, and the promise checker.
 18. The runner MUST take a stall timeout and a whole-chain wall-clock deadline. A turn with someone
     waiting gets a short stall timeout; an unattended wake gets a longer one and no wall clock.
 19. **Liveness MUST be two signs, not one:** new bytes in the stream log, or CPU burned across the
@@ -86,8 +86,9 @@ out" — it is ten minutes of silence with nothing on screen explaining it.
 
 28. Every detached child MUST inherit the current login. A child that fires at the ambient login and
     fails quietly is a silent hole in the chain.
-29. Every out-of-band model call — the promise audit, the memory store's ingest and judge, the
-    summariser — MUST route through the chain, or at minimum honour the current default.
+29. Every out-of-band model call — the promise audit, the promise checker and its sweep, the
+    memory store's ingest and judge, the summariser — MUST route through the chain, or at minimum
+    honour the current default.
 30. The summariser MUST capture standard error, so a refusal that arrives only there cannot break the
     walk.
 31. A refusal MUST NEVER be committed as a summary. See [turn-pipeline.md](turn-pipeline.md) rule 27.

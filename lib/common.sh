@@ -3594,12 +3594,21 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
 # with nothing on the queue behind the sentence.
 PROMISE_AUDIT_REASON_PREFIX="You said this and did not write it down:"
 DEFERRED_PROMISE_REASON_PREFIX="You promised him and nothing was booked:"
+# The promise CHECKER's class (specs/wake-queue.md rule 43b), a third prefix
+# beside the auditor's two: her reply claimed a concrete action and the turn's
+# own tool record shows nothing performed or booked it.
+PROMISE_CHECK_REASON_PREFIX="You claimed this and the record shows nothing did it:"
 
-# Is this wake's reason one of the audit's own follow-ups, and so exempt from
-# re-auditing? One question, asked wherever a wake decides whether to audit.
+# Is this wake's reason one of the follow-up classes, and so exempt from
+# re-AUDITING? One question, asked wherever a wake decides whether to audit.
+# The checker's prefix is here too: its agenda quotes the promise verbatim,
+# and an audit reading that quote books deferred wakes forever. Only the
+# audit is exempted — the CHECKER still runs on these wakes, because it reads
+# the fresh reply against fresh evidence, never the agenda.
 promise_audit_own_reason() {  # <wake reason>
     case "${1:-}" in
         "$PROMISE_AUDIT_REASON_PREFIX"*|"$DEFERRED_PROMISE_REASON_PREFIX"*) return 0 ;;
+        "$PROMISE_CHECK_REASON_PREFIX"*) return 0 ;;
     esac
     return 1
 }
@@ -3608,6 +3617,63 @@ fire_promise_audit() {  # <user-text> <response>  |  --wake <agenda> <response>
     [ "${PROMISE_AUDIT:-1}" = "1" ] || return 0
     [ -x "$SCRIPT_DIR/lib/promise-audit" ] || return 0
     detach_turn_child promise-audit "$SCRIPT_DIR/lib/promise-audit" "$@"
+}
+
+# --- Promise check: the claim with no work behind it ------------------------
+# specs/turn-pipeline.md rules 32a-32d. The audit above reads what was SAID —
+# a want or a stated-later promise, held against the shelf and the queue.
+# This reads what was DONE: the reply's first-person claims of concrete
+# action ("I am wiring it now", "I've written it to the log"), held against
+# the tool calls the turn's own stream log records. Every channel fires it —
+# desk, phone, wake — and a presence pre-check gates the model, so the
+# ordinary reply costs one grep and a trace line, never a model call.
+
+# The durable ledger of unkept commitments; the nightly sweep reads and
+# extends it (specs/nightly.md rules 51-53).
+PROMISE_LEDGER="${PROMISE_LEDGER:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/promise-ledger.jsonl}"
+
+# The shape of a first-person commitment, cheaply: the immediate future
+# ("I'll", "I will", "I'm going to"), the present act ("I'm wiring", "let
+# me"), and the completed claim ("I've", "I have written", "I just fixed",
+# and the bare simple past of the doing verbs she reaches for). Deliberately
+# liberal — a false hit costs one small classify call, a miss costs only the
+# live catch (the night sweep reads the whole day without this gate) — but a
+# pattern, not a model: rule 32a's whole point is that most turns cost
+# nothing. Both apostrophes, because the model writes the curly one.
+PROMISE_COMMIT_RE="\bI('|’)ll\b|\bI will\b|\bI('|’)m ((now|just|already) )?[a-z]+ing\b|\bI am ((now|just|already) )?[a-z]+ing\b|\bI('|’)ve\b|\bI have (just |now |already )?[a-z]+(ed|en|wn|ne|t)\b|\blet me\b|\bI('|’)m (going|about) to\b|\bI am (going|about) to\b|\bI just [a-z]+(ed|t)\b|\bI (booked|wrote|sent|set|ran|made|did|fixed|wired|built|committed|pushed|logged|filed|noted|saved|moved|added|removed|updated|restarted|recorded|scheduled|dispatched|deployed|installed|started|stopped|created|cancelled|cleared|patched)\b"
+
+# Does this reply plausibly contain a first-person commitment to a concrete
+# action? A pattern match and nothing else — no model call on any path.
+promise_precheck() {  # <reply>
+    printf '%s' "${1:-}" | LC_ALL=C grep -qiE "$PROMISE_COMMIT_RE"
+}
+
+fire_promise_check() {  # <journal-kind> <response>
+    [ "${PROMISE_CHECK:-1}" = "1" ] || return 0
+    [ -x "$SCRIPT_DIR/lib/promise-check" ] || return 0
+    [ -n "$(printf '%s' "${2:-}" | tr -d '[:space:]')" ] || return 0
+    if ! promise_precheck "$2"; then
+        # Most replies end here, and this line is the feature's whole cost:
+        # it is also the only way to tell "checked, no commitment shape"
+        # from "the checker never ran".
+        printf '%s\t%s\tpre-check: no commitment shape — the model was never called\n' \
+            "$(date '+%F %T')" "$1" >> "${STATE_PREFIX}-promise-check.log" 2>/dev/null
+        return 0
+    fi
+    # The evidence, snapshotted NOW: the phone turn deletes its stream log
+    # moments after this fires, and a detached child racing that deletion
+    # would judge nothing. The checker owns the copy and removes it; a copy
+    # a crashed checker leaked is swept here, aged, like the phone's clips.
+    local SNAP=""
+    if [ -f "${DEBUGLOG:-}" ]; then
+        SNAP="${STATE_PREFIX}-promise-evidence-$$-$(date +%s%N)"
+        cp -- "$DEBUGLOG" "$SNAP" 2>/dev/null || SNAP=""
+    fi
+    find "$(dirname "$STATE_PREFIX")" -maxdepth 1 \
+        -name "$(basename "$STATE_PREFIX")-promise-evidence-*" \
+        -mmin +120 -delete 2>/dev/null
+    detach_turn_child promise-check "$SCRIPT_DIR/lib/promise-check" turn \
+        "$1" "${SESSION_START:-$(date +%s)}" "$$" "$SNAP" "$PROMISE_LEDGER" "$2"
 }
 
 # --- Claudism capture: the phrase-habit flag log ----------------------------
@@ -4930,6 +4996,11 @@ $DISPLAY_PART"
     # The claudism capture rides the same moment, and unconditionally: a
     # wake spoken to nobody is still her voice, audit follow-ups included.
     fire_claudism_capture wake "$RESPONSE"
+    # And the promise checker, on every wake — its own follow-ups included:
+    # a claim of work with nothing in the tool record behind it is a false
+    # record whoever was listening, and the checker judges fresh words
+    # against fresh evidence, never the agenda (turn-pipeline rule 32a).
+    fire_promise_check wake "$RESPONSE"
     # Same moment for the memory judge: the wake's outcome is recorded, and a
     # silent completion below must not skip the judgement — a memory used by
     # a wake that chose to say nothing was still used.
@@ -5626,6 +5697,12 @@ _run_claude_remote_locked() {
     # job was judged as if it had done nothing but talk.
     local WORK_TRACE; WORK_TRACE="$(wake_work_trace)"
 
+    # The promise checker fires BEFORE the stream log goes: its evidence is
+    # that log, snapshotted at fire time, and three lines down it is deleted
+    # (turn-pipeline rule 32a). A held (superseded) turn arrives here with
+    # RESPONSE already emptied, so nothing of an unspoken reply is judged.
+    fire_promise_check phone "$RESPONSE"
+
     rm -f "$DEBUGLOG"
     # Reply audio the client has had time to fetch. Scoped to THIS instance's
     # own prefix and to clips older than an hour — a pattern delete that only
@@ -5844,6 +5921,10 @@ run_claude_and_respond() {
         # that hands the sentence back to me. Costs nothing on the hot path.
         fire_promise_audit "$TEXT" "$RESPONSE"
         fire_claudism_capture desktop "$RESPONSE"
+        # And did I CLAIM work this turn's own tool record never performed?
+        # Pattern-gated: most replies cost a grep here and no model call
+        # (turn-pipeline rules 32a-32d).
+        fire_promise_check desktop "$RESPONSE"
     else
         # He asked out loud and nothing came back. This branch used to do
         # NOTHING AT ALL — no speech, no notification, no journal line — so a
