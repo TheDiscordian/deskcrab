@@ -334,6 +334,23 @@ cannot be changed.
     her wakes, nothing else. `DESKCRAB_CHESS_ALLOW_WAKE_MOVE=1` is the deliberate escape
     hatch, named in the refusal, for the one case where a human explicitly asked a wake to
     place a specific move.
+21. A **chess wake's prompt opens with a refusal**, before even the waking frame. Every wake
+    whose booking provenance is exactly `chessweb` — rule 7's post-move and end-of-game wakes;
+    `WAKE_BOOKED_BY` is the gate, carried on the record and preserved by both the deferral
+    re-book and the outage retry (`--by "$WAKE_BOOKED_BY"`), so a chess wake that lost the run
+    lock or the model still opens with it when it finally fires — has this directive as the
+    literal first line of the agenda text handed to the CLI:
+
+        DO NOT RUN THE betty-chess move COMMAND UNDER ANY CIRCUMSTANCES. LOOK AND THINK ONLY. THE RESIDENT CHESS MOVER PLAYS THE MOVES, NOT YOU.
+
+    Rule 20 arms the command; this line arms the reader, and the two stand or fall
+    independently. The 2026-08-10 wake that mirrored a move into a live game was reading an
+    agenda that pointed it at its own board and said nothing about its hands — the rule it
+    broke lived in a conduct file it had no reason to open that second. The directive is
+    scoped to chessweb bookings ONLY and every other wake's agenda stays **byte-identical**:
+    an all-caps order over every wake is a cried wolf — the wakes with no board to touch
+    would learn to read past it, and the one wake it was written for would read past it
+    with them.
 
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 

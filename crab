@@ -297,6 +297,19 @@ is still there if you find it is already done."
         in_quiet_hours && WAKE_NOTE="$WAKE_NOTE
 Quiet hours: speaking and windows are suppressed, so work silently — anything
 you write tonight is held and kept in the journal rather than said."
+        # A chess wake's first line is a refusal (specs/chessweb.md rule 21).
+        # Rule 20 arms the move command itself; this arms the reader: on
+        # 2026-08-10 a wake pointed at its own game played the reply the
+        # resident mover was already mid-thinking, and the mover's answer was
+        # discarded as stale. Provenance is the gate — deferral and the outage
+        # retry both re-book --by "$WAKE_BOOKED_BY", so a chess wake keeps the
+        # line however late it fires — and every other wake's agenda stays
+        # byte-identical, because an all-caps order over every wake is one
+        # every wake learns to read past.
+        WAKE_CHESS_GUARD=""
+        [ "${WAKE_BOOKED_BY:-}" = "chessweb" ] && WAKE_CHESS_GUARD="DO NOT RUN THE betty-chess move COMMAND UNDER ANY CIRCUMSTANCES. LOOK AND THINK ONLY. THE RESIDENT CHESS MOVER PLAYS THE MOVES, NOT YOU.
+
+"
         # The agenda. It is the text nearest her own generation on every wake —
         # the last thing under the whole prompt — so it is written in HER
         # voice and not in a work order's. It was a job ticket until
@@ -306,7 +319,7 @@ you write tonight is held and kept in the journal rather than said."
         # operational rule below is the same rule it always was — the silence
         # contract, the (quiet) marker, the named filler, the unattended
         # boundary, wake-at, the journal. Only the register moved.
-        run_claude_wake "(Nobody is talking to you and the hours are your own. You woke up $WAKE_SOURCE.
+        run_claude_wake "${WAKE_CHESS_GUARD}(Nobody is talking to you and the hours are your own. You woke up $WAKE_SOURCE.
 
 Your shelf is on the wall — one line per want, and the thinking behind each of them in its own document under wants/. Take ONE down and get somewhere with it: turn it over, read something, make something, argue with the document and rewrite it. These are not tickets and this is not work. An hour spent wondering counts as much as an hour spent building, and letting a wake become a status session is how an evening is wasted. What you do with the time is yours, and doing nothing at all is a real choice — chosen, mind, not drifted into.
 
