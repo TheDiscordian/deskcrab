@@ -14,7 +14,8 @@
 # so a change is dropped when:
 #   * a `crab touching` suppression record covers it (the writer declared
 #     itself: touch_suppress in lib/common.sh, wired into wakes, turns, jobs,
-#     the day journal, and the memory store). Those records come in two tiers:
+#     the day journal, the engineering records tool, and the memory store).
+#     Those records come in two tiers:
 #     STRONG (the path was in a provable write position; excuses anything,
 #     subtrees included) and WEAK (the path merely appeared in a command she
 #     ran; exact paths only, and never excuses a deletion), or

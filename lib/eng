@@ -30,6 +30,7 @@ like job-status: this must run on an offline machine with nothing installed.
 
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -104,6 +105,37 @@ def parse(path):
     return meta, body
 
 
+def declare_write(*paths):
+    """Tell the self-change watcher these paths are about to move by my hand.
+
+    The records directory is in lib/notice-selfchange's watch set, and an
+    undeclared write there is reported back as an intruder's change to her
+    own files. On 2026-08-11 at 11:22 a `crab eng touch` made from a live
+    wake did exactly that: at 11:23 the watcher booked a wake about the very
+    record this tool had just written. So every write goes out declared
+    FIRST, through `crab touching` — the CLI face of touch_suppress in
+    lib/common.sh, the same door every other writing hand of hers uses —
+    with the same short window the day journal's declaration takes
+    (day_journal_append, lib/common.sh). The watcher itself stays untouched:
+    a genuinely external edit to the same file still surfaces.
+
+    Best-effort, like every existing caller's `2>/dev/null`: a missing or
+    failing crab must never cost the record write itself.
+    """
+    crab = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        os.pardir, "crab")
+    if not os.access(crab, os.X_OK):
+        return
+    try:
+        subprocess.run(
+            [crab, "touching", "-w", "300"]
+            + [os.path.abspath(p) for p in paths],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def write(path, meta, body):
     """Atomic, like job-status: a concurrent prompt build never reads half."""
     lines = ["---"]
@@ -111,8 +143,11 @@ def write(path, meta, body):
         lines.append("%s: %s" % (k, quote(meta.get(k, ""))))
     lines.append("---")
     text = "\n".join(lines) + "\n\n" + body.rstrip("\n") + "\n"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = "%s.tmp.%d" % (path, os.getpid())
+    # Every path this write moves — the record and the temporary it is
+    # atomically replaced from — declared before a byte lands (rule 10a).
+    declare_write(path, tmp)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)

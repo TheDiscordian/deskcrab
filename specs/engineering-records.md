@@ -51,6 +51,18 @@ assistant together on 2026-08-11; the session is recorded in
    caller.
 10. An id the tool does not know is an error, never a silent no-op and never a fresh file.
 
+10a. The records directory is part of the self-change watch set, so every code path of the tool
+    that creates or modifies a file there — `new`, `touch`, `settle`, `kill`, `migrate`, all of
+    them funnelling through the one atomic writer — MUST declare the write FIRST, through the
+    write-declaration mechanism the watcher honours (`crab touching`, i.e. `touch_suppress` in
+    `lib/common.sh`; [nightly.md](nightly.md) rules 25–27), covering every path actually written:
+    the record file and the temporary it is atomically replaced from. The watcher is never
+    special-cased by directory name — the writing hand declares itself, so a genuinely
+    out-of-band edit to the very same file still surfaces. The declaration is best-effort: a
+    missing or failing declaration must not cost the record write itself. Without this, a
+    `crab eng touch` made from a live wake at 2026-08-11 11:22 was reported back one minute
+    later as an intruder's change to her own files.
+
 ### The prompt
 
 11. The engineering drawer reaches the speaking prompts (turn and wake) through `lib/eng prompt`,
@@ -99,11 +111,14 @@ assistant together on 2026-08-11; the session is recorded in
 (`touched-since`).
 
 **The tool must never:** speak, notify, book a wake, dispatch a job, or write outside its records
-directory.
+directory — with the one exception of the write declaration of rule 10a, which goes to the
+self-change watcher's suppression file through `crab touching`.
 
 ## TESTS
 
 **Existing:** `tests/test_eng_records.sh` (round-trip, transitions bumping `last_touched`,
 `touched-since`, search, the prompt rendering of open versus settled records — a settled record's
 body prose stays out of the prompt — and migration preserving dates and idempotence);
-`tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md)).
+`tests/test_eng_selfchange.sh` (rule 10a: a real `crab eng touch` declares its own write and the
+self-change watcher stays quiet about it, while an undeclared out-of-band edit to the same record
+still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md)).
