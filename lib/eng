@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Engineering records: threads with STATE, not appended prose (specs/engineering-records.md).
+
+One file per thread in $DESKCRAB_ENG_DIR (default ~/.local/share/deskcrab/
+engineering/records/): YAML frontmatter carrying id, title, opened,
+last_touched, state (open|settled|dead), settled_at, settled_by, summary;
+below it free prose, newest entries first, each headed with its own datetime.
+State moves ONLY through this tool, and every write that adds an entry bumps
+last_touched in the same motion — that pairing is what the job hook trusts.
+
+    eng new <title> [--summary <line>] [--body <text>] [--opened <datetime>]
+    eng list [--state open|settled|dead|all]
+    eng show <id>
+    eng touch <id> <note...>
+    eng settle <id> <what-settled-it...>
+    eng kill <id> [reason...]
+    eng search <words...>
+    eng field <id> <key>
+    eng touched-since <id> <epoch>     exit 0 iff last_touched is newer
+    eng prompt                          the shelves-layer block, or nothing
+    eng migrate <prose file>            one record per ## entry or index
+                                        bullet of the old prose, once
+
+Why this exists: an engineering note used to be undated prose with no state,
+so a worry written before a question was settled kept reading as present-tense
+fact — and twice on 2026-08-10 it was announced as a live code flaw that did
+not exist. A settled thing must read as settled at a glance. Stdlib only,
+like job-status: this must run on an offline machine with nothing installed.
+"""
+
+import os
+import re
+import sys
+import time
+
+FIELDS = ["id", "title", "opened", "last_touched", "state",
+          "settled_at", "settled_by", "summary"]
+STATES = ("open", "settled", "dead")
+TIMEFMT = "%Y-%m-%d %H:%M:%S"
+
+
+def eng_dir():
+    d = os.environ.get("DESKCRAB_ENG_DIR")
+    if not d:
+        data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        d = os.path.join(data, "deskcrab", "engineering", "records")
+    return d
+
+
+def now():
+    return time.strftime(TIMEFMT)
+
+
+def die(msg):
+    print("eng: %s" % msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def slugify(title):
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return s[:48].rstrip("-") or "untitled"
+
+
+def rec_path(rid):
+    return os.path.join(eng_dir(), rid + ".md")
+
+
+def quote(v):
+    """One line, quoted only when YAML would misread it bare."""
+    v = " ".join(str(v).split())
+    if v and (":" in v or v[0] in "-?[]{}#&*!|>'\"%@`"):
+        return '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
+    return v
+
+
+def unquote(v):
+    v = v.strip()
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return v
+
+
+def parse(path):
+    """-> (meta dict, body str) or None if the file is not a record."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return None
+    meta = {}
+    for line in text[4:end].splitlines():
+        if ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        meta[k.strip()] = unquote(v)
+    body = text[end + 5:].lstrip("\n")
+    if "id" not in meta:
+        return None
+    return meta, body
+
+
+def write(path, meta, body):
+    """Atomic, like job-status: a concurrent prompt build never reads half."""
+    lines = ["---"]
+    for k in FIELDS:
+        lines.append("%s: %s" % (k, quote(meta.get(k, ""))))
+    lines.append("---")
+    text = "\n".join(lines) + "\n\n" + body.rstrip("\n") + "\n"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def load(rid):
+    got = parse(rec_path(rid))
+    if got is None:
+        die("no record '%s' in %s (ids: crab eng list)" % (rid, eng_dir()))
+    return got
+
+
+def all_records():
+    d = eng_dir()
+    out = []
+    if os.path.isdir(d):
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".md"):
+                continue
+            got = parse(os.path.join(d, name))
+            if got is not None:
+                out.append(got)
+    return out
+
+
+def touched_epoch(meta):
+    for key in ("last_touched", "opened"):
+        v = (meta.get(key) or "").strip()
+        for fmt in (TIMEFMT, "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return int(time.mktime(time.strptime(v, fmt)))
+            except ValueError:
+                continue
+    return 0
+
+
+def add_entry(body, note, stamp=None):
+    """Newest first: the fresh entry goes above whatever is already there."""
+    entry = "## %s\n\n%s\n" % (stamp or now(), note.strip())
+    return entry + ("\n" + body if body.strip() else "")
+
+
+# --- the commands ----------------------------------------------------------
+
+def cmd_new(argv):
+    title, summary, body, opened = None, "", "", ""
+    args = list(argv)
+    rest = []
+    while args:
+        a = args.pop(0)
+        if a == "--summary" and args:
+            summary = args.pop(0)
+        elif a == "--body" and args:
+            body = args.pop(0)
+        elif a == "--opened" and args:
+            opened = args.pop(0)
+        else:
+            rest.append(a)
+    title = " ".join(rest).strip()
+    if not title:
+        die("usage: eng new <title> [--summary <line>] [--body <text>]")
+    rid = slugify(title)
+    n = 2
+    while os.path.exists(rec_path(rid)):
+        rid = "%s-%d" % (slugify(title), n)
+        n += 1
+    stamp = opened or now()
+    meta = {"id": rid, "title": title, "opened": stamp, "last_touched": stamp,
+            "state": "open", "settled_at": "", "settled_by": "",
+            "summary": summary}
+    write(rec_path(rid), meta, add_entry("", body or "Opened.", stamp))
+    print(rid)
+
+
+def one_line(meta):
+    state = meta.get("state", "open")
+    if state in ("settled", "dead"):
+        return "%s [%s] — %s %s: %s" % (
+            meta.get("title", "?"), meta["id"], state,
+            meta.get("settled_at") or "(undated)",
+            meta.get("settled_by") or "(unrecorded)")
+    return "%s [%s] — opened %s, last touched %s" % (
+        meta.get("title", "?"), meta["id"],
+        meta.get("opened") or "(undated)",
+        meta.get("last_touched") or "(undated)")
+
+
+def cmd_list(argv):
+    want = "all"
+    if "--state" in argv:
+        i = argv.index("--state")
+        want = argv[i + 1] if i + 1 < len(argv) else "all"
+    recs = [m for m, _ in all_records()]
+    if want != "all":
+        recs = [m for m in recs if m.get("state") == want]
+    recs.sort(key=lambda m: (0 if m.get("state") == "open" else 1,
+                             -touched_epoch(m)))
+    for m in recs:
+        print("%-7s  %s" % (m.get("state", "?"), one_line(m)))
+
+
+def cmd_show(argv):
+    if not argv:
+        die("usage: eng show <id>")
+    load(argv[0])
+    with open(rec_path(argv[0]), encoding="utf-8", errors="replace") as f:
+        sys.stdout.write(f.read())
+
+
+def cmd_touch(argv):
+    if len(argv) < 2:
+        die("usage: eng touch <id> <note>")
+    rid, note = argv[0], " ".join(argv[1:])
+    meta, body = load(rid)
+    # One stamp for both writes: the entry's heading and last_touched are the
+    # same instant by construction, never a second apart across a boundary.
+    stamp = now()
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, note, stamp))
+    print("%s touched %s" % (rid, stamp))
+
+
+def _close(rid, state, by, verb):
+    meta, body = load(rid)
+    stamp = now()
+    meta["state"] = state
+    meta["settled_at"] = stamp
+    meta["settled_by"] = by
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, "%s: %s" % (verb, by)))
+    print("%s %s %s: %s" % (rid, state, stamp, by))
+
+
+def cmd_settle(argv):
+    if len(argv) < 2:
+        die("usage: eng settle <id> <what-settled-it>")
+    _close(argv[0], "settled", " ".join(argv[1:]), "Settled")
+
+
+def cmd_kill(argv):
+    if not argv:
+        die("usage: eng kill <id> [reason]")
+    _close(argv[0], "dead", " ".join(argv[1:]) or "abandoned", "Killed")
+
+
+def cmd_search(argv):
+    if not argv:
+        die("usage: eng search <words>")
+    words = [w.lower() for w in argv]
+    hit = False
+    for meta, body in all_records():
+        text = ("%s %s %s %s" % (meta.get("title", ""), meta.get("summary", ""),
+                                 meta.get("settled_by", ""), body)).lower()
+        if all(w in text for w in words):
+            hit = True
+            print("%-7s  %s" % (meta.get("state", "?"), one_line(meta)))
+    sys.exit(0 if hit else 1)
+
+
+def cmd_field(argv):
+    if len(argv) != 2:
+        die("usage: eng field <id> <key>")
+    meta, _ = load(argv[0])
+    print(meta.get(argv[1], ""))
+
+
+def cmd_touched_since(argv):
+    if len(argv) != 2:
+        die("usage: eng touched-since <id> <epoch>")
+    meta, _ = load(argv[0])
+    try:
+        cut = int(argv[1])
+    except ValueError:
+        die("not an epoch: %s" % argv[1])
+    sys.exit(0 if touched_epoch(meta) > cut else 1)
+
+
+def cmd_prompt(argv):
+    """The shelves-layer block (prompt-assembly rule 21a). Open records are
+    live threads with their dates; settled and dead ones are ONE line of
+    outcome each, body prose never shown — a resolved worry must read as
+    resolved, not as a quotable present-tense fact. Empty drawer, no block."""
+    recs = [m for m, _ in all_records()]
+    if not recs:
+        return
+    opens = sorted((m for m in recs if m.get("state") == "open"),
+                   key=touched_epoch, reverse=True)
+    closed = sorted((m for m in recs if m.get("state") in ("settled", "dead")),
+                    key=lambda m: m.get("settled_at") or "", reverse=True)
+    out = ["YOUR ENGINEERING RECORDS — one thread per file in %s. Read one "
+           "with 'crab eng show <id>'; every state change goes through "
+           "'crab eng' (touch/settle/kill), never a hand edit, so the dates "
+           "stay true." % eng_dir()]
+    if opens:
+        out.append("OPEN — live threads, still current:")
+        for m in opens:
+            out.append("  - %s" % one_line(m))
+    if closed:
+        out.append("SETTLED or DEAD — history, not live worries. The line "
+                   "below is the whole of what each still says; never quote "
+                   "one as a present-tense fact:")
+        for m in closed:
+            out.append("  - %s" % one_line(m))
+    print("\n".join(out))
+
+
+# --- migration -------------------------------------------------------------
+
+HEAD_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2})(?::\d{2})?)?"
+                     r"\s*[—-]+\s*(.+)$")
+ANY_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?")
+# The archive index's own shape (engineering/INDEX.md): a bullet linking a
+# thread's file, an em-dash, a description that may wrap onto indented lines.
+BULLET_RE = re.compile(r"^- \[([^\]]+)\]\([^)]*\)\s*[—-]+\s*(.*)$")
+SETTLED_RE = re.compile(r"(?i)^settled\b|\((?:closed|settled|done)\)\s*$")
+
+
+def _heading_date(heading):
+    m = HEAD_RE.match(heading)
+    if m:
+        return ("%s %s:00" % (m.group(1), m.group(2)) if m.group(2)
+                else "%s 00:00:00" % m.group(1)), m.group(3).strip()
+    m = ANY_DATE_RE.search(heading)
+    if m:
+        return ("%s %s:00" % (m.group(1), m.group(2)) if m.group(2)
+                else "%s 00:00:00" % m.group(1)), heading.strip()
+    return "", heading.strip()
+
+
+def cmd_migrate(argv):
+    """One record per '## ' entry of a prose thread file, and one per
+    '- [file](file) — description' bullet of the archive index. Dates come
+    off the entry's own heading or description and are left blank rather than
+    guessed; state stays open unless the ENTRY ITSELF says settled or closed
+    — prose is never interpreted. Idempotent: an existing slug is skipped,
+    never overwritten. The source file is read only; it stays in place as
+    the archive."""
+    if not argv:
+        die("usage: eng migrate <prose file>")
+    src = argv[0]
+    try:
+        with open(src, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        die(str(e))
+    entries = []  # (heading, [body lines]) — the '## ' thread-log shape
+    bullets = []  # [linked file, description] — the INDEX.md list shape
+    cur = bullet = None
+    for line in lines:
+        m = BULLET_RE.match(line)
+        if line.startswith("## "):
+            cur, bullet = (line[3:].strip(), []), None
+            entries.append(cur)
+        elif m:
+            cur, bullet = None, [m.group(1), m.group(2).strip()]
+            bullets.append(bullet)
+        elif bullet is not None and line.startswith("  ") and line.strip():
+            # The description wraps onto indented lines; unwrap it.
+            bullet[1] = ("%s %s" % (bullet[1], line.strip())).strip()
+        else:
+            bullet = None
+            if cur is not None:
+                cur[1].append(line)
+    created = skipped = 0
+    for heading, body_lines in entries:
+        opened, title = _heading_date(heading)
+        rid = slugify(title)
+        if os.path.exists(rec_path(rid)):
+            skipped += 1
+            continue
+        state, settled_at, settled_by = "open", "", ""
+        if SETTLED_RE.search(title):
+            state = "settled"
+            settled_at = opened
+            settled_by = ("its own heading marks it settled "
+                          "(migrated from %s)" % os.path.basename(src))
+        meta = {"id": rid, "title": title, "opened": opened,
+                "last_touched": opened, "state": state,
+                "settled_at": settled_at, "settled_by": settled_by,
+                "summary": title}
+        body = "## %s — migrated from %s\n\n%s\n" % (
+            opened or "(undated)", os.path.basename(src),
+            "\n".join(body_lines).strip())
+        write(rec_path(rid), meta, body)
+        created += 1
+    for fname, desc in bullets:
+        # An index entry names a thread whose prose lives in its own file, so
+        # the record keeps the file's own name as id and title and points back
+        # at it — the archive stays the body's home, the record carries the
+        # state the archive never could.
+        stem = re.sub(r"\.md$", "", os.path.basename(fname))
+        rid = slugify(stem)
+        if os.path.exists(rec_path(rid)):
+            skipped += 1
+            continue
+        opened = ""
+        m = ANY_DATE_RE.search(desc)
+        if m:
+            opened = ("%s %s:00" % (m.group(1), m.group(2)) if m.group(2)
+                      else "%s 00:00:00" % m.group(1))
+        state, settled_at, settled_by = "open", "", ""
+        if SETTLED_RE.search(desc):
+            state = "settled"
+            settled_at = opened
+            settled_by = ("its own index entry marks it settled "
+                          "(migrated from %s)" % os.path.basename(src))
+        meta = {"id": rid, "title": stem, "opened": opened,
+                "last_touched": opened, "state": state,
+                "settled_at": settled_at, "settled_by": settled_by,
+                "summary": desc}
+        body = ("## %s — migrated from %s\n\n%s\n\nThe thread's own prose is "
+                "%s, beside the index in the read-only archive.\n" % (
+                    opened or "(undated)", os.path.basename(src), desc, fname))
+        write(rec_path(rid), meta, body)
+        created += 1
+    print("migrated %s: %d records created, %d already existed, %d entries read"
+          % (os.path.basename(src), created, skipped,
+             len(entries) + len(bullets)))
+
+
+def main():
+    cmds = {"new": cmd_new, "list": cmd_list, "show": cmd_show,
+            "touch": cmd_touch, "settle": cmd_settle, "kill": cmd_kill,
+            "search": cmd_search, "field": cmd_field,
+            "touched-since": cmd_touched_since, "prompt": cmd_prompt,
+            "migrate": cmd_migrate}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        sys.exit(__doc__.strip())
+    cmds[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()

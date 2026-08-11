@@ -12,7 +12,7 @@
 refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
 
 D="$XDG_DATA_HOME/deskcrab"
-mkdir -p "$D/conduct" "$D/wants" "$D/engineering" "$D/memory" \
+mkdir -p "$D/conduct" "$D/wants" "$D/engineering/records" "$D/memory" \
          "$ARCHIVE_DIR" "$DAY_JOURNAL_DIR" "$WAKES_DIR" "$SANDBOX/home/Library"
 printf '# Wants\n\n- 🎼 **Learn to read a score**\n' > "$D/wants.md"
 printf 'a want body\n' > "$D/wants/score.md"
@@ -54,7 +54,8 @@ echo "every drawer she owns is named:"
 # The minimum list is rule 22's: the shelf and its bodies, conduct and its
 # index, the engineering threads and their index, the day journal, the memory
 # store, the library, the archive, and the repo.
-for drawer in "$D/wants.md" "$D/conduct" "$D/engineering/INDEX.md" \
+for drawer in "$D/wants.md" "$D/conduct" "$D/engineering/records" \
+              "$D/engineering/INDEX.md" \
               "$D/engineering.md" "$DAY_JOURNAL_DIR" "$D/memory/memory.db" \
               "$ARCHIVE_DIR" "$SANDBOX/home/Library" "$SANDBOX_REPO"; do
     check "$(basename "$drawer") is in the index" contains "$INDEX" "$drawer"

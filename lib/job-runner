@@ -56,6 +56,13 @@ done
 unset _s _sid
 TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 [ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
+# The engineering record this build was dispatched against, if any (jobs.md
+# rules 7b and 27-29, specs/engineering-records.md). Success is gated below on
+# the record having been touched after dispatch — the sidecar's started_epoch
+# is the dispatch time, written before this worker existed.
+RECORD="$("$LIB_DIR/job-status" get "$STATUS" record 2>/dev/null)"
+DISPATCH_EPOCH="$("$LIB_DIR/job-status" get "$STATUS" started_epoch 2>/dev/null)"
+ENG_DIR="$(deskcrab_home)/engineering/records"
 
 # The pid and its start time let `crab jobs` tell a hard-killed job from a
 # running one — a SIGKILLed worker never gets to write its own outcome.
@@ -94,6 +101,20 @@ Hard rules:
 - Read the repo's CLAUDE.md before changing anything in it.
 - If the task turns out to be wrong or impossible, stop and report why. Do not
   invent adjacent work to have something to show."
+
+# A build against an engineering record owes that record its outcome
+# (jobs.md rule 29). Said in the prompt, because the gate below is real: a
+# builder that never hears about the obligation can only ever fail it.
+if [ -n "$RECORD" ]; then
+    SYS="$SYS
+
+This job was dispatched against engineering record '$RECORD'. Before your
+final message, write your outcome into that record:
+  crab eng touch $RECORD '<what you did, what you ran, what it showed>'
+This is a hard condition of success: the runner refuses to mark this job
+finished unless the record has been touched since dispatch. Read it first
+with 'crab eng show $RECORD' so your entry lands on the thread it answers."
+fi
 
 cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 # Deliberately NOT prefixed with $CLAUDE_NO_AUTO_MEMORY, unlike every other
@@ -187,9 +208,27 @@ trap - TERM
 # declaration's window.
 touch_suppress -w 900 "$WORKDIR" "$JOBS_DIR" 2>/dev/null
 
-SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
 STATE=finished
 [ "$RC" -eq 0 ] || STATE=failed
+# The record hook (jobs.md rules 27-28): a build dispatched against an
+# engineering record may not end successful unless that record's last_touched
+# is newer than this job's dispatch — the builder wrote its outcome back to
+# the thread it came from. The comparison is asked of the tool that owns the
+# format, never re-implemented here; a record the drawer no longer holds
+# fails the same way, because an untouchable record cannot pass. A run that
+# failed on its own keeps its own reason, and a blocked run never began, so
+# no record was owed.
+RECORD_UNTOUCHED=""
+if [ "$STATE" = finished ] && [ -n "$RECORD" ]; then
+    if ! DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" \
+            touched-since "$RECORD" "${DISPATCH_EPOCH:-0}" 2>/dev/null; then
+        STATE=failed
+        RC=1
+        RECORD_UNTOUCHED=1
+        echo "job-runner: the build ran clean, but engineering record '$RECORD' was never updated — its last_touched is not newer than this job's dispatch. A job dispatched against a record succeeds only by writing its outcome back to it (crab eng touch $RECORD '...'). Marked failed; the work above may still be real, so read the log and the record before repeating it." >> "$LOG"
+    fi
+fi
+SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
 # A build that never began is its own outcome. Reported as "failed" it reads as
 # a builder that tried and got it wrong, which sends the next wake to read a log
 # holding nothing but a refusal — and leaves the standing dispatch policy free
@@ -219,6 +258,12 @@ if [ "$STATE" = blocked ]; then
     # Nothing ran, so there is nothing to read and nothing to verify. Say that
     # plainly instead of sending the next wake to audit an empty log.
     WAKE_REASON="Detached job $ID never began: ${BLOCKED:-the CLI refused to run}. NO WORK WAS ATTEMPTED and the log holds only the refusal — do not read it looking for results. Task still undone: $(printf '%.200s' "$TASK"). Further dispatches are held for $(( JOB_BLOCK_RETRY / 60 )) min; do the work by hand if it is small, or leave it for later."
+elif [ -n "$RECORD_UNTOUCHED" ]; then
+    # The build ran clean and the obligation did not: the record it was
+    # dispatched against was never touched (jobs.md rule 28). Name the record
+    # in the one channel that reaches her, so the next reader knows what is
+    # owed before deciding whether the work itself needs repeating.
+    WAKE_REASON="Detached job $ID FAILED because engineering record '$RECORD' was never updated: the build ran, but its last_touched is older than the dispatch. Read $LOG, and if the work is real, write the outcome yourself with crab eng touch $RECORD — the thread must carry what happened to it. Task was: $(printf '%.200s' "$TASK")"
 else
     WAKE_REASON="Detached job $ID finished ($STATE, exit $RC). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
 fi

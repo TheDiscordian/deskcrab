@@ -166,7 +166,7 @@ check "the index is never trimmed — it reports over budget instead" \
 # numbers on purpose. Until 2026-08-09 this function held numbers 400 under
 # the table: the 2026-08-08 L4 raise moved the spec alone, which is exactly
 # the drift the paragraph above forbids.
-total_budget() { case "$1" in turn) echo 33900 ;; wake) echo 26500 ;;
+total_budget() { case "$1" in turn) echo 37900 ;; wake) echo 30500 ;;
                               job) echo 2000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"

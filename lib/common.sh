@@ -2191,14 +2191,17 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
         L2:turn|L2:wake) v=1500 ;;
         L3:turn|L3:wake) v=3200 ;;
-        # 4,000 since 2026-08-09, measured at 3,347 live: her conduct index
-        # had grown past the 2,400 of 2026-08-08 and every turn was cutting
-        # rule titles off the shelf mid-list — rules she could no longer
-        # consult. (2,400 was itself the 2026-08-08 raise for the
-        # recent-catches block, prompt-assembly rule 35.) The margin is for
-        # the shelves to grow; when they outgrow it, the cuts record (rule 36)
-        # says so, rather than nothing saying so.
-        L4:turn|L4:wake) v=4000 ;;
+        # 8,000 since 2026-08-11: the engineering records block (rule 21a)
+        # joined the layer — the drawer that was a one-way sink (MAJ-24) now
+        # renders one line per open thread and one per settled outcome. The
+        # number is the steady state, a working drawer beside the shelf and
+        # conduct; on migration day the block alone measured 12,047 bytes
+        # because 62 of the 64 migrated entries arrived open, so the layer reads over
+        # and rule 36's warning stands until the backlog is settled down —
+        # which is the pressure to settle it, not a budget error. (4,000
+        # since 2026-08-09 before that, measured at 3,347 for shelf plus
+        # conduct plus catches; 2,400 before that for the catches block.)
+        L4:turn|L4:wake) v=8000 ;;
         # The spec's table read 600 here until 2026-08-08 and the assembler has
         # always set 1,000; the table was corrected to the shipped number rather
         # than the other way round, because rule 22 names nine drawers the index
@@ -2280,8 +2283,9 @@ _prompt_layer_index() {
   $2 — $1"; }
     _idx "your shelf; each want's own document is beside it in wants/" "${WANTS_FILE:-}"
     _idx "one file per conduct rule — the titles above are the index into it" "$H/conduct"
-    _idx "every engineering thread you have opened" "$H/engineering/INDEX.md"
-    _idx "the open threads, newest first" "$H/engineering.md"
+    _idx "your engineering records — threads with state; 'crab eng list', 'crab eng show <id>'" "$H/engineering/records"
+    _idx "the pre-records archive of engineering threads, read-only history" "$H/engineering/INDEX.md"
+    _idx "the pre-records archive of open-thread prose, read-only history" "$H/engineering.md"
     _idx "every finished turn of the day in full — 'crab journal'" "${DAY_JOURNAL_DIR:-$H/journal}"
     _idx "your long-term memory — 'crab memory search <words>'" "$H/memory/memory.db"
     _idx "every booking, cancellation and restore, in order" "${WAKES_DIR:-$H/wakes}/ledger.log"
@@ -2488,6 +2492,20 @@ $WANTS_TITLES"
         elif [ -n "${WANTS_FILE:-}" ]; then
             SHELVES="YOUR WANTS — the shelf at $WANTS_FILE is empty; nothing is recorded yet."
         fi
+        # The engineering drawer, as RECORDS with state (prompt-assembly rule
+        # 21a, specs/engineering-records.md): open threads as live lines with
+        # their opened/last-touched dates, settled and dead ones as one-line
+        # outcomes that read as history at a glance. Rendered by the tool that
+        # owns the format, so a worry written before a question was settled can
+        # never be quoted back as present-tense fact — the 2026-08-10 failure
+        # this drawer shape exists to end. A broken or empty drawer costs the
+        # block and never the prompt.
+        local ENG_BLOCK=""
+        ENG_BLOCK="$(DESKCRAB_ENG_DIR="$H/engineering/records" \
+                     python3 "$LIB_DIR/eng" prompt 2>/dev/null)" || ENG_BLOCK=""
+        [ -n "$ENG_BLOCK" ] && SHELVES="${SHELVES:+$SHELVES
+
+}$ENG_BLOCK"
         [ -n "$CONDUCT_BLOCK" ] && SHELVES="${SHELVES:+$SHELVES
 
 }$CONDUCT_BLOCK"
@@ -6467,7 +6485,7 @@ job_stop() {
 }
 
 job_start() {
-    local workdir="$PROJECT_DIR" force="" origin=""
+    local workdir="$PROJECT_DIR" force="" origin="" record=""
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
@@ -6477,14 +6495,35 @@ job_start() {
             # the usage line: the stamps it writes below are what make the
             # retry once-only and legible in `crab jobs`.
             -O) origin="${2:-}"; shift 2 2>/dev/null || shift $# ;;
+            # The engineering record this build is dispatched against
+            # (jobs.md rule 7b, specs/engineering-records.md). The runner
+            # refuses to call the job successful unless the builder touched
+            # this record after dispatch — work tied to the thread it came
+            # from, not floating beside it.
+            --record|-R) record="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # Any other flag is a mistake, not a task description — once, a
             # stray --help was dispatched as a real job that ran `claude --help`.
-            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [-f] <description of the work>"; return 1 ;;
+            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [-f] <description of the work>"; return 1 ;;
             *) break ;;
         esac
     done
     local task="$*"
-    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [-f] <description of the work>"; return 1; }
+    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [-f] <description of the work>"; return 1; }
+    # An automatic retry inherits the obligation its origin carried: the brief
+    # is the same brief, so the record rides the sidecar chain (rule 7b).
+    if [ -z "$record" ] && [ -n "$origin" ] && [ -e "$JOBS_DIR/$origin.json" ]; then
+        record="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" record 2>/dev/null)"
+    fi
+    # An id the records drawer does not know is refused before any sidecar or
+    # unit exists — a job tied to a record nobody can touch could only ever
+    # end failed, hours from now, for a typo visible right here.
+    if [ -n "$record" ]; then
+        if ! DESKCRAB_ENG_DIR="$(deskcrab_home)/engineering/records" \
+                python3 "$LIB_DIR/eng" field "$record" id >/dev/null 2>&1; then
+            echo "Not dispatched — no engineering record '$record' (ids: crab eng list)."
+            return 1
+        fi
+    fi
     # A non-empty task can still be nobody's brief. On 2026-08-11 a re-dispatch
     # loop pulled `.task` out of job sidecars whose field is `.description`;
     # jq's answer for a missing field is the literal word "null", which sailed
@@ -6511,7 +6550,7 @@ job_start() {
     # — one of which fired a completion wake at me, seven hours later, about a
     # job whose scratch log had long since been deleted.
     if [ -n "${DESKCRAB_NO_DISPATCH:-}" ]; then
-        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}"
+        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}${record:+ (against record $record)}"
         return 0
     fi
     local id unit
@@ -6520,6 +6559,10 @@ job_start() {
     id="$(date +%Y%m%d-%H%M%S)-$$"
     unit="deskcrab-job-$id"
     "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "$unit" "$workdir" || return 1
+    # The record rides the sidecar (jobs.md rule 7b): the runner reads it back
+    # at completion, and requeue re-dispatches with the obligation intact.
+    [ -n "$record" ] && \
+        "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" record="$record"
     if [ -n "$origin" ]; then
         # jobs.md rules 18b and 18f: the new sidecar names the blocked job it
         # came from — `crab jobs` shows it, and job-runner reads it to never
@@ -6598,7 +6641,15 @@ job_requeue() {
         echo "  Redispatch by hand: crab job -C <workdir> \"$desc\""
         return 1
     fi
-    job_start -C "$workdir" "$desc"
+    # The engineering record rides too (jobs.md rule 7b): a requeued brief
+    # keeps the obligation its original carried, off the sidecar like the rest.
+    local record
+    record="$("$LIB_DIR/job-status" get "$sidecar" record 2>/dev/null)"
+    if [ -n "$record" ]; then
+        job_start -C "$workdir" --record "$record" "$desc"
+    else
+        job_start -C "$workdir" "$desc"
+    fi
 }
 
 # One line per job, running first, recent finishes last — read by `crab jobs`

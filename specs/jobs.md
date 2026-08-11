@@ -43,6 +43,11 @@ back to her.
    no recorded workdir (one written before the field existed) MUST be an error, never a dispatch.
    Requeue goes through the same preflight as any other dispatch: the block marker still holds it,
    and the redispatch is a new job with its own id.
+7b. `crab job --record <id>` dispatches a builder AGAINST an engineering record
+   ([engineering-records.md](engineering-records.md)). An id the records drawer does not know MUST
+   be refused before any sidecar or unit exists; a known one is recorded in the sidecar as
+   `record`. Requeue and the automatic block retry carry the record along off the sidecar, so a
+   re-dispatched brief keeps the obligation its original carried.
 
 ### State
 
@@ -147,11 +152,28 @@ back to her.
     rather than print nothing, and an id with no sidecar MUST be an error — never dispatched as a
     job whose task begins with the word `log`, the trap `job stop` fell into once.
 
+### The engineering-record hook
+
+27. A job dispatched with `--record <id>` (rule 7b) MUST NOT be marked `finished` unless the
+    record's `last_touched` is newer than the job's dispatch time (`started_epoch`) — the builder
+    updated the record it came from, and there is no other way to that date, because state moves
+    only through `crab eng` and every `touch` bumps it. The comparison is asked of the tool
+    (`eng touched-since`), never re-implemented in the runner.
+28. A clean build whose record was never touched ends `failed`, with a clear reason NAMING the
+    record — in the log, in the sidecar summary, and in the completion wake's reason — so the next
+    reader knows the work may be real and the record is what is owed. A run that failed on its own
+    stays `failed` for its own reason; a `blocked` run never began, so no record was owed. A record
+    the drawer no longer holds fails the same way: an untouchable record cannot pass.
+29. The builder MUST be told, in its system prompt, which record it was dispatched against and
+    that touching it is a condition of success. This pairs with the standing rule that a builder
+    verifies with a real grep or test before claiming done: the record entry is where the
+    verification is written down, dated, on the thread the work came from.
+
 ## DATA
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit, retry, retry_of}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than the field simply lack it. `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit, retry, retry_of}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than the field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was. `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar |
@@ -237,7 +259,10 @@ answers of `crab job log`);
 `tests/test_job_block_retry.sh` (rules 18a–18f: the runner arms the one retry timer for a blocked
 job and never for a failed, scratch, or already-retried one; the fire side re-dispatches once from
 the sidecar, naming its origin, and refuses a spent, stale, failed, scratch, artifact-brief, or
-workdir-less record).
+workdir-less record);
+`tests/test_job_record.sh` (rules 7b and 27–29: dispatch refuses an unknown record and records a
+known one; a clean build with an untouched record ends failed naming it; a builder that touches
+its record finishes; a job with no record is untouched by the hook; requeue carries the record).
 
 **To be written:**
 

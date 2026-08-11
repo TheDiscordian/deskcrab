@@ -79,14 +79,14 @@ flowchart TD
 | L1 identity | 10,400 | 10,400 | 800 | 0 |
 | L2 state | 1,500 | 1,500 | 0 | 0 |
 | L3 memory | 3,200 | 3,200 | 0 | 0 |
-| L4 shelves | 4,000 | 4,000 | 0 | 0 |
+| L4 shelves | 8,000 | 8,000 | 0 | 0 |
 | L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 33,900** | **≤ 26,500** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 37,900** | **≤ 30,500** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -124,6 +124,18 @@ inverts who yields: 2,000 is the instructions plus roughly 750 bytes of quote, a
 that clips. The two speaking totals move by the same 2,300 — and this table and
 `tests/test_prompt_profiles.sh` state the same totals on purpose: the 2026-08-08 raise moved this
 table alone, and until 2026-08-09 the test was quietly asserting numbers 400 under it.
+
+L4 read 4,000 until 2026-08-11, sized for the shelf, the conduct index and the recent catches. The
+engineering drawer joined the layer that day as records (rule 21a, [engineering-records.md](engineering-records.md)):
+one line per open thread and one line per settled outcome, which closes MAJ-24 — 34 KB of threads
+maintained nightly and reachable from no prompt path. 8,000 is the layer's steady-state number: a
+working drawer of a dozen open threads plus the settled tail, beside the shelf, conduct and the
+catches. On migration day the block alone measured 12,047 bytes, because 62 of the 64 migrated
+entries arrived `open` — the migration refuses to guess at settlement — so L4 reads `over` and
+rule 36's warning stands until the backlog is settled down through `crab eng`. That is the machinery working,
+not a budget error: settling a thread replaces its two dated lines with one outcome line, the
+drawer shrinks with every settlement, and the warning is the standing pressure to do it. The two
+speaking totals move by the same 4,000.
 
 The dispute row read 1,800 until 2026-08-10 evening, sized for the first cut of the frame. The
 frame then took on two things the adversarial reviews demanded ([cocoon.md](cocoon.md) rules 8 and
@@ -189,10 +201,19 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
 21. Conduct MUST get the same treatment as wants: the binding test and the rule titles in the
     prompt, the bodies on disk behind an index. **The binding test line MUST stay verbatim.** Conduct
     is owed, not chosen, and a paraphrase regresses corrections.
+21a. The engineering drawer rides the shelves layer as RECORDS, not prose
+    ([engineering-records.md](engineering-records.md)), rendered by `lib/eng prompt` on the turn
+    and wake profiles. An OPEN record is a live thread: title, id, its `opened` and `last_touched`
+    dates, body on disk behind `crab eng show`. A SETTLED or DEAD record is the title plus ONE
+    line — `settled <when>: <what settled it>` — and NEVER its body prose: a worry written before
+    a question was settled must not be quotable as present-tense fact, which is the failure this
+    whole drawer shape exists to end (2026-08-10, twice). The block states that the settled
+    section is history. The renderer is fail-safe: an empty drawer costs the block, an unreadable
+    record is skipped, and no failure of it may break a prompt build.
 22. There MUST be a `WHERE THINGS ARE` layer: one line per drawer, path plus a short description,
     covering at minimum the wants shelf and its bodies, conduct and its index, the engineering
-    threads and their index, the day journal, the memory store, the library, the archive, and the
-    repo. A drawer she is never told how to open is a drawer she does not have.
+    records and the pre-records archive of threads, the day journal, the memory store, the library,
+    the archive, and the repo. A drawer she is never told how to open is a drawer she does not have.
 23. Nothing may be maintained nightly and named in no prompt path. If the tidy writes it, the index
     lists it.
 24. The persona sheet, the identity layer, and conduct MUST NOT restate one another. Each rule is
@@ -328,7 +349,8 @@ the assembler is the only place the overrun is known the moment it happens.
 | `~/.local/share/deskcrab/wants.md` + `wants/` | L4 | titles injected, bodies on disk |
 | `~/.local/share/deskcrab/conduct/CONDUCT.md` + `conduct/` | L4 | binding test verbatim, titles, index |
 | `~/.local/share/deskcrab/claudism-flags/` via `lib/claudism-feedforward` | L4 | the recent-catches block, rule 35; see turn-pipeline.md |
-| `~/.local/share/deskcrab/engineering/INDEX.md` | L5 | named by path in the index block |
+| `~/.local/share/deskcrab/engineering/records/` via `lib/eng prompt` | L4 | the records block, rule 21a; see engineering-records.md |
+| `~/.local/share/deskcrab/engineering/INDEX.md`, `engineering.md` | L5 | the pre-records archive, named by path in the index block |
 | `~/.local/share/deskcrab/journal/`, `memory/`, library, archive | L5 | named by path in the index block |
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
@@ -373,7 +395,6 @@ assembler is the only place it is known the moment it happens.
 | Id | What implementation must fix |
 |---|---|
 | `C6` | The promise auditor's shelf pattern matched zero lines while the prompt's matched eleven, so the auditor was handed nothing and told the list was complete. One reader, both callers. |
-| `MAJ-24` | The engineering threads are maintained nightly and reachable from no prompt path. A one-way sink. |
 | `MAJ-27` | Conduct is injected as full uncapped text, ten lines after the wants shelf is deliberately reduced to titles with a comment explaining why. |
 | `MAJ-28` | A builder job starts on 54 KB of project context in front of a 1.2 KB task. |
 | `MAJ-29` | About 29–37 KB of desktop-agent surface rides on every session on every path, including one-question classifiers. |
@@ -593,7 +614,10 @@ layer over its budget is carried whole and manifests `over`, never `trimmed` or 
 over its target opens the prompt with the warning and leaves the record; the state block renders
 it; a build inside the target clears it),
 `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
-assembled through the real assembler and graded against its assertions).
+assembled through the real assembler and graded against its assertions),
+`tests/test_eng_records.sh` (rule 21a: an open record renders as a live thread with its dates, a
+settled one as its one-line outcome with its body prose kept out of the prompt, and an empty
+drawer costs the block and nothing else).
 
 **To be written:**
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
