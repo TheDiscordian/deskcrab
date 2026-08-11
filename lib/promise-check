@@ -642,9 +642,8 @@ $RECORD_BLOCK"
             *" | "*) PROMISE="${LINE%% | *}"; WHY="${LINE#* | }" ;;
         esac
         # The verdict line wraps the promise in quote marks; the ledger and
-        # the reason hold the words themselves. The rebook bound compares
-        # ledger lines byte for byte, so a stray layer of quotes would make
-        # every re-catch of one promise read as a new one.
+        # the reason hold the words themselves, so the sweep reads one
+        # spelling wherever the promise lands.
         case "$PROMISE" in
             \"*\") PROMISE="${PROMISE#\"}"; PROMISE="${PROMISE%\"}" ;;
         esac
@@ -671,14 +670,21 @@ $RECORD_BLOCK"
             WAKE_NOTE="not booked — covered by the auditor's deferred wake $COVERED"
         fi
 
-        # One verbatim promise earns at most REBOOK_MAX wakes a day. Past
-        # that the ledger line still lands and the night sweep takes it —
-        # a chase that failed twice is not improved by a third alarm.
+        # The chase chain is bounded by CLASS, per day — at most REBOOK_MAX
+        # chase bookings a day, counted from the ledger's own booking lines,
+        # NEVER keyed on the promise's wording (wake-queue.md rule 43b).
+        # It used to count only lines whose promise string matched byte for
+        # byte, so a chase wake that re-claimed in different words minted a
+        # fresh key every time and was never bounded — a self-sustaining
+        # low-effort chain, each fired session's fresh phrasing buying the
+        # next alarm. Past the bound the ledger line still lands and the
+        # night sweep takes it — a chase that failed twice is not improved
+        # by a third alarm.
         if [ -z "$WAKE_NOTE" ]; then
             local CHASED
-            CHASED="$(python3 - "$LEDGER" "$PROMISE" "$TODAY" <<'PY'
+            CHASED="$(python3 - "$LEDGER" "$TODAY" <<'PY'
 import json, sys
-path, promise, day = sys.argv[1:4]
+path, day = sys.argv[1:3]
 n = 0
 try:
     for line in open(path, encoding="utf-8"):
@@ -688,8 +694,7 @@ try:
             continue
         if d.get("type") == "sweep":
             continue
-        if d.get("promise") == promise \
-                and str(d.get("wake", "")).startswith("booked") \
+        if str(d.get("wake", "")).startswith("booked") \
                 and str(d.get("time", "")).startswith(day):
             n += 1
 except OSError:
@@ -698,7 +703,7 @@ print(n)
 PY
 )"
             if [ "${CHASED:-0}" -ge "$REBOOK_MAX" ]; then
-                WAKE_NOTE="not booked — already chased $CHASED times today; the night sweep takes it"
+                WAKE_NOTE="not booked — the checker already booked $CHASED chase wakes today (bounded by class, not wording); the night sweep takes it"
             fi
         fi
 

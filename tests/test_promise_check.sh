@@ -395,24 +395,40 @@ check_eq "and haiku's verdict still lands: one ledger line, one wake" \
     "$(ledger_n)$(records)" "11"
 
 echo
-echo "one verbatim promise is chased at most twice a day, then the night takes it:"
+echo "the chase chain is bounded by class per day — a re-claim in different words is not a fresh key:"
+# The bound used to compare promise strings byte for byte, so a chase wake
+# that re-claimed in different words minted a fresh key every time and the
+# chain was never bounded (wake-queue.md rule 43b). The two bookings already
+# on today's ledger here are DIFFERENTLY worded on purpose, and so is the
+# third catch: what is counted is the class's bookings for the day, never
+# the wording.
 reset
 NOW_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
 printf '{"time":"%s","kind":"desktop","promise":"I am wiring the greenhouse fan into the config now","wake":"booked 3m out at effort low"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
-printf '{"time":"%s","kind":"desktop","promise":"I am wiring the greenhouse fan into the config now","wake":"booked 3m out at effort low"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
+printf '{"time":"%s","kind":"wake","promise":"I will hook the fan up to the configuration right away","wake":"booked 3m out at effort low"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
 sandbox_stub claude <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
 cat > /dev/null
-printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"UNKEPT: \"I am wiring the greenhouse fan into the config now\" | still nothing in the record"}]}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"UNKEPT: \"I am getting that fan wired into the config now\" | still nothing in the record"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
 "$T/repo/lib/promise-check" turn desktop 1786400004 4246 "$(snap "$SNAP_EMPTY")" \
-    "$T/ledger.jsonl" "I am wiring the greenhouse fan into the config now." >/dev/null 2>&1
-check_eq "no third wake was booked" "$(records)" "0"
+    "$T/ledger.jsonl" "I am getting that fan wired into the config now." >/dev/null 2>&1
+check_eq "no third wake was booked for the paraphrase" "$(records)" "0"
 check_eq "but the ledger still holds the third catch" "$(ledger_n)" "3"
-check "marked as handed to the night" \
-    grep -q "already chased 2 times today" "$T/ledger.jsonl"
+check "marked as handed to the night, counted by class rather than wording" \
+    grep -q "bounded by class, not wording" "$T/ledger.jsonl"
+# A sweep record is not a chase booking, and yesterday is not today: neither
+# may count against the day's bound.
+reset
+printf '{"time":"%s","kind":"desktop","promise":"an older promise","wake":"booked 3m out at effort low"}\n' \
+    "$(date -d yesterday +%Y-%m-%dT%H:%M:%S%z)" >> "$T/ledger.jsonl"
+printf '{"time":"%s","type":"sweep","day":"yesterday","promise":"a swept promise","wake":"booked for the morning"}\n' \
+    "$NOW_ISO" >> "$T/ledger.jsonl"
+"$T/repo/lib/promise-check" turn desktop 1786400007 4249 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I am getting that fan wired into the config now." >/dev/null 2>&1
+check_eq "yesterday's booking and a sweep record leave today's bound untouched" "$(records)" "1"
 
 echo
 echo "the auditor's deferred wake from the same turn covers the promise — no double alarm:"

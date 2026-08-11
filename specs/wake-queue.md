@@ -327,9 +327,11 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     follow-up is not exempt from the evidence test — a wake that claims again and again does
     nothing is caught again — and the chain is bounded instead of exempted: the wake path MUST
     skip the promise AUDIT for this prefix exactly as for the auditor's two (the agenda quotes
-    the promise, and an audited quote books deferred wakes forever), one verbatim promise may
-    earn at most `PROMISE_CHECK_REBOOK_MAX` wakes a day past which the ledger line lands and the
-    night sweep takes it, and the class carries its own scoped cap (rule 44), so unkept
+    the promise, and an audited quote books deferred wakes forever), the class may book at most
+    `PROMISE_CHECK_REBOOK_MAX` chase wakes a day — counted from the ledger's own booking lines
+    for the day, NEVER keyed on the promise's wording: a chase that re-claims in different words
+    is the same chain wearing a fresh key, and a bound on verbatim text never catches it — past
+    which the ledger line lands and the night sweep takes it, and the class carries its own scoped cap (rule 44), so unkept
     commitments neither fill nor drain the auditor's classes. The checker's sweep
     ([nightly.md](nightly.md) rules 51-53) books through the same door under the same identity:
     one morning event wake naming the day's genuine misses, none on a clean day.
