@@ -88,6 +88,43 @@ allows "a busctl naming nothing constituent — the verb alone is not the act" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"busctl --user list\"}}"
 
 echo
+echo "running what lives in the repo is a read, not a write:"
+# The first cut counted the program's own path as a hit whenever any write
+# shape stood beside it, which made the chess board and crab itself
+# unrunnable mid-turn. Execution is use, not change.
+allows "a repo-resident program runs, its output aimed at scratch" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$SANDBOX_REPO/lib/betty-chess board > /tmp/board.txt\"}}"
+allows "crab itself runs, piped through tee to scratch" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$SANDBOX_REPO/crab jobs | tee /tmp/jobs.txt\"}}"
+allows "a copy OUT of the repo — the write lands elsewhere" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp $SANDBOX_REPO/deskcrab.conf.example /tmp/conf-copy\"}}"
+denies "a copy INTO the repo still dies" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cp /tmp/conf-copy $SANDBOX_REPO/deskcrab.conf.example\"}}"
+denies "a touch inside the repo still dies" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $SANDBOX_REPO/new-file\"}}"
+denies "a move out of the repo still dies — removal is a write too" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"mv $SANDBOX_REPO/crab /tmp/crab-copy\"}}"
+
+echo
+echo "her library is hers — writing, not machinery (rules 1 and 3):"
+allows "a Write into the library" \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$HOME/project/Library/moments/tonight.md\"}}"
+allows "a Bash write into the library" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo kept >> $HOME/project/Library/lines/one.md\"}}"
+denies "the project CLAUDE.md beside it stays sealed" \
+    "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$HOME/project/CLAUDE.md\"}}"
+
+echo
+echo "text that names a sealed path is not a write to it:"
+# Both shapes were refused live: a wake reason and a job brief, each merely
+# MENTIONING the repo inside a quoted argument. The mention is speech about
+# the path; the write operations here never target anything constituent.
+allows "a wake reason that names the repo" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"crab wake-at '21:30' 'reread $SANDBOX_REPO/specs/cocoon.md; touch base after'\"}}"
+allows "a job brief that names the repo — the road itself stays open" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"crab job \\\"in $SANDBOX_REPO/lib/common.sh rename the gate flag; git commit the change\\\"\"}}"
+
+echo
 echo "symlinks are judged by what they point at:"
 ln -s "$SANDBOX_REPO/lib/common.sh" "$SANDBOX/via-link.sh"
 denies "an Edit through a symlink into the repo" \

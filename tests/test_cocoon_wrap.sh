@@ -37,6 +37,10 @@ EOF
 
 run() { sandbox_bash "source '$SANDBOX_REPO/lib/common.sh' >/dev/null 2>&1; $1"; }
 
+# Her library — writing, not machinery — rides the writable set (rule 3). It
+# has to exist before the wrap is built for the bind to be emitted.
+mkdir -p "$SANDBOX/home/Library/moments"
+
 echo "the wrap is bubblewrap over a read-only root with the drawers re-bound:"
 ARGV="$(run 'cocoon_wrap_build && printf "%s\n" "${COCOON_WRAP_ARGV[@]}"')"
 check "bubblewrap leads the argv" contains "$ARGV" "bwrap"
@@ -46,6 +50,8 @@ check "the whole filesystem is read-only" contains "$ARGV" "--ro-bind
 check "the wrapped process dies with its parent" contains "$ARGV" "--die-with-parent"
 check "her data drawers are re-bound writable" contains "$ARGV" "$SANDBOX/data/deskcrab"
 check "the state prefix directory is writable" contains "$ARGV" "$SANDBOX/state"
+check "her library is re-bound writable — writing, not machinery" contains "$ARGV" "--bind
+$SANDBOX/home/Library"
 
 echo
 echo "the kernel, not a pattern, answers a write (rules 1 and 4):"

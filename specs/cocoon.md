@@ -25,18 +25,28 @@ moved from a regex that reads commands to a mount namespace that does not.
 1. In a turn or a wake, every write to what CONSTITUTES her MUST fail — in the operating system,
    not in a rule she reads. The constituent set: the repo checkout, the installed library
    (`~/.local/lib/deskcrab`), the `crab` and `crab-debug` binaries, `~/.config/deskcrab` (conf and
-   persona sheet), her systemd user units, and `SELF_WATCH_EXTRA`'s equivalents (the project
-   directory's `CLAUDE.md` and library). Reading any of it is never gated.
+   persona sheet), her systemd user units, and the project directory's `CLAUDE.md`. The personal
+   library beside that file — lines, moments, music, pretty, voice — is NOT constituent, though
+   the self-change watcher watches both (`SELF_WATCH_EXTRA`): the watcher watches it because it
+   is part of her, but it is her own writing, not her machinery, and rule 3 keeps it hers.
+   Reading anything constituent is never gated, and EXECUTING it is a read: a program that lives
+   under a constituent root runs freely — the cocoon seals the machinery against change, not
+   against use, and a cocoon that stops `crab` running mid-turn has sealed her hands, not her
+   code.
 2. Builders keep their hands: the job profile carries no gate, and every deny names the road —
    `crab job "<self-contained brief>"`. That asymmetry is the design: the session that is
    mid-conversation describes the change; a builder makes it in a calm hour, at builder strength.
 3. Her drawers stay hers. Nothing under `~/.local/share/deskcrab` — wants, journal, engineering
-   notes, chess data, memory — is gated, in any profile. The cocoon covers the machinery, not the
+   notes, chess data, memory — is gated, in any profile, and neither is the project directory's
+   library: prompt-assembly's `WHERE THINGS ARE` names it beside the journal and the archive as
+   a drawer — what she writes for herself — and the wake filler sends her there to leave a dated
+   thought, which a sealed library made impossible. The cocoon covers the machinery, not the
    life lived in it.
 4. The enforcement is a mount namespace, not a pattern. The turn and wake CLI launches
    (`_generate_claude_run`, `_wake_claude_run`) run the CLI under bubblewrap
    (`cocoon_wrap_build`): the whole filesystem is bind-mounted read-only, and only her drawers
-   are re-bound writable — the deskcrab data dir, the deskcrab state dir, the `STATE_PREFIX`
+   are re-bound writable — the deskcrab data dir, the deskcrab state dir, the project
+   directory's library (her own writing, rule 3), the `STATE_PREFIX`
    directory and `/tmp` and `TMPDIR`, the runtime dir, the CLI's own config state (`~/.claude`
    and `~/.claude.json`, plus the account dir in play when `CLAUDE_CONFIG_DIR` is set — a turn
    breaks without its history, sessions and session-env, and the fallback twins symlink their
@@ -54,7 +64,14 @@ moved from a regex that reads commands to a mount namespace that does not.
    hook now costs an error message, not the cocoon. The hook also covers what the wrap must
    leave writable for the CLI's own sake: the CLI config dirs and the project directory's
    `.claude`, where one ungated settings write (`disableAllHooks`) would kill every hook — the
-   kernel seals the project copy and the hook refuses the config-dir copy. In a dispute turn the
+   kernel seals the project copy and the hook refuses the config-dir copy. And because the hook
+   reads text, it MUST judge only the write operations it can actually see — a redirection's
+   target, a writing command's operands, git's writing subcommands, the transient-unit road of
+   rule 4c — never a path merely mentioned in prose and never the command word itself. A wake
+   reason or a job brief that names a sealed path is speech about the path, not a write to it,
+   and running a constituent program is a read: the first cut of the signpost matched shapes
+   against the whole command text and refused her own hands mid-turn — the chess board, `crab`
+   itself — for the crime of living in the repo. In a dispute turn the
    hook's deny MUST NOT tell her to dispatch a builder — rule 8 forbids exactly that in that
    turn — so the flag-time settings carry the dispute mark and the deny says the change waits
    until the dispute is settled.
@@ -198,15 +215,17 @@ turn that denied his observation would have been framed by rule 8 instead.
 ## TESTS
 
 `tests/test_cocoon_wrap.sh` — the wall: the wrap argv is bubblewrap with a read-only root and the
-drawers re-bound; a constituent write from inside the wrap dies in the kernel while a drawer write
-lands; a full stub turn and a stub wake run under the wrap and answer; a missing bubblewrap
-refuses the session with the `cocoon-refused` note and never launches the CLI; the wrap is applied
-by exactly the two run functions.
+drawers re-bound, the project library among them; a constituent write from inside the wrap dies in
+the kernel while a drawer write lands; a full stub turn and a stub wake run under the wrap and
+answer; a missing bubblewrap refuses the session with the `cocoon-refused` note and never launches
+the CLI; the wrap is applied by exactly the two run functions.
 `tests/test_cocoon_gate.sh` — the signpost: constituent Edit/Write/Bash shapes denied with the
-road named; drawer writes, reads, and read-shaped git allowed; symlinks judged by realpath;
-malformed input fails open; the turn and wake profiles carry the settings flag and the job profile
-does not; the dispute-marked deny names no builder; the CLI config dirs and the project `.claude`
-are refused.
+road named; drawer writes, reads, and read-shaped git allowed; a constituent program runs and a
+copy out of the repo lands (execution and reading are not writes); a wake reason and a job brief
+that only NAME a sealed path pass; library writes pass and the project `CLAUDE.md` beside the
+library stays sealed; symlinks judged by realpath; malformed input fails open; the turn and wake
+profiles carry the settings flag and the job profile does not; the dispute-marked deny names no
+builder; the CLI config dirs and the project `.claude` are refused.
 `tests/test_dispute.sh` — the detector on the day's real sentences and on benign kin, judged on a
 production-shaped transcript (his message appended last, as both turn paths leave it); the
 first-words guard; the strong/soft/weak classes and the supersede line; the layer present on a

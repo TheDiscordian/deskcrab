@@ -4433,6 +4433,11 @@ claude_profile_flags() {  # <turn|wake|job|classify>
 #   * the deskcrab data dir      — her drawers (rule 3): wants, journal,
 #                                  memory, jobs, wakes, chess, metrics
 #   * the deskcrab state dir     — the self-change watcher's records
+#   * the project dir's library  — her own writing (rule 3): lines, moments,
+#                                  music, pretty, voice. The life, not the
+#                                  machinery — a wake that cannot leave a
+#                                  dated thought there is a wake sealed
+#                                  against its own instructions
 #   * dirname(STATE_PREFIX),     — the turn's own machinery: convo, tickets,
 #     /tmp and TMPDIR              stream logs, live-speech markers
 #   * XDG_RUNTIME_DIR            — the session bus, so `crab job` can still
@@ -4449,8 +4454,8 @@ claude_profile_flags() {  # <turn|wake|job|classify>
 #   * the user cache             — the CLI's own logging
 # Everything else on the machine — the repo, ~/.local/lib/deskcrab, the
 # ~/.local/bin entry points, ~/.config/deskcrab, the systemd units, the
-# project dir's CLAUDE.md and library — is read-only by construction, with
-# no list to keep current.
+# project dir's CLAUDE.md — is read-only by construction, with no list to
+# keep current.
 #
 # Fail CLOSED (rule 4b): no bubblewrap, no turn. The callers refuse with a
 # cocoon-refused stream note rather than running unwrapped — an unwrapped
@@ -4473,6 +4478,7 @@ cocoon_wrap_build() {  # fills COCOON_WRAP_ARGV, or COCOON_WRAP_ERR and rc 1
     for d in \
         "$DATA" \
         "${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab" \
+        "${PROJECT_DIR:+$PROJECT_DIR/Library}" \
         "$(dirname "$STATE_PREFIX")" \
         /tmp \
         "${TMPDIR:-}" \
