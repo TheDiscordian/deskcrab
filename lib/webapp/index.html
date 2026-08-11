@@ -130,7 +130,11 @@
   #playnow { padding: 14px; font: inherit; font-size: 16px; color: #ffdada;
              background: #143a1a; border: 1px solid #3a3; border-radius: 12px; }
   #talk.rec { background: #3a1414; border-color: #a33; color: #ffdada; }
-  #talk.busy { opacity: .45; }
+  /* Busy is a hint, not a wall (spec rule 5): the button keeps working
+     mid-turn — hold records and queues, tap stops speech — so it must not
+     look disabled. The old .45 read as a grey dead control, which is exactly
+     what the user reported it as. */
+  #talk.busy { opacity: .85; }
   /* Speech is playing: the same button is now also the stop control. Wins over
      .busy because a turn's clips play while the turn is still running — which
      is exactly when stopping matters most. */
@@ -695,14 +699,42 @@ function post(url, body, headers, timeoutMs) {
     .finally(() => clearTimeout(guard));
 }
 
+// One take's transcription, shared by the live path (runTurn) and the mid-turn
+// queue path (queueRecorded). Nearly all of the audio is already on the laptop
+// and decoded, so finishing usually only leaves the last slice to transcribe;
+// if any slice failed to upload the session is incomplete and this falls back
+// to sending the whole recording the old way. Every wait is bounded (spec rule
+// 40): a slice upload stuck on a half-dead link used to hold this await — and
+// the button — until the watchdog. `take` carries the stt session captured at
+// release: the globals reset on the next press, and a stale sttFailed at worst
+// forces the whole-blob fallback, which still transcribes.
+async function transcribeBlob(blob, ctype, take) {
+  let t;
+  const sid = take ? take.sid : sttSid;
+  const chain = take ? take.chain : sttChain;
+  const settled = await Promise.race([
+    chain.then(() => true, () => false),
+    new Promise(res => setTimeout(() => res(false), 8000)),
+  ]);
+  if (!settled) sttFailed = true;
+  if (sid && !sttFailed) {
+    t = await post("/stt/finish?s=" + sid, null, { "X-Audio-Type": ctype }, 30000)
+          .catch(() => ({ error: "stream lost" }));
+    if (t.error) t = null;
+  }
+  if (!t) t = await post("/transcribe", blob, { "X-Audio-Type": ctype }, 75000);
+  return t;
+}
+
 // A turn is two requests, not one: transcription comes back in a second or two
 // and is shown immediately, so a mis-heard sentence is visible during the long
 // wait for the answer rather than after it.
-async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
+async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take) {
   if (busy) return;
-  // Dimmed, not disabled: a disabled button gets no pointer events, and the
+  // Hinted, never disabled: a disabled button gets no pointer events, and the
   // reply's clips play while the turn is still running — tap-to-stop must
-  // keep working exactly then. startRec's own busy guard blocks recording.
+  // keep working exactly then, and so must hold-to-talk (spec rule 5): a
+  // recording made while this flag is set queues instead of running.
   busy = true; talk.classList.add("busy");
   showStop(true);
   lastTurnProgress = Date.now();
@@ -719,25 +751,7 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt) {
     let text = typed;
     if (!text) {
       setStatus("transcribing…", "busy");
-      // Nearly all of this audio is already on the laptop and decoded, so
-      // finishing usually only leaves the last slice to transcribe. If any
-      // slice failed to upload the session is incomplete and we fall back to
-      // sending the whole recording the old way. Every wait here is bounded
-      // (spec rule 40): a slice upload stuck on a half-dead link used to
-      // hold this await — and the button — until the watchdog.
-      let t;
-      const sid = sttSid;
-      const settled = await Promise.race([
-        sttChain.then(() => true, () => false),
-        new Promise(res => setTimeout(() => res(false), 8000)),
-      ]);
-      if (!settled) sttFailed = true;
-      if (sid && !sttFailed) {
-        t = await post("/stt/finish?s=" + sid, null, { "X-Audio-Type": ctype }, 30000)
-              .catch(() => ({ error: "stream lost" }));
-        if (t.error) t = null;
-      }
-      if (!t) t = await post("/transcribe", blob, { "X-Audio-Type": ctype }, 75000);
+      const t = await transcribeBlob(blob, ctype, take);
       if (t.error) { turn.reply.textContent = "(" + t.error + ")"; setStatus(t.error, "err"); return; }
       text = t.transcript;
       turn.you.textContent = text;
@@ -898,8 +912,29 @@ document.addEventListener("visibilitychange", () => {
 // start with nothing left to stop it.
 let recWanted = false;
 
+// While the microphone is open the page's own sound is paused (spec rule 5):
+// the mic would eat her clips, which was the old rule's whole reason to refuse
+// recording mid-turn — the refusal is gone and the pause is the microphone's.
+// Resumed on release exactly where it stopped: pausing is not stopping, the
+// voice queue neither advances nor drops, and the mute is untouched.
+let duckedVoice = false, duckedMusic = false;
+function duckPlayback() {
+  duckedVoice = voicePlaying && !player.paused;
+  if (duckedVoice) player.pause();
+  duckedMusic = !music.paused && !music.ended;
+  if (duckedMusic) music.pause();
+}
+function unduckPlayback() {
+  // A stop pressed while recording cleared the queue: playerMeta gone means
+  // there is nothing to resume, and resuming would replay a chosen silence.
+  if (duckedVoice && playerMeta) { const p = player.play(); if (p) p.catch(() => {}); }
+  if (duckedMusic && music.src) { const p = music.play(); if (p) p.catch(() => {}); }
+  duckedVoice = duckedMusic = false;
+}
+
 async function startRec() {
-  if (busy) return;
+  // No busy guard (spec rule 5): the microphone is never refused. A take
+  // recorded while a turn runs is transcribed and queued by rec.onstop.
   recWanted = true;
   // The cached stream can die while the page is away — the browser revokes
   // the microphone on a locked screen — and a dead stream records nothing:
@@ -939,9 +974,16 @@ async function startRec() {
   rec.onstop = () => {
     const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
     if (blob.size < 1200) { setStatus("too short", "err"); return; }
-    runTurn(blob, blob.type || "audio/webm", null);
+    // The stt session is captured at release: a second recording resets the
+    // globals, and this take's transcription must finish against its own.
+    const take = { sid: sttSid, chain: sttChain };
+    // Mid-turn the take queues (spec rules 5, 49) exactly as a typed send
+    // does; idle it runs as it always did.
+    if (busy) queueRecorded(blob, blob.type || "audio/webm", take);
+    else runTurn(blob, blob.type || "audio/webm", null, undefined, undefined, take);
   };
   recorder.start(2000);
+  duckPlayback();
   talk.classList.remove("speaking");
   talk.classList.add("rec");
   talk.textContent = "Release to send";
@@ -952,6 +994,7 @@ function stopRec() {
   recWanted = false;
   if (recorder && recorder.state === "recording") recorder.stop();
   recorder = null;
+  unduckPlayback();
   talk.classList.remove("rec");
   updateTalkBtn();
 }
@@ -1028,6 +1071,37 @@ function queueTurn(text) {
   sendQueue.push({ text, tid, at: Date.now(), el: bubble.reply.parentNode });
   seedTurn(text, tid);
   setStatus("queued — ◼ Stop cuts in", "busy");
+}
+
+// A recording made while a turn runs (spec rules 5, 49): never refused, never
+// dropped. The take transcribes exactly as a live one and the text joins the
+// same queue a typed send does — drawn where the user can see it, posted at
+// once under its own id (seedTurn), attached when the slot frees. A failed
+// transcription says so in its own bubble rather than dying silently.
+async function queueRecorded(blob, ctype, take) {
+  const bubble = addTurn("🎤 …");
+  bubble.reply.classList.add("queued");
+  bubble.reply.textContent = "⏳ transcribing…";
+  let t;
+  try {
+    t = await transcribeBlob(blob, ctype, take);
+  } catch (e) {
+    t = { error: String(e.message || e) };
+  }
+  if (t.error || !norm(t.transcript || "")) {
+    bubble.reply.textContent = "(" + (t.error || "heard nothing") + ")";
+    setStatus(t.error || "heard nothing", "err");
+    return;
+  }
+  bubble.you.textContent = t.transcript;
+  bubble.reply.textContent = "⏳ queued — she's still on the last one";
+  const tid = randomHex(32);
+  sendQueue.push({ text: t.transcript, tid, at: Date.now(), el: bubble.reply.parentNode });
+  seedTurn(t.transcript, tid);
+  setStatus("queued — ◼ Stop cuts in", "busy");
+  // The turn may have ended while the transcription ran, and its own pump saw
+  // an empty queue: pump again now so this take never waits for a next turn.
+  pumpQueue();
 }
 
 function pumpQueue() {

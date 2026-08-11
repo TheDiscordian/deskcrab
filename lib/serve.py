@@ -299,6 +299,9 @@ def stop_turn(turn):
             return False
         turn.stopped = True
         pgids = list(turn.procs)
+    # The stop takes the message with it (spec rules 50, 52): a stopped turn's
+    # mid-turn spool entry must not surface later in a run it no longer owns.
+    unspool_midturn(turn.tid)
     for pg in pgids:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pg, signal.SIGTERM)
@@ -428,6 +431,16 @@ def _queue_watch(turn, stop):
 
 def run_turn(turn, text):
     """The actual assistant turn, feeding the buffer. Socket-independent."""
+    # In-flight delivery (spec rule 51): accepted while another turn is
+    # running means this message parks behind the remote lock — so it goes
+    # into the mid-turn spool NOW, before the park, and the running mind
+    # reads it at its very next tool-call boundary instead of after its last.
+    # The runner deletes this turn's own entry once it holds the lock, so the
+    # entry can never come back around as this turn's own mail.
+    with TURNS_LOCK:
+        behind = any(t is not turn and not t.done for t in TURNS.values())
+    if behind:
+        spool_midturn(turn.tid, text)
     try:
         with turn_in_flight():
             stop = threading.Event()
@@ -598,6 +611,44 @@ def run(cmd, turn=None, **kw):
 
 STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
 CONTEXT_TURNS = int(os.environ.get("DESKCRAB_SERVE_CONTEXT_TURNS", "6"))
+
+# The mid-turn spool (specs/phone.md rules 51-52): a message accepted while
+# another turn is in flight is written here the moment it is accepted, and the
+# running turn's PostToolUse hook (lib/midturn-mail) reads it at its very next
+# tool-call boundary — so a course correction sent mid-task is heard mid-task,
+# not after the turn ends. One file per message, named <arrival-ns>.<turn-id>.msg:
+# the id is the queued turn's own, so the runner can delete its entry once it
+# holds the lock and the reader can skip it — a turn must never be handed its
+# own message as mail from outside.
+MIDTURN_DIR = STATE_PREFIX + "-midturn"
+
+
+def spool_midturn(tid, text):
+    try:
+        os.makedirs(MIDTURN_DIR, exist_ok=True)
+        name = "%d.%s.msg" % (time.time_ns(), tid)
+        tmp = os.path.join(MIDTURN_DIR, name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.rename(tmp, os.path.join(MIDTURN_DIR, name))
+    except OSError as exc:
+        # Best-effort: the message is not lost — its own turn still runs — it
+        # is merely not surfaced mid-flight. Worth a line, never a failure.
+        print("midturn: spool failed for %s: %s" % (tid[:8], exc),
+              file=sys.stderr, flush=True)
+
+
+def unspool_midturn(tid):
+    """A stopped turn's entry leaves the spool with it (spec rule 50: a stop
+    takes the queued messages along), and rule 52's never-echo holds even for
+    a runner that dies before its own delete."""
+    try:
+        for name in os.listdir(MIDTURN_DIR):
+            if name.endswith(".%s.msg" % tid):
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(MIDTURN_DIR, name))
+    except OSError:
+        pass
 
 # The phone's liveness beacon: touched on every authenticated /watch poll. An
 # autonomous wake deciding whether its voice belongs on the phone checks this
@@ -1246,8 +1297,14 @@ def ask(text, on_event=None, speaker=None, turn=None):
     The turn must store the text exactly as the phone knows it, or the phone
     cannot recognise its own turn coming back around in /watch.
     """
+    # The turn's identity rides down to the runner (spec rule 52): crab remote
+    # deletes its own mid-turn spool entry once it holds the lock, and the
+    # mail reader skips entries naming the run's own turn.
     if on_event is None:
-        r = run([CRAB_BIN, "remote", text], turn=turn)
+        env = dict(os.environ)
+        if turn is not None:
+            env["DESKCRAB_TURN_ID"] = turn.tid
+        r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
     else:
         # Under STATE_PREFIX, never a bare /tmp name: crab-debug follows
         # <prefix>-turn-*.log, and a scratch instance (the test suite) writing
@@ -1260,6 +1317,8 @@ def ask(text, on_event=None, speaker=None, turn=None):
         )
         watcher.start()
         env = dict(os.environ, DESKCRAB_REMOTE_LOG=logpath)
+        if turn is not None:
+            env["DESKCRAB_TURN_ID"] = turn.tid
         try:
             r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
         finally:

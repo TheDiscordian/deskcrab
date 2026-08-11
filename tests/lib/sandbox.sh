@@ -385,34 +385,21 @@ _sandbox_photo_after() {
         _sandbox_timers_photo "$SANDBOX/leak/after.timers"
 }
 
-# A backstop, and no longer a known defect: the phone's reply audio used to go
-# to a hardcoded /tmp/deskcrab-remote-*.opus with no knob to redirect it, so any
-# test that drove a phone turn wrote a live path. It hangs off STATE_PREFIX now,
-# and a scratch instance writes its clips inside its own root, so this sweep
-# should find nothing. It stays because finding nothing is cheap and because it
-# only ever removes files that did not exist before the test ran — live state
-# ends the run as it started it, whatever a future path does.
-_sandbox_sweep_known_defect() {
-    local path rest
-    while IFS=$'\t' read -r path rest; do
-        case "$path" in
-            /tmp/deskcrab-remote-*.opus) ;;
-            *) continue ;;
-        esac
-        grep -qF "$path"$'\t' "$SANDBOX/leak/before" && continue
-        rm -f "$path" 2>/dev/null && cat <<NOTE
-
-  NOTE: shipping code wrote a live path — $path
-        The phone's reply audio is supposed to hang off STATE_PREFIX. Removed,
-        so this run leaves live state as it found it, but something has put a
-        hardcoded path back and that is a defect in the code, not in this test.
-NOTE
-    done < <(comm -13 "$SANDBOX/leak/before" "$SANDBOX/leak/after.raw" 2>/dev/null)
-}
+# There used to be a sweep here that DELETED any /tmp/deskcrab-remote-*.opus
+# the run had added, reasoning that shipping code hangs its reply audio off
+# STATE_PREFIX now, so a new clip under the live prefix could only be a leaked
+# hardcoded path. The reasoning missed the other author: the LIVE phone server
+# mints exactly those clips on its own schedule, whenever somebody is talking
+# to it, and on 2026-08-11 the sweep deleted three clips the live server had
+# synthesised and not yet served — the spoken reply cut out mid-sentence on
+# the phone, with a replay control pointing at a file this harness had
+# destroyed. The two authors write the same path and the harness cannot tell
+# them apart, so it may only accuse (test-harness.md rule 9): the photograph
+# diff below names the file, the run fails, and a hand that read the verdict
+# does the cleaning. A stray clip is collected by the live instance's own
+# hourly sweep. Held by tests/test_sandbox_live_clips.sh.
 
 _sandbox_leak_check() {  # -> 0 clean, 1 leaked
-    _sandbox_photo_after
-    _sandbox_sweep_known_defect
     _sandbox_photo_after
     local leaked=0 what
     for what in "" ".units" ".timers"; do

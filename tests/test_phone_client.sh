@@ -29,4 +29,10 @@ if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
     exit 77
 fi
 
-exec "$NODE" "$REPO_DIR/tests/phone_client_test.js"
+# Two files, one verdict: the second carries the mid-turn recording cases
+# (specs/phone.md rules 5 and 49 as amended, and the queue feeding rule 51),
+# and a failure in either fails this test.
+RC=0
+"$NODE" "$REPO_DIR/tests/phone_client_test.js" || RC=1
+"$NODE" "$REPO_DIR/tests/phone_client_midturn_test.js" || RC=1
+exit "$RC"

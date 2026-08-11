@@ -1014,6 +1014,9 @@ async function testDeadMicReacquired() {
                                             this.mimeType = "audio/webm"; }
                            start() {} },
     talk: { classList: { add() {}, remove() {} }, textContent: "" },
+    // The mic-open playback duck (spec rule 5) is its own case, in
+    // phone_client_midturn_test.js; here it just has to exist.
+    duckPlayback: () => {},
   };
   await build(["async function startRec"], ctx).startRec();
   if (stopped === 1 && acquired === 1 && ctx.stream !== dead)

@@ -21,8 +21,14 @@ with the page closed.
    MUST be enforced while the socket is still delivering: keepalive pings prove the link, not the
    turn, and a stream carrying nothing but pings past the deadline MUST be given up on. A watchdog
    MUST return the page to idle even when the turn path fails to.
-5. While a turn is in flight the client refuses to record. That refusal MUST end when the turn ends,
-   by any route including abort.
+5. The hold-to-talk control MUST stay usable while a turn is in flight — never disabled, never
+   refusing to record. Until 2026-08-11 the client refused the microphone for the whole of a live
+   turn, so a spoken message could not even be queued; reported by the user as conversation that
+   feels blocking. A recording made mid-turn is transcribed and queued exactly as a typed send is
+   (rule 49), never dropped. While the microphone is open the page MUST pause its own playback —
+   the voice element and any handed media — and resume it on release, so the recording cannot eat
+   her own clips (the whole reason the old refusal existed); the pause is the microphone's, never
+   the mute's: it advances no cursor, drops no queued clip, and suppresses nothing.
 6. A turn's completion payload MUST carry the spoken text, the display content, the audio pointer,
    and an error field. The audio pointer is the never-silent fallback: it MUST carry the turn's own
    reply clip when and only when no streaming voice clip was emitted for the turn, so a client that
@@ -145,8 +151,9 @@ with the page closed.
     completion audio covers a turn that voiced nothing.
 40. Every request the turn path makes MUST be bounded by an abort timeout — the slice uploads, the
     finish, and the batch-transcription fallback included, not only the streaming fetch of rule 4.
-    An unbounded transcription fetch held rule 5's refusal until the watchdog, and a refusal held
-    for minutes is indistinguishable from forever from a phone.
+    An unbounded transcription fetch held the button's busy state until the watchdog — under the
+    old rule 5 that was a refusal to record — and a phone held busy for minutes is
+    indistinguishable from one held forever.
 41. When the page returns to the foreground with a turn in flight and no recent progress, the
     client MUST abort the current attempt and reconnect immediately rather than waiting out
     throttled timers. And when the microphone stream's tracks died while the page was away, the
@@ -260,8 +267,10 @@ he is locked out of.
     second run — drawn as queued where the user can see it beside a live stop control, and
     attached when the slot frees. The lock keeps its meaning — one mind, turns in the order he
     said things (rule 2) — but waiting is a thing the page shows (rule 43), never a thing a send
-    dies on. The voice path keeps rule 5's refusal to record mid-turn (the microphone would eat
-    her own clips); its reach is the brake — one tap to stop, then talk.
+    dies on. The voice path queues the same way: a message spoken while a turn runs is transcribed
+    and joins the same queue the typed one does (rule 5), with the page's own playback paused for
+    exactly as long as the microphone is open. The brake stays the brake — one tap to stop — and a
+    send, spoken or typed, never blocks and never kills.
 50. A new message is NOT an interrupt. The explicit stop is the only brake, deliberately: the
     pipeline already has a doctrine for what a newer message means to a reply in flight —
     supersession holds a superseded reply as written-not-spoken, and only pushback supersedes; an
@@ -272,6 +281,33 @@ he is locked out of.
     full stop — it takes the queued messages with it, and it silences the voice in the same
     gesture; a killed reply's clips playing on would be the stream outliving the brake.
 
+### In-flight delivery — the running turn reads its mail
+
+Queued-not-dropped (rule 49) fixed the send and did nothing for the wait: a message queued behind
+a long turn sat unseen until that turn's last tool call finished, so a mid-task "also check the
+logs" — or "stop, wrong branch" short of the brake — reached her only after the work it should
+have steered was done. Reported by the user 2026-08-11: a mind that cannot hear until it stops
+working feels blocking even when nothing blocks. The CLI offers no way to append a true user turn
+to a run already in flight, so the delivery rides the per-run hooks settings the cocoon signpost
+already generates: a PostToolUse hook surfaces the queue to the model between one tool call and
+the next — the closest thing to a mid-turn user message the runner can carry, verified live
+against the shipped CLI before this rule was written.
+
+51. A message accepted while another turn is in flight MUST be written to the mid-turn spool the
+    moment it is accepted, and a running turn MUST read the spool at its very next tool-call
+    boundary — between two consecutive tool calls of a long chain, never only at the turn's end.
+    What is read is delivered exactly once, oldest first, marked plainly as the user's message
+    arriving mid-turn — and marked with what it is not: the message still runs as its own turn
+    when the slot frees (rule 50), so the running turn adjusts its course and leaves the full
+    reply to the turn the message owns. A turn that makes no further tool call delivers nothing —
+    the boundary is the only door the CLI offers — and the queued turn behind it answers exactly
+    as before this rule existed.
+52. The spool MUST never echo a turn its own message. The runner deletes its own turn's entry
+    after taking the remote lock and before its model runs, and the reader skips entries naming
+    its own turn identifier as a second belt. A stop (rule 50) takes the stopped and queued
+    turns' entries with it, and an entry nobody consumed MUST expire by age at the reader rather
+    than wait to be mis-delivered into some later, unrelated turn.
+
 ## DATA
 
 | Path | Role |
@@ -281,6 +317,7 @@ he is locked out of.
 | `${STATE_PREFIX}-phone-seen` | touched on every authenticated poll; the delivery beacon |
 | `${STATE_PREFIX}-wake-audio` | pointer to a wake's synthesised reply |
 | `${STATE_PREFIX}-play` | pointer to a handed audio file (`crab play`), expiring |
+| `${STATE_PREFIX}-midturn/` | the mid-turn spool (rules 51-52): one file per queued message, named `<arrival-ns>.<turn-id>.msg`, expiring at the reader |
 | `${STATE_PREFIX}-convo.txt` | followed by the poll route |
 | `~/.local/share/deskcrab/webpush/` | key pair and subscriptions |
 | `~/.local/share/deskcrab/last-origin` | desk or phone, durable |
@@ -367,6 +404,7 @@ block itself. The turn it spawns does that.
 | `C12` | The hold-to-talk button sat grey past any patience: the transcription fetches had no bound at all (a hang held the refusal until a seventeen-minute watchdog), a reload mid-turn orphaned the running turn behind the lock so the next attempt showed nothing either, and the give-up ladder was tuned in tens of minutes. Three reloads in four minutes on 2026-08-08, reported twice that evening. **Resolved:** rules 39-41 — bounded transcription, re-attach across reload, a foreground kick, and the ladder brought down to single minutes; held by the abnormal-end cases in `tests/phone_client_test.js`. |
 | `C14` | The rule 42 release cut the turn's stream as soon as any clip had sounded, on the belief that a voiced turn had no sound left to deliver. Sentence streaming (rule 17) made that belief false: the conversation append runs one to two seconds ahead of the synthesiser's tail, so on 2026-08-09 16:54–16:55 three replies in a row lost every sentence past the second — synthesised, emitted, never fetched, the clips left on disk with no listener. The user heard each reply stop mid-thought. **Resolved:** the release never aborts the stream; it always becomes a voice tail that plays the clips still arriving and ends at the turn's own completion event. Held by the released-tail case in `tests/phone_client_test.js` and the voice-before-done ordering pin in `tests/test_phone_stream.sh`. |
 | `C15` | No brakes. The server had no stop route at all — `/say`, `/turn`, `/img`, `/audio`, `/media`, and nothing that could end a turn — and the client refused new messages while one was in flight, the typed path silently discarding the text after clearing the input. A long or destructive task, once started, could not be stopped from the phone, and a new message parked behind the lock's ten-minute wait. Reported by the user 2026-08-10. **Resolved:** rules 47-50 — a `/stop` route that kills the turn's process groups and releases the lock with them, a stopped-marked completion event, a client stop control, and queued-not-dropped sends; held by `tests/test_phone_stop.sh` and the queue/stop cases in `tests/phone_client_test.js`. |
+| `C17` | A message sent mid-turn was queued but unheard until the turn ended: the runner parked it behind the remote lock and nothing surfaced it to the run in flight, so a course correction sent during a long tool chain arrived after the course had been run — and the hold-to-talk control refused to record at all while busy, so a spoken message could not even be queued. Reported by the user 2026-08-11 in exactly those terms. **Resolved:** rules 5 and 49 (the control stays usable; a mid-turn recording transcribes into the same queue, with the page's own playback paused while the microphone is open) and rules 51-52 (the mid-turn spool, read by the running turn at its next tool-call boundary through the per-run PostToolUse hook, delivered exactly once and never echoed to its own turn); held by `tests/test_phone_midturn.sh` and `tests/phone_client_midturn_test.js`. |
 | `C13` | A phone turn whose answer reached the conversation file before its stream's completion event left the button grey with the answer already on screen, drawn as a turn from the laptop. Structural, twice over: the mirror pass rewrites the draft after the raw text has streamed, so the stored block no longer matches the own-turn filter; and compaction — a whole model run — sits between the conversation append and the process exit that emits the completion event, so the stream carries nothing but keepalives while the record already holds the reply. Measured live on 2026-08-08: the mirror rewrite logged at 23:42:30, the reply delivered by the watcher by 23:42:55, the page reloaded by hand at 23:43:29, and the completion event not possible before ~23:43:35. **Resolved:** rule 42 — a watcher-delivered reply ends the turn well inside the watchdog window; held by the watcher-release cases in `tests/phone_client_test.js`. |
 
 ## TESTS
@@ -431,6 +469,19 @@ ten-minute bound. A wrong turn id and a missing key are both refused. The client
 `tests/phone_client_test.js`: a typed send while busy is queued and posted to the server
 immediately rather than dropped, the queue pumps into a real turn when the current one ends, and
 the stop control stops the active turn and the queue behind it.
+`tests/test_phone_midturn.sh` drives rules 51-52 through the real server with a stub crab holding
+the real remote lock: a message posted mid-turn lands in the mid-turn spool the moment it is
+accepted, named by its own turn identifier; a message posted with nothing running spools nothing;
+a stop sweeps the queued turn's entry away; and the reader (`lib/midturn-mail`) drains a populated
+spool oldest-first into one delivery marked mid-turn and leaves the spool empty, skips an entry
+naming its own turn, expires an aged entry unread, and emits nothing at all for an empty spool.
+The same file pins the runner's own-entry delete and the hook's presence in the generated
+settings, in `lib/common.sh`, by the exact lines that do it. The client half lives in
+`tests/phone_client_midturn_test.js`: hold-to-talk records while busy — never refused — the
+mid-turn recording is transcribed and joins the queue posted at once, a transcription failure
+says so in its own bubble instead of dying silently, a take queued against an already-idle page
+pumps into a real turn immediately, and the page's own playback is paused while the microphone
+is open and resumed on release.
 
 **To be written:**
 

@@ -33,6 +33,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/serve.py` | stdlib HTTP front end for the phone (`crab serve`) |
 | `lib/webapp/` | the phone client: one page, a manifest, a service worker |
 | `lib/webpush.py` | Web Push: RFC 8291 crypto, RFC 8292 VAPID, subscription store |
+| `lib/midturn-mail` | PostToolUse hook: hands a running turn the messages queued behind it, between two tool calls |
 | `lib/gen-cert` | self-signed TLS material for the server |
 | `lib/memory.py` | vector store (`crab memory`): sqlite-vec plus local ollama |
 | `lib/tiredness` | the unread-pile score (`crab tired`): file facts in, one number and word out |

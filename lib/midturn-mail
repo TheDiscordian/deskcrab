@@ -1,0 +1,83 @@
+#!/bin/bash
+# The mid-turn mail reader — specs/phone.md rules 51-52.
+#
+# Runs as a PostToolUse hook inside a live turn or wake (wired by
+# claude_profile_flags into the same per-run settings file as the cocoon
+# signpost), which means it runs between one tool call and the next — the
+# closest thing to a mid-turn user message the CLI can deliver, verified live
+# against claude 2.1.226 before the rule was written. A message the phone
+# accepted while this run was already working (serve.py's spool write, rule
+# 51) is surfaced here, at the very next tool-call boundary, instead of
+# waiting unheard behind the remote lock until the turn ends.
+#
+# Speed first: this runs after EVERY tool call of every turn, so the empty
+# case is a bash glob and an exit — python is paid for only when there is
+# actually mail.
+#
+# Never an error: a hook that fails aloud becomes noise in the turn it was
+# trying to help. Anything unexpected here exits 0 with nothing said.
+
+PREFIX="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}"
+DIR="${PREFIX}-midturn"
+[ -d "$DIR" ] || exit 0
+shopt -s nullglob
+ENTRIES=("$DIR"/*.msg)
+[ "${#ENTRIES[@]}" -gt 0 ] || exit 0
+
+exec python3 - "$DIR" "${DESKCRAB_TURN_ID:-}" <<'PY'
+import json, os, sys, time
+
+d, own = sys.argv[1], sys.argv[2]
+# An entry nobody consumed expires by age at the reader (rule 52) rather than
+# wait to be mis-delivered into some later, unrelated turn.
+TTL = int(os.environ.get("DESKCRAB_MIDTURN_TTL", "3600"))
+now = time.time()
+msgs = []
+for name in sorted(os.listdir(d)):          # <arrival-ns>.<turn-id>.msg — sorted is oldest first
+    if not name.endswith(".msg"):
+        continue
+    ns, _, tid = name[:-4].partition(".")
+    if own and tid == own:
+        # Never echo a turn its own message (rule 52). Second belt only: the
+        # runner already deletes its own entry after taking the remote lock.
+        continue
+    path = os.path.join(d, name)
+    taken = "%s.taken.%d" % (path, os.getpid())
+    try:
+        os.rename(path, taken)              # atomic claim; a racing reader loses quietly
+    except OSError:
+        continue
+    try:
+        with open(taken, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read().strip()
+    except OSError:
+        text = ""
+    try:
+        os.unlink(taken)
+    except OSError:
+        pass
+    try:
+        expired = (now - int(ns) / 1e9) > TTL
+    except ValueError:
+        expired = False
+    if text and not expired:
+        msgs.append(text)
+
+if not msgs:
+    sys.exit(0)
+
+note = (
+    "MID-TURN MESSAGE FROM THE USER — sent while you were working, and "
+    "surfaced to you here, between two of your tool calls, so you would not "
+    "have to finish before hearing it. Read it now and let it steer the work "
+    "in your hands: if it changes, narrows, or cancels what you are doing, "
+    "change course immediately. It will also run as its own turn when this "
+    "one ends, so the full reply belongs there — do not let it go unheard "
+    "until then.\n\n"
+    + "\n\n".join(msgs)
+)
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": note,
+}}))
+PY
