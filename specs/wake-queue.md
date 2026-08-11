@@ -127,9 +127,12 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     own lane — two event wakes settle it at the lock, as they always have.
 22. The wake agenda MUST be delivered as the session's user message. See
     [prompt-assembly.md](prompt-assembly.md) rule 12.
-23. When the stream held an error and no genuine model output, the wake MUST journal the failure
-    with the exit code and error text, append nothing to the conversation, skip the audit and all
-    output, and re-book a kinded wake so the agenda survives the outage.
+23. When the stream held an error and no genuine model output — or the run was cut off mid-flight
+    by a usage or session limit with nothing genuine after the refusal, on every account the chain
+    could offer (account-fallback.md rules 12a and 12c) — the wake MUST journal the failure with
+    the exit code and error text, naming the session limit as the cause when it was one, append
+    nothing to the conversation, skip the audit and all output, and re-book a kinded wake so the
+    agenda survives the outage. The refusal text is a failure record, never a reply.
 24. A wake that produced no output on a clean exit MUST be journaled as silence, not as a crash.
 25. Every wake MUST journal what it did, from its own tool activity, not from its reply. A silent
     reply is a speech decision, not a work record.
@@ -237,8 +240,9 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     (`canary`), the nightly claudism review (`claudism-review`) and the chain floor
     (`wake-chain-floor`) all book wakes in her name. Each MUST pass its own
     identity as `booked_by`. Three further identities reach a record without being subsystems:
-    `outage-retry`, when a wake that failed before the model ran re-books itself and cannot name its
-    original booker, `hot-hold`, when a wake's own non-urgent output was held for a hot
+    `outage-retry`, when a wake that failed before the model ran — or was cut off mid-run by a
+    limit the whole chain shared (account-fallback.md rule 12a) — re-books itself and cannot name
+    its original booker, `hot-hold`, when a wake's own non-urgent output was held for a hot
     conversation and books itself back past the heat (rule 27a), and `herself`, the default when
     nobody says. Any prose that enumerates the bookers — here, in the other specs, or in the prompt
     — MUST name the whole set, and it is eight hands and eleven names, not four of either.

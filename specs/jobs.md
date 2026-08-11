@@ -62,6 +62,12 @@ back to her.
       further dispatch for the retry window.
     - A slice containing genuine model output is NEVER blocked, whatever words passed through it. A
       run that produced output is a run that happened.
+15a. A limit that cuts a build off MID-RUN (account-fallback.md rule 12a: genuine output, then the
+    CLI's own limit text with nothing genuine after it) MUST ride the walk to the next account
+    exactly as a refusal does, so an interrupted build finishes at once on a login with credit.
+    A FINAL attempt that ends cut stays `failed`, never `blocked` — work was attempted and the log
+    holds it — and four builders died exactly this way on the night of 2026-08-11, each one
+    journalled "failed (exit 1)" with the session-limit line standing as its closing words.
 16. While the block marker is younger than the retry window, dispatch MUST refuse. The standing
     policy of dispatching a builder the moment work is noticed otherwise fires builder after builder
     into the same wall.

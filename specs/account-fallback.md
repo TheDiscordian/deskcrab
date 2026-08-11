@@ -41,6 +41,27 @@ out" — it is ten minutes of silence with nothing on screen explaining it.
 12. A refusal MUST be recognised only by the CLI's own synthetic marker plus a limit signature, and
     only for a stream with **no genuine model output**. An authentication or network failure would
     fail every other login too and MUST surface as itself.
+12a. A limit refusal that arrives MID-RUN is a **cut**: the attempt's slice holds genuine model
+    output, and then the CLI's own limit-signature text — a synthetic assistant message, an error
+    result, or its own stderr — with no genuine text block after it. A cut MUST be treated exactly
+    as a refusal by every account walk: the default moves off the account that was cut, and the
+    same prompt re-runs on the next login **at once** — no path waits for a reset while another
+    account has credit. However much work it did first, a run the limit cut off never delivered.
+    (2026-08-11, 00:17: a wake nine tool calls deep was cut; the synthetic "You've hit your
+    session limit · resets 1:30am" was extracted as the reply, journalled as her own words,
+    surfaced in her voice — and nothing retried, because the genuine tool calls before the cut
+    made rule 12 read the stream as a run that happened.)
+12b. A cut MUST be recognised only by CLI-owned text, exactly as rule 15 demands for the refusal.
+    The success-shaped result event repeats the final genuine text block verbatim, so only an
+    `is_error` result's text may be read for the cut — a genuine reply that quotes a limit phrase
+    must not read as a cut off the back of its own echo in the result event.
+12c. When the whole chain ends refused or cut, the run is a FAILED run with the session limit named
+    as its cause: journalled like a model-unreachable outage, never stored, spoken, displayed, or
+    committed as assistant output — and a wake re-books itself through the same outage-retry path,
+    so the agenda survives to the reset (wake-queue.md rules 23 and 41).
+12d. The CLI has been observed (2.1.219, 2026-08-11) to end a cut stream with a final result line
+    carrying `is_error` and NO `type` field at all. Every judgement MUST read that line as the
+    error result it is.
 13. One signature MUST be shared between the retry decision and the blocked-job judgement, so the
     two cannot drift.
 14. **Each attempt MUST be judged on its own bytes.** The runner records the log offset at the start
@@ -151,8 +172,15 @@ refusal to audio.
 
 ## TESTS
 
-**Existing:** `tests/test_limit_fallback.sh` — 61 assertions, green, and green partly because the
+**Existing:** `tests/test_limit_fallback.sh` — 61 assertions plus the mid-run cut cases (rule 12a:
+the cut detector against the observed 2.1.219 stream shape, its disjointness from the plain
+refusal, the rule-15 echo trap, the wake and turn walks riding a cut to the next login, and the
+job-runner finishing a cut build on the fallback), green, and green partly because the
 harness removes an environment variable the code should remove itself.
+`tests/test_wake_limit_cut.sh` — the wake path end to end in the sandbox: a chain that ends cut
+journals a failed run naming the session limit, writes nothing to the conversation, and re-books
+through the outage-retry path; a chain with credit left delivers the fallback's reply and re-books
+nothing.
 `tests/test_convo_compaction.sh` — the summariser's own judgement, at both exit codes: a summary
 whose text is full of the signature's words is committed and folds its blocks away and stamps nobody
 dry, while a stream carrying the CLI's synthetic refusal and no genuine output skips the compaction,
