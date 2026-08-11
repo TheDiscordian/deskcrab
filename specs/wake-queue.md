@@ -17,6 +17,13 @@ for reduction here — every rule below makes the queue **visible and bounded**,
    stop a wake timer. Every booker goes through `book()`.
 3. `list()` MUST enumerate the records and join timers onto them, never the reverse. See
    [self-awareness.md](self-awareness.md) rules 1 to 4.
+3a. A transient timer whose SERVICE is active or activating is a wake firing right now — it
+   retired its own record first thing (rule 19) — and `list()` MUST skip it exactly as tidy and
+   restore do (rules 31 and 36), never report it as a timer with no booking record. The running
+   session is already visible in the session registry. On 2026-08-10 every fired event wake spent
+   up to `WAKE_EVENT_LOCK_WAIT` at the run lock with its record correctly retired, and the state
+   block rendered each of them as an orphan: three to six "timers with no booking record" stood
+   in front of her all evening, every one of them a wake mid-fire that nothing had lost.
 
 ### Booking
 

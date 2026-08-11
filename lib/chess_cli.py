@@ -364,6 +364,57 @@ def check_expectation(g: dict, board: chess.Board, ply, fen) -> None:
                 f"Refusing the move. Read the board: betty-chess show {g['id']}")
 
 
+def raise_turn_conflict(g: dict, board: chess.Board, text: str,
+                        err: CliError) -> None:
+    """cmd_move's parse failed. When the side to move is not hers, the
+    likeliest truth is not a bad move but a stale photograph: another hand —
+    the resident mover, or a second session of her — already answered this
+    position, and the turn has passed. Say THAT, naming whose move it is
+    (specs/chessweb.md rule 15). On 2026-08-10 two of her sessions answered
+    one board with the same move, and the loser was told "illegal move: Nf3"
+    as if she could not read a board. Re-raises the original error when it
+    really is her turn."""
+    mover = "white" if board.turn == chess.WHITE else "black"
+    if mover == g.get("my_side"):
+        raise err
+    # Text that is not chess-shaped at all keeps its own error: "turn
+    # conflict" over gibberish would send her hunting a race that never was.
+    t0 = text.strip()
+    shaped = re.fullmatch(
+        r"[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=?[QRBN])?[+#]?"
+        r"|[O0]-[O0](-[O0])?[+#]?", t0, re.IGNORECASE)
+    if not shaped:
+        try:
+            chess.Move.from_uci(t0.lower())
+        except chess.InvalidMoveError:
+            raise err
+    ply = len(g["moves"])
+    already = ""
+    if g["moves"]:
+        prev = chess.Board()
+        for uci in g["moves"][:-1]:
+            prev.push(chess.Move.from_uci(uci))
+        t = text.strip()
+        if re.fullmatch(r"0-0(-0)?[+#]?", t):
+            t = t.replace("0", "O")
+        cand = None
+        try:
+            cand = prev.parse_san(t)
+        except ValueError:
+            try:
+                cand = chess.Move.from_uci(t.lower())
+            except chess.InvalidMoveError:
+                cand = None
+        if cand == chess.Move.from_uci(g["moves"][-1]):
+            already = (f" Your '{text}' is already on the board — another "
+                       f"hand played it at ply {ply - 1}.")
+    raise CliError(
+        f"{g['id']}: turn conflict — it is {mover}'s move "
+        f"({side_name(g, mover)}), not yours; the game is at ply "
+        f"{ply}.{already} Read the board and think again: "
+        f"betty-chess show {g['id']}")
+
+
 def history(board_moves: list[str]) -> str:
     if not board_moves:
         return "(no moves yet)"
@@ -460,7 +511,12 @@ def cmd_move(args):
     if key != "active":
         raise CliError(f"{g['id']} is over ({desc}) — undo to reopen it, "
                        "or start a new game")
-    move = parse_move(board, text)
+    try:
+        move = parse_move(board, text)
+    except CliError as err:
+        # A move that fails while the turn is not hers is a turn conflict,
+        # not an "illegal move" — name whose move it actually is.
+        raise_turn_conflict(g, board, text, err)
     san = board.san(move)
     mover = "white" if board.turn == chess.WHITE else "black"
     ply = len(g["moves"])

@@ -86,10 +86,20 @@ cannot be changed.
    wakes are still booked, both consequences and never preconditions, through
    `crab wake-at --by chessweb 1s event <reason>`:
    the **post-move wake**, after a move the bridge itself posted (reflex or model) has already
-   reached the store and the board — she wakes holding what she played, free to say one
-   sentence about the game to the user (never her reasoning or plans; the opponent hears
+   reached the store and the board — she wakes pointed at her own game, free to say one
+   sentence about it to the user (never her reasoning or plans; the opponent hears
    everything she says) or to say nothing, because taking the queue out of the play path must
-   not take her voice out of her own game; and the **end-of-game wake**, carrying the game id,
+   not take her voice out of her own game. The post-move wake's reason is **one fixed sentence
+   per game**: it names the game and where to look (`betty-chess show <id>`), never the move
+   played or whose turn it is. Byte-identical reasons are the queue's own coalescing key
+   ([wake-queue.md](wake-queue.md) rule 10), so while one post-move wake for a game is still
+   pending — or bouncing off the run lock on the event backoff — the next move's booking and
+   every deferral re-book fold into it instead of stacking behind it: at most one post-move
+   wake per game stands at a time. The move-per-wake shape was measured on 2026-08-10: a wake
+   per move into a lane that runs minutes per session held several bookings for one game at
+   once, kept two of them cycling for eight minutes after that game had ended, and every san
+   a reason carried was stale by delivery. The board is the truth she is pointed at, and it is
+   the only copy that cannot be stale. And the **end-of-game wake**, carrying the game id,
    how the game ended, and the movetext, because she should hear how her game finished. Neither
    wake is ever waited on: the next opponent move is answered whether or not the previous
    wake has fired. Serve start hands the position to the mover the same way when the loaded
@@ -148,7 +158,14 @@ cannot be changed.
     for every out-of-process caller — a reasoning session, a hand at the CLI. `--expect-fen` compares the position proper only — placement, side, castling,
     en passant — never the halfmove or fullmove counters. No expectation given, no check: every
     existing caller keeps working. `show` and `status` print the current ply, so the value is
-    always at hand.
+    always at hand. And when a move given WITHOUT an expectation fails to apply while the side
+    to move is not hers, `betty-chess move` MUST report it as a **turn conflict**, naming whose
+    move it actually is — side and player — and, when the refused text is exactly the move
+    already last on the board, saying that another hand already played it and at which ply.
+    "illegal move" is the answer to a bad move on her own turn; on 2026-08-10 two of her
+    sessions answered the same photograph with the same move, and the loser was told
+    "illegal move: Nf3" as if she could not read a board, when the truth was that the first
+    hand had already played it and the turn had passed.
 16. **The resident mover** (`lib/chess_mover.py`). The bridge answers her positions itself,
     in-process, the moment they appear — never through the wake queue, never behind the
     conversation lock, never behind a phone turn. It went through the queue once: every user

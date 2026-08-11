@@ -151,6 +151,52 @@ out="$(chess move stale Nxe5 --expect-fen "$loose")"; rc=$?
   && ok "the move counters in an expected FEN are ignored" \
   || fail "counters made a matching position look stale: rc=$rc $out"
 
+# --- the turn conflict (specs/chessweb.md rule 15) ------------------------
+# Two of her sessions answered the same photograph with the same move on
+# 2026-08-10; the first landed, the turn passed, and the loser was told
+# "illegal move: Nf3" as if she could not read a board. A move that fails
+# while the side to move is not hers is a turn conflict, reported as one,
+# naming whose move it actually is.
+chess move stale Nc3 >/dev/null   # her move lands; black to move now
+
+out="$(chess move stale Nc3)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "turn conflict" \
+  && ok "the double-fired move is refused as a turn conflict" \
+  || fail "replayed move: rc=$rc $out"
+echo "$out" | grep -q "it is black's move (stale)" \
+  && ok "and the refusal names whose move it actually is" \
+  || fail "no side named in: $out"
+echo "$out" | grep -q "another hand played it at ply 8" \
+  && ok "and says the move is already on the board, and when it landed" \
+  || fail "no already-played note in: $out"
+! echo "$out" | grep -q "illegal move" \
+  && ok "the words 'illegal move' are gone from the conflict" \
+  || fail "still says illegal move: $out"
+
+# A DIFFERENT failing move off her turn is still a turn conflict — just not
+# an already-played one.
+out="$(chess move stale Qe2)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "turn conflict" \
+  && ! echo "$out" | grep -q "another hand" \
+  && ok "an unrelated failing move off her turn is a plain turn conflict" \
+  || fail "off-turn Qe2: rc=$rc $out"
+
+# Gibberish keeps its own error even off her turn: 'turn conflict' over a
+# typo would send her hunting a race that never was.
+out="$(chess move stale xyzzy)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "cannot read" \
+  && ! echo "$out" | grep -q "turn conflict" \
+  && ok "text that is not chess-shaped is still a reading error" \
+  || fail "gibberish off-turn: rc=$rc $out"
+
+# And on her own turn a bad move is what it always was.
+chess move stale Nf6 >/dev/null   # the opponent replies; her turn again
+out="$(chess move stale Ke7)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "illegal move: Ke7" \
+  && ! echo "$out" | grep -q "turn conflict" \
+  && ok "a bad move on her own turn still reads illegal move" \
+  || fail "her-turn Ke7: rc=$rc $out"
+
 # --- reflex memory (specs/chess-reflex.md) --------------------------------
 # The fool's mate at the top of this file finished a game through the normal
 # move path; nothing since has mentioned reflex. If the memory works, that

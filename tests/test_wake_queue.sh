@@ -320,6 +320,43 @@ case "$out" in
 esac
 
 echo
+echo "a fired wake mid-run is not an orphan (wake-queue.md rule 3a):"
+# A wake that fires retires its own record first thing (rule 19), and its
+# one-shot timer lingers as a husk until --collect reaps the pair when the
+# service exits. On 2026-08-10 every event wake queueing at the run lock
+# showed in the block as "a timer with no booking record" — three to six
+# phantoms, all evening, every one a wake mid-fire. A record-less timer whose
+# SERVICE is active is skipped; a record-less timer whose service is dead is
+# exactly the orphan it always was.
+rm -f "$T"/wakes/*.wake
+run_husk() { # <shell body>
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" sandbox_bash '
+        systemctl() {
+            case "$*" in
+                *list-units*)
+                    echo "deskcrab-wake-991-1.timer loaded inactive dead"
+                    echo "deskcrab-wake-991-1.service loaded active running"
+                    echo "deskcrab-wake-992-1.timer loaded active waiting"
+                    return 0 ;;
+                *list-timers*) return 0 ;;
+                *is-active*) return 1 ;;
+            esac
+            return 0
+        }
+        '"$*" 2>&1
+}
+rows="$(run_husk 'wake_list')"
+check_eq "the mid-run husk has no row at all" \
+    "$(printf '%s\n' "$rows" | awk -F'\t' -v u=deskcrab-wake-991-1 '$2 == u { print $7; exit }')" ""
+check_eq "the never-fired record-less timer beside it is still an orphan" \
+    "$(printf '%s\n' "$rows" | awk -F'\t' -v u=deskcrab-wake-992-1 '$2 == u { print $7; exit }')" "orphan"
+out="$(run_husk 'wakes_report --brief')"
+case "$out" in
+    *"! 1 live timer has no booking record"*) ok "the orphan count sees one, not two" ;;
+    *) fail "the husk leaked into the orphan count" "$out" ;;
+esac
+
+echo
 echo "the permanent timers are fixtures, never an orphan:"
 # specs/self-awareness.md rule 3. deskcrab-wake.timer is the standing
 # random-interval timer and deskcrab-wake-restore is the login reconciler:

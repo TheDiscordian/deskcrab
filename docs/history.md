@@ -634,6 +634,61 @@ Contract: [`specs/phone.md`](../specs/phone.md).
 
 ## The chess bridge
 
+### 2026-08-10, that evening — two hands on one board, and the doubles that were neither
+
+The evening the resident mover went live, three symptoms looked like one bug: two of her sessions
+choosing the same move and the loser told "illegal move"; two chessweb wakes apparently booked for
+the same minute, game and position; and three to six live timers with no booking record. The
+ledger, the turn-metrics log and the day journal say they were three separate things — and only
+the first was in the chess path at all. The cocoon guard, under suspicion all evening because it
+was sealing her tools at the same moment, appears in none of the three mechanisms. And there is
+no move queue anywhere in this — none existed, none was added.
+
+**The same move from two hands.** A post-move wake session read its board, found the position
+hers — the user had answered while the wake stood in line — and played by hand, racing the
+resident mover answering the same position in-process. The race is survivable by design and the
+guards held: at 22:51:50 the metrics show `move-played … ply 17 g6 cli` and, one second later,
+`mover-stale … ply 17 now ply 18` — the mover's own answer discarded by the rule-16d photograph
+guard. Nothing was ever double-played, tonight or anywhere in the log. Earlier the race ran the
+other way: the mover landed Nf3 at ply 14 (22:42:07) and a wake session's identical Nf3, seconds
+behind, was refused — as `illegal move: Nf3`, because `parse_move` answers the board in front of
+it, and on that board the knight had already moved. The loser of a race deserves the truth: it is
+a **turn conflict**. `betty-chess move` now says so whenever a move fails while the side to move
+is not hers — naming the side and player whose move it actually is, and, when the refused text is
+exactly the last move on the board, that another hand already played it and at which ply
+(chessweb.md rule 15, `raise_turn_conflict` in `lib/chess_cli.py`, cases in `tests/test_chess.sh`).
+Text that is not chess-shaped keeps its own reading error: "turn conflict" over a typo would send
+her hunting a race that never was.
+
+**The "double-booked" wakes.** No move was ever booked twice. Every repeated ledger line was ONE
+wake bouncing: a post-move wake fires one second after booking, waits up to 90s at the run lock,
+defers on the event backoff and re-books itself — `booked`, same reason, roughly every 92 seconds,
+for as long as sessions held the lock. With a move landing every ~20 seconds and each wake that
+finally wins the lock costing a minutes-long session, the queue held several bouncing wakes per
+game at once, tidy kept `spread`ing them on and off each other's seconds (three times in twenty
+seconds at 22:49), and the wake for one browser-005 move finally ran at 22:55 — ten minutes after
+the move and six after that game had ended in checkmate — announcing a san that was stale by
+half a game. The fix is one line of prose, not queue machinery: the post-move reason is now **one
+fixed sentence per game** — it names the game and `betty-chess show <id>`, never the move or
+whose turn — so rule 10's byte-identical event coalescing folds the next move's booking and every
+deferral re-book into whatever post-move wake already stands for that game. At most one pending
+per game, enforced by the queue's own existing rule (chessweb.md rule 7). The board she is
+pointed at is the only copy of the position that cannot be stale. The serve loads its source once
+(the 2026-08-08 lesson), so the new reason begins at the service's next restart; deliberately not
+restarted under a live game — the CLI-side fixes were live at once.
+
+**The "orphan" timers.** Not one of them was an orphan. A fired wake retires its record first
+thing (rule 19), and its one-shot timer lingers as a husk until `--collect` reaps the pair at
+service exit — so a wake queueing at the run lock is, for up to ninety seconds per bounce plus
+the whole session when it wins, a live timer with no booking record BY DESIGN. tidy and restore
+have always skipped a unit whose service is active; `wake_list` did not, reported exactly that
+state as `orphan`, and the block put "three to six timers nobody booked" in front of her all
+evening — one per chess wake in flight. `wake_list` now skips a record-less unit whose service is
+active or activating (wake-queue.md rule 3a, self-awareness.md rule 3); a record-less timer whose
+service is dead reads `orphan` exactly as before, and a never-fired one is still never purged.
+Verified against the live manager mid-storm: five wake services in flight with retired records,
+nine pending bookings, zero phantoms in the block.
+
 ### 2026-08-10 — the move that waited in line behind the conversation
 
 Her chess moves used to be wakes: the bridge booked an event wake per user move, the wake queue

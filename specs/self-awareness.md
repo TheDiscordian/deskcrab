@@ -25,7 +25,11 @@ below is a fact placed before her, never a gate placed behind her.
    was lost or a unit from another instance, and both are worth seeing. The **permanent** wake units
    are excluded by name: the standing random-interval timer and the login reconciler are fixtures of
    the installation, have never had a booking record, and are not missing one. Reporting one as "a
-   timer with no booking record" puts a wake nobody booked in front of her.
+   timer with no booking record" puts a wake nobody booked in front of her. A transient timer whose
+   **service is active** is excluded too ([wake-queue.md](wake-queue.md) rule 3a): that is a wake
+   firing right now, whose record was retired the moment it fired — reported as an orphan it put
+   three to six phantom timers in the block for as long as the evening's wakes queued at the run
+   lock (2026-08-10).
 4. `crab status` MUST warn when a record has no timer.
 
 ### Totals before samples

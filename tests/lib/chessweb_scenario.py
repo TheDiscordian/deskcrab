@@ -317,8 +317,12 @@ def s_fresh(port, chess_dir, wake_log, mover_log):
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
     assert "your move" not in wake, f"a wake gated her move: {wake}"
-    assert "you played e5" in wake, wake
-    ok("no wake gated the move; the post-move wake carries what she played")
+    assert "you played a move in game guest-001" in wake, wake
+    assert "you played e5" not in wake, \
+        f"the post-move reason must not carry the san — it is one fixed " \
+        f"sentence per game so bookings coalesce (chessweb.md rule 7): {wake}"
+    ok("no wake gated the move; the post-move wake names the game, never "
+       "the move")
 
     obs = Client(port)
     obs.join(player=False)
@@ -517,7 +521,7 @@ def s_reflex(port, chess_dir, wake_log, mover_log):
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
     assert "your move" not in wake, f"a thinking wake was booked: {wake}"
-    assert "you played e5" in wake, wake
+    assert "you played a move in game guest-001" in wake, wake
     assert "ended" in wake and "checkmate" in wake, wake
     ok("no thinking wake was spent; her post-move voice and the "
        "end-of-game wake still fired")

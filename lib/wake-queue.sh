@@ -689,6 +689,16 @@ wake_list() {
             _wake_unit_is_fixture "$base" && continue
             case "$base" in deskcrab-wake-[0-9]*) ;; *) continue ;; esac
             [ -s "$WAKES_DIR/$base.wake" ] && continue
+            # A unit whose SERVICE is active is a wake firing right now — it
+            # retired its own record first thing (rule 19), and its timer husk
+            # lingers only until --collect reaps the pair. Skipped here exactly
+            # as tidy and restore skip it (rule 3a): reported as an orphan, an
+            # evening of event wakes queueing at the run lock read as three to
+            # six timers nobody had booked (2026-08-10). The running session is
+            # the session registry's row, not this table's.
+            case "${_WAKE_UNIT_STATE[$base.service]:-}" in
+                active|activating) continue ;;
+            esac
             [ -n "$nexts" ] || nexts="$(_wake_timer_nexts)"$'\n'
             printf '%s\t%s\t-\t%s\t-\t-\torphan\n' \
                 "$(_wake_next_epoch "$u" "$nexts")" "$base" "(no booking record)"

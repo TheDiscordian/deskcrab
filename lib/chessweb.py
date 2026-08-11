@@ -702,15 +702,25 @@ class Hub:
     def spoken_move_wake(self, g, san, desc):
         """After she plays, she wakes — a consequence of the move, never a
         gate on it or on the next one (rule 7). The queue left the play
-        path; her voice about the game did not leave with it."""
+        path; her voice about the game did not leave with it.
+
+        The reason is ONE FIXED SENTENCE PER GAME — no san, no whose-turn —
+        because byte-identical reasons are the queue's own coalescing key
+        (wake-queue.md rule 10): while a post-move wake for this game is
+        pending, or bouncing off the run lock on the event backoff, the next
+        move's booking and every deferral re-book fold into it. The evening
+        of 2026-08-10 booked a wake per move into a lane that runs minutes
+        per session: several wakes stood for one game at once, two kept
+        cycling for eight minutes after the game had ended, and every san
+        was stale by delivery. The board she is pointed at cannot be."""
         gid = g["id"]
         self.book_wake(
-            f"chessweb: you played {san} in game {gid} against "
-            f"{g['opponent']} — {desc}. The move is already on their board; "
-            f"nothing waits on this wake. If you feel like it, say one "
-            f"sentence to the user about the game — the move, or banter; "
-            f"never your reasoning or plans, they hear everything you say — "
-            f"or say nothing at all. Board: betty-chess show {gid}",
+            f"chessweb: you played a move in game {gid} against "
+            f"{g['opponent']}; it is already on their board, and nothing "
+            f"waits on this wake. If you feel like it, say one sentence to "
+            f"the user about the game — the position, or banter; never your "
+            f"reasoning or plans, they hear everything you say — or say "
+            f"nothing at all. Board: betty-chess show {gid}",
             f"her voice after {san} in {gid}")
 
     # -- protocol ----------------------------------------------------------
