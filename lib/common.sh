@@ -2487,7 +2487,7 @@ $(_persona_fit "$CUSTOM_CONTEXT" "$ROOM" "$CUSTOM_PROMPT")"
 $(self_state_report --prompt)
 THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
 Reading this block is free and it IS the answer to 'what are you doing', 'what is running', 'what is scheduled' and 'what have you got coming'. Run a command only for something this block does not cover.
-Wakes are booked in your name by eight hands besides you, each leaving its name on the record: the promise auditor (promise-audit), the promise checker (promise-check), the job runner (job-runner), the self-change watcher (notice-selfchange), the new-file watcher (notice-newfiles), the watcher's canary (canary), the nightly claudism review (claudism-review) and the chain floor (wake-chain-floor); a wake that could not reach a model re-books itself as outage-retry, a wake whose quiet note landed in a hot conversation books itself back as hot-hold, and a record stamped herself is one you made yourself, rendered as 'booked by you'. Each pending wake above names its booker and carries its own reason. A wake you did not personally type is still yours and still scheduled.
+Wakes are booked in your name by eight hands besides you, each leaving its name on the record: the promise auditor (promise-audit), the promise checker (promise-check), the job runner (job-runner), the self-change watcher (notice-selfchange), the new-file watcher (notice-newfiles), the watcher's canary (canary), the nightly claudism review (claudism-review) and the chain floor (wake-chain-floor); a wake that could not reach a model — or was cut off mid-run by a session limit on every login — re-books itself as outage-retry, a wake whose quiet note landed in a hot conversation books itself back as hot-hold, and a record stamped herself is one you made yourself, rendered as 'booked by you'. Each pending wake above names its booker and carries its own reason. A wake you did not personally type is still yours and still scheduled.
 Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
 Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
@@ -4298,7 +4298,10 @@ for line in open(sys.argv[1]):
         d = json.loads(line)
     except json.JSONDecodeError:
         continue
-    if d.get("type") == "result" and d.get("is_error"):
+    # An error result with or without its type field: the CLI has been seen
+    # (2.1.219) ending a limit-cut stream with a result line carrying is_error
+    # and no "type" at all (specs/account-fallback.md rule 12d).
+    if d.get("is_error") and d.get("type") in ("result", None):
         err = True
     elif d.get("type") == "assistant":
         if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
@@ -4615,7 +4618,10 @@ with fh:
                         own.append(b.get("text") or "")
             else:
                 real = True
-        elif kind == "result":
+        elif kind == "result" or (kind is None and d.get("is_error")):
+            # The second arm is the type-less error result the CLI has been
+            # seen closing a limit-cut stream with (rule 12d): CLI-owned
+            # either way.
             for k in ("result", "error", "message"):
                 v = d.get(k)
                 if isinstance(v, str):
@@ -4623,6 +4629,97 @@ with fh:
 if real:
     sys.exit(1)
 for text in own:
+    m = rx.search(text)
+    if m:
+        print(m.group(0))
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# The limit refusal's other face: the CUT — a run the limit stopped MID-FLIGHT
+# (specs/account-fallback.md rule 12a).
+#
+#   claude_stream_limit_cut <stream file> [byte offset]
+#
+# Prints the matched limit text and returns 0 when this slice holds genuine
+# model output and then the CLI's OWN limit-signature text with no genuine text
+# block after it; prints nothing and returns 1 otherwise. Disjoint from
+# claude_stream_refusal on purpose: that one is the run that never began (no
+# genuine output at all), this one is the run that began and was killed
+# part-way. Both move the account walk; only the shapes differ.
+#
+# The class this exists for, observed 2026-08-11 at 00:17: a wake nine tool
+# calls deep hit the five-hour limit. The CLI ended the stream with a synthetic
+# assistant message ("You've hit your session limit · resets 1:30am") and a
+# final result line carrying is_error and NO type field at all (CLI 2.1.219).
+# claude_stream_refusal saw the genuine tool calls and said "a run that
+# happened"; wake_stream_failed said the same; extract_response then handed the
+# synthetic text over as the reply, and the CLI's complaint was journalled and
+# surfaced as her own words while the thought it interrupted was lost. Four
+# detached builders died the same way inside ten minutes.
+#
+# What is read, and what is NOT:
+#   * CLI-owned text only — a synthetic (api-error) assistant message, an
+#     is_error result (with or without its type field, rule 12d), or a line
+#     that is not JSON at all, which on this stream is the CLI's own stderr.
+#   * A NON-error result event is never read here, unlike in
+#     claude_stream_refusal: on a stream with genuine output the success
+#     result repeats her final text block verbatim, so reading it would gag a
+#     genuine reply that quotes a limit phrase on the echo of its own words
+#     (rules 12b and 15).
+#   * A genuine text block clears everything gathered so far: a later account
+#     answering means the stream reads as that answer, never as the earlier
+#     account's cut (rule 16's ordering, applied per slice).
+claude_stream_limit_cut() {  # <stream file> [byte offset]
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "${2:-0}" "$CLAUDE_LIMIT_RE" <<'PY'
+import json, re, sys
+path, off, pattern = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3]
+rx = re.compile(pattern, re.I)
+real = False   # any genuine model output in the slice
+tail = []      # CLI-owned text since the last genuine text block
+try:
+    fh = open(path, "rb")
+except OSError:
+    sys.exit(1)
+with fh:
+    try:
+        fh.seek(off)
+    except OSError:
+        pass
+    for raw in fh:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            tail.append(line)         # not JSON: the CLI's own stderr
+            continue
+        if not isinstance(d, dict):
+            continue
+        kind = d.get("type")
+        if kind == "assistant":
+            msg = d.get("message") or {}
+            if d.get("is_api_error_message") or msg.get("model") == "<synthetic>":
+                for b in msg.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        tail.append(b.get("text") or "")
+            else:
+                real = True
+                for b in msg.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text" \
+                            and (b.get("text") or "").strip():
+                        tail = []
+        elif d.get("is_error") and kind in ("result", None):
+            for k in ("result", "error", "message"):
+                v = d.get(k)
+                if isinstance(v, str):
+                    tail.append(v)
+if not real:
+    sys.exit(1)          # nothing genuine at all: rule 12's refusal, not a cut
+for text in tail:
     m = rx.search(text)
     if m:
         print(m.group(0))
@@ -4933,7 +5030,9 @@ _wake_claude_run() {
 }
 
 # The whole of a wake's CLI work: every account that is worth trying, in order,
-# for as long as the answer is a limit refusal. A login refusing over a
+# for as long as the answer is a limit refusal — or a mid-flight limit CUT
+# (specs/account-fallback.md rule 12a), which is the same dry account seen
+# from further in. A login refusing over a
 # usage/session limit does not end the wake — it moves it to the next
 # subscription, still under the watchdog, until one answers or the chain is
 # spent; each refusal stamps that account so the next wake starts past it
@@ -4958,7 +5057,15 @@ wake_claude_run_chain() {
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         _wake_claude_run "$CONFDIR"
-        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" || break
+        # Two shapes move the walk: the refusal (the run never began) and the
+        # cut (the limit killed it mid-flight — specs/account-fallback.md rule
+        # 12a). Both mean this account is dry; the next login re-runs the same
+        # agenda at once, so the thought in progress gets said rather than
+        # waiting on a reset. Anything else — an answer, a network death — ends
+        # the walk and surfaces as itself.
+        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
+            || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
+            || break
         claude_limit_record "$CONFDIR" "$REFUSAL"
         PREV="$ACCT"
     done
@@ -5063,8 +5170,20 @@ run_claude_wake() {
     # audit, and spoken aloud at the desk ("You've hit your session limit…").
     # Journal the failure instead, and re-book a wake that had a purpose so
     # its agenda survives to a retry after the outage clears.
-    if wake_stream_failed; then
-        session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(printf '%s' "$RESPONSE" | tr '\n\t' '  ' | head -c 160))"
+    #
+    # The cut is the same failure wearing work clothes (specs/account-fallback
+    # rule 12a, wake-queue rule 23): the chain above already rode any cut to
+    # the next login, so a cut still standing on the WHOLE log means every
+    # account was tried and the limit had the last word. Judged at offset 0 on
+    # purpose — a genuine text block from any later account clears it.
+    local LIMIT_CUT
+    LIMIT_CUT="$(claude_stream_limit_cut "$DEBUGLOG")" || LIMIT_CUT=""
+    if wake_stream_failed || [ -n "$LIMIT_CUT" ]; then
+        if [ -n "$LIMIT_CUT" ]; then
+            session_outcome "(wake failed — session-limit cut it off mid-run, every account tried — claude exit $CLAUDE_STATUS: $(printf '%s' "$LIMIT_CUT" | tr '\n\t' '  ' | head -c 160))"
+        else
+            session_outcome "(wake failed before the model ran — claude exit $CLAUDE_STATUS: $(printf '%s' "$RESPONSE" | tr '\n\t' '  ' | head -c 160))"
+        fi
         # A free slot, not a flat half hour: an outage fails every wake it
         # touches, and a fixed retry stacks all of them onto the same second
         # (wake_book does the spacing, under the booking lock).
@@ -5654,7 +5773,13 @@ claude_generate() {
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         _generate_claude_run "$CONFDIR"
-        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" || break
+        # As on the wake walk: a refusal OR a mid-flight cut moves to the next
+        # login at once (specs/account-fallback.md rule 12a). The streamer is
+        # already holding the synthetic refusal off the speakers, and the
+        # retry's genuine reply appends behind it in the same log.
+        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
+            || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
+            || break
         claude_limit_record "$CONFDIR" "$REFUSAL"
         PREV="$ACCT"
         # No time left for another whole CLI boot and refusal.
@@ -5895,16 +6020,25 @@ _run_claude_remote_locked() {
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
 
-    local ERROR=""
-    if claude_run_limited; then
+    local ERROR="" TURN_CUT
+    # Same judgement as the desk turn: a cut standing on the whole log means
+    # the chain rode every account and the limit ended the last of them
+    # (specs/account-fallback.md rules 12a and 12c).
+    TURN_CUT="$(claude_stream_limit_cut "$DEBUGLOG")" || TURN_CUT=""
+    if claude_run_limited || [ -n "$TURN_CUT" ]; then
         # Same routing as the desk turn: an all-refused chain reports the
         # CLI's refusal as the extracted reply. That is the outage speaking,
         # not me — never the conversation's assistant block, and never
         # synthesized for the phone's speakers. The error field carries it
         # as text the client can show.
         live_turn_end phone "$TEXT" ""
-        session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
-        ERROR="every login is over its limit: $(printf '%.140s' "$RESPONSE")"
+        if [ -n "$TURN_CUT" ]; then
+            session_outcome "(turn failed — session-limit cut it off mid-run, every account tried, for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$TURN_CUT"))"
+            ERROR="the session limit cut this answer off mid-run and every login is out: $(printf '%.140s' "$TURN_CUT")"
+        else
+            session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
+            ERROR="every login is over its limit: $(printf '%.140s' "$RESPONSE")"
+        fi
         RESPONSE=""
     elif [ -n "$RESPONSE" ]; then
         # The pre-speech mirror on the whole draft (specs/speech-output.md
@@ -6109,9 +6243,17 @@ run_claude_and_respond() {
 
     notify_thinking_clear
 
-    if claude_run_limited; then
-        # Every account refused over a limit. extract_response reports the
-        # refusal so an error-only stream can explain itself in a log — which
+    # The cut twin of the limited test below (specs/account-fallback.md rules
+    # 12a and 12c): the chain already rode any mid-flight cut to the next
+    # login, so a cut still standing on the whole log means every account was
+    # tried and the limit ended the last of them. Judged at offset 0 — one
+    # genuine text block from any account clears it.
+    local TURN_CUT
+    TURN_CUT="$(claude_stream_limit_cut "$DEBUGLOG")" || TURN_CUT=""
+    if claude_run_limited || [ -n "$TURN_CUT" ]; then
+        # Every account refused over a limit — or the last one was cut off
+        # mid-run by it. extract_response reports the refusal so an error-only
+        # stream can explain itself in a log — which
         # means RESPONSE holds the CLI's words, not mine. They never enter
         # the conversation as my reply and are NEVER spoken: the streamer
         # held them, its receipt reads empty, and the never-silent guard
@@ -6122,9 +6264,15 @@ run_claude_and_respond() {
         claudism_mirror_abort
         wait_tts_streamer
         live_turn_end desk "$TEXT" ""
-        session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
-        notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
-            "every login is over its limit — nothing was said ($(printf '%.120s' "$RESPONSE"))" 2>/dev/null
+        if [ -n "$TURN_CUT" ]; then
+            session_outcome "(turn failed — session-limit cut it off mid-run, every account tried, for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$TURN_CUT"))"
+            notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+                "the session limit cut that answer off mid-run and every login is out — nothing was said ($(printf '%.120s' "$TURN_CUT"))" 2>/dev/null
+        else
+            session_outcome "(every account limited for: $(printf '%.80s' "$TEXT") — $(printf '%.120s' "$RESPONSE"))"
+            notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
+                "every login is over its limit — nothing was said ($(printf '%.120s' "$RESPONSE"))" 2>/dev/null
+        fi
         RESPONSE=""
     elif [ -n "$RESPONSE" ]; then
         # The pre-speech mirror (specs/speech-output.md rules 38-45): any
