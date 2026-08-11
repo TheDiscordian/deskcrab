@@ -60,6 +60,16 @@ cmd_run() {
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         echo "sleep: the claudism review did not finish — the night still counts. See $log" >&2
     fi
+
+    # The promise sweep, over the same day: the journal beside the promise
+    # ledger, promises fulfilled later reconciled, only the genuine
+    # end-of-day misses surfaced (specs/nightly.md rules 51-53). The live
+    # checker is a cheap pattern gate and misses; this is the honest pass.
+    # Same bargain as the review: never the night's verdict.
+    "$LIB_DIR/promise-check" sweep 2>&1 | tee -a "$log"
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        echo "sleep: the promise sweep did not finish — the night still counts. See $log" >&2
+    fi
     return 0
 }
 
