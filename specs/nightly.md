@@ -61,6 +61,15 @@ which fails silently is worse than one that does not exist.
 25. Her own writes MUST NEVER wake her. A change is dropped when a write declaration covers it, or a
     live session's claim names it, or it is the memory database and one of her sessions ran
     recently.
+
+25a. The watched drawers exclude `.git` internals. Several of them are git repositories of their
+    own — conduct is, and any personal directory in the extra watch set may be — and there the
+    commits are the record while the plumbing that records them (`refs/heads/*`, `logs/HEAD`,
+    `COMMIT_EDITMSG`, the index, the object store) is noise: a change of substance always shows in
+    the working tree beside it. The snapshot MUST NOT descend into `.git`, exactly as the code
+    repository's internals are invisible by construction through `git ls-files`. Without this, a
+    conduct commit made by her own hand at 00:37 woke her at 00:50 about its refs and logs
+    (2026-08-11).
 26. Write declarations come in two tiers. A **strong** declaration means the path was in a provable
     write position and excuses anything, including a subtree. A **weak** declaration means the path
     merely appeared in a command she ran, and excuses exact paths only, never a deletion.
@@ -314,8 +323,9 @@ reaches her through an event wake or through a record she reads.
 
 ## TESTS
 
-**Existing:** `tests/test_notice_selfchange.sh` — 37 assertions in the most hermetic sandbox in the
-suite, and the model for every other test. `tests/test_claudism_scan.sh` — the review reads the
+**Existing:** `tests/test_notice_selfchange.sh` — 40 assertions in the most hermetic sandbox in the
+suite, and the model for every other test; among them, `.git` internals under a watched drawer and
+under an extra watch directory fire nothing (rule 25a). `tests/test_claudism_scan.sh` — the review reads the
 spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
 skip; the wake is booked through the door in the review's own name; a dead model still writes the
 report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep
