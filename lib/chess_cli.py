@@ -108,6 +108,52 @@ def metric(stage: str, detail: str = "") -> None:
         pass
 
 
+# ------------------------------------------------------------- session kind
+#
+# Which kind of claude session is this process running under? Every claude
+# invocation registers itself at $DESKCRAB_STATE_PREFIX-sessions/<pid> (see
+# session_register in lib/common.sh): one tab-separated line whose FIRST field
+# is the kind — 'phone turn', 'desktop turn', 'autonomous wake'. The chess CLI
+# runs several process levels below that shell, so the answer comes from
+# walking the /proc parent chain upward until a registered pid appears.
+# Bounded, and empty-handed on any surprise: a guard that cannot tell must let
+# the move through, because the registry binds her sessions, nothing else.
+
+SESSIONS_DIR = Path(
+    os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab") + "-sessions")
+
+
+def _parent_pid(pid: int) -> int:
+    """ppid from /proc/<pid>/stat, or 0 when it cannot be read. The comm
+    field can itself contain spaces and parens ('(tmux: server)'), so split
+    on the LAST ')' — after it the fields are fixed-order, ppid at index 1."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return 0
+    fields = stat.rsplit(")", 1)[-1].split()
+    try:
+        return int(fields[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def session_kind() -> str:
+    """The registered kind of the session above this process, or ''."""
+    pid = os.getpid()
+    for _ in range(24):
+        if pid <= 1:
+            return ""
+        reg = SESSIONS_DIR / str(pid)
+        if reg.is_file():
+            try:
+                return reg.read_text().split("\t", 1)[0].strip()
+            except OSError:
+                return ""
+        pid = _parent_pid(pid)
+    return ""
+
+
 def build_board(g: dict) -> chess.Board:
     board = chess.Board()
     for uci in g["moves"]:
@@ -364,6 +410,30 @@ def check_expectation(g: dict, board: chess.Board, ply, fen) -> None:
                 f"Refusing the move. Read the board: betty-chess show {g['id']}")
 
 
+def guard_resident_mover(g: dict, board: chess.Board, force: bool) -> None:
+    """Refuse to play her side of a browser game from the command line.
+
+    Browser games are answered in-process by the resident mover
+    (specs/chessweb.md rule 16), which pushes its reply straight into the
+    store and never comes through this CLI. A hand-typed or wake-driven
+    `betty-chess move` on one is a second mover racing the first, and rule
+    16d guarantees one of the two answers is discarded as stale: twice on
+    the night of 2026-08-10 a wake did exactly that while the mover was
+    mid-think, and the game visibly played worse. See rule 15b. Mirrored
+    opponent moves — the side to move not hers — pass untouched.
+    """
+    if force or g.get("opponent") != "browser":
+        return
+    mover = "white" if board.turn == chess.WHITE else "black"
+    if mover != g.get("my_side"):
+        return
+    raise CliError(
+        f"{g['id']} is a browser game — the resident mover plays her side "
+        f"there, and a move from the command line races it: whichever "
+        f"answer lands second is discarded as stale. Use --force only if "
+        f"the mover is known to be down.")
+
+
 def raise_turn_conflict(g: dict, board: chess.Board, text: str,
                         err: CliError) -> None:
     """cmd_move's parse failed. When the side to move is not hers, the
@@ -498,6 +568,21 @@ def cmd_png(args):
 
 
 def cmd_move(args):
+    # Before anything else — before even naming the game: a move arriving
+    # from an autonomous wake is refused outright (specs/chessweb.md rule
+    # 20). On 2026-08-10 a wake mirrored a move into a live game two minutes
+    # after a written conduct rule said the mover plays, not the wake; the
+    # mover's own answer for that ply came back, was discarded as stale, and
+    # a knight was lost for nothing. Prose did not hold, so the code does.
+    if (session_kind() == "autonomous wake"
+            and os.environ.get("DESKCRAB_CHESS_ALLOW_WAKE_MOVE") != "1"):
+        raise CliError(
+            "this session is an autonomous wake, and a wake may look at the "
+            "board but not play on it — the resident mover owns the move, "
+            "and a wake that plays races it (specs/chessweb.md rule 20). "
+            "show, status, reflex and similar all still work. If a human "
+            "explicitly asked this wake to place this exact move, "
+            "DESKCRAB_CHESS_ALLOW_WAKE_MOVE=1 is the override.")
     if len(args.words) == 1:
         spec, text = None, args.words[0]
     elif len(args.words) == 2:
@@ -507,6 +592,7 @@ def cmd_move(args):
     g = resolve_game(spec)
     board = build_board(g)
     check_expectation(g, board, args.expect_ply, args.expect_fen)
+    guard_resident_mover(g, board, args.force)
     key, desc, _ = compute_state(g, board)
     if key != "active":
         raise CliError(f"{g['id']} is over ({desc}) — undo to reopen it, "
@@ -745,6 +831,10 @@ def main(argv=None):
                          "the move is refused if the game has moved on")
     sp.add_argument("--expect-fen", default=None, metavar="FEN",
                     help="likewise, but naming the position itself")
+    sp.add_argument("--force", action="store_true", default=False,
+                    help="override the resident-mover guard: play her side "
+                         "of a browser game from the command line anyway "
+                         "(only when the mover is known to be down)")
     sp.set_defaults(func=cmd_move)
 
     sp = sub.add_parser("undo", help="take back plies (or a resignation)")

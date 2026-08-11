@@ -344,3 +344,31 @@ out="$(chess reflex not-a-fen-nor-a-game)"; rc=$?
   && echo "$out" | grep -q "FEN" \
   && ok "a word that is neither names both failures" \
   || fail "unhelpful error for a bad argument: $out"
+
+# --- the resident-mover guard (specs/chessweb.md rule 15b) ----------------
+# Her side of a browser game is played in-process by the resident mover, and
+# a CLI move there is a second mover racing the first: whichever answer lands
+# second is discarded as stale. Twice in one night a wake-driven move did
+# exactly that mid-think and the game played worse for it, so the command
+# line refuses her side of a browser game unless --force says the mover is
+# known to be down.
+chess new browser >/dev/null            # opponent 'browser', she is white
+out="$(chess move browser e4)"; rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q "resident mover" \
+  && echo "$out" | grep -q -- "--force" \
+  && ok "her side of a browser game is refused, naming the mover and the flag" \
+  || fail "browser-game move: rc=$rc $out"
+chess status browser | grep -q "ply 0" \
+  && ok "the refusal wrote nothing to the game" \
+  || fail "store changed despite the guard: $(chess status browser)"
+
+out="$(chess move browser e4 --force)"; rc=$?
+[ "$rc" -eq 0 ] && echo "$out" | grep -q "played e4" \
+  && ok "--force plays her side when the mover is known to be down" \
+  || fail "forced browser-game move: rc=$rc $out"
+
+# The opponent's mirrored move is not hers, and passes with no flag at all.
+out="$(chess move browser e5)"; rc=$?
+[ "$rc" -eq 0 ] && echo "$out" | grep -q "played e5" \
+  && ok "a mirrored opponent move on a browser game needs no force" \
+  || fail "opponent move on browser game: rc=$rc $out"

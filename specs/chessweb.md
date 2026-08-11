@@ -313,6 +313,27 @@ cannot be changed.
     booked (rule 7) saying the user resigned from the browser. The endpoint rides HTTP like
     `/state` because the stock wire has no Resign message; the LAN-trust posture (KNOWN LIMITS)
     covers it exactly as it covers the seat itself.
+20. `betty-chess move` refuses to play when the session it runs under is an **autonomous
+    wake**. The CLI walks its own /proc parent chain (bounded) looking for a live session
+    registration — `$DESKCRAB_STATE_PREFIX-sessions/<pid>`, whose first tab-separated field is
+    the session kind — and when that kind is exactly `autonomous wake` the move is refused:
+    non-zero, nothing written, the message saying a wake may look at the board but not play on
+    it, because the resident mover (rule 16) owns her move. A wake that mirrors a move into a
+    live game races the mover it did not know was already answering: on 2026-08-10 a wake
+    played her reply itself, the mover's own answer for that ply came back and was discarded as
+    stale by rule 16d, and the opponent was handed a knight for nothing. A written conduct rule
+    saying the mover plays, not the wake, was violated two minutes after it was written — so
+    the refusal lives in the code, not in prose. Rule 15b bars every out-of-process hand from
+    her side of a *browser* game; this rule is the other axis: a wake is refused the move on
+    every game, either side, browser or not. Only `move` is guarded: `show`, `status`,
+    `png`, `reflex`, `similar`, `resign`, `draw` and the rest keep working from a wake, because
+    looking is how a wake briefs itself. The mover is not caught: it applies her move
+    in-process through `chess_cli.save_game` under the board service, never through the move
+    command, and the service's ancestry holds no session registration. No registration found —
+    the user's own shell, the board service, a test harness — means no refusal: the guard binds
+    her wakes, nothing else. `DESKCRAB_CHESS_ALLOW_WAKE_MOVE=1` is the deliberate escape
+    hatch, named in the refusal, for the one case where a human explicitly asked a wake to
+    place a specific move.
 
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 
