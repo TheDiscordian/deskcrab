@@ -186,7 +186,15 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        interruption — with the held words in the reason, so she meets them again in a quiet minute
        and decides afresh with the conversation in front of her. The booking is capped
        (`WAKE_HOT_HOLD_CAP`, scoped to the held-reason prefix): a stack of held asides all landing
-       on the first quiet minute is the same storm one delay later.
+       on the first quiet minute is the same storm one delay later. The comeback is a booking like
+       any other and the cap can refuse it, so the hold MUST read the booking's answer BEFORE the
+       journal line is written: a line promising a comeback may only be written when a comeback
+       wake actually stands (booked now, or an equivalent one already pending), and a refused hold
+       MUST be journalled as refused — the note surviving in that journal line only — never as a
+       promise the queue never accepted. A display-only hold MUST carry the built display content
+       itself in the reason (clipped to the reason's budget), never a placeholder naming it: the
+       comeback wake's reason is the only place the held words survive, and a placeholder holds
+       nothing.
      - **Said in those words in the journal**, exactly as the night's hold and the busy hold are,
        and for the same reason — a wake the heat held is not a wake that had nothing to say, and
        the next session and the since-your-last-reply anchor both read that line.
@@ -485,7 +493,9 @@ own-record judgement with the failure on the trace),
 `tests/test_wake_hot_hold.sh` (rule 27a: a quiet bubble into a hot conversation reaches no bubble,
 no notifier and no conversation and books itself back with its words in the reason; the same wake
 into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
-sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue),
+sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue, a hold the
+cap refused is journalled as refused rather than as a comeback, and a display-only hold's comeback
+carries the built content itself, not a placeholder),
 `tests/test_wake_ledger_utf8.sh` (the ledger's UTF-8 guarantee: a reason whose em-dash straddles
 the 200-character trim boundary lands as valid UTF-8 with the partial character dropped whole,
 plain grep — no `-a` — still finds the record, an em-dash short of the boundary survives intact,

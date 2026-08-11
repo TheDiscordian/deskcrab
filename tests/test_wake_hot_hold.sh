@@ -143,6 +143,10 @@ echo "...and the record says the heat held it, not that she had nothing:"
 check "the journal names the hot conversation as the reason" \
     grep -q "the conversation was hot" "$JOURNAL"
 check "and keeps the words that were held" grep -qF "browser-006" "$JOURNAL"
+# The promise is made AFTER the booking now, so a line that says "coming
+# back" is a line whose comeback actually stands on the queue.
+check "and promises the comeback only because one actually stands" \
+    bash -c 'tail -n1 "$1" | grep -q "coming back in 5min"' _ "$JOURNAL"
 
 echo
 echo "the held words come back through the queue, not into the bin:"
@@ -196,6 +200,16 @@ run_wake
 check "no window was opened" [ ! -f "$WORK/displayed.txt" ]
 check "and its journal line names the heat, not silence" \
     bash -c 'tail -n1 "$1" | grep -q "the conversation was hot"' _ "$JOURNAL"
+# The comeback's reason is the only place the held words survive, so it must
+# carry the built content itself — the literal words "a display section it
+# built" were what used to be booked, and they hold nothing.
+BOOKED="$(held_field 3)"
+contains "$BOOKED" "the board, move by move" \
+    && ok "the comeback carries the display content itself" \
+    || fail "the held reason lost the built content" "[$BOOKED]"
+contains "$BOOKED" "a display section it built" \
+    && fail "a placeholder stands in for the held words" "[$BOOKED]" \
+    || ok "and no placeholder stands in for the words"
 
 echo
 echo "with the window at zero, nothing changes from before it existed:"
@@ -222,6 +236,19 @@ HELD_COUNT="$(held_count)"
 check "no more than the cap of held notes stands at once" [ "$HELD_COUNT" -le 3 ]
 check "and at least one is still there — the cap bounds, it does not empty" \
     [ "$HELD_COUNT" -ge 1 ]
+
+echo
+echo "...and a hold the cap refused is journalled as refused, never as a comeback:"
+# The last of the six was past the cap: the booking door refused it politely
+# (exit 0, nothing booked), and the journal line used to be written before
+# the booking was even attempted — a promise over a note already gone. The
+# record now reads the booking's answer first.
+check "the refused hold says the note survives in the journal only" \
+    bash -c 'tail -n1 "$1" | grep -q "hold refused at cap — the note is in this journal only"' _ "$JOURNAL"
+check "and its line promises no comeback" \
+    bash -c '! tail -n1 "$1" | grep -q "coming back"' _ "$JOURNAL"
+check "while the words themselves are still on the line" \
+    bash -c 'tail -n1 "$1" | grep -q "held note number 6"' _ "$JOURNAL"
 
 PASSED=0; [ -f "$SANDBOX/witness/passes" ] && PASSED=$(wc -l < "$SANDBOX/witness/passes")
 FAILED=0; [ -f "$SANDBOX/witness/failures" ] && FAILED=$(wc -l < "$SANDBOX/witness/failures")

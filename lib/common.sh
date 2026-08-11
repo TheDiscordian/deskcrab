@@ -5236,16 +5236,33 @@ WAKE_HELD_REASON_PREFIX="You had this to say while he was mid-conversation and i
 # directory — with a cap scoped to this prefix, because a stack of held asides
 # all landing on the first quiet minute is the storm the hold was avoiding,
 # one delay later.
+#
+# Returns 0 only when a comeback wake actually STANDS — booked now, or an
+# equivalent one already pending. Returns 1 when nothing is coming back, with
+# WAKE_HOLD_REFUSAL naming why, because the caller writes the journal line and
+# rule 27a forbids that line promising a comeback the queue never accepted:
+# the output used to be discarded here, and at the cap the booking door
+# refuses politely (exit 0, nothing booked) — so the journal promised
+# "coming back in 5min" over a note that was already gone.
 wake_hold_for_heat() {  # <the held words>
-    local WORDS
+    WAKE_HOLD_REFUSAL=""
+    local WORDS OUT
     WORDS="$(utf8_trim "$1" 600)"
-    [ -n "$(printf '%s' "$WORDS" | tr -d '[:space:]')" ] || return 0
-    "$SCRIPT_DIR/crab" wake-at --by hot-hold \
+    [ -n "$(printf '%s' "$WORDS" | tr -d '[:space:]')" ] || {
+        WAKE_HOLD_REFUSAL="nothing to hold"; return 1; }
+    OUT="$("$SCRIPT_DIR/crab" wake-at --by hot-hold \
         --cap "$WAKE_HOT_HOLD_CAP" --cap-prefix "$WAKE_HELD_REASON_PREFIX" \
         "${WAKE_HOT_RETRY}s" event \
         "$WAKE_HELD_REASON_PREFIX $WORDS — the conversation has had a chance to cool since. Say it now if it still stands, and let it go if it does not." \
-        >/dev/null 2>&1
-    return 0
+        2>&1)"
+    case "$OUT" in
+        *"Not booked"*)
+            WAKE_HOLD_REFUSAL="hold refused at cap"; return 1 ;;
+        *"Wake scheduled"*|*"already pending"*)
+            return 0 ;;
+        *)
+            WAKE_HOLD_REFUSAL="the comeback booking failed"; return 1 ;;
+    esac
 }
 
 run_claude_wake() {
@@ -5561,8 +5578,18 @@ $DISPLAY_PART"
     # event wake past the heat, so she comes back to it in a quiet minute and
     # decides again with the conversation in front of her.
     if [ -z "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && convo_hot; then
-        session_outcome "(held — the conversation was hot, nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}"
-        wake_hold_for_heat "${SILENT_NOTE:-${DISPLAY_PART:+a display section it built}}"
+        # The booking FIRST, the record after — this line used to be written
+        # before the booking was even attempted, so at the cap the journal
+        # promised a comeback while the queue had refused to book one. And
+        # the hold carries the real content: a display-only wake's note IS
+        # the display section it built (clipped by the holder), because the
+        # comeback wake's reason is the only place the words survive — the
+        # literal words "a display section it built" hold nothing.
+        if wake_hold_for_heat "${SILENT_NOTE:-$DISPLAY_PART}"; then
+            session_outcome "(held — the conversation was hot, nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}"
+        else
+            session_outcome "(held — the conversation was hot, nothing shown; ${WAKE_HOLD_REFUSAL:-the comeback booking failed} — the note is in this journal only) ${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}"
+        fi
         return 0
     fi
 
