@@ -225,7 +225,9 @@ cannot be changed.
     thought precisely because no memory helps. An exact reflex hit plays before the classifier
     is ever consulted, so a remembered position costs neither a model call nor a
     classification. A classifier failure — and `DESKCRAB_CHESS_EFFORT=0` — makes the call at
-    the mover's default (`low`), exactly as the always-low pin does. The thresholds are
+    the mover's default (`medium`, overridable with `DESKCRAB_CHESS_MOVER_EFFORT`): the floor
+    for a normal move is `medium`, and only the explicit always-low pin reaches `low`. The
+    thresholds are
     tunable: `DESKCRAB_CHESS_EFFORT_FORCED` (legal-move ceiling, default 8),
     `DESKCRAB_CHESS_EFFORT_CAPTURE` (capture-alarm floor, default 5),
     `DESKCRAB_CHESS_EFFORT_NOVEL_ROWS` (vector rows before novelty may be judged, default 500),

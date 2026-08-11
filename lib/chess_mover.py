@@ -226,7 +226,7 @@ class Mover:
         board = chess.Board(job["fen"])
         prompt = self._prompt(job, board)
         effort = job.get("effort") or os.environ.get(
-            "DESKCRAB_CHESS_MOVER_EFFORT", "low")
+            "DESKCRAB_CHESS_MOVER_EFFORT", "medium")
         move = None
         for label, cmd, env in self._attempts(effort):
             t0 = time.time()
