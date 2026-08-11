@@ -46,13 +46,12 @@
 # reporting is uniform even where the control flow has to abort.
 
 # --------------------------------------------------------------------------
-# The two live paths that move under somebody else's hand.
+# The live paths that move under somebody else's hand.
 #
 # The leak check accuses whichever test was running when a live path moved, and
-# that is right for every path but these two: the phone server (a live
-# deskcrab-serve.service, running the whole time the suite runs) writes them on
-# its own schedule, driven by a phone somewhere polling it. Nothing a test does
-# can stop that, and nothing a test does causes it.
+# that is right for every path but these: live processes write them on their
+# own schedule, the whole time the suite runs. Nothing a test does can stop
+# that, and nothing a test does causes it.
 #
 #   <live prefix>-phone-seen    serve.py touches it on EVERY authenticated
 #                               /watch poll from a wake-capable client
@@ -62,6 +61,25 @@
 #                               takes the lock and replaces subscriptions.json
 #                               atomically, which moves the directory's own
 #                               mtime with it.
+#   $SANDBOX_FOREIGN_LOGS       the debug logs of the sessions that were
+#                               ALREADY AWAKE when this sandbox was built.
+#                               Every session streams to its own
+#                               <live prefix>-debug-*.log (lib/common.sh sets
+#                               DEBUGLOG off its pid, the job runner off its
+#                               job id) for as long as it runs, so a test run
+#                               beside a live session was failed for that
+#                               session's writing: observed 2026-08-11 01:45,
+#                               deskcrab-debug-500570.log grew 52187 -> 52554
+#                               under test_chess_wake_prompt, and 500570 was a
+#                               live wake, not the test. Membership is
+#                               computed ONCE, in phase 1 before the first
+#                               photograph, and carried through the `env -i`
+#                               boundary, so both photographs drop exactly the
+#                               same paths. It is exact paths, never a name
+#                               pattern: a debug log that APPEARS during the
+#                               run still counts — a live path minted by the
+#                               code under test is the hardcoded-path defect
+#                               this check exists to catch.
 #
 # Excluded from BOTH photographs — the before and the after — because a path
 # dropped from only one side reads as a deletion. Defined above the phase-1
@@ -74,8 +92,13 @@
 # about.
 _sandbox_drop_external() {  # <live prefix> <live data dir>: a path filter
     awk -F'\t' -v seen="$1-phone-seen" -v push="$2/webpush" '
+        BEGIN {
+            n = split(ENVIRON["SANDBOX_FOREIGN_LOGS"], _f, "\n")
+            for (i = 1; i <= n; i++) if (_f[i] != "") foreign[_f[i]] = 1
+        }
         $1 == seen { next }
         $1 == push || index($1, push "/") == 1 { next }
+        $1 in foreign { next }
         { print }'
 }
 
@@ -140,6 +163,18 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
             2>/dev/null | LC_ALL=C sort > "$1.units"
         _sandbox_timers_photo "$1.timers"
     }
+    # The already-awake sessions' debug logs, enumerated ONCE, here, before the
+    # first photograph, so the before and the after drop exactly the same
+    # paths. Exported now (awk reads it through ENVIRON) and passed through the
+    # `env -i` boundary below. The comment above _sandbox_drop_external carries
+    # the why.
+    SANDBOX_FOREIGN_LOGS=""
+    for _sb_foreign in "$_sb_live_prefix"-debug-*.log; do
+        [ -e "$_sb_foreign" ] || continue
+        SANDBOX_FOREIGN_LOGS="$SANDBOX_FOREIGN_LOGS$_sb_foreign"$'\n'
+    done
+    export SANDBOX_FOREIGN_LOGS
+
     _sb_photo "$_sb_root/leak/before"
 
     # A configuration has to exist — lib/common.sh refuses to load without one
@@ -178,6 +213,7 @@ CONF
         SANDBOX_LIVE_STATE="$_sb_live_state" \
         SANDBOX_LIVE_CONF="$_sb_live_conf" \
         SANDBOX_LIVE_PREFIX="$_sb_live_prefix" \
+        SANDBOX_FOREIGN_LOGS="$SANDBOX_FOREIGN_LOGS" \
         SANDBOX_REAL_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
         SANDBOX_REAL_DBUS="${DBUS_SESSION_BUS_ADDRESS:-}" \
         HOME="$_sb_root/home" \

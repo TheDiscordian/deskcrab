@@ -48,11 +48,18 @@ during the very investigation that produced these specs.
    - The proof is a photograph of live state before and after, and anything that moved fails the
      test. A path may be excluded from that photograph only when a LIVE INSTANCE writes it on its
      own schedule while the suite runs — today the phone server's seen-file and its webpush store,
-     which a phone polling from outside the house moves every few seconds. Each exclusion is named
-     individually, in the harness, with the writer that moves it. A pattern, a directory swept
-     wholesale, or an exclusion added to quieten a failure is forbidden: the accusation is the
-     point, and everything else that moves is either the code under test writing where it should
-     not or another hand writing at the same moment.
+     which a phone polling from outside the house moves every few seconds, and the debug logs of
+     the sessions that were already awake when the sandbox was built, which each live session
+     appends to for as long as it runs. Each exclusion is named individually, in the harness, with
+     the writer that moves it. A pattern, a directory swept wholesale, or an exclusion added to
+     quieten a failure is forbidden: the accusation is the point, and everything else that moves
+     is either the code under test writing where it should not or another hand writing at the
+     same moment.
+   - The debug-log exclusion is a list of exact paths, enumerated ONCE when the sandbox is built
+     and dropped identically from both photographs — a path dropped from only one side would read
+     as a deletion. It is never a name pattern: a debug log that APPEARS while the test runs still
+     fails it, because a live path minted during the run is the hardcoded-path shape this gate
+     exists to catch.
    - A path that APPEARED counts as much as one that changed. The photograph dropped new paths
      beside the live prefix until 2026-08-08, on the reasoning that a new file there might belong to
      somebody else — and a state file re-hardcoded to a live path, the defect the harness's own
