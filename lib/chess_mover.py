@@ -103,11 +103,45 @@ def material_loss(board, move):
 POSTED_TTL = 10.0
 
 
-def _retry_secs():
+def _env_secs(name, default):
     try:
-        return float(os.environ.get("DESKCRAB_CHESS_MOVER_RETRY", "20"))
+        return float(os.environ.get(name, default))
     except ValueError:
-        return 20.0
+        return float(default)
+
+
+def _retry_secs():
+    """The cooldown after ONE failed round (all accounts tried, no move)."""
+    return _env_secs("DESKCRAB_CHESS_MOVER_RETRY", "20")
+
+
+def _retry_cap():
+    """The ceiling the doubling cooldown grows to (chessweb.md rule 16e)."""
+    return _env_secs("DESKCRAB_CHESS_MOVER_RETRY_CAP", "600")
+
+
+def _max_fails():
+    """Consecutive failed rounds before the position is stalled."""
+    try:
+        return int(os.environ.get("DESKCRAB_CHESS_MOVER_MAX_FAILS", "6"))
+    except ValueError:
+        return 6
+
+
+def _stall_retry():
+    """Seconds between probe rounds once stalled; 0 stops retrying outright.
+    The probe is what lets a session limit that resets on the clock heal
+    without anyone restarting the bridge."""
+    return _env_secs("DESKCRAB_CHESS_MOVER_STALL_RETRY", "600")
+
+
+# Output lines carrying one of these name the failure better than whatever
+# the CLI happened to print last: on 2026-08-11 a settings-file warning on
+# stderr masked "You've hit your session limit" on stdout in every logged
+# failure, and the loop was diagnosed from the wrong line for half an hour.
+_CAUSE_MARKERS = ("session limit", "usage limit", "rate limit", "not logged",
+                  "please run /login", "overloaded", "credit balance",
+                  "api error", "billing")
 
 
 class Mover:
@@ -117,9 +151,11 @@ class Mover:
     `play` — the hub's posting callback, which re-reads the store under its
     own lock before anything is written (chessweb.md rule 16d)."""
 
-    def __init__(self, play, log=print, metric=lambda stage, detail="": None):
+    def __init__(self, play, log=print, metric=lambda stage, detail="": None,
+                 alert=None):
         self.play = play          # play(job, chess.Move) -> bool: it landed
         self.log = log
+        self.alert = alert or log  # failures go here: loud, journal-visible
         self.metric = metric
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
@@ -127,6 +163,8 @@ class Mover:
         self.inflight = None      # key of the job being answered right now
         self.proc = None          # the live model call, killable
         self.resolved = {}        # key -> (outcome, epoch): the dedup memory
+        self.fails = {}           # key -> consecutive failed rounds
+        self.fail_why = {}        # key -> the last round's best failure cause
         threading.Thread(target=self._run, daemon=True,
                          name="chess-mover").start()
 
@@ -135,7 +173,11 @@ class Mover:
         """May this position be worked on now? False while it is already
         pending, in flight, freshly answered, or cooling down after a
         failure — which is what lets the store poll re-offer the position
-        every tick without the mover ever answering it twice."""
+        every tick without the mover ever answering it twice. The failure
+        cooldown DOUBLES per consecutive failed round up to the cap, and a
+        position past the failure cap is stalled: claimable only once per
+        stall-retry window (never, when that is 0), so a dead login chain
+        costs probes, not a call-burning loop (chessweb.md rule 16e)."""
         now = time.time()
         with self.lock:
             if self.slot is not None and self.slot["key"] == key:
@@ -145,8 +187,18 @@ class Mover:
             got = self.resolved.get(key)
             if got is not None:
                 outcome, at = got
-                ttl = _retry_secs() if outcome == "failed" else POSTED_TTL
-                if now - at < ttl:
+                if outcome == "failed":
+                    n = self.fails.get(key, 1)
+                    if n >= _max_fails():
+                        probe = _stall_retry()
+                        if probe <= 0 or now - at < probe:
+                            return False
+                    else:
+                        ttl = min(_retry_secs() * (2 ** max(0, n - 1)),
+                                  _retry_cap())
+                        if now - at < ttl:
+                            return False
+                elif now - at < POSTED_TTL:
                     return False
             return True
 
@@ -156,11 +208,28 @@ class Mover:
             self._resolve_locked(key, outcome)
 
     def _resolve_locked(self, key, outcome):
+        """Record an outcome; returns the consecutive failed-round count
+        (0 after anything but a failure)."""
         self.resolved[key] = (outcome, time.time())
+        if outcome == "failed":
+            self.fails[key] = self.fails.get(key, 0) + 1
+        else:
+            self.fails.pop(key, None)
+            self.fail_why.pop(key, None)
         if len(self.resolved) > 64:
             for k in sorted(self.resolved,
                             key=lambda k: self.resolved[k][1])[:32]:
                 del self.resolved[k]
+                self.fails.pop(k, None)
+                self.fail_why.pop(k, None)
+        return self.fails.get(key, 0)
+
+    def failure_state(self, key):
+        """(consecutive failed rounds, stalled?, last cause) — what the
+        banner needs to stop calling a dead think 'thinking'."""
+        with self.lock:
+            n = self.fails.get(key, 0)
+            return n, n >= _max_fails(), self.fail_why.get(key, "")
 
     def submit(self, job):
         """The newest position to answer. A job carries key, gid, ply, fen,
@@ -183,6 +252,8 @@ class Mover:
         with self.lock:
             self.slot = None
             self.resolved.clear()
+            self.fails.clear()
+            self.fail_why.clear()
             self._abandon_locked()
 
     def _abandon_locked(self):
@@ -211,23 +282,41 @@ class Mover:
                 job, self.slot = self.slot, None
                 self.inflight = job["key"]
             try:
-                outcome = self._answer(job)
+                outcome, why = self._answer(job)
             except Exception as e:  # a broken answer must never stop the loop
-                self.log(f"mover: {job['gid']} ply {job['ply']} "
-                         f"failed unexpectedly: {e!r}")
-                outcome = "failed"
+                self.alert(f"mover: {job['gid']} ply {job['ply']} "
+                           f"failed unexpectedly: {e!r}")
+                outcome, why = "failed", repr(e)
+            fails = 0
             with self.lock:
                 self.inflight = None
                 self.proc = None
                 if outcome:
-                    self._resolve_locked(job["key"], outcome)
+                    fails = self._resolve_locked(job["key"], outcome)
+                    if outcome == "failed":
+                        self.fail_why[job["key"]] = (why or "")[:200]
+            if outcome == "failed" and fails == _max_fails():
+                self.metric("mover-stalled",
+                            f"{job['gid']} ply {job['ply']} after "
+                            f"{fails} rounds")
+                probe = _stall_retry()
+                self.alert(
+                    f"mover: {job['gid']} ply {job['ply']} STALLED — "
+                    f"{fails} consecutive rounds failed, last cause: "
+                    f"{why or 'unknown'}. "
+                    + (f"Probing again every {probe:.0f}s."
+                       if probe > 0 else "Not retrying again."))
 
     def _answer(self, job):
+        """(outcome, why): outcome is None when superseded, otherwise
+        posted/stale/failed; why carries the round's most telling failure
+        cause when the outcome is failed."""
         board = chess.Board(job["fen"])
         prompt = self._prompt(job, board)
         effort = job.get("effort") or os.environ.get(
             "DESKCRAB_CHESS_MOVER_EFFORT", "medium")
         move = None
+        last_why = ""
         for label, cmd, env in self._attempts(effort):
             t0 = time.time()
             self.metric("model-start",
@@ -241,20 +330,21 @@ class Mover:
                             f"superseded")
                 self.log(f"mover: {job['gid']} ply {job['ply']} superseded "
                          f"after {dt:.1f}s — answering the newer position")
-                return None
+                return None, None
             move = self._parse(board, out) if out else None
             outcome = "ok" if move else (why or "no-legal-move")
             self.metric("model-end",
                         f"{job['gid']} ply {job['ply']} {dt:.1f}s {outcome}")
             if move:
                 break
-            self.log(f"mover: {job['gid']} ply {job['ply']} attempt {label} "
-                     f"came back {outcome} after {dt:.1f}s")
+            last_why = f"{label}: {outcome}"
+            self.alert(f"mover: {job['gid']} ply {job['ply']} attempt "
+                       f"{label} came back {outcome} after {dt:.1f}s")
         if move is None:
-            self.log(f"mover: {job['gid']} ply {job['ply']}: every attempt "
-                     f"failed — the poll re-offers in {_retry_secs():.0f}s")
-            return "failed"
-        return "posted" if self.play(job, move) else "stale"
+            self.alert(f"mover: {job['gid']} ply {job['ply']}: every attempt "
+                       f"failed — last: {last_why or 'no attempts ran'}")
+            return "failed", last_why
+        return ("posted" if self.play(job, move) else "stale"), None
 
     # -- the call ----------------------------------------------------------
     def _attempts(self, effort):
@@ -276,7 +366,13 @@ class Mover:
         for d in re.split(r"[:\s]+",
                           os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", "")):
             if d:
-                chain.append(d)
+                # systemd's EnvironmentFile hands values through unexpanded
+                # (the same trap _claude_cmd guards CLAUDE_BIN against): a
+                # literal "$HOME/..." handed to CLAUDE_CONFIG_DIR names an
+                # empty login that answers "Not logged in" while the real
+                # account sits logged in (2026-08-11), and it never matches
+                # the recorded default below, so the chain never rotates.
+                chain.append(os.path.expanduser(os.path.expandvars(d)))
         default_file = os.environ.get("ACCOUNT_DEFAULT_FILE") or os.path.join(
             os.environ.get("XDG_DATA_HOME",
                            os.path.expanduser("~/.local/share")),
@@ -286,6 +382,8 @@ class Mover:
                 stored = fh.readline().split("\t")[0].strip()
         except OSError:
             stored = ""
+        if stored:
+            stored = os.path.expanduser(os.path.expandvars(stored))
         start = chain.index(stored) if stored in chain else 0
         return chain[start:] + chain[:start]
 
@@ -377,9 +475,17 @@ class Mover:
         if why:
             return "", why
         if proc.returncode != 0:
-            tail = (err or out or "").strip().splitlines()
-            detail = tail[-1][:120] if tail else ""
-            return out or "", f"exit-{proc.returncode}: {detail}"
+            # The most telling line, not the last one: on 2026-08-11 a
+            # settings-file warning was stderr's last line on every call,
+            # and "You've hit your session limit" sat unlogged on stdout.
+            lines = [ln.strip()
+                     for ln in f"{err or ''}\n{out or ''}".splitlines()
+                     if ln.strip()]
+            detail = next((ln for ln in lines
+                           if any(m in ln.lower()
+                                  for m in _CAUSE_MARKERS)),
+                          lines[-1] if lines else "")
+            return out or "", f"exit-{proc.returncode}: {detail[:200]}"
         return out or "", None
 
     # -- the words ---------------------------------------------------------

@@ -26,10 +26,13 @@ import socket
 import struct
 import subprocess
 import sys
+import syslog
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+syslog.openlog("deskcrab-chessweb")
 
 import chess
 
@@ -81,7 +84,10 @@ THINKING_WIDGET = ("""
   function paint(){
     if(!s){el.style.display='none';return;}
     var now=s.now+(Date.now()-s.at)/1000, txt=null;
-    if(s.started_at) txt='%(name)s is thinking \\u2014 '+ago(s.started_at,now);
+    if(s.stalled) txt='%(name)s is stuck \\u2014 '+s.stalled;
+    else if(s.started_at){
+      txt='%(name)s is thinking \\u2014 '+ago(s.started_at,now);
+      if(s.attempts>1) txt+=' (try '+s.attempts+')';}
     else if(s.poked_at) txt='%(name)s was asked to move '
       +ago(s.poked_at,now)+' ago';
     else if(s.played_at&&now-s.played_at<20)
@@ -101,6 +107,19 @@ THINKING_WIDGET = ("""
 
 def log(msg):
     print(f"chessweb: {msg}", flush=True)
+
+
+def loud(msg):
+    """A failure the user must be able to find: the serve log AND syslog.
+    The unit redirects stdout to a file, so without this a night of failed
+    mover calls shows `journalctl --user -u deskcrab-chessweb` nothing at
+    all (2026-08-11). journald attributes /dev/log messages to the unit by
+    cgroup, so these land under the unit's own journal."""
+    log(msg)
+    try:
+        syslog.syslog(syslog.LOG_ERR, f"chessweb: {msg}")
+    except Exception:
+        pass  # a missing /dev/log must never cost the file line above
 
 
 # ------------------------------------------------------------- protobuf-lite
@@ -440,9 +459,13 @@ class Hub:
         # think and a mover that silently died look identical from the phone.
         self.activity = {"poked_at": None, "started_at": None,
                          "played_at": None, "san": None}
+        # The position the banner's clock is about: a retry of the SAME
+        # position is the same think, so the started stamp survives it
+        # (rule 12), and /thinking asks the mover about this key's failures.
+        self.think_key = None
         self.port = None
         self.mover = chess_mover.Mover(self._post_model_move, log=log,
-                                       metric=chess_cli.metric)
+                                       metric=chess_cli.metric, alert=loud)
 
     # -- helpers -----------------------------------------------------------
     def human_side(self):
@@ -643,8 +666,17 @@ class Hub:
             "history": chess_cli.history(g["moves"]),
             "note": self.similar_note(g, board),
             "effort": self.move_effort(g, board), "t0": t0})
-        self.activity.update(poked_at=t0, started_at=time.time(),
-                             played_at=None, san=None)
+        # A retry of the SAME position is the same think (rule 12): the
+        # started stamp is set once, when the position first goes to the
+        # mover, and kept across every retry. Restamping made a position
+        # whose every call died in seconds read as a fresh one-second think
+        # per round, forever — the banner was the only witness, and it lied.
+        if self.think_key == key and self.activity["started_at"]:
+            self.activity.update(played_at=None, san=None)
+        else:
+            self.think_key = key
+            self.activity.update(poked_at=t0, started_at=time.time(),
+                                 played_at=None, san=None)
         log(f"{gid}: thinking about ply {ply}")
 
     def _post_model_move(self, job, move):
@@ -1018,7 +1050,11 @@ class Hub:
             self.synced = list(moves)
             self.pending_promo = None
             self.over_announced = False
+            # An undo's reset clears everything (rule 16e) — the failure
+            # counts go with the mover's memory, and the think clock with
+            # them: the re-offered position is a fresh think, not a retry.
             self.mover.reset()
+            self.think_key = None
             for c in self.joined():
                 self.sync_conn(c, g)
         board = chess_cli.build_board(g)
@@ -1108,10 +1144,23 @@ def make_handler(hub, client_dir):
         def thinking_state(self):
             with hub.lock:
                 state = dict(hub.activity)
+                key = hub.think_key
             state["now"] = time.time()
             # The shipped client's native banner has no server-side template
             # to hand it the name, so the JSON carries it.
             state["name"] = ASSISTANT_NAME
+            # Rule 12: which round of the same think this is (1 on a first
+            # try), and — once rule 16e's failure cap is hit — the short
+            # reason retrying stopped, so the banner can say stuck instead
+            # of counting a dead think's clock as thinking.
+            state["attempts"], state["stalled"] = 1, None
+            if key and state.get("started_at"):
+                fails, stalled, why = hub.mover.failure_state(key)
+                if stalled:
+                    state["attempts"] = fails
+                    state["stalled"] = why or "every attempt failed"
+                else:
+                    state["attempts"] = fails + 1
             self.json_body(state)
 
         def game_state(self):

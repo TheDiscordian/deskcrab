@@ -158,6 +158,16 @@ cannot be changed.
     loads the banner plays exactly as before. A page whose bytes already carry `crab-thinking` —
     the shipped client renders the same state natively — is served uninjected: the marker's
     presence is the whole test, so a page that owns the banner is never given a second one.
+    The state also carries `attempts` — which round of the same think this is, 1 on a first
+    try — and `stalled`, null until rule 16e's failure cap is hit and then the short reason
+    retrying stopped. A retry of the SAME position is the same think: the started stamp is
+    set once, when the position first goes to the mover, and kept across every retry, so the
+    banner's clock counts the whole wait instead of restarting at each attempt — on
+    2026-08-11 a position whose every call died in seconds read as a fresh one-second think
+    every twenty-six seconds, forever, and the banner was the only witness that lied about
+    it. Both banners (the injected one and the shipped client's native one) render both
+    fields: a try count after the clock when a think is on its second round or later, and a
+    stuck line — no longer "thinking" — once the mover has given up.
 13. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
     up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
     drops two minutes into a think.
@@ -240,9 +250,31 @@ cannot be changed.
        in-process. A stale answer is discarded and the newest position stands to be answered.
     e. A failed attempt — a limit refusal, a timeout, no legal move in the reply — walks the
        login chain (the recorded account default first, then `$CLAUDE_FALLBACK_CONFIG_DIR` in
-       order) within the same detection. A position whose every attempt failed is retried on a
-       cooldown (`$DESKCRAB_CHESS_MOVER_RETRY`, default 20s) by the store poll, indefinitely:
-       every failure is logged, and a turn is never silently lost.
+       order) within the same detection. Chain entries and the recorded default are tilde-
+       and variable-expanded before use: systemd's `EnvironmentFile` hands values through
+       unexpanded (the same trap rule 16b's `CLAUDE_BIN` handling guards against), and an
+       unexpanded `$HOME/...` handed to `CLAUDE_CONFIG_DIR` names an empty login that
+       answers "Not logged in" while the real account sits logged in — which also breaks
+       the recorded-default match, so the chain silently never rotates (2026-08-11). A
+       position whose every attempt failed is re-offered by the store poll on a DOUBLING
+       cooldown: `$DESKCRAB_CHESS_MOVER_RETRY` (default 20s) after the first failed round,
+       twice that after the second, and so on, capped at
+       `$DESKCRAB_CHESS_MOVER_RETRY_CAP` (default 600s). After
+       `$DESKCRAB_CHESS_MOVER_MAX_FAILS` consecutive failed rounds (default 6) the
+       position is STALLED: `mover-stalled` is stamped, a loud line names the round count
+       and the last cause, the banner switches to a stuck state (rule 12), and retrying
+       drops to one probe round every `$DESKCRAB_CHESS_MOVER_STALL_RETRY` seconds
+       (default 600; 0 stops retrying outright) — the probe is what lets a limit that
+       resets on the clock heal without anyone restarting the bridge. A successful round
+       clears the count; an undo's reset clears everything. Every failed attempt is
+       logged WITH ITS CAUSE, and every mover failure line goes both to the serve log and
+       to syslog, so `journalctl --user -u deskcrab-chessweb` shows them even though the
+       unit's stdout is redirected to a file — a mover that cannot move must be loud
+       (2026-08-11: hundreds of failed calls an hour, visible nowhere but a /tmp file).
+       The cause is taken from the call's most informative output line: a line naming a
+       limit, a login, or an overload beats whatever happened to be printed last — the
+       same night, a settings-file warning on stderr masked "You've hit your session
+       limit" on stdout in every logged detail.
     f. `$DESKCRAB_CHESS_MOVER_CMD` replaces the model invocation wholesale for tests — the
        prompt arrives on stdin, the reply is its stdout — so no test thinks with a real model.
 16b. When rule 16a has missed and the model call is about to be made, the bridge asks the effort
@@ -290,7 +322,8 @@ cannot be changed.
     `reflex` from memory, `model` from the mover's call, `cli` from `betty-chess move`
     whoever ran it — and `move-latency` with the seconds from detection to the store write,
     which is the number the whole redesign is accountable to. A stale answer discarded by rule
-    16d stamps `mover-stale`. Rule 33's whole discipline applies: the stamps are evidence,
+    16d stamps `mover-stale`. A position crossing rule 16e's failure cap stamps
+    `mover-stalled`, detail carrying the round count. Rule 33's whole discipline applies: the stamps are evidence,
     never control flow, best-effort behind their own error handling, and `TURN_METRICS=0`
     switches them off. `tools/turn-latency-report` renders the chess section per move.
 18. `GET /state` answers a read-only JSON photograph of the stored game, taken under the hub
