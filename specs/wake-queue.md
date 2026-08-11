@@ -321,6 +321,15 @@ first three fields — every record already on disk has that shape — and MUST 
 with "unknown" rather than shifting the ones it has. The sixth field, the effort override, is
 optional and empty on every record booked without one; a reader treats absent and empty alike.
 
+The ledger MUST stay valid UTF-8, every line, whole. Its reason column is bounded at 200
+characters, and the bound MUST fall on a character boundary, never a byte one: a byte cut
+(`head -c`) splits a multibyte character, and one stray continuation byte on one line makes grep
+classify the ENTIRE file as binary — every query on every record answers nothing and exits 0,
+which reads as bookings that never happened. Found live on 2026-08-11: a split em-dash on a single
+hot-hold line hid all 958 records at once, in the exact file read to adjudicate promise flags. A
+trim that may have cut into a multibyte character MUST drop the partial character rather than
+write its leading bytes.
+
 ## The lifecycle
 
 ```mermaid
@@ -432,6 +441,10 @@ booking),
 no notifier and no conversation and books itself back with its words in the reason; the same wake
 into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
 sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue),
+`tests/test_wake_ledger_utf8.sh` (the ledger's UTF-8 guarantee: a reason whose em-dash straddles
+the 200-character trim boundary lands as valid UTF-8 with the partial character dropped whole,
+plain grep — no `-a` — still finds the record, an em-dash short of the boundary survives intact,
+and the 200 limit itself still holds),
 `tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own

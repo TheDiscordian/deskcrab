@@ -61,11 +61,21 @@ WAKE_LIVE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes"
 # unsynchronised hands write this file, and the old `tail > ledger.tmp && mv`
 # lost every line appended between the read and the rename while two
 # rotations raced each other through the one fixed temp name.
+#
+# The reason is bounded, and the bound must never split a character. A bare
+# `head -c 200` cuts on bytes, and an em-dash straddling byte 200 left its
+# lone leading 0xE2 in the live ledger — one byte that made grep classify the
+# WHOLE file as binary and answer every query with nothing, exit 0
+# (2026-08-11 02:22; specs/wake-queue.md, DATA). The iconv pass drops
+# whatever partial character the byte cut left. It names the charset
+# explicitly, so it holds even in a C-locale systemd unit, where GNU
+# `cut -c` and bash's ${var:0:200} both still count bytes.
 wake_ledger() {  # <action> <unit> <kind> <reason> <actor>
     mkdir -p "$WAKES_DIR" 2>/dev/null
     log_append_bounded "$WAKE_LEDGER" "$WAKE_LEDGER_KEEP" \
         "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$1" "${2:-}" "${3:-}" \
-            "$(printf '%s' "${4:-}" | tr '\n\t' '  ' | head -c 200)" "${5:-unknown}")"
+            "$(printf '%s' "${4:-}" | tr '\n\t' '  ' | head -c 200 \
+                | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)" "${5:-unknown}")"
     return 0
 }
 
