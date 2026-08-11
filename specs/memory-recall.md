@@ -39,20 +39,29 @@ rule: degradation must never be as quiet as working.
 
 11. Notes and directives MUST be queried as two pools with different floors, so her own notes can
     never crowd the user's rules out.
-12. Notes are ranked by similarity, confidence, decay, and a capped use bonus. Directives are ranked
-    by raw similarity and are never decayed or boosted.
+12. Notes are ranked by similarity, confidence, decay, a capped use bonus, and the
+    recency-of-relevance factor of rule 37. Directives are ranked by raw similarity and are never
+    decayed or boosted.
 13. Every pinned record MUST ride along regardless of score.
-14. The recall block MUST be capped. When the cap bites, the header MUST say so.
-15. **Truncation MUST NOT drop a pinned record.** Pinned records are guaranteed retrieved, so
-    dropping them first when the block is over budget contradicts the guarantee.
+14. **The recall block is NEVER truncated.** Every retrieved row reaches the block, whole. Its size
+    is governed by retrieval — the note top-K, the directive cap, the pinned tier — and by nothing
+    after retrieval. This rule used to say the opposite ("the recall block MUST be capped; when the
+    cap bites, the header MUST say so"), wording a subagent wrote into this spec: the user never
+    asked for it, and on 2026-08-11 — the night a live prompt arrived stamped 'TRUNCATED to fit' —
+    he ordered it removed. A memory retrieved and then dropped to fit a size cap is amnesia wearing
+    a header. A block that outgrows its prompt layer is the assembler's over-budget warning to
+    raise ([prompt-assembly.md](prompt-assembly.md) rules 4 and 36), never this module's to cut.
+15. Because nothing is dropped, no drop order exists to get wrong. (This rule once guarded pinned
+    records against being truncated first; with rule 14 as it now stands there is nothing to guard
+    against, and the guarantee — every pinned record reaches the prompt — holds trivially.)
 16. The block MUST be written in her own first-person voice.
 17. The block MUST be fail-safe by contract: an empty store adds nothing, a dead embedder degrades to
     the pinned tier with a loud warning, and neither ever breaks a prompt build.
 18. The fail-safe MUST catch every error a malformed embedder response can raise, not only transport
     errors. A parse error currently escapes, and the caller discards the warning, so the prompt loses
     both the block and the promised warning.
-19. The block builder MUST leave a sidecar naming the records that actually reached the prompt, with
-    truncated-away notes excluded.
+19. The block builder MUST leave a sidecar naming the records that actually reached the prompt —
+    which, with rule 14, is every row the block was handed, by construction.
 
 ### Reinforcement and decay
 
@@ -83,6 +92,37 @@ rule: degradation must never be as quiet as working.
     one shot at the login handed in loses a whole turn's reinforcement the moment that account goes
     dry, and loses it silently, because a judgement that cannot be made is skipped by design.
 
+### Temporal grounding
+
+34. Every record MAY carry `occurred`: when the thing it DESCRIBES happened, distinct from
+    `created`, when the record was written about it. Before this existed she could retrieve that a
+    thing was true but not when it happened, how long it mattered, or that it stopped mattering —
+    a memory with no when-ness is a fact floating free of her own history.
+35. An unknown `occurred` stays NULL. It MUST NOT be guessed — not from the ingest date, not from
+    the creation stamp, not from anything. Unknown rendered as unknown beats a confident wrong date.
+36. The recall block MUST render each row's when-ness in relative human terms ('yesterday', 'three
+    days ago', 'about two months ago'), never as a bare timestamp — a stamp retrieved into a prompt
+    is arithmetic she has to do while answering, and mostly does not. A known `occurred` speaks for
+    the thing itself; a row without one has its write date speak, named as exactly that ('recorded
+    three days ago') rather than passed off as the event's. A directive with a known `occurred`
+    reads 'standing since …', because a directive is not an event that faded — it is a rule with a
+    start.
+37. Note scoring MUST factor recency-of-relevance: a note whose `occurred` is recent outranks an
+    equally-similar note about something long past, by a factor floored well above zero, so age
+    alone can never bury a note that is genuinely the best match. A note with no `occurred` takes
+    no factor at all. **Directives take none of this ever** — the user's standing rules do not
+    decay, do not age out, and are ranked by raw similarity exactly as rule 12 has always said.
+38. Ingest MUST ask the distiller for `occurred` on records that describe something that happened,
+    dated from the material's own headers, and MUST accept its absence: rule 35's never-guess
+    applies to the model too, and an unparseable date is dropped, not stored broken.
+39. A duplicate arriving with a date MUST fill an existing record's unknown `occurred` — new
+    knowledge about an old record — and MUST NOT overwrite one already known.
+40. Rows from before this contract are backfilled once, from the only source that is not a guess:
+    the record's own text naming exactly one calendar date (ISO shape only). Two dates is
+    ambiguous and left unknown; a future date is a schedule, not an event, and left unknown; no
+    date stays unknown, and rule 36's 'recorded …' fallback still gives such a row honest
+    when-ness. The backfill is `crab memory backfill-occurred`, idempotent, with `--dry-run`.
+
 ### Isolation
 
 31. Every path in the store MUST honour every instance redirect: the state prefix, the memory
@@ -107,6 +147,10 @@ rule: degradation must never be as quiet as working.
 
 Record kinds: `directive` (the user's standing rules — never decayed, only superseded by a newer
 directive) and `note` (her own soft memory).
+
+Temporal fields, distinct on purpose: `created` (when the record was written), `last_seen` (when
+retrieval last surfaced it), `last_used_at` (when the judge last credited it), and `occurred` (when
+the thing it describes happened — NULL when unknown, and never guessed; rules 34 to 40).
 
 ## INTERACTIONS
 
@@ -150,15 +194,18 @@ judge), `crab memory`, and the nightly sleep.
 | `MAJ-22` | The wake query boundary is exclusive where it should be inclusive, so an agenda exactly at the budget composes an empty query. Latent today — live agendas are far under the budget — but it is the boundary the first long agenda hits, and the belief that it was firing was itself the harm. |
 | `MAJ-26` | Retrieval alone resets the decay clock, so a note that is surfaced constantly and credited never is frozen at full confidence forever. |
 | `MAJ-32` | Ingest tail-clamps a single prompt, and the cap is saturated against the current journal, so the day's earliest material is never ingested. |
-| `MIN-27` | Block truncation pops from the tail, so a pinned record is the first thing dropped. |
+| `MIN-27` | Closed 2026-08-11 by rule 14's rewrite: block truncation no longer exists to pop anything. |
 | `MIN-28` | The block's fail-safe does not catch a malformed embedder response, and the caller discards the warning. The prompt loses both. |
 | `H3` / `RC-6` | The store's model calls do not walk the account chain and have no limit detection. Closed for the judge and the ingest distiller on 2026-08-08: both go through one runner, which walks the chain on a limit-shaped refusal and logs which login answered. The embedder is a different daemon and has no chain. |
 
 ## TESTS
 
-**Existing:** `tests/test_memory.py` (74 cases, run under the venv interpreter, including the judge's
-walk of the account chain — a refused login moves to the next, a chain that is entirely dry skips the
-judgement and says so in the judge log, and a failure that is not a refusal spends no second login),
+**Existing:** `tests/test_memory.py` (run under the venv interpreter; includes the judge's walk of
+the account chain — a refused login moves to the next, a chain that is entirely dry skips the
+judgement and says so in the judge log, and a failure that is not a refusal spends no second login —
+and, since 2026-08-11, the whole-block cases of rule 14, the relative-when ladder and rendering of
+rule 36, the recency factor and its floor of rule 37, the schema migration for `occurred`, the
+duplicate fill of rule 39, and the backfill edges of rule 40),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).
@@ -174,6 +221,7 @@ reinforce, end to end, including a wordless wake).
   state home was written.
 - `tests/test_memory_decay.py` — a record retrieved repeatedly and credited never must lose
   confidence and retire.
-- `tests/test_memory_block.py` — a pinned record survives truncation; a malformed embedder response
-  degrades to the pinned tier and emits the warning.
+- `tests/test_memory_block.py` — a malformed embedder response degrades to the pinned tier and
+  emits the warning. (The pinned-survives-truncation half died with truncation itself: rule 14, and
+  the whole-block cases now in `tests/test_memory.py`.)
 - `tests/test_memory_ingest.py` — a journal larger than the input cap is ingested in full.

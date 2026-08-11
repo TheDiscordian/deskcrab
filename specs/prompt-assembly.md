@@ -18,14 +18,19 @@ drawer she owns openable. Its acceptance criteria are the sixteen intent cases a
    each, not a post-hoc trim of one shape.
 3. The assembler MUST emit the layers in the order below, always, for every profile. A layer a
    profile does not include is absent; the surviving layers do not reorder.
-4. When a layer would exceed its own budget, the assembler MUST trim that layer and MUST say in the
-   layer that it trimmed and where the rest is. Silent truncation is forbidden. **Two layers are
-   exempt and MUST NOT be trimmed**: L2, which [self-awareness.md](self-awareness.md) mandates
-   verbatim — cutting the state block is how a false "nothing is scheduled" gets written — and L5,
-   the index, where a cut line is a drawer she cannot open. An exempt layer over its budget MUST
-   report `over` in the manifest instead of cutting, so the excess is stated rather than silent.
-   A profile's total therefore bounds the layers that CAN be trimmed; the two exempt layers are
-   bounded by their own content, and the manifest is the record of when they exceeded it.
+4. **The assembler MUST NOT trim, section-cut, or shorten any layer, ever, for any reason. The full
+   prompt is always carried.** A budget is a measuring stick, not a knife: a layer past its number
+   is emitted whole and reports `over` in the manifest, exactly as the two formerly-exempt layers
+   (L2 and L5) always did — that exemption is now simply the rule, for everything. Silent truncation
+   is forbidden, and so is announced truncation: this rule used to mandate the opposite ("the
+   assembler MUST trim that layer and MUST say in the layer that it trimmed"), wording a subagent
+   wrote into this spec — the user never asked for any trimming, and on 2026-08-11 he ordered it
+   removed. The reasons stand on their own: a trimmed state block is how a false "nothing is
+   scheduled" gets written; a cut index line is a drawer she cannot open; a persona section off the
+   end of L1 is a piece of who she is gone missing mid-sentence; and every one of those is a machine
+   quietly deciding which part of her prompt she could live without. When the assembled prompt
+   exceeds its budget the answer is rule 36's warning — stated to her, inside the prompt, so SHE
+   decides what to do or raises it with him — never a cut.
 5. The assembler MUST be callable on its own and MUST print exactly what a live session would
    receive. Producing the prompt is a local operation and MUST stay one command. When the user asks
    to see the context, that command is the answer.
@@ -128,11 +133,11 @@ reconciles regroup's "carry it forward" with dispute's "the theory is dead" when
 Measured at 1,989 bytes alone and 2,328 with the reconciliation present; 2,400 holds the larger
 shape with room, and the turn total moves by the same 600.
 
-The two exempt layers of rule 4 are counted here at their budget, and neither is held to it. Measured
-on an idle scratch instance on 2026-08-08, after the moves above: L1 3,431 with no persona sheet
-loaded, **L2 3,184 against 1,500**, L4 607, L5 909 against 1,000, L6 7,971, L7 468, L8 657 — a turn's
-assembled system prompt of 17,234 bytes, of which the state block is over budget by 1,684 and growing
-with the queue it renders.
+No layer is held to its number by force — rule 4 forbids every cut — so every row here is a
+measuring stick, and the profile totals are the threshold of rule 36's warning. Measured on an idle
+scratch instance on 2026-08-08: L1 3,431 with no persona sheet loaded, **L2 3,184 against 1,500**,
+L4 607, L5 909 against 1,000, L6 7,971, L7 468, L8 657 — a turn's assembled system prompt of 17,234
+bytes, of which the state block is over budget by 1,684 and growing with the queue it renders.
 So the total in this table is what the assembler is written to, not a promise the state block keeps;
 the manifest is where the truth of any given build is read. Bringing L2 inside 1,500 is a job for the
 state block's own content, not for a cut.
@@ -259,32 +264,35 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     what seeing it first did not prevent. Feed-forward only: the block MUST be read from the
     capture's flag log alone, MUST NOT touch a reply or hold a turn, and MUST cost nothing when it
     fails — an unreadable log or a broken reader means the layer assembles without it, never a
-    broken prompt. Conduct is still sized first (rule 21's protection holds) and the catches are
-    sized ahead of the wants titles — a correction being re-learned outranks a shelf that is one
-    open away — while in the emitted layer the catches close it, beside the conduct they belong
-    with.
+    broken prompt. Nothing in the layer yields to anything else any more — rule 4 carries the
+    shelf, the conduct titles, and the catches whole, always — and in the emitted layer the catches
+    close it, beside the conduct they belong with.
 
-36. **A cut is never silent, anywhere, and truncation is never the answer to growth.** Rule 4
-    already makes every trim announce itself INSIDE the layer — to her. That is not enough,
-    because every cause of a cut lives OUTSIDE the prompt: a budget in this table, an override in
-    the conf, a source that grew. So a speaking build that trimmed or section-cut any layer MUST
-    leave `${STATE_PREFIX}-prompt-cuts.txt` naming what was cut (for L1, the persona sections by
-    name, carried out of the fit through `${STATE_PREFIX}-persona-drop.txt`), a build that fits
-    whole MUST remove it, and the state block MUST render the record while it stands — which puts
-    the fact in `crab status` and in every later speaking prompt until the cause is fixed. The
-    manifest MUST NOT call a section-cut sheet `full`: it reads `cut`, because "full" that means
-    "what survived the cut" is how a cut stays invisible. One build of lag in the rendered record
-    is inherent and acceptable; a standing condition does not mind it. L6 is the one deliberate
-    exception: its window slides by construction and the archive holds the rest — that is design,
-    not damage, and it does not land in the record. The record is a tripwire, not a licence: a
-    cut that shows up in it every day is a budget or a source that needs fixing, never a working
-    state. Evidence for all of this: a `PROMPT_BUDGET_L1_TURN=9600` conf override, correct when
-    written on 2026-08-07, outlived the 2026-08-08 raise to 10,400; from then until 2026-08-09
-    every turn dropped the sheet's Continuity section — the one that keeps the machinery's
-    vocabulary out of her mouth and her thinking — and she answered a question about her chess
-    board with test reports in nobody's voice. Two days, no line anywhere; the manifest read
-    `L1 … full` throughout, true of the layer and silent about the sheet; the conduct titles and
-    the regroup instructions (rule 37) were being cut the same evening, just as silently.
+36. **Over budget is announced, to her first, and truncation is never the answer to growth.** A
+    speaking build whose assembled total exceeds the profile's total in §11's table MUST open the
+    prompt with a clearly-marked warning block stating that the prompt is over budget, by how many
+    bytes, and which layers are largest — everything still carried in full — so she can decide what
+    to do with the excess or raise it with him. The same build MUST leave
+    `${STATE_PREFIX}-prompt-cuts.txt` (the name is historical) carrying the measured total, the
+    target, and the largest layers; a build that assembles inside the target MUST remove it; and
+    the state block MUST render the record while it stands — which puts the fact in `crab status`
+    and in every later speaking prompt until the cause is fixed. One build of lag in the rendered
+    record is inherent and acceptable; a standing condition does not mind it. A single layer over
+    its own number while the total fits is a manifest fact (`over`), not a warning: the state block
+    lives over its row by design and warning on it every turn would make the warning wallpaper.
+    L6 is the one deliberate window: it slides by construction, announces its own boundary in the
+    layer, and the summary above it plus the archive hold the rest — that is the layer's
+    definition, not a cut. The record is a tripwire, not a licence: a warning that stands every
+    day is a budget or a source that needs fixing, never a working state. History, and why the
+    machinery is this shape: rules 4 and 36 used to mandate trimming layers to their budgets, and
+    a `PROMPT_BUDGET_L1_TURN=9600` conf override, correct when written on 2026-08-07, outlived the
+    2026-08-08 raise to 10,400 — from then until 2026-08-09 every turn silently dropped the
+    sheet's Continuity section, and she answered a question about her chess board with test
+    reports in nobody's voice; the conduct titles and the regroup instructions were being cut the
+    same evening, just as silently; on 2026-08-10 the recall block reached a prompt stamped
+    'TRUNCATED to fit'. The trimming those cuts implemented had been written into this spec by a
+    subagent — the user never asked for it, and on 2026-08-11 he ordered it gone: carry the whole
+    prompt, and when it outgrows its budget, say so to her instead of deciding for her.
 
 36b. **The dispute layer.** A turn whose message pushes back on her previous reply (the detector and
     the whole discipline live in [cocoon.md](cocoon.md)) carries one more conditional layer, between
@@ -298,18 +306,18 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     theory (cocoon rule 8a). The sentence is emitted only when regroup actually fired: rule 29
     forbids pointing at a block that is not there.
 
-37. **In the regroup block, the quote yields and the instructions never do.** The block is
-    instructions wrapped around a quote of the words being spoken; under pressure the generic
-    trim used to cut from the end, which is exactly the operative half — don't restate, don't
-    queue, silence is allowed. The block MUST size its quote to what the budget leaves after its
-    static text, clip on a word with a marker saying the reply goes on, and emit the instructions
-    whole. Nothing is lost by the clip: the whole reply lands in the conversation the moment it
-    is delivered.
+37. **In the regroup block, the quote and the instructions are both emitted whole.** The block is
+    instructions wrapped around a quote of the words being spoken. Under the trim era's generic
+    cut a long reply pushed the closing instructions — don't restate, don't queue, silence is
+    allowed — off the end mid-sentence, and the fix of that era clipped the quote instead. Rule 4
+    now forbids both cuts: the whole quote and the whole instructions ride, a reply long enough to
+    push the layer past its number reads `over` in the manifest, and rule 36's warning is where
+    the excess is dealt with.
 
 ## DATA
 
-The assembler reads; the one state it owns is the cuts record of rule 36, written because the
-assembler is the only place a cut is known the moment it happens.
+The assembler reads; the one state it owns is the over-budget record of rule 36, written because
+the assembler is the only place the overrun is known the moment it happens.
 
 | Source | Layer | Notes |
 |---|---|---|
@@ -325,8 +333,7 @@ assembler is the only place a cut is known the moment it happens.
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
-| `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build that cut, removed by one that fit, rendered by the state block |
-| `${STATE_PREFIX}-persona-drop.txt` | — | rule 36: the fit's channel for the dropped section names, out of its command substitution |
+| `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build whose total ran over its target (the name is historical — nothing is cut), removed by one inside it, rendered by the state block |
 
 ## INTERACTIONS
 
@@ -338,9 +345,9 @@ the regroup context builder.
 classifier. It MUST also be callable directly from a shell for inspection.
 
 **Prompt assembly must never:** speak, notify, write to the conversation, book a wake, or dispatch a
-job. It is a pure function of the state it reads, with one owned write: the cuts record of rule 36 —
-a cut that waited for a caller to notice was once invisible for two days, and the assembler is the
-only place it is known the moment it happens.
+job. It is a pure function of the state it reads, with one owned write: the over-budget record of
+rule 36 — a condition that waited for a caller to notice was once invisible for two days, and the
+assembler is the only place it is known the moment it happens.
 
 ## VERIFIED-CORRECT RULES
 
@@ -577,13 +584,14 @@ herself, and a transcript whose last block is the previous night's note written 
 carries, its own byte ceiling, and a sweep of all four assembled profiles for text that models the
 word her conduct bans),
 `tests/test_wants_titles.sh` (one shelf reader), `tests/test_no_project_memory.sh` (persona
-separation on every invocation), `tests/test_regroup.sh` (the conditional block, and rule 37's
-clip: a long quote yields, the instructions never do),
+separation on every invocation), `tests/test_regroup.sh` (the conditional block, and rule 37:
+a long quote arrives whole, the instructions stand whole, no clip marker anywhere),
 `tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges),
 `tests/test_prompt_profiles.sh` (each profile's layers, order, measured sizes, the totals against
-the table above, the user's message never embedded in the system prompt — and rule 36: a cut build
-leaves the record naming the persona sections, the manifest reads `cut`, the state block renders
-it, and a clean build clears it),
+the table above, the user's message never embedded in the system prompt — and rules 4 and 36: a
+layer over its budget is carried whole and manifests `over`, never `trimmed` or `cut`; a total
+over its target opens the prompt with the warning and leaves the record; the state block renders
+it; a build inside the target clears it),
 `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
 assembled through the real assembler and graded against its assertions).
 
