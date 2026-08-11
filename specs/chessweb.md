@@ -188,6 +188,20 @@ cannot be changed.
     sessions answered the same photograph with the same move, and the loser was told
     "illegal move: Nf3" as if she could not read a board, when the truth was that the first
     hand had already played it and the turn had passed.
+15b. And `betty-chess move` MUST refuse to play **her side of a browser game**. When the loaded
+    game's opponent is `browser`, the side to move is her `my_side`, and `--force` was not given,
+    the move is refused — non-zero, nothing written. A browser game is answered in-process by the
+    resident mover (rule 16), which pushes its reply straight into the store and never comes
+    through the CLI; a hand-typed or wake-driven `betty-chess move` on such a game is a second
+    mover racing the first, and rule 16d guarantees one of the two answers is discarded as stale.
+    Twice on the night of 2026-08-10 an autonomous wake did exactly that while the mover was
+    mid-think: the mover's own answer was thrown away and the game visibly played worse. The CLI
+    is the only door an out-of-process hand can reach, so the guard lives there
+    (`guard_resident_mover` in `lib/chess_cli.py`), never in the bridge — chessweb.py does not go
+    through `cmd_move` and needs no exemption. A mirrored *opponent* move — the side to move not
+    hers — passes untouched, as does every game whose opponent is not `browser`; `undo`, `resign`
+    and every other subcommand are unaffected. `--force` is the deliberate opt-out, for when the
+    mover is known to be down, and the refusal names it.
 16. **The resident mover** (`lib/chess_mover.py`). The bridge answers her positions itself,
     in-process, the moment they appear — never through the wake queue, never behind the
     conversation lock, never behind a phone turn. It went through the queue once: every user
