@@ -174,7 +174,11 @@ night is where the day's promises are settled honestly, from the whole record at
     sweep (`lib/promise-check sweep`) over the day that just ended: the day's journal, every
     channel's replies with the outcome and work trace each session left, beside the day's
     promise ledger. One model call, the checker's own model and fallback, under the account
-    chain (rule 13 applies).
+    chain (rule 13 applies). Every channel's outcome carries its turn's own tool trace — the
+    desk and phone rows exactly as the wake's ([turn-pipeline.md](turn-pipeline.md) rule 32e)
+    — so a completed-work claim that slipped the live pre-check is refuted here from the day's
+    own record, or shown done by it: a claim whose day carries no matching trace surfaces as a
+    miss, and one whose trace names the work is dropped.
 52. The sweep surfaces only genuine end-of-day misses. A commitment fulfilled later in the day
     — promised at noon, visibly done by a later session's record — is reconciled and dropped,
     whether or not the live checker caught it; a commitment never caught during the day and

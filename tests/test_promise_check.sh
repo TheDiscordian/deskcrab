@@ -271,13 +271,16 @@ check_eq "an ordinary reason is not" \
     "$(sandbox_bash "promise_audit_own_reason 'check the greenhouse' || echo audited")" "audited"
 
 echo
-echo "the sweep: an end-of-day miss surfaces, a later-fulfilled promise is dropped:"
+echo "the sweep: an end-of-day miss surfaces, a later-fulfilled promise is dropped,"
+echo "and the desk rows' own tool traces (rule 32e) refute or fulfil a completed claim:"
 reset
 DAY="$(date -d yesterday +%F)"
 mkdir -p "$DAY_JOURNAL_DIR"
 cat > "$DAY_JOURNAL_DIR/$DAY.jsonl" <<EOF
-{"epoch": 1786360800, "time": "${DAY}T12:00:00-0400", "kind": "desktop", "user": "sort the fan out?", "reply": "I'll wire the greenhouse fan into the config now.", "pid": 100, "outcome": "asked: sort the fan out? | replied: I'll wire the greenhouse fan into the config now."}
-{"epoch": 1786361100, "time": "${DAY}T12:05:00-0400", "kind": "desktop", "user": "and the drip line?", "reply": "I'll write the drip-line notes up this afternoon.", "pid": 101, "outcome": "asked: and the drip line? | replied: I'll write the drip-line notes up this afternoon."}
+{"epoch": 1786360800, "time": "${DAY}T12:00:00-0400", "kind": "desktop", "user": "sort the fan out?", "reply": "I'll wire the greenhouse fan into the config now.", "pid": 100, "outcome": "asked: sort the fan out? | did: ran no tools, touched nothing | replied: I'll wire the greenhouse fan into the config now."}
+{"epoch": 1786361100, "time": "${DAY}T12:05:00-0400", "kind": "desktop", "user": "and the drip line?", "reply": "I'll write the drip-line notes up this afternoon.", "pid": 101, "outcome": "asked: and the drip line? | did: ran no tools, touched nothing | replied: I'll write the drip-line notes up this afternoon."}
+{"epoch": 1786364400, "time": "${DAY}T13:00:00-0400", "kind": "desktop", "user": "flip the pump relay?", "reply": "Done — I've switched the pump relay over.", "pid": 103, "outcome": "asked: flip the pump relay? | did: ran no tools, touched nothing | replied: Done — I've switched the pump relay over."}
+{"epoch": 1786368000, "time": "${DAY}T14:00:00-0400", "kind": "desktop", "user": "frost notes?", "reply": "Done — I've written the frost notes to ~/notes/frost.md.", "pid": 104, "outcome": "asked: frost notes? | did: wrote ~/notes/frost.md; ran 1 command | replied: Done — I've written the frost notes."}
 {"epoch": 1786371600, "time": "${DAY}T15:00:00-0400", "kind": "wake", "user": "", "reply": "", "pid": 102, "outcome": "(silent — wrote ~/notes/drip-line.md, ran 2 commands)"}
 EOF
 sandbox_stub claude <<STUB
@@ -285,6 +288,7 @@ sandbox_stub claude <<STUB
 printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
 cat > "$T/model-stdin"
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"MISS: \"I'"'"'ll wire the greenhouse fan into the config now\" @ 12:00 | no later record wires any config"}]}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"MISS: \"I'"'"'ve switched the pump relay over\" @ 13:00 | its own outcome trace says the turn ran no tools"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
 "$T/repo/lib/promise-check" sweep "$DAY" >/dev/null 2>&1
@@ -293,17 +297,25 @@ check "the model was handed the noon promise" \
     grep -q "wire the greenhouse fan into the config" "$T/model-stdin"
 check "AND the 15:00 work trace that reconciles the drip-line promise" \
     grep -q "wrote ~/notes/drip-line.md" "$T/model-stdin"
-check_eq "one sweep record landed on the ledger" \
-    "$(sandbox_count_in '"type": "sweep"' "$T/ledger.jsonl")" "1"
+check "the refuting desk trace reached the judge (rule 32e)" \
+    grep -q "did: ran no tools, touched nothing" "$T/model-stdin"
+check "and the fulfilling desk trace beside it" \
+    grep -q "did: wrote ~/notes/frost.md" "$T/model-stdin"
+check_eq "two sweep records landed on the ledger" \
+    "$(sandbox_count_in '"type": "sweep"' "$T/ledger.jsonl")" "2"
 check "naming the fan promise" \
     grep -q "wire the greenhouse fan" "$T/ledger.jsonl"
+check "and the completed claim whose day carried no matching trace" \
+    grep -q "switched the pump relay" "$T/ledger.jsonl"
 check_eq "and not the fulfilled drip-line one" \
     "$(sandbox_count_in "drip-line" "$T/ledger.jsonl")" "0"
+check_eq "nor the frost claim its own trace shows done" \
+    "$(sandbox_count_in "frost" "$T/ledger.jsonl")" "0"
 check_eq "one morning wake was booked" "$(records)" "1"
 check_eq "by the checker's own hand" "$(field 5)" "promise-check"
 case "$(field 3)" in
-    "$CHECK_PREFIX"*"wire the greenhouse fan"*)
-        ok "carrying the prefix and the missed promise" ;;
+    "$CHECK_PREFIX"*"wire the greenhouse fan"*"switched the pump relay"*)
+        ok "carrying the prefix and both missed promises" ;;
     *) fail "the morning wake must quote the misses" "$(field 3)" ;;
 esac
 
@@ -332,3 +344,46 @@ rm -f "$DAY_JOURNAL_DIR/$DAY.jsonl"
 check_eq "the model was never called" "$(claude_n)" "0"
 check "and the trace says there was nothing to sweep" \
     grep -q "no journal — nothing to sweep" "$CHECK_LOG"
+
+echo
+echo "the desk and phone paths journal the trace the sweep just judged (rule 32e),"
+echo "proven from real turns through the production pipeline:"
+reset
+cat > "$DESKCRAB_CONF" <<CONF
+PROJECT_DIR="$T/home"
+PIPER_VOICE="$T/voice.onnx"
+WHISPER_MODEL="$T/whisper.bin"
+MEMORY_STORE=0
+MEMORY_JUDGE=0
+PROMISE_AUDIT=0
+PROMISE_CHECK=0
+CLAUDISM_CAPTURE=0
+WAKE_QUIET_HOURS=""
+CONF
+JOURNAL_TODAY="$DAY_JOURNAL_DIR/$(date +%F).jsonl"
+: > "$JOURNAL_TODAY"
+# A claude whose stream holds one genuine tool call: the trace must name it.
+sandbox_stub claude <<'STUB'
+#!/bin/bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/home/nobody/notes/frost.md","content":"x"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"Done - the frost notes are written."}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$REPO/crab" "write the frost notes" >/dev/null 2>&1
+check "a desk turn's outcome names what its hands did" \
+    grep -qE '"kind": "desktop".*did: wrote /home/nobody/notes/frost\.md' "$JOURNAL_TODAY"
+"$REPO/crab" remote "and the phone half" >/dev/null 2>&1
+check "and a phone turn's outcome carries the same trace" \
+    grep -qE '"kind": "phone".*did: wrote /home/nobody/notes/frost\.md' "$JOURNAL_TODAY"
+# And a turn that ran no tools says so — a record, not an absence (rule 32d's
+# zero-calls principle carried onto the journal row).
+sandbox_stub claude <<'STUB'
+#!/bin/bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"Nineteen degrees and steady."}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$REPO/crab" "just the temperature" >/dev/null 2>&1
+check "a turn that ran no tools says so on its row" \
+    grep -qE '"user": "just the temperature".*did: ran no tools, touched nothing' "$JOURNAL_TODAY"

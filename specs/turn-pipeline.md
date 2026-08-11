@@ -240,6 +240,17 @@ ledger.
      run that gets nothing from either ends with the failure named on the trace. A missing or
      broken checker costs the check, never the turn: every failure path exits quietly with a
      trace line, and nothing here may hold, edit, or veto a reply.
+32e. The night's evidence is the journal, so every DELIVERED reply's session outcome MUST
+     carry a compact record of what the turn's own hands did — the desk and the phone exactly
+     as the wake's silent outcome always has (`wake_work_trace`: files written, jobs
+     dispatched, commands run — or the explicit "ran no tools, touched nothing", which is a
+     record, not an absence). The live checker's stream snapshot dies with the turn, and a
+     completed-work claim that slips its pattern pre-check leaves nothing else behind: the
+     nightly sweep ([nightly.md](nightly.md) rules 51-53) judges the morning after from the
+     journal alone, and without a trace on the desk and phone rows a "Done — X" said on those
+     channels was unfalsifiable the next day. The trace rides between the asked and replied
+     halves on purpose: the outcome line is capped, the full reply already rides the journal's
+     own reply field, so the cap may clip the reply's echo and never the evidence.
 
 ### Turn metrics
 
@@ -408,7 +419,10 @@ no commitment never reaches the model (the pre-check's gate is proven from the C
 missing stream snapshot judges nothing; the auditor's deferred wake and the per-promise rebook
 bound each stop a duplicate booking; the sweep hands the model the whole day and its reconciling
 evidence, surfaces an end-of-day miss as a ledger record and one morning wake, and a clean day
-books nothing.
+books nothing. Rule 32e by observation: a real desk turn and a real phone turn each journal an
+outcome carrying the turn's own tool trace (or the explicit no-tools record), and the sweep is
+handed a desk claim's refuting trace and a desk claim's fulfilling trace alike — the traceless
+claim surfaces, the traced one is dropped.
 
 **To be written:**
 

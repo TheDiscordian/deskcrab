@@ -5874,7 +5874,16 @@ _run_claude_remote_locked() {
             jobs_news_delivered
             live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
             compact_convo
-            session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+            # The outcome carries the turn's own tool record (turn-pipeline
+            # rule 32e): the nightly sweep judges completed-work claims from
+            # the journal alone, and only wakes used to leave a trace — a
+            # phone claim that slipped the live pre-check was unfalsifiable
+            # the morning after. Before "replied:" on purpose — the outcome
+            # is capped and the full reply already rides the journal's own
+            # reply field, so the cap may clip the reply's echo, never the
+            # evidence.
+            local TURN_TRACE; TURN_TRACE="$(wake_work_trace)"
+            session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $(spoken_part "$RESPONSE")"
             # Delivered — see the desk turn: the place goes back now, not at
             # process exit, so nobody queues behind the synthesiser.
             turn_order_release
@@ -6113,7 +6122,15 @@ run_claude_and_respond() {
         jobs_news_delivered
         live_turn_end desk "$TEXT" "$(spoken_part "$RESPONSE")"
         compact_convo
-        session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | replied: $(spoken_part "$RESPONSE")"
+        # The outcome carries the turn's own tool record (turn-pipeline rule
+        # 32e): the nightly sweep judges completed-work claims from the
+        # journal alone, and only wakes used to leave a trace — a desk claim
+        # that slipped the live pre-check was unfalsifiable the morning
+        # after. Before "replied:" on purpose — the outcome is capped and
+        # the full reply already rides the journal's own reply field, so the
+        # cap may clip the reply's echo, never the evidence.
+        local TURN_TRACE; TURN_TRACE="$(wake_work_trace)"
+        session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $(spoken_part "$RESPONSE")"
         # Delivered — the place in the queue is given up HERE, not at process
         # exit. What comes after this line is the window, the streamer wait
         # and the out-of-band judges, and none of it is the reply: making the
