@@ -1,0 +1,94 @@
+#!/bin/bash
+# crab seal / crab revive — take Beatrice fully down, or bring her back, with
+# one reliable command instead of a hand-typed run of systemctl, pkill and
+# wake-cancel that is easy to get half-right.
+#
+# The repair is for a real failure on 2026-08-10: a by-hand seal left a booked
+# wake running — the main timer was disabled, but a transient per-wake timer
+# fired anyway — and a by-hand revive stampeded 27 stale wakes back through
+# wake-restore. So seal now clears the booking RECORDS as well as the timers,
+# and revive deliberately does NOT restore stale wakes.
+#
+# Sourced by crab after common.sh, so CLAUDE_BIN, WAKES_DIR and SCRIPT_DIR are
+# in scope.
+
+# The units, grouped by how they are handled. serve and the wake timer are the
+# two GATES — enabled/disabled, so a login or reboot cannot re-arm them while
+# she is meant to be down; the rest are start/stop only.
+_LC_GATES="deskcrab-serve.service deskcrab-wake.timer"
+_LC_SERVICES="deskcrab-chessweb.service"
+_LC_TIMERS="deskcrab-canary-selfchange.timer deskcrab-sleep.timer deskcrab-tidy.timer"
+_LC_PATHS="deskcrab-notice-selfchange.path deskcrab-notice-transcriptions.path"
+
+_lc_wakes_dir() { printf '%s' "${WAKES_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes}"; }
+_lc_cli() { basename "${CLAUDE_BIN:-claude}"; }
+
+# What is still up: live processes, loaded per-wake timers, booking records.
+# Returns success only when all three read zero.
+crab_seal_report() {
+    local procs timers bookings gates cli
+    cli="$(_lc_cli)"
+    procs=$(pgrep -af "deskcrab|chessweb|tts-streamer|job-runner|memory.py judge|${cli} -p" 2>/dev/null \
+            | grep -vcE "grep|crab-debug|/crab (seal|revive|status|offline|online)( |$)")
+    timers=$(systemctl --user list-timers --all 2>/dev/null | grep -c 'deskcrab-wake')
+    bookings=$(find "$(_lc_wakes_dir)" -maxdepth 1 -name '*.wake' 2>/dev/null | wc -l | tr -d ' ')
+    gates=$(systemctl --user is-enabled $_LC_GATES 2>&1 | tr '\n' '/' | sed 's:/$::')
+    printf '  live processes: %s\n  wake timers loaded: %s\n  wake bookings: %s\n  gates (serve/wake): %s\n' \
+        "$procs" "$timers" "$bookings" "$gates"
+    [ "$procs" = 0 ] && [ "$timers" = 0 ] && [ "$bookings" = 0 ]
+}
+
+crab_seal() {
+    echo "Sealing Beatrice — every service down, every booked wake cleared."
+    # 1. Disable+stop the gates so a login/reboot cannot re-arm them.
+    systemctl --user disable --now $_LC_GATES 2>/dev/null
+    # 2. Stop the rest.
+    systemctl --user stop $_LC_SERVICES $_LC_TIMERS $_LC_PATHS 2>/dev/null
+    # 3. Stop every transient per-wake unit a session or wake-restore booked.
+    systemctl --user stop 'deskcrab-wake-*.timer' 'deskcrab-wake-*.service' 2>/dev/null
+    # 4. Cancel the booking RECORDS, not just the timers — a timer stopped with
+    #    its booking intact is brought back by wake-restore. This is the step a
+    #    by-hand seal forgets, and it is why a wake fired after the last one.
+    "$SCRIPT_DIR/crab" wake-cancel --all >/dev/null 2>&1
+    # 5. Kill anything of her still live: a session, its streamer, a detached
+    #    job, a post-turn memory judge, the chess server, the CLI mid-turn.
+    local cli; cli="$(_lc_cli)"
+    pkill -f "deskcrab/crab wake"    2>/dev/null
+    pkill -f "deskcrab/crab remote"  2>/dev/null
+    pkill -f "lib/job-runner"        2>/dev/null
+    pkill -f "lib/tts-streamer"      2>/dev/null
+    pkill -f "lib/chessweb.py serve" 2>/dev/null
+    pkill -f "memory.py judge-turn"  2>/dev/null
+    pkill -f "${cli} -p"             2>/dev/null
+    systemctl --user reset-failed 2>/dev/null
+    sleep 1
+    echo "Sealed:"
+    if crab_seal_report; then
+        echo "She is fully down."
+        return 0
+    fi
+    echo "NOT fully down — something above is non-zero. Look before assuming sealed." >&2
+    return 1
+}
+
+crab_revive() {
+    echo "Reviving Beatrice."
+    # Deliberately NO wake-restore: a clean revive follows a seal that already
+    # cleared the bookings, so there is nothing stale to bring back, and the
+    # wake timer fires fresh on its own schedule. Restoring here is how a revive
+    # stampedes a day's worth of old wakes the moment she comes up.
+    systemctl --user enable --now $_LC_GATES 2>/dev/null
+    systemctl --user start $_LC_SERVICES $_LC_TIMERS $_LC_PATHS 2>/dev/null
+    sleep 2
+    local up=0 total=0 u
+    for u in $_LC_GATES $_LC_SERVICES; do
+        total=$((total + 1))
+        [ "$(systemctl --user is-active "$u" 2>/dev/null)" = active ] && up=$((up + 1))
+    done
+    printf 'Revived: %s of %s core units active (serve: %s, wake timer: %s).\n' \
+        "$up" "$total" \
+        "$(systemctl --user is-active deskcrab-serve.service 2>/dev/null)" \
+        "$(systemctl --user is-active deskcrab-wake.timer 2>/dev/null)"
+    [ "$up" = "$total" ] || { echo "A core unit did not come up — check 'systemctl --user status'." >&2; return 1; }
+    return 0
+}
