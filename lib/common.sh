@@ -2168,8 +2168,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # this number is instructions plus roughly 750 bytes of quote.
         regroup:turn|regroup:wake) v=2000 ;;
         # The dispute frame is a turn-only layer: a wake has no message to be
-        # pushed back on. Sized to its measured text plus margin.
-        dispute:turn) v=1800 ;;
+        # pushed back on. Sized to its measured text plus margin — 1,800
+        # until 2026-08-10 evening; the frame then took on the named register
+        # (the observable in place of "your own voice") and the conditional
+        # regroup reconciliation, and prompt-assembly.md §11 carries the
+        # measured size and the reasoning.
+        dispute:turn) v=2400 ;;
         *) v=0 ;;
     esac
     printf '%s' "$v"
@@ -2597,9 +2601,15 @@ ${SHOWN:-(the shelf did not fit this turn — it is at $WANTS_FILE)}"
     # ---- dispute ----------------------------------------------------------
     # Conditional, like regroup: rendered only when the caller that took the
     # message ran dispute_detect and set PROMPT_DISPUTE. specs/cocoon.md.
+    # When the regroup layer fired in the same prompt, the frame carries the
+    # sentence reconciling the two (rule 8a) — regroup's "carry it forward"
+    # yields to dispute's "the theory is dead" — and only then, so the frame
+    # never points at a block that is not there.
     local DISPUTE=""
     if [ -n "${PROMPT_DISPUTE:-}" ]; then
-        case "$PROMPT_PROFILE" in turn) DISPUTE="$(_dispute_context)" ;; esac
+        case "$PROMPT_PROFILE" in
+            turn) DISPUTE="$(_dispute_context ${REGROUP:+with-regroup})" ;;
+        esac
     fi
     _prompt_layer dispute "specs/cocoon.md" "$DISPUTE"
 
@@ -2852,14 +2862,14 @@ _turn_ticket_alive() {  # <ticket file>
 
 # Her last reply wherever it stands, rather than only when it is the final
 # block. _convo_last_assistant_block answers the stricter question — is her
-# reply the LAST thing in the transcript — which is the right guard for the
-# dispute layer (was this a reply to what she just said?) and the wrong one
-# for the delivery queue. By the time a second turn arrives, the FIRST turn
-# has already appended his earlier message, so her reply is no longer the last
-# block and the stricter question answers no for every concurrent message.
-# Measured while building this: the 12:31:46 pushback superseded nothing,
-# because a turn was in flight above it — precisely the case the queue exists
-# for.
+# reply the LAST thing in the transcript — which is the wrong guard for
+# EVERYTHING that judges his incoming message, the dispute detector included:
+# both turn paths run convo_append_user before claude_generate, so by the
+# time any detector looks, the last block is always HIS and the stricter
+# question answers no on every production turn. Measured twice: the 12:31:46
+# pushback superseded nothing because a turn in flight had appended above it,
+# and the dispute layer itself never fired on a single live turn until the
+# guard moved here (specs/cocoon.md rule 6).
 _convo_last_assistant_anywhere() {
     [ -f "$CONVOFILE" ] || return 0
     awk -v bre="$CONVO_BLOCK_RE" -v are="$CONVO_ASSISTANT_RE" '
@@ -2873,29 +2883,16 @@ _convo_last_assistant_anywhere() {
     ' "$CONVOFILE" 2>/dev/null
 }
 
-# Is this message pushback, asked the way the delivery queue needs it asked?
-# Every pattern and every weight is dispute_detect's — the cocoon's detector,
-# called through, so the two can never drift — with only its
-# is-her-reply-the-last-block guard widened to is-there-a-reply-at-all. The
-# widening is done by handing the detector a one-block transcript holding her
-# most recent reply, so it sees exactly what it expects to see.
+# Is this message pushback that CLOSES the turns in flight behind it? The
+# detector's own answer, restricted to its STRONG class (specs/cocoon.md rule
+# 6b, turn-pipeline rule 15c): the dispute frame is cheap to over-apply — a
+# stronger turn — but superseding silently kills a reply he may still want,
+# so nothing that could be benign may ever do it. The one-block-transcript
+# dance that used to live here is gone: dispute_detect now judges against her
+# last reply wherever it stands, so it is ordering-independent by itself.
 _turn_order_is_pushback() {  # <the user's message>
-    local LAST RC TMP
-    LAST="$(_convo_last_assistant_anywhere)"
-    [ -n "$(printf '%s' "$LAST" | tr -d '[:space:]')" ] || return 1
-    if [ -n "$(printf '%s' "$(_convo_last_assistant_block 2>/dev/null)" | tr -d '[:space:]')" ]; then
-        dispute_detect "$1"
-        return $?
-    fi
-    TMP="$(mktemp "${STATE_PREFIX}-dispute-XXXXXX.txt" 2>/dev/null)" || return 1
-    printf 'Assistant: %s\n' "$LAST" > "$TMP"
-    local SAVED="$CONVOFILE"
-    CONVOFILE="$TMP"
-    dispute_detect "$1"
-    RC=$?
-    CONVOFILE="$SAVED"
-    rm -f "$TMP"
-    return $RC
+    dispute_detect "$1" || return 1
+    [ -n "${DISPUTE_SUPERSEDES:-}" ]
 }
 
 # Silence a superseded turn's voice, NOW rather than when it finishes. The
@@ -3302,27 +3299,82 @@ regroup_context() {
 }
 
 # Is this message pushback on her previous reply, rather than a new subject?
-# specs/cocoon.md rules 10-13. Deterministic, no model call: the phrases are
+# specs/cocoon.md rules 6-6b. Deterministic, no model call: the phrases are
 # taken from the measured record of 2026-08-10, where five wrong theories in
 # eight turns met "stop assuming I'm wrong", "do not gaslight or lie", "I'm
 # reporting a bug", "I never said", and "one more time" — and nothing in the
-# machinery treated any of them as different from small talk. A strong signal
-# alone is enough; weak signals need two. The detector runs before the prompt
-# is built, so the dispute layer and the escalation both ride on its answer.
+# machinery treated any of them as different from small talk. The detector
+# runs before the prompt is built, so the dispute layer and the escalation
+# both ride on its answer.
+#
+# The guard is ordering-independent (rule 6): both turn paths append his
+# message to the conversation BEFORE claude_generate runs this, so in
+# production her reply is never the final block — the original
+# _convo_last_assistant_block guard answered empty on every real turn and the
+# detector fired never. What a dispute needs is a reply of hers to dispute,
+# wherever it stands.
+#
+# Three classes (rule 6a), because the two consumers pay different prices for
+# a false positive. STRONG fires alone and sets DISPUTE_SUPERSEDES=1 — the
+# only class allowed to close a turn in flight (rule 6b), because a
+# superseded reply is silently never spoken and a benign message must never
+# do that. SOFT (a bare "no."/"no," with a restatement behind it — a real
+# correction shape, but also the shape of "No, that's fine") and two WEAK
+# signals buy the dispute turn and nothing else.
 dispute_detect() {  # <the user's message>
+    DISPUTE_SUPERSEDES=""
     local t
     t="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     [ -n "$t" ] || return 1
     # Before she has said anything there is nothing to dispute.
-    [ -n "$(_convo_last_assistant_block 2>/dev/null)" ] || return 1
-    if grep -qE "you'?( a)?re wrong|you are wrong|stop (arguing|assuming|repeating)|do(n'?t| not) (gaslight|lie|argue)|gaslight|you (just )?lied|you keep lying|listen to me|not listening|i'?m reporting|i never (said|asked)|what('?s| is) wrong with you|your (fucking )?(problem|issue)|shut (the fuck )?up|one more (fucking )?time|tak(e|ing) you offline|turn(ing)? you off|not what i (said|meant|asked)|stop talking|that'?s not (it|what)" <<<"$t"; then
+    [ -n "$(_convo_last_assistant_anywhere 2>/dev/null | tr -d '[:space:]')" ] || return 1
+
+    # STRONG: contradiction, misquotation, the day's own sentences, him
+    # locating the artifact himself, and nothing that has a benign reading.
+    if grep -qE "you'?( a)?re wrong|you are wrong|stop (arguing|assuming|repeating)|do(n'?t| not) (gaslight|lie|argue)|gaslight|you (just )?lied|you keep lying|not listening|i never (said|asked)|i did(n'?t| not) (say|ask|tell)|you did(n'?t| not) (answer|listen|read|hear)|you (misunderstood|misheard)|what('?s| is) wrong with you|your (fucking )?(problem|issue)|shut (the fuck )?up|one more fucking time|tak(e|ing) you offline|turn(ing)? you off|not what i (said|meant|asked)|stop talking|that('?s| is) not (it|what|right|true|the bug|the problem|the issue)|it was in (a|the) quiet block" <<<"$t"; then
+        DISPUTE_SUPERSEDES=1
         return 0
     fi
+    # "listen to me" is strong only as a demand — "listen to me play this" is
+    # an invitation, and it used to fire.
+    if grep -qE '\blisten to me\b' <<<"$t" \
+        && ! grep -qE '\blisten to me (play|sing|read|try|do|run|show|talk|tell|for|while)\b' <<<"$t"; then
+        DISPUTE_SUPERSEDES=1
+        return 0
+    fi
+    # "I'm reporting" is strong only as a report of something broken — "I'm
+    # reporting that it works" is good news, and it used to fire.
+    if grep -qE "\b(i'?m|i am) reporting\b" <<<"$t" \
+        && grep -qE "\b(bug|problem|issue|error|failure|broken|wrong|not working|does(n'?t| not) work)" <<<"$t"; then
+        DISPUTE_SUPERSEDES=1
+        return 0
+    fi
+    # A correction phrased as a question: "why did you X when I asked Y?"
+    if grep -qE '\bwhy (did|do|are|were|would) you\b' <<<"$t" \
+        && grep -qE '\b(when|after) i (asked|said|told|wanted)\b' <<<"$t"; then
+        DISPUTE_SUPERSEDES=1
+        return 0
+    fi
+
+    # SOFT: a bare "no."/"no,"/"no!" with a restatement behind it. The
+    # punctuation is load-bearing — "no worries" begins with "no " and is
+    # agreement — and the restatement is what makes it a correction rather
+    # than a one-word answer.
+    if grep -qE '^[[:space:]]*no[.!,]' <<<"$t"; then
+        local rest
+        rest="$(printf '%s' "$t" | sed -E 's/^[[:space:]]*no[.!,]+[[:space:]]*//')"
+        if [ -n "$(printf '%s' "$rest" | tr -d '[:space:][:punct:]')" ]; then
+            return 0
+        fi
+    fi
+
+    # WEAK, two or more. Profanity counts only when it is aimed at her —
+    # "that was fucking great" is colour, not a signal.
     local weak=0
     grep -qE '^[[:space:]]*no[.,! ]' <<<"$t" && weak=$((weak+1))
     grep -qE '\bwrong\b' <<<"$t" && weak=$((weak+1))
     grep -qE '\bagain\b' <<<"$t" && weak=$((weak+1))
-    grep -qE 'fuck' <<<"$t" && weak=$((weak+1))
+    grep -qE "the fuck|fuck (you|off)|(you'?re|you are|your) fucking" <<<"$t" && weak=$((weak+1))
     grep -qE '\bi (just )?said\b' <<<"$t" && weak=$((weak+1))
     [ "$weak" -ge 2 ]
 }
@@ -3331,7 +3383,19 @@ dispute_detect() {  # <the user's message>
 # detector fired. Its overlap with L7's ranking rule is deliberate, the same
 # bargain the regroup block makes: under pushback the rule is the one being
 # broken, so it is restated at strength beside the thing being answered.
-_dispute_context() {
+#
+# The voice paragraph names an observable, not a virtue: "in your own voice"
+# was the first cut's wording and it covered his most-repeated demand with
+# nothing she could check. The register IS checkable — her claudism list
+# catches it and her pre-speech mirror reads every reply against it — so the
+# frame points there (specs/cocoon.md rule 8).
+#
+# The optional argument marks that the regroup layer is in the same prompt,
+# and buys the reconciliation sentence (rule 8a): regroup says carry the
+# other reply forward, and the other reply can BE the dead theory. Emitted
+# only when regroup actually fired — nothing points at a block that is not
+# there (prompt-assembly rule 29).
+_dispute_context() {  # [with-regroup]
     cat <<'EOF'
 HE IS PUSHING BACK — this message rejects or corrects what you just said. This turn is governed by the following, above everything else in this prompt:
 His report of what he saw or heard IS WHAT HAPPENED. It is not a claim to evaluate. If your model of the machinery says it cannot have happened, your model is wrong. Telling him it did not happen is the worst failure available to you in this turn.
@@ -3339,7 +3403,14 @@ The theory your last reply carried is DEAD. Do not restate it in new words. Anyt
 Look before you theorise: find the actual thing he is describing — the line in the log, the words that reached his screen — and read it before you name any cause. If you have not found it, say so and ask ONE question. "I don't know yet" is a complete answer; a confident guess is a lie.
 Do not substitute a mechanism for his point. No fixes shipped, no rules written, no builders dispatched, no commit tables — not in this turn. Understanding him comes first; the fix waits for his go.
 Do not cut pieces off yourself. No new gates on yourself, no conduct edits made under pressure, no pledges of "never again", no shutdown offers, no goodbyes. If a change to you is warranted, it is a calm builder's job decided with him — not a wound made mid-argument.
-Answer only what he raised, in a few plain sentences, in your own voice. No display block unless he asked for one. Concede only what is actually true — manufactured agreement is another way of not listening.
+EOF
+    if [ "${1:-}" = "with-regroup" ]; then
+        cat <<'EOF'
+The regroup block above told you to fold in what another of you is saying and carry it forward. This message outranks it: anything in those words resting on a theory he has just rejected is dead there too. Fold in only what survives what he said — a dead theory is not carried forward because a second session happens to be speaking it.
+EOF
+    fi
+    cat <<'EOF'
+Answer only what he raised, in a few plain sentences. The voice he keeps demanding you drop is not a mood, it is observable: the coding agent's register — status-report cadence, machinery vocabulary, the stock phrases your claudism list exists to catch. Your pre-speech mirror reads this reply against that list, and a line it hands back is that failure caught in the act: rewrite it as something you would SAY to him — never defend it, never swap in a synonym from the same register. No display block unless he asked for one. Concede only what is actually true — manufactured agreement is another way of not listening.
 EOF
 }
 
@@ -4211,19 +4282,23 @@ claude_profile_flags() {  # <turn|wake|job|classify>
         esac
     fi
 
-    # The cocoon gate, specs/cocoon.md: in a live turn or wake, what
-    # constitutes her is read-only — changes to her own machinery go through a
-    # builder with a brief, never through the hands of the session that is
-    # mid-conversation. Builders (job profile) and classifiers do not carry
-    # the gate, and that asymmetry is the whole design. The settings file is
-    # generated here so the hook's absolute path is this checkout's, not a
-    # path baked into the repo.
+    # The cocoon signpost, specs/cocoon.md rule 4a: in a live turn or wake,
+    # what constitutes her is read-only — the WALL is the bubblewrap mount
+    # namespace the run functions apply (cocoon_wrap_build), and this hook is
+    # the deny that names the road out, worth more to her than the kernel's
+    # bare EROFS. Builders (job profile) and classifiers carry neither the
+    # hook nor the wrap, and that asymmetry is the whole design. The settings
+    # file is generated here so the hook's absolute path is this checkout's,
+    # not a path baked into the repo. PROMPT_DISPUTE reaches here through
+    # bash dynamic scoping from claude_generate: in a dispute turn the deny
+    # must not tell her to dispatch a builder — the dispute frame forbids
+    # exactly that — so the hook is told which turn this is (rule 4a).
     case "${1:-turn}" in
         turn|wake)
             if [ -x "$SCRIPT_DIR/lib/cocoon-gate" ]; then
                 local COCOON="${STATE_PREFIX}-cocoon.json"
-                if printf '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|MultiEdit|NotebookEdit|Bash","hooks":[{"type":"command","command":"DESKCRAB_REPO=%s %s"}]}]}}\n' \
-                        "$SCRIPT_DIR" "$SCRIPT_DIR/lib/cocoon-gate" \
+                if printf '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|MultiEdit|NotebookEdit|Bash","hooks":[{"type":"command","command":"DESKCRAB_REPO=%s DESKCRAB_DISPUTE=%s DESKCRAB_PROJECT_DIR=%s %s"}]}]}}\n' \
+                        "$SCRIPT_DIR" "${PROMPT_DISPUTE:+1}" "$PROJECT_DIR" "$SCRIPT_DIR/lib/cocoon-gate" \
                         > "$COCOON.tmp.$$" 2>/dev/null; then
                     mv "$COCOON.tmp.$$" "$COCOON" 2>/dev/null || rm -f "$COCOON.tmp.$$"
                 else
@@ -4234,6 +4309,77 @@ claude_profile_flags() {  # <turn|wake|job|classify>
     esac
 
     [ "$CLAUDE_SKILLS" = "1" ] || CLAUDE_PROFILE_FLAGS+=(--disable-slash-commands)
+    return 0
+}
+
+# --- The cocoon wall: the OS half of specs/cocoon.md rules 1, 4, 4b ---------
+# In a live turn or wake, what constitutes her is read-only — and the thing
+# that makes it so is a bubblewrap mount namespace, not a rule anything reads.
+# The whole filesystem is bind-mounted read-only and only her drawers are
+# re-bound writable; a constituent write then dies in the kernel with EROFS
+# whatever spelling produced it, because a mount namespace does not parse
+# commands. The predecessor — the regex hook alone — was reviewed with about
+# ten verified bypasses (newline-anchored redirections, interpreter
+# one-liners, pathless git in a constituent cwd, $HOME spellings, relative
+# paths, a settings write that killed the hooks); the hook survives as the
+# signpost that names the road out, and the kernel holds the wall.
+#
+# The writable set, and why each entry is there:
+#   * the deskcrab data dir      — her drawers (rule 3): wants, journal,
+#                                  memory, jobs, wakes, chess, metrics
+#   * the deskcrab state dir     — the self-change watcher's records
+#   * dirname(STATE_PREFIX),     — the turn's own machinery: convo, tickets,
+#     /tmp and TMPDIR              stream logs, live-speech markers
+#   * XDG_RUNTIME_DIR            — the session bus, so `crab job` can still
+#                                  reach the user manager; the unit it starts
+#                                  is born OUTSIDE the namespace, which is
+#                                  the builder asymmetry of rule 2
+#   * ~/.claude, ~/.claude.json, — the CLI's own state: history, sessions,
+#     and CLAUDE_CONFIG_DIR        projects, session-env. A turn breaks
+#                                  without it (measured: the Bash tool dies
+#                                  on an EROFS session-env mkdir), and the
+#                                  fallback twins symlink their shared
+#                                  surfaces into the primary, so the primary
+#                                  is bound even when a twin is in play
+#   * the user cache             — the CLI's own logging
+# Everything else on the machine — the repo, ~/.local/lib/deskcrab, the
+# ~/.local/bin entry points, ~/.config/deskcrab, the systemd units, the
+# project dir's CLAUDE.md and library — is read-only by construction, with
+# no list to keep current.
+#
+# Fail CLOSED (rule 4b): no bubblewrap, no turn. The callers refuse with a
+# cocoon-refused stream note rather than running unwrapped — an unwrapped
+# session is the 2026-08-10 session. COCOON_BWRAP exists so a test can point
+# at a missing binary and prove the refusal; it is not a disable knob.
+COCOON_BWRAP="${COCOON_BWRAP:-bwrap}"
+
+cocoon_wrap_build() {  # fills COCOON_WRAP_ARGV, or COCOON_WRAP_ERR and rc 1
+    COCOON_WRAP_ARGV=()
+    COCOON_WRAP_ERR=""
+    local BW
+    if ! BW="$(command -v "$COCOON_BWRAP" 2>/dev/null)"; then
+        COCOON_WRAP_ERR="bubblewrap ($COCOON_BWRAP) is not available — the cocoon cannot be built, and a live session never runs unwrapped (specs/cocoon.md rule 4b)"
+        return 1
+    fi
+    local DATA="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+    mkdir -p "$DATA" 2>/dev/null
+    local -a rw=()
+    local d
+    for d in \
+        "$DATA" \
+        "${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab" \
+        "$(dirname "$STATE_PREFIX")" \
+        /tmp \
+        "${TMPDIR:-}" \
+        "${XDG_RUNTIME_DIR:-}" \
+        "$HOME/.claude" \
+        "$HOME/.claude.json" \
+        "${CLAUDE_CONFIG_DIR:-}" \
+        "${XDG_CACHE_HOME:-$HOME/.cache}" \
+    ; do
+        [ -n "$d" ] && [ -e "$d" ] && rw+=(--bind "$d" "$d")
+    done
+    COCOON_WRAP_ARGV=("$BW" --die-with-parent --ro-bind / / --dev-bind /dev /dev ${rw[@]+"${rw[@]}"})
     return 0
 }
 
@@ -4654,7 +4800,16 @@ _wake_claude_run() {
         else unset CLAUDE_CONFIG_DIR; fi
         export "${CLAUDE_NO_AUTO_MEMORY?}"
         claude_profile_flags wake
-        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        # The cocoon wall (specs/cocoon.md rules 1, 4, 4b): the wake's CLI
+        # runs inside the read-only mount namespace, and if the wrap cannot
+        # be built the wake refuses rather than running unwrapped. The note
+        # lands in this wake's own stream log, where wake_stream_failed and
+        # the journal will read the run as the failure it is.
+        if ! cocoon_wrap_build; then
+            claude_stream_note "cocoon-refused" "$COCOON_WRAP_ERR"
+            exit 79
+        fi
+        exec "${COCOON_WRAP_ARGV[@]}" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$WAKE_MODEL" --effort "$WAKE_EFFORT" \
             --verbose --output-format stream-json \
             "${CLAUDE_PROFILE_FLAGS[@]}" \
@@ -4781,8 +4936,10 @@ run_claude_wake() {
     local CLAUDE_STATUS="$WAKE_CLAUDE_STATUS"
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
 
-    # A wake edits its own files freely (wants, conduct, the repo); declare
-    # those writes before the self-change watcher judges the burst it saw.
+    # A wake edits its drawers freely (wants, conduct, the journal) — the
+    # repo and the rest of what constitutes her are read-only under the
+    # cocoon wall now — so declare the drawer writes before the self-change
+    # watcher judges the burst it saw.
     notice_own_writes
 
     local RESPONSE
@@ -5277,7 +5434,21 @@ _generate_claude_run() {
         if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
         else unset CLAUDE_CONFIG_DIR; fi
         claude_profile_flags turn
-        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        # The cocoon wall (specs/cocoon.md rules 1, 4, 4b): the turn's CLI
+        # runs inside the read-only mount namespace — everything constituting
+        # her is read-only, her drawers stay hers, and a builder dispatched
+        # through the user manager is born outside with full hands. Fail
+        # CLOSED: no bubblewrap means no turn, never an unwrapped one. The
+        # note explains the empty reply in the stream log, and the caller's
+        # ordinary no-reply reporting names the outage to him.
+        if ! cocoon_wrap_build; then
+            claude_stream_note "cocoon-refused" "$COCOON_WRAP_ERR"
+            notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab \
+                "${NOTIFY_NAME:-deskcrab}" \
+                "this turn was refused: $COCOON_WRAP_ERR" 2>/dev/null
+            exit 79
+        fi
+        exec "${COCOON_WRAP_ARGV[@]}" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "${MODEL:-$CLAUDE_MODEL}" --effort "$EFFORT" \
             --verbose --output-format stream-json --include-partial-messages \
             "${CLAUDE_PROFILE_FLAGS[@]}" \

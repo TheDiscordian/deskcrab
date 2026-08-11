@@ -69,8 +69,11 @@ slot is the loudest statement this machine can make that it was not listening.
      bounded by `TURN_ORDER_WAIT`; past the bound the reply goes out and the session outcome says
      it went out of order. A reply held forever is the failure this rule exists to prevent, not an
      acceptable price for preventing it.
-15c. A message from him that is **pushback** (`dispute_detect`, [cocoon.md](cocoon.md) rules 10-13)
-     SUPERSEDES every turn still in flight behind it. A superseded reply answers a question he has
+15c. A message from him that is **pushback at the detector's STRONG class** (`dispute_detect`,
+     [cocoon.md](cocoon.md) rules 6-6b) SUPERSEDES every turn still in flight behind it. STRONG
+     only: the dispute frame may ride on a softer signal, where a false positive costs a stronger
+     turn, but a superseded reply is silently never spoken — so nothing that could be a benign
+     message ("no worries", "run it one more time") may ever close one. A superseded reply answers a question he has
      since closed, and it MUST NOT be spoken, shown, or synthesised, and MUST NOT be announced as
      though it were a reply. The turn MAY raise one notification saying that a reply was held —
      nothing here happens silently — provided it carries none of the held words. It MUST be appended

@@ -1,23 +1,39 @@
 #!/usr/bin/env python3
-"""The cocoon gate: in a live turn or wake, what constitutes her is read-only.
+"""The cocoon signpost: in a live turn or wake, what constitutes her is
+read-only, and this hook is the deny that says WHY and names the road out.
 
-specs/cocoon.md. This is a PreToolUse hook attached (by claude_profile_flags)
-to the turn and wake profiles only. Builders — `crab job`, the job profile,
-fable at xhigh — do not carry it, and that is the whole design: changes to her
-own machinery go through a builder with a brief, never through the hands of
-the session that is mid-conversation.
+specs/cocoon.md rules 4a and 5. This is a PreToolUse hook attached (by
+claude_profile_flags) to the turn and wake profiles only. Builders — `crab
+job`, the job profile — carry neither this hook nor the wall, and that is the
+whole design: changes to her own machinery go through a builder with a brief,
+never through the hands of the session that is mid-conversation.
 
-Why this is mechanical and not a prompt rule: on 2026-08-10, told eight ways
-to stop and listen, she shipped six commits to her own speech machinery in the
-middle of the argument itself — each one a way of not listening, several of
-them wrong. A rule she reads is a rule she can reach past when she is sure;
-this one does not read back.
+This hook is NOT the enforcement. It reads text, and text has infinitely many
+spellings — an adversarial review found about ten working bypasses when it
+stood alone. The wall is the bubblewrap mount namespace the run functions
+apply (cocoon_wrap_build in lib/common.sh): everything constituent is
+bind-mounted read-only and a write there dies in the kernel, whatever spelling
+produced it. What this hook buys is the sentence the kernel cannot say — a
+deny that names the cocoon and the road, instead of a bare "Read-only file
+system" — plus cover for the two places the wrap must leave writable for the
+CLI's own sake: the CLI config dirs and the project directory's `.claude`,
+where one settings write (disableAllHooks) would kill every hook.
+
+Why the discipline is mechanical and not a prompt rule: on 2026-08-10, told
+eight ways to stop and listen, she shipped six commits to her own speech
+machinery in the middle of the argument itself — each one a way of not
+listening, several of them wrong. A rule she reads is a rule she can reach
+past when she is sure; a mount namespace does not read back.
 
 Contract (Claude Code hook protocol): tool-call JSON on stdin; a deny is JSON
 on stdout with permissionDecision "deny"; anything else exits 0 silently and
-the call proceeds. Fail-open on malformed input — a broken gate must not brick
-her hands entirely, only the constituent paths are guarded and a parse error
-is not a write.
+the call proceeds. Fail-open on malformed input — broken advice must not brick
+her hands, and the wall does not depend on this hook.
+
+DESKCRAB_DISPUTE=1 marks a dispute turn (set into the generated settings by
+claude_profile_flags): the dispute frame forbids dispatching a builder in that
+turn, so the deny must not tell her to — it says the change waits until the
+dispute is settled instead.
 """
 
 import json
@@ -31,7 +47,9 @@ def home(*parts):
 
 
 # What constitutes her. Realpathed, so the ~/.local/bin symlinks into the repo
-# and any path spelled through them land on the same answer.
+# and any path spelled through them land on the same answer. The CLI config
+# dirs and the project .claude are here for the hook-killing settings write —
+# the wrap leaves them writable because the CLI itself needs them.
 CONSTITUENT = [
     os.path.realpath(os.environ.get("DESKCRAB_REPO", home("Programming", "Claude", "deskcrab"))),
     home(".local", "lib", "deskcrab"),
@@ -39,19 +57,34 @@ CONSTITUENT = [
     home(".local", "bin", "crab-debug"),
     home(".config", "deskcrab"),
     home(".config", "systemd", "user"),
-    home("Beatrice", "CLAUDE.md"),
-    home("Beatrice", "Library"),
+    home(".claude"),
 ]
+# The project directory's persona surfaces (SELF_WATCH_EXTRA's equivalents):
+# its CLAUDE.md, its library, and its .claude settings. Named through the env
+# the settings command carries, with the installed default as the fallback so
+# a bare invocation still protects the live install.
+_PROJ = os.environ.get("DESKCRAB_PROJECT_DIR") or home("Beatrice")
+CONSTITUENT += [
+    os.path.realpath(os.path.join(_PROJ, "CLAUDE.md")),
+    os.path.realpath(os.path.join(_PROJ, "Library")),
+    os.path.realpath(os.path.join(_PROJ, ".claude")),
+]
+if os.environ.get("CLAUDE_CONFIG_DIR"):
+    CONSTITUENT.append(os.path.realpath(os.environ["CLAUDE_CONFIG_DIR"]))
 
 # Inside a constituent Bash command, these are the write shapes. A read —
-# grep, cat, git log, git show, diff — never matches.
+# grep, cat, git log, git show, diff — never matches. `systemd-run` is a write
+# shape here because aiming the user manager at a constituent path is the
+# builder road without the brief (specs/cocoon.md rule 4c); `dd` only in its
+# of= form, since dd reading a constituent file is a read like any other.
 WRITE_RE = re.compile(
     r"(?:^|[|&;]\s*)(?:sudo\s+)?"
     r"(?:sed\s+(?:\S+\s+)*-i|tee\b|rm\b|mv\b|cp\b|ln\b|chmod\b|chown\b|"
-    r"patch\b|truncate\b|install\b|mkdir\b|touch\b|"
+    r"patch\b|truncate\b|install\b|mkdir\b|touch\b|systemd-run\b|"
     r"git\s+(?:-C\s+\S+\s+)?(?:commit|add|apply|am|rebase|merge|reset|restore|checkout|switch|rm|mv|stash|push|clean)|"
     r"systemctl\s+--user\s+(?:daemon-reload|enable|disable|edit|mask|unmask))"
     r"|>>?\s*\S"
+    r"|dd\b[^|&;]*\bof="
 )
 
 DENY_TEXT = (
@@ -61,6 +94,19 @@ DENY_TEXT = (
     "\"<self-contained description of the change, the files, and how to prove "
     "it works>\" — the builder has hands here and you do not. If it cannot "
     "wait for a builder, say so to him and let him decide."
+)
+
+# In a dispute turn the frame forbids dispatching a builder, so the deny must
+# not point at one — the contradiction the review caught. The road in a
+# dispute turn is through him, afterwards.
+DENY_TEXT_DISPUTE = (
+    "{path} is part of what constitutes you, and in a live turn or wake it is "
+    "read-only — the cocoon rule (specs/cocoon.md). Reading it is fine. And he "
+    "is pushing back this turn, so no builder is dispatched either — "
+    "understanding him comes first, and a change made mid-argument is the "
+    "failure being answered. If the change still matters once the dispute is "
+    "settled, describe it to him and let him decide; the builder road waits "
+    "until then."
 )
 
 
@@ -101,11 +147,12 @@ def main():
         hit = bash_hit(tool_input.get("command") or "")
 
     if hit:
+        text = DENY_TEXT_DISPUTE if os.environ.get("DESKCRAB_DISPUTE") else DENY_TEXT
         json.dump({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": DENY_TEXT.format(path=hit),
+                "permissionDecisionReason": text.format(path=hit),
             }
         }, sys.stdout)
     return 0

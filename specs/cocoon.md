@@ -11,41 +11,101 @@ constitutes her is read-only, and changes go through a builder with a brief. The
 shape: a message that pushes back on her previous reply is detected, bought at her best attention
 instead of her cheapest, and framed by rules that put his report above her model of the machinery.
 
+The first cut of both disciplines was found unsound by four independent adversarial reviews later
+the same day: the detector's guard meant it fired on no production turn ever, its patterns missed
+quiet corrections and tripped on benign lines, and the write-gate was a regex with about ten
+verified bypasses. This revision is the answer to those reviews: the detector's guard is
+ordering-independent and its patterns are classed by what a false positive costs, and the wall
+moved from a regex that reads commands to a mount namespace that does not.
+
 ## CONTRACT
 
 ### The cocoon: constituent files are read-only in a live session
 
-1. In a turn or a wake, every write to what CONSTITUTES her MUST be denied mechanically, before
-   the tool runs. The constituent set: the repo checkout, the installed library
+1. In a turn or a wake, every write to what CONSTITUTES her MUST fail — in the operating system,
+   not in a rule she reads. The constituent set: the repo checkout, the installed library
    (`~/.local/lib/deskcrab`), the `crab` and `crab-debug` binaries, `~/.config/deskcrab` (conf and
-   persona sheet), her systemd user units, and `SELF_WATCH_EXTRA`'s equivalents
-   (`~/Beatrice/CLAUDE.md`, `~/Beatrice/Library`). Reading any of it is never gated.
+   persona sheet), her systemd user units, and `SELF_WATCH_EXTRA`'s equivalents (the project
+   directory's `CLAUDE.md` and library). Reading any of it is never gated.
 2. Builders keep their hands: the job profile carries no gate, and every deny names the road —
    `crab job "<self-contained brief>"`. That asymmetry is the design: the session that is
    mid-conversation describes the change; a builder makes it in a calm hour, at builder strength.
 3. Her drawers stay hers. Nothing under `~/.local/share/deskcrab` — wants, journal, engineering
    notes, chess data, memory — is gated, in any profile. The cocoon covers the machinery, not the
    life lived in it.
-4. The gate is a PreToolUse hook (`lib/cocoon-gate`) attached by `claude_profile_flags` to the
-   turn and wake profiles only, through a settings file generated at flag time so the hook's path
-   is the running checkout's, never a path baked into the repo. Edit/Write tool calls are judged
-   by realpath — the `~/.local/bin` symlinks into the repo land on the same answer as the repo
-   spelled directly. Bash commands are judged by shape: a write-verb (redirection, `sed -i`,
-   `tee`, `rm`/`mv`/`cp`/`ln`, `git commit/add/apply/checkout/…`, `systemctl --user
-   daemon-reload/enable/disable/…`) naming a constituent path is denied. The heuristic MAY
-   overmatch a read that merely names a path in a write-shaped line; the deny message carries the
-   road out, so overmatching costs a sentence, while undermatching costs what 2026-08-10 cost.
-5. The gate fails open on malformed input — a broken gate must not brick her hands — and stays
-   silent on every allowed call: no output, no log, no drag.
+4. The enforcement is a mount namespace, not a pattern. The turn and wake CLI launches
+   (`_generate_claude_run`, `_wake_claude_run`) run the CLI under bubblewrap
+   (`cocoon_wrap_build`): the whole filesystem is bind-mounted read-only, and only her drawers
+   are re-bound writable — the deskcrab data dir, the deskcrab state dir, the `STATE_PREFIX`
+   directory and `/tmp` and `TMPDIR`, the runtime dir, the CLI's own config state (`~/.claude`
+   and `~/.claude.json`, plus the account dir in play when `CLAUDE_CONFIG_DIR` is set — a turn
+   breaks without its history, sessions and session-env, and the fallback twins symlink their
+   shared surfaces into the primary), and the user cache. Every constituent path of rule 1 falls
+   under the read-only root, so a write there fails in the kernel with EROFS whatever spelling
+   produced it — a redirection behind a newline, an interpreter one-liner, `sed --in-place`,
+   `dd`, a pathless `git commit` run in a constituent cwd, a `$HOME` expansion, a relative path
+   against a wandering cwd, or a settings write meant to kill the hooks. A mount namespace does
+   not parse commands, and that is the whole reason it replaced a regex as the wall: the regex
+   gate was reviewed with roughly ten verified bypasses of exactly those shapes.
+4a. The PreToolUse hook (`lib/cocoon-gate`) stays, demoted from wall to signpost. It reads text,
+   and text has infinitely many spellings, so it may never again be the enforcement — but a deny
+   that names the road out is worth more to her than the kernel's bare "Read-only file system",
+   so the hook answers first where it matches and the kernel answers everywhere. A bypass of the
+   hook now costs an error message, not the cocoon. The hook also covers what the wrap must
+   leave writable for the CLI's own sake: the CLI config dirs and the project directory's
+   `.claude`, where one ungated settings write (`disableAllHooks`) would kill every hook — the
+   kernel seals the project copy and the hook refuses the config-dir copy. In a dispute turn the
+   hook's deny MUST NOT tell her to dispatch a builder — rule 8 forbids exactly that in that
+   turn — so the flag-time settings carry the dispute mark and the deny says the change waits
+   until the dispute is settled.
+4b. Fail closed. If bubblewrap is missing or the wrap cannot be built, the turn or wake REFUSES
+   to run — a `cocoon-refused` note in its own stream log, a notification, no reply — never an
+   unwrapped run. An unwrapped session is the 2026-08-10 session; a refused turn is an outage
+   with a name. The same holds at exec time by construction: the wrap IS the exec, so a wrap
+   that cannot start is a turn that never starts, with bubblewrap's own error in the stream log.
+4c. The doors that remain open are the designed ones, named here so nobody rediscovers them as
+   holes. Her drawers are writable because they are hers (rule 3). The `STATE_PREFIX` files are
+   writable because the turn's own machinery lives there — including the generated hook-settings
+   file, whose mid-run edit changes nothing: the CLI read it at boot, and the wall was never the
+   hook. And the systemd user manager is reachable from inside the wrap because it is the road —
+   `crab job` dispatches through it, and the unit the manager starts is born OUTSIDE the
+   namespace with full hands. That asymmetry is rule 2's design, not a leak: the session that is
+   mid-conversation cannot edit her with its own hands, and the deliberate, out-of-band brief
+   keeps every hand it ever had. A bare `systemd-run` aimed at a constituent path is the same
+   act without the brief, and the signpost denies it by name.
+5. The hook fails open on malformed input — broken advice must not brick her hands, and the wall
+   does not depend on it — and stays silent on every allowed call: no output, no log, no drag.
 
 ### The dispute turn: pushback is detected and changes the turn
 
 6. Every turn's message MUST pass `dispute_detect` before the prompt is built. The detector is
    deterministic — patterns, no model call — because the thing it guards against is exactly a
-   model's judgement under pressure. A strong signal alone fires ("you're wrong", "stop arguing",
-   "do not gaslight", "I'm reporting", "I never said", "one more time", "taking you offline", and
-   kin); weak signals ("no," leading, "wrong", "again", profanity, "I said") need two. Before she
-   has said anything there is nothing to dispute, and the detector says no.
+   model's judgement under pressure. **The guard is ordering-independent**: the detector judges
+   the message against her last reply WHEREVER it stands in the transcript
+   (`_convo_last_assistant_anywhere`), never against whether her reply is the final block. Both
+   turn paths append his message to the conversation before generation runs, so in production
+   her reply is never the final block — the original final-block guard meant the detector fired
+   on no production turn, ever, while its tests fed it transcripts no turn ever sees. Before she
+   has said anything at all there is still nothing to dispute, and the detector says no.
+6a. The patterns are three classes, because the detector's two consumers pay different prices
+   for a false positive. STRONG fires alone: direct contradiction ("you're wrong", "that's not
+   right", "that's not the bug"); what she did to his words ("not what I said", "I didn't say
+   that", "I never said", "you misunderstood", "you didn't answer my question", "I didn't ask
+   for a fix"); the day's own sentences ("stop arguing/assuming", "do not gaslight", "you're
+   not listening", "I'm reporting a bug", "taking you offline", "one more fucking time", "what
+   is wrong with you"); him locating the artifact himself ("it was in a quiet block"); and a
+   correction phrased as a question ("why did you X when I asked Y"). SOFT fires the dispute
+   turn but supersedes nothing: a bare "no."/"no," with a restatement behind it is a real
+   correction shape, but it is also the shape of "No, that's fine". WEAK signals need two and
+   also never supersede: a leading "no", "wrong", "again", "I said", and profanity only when it
+   is aimed ("the fuck", "fuck you", "you're fucking…") — profanity as colour ("that was
+   fucking great") counts nothing. The benign kin the first cut tripped on are excluded by
+   construction and held by test: "one more time" alone, "run it one more time", "listen to me
+   play this", "I'm reporting that it works", lone profanity, "no worries".
+6b. Superseding a turn still in flight ([turn-pipeline.md](turn-pipeline.md) rule 15c) requires
+   the STRONG class. The dispute frame and the escalation may ride on SOFT or two WEAK —
+   over-applying them costs a stronger turn — but a superseded reply is silently never spoken,
+   which he cannot recover, so nothing that could be benign may ever do it.
 7. A dispute turn is bought at strength, not at the voice loop's economy price: effort rises to
    `DISPUTE_EFFORT` (default high) unless the caller already asked for more, and when
    `DISPUTE_MODEL` is set, that model takes the turn. The 2026-08-10 spiral ran entirely on the
@@ -58,8 +118,21 @@ instead of her cheapest, and framed by rules that put his report above her model
    don't know yet" plus one question is a complete answer; no mechanism is substituted for his
    point — no fixes, rules, builders, or commit tables in the turn; no cutting pieces off herself
    — no self-gates, pressure conduct edits, "never again" pledges, shutdown offers, or goodbyes;
-   the answer is a few plain sentences in her own voice, no display block unbidden, conceding
-   only what is actually true.
+   the answer is a few plain sentences, no display block unbidden, conceding only what is
+   actually true. The voice demand — his most-repeated — MUST be stated as an observable, never
+   as "your own voice": the frame names the register itself (the coding agent's report cadence,
+   the machinery vocabulary, the stock phrases her claudism list exists to catch) and points at
+   the pre-speech mirror — a line the mirror hands back during this turn is that failure caught
+   in the act, to be rewritten as speech, never defended and never swapped for a synonym from
+   the same register. "Answer in your own voice" was the first cut's wording, and it was
+   unfalsifiable: it covered the demand with nothing she could check.
+8a. When the regroup layer and the dispute layer fire in the same prompt, the dispute layer MUST
+   reconcile them, because they contradict: regroup says fold in what another session is saying
+   and carry it forward, and the folded-in words can BE the rejected theory. The dispute layer —
+   which sits below regroup in the order and wins — states that anything in the other reply
+   resting on a theory this message rejects is dead there too: she folds in only what survives
+   what he just said. The reconciliation sentence is emitted only when both layers are present
+   (rule 29 of prompt-assembly: nothing points at a block that is not there).
 9. The frame's overlap with L7's ranking rule is deliberate — the regroup bargain: under pushback
    the ranking rule is the one being broken, so it is restated beside the thing being answered.
 10. Detection MUST be visible after the fact: the turn metric records that pushback was detected
@@ -69,15 +142,20 @@ instead of her cheapest, and framed by rules that put his report above her model
 
 | Source | Used by | Notes |
 |---|---|---|
-| `${STATE_PREFIX}-cocoon.json` | turn/wake CLI invocations | generated by `claude_profile_flags`; points at `lib/cocoon-gate` |
-| the conversation's last assistant block | `dispute_detect` | a dispute needs something to dispute |
+| `bwrap` (bubblewrap, unprivileged userns) | `cocoon_wrap_build` → the two CLI run functions | the wall; its absence refuses the session (rule 4b) |
+| `${STATE_PREFIX}-cocoon.json` | turn/wake CLI invocations | generated by `claude_profile_flags`; points at `lib/cocoon-gate`, carries the dispute mark |
+| her last reply, wherever it stands (`_convo_last_assistant_anywhere`) | `dispute_detect` | a dispute needs something to dispute; ordering-independent (rule 6) |
 | `DISPUTE_EFFORT`, `DISPUTE_MODEL` | `claude_generate` | conf knobs; default high / unset |
+| `DISPUTE_SUPERSEDES` | `_turn_order_is_pushback` | set by the detector on STRONG only (rule 6b) |
 
 ## INTERACTIONS
 
-**The gate may be called by:** the CLI's hook runner, inside turn and wake sessions only.
-**The detector may be called by:** `claude_generate`, once per turn, before prompt assembly.
-**Neither may:** speak, write to the conversation, book a wake, or block a read.
+**The wrap is applied by:** `_generate_claude_run` and `_wake_claude_run`, and nothing else — the
+job runner and every classifier launch outside it, on purpose.
+**The signpost may be called by:** the CLI's hook runner, inside turn and wake sessions only.
+**The detector may be called by:** `claude_generate`, once per turn, before prompt assembly, and
+`_turn_order_is_pushback` for the supersede decision.
+**None of them may:** speak, write to the conversation, book a wake, or block a read.
 
 ## EVIDENCE — 2026-08-10
 
@@ -96,10 +174,19 @@ turn that denied his observation would have been framed by rule 8 instead.
 
 ## TESTS
 
-`tests/test_cocoon_gate.sh` — the gate: constituent Edit/Write/Bash shapes denied with the road
-named; drawer writes, reads, and read-shaped git allowed; symlinks judged by realpath; malformed
-input fails open; the turn and wake profiles carry the settings flag and the job profile does not.
-`tests/test_dispute.sh` — the detector on the day's real sentences and on benign kin; the
-first-words guard; the layer present on a flagged turn, absent otherwise and absent on wakes; the
-escalation visible in the stub CLI's argv (model and effort).
+`tests/test_cocoon_wrap.sh` — the wall: the wrap argv is bubblewrap with a read-only root and the
+drawers re-bound; a constituent write from inside the wrap dies in the kernel while a drawer write
+lands; a full stub turn and a stub wake run under the wrap and answer; a missing bubblewrap
+refuses the session with the `cocoon-refused` note and never launches the CLI; the wrap is applied
+by exactly the two run functions.
+`tests/test_cocoon_gate.sh` — the signpost: constituent Edit/Write/Bash shapes denied with the
+road named; drawer writes, reads, and read-shaped git allowed; symlinks judged by realpath;
+malformed input fails open; the turn and wake profiles carry the settings flag and the job profile
+does not; the dispute-marked deny names no builder; the CLI config dirs and the project `.claude`
+are refused.
+`tests/test_dispute.sh` — the detector on the day's real sentences and on benign kin, judged on a
+production-shaped transcript (his message appended last, as both turn paths leave it); the
+first-words guard; the strong/soft/weak classes and the supersede line; the layer present on a
+flagged turn, absent otherwise and absent on wakes; the regroup reconciliation present only when
+both layers are; the escalation visible in the stub CLI's argv (model and effort).
 `tests/test_prompt_profiles.sh` — the dispute layer in the order contract and the totals.

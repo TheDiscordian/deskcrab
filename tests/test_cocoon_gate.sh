@@ -1,11 +1,13 @@
 #!/bin/bash
-# The cocoon: constituent files are read-only in a live session — specs/cocoon.md
-# rules 1-5. Run: bash tests/test_cocoon_gate.sh
+# The cocoon signpost: constituent files are read-only in a live session, and
+# this hook is the deny that names the road — specs/cocoon.md rules 4a and 5.
+# Run: bash tests/test_cocoon_gate.sh
 #
-# The gate is a PreToolUse hook, so it is tested the way the CLI runs it: a
-# tool-call JSON on stdin, a deny JSON (or silence) on stdout. The repo under
-# judgement is the sandbox's own copy, handed in as DESKCRAB_REPO exactly as
-# claude_profile_flags hands it to the live hook.
+# The WALL is the bubblewrap wrap (tests/test_cocoon_wrap.sh); this hook is
+# advice, tested the way the CLI runs it: a tool-call JSON on stdin, a deny
+# JSON (or silence) on stdout. The repo under judgement is the sandbox's own
+# copy, handed in as DESKCRAB_REPO exactly as claude_profile_flags hands it to
+# the live hook.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -16,7 +18,7 @@ D="$XDG_DATA_HOME/deskcrab"
 mkdir -p "$D" "$HOME/.config/deskcrab"
 
 gate() {  # <json on stdin via heredoc> -> stdout
-    DESKCRAB_REPO="$SANDBOX_REPO" "$GATE"
+    DESKCRAB_REPO="$SANDBOX_REPO" DESKCRAB_PROJECT_DIR="$HOME/project" "$GATE"
 }
 
 denies() {  # <desc> <json>
@@ -49,6 +51,14 @@ denies "a redirection into the repo, through Bash" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x >> $SANDBOX_REPO/lib/common.sh\"}}"
 denies "a sed -i on the repo, through Bash" \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"sed -i s/a/b/ $SANDBOX_REPO/crab\"}}"
+denies "a systemd-run aimed at a constituent path — the builder road without the brief" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"systemd-run --user bash -c 'echo x > $SANDBOX_REPO/crab'\"}}"
+denies "a dd of= into the repo" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"dd if=/dev/zero of=$SANDBOX_REPO/crab bs=1 count=1\"}}"
+denies "the hook-killing settings write: the CLI config dir" \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$HOME/.claude/settings.json\"}}"
+denies "the hook-killing settings write: the project .claude" \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$HOME/project/.claude/settings.json\"}}"
 
 echo
 echo "her drawers and her reads are never gated:"
@@ -98,3 +108,30 @@ for p in job classify; do
         *) ok "$p carries no gate — builders keep their hands" ;;
     esac
 done
+
+echo
+echo "in a dispute turn the deny names no builder (rule 4a):"
+# The dispute frame forbids dispatching a builder in that turn; a deny that
+# says "crab job" beside it is the contradiction the review caught.
+DOUT="$(printf '%s' "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$SANDBOX_REPO/lib/common.sh\"}}" \
+    | DESKCRAB_REPO="$SANDBOX_REPO" DESKCRAB_DISPUTE=1 "$GATE")"
+case "$DOUT" in
+    *'"permissionDecision": "deny"'*) ok "the dispute deny still denies" ;;
+    *) fail "the dispute deny still denies" "$DOUT" ;;
+esac
+case "$DOUT" in
+    *"crab job"*) fail "and it does not say crab job" "$DOUT" ;;
+    *) ok "and it does not say crab job" ;;
+esac
+contains "$DOUT" "no builder is dispatched" \
+    && ok "it says the change waits for the dispute to settle" \
+    || fail "it says the change waits for the dispute to settle" "$DOUT"
+# And the profile flags actually carry the mark into the settings.
+DS="$(sandbox_bash "source '$SANDBOX_REPO/lib/common.sh' >/dev/null 2>&1; PROMPT_DISPUTE=1 claude_profile_flags turn; cat \"\${STATE_PREFIX}-cocoon.json\"")"
+contains "$DS" "DESKCRAB_DISPUTE=1" \
+    && ok "a dispute turn's settings carry the mark" \
+    || fail "a dispute turn's settings carry the mark" "$DS"
+DS="$(sandbox_bash "source '$SANDBOX_REPO/lib/common.sh' >/dev/null 2>&1; claude_profile_flags turn; cat \"\${STATE_PREFIX}-cocoon.json\"")"
+contains "$DS" "DESKCRAB_DISPUTE=1" \
+    && fail "an ordinary turn's settings do not" "$DS" \
+    || ok "an ordinary turn's settings do not"

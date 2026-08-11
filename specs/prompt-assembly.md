@@ -80,8 +80,8 @@ flowchart TD
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 900 | 900 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
-| conditional dispute | 1,800 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 33,300** | **≤ 26,500** | **≤ 2,000** | **≤ 200** |
+| conditional dispute | 2,400 | 0 | 0 | 0 |
+| **system-prompt total** | **≤ 33,900** | **≤ 26,500** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -119,6 +119,14 @@ inverts who yields: 2,000 is the instructions plus roughly 750 bytes of quote, a
 that clips. The two speaking totals move by the same 2,300 — and this table and
 `tests/test_prompt_profiles.sh` state the same totals on purpose: the 2026-08-08 raise moved this
 table alone, and until 2026-08-09 the test was quietly asserting numbers 400 under it.
+
+The dispute row read 1,800 until 2026-08-10 evening, sized for the first cut of the frame. The
+frame then took on two things the adversarial reviews demanded ([cocoon.md](cocoon.md) rules 8 and
+8a): the voice demand restated as an observable — the register named, the pre-speech mirror
+pointed at — in place of the unfalsifiable "in your own voice", and the conditional sentence that
+reconciles regroup's "carry it forward" with dispute's "the theory is dead" when both layers fire.
+Measured at 1,989 bytes alone and 2,328 with the reconciliation present; 2,400 holds the larger
+shape with room, and the turn total moves by the same 600.
 
 The two exempt layers of rule 4 are counted here at their budget, and neither is held to it. Measured
 on an idle scratch instance on 2026-08-08, after the moves above: L1 3,431 with no persona sheet
@@ -284,7 +292,11 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     to be pushed back on — and its deliberate overlap with L7's ranking rule is the regroup
     bargain again: under pushback the ranking rule is the one being broken, so it is restated
     beside the thing being answered. Sits between the conditional regroup and L7; the order above
-    is the contract.
+    is the contract. When the regroup layer is present in the same prompt, the dispute layer
+    carries one extra sentence reconciling the two — regroup's "carry it forward" yields to
+    dispute's "the rejected theory is dead", because the words being folded in can BE the dead
+    theory (cocoon rule 8a). The sentence is emitted only when regroup actually fired: rule 29
+    forbids pointing at a block that is not there.
 
 37. **In the regroup block, the quote yields and the instructions never do.** The block is
     instructions wrapped around a quote of the words being spoken; under pressure the generic
