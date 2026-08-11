@@ -3613,9 +3613,21 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     # Close fds 8 and 9: the phone turn holds its serialising lock on 8 and a
     # wake holds the wake lock on 9. A child that lives for a whole claude
     # call would keep either lock held long after its turn had finished.
-    CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}" \
-    DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
-        setsid "$@" >/dev/null 2>&1 8>&- 9>&- &
+    # Carry the harness and the login too, matching the systemd-run branch
+    # above (rules 28, 29): without CLAUDE_BIN a box with no user manager runs
+    # the memory judge on stock `claude`, and without CLAUDE_CONFIG_DIR it
+    # starts the chain at the primary while the walk has moved the default on.
+    # (An env array, not a `${login:+VAR=val}` prefix — a parameter expansion
+    # is not recognised as an assignment word, so it would be run as a command.
+    # `env` reads NAME=value arguments as assignments, and an empty login
+    # simply contributes no argument, so the primary stays unset per rule 2.)
+    local -a fbenv=(
+        CLAUDE_BIN="${CLAUDE_BIN:-}"
+        CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
+        DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
+    )
+    [ -n "$login" ] && fbenv+=(CLAUDE_CONFIG_DIR="$login")
+    env "${fbenv[@]}" setsid "$@" >/dev/null 2>&1 8>&- 9>&- &
 }
 
 # --- Promise audit: the unkept-want catcher ---------------------------------

@@ -24,6 +24,23 @@ CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
 # so the phases below are invoked at their real paths, not the symlink's.
 LIB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
+# Route every model call this nightly makes through her harness and the
+# rotating account chain. sleep.service hands the run only PATH, so a child
+# that does not source the library — the claudism-scan rewrite pass, run
+# directly below — falls back to stock `claude` on the primary login
+# (account-fallback.md rules 17, 29). Sourcing common.sh gives the canonical
+# CLAUDE_BIN, the fallback chain, and the one shared limit signature (rule 13);
+# exporting them, and seeding CLAUDE_CONFIG_DIR to the durable default (unset
+# for the primary, rule 2), makes every nightly child start where the chain
+# currently prefers. The ingest itself goes through `crab memory`, which seeds
+# the same way; this covers the children that do not.
+# shellcheck source=common.sh
+. "$LIB_DIR/common.sh"
+export CLAUDE_BIN CLAUDE_FALLBACK_CONFIG_DIR
+export DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
+__sleep_login="$(claude_preferred_login)"
+if [ -n "$__sleep_login" ]; then export CLAUDE_CONFIG_DIR="$__sleep_login"; else unset CLAUDE_CONFIG_DIR; fi
+
 # Two nights is the threshold at which I should feel it rather than be told.
 ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
 

@@ -176,7 +176,7 @@ refusal to audio.
 | `H3` / `RC-3` | The post-outage retry arrives with no agenda, and a kind-less wake is never retried. |
 | `H3` / `RC-4` | Nothing she can read records any of it: no account line, refusals held off the speakers and written only to the speech log, dropped by the extractor, absent from the session outcome. |
 | `H3` / `RC-5` | The streaming paths judge the whole accumulated log rather than the attempt's own bytes, so a later failure with no output is misread as a refusal and moves the default onto an innocent account. |
-| `H3` / `RC-6` | Out-of-band children have no chain and no login, and fail quietly. |
+| `H3` / `RC-6` | Out-of-band children have no chain and no login, and fail quietly. **2026-08-11 audit (branch `bin-audit-harness-routing`):** the surviving instances were found and closed — `crab memory` exec'd `lib/memory.py` carrying only the `MEMORY_*` knobs, so the nightly ingest ran stock `claude` on the primary; `lib/sleep-nightly` sourced nothing, so its direct `claudism-scan` rewrite pass did the same; and `detach_turn_child`'s `setsid` fallback dropped `CLAUDE_BIN` and the preferred login. All three now export the harness (`CLAUDE_BIN`), the fallback chain, the shared limit signature, and the durable-default login (unset for the primary, rule 2). **Still open (gap 4):** the mid-turn claudism mirror (`_claudism_mirror_call`) runs on the ambient login rather than the preferred one — right harness, wrong account; single-shot and fail-safe, so it merely goes inert after a chain move rather than erroring. |
 | `MAJ-10` | A refusal can be committed as the conversation summary, dropping the folded blocks permanently. Closed 2026-08-08: the summariser runs as an event stream and is judged by `claude_stream_refusal` like every other path, so a refusal is recognised structurally and a summary that merely talks about limits is a summary. |
 | Recommendation §4.2 | A swap is invisible: no marker, no notification, and a stuck thinking notification. |
 | Recommendation §4.3 | The test suite strips the variable the shipping code fails to strip. |
@@ -223,3 +223,9 @@ login, so it can walk past an account that went dry between dispatch and run.
 - `tests/test_swap_announce.sh` — a swap writes a marker to the stream log, notifies on a turn, does
   not notify on a wake, and the marker does not match the limit signature.
 - `tests/test_child_env.sh` — every detached child inherits the current login.
+- `tests/test_nightly_harness_routing.sh` (TODO) — `crab memory ingest` and `lib/sleep-nightly`'s
+  `claudism-scan` child both run under `CLAUDE_BIN` (her harness, not stock `claude`) starting at the
+  durable default, and `detach_turn_child`'s `setsid` fallback forwards both `CLAUDE_BIN` and the
+  preferred login. The 2026-08-11 fix is currently covered indirectly by `test_no_project_memory`,
+  `test_limit_fallback`, `test_sleep_*`, `test_claudism_scan` and `test_memory` (all green); this
+  names the dedicated regression the export sites still owe.
