@@ -190,7 +190,11 @@ disjointness from the plain refusal, the rule-15 echo trap, the wake and turn wa
 to the next login, and the job-runner finishing a cut build on the fallback). Also holds rule 4a:
 with nothing configured and no default record the chain still yields the primary, and a wake walk
 handed a forcibly emptied list still makes exactly one attempt, on the default login, with the
-fall-through named in its own stream.
+fall-through named in its own stream. Also holds the 2026-08-11 model-limit wording ("You've
+reached your Fable 5 limit. Run /usage-credits…"), which matched nothing in the signature and let
+two builder jobs die as ordinary failures with no rotation: the exact observed line is judged a
+refusal, matches the blocked-job signature, and rides the wake walk to the fallback, moving the
+durable default.
 `tests/test_wake_limit_cut.sh` — the wake path end to end in the sandbox: a chain that ends cut
 journals a failed run naming the session limit, writes nothing to the conversation, and re-books
 through the outage-retry path; a chain with credit left delivers the fallback's reply and re-books

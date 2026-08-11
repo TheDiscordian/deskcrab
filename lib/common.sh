@@ -46,7 +46,15 @@ CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # answering fine seconds later. It reads like an auth failure — the one thing
 # this list is supposed to exclude — but a login is per-account by definition,
 # so refusing to walk past it strands every job on one dead credential.
-CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage|not logged in|please run /login}"
+# "You've reached your Fable 5 limit. Run /usage-credits to continue or switch
+# models with /model" earned its place on 2026-08-11: two builder jobs died on
+# that single line — a per-model limit, worded to match nothing then in this
+# list — so the chain never rotated, both runs were reported as ordinary build
+# failures with no work attempted, and the default had to be advanced by hand.
+# "reached your .* limit" covers that family whatever model name sits inside
+# it, and "run /usage-credits" is the CLI's own remedy line; neither phrase
+# appears in auth or network failures, which must still surface as themselves.
+CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage|reached your .* limit|run /usage-credits|not logged in|please run /login}"
 PROJECT_DIR="${PROJECT_DIR:-$HOME}"
 # The auto-memory of the directory she is started in is not HER memory.
 # `claude` reads $HOME/.claude/projects/<cwd-slug>/memory/MEMORY.md straight

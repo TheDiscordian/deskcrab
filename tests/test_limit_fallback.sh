@@ -118,6 +118,18 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-nologin" "$DEBUGLO
 [ "$out" = DUE ] && ok "a not-logged-in login is walked past, not died on" \
     || fail "one dead login must not strand the whole chain" "$out"
 
+# 2026-08-11: two builder jobs died with exit 1 and this single line — a
+# per-model limit, worded to match nothing then in the signature — so neither
+# judgement moved the chain and both runs were reported as ordinary build
+# failures with no work attempted. The exact observed wording, verbatim.
+MODEL_LIMIT="You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model."
+printf '%s\n' \
+    '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"'"$MODEL_LIMIT"'"}]}}' \
+    '{"type":"result","is_error":true,"result":"'"$MODEL_LIMIT"'"}' > "$T/fix-modellimit"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-modellimit" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
+[ "$out" = DUE ] && ok "the model-limit wording is judged a refusal, and due" \
+    || fail "the model-limit line must be walked past, not died on" "$out"
+
 reply_stream "a genuine answer" > "$T/fix-reply"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" 'cp "'"$T"'/fix-reply" "$DEBUGLOG"; claude_limit_fallback_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "a genuine reply is never retried" || fail "real output must not retry" "$out"
@@ -177,7 +189,8 @@ echo "the shared signature — session-limit wordings match, prose does not:"
 for line in \
     "Session limit reached - resets 3am" \
     "You've hit your session limit for Fable 5" \
-    "5-hour limit reached"
+    "5-hour limit reached" \
+    "$MODEL_LIMIT"
 do
     printf '%s\n' "$line" > "$T/sig"
     out="$(run 'job_output_blocked "'"$T"'/sig" && echo BLOCKED || echo no')"
@@ -404,6 +417,39 @@ case "$out" in
     *1) ok "and the stream names the fall-through, once" ;;
     *) fail "the empty chain must be legible in the stream, not inferred" "$out" ;;
 esac
+
+echo "the model-limit wording moves the walk — 2026-08-11's two dead builders:"
+# A stub that refuses with the exact observed line on every login but the
+# first fallback: the walk must ride it to the account that answers, and the
+# durable default must move — neither happened live.
+cat > "$T/claude-modellimit" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-primary}" >> "$T/calls"
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "$T/fb" ]; then
+    cat "$T/fixture-reply"
+    exit 0
+fi
+cat "$T/fix-modellimit"
+exit 1
+EOF
+chmod +x "$T/claude-modellimit"
+rm -f "$T/calls" "$T/state-account-default"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-modellimit" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE FALLBACK REPLY" ] && ok "the model-limit refusal is ridden to the fallback's reply" \
+    || fail "the walk must ride the model-limit wording to the next login" "$out"
+[ "$(cat "$T/calls" 2>/dev/null)" = "CALL:primary
+CALL:$T/fb" ] && ok "model limit: primary refused, fallback tried at once" \
+    || fail "the chain must rotate on the model-limit line" "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)"
+[ "$(cut -f1 "$T/state-account-default" 2>/dev/null)" = "$T/fb" ] \
+    && ok "the model-limit refusal moves the durable default" \
+    || fail "the default must move off the account the model limit dried up" \
+            "$(cat "$T/state-account-default" 2>/dev/null || echo "no record")"
+rm -f "$T/state-account-default"
 
 echo "claude_stream_limit_cut — a limit that stops a run MID-FLIGHT is a cut:"
 # The observed shape (CLI 2.1.219, the wake of 2026-08-11 00:17): genuine tool
