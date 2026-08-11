@@ -6153,12 +6153,47 @@ synth_opus() {
 # Remote turn (crab serve / the phone). Same conversation, same prompt, but the
 # reply comes back as data — spoken audio file + display markdown — instead of
 # being played and rendered on this desktop.
+# The bound on the remote serialisation wait (specs/phone.md rule 2). Ten
+# minutes: long enough for any honest turn ahead in the queue, short enough
+# that a wedge is reported inside the session it wedged.
+REMOTE_LOCK_WAIT="${REMOTE_LOCK_WAIT:-600}"
+
 run_claude_remote() {
     # Serialize remote turns: two overlapping requests would otherwise run two
     # claude processes whose stream logs and conversation appends race. The
     # phone is one person talking, so queueing is the honest behaviour.
+    #
+    # The delivery-queue place is taken BEFORE the lock (turn-pipeline.md
+    # rule 15a): the seat is the moment the message ARRIVED, and a message
+    # parked at the lock has still arrived. Taken inside the lock — as it
+    # used to be — a phone pushback queued behind the very turn it closes,
+    # so it could never supersede until that turn had fully delivered, and a
+    # desk turn arriving after the pushback took an earlier seat than the
+    # message that beat it here. The supersede pass rides in the take, which
+    # is exactly the part that must not wait: it is what silences the
+    # in-flight voice he is talking over. The wait chains this opens are
+    # bounded — every waiter gives up after TURN_ORDER_WAIT and delivers out
+    # of order, saying so — so the worst case is the old latency, never a
+    # wedge.
     turn_metric queue-enqueued phone
-    { flock -w 600 8; _run_claude_remote_locked "$1"; } 8>"${STATE_PREFIX}-remote.lock"
+    turn_order_take phone "$1"
+    {
+        if ! flock -w "$REMOTE_LOCK_WAIT" 8; then
+            # The wait EXPIRED. This used to fall through and run the turn
+            # anyway — unlocked, beside whatever had wedged the lock for ten
+            # minutes: two claude processes racing the same conversation and
+            # stream, the exact corruption the lock exists to prevent. A
+            # turn that cannot be serialised is refused, and the refusal is
+            # said plainly in the one field the client renders for a turn
+            # that arrived holding nothing (phone.md rule 2).
+            turn_metric turn-refused "remote lock wait expired after ${REMOTE_LOCK_WAIT}s"
+            turn_order_release
+            python3 -c 'import json,sys; print(json.dumps({"spoken":"","display":"","audio":"","error":sys.argv[1]}))' \
+                "refused — another phone turn has held the line for $(( REMOTE_LOCK_WAIT / 60 )) minutes and this one cannot run safely beside it; nothing was run. Say it again in a moment."
+            return 1
+        fi
+        _run_claude_remote_locked "$1"
+    } 8>"${STATE_PREFIX}-remote.lock"
 }
 
 _run_claude_remote_locked() {
@@ -6184,12 +6219,12 @@ _run_claude_remote_locked() {
     # Mark the exchange in flight: a wake firing beside this turn reads it
     # and is told the message is already being answered.
     live_turn_begin phone "$TEXT"
-    # The same place in the same queue as a desk turn (specs/turn-pipeline.md
-    # rule 15a). The remote lock already orders phone turns against each
-    # other; this is what orders them against the desk, and he is one person
-    # having one conversation — which handset he picked up does not change
-    # the order he said things in.
-    turn_order_take phone "$TEXT"
+    # The delivery-queue place was taken in run_claude_remote, BEFORE the
+    # remote lock (specs/turn-pipeline.md rule 15a) — taking it here put the
+    # take on the far side of a wait that can last minutes, which inverted
+    # cross-device order and let a phone pushback queue behind the very turn
+    # it was closing. TURN_SEQ survives into this scope: the lock body is a
+    # braced group in the same process, not a subshell.
     # A private stream log, so a remote turn can never truncate the log a
     # desktop turn's TTS streamer is tailing.
     # crab serve sets DESKCRAB_REMOTE_LOG when it wants to tail this stream and

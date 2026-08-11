@@ -64,7 +64,14 @@ slot is the loudest statement this machine can make that it was not listening.
      on the desk and the phone alike. He is one person having one conversation and which handset he
      reached for does not change the order he said things in. The place is taken before the prompt
      is built and released when the reply has been delivered — or by the session's exit trap, so a
-     turn killed anywhere cannot hold a place the next reply queues behind.
+     turn killed anywhere cannot hold a place the next reply queues behind. On the phone the place
+     — and with it rule 15c's supersede pass — MUST be taken BEFORE the remote serialisation lock
+     ([phone.md](phone.md) rule 2) is waited on, never inside it: the seat is the moment the
+     message arrived, and a message parked at the lock has still arrived. Taken inside the lock, a
+     phone pushback queues behind the very turn it closes and cannot supersede it until that turn
+     has fully delivered, and a desk turn arriving after the pushback takes an earlier seat than
+     the message that beat it here. The wait chains this opens stay bounded: every waiter gives up
+     after `TURN_ORDER_WAIT` and delivers out of order, saying so (rule 15b).
 15b. A reply MUST NOT be delivered while an earlier turn is still owed its delivery. The wait is
      bounded by `TURN_ORDER_WAIT`; past the bound the reply goes out and the session outcome says
      it went out of order. A reply held forever is the failure this rule exists to prevent, not an

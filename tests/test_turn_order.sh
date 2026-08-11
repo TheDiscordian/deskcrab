@@ -146,6 +146,61 @@ grep -q "^Assistant \[[^]]*\]: ANSWER-TO You didn't have it" "$CONVO" \
     && ok "the reply to the message he actually sent last was delivered" \
     || fail "the pushback turn's own reply never landed"
 
+# --- the phone takes its seat BEFORE the remote lock -----------------------
+# specs/turn-pipeline.md rule 15a, phone.md rule 2. The ticket used to be
+# taken inside the lock, so a phone pushback queued behind the very turn it
+# was closing: it could not supersede until that turn had fully delivered,
+# which is the 12:31 shape again with a lock in the middle. The seat is the
+# moment the message arrived; a message parked at the lock has still arrived.
+echo
+echo "a phone pushback supersedes the phone turn it arrived behind:"
+seed_convo
+rm -rf "$ORDERDIR"; : > "$SESSLOG"
+"$REPO/crab" remote "SLOW it was the quotation marks" > "$WORK/phone-first.json" 2>/dev/null &
+FIRST=$!
+sleep 1
+"$REPO/crab" remote "Stop assuming I'm wrong you are wrong not me" \
+    > "$WORK/phone-push.json" 2>/dev/null
+wait "$FIRST" 2>/dev/null
+# The JSON escapes the em dash (—), so the match stays on plain words.
+grep -q "you had already moved past what this answered" "$WORK/phone-first.json" \
+    && ok "the in-flight phone turn was told its moment had passed" \
+    || fail "the earlier phone turn delivered as if nothing had closed it" \
+            "$(cat "$WORK/phone-first.json" 2>/dev/null)"
+grep -q "Assistant .*(held — not spoken).*ANSWER-TO SLOW" "$CONVO" \
+    && ok "its reply is in the transcript, marked as words she did not say" \
+    || fail "the superseded phone reply is not marked held in the transcript"
+grep -q 'held — he had already moved past this' "$SESSLOG" \
+    && ok "and the journal names the message that closed it" \
+    || fail "the journal does not record the phone hold"
+grep -q "ANSWER-TO Stop assuming" "$WORK/phone-push.json" \
+    && ok "the pushback's own reply was delivered to the phone" \
+    || fail "the pushback turn's reply never landed" \
+            "$(cat "$WORK/phone-push.json" 2>/dev/null)"
+
+# --- a remote lock wait that expires refuses the turn ----------------------
+# phone.md rule 2: it used to fall through and run the turn UNLOCKED beside
+# whatever had wedged the lock for ten minutes — two claude processes racing
+# one conversation, the exact corruption the lock exists to prevent.
+echo
+echo "a remote lock wait that expires refuses the turn — it never runs unlocked:"
+rm -rf "$ORDERDIR"
+: > "$SANDBOX_ASKED"
+flock "${DESKCRAB_STATE_PREFIX}-remote.lock" sleep 15 &
+HOLDER=$!
+sleep 1
+OUT="$(REMOTE_LOCK_WAIT=1 "$REPO/crab" remote "hello are you in there" 2>/dev/null)"; RC=$?
+contains "$OUT" "refused" && contains "$OUT" "nothing was run" \
+    && ok "the client is told plainly that the turn was refused, and why" \
+    || fail "no clear refusal reached the client" "[$OUT]"
+grep -q "hello are you in there" "$SANDBOX_ASKED" \
+    && fail "the refused turn still ran the model — unlocked, beside the wedge" \
+    || ok "the model was never run"
+check "the refusal reports failure, not success" [ "$RC" -ne 0 ]
+check_eq "and no ticket was left for the next reply to queue behind" \
+    "$(ls "$ORDERDIR"/*.ticket 2>/dev/null | wc -l)" "0"
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+
 # --- 5, 6, 7, 8: the queue's own arithmetic, at unit level -----------------
 (
     set +eu

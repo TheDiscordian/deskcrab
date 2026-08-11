@@ -13,7 +13,13 @@ with the page closed.
 
 1. A turn MUST be identified by a client-chosen identifier. The same identifier re-posted MUST
    attach to the running turn rather than starting a second one.
-2. Phone turns MUST be serialised by a lock with a bounded wait.
+2. Phone turns MUST be serialised by a lock with a bounded wait. The delivery-queue place
+   ([turn-pipeline.md](turn-pipeline.md) rule 15a) is taken BEFORE that wait, so a message parked
+   at the lock holds its true arrival order and its pushback pass runs at once. A wait that
+   expires MUST refuse the turn with a clear error the client can show — it MUST NOT run the turn
+   unserialised beside whatever holds the lock, which is the exact race the lock exists to
+   prevent. The bound is `REMOTE_LOCK_WAIT`, ten minutes by default (rule 43 measures the queue
+   against it).
 3. A phone turn MUST build the same prompt shape as a desk turn, with the origin recorded as phone.
 4. A stalled turn MUST NOT wedge the client. The client MUST wrap the streaming fetch in an abort
    controller with an idle-byte timer, and MUST check its deadline outside the error handler. The
