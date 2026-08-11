@@ -215,12 +215,22 @@ ledger.
      claim of completed work ("I've written it to the log") — the completed claim is
      precisely the lie this checker exists for, and unlike the audit it holds the record that
      can refute it. A statement about future conversation, an offer still awaiting an answer,
-     and a bare want are not commitments. The record the judge holds is wider than the turn's
+     and a bare want are not commitments. Neither is a claim of understanding — "I worked out
+     why", "I realised", "the cause is" — which reports a finding and owes no work: the checker
+     read "I worked out X" as "I did the work X" and accused a diagnosis of being an unkept
+     chore (2026-08-11 09:42). The record the judge holds is wider than the turn's
      own calls ([wake-queue.md](wake-queue.md) rule 43b): she runs several hands at once and
      the announced work is often performed by a parallel session or a dispatched builder, so
      the judge is handed the other sessions' recent tool records and the jobs ledger's recent
-     dispatches beside the turn's own, each as a labelled section, and anything in any of them
-     that plausibly performed the commitment makes it KEPT. A commitment nothing anywhere
+     dispatches beside the turn's own, each as a labelled section — and, because the right
+     question is always whether the thing exists rather than whether this turn ran a tool, two
+     more labelled sections: the files the reply names, statted from the disk itself (an
+     artefact that exists, with a modification time consistent with the claim, is the record
+     that keeps a completed-work claim — whoever's hand wrote it), and the wake queue's pending
+     bookings (a future commitment whose work a pending wake's reason already names is kept by
+     the schedule, whenever the schedule was written). Anything in any of them
+     that plausibly performed, embodies, or durably schedules the commitment makes it KEPT. A
+     commitment nothing anywhere
      performed is UNKEPT; a call that durably scheduled the work counts as performing it —
      a `crab wake-at` or `crab job` naming that work is a kept promise, not an excuse — and
      two cheap backed short-circuits (a job dispatched in the turn's window; a chess-move

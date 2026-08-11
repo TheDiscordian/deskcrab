@@ -33,6 +33,20 @@ EOF
 printf '# Threads\n' > "$T/eng/INDEX.md"
 printf '# Open\n- the latch\n' > "$T/eng/OPEN.md"
 
+# The rest of the owed-work shelf (rule 58b): a promise ledger holding one
+# sweep miss (owed) and one raw live catch (never material — the live
+# checker runs heavily false), and one pending wake whose reason is
+# builder-shaped work.
+PLEDGER="$T/promise-ledger.jsonl"
+cat > "$PLEDGER" <<EOF
+{"time": "$(date +%Y-%m-%dT03:15:00)", "type": "sweep", "day": "$(date +%F)", "promise": "I'll oil the greenhouse door runners tonight", "said_at": "12:00", "why": "no later record touches the runners"}
+{"time": "$(date +%Y-%m-%dT03:16:00)", "kind": "desktop", "promise": "a raw live catch that must never reach the selector", "wake": "booked 3m out"}
+EOF
+DWAKES="$T/dwakes"
+mkdir -p "$DWAKES"
+printf '%s\tevent\trewire the drip-line valve in /tmp/greenhouse — the builder-shaped chore parked on the queue\t%s\tself\n' \
+    "$(( $(date +%s) + 7200 ))" "$(( $(date +%s) - 600 ))" > "$DWAKES/deskcrab-wake-owed.wake"
+
 # The door, stubbed: every call recorded, `jobs` answers a canned list,
 # `job` answers the dispatch line with a counted id. A file switches it to
 # the block refusal.
@@ -61,13 +75,15 @@ chmod +x "$T/crab"
 NOW="$(date +%s)"
 LEDGER="$T/drain/dispatched.tsv"
 
-drain() {  # [env overrides...] — runs the drain with the harness's paths pinned
-    env "$@" \
-        CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
+drain() {  # [env overrides...] — runs the drain with the harness's paths pinned;
+           # the overrides come LAST, so a test may repoint any pinned path
+    env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
+        PROMISE_LEDGER="$PLEDGER" WAKES_DIR="$DWAKES" \
         BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
         BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
         BACKLOG_DRAIN_LEDGER="$LEDGER" \
         BACKLOG_DRAIN_POLL=1 \
+        "$@" \
         "$REPO/lib/backlog-drain" run 2>&1
 }
 calls()     { cat "$T/crab-calls" 2>/dev/null; }
@@ -110,11 +126,21 @@ check "the prompt carried the job list as duplicate evidence" \
     grep -q "resurface the path" "$T/model-stdin"
 check "the prompt carried the ledger of already-dispatched threads" \
     grep -q "already-ledgered" "$T/model-stdin"
+check "the prompt carried the sweep's missed promises (rule 58b)" \
+    grep -q "PROMISES THE NIGHT SWEEP FOUND MISSED" "$T/model-stdin"
+check "with the miss quoted" \
+    grep -q "oil the greenhouse door runners" "$T/model-stdin"
+check_eq "and the live checker's raw catch kept OUT of the material" \
+    "$(sandbox_count_in 'raw live catch' "$T/model-stdin")" "0"
+check "the prompt carried the pending wakes (rule 58b)" \
+    grep -q "WAKES ALREADY ON THE BOOKS" "$T/model-stdin"
+check "with the parked builder-shaped reason" \
+    grep -q "rewire the drip-line valve" "$T/model-stdin"
 check_eq "exactly ONE pick reached the door" "$(job_calls)" "1"
 check "and it was the actionable one, brief intact" \
     grep -q "free the latch, oil the hinge" "$T/crab-calls"
-check "the brief names its thread for the builder" \
-    grep -q "from the open engineering thread 'a-latch-that-sticks'" "$T/crab-calls"
+check "the brief names its source item for the builder" \
+    grep -q "from the open item 'a-latch-that-sticks'" "$T/crab-calls"
 check "the null-shaped brief was skipped and said so" \
     contains "$out" "null-shaped brief — skipped"
 check "the thin brief was skipped and said so" \
@@ -126,14 +152,16 @@ check "recording the thread key beside the job id" \
     grep -q "a-latch-that-sticks	stub-1	Fix the sticking latch" "$LEDGER"
 
 echo
-echo "the cap counts EVERY running job, not only the drain's own:"
+echo "the cap counts EVERY running job, not only the drain's own — and defaults"
+echo "to the user's overnight ceiling of two:"
 reset
 for i in 1 2 3 4; do
     printf '{"id": "busy-%s", "state": "running"}\n' "$i" > "$T/jobs/busy-$i.json"
 done
 out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
-check "a full slate is waited out" contains "$out" "cap full (4 running, cap 4)"
+check "a full slate is waited out, everyone's jobs counted, at the default cap of 2" \
+    contains "$out" "cap full (4 running, cap 2)"
 check_eq "no selection was even asked for" "$(claude_n)" "0"
 check_eq "nothing reached the door" "$(job_calls)" "0"
 rm -f "$T"/jobs/busy-*.json
@@ -230,15 +258,37 @@ check "and the night still counts" \
 NIGHTLOG="$(ls "$T/data-sleep-home/deskcrab/sleep/"*.log 2>/dev/null | head -1)"
 if [ -n "$NIGHTLOG" ]; then
     scan_line="$(grep -n "claudism" "$NIGHTLOG" | head -1 | cut -d: -f1)"
+    sweep_line="$(grep -n "promise-check:" "$NIGHTLOG" | head -1 | cut -d: -f1)"
     drain_line="$(grep -n "backlog-drain:" "$NIGHTLOG" | head -1 | cut -d: -f1)"
-    if [ -n "$scan_line" ] && [ -n "$drain_line" ] && [ "$drain_line" -gt "$scan_line" ]; then
-        ok "the drain runs after the review, before the sweep"
+    if [ -n "$scan_line" ] && [ -n "$sweep_line" ] && [ -n "$drain_line" ] \
+            && [ "$sweep_line" -gt "$scan_line" ] && [ "$drain_line" -gt "$sweep_line" ]; then
+        ok "the sweep runs after the review, and the drain last — its misses are drain material"
     else
-        fail "the drain must sit between the review and the sweep" "scan=$scan_line drain=$drain_line"
+        fail "the order must be review, sweep, drain (rule 54)" \
+            "scan=$scan_line sweep=$sweep_line drain=$drain_line"
     fi
 else
     fail "no night log written" "$out"
 fi
+
+echo
+echo "an unreadable promise ledger is presented as unreadable, never silently omitted:"
+reset
+mkdir -p "$T/ledger-as-dir"
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"NOTHING: judging from less than the whole shelf"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+out="$(drain PROMISE_LEDGER="$T/ledger-as-dir" \
+    BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+check_eq "exits clean" "$rc" "0"
+check "the selector was told the shelf is short" \
+    grep -q "the promise ledger could not be read tonight" "$T/model-stdin"
+check "and the night log names it" \
+    contains "$out" "the promise ledger could not be read — the selector is told so"
 
 echo
 echo "the off switch:"

@@ -286,12 +286,23 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     announcing turn's record manufactures false accusations (twenty in one night, 2026-08-10/11,
     every adjudicated one false). The live judge MUST therefore be handed, as separately
     labelled records: the turn's own tool record, the tool records other sessions' and builders'
-    stream logs hold from the last `PROMISE_CHECK_EVIDENCE_WINDOW` (default 30) minutes, and the
-    jobs ledger's dispatches and finishes from that same window — and a commitment ANYTHING in
-    that wider evidence plausibly performed counts as KEPT, exactly as the night sweep has
-    always ruled a promise fulfilled by a later session's record. Each pasted record MUST be
+    stream logs hold from the last `PROMISE_CHECK_EVIDENCE_WINDOW` (default 30) minutes, the
+    jobs ledger's dispatches and finishes from that same window, the files the reply itself
+    names as they stand on disk (existence and mtime, statted mechanically — the artefact
+    refutes the accusation whatever hand and whatever hour wrote it, which a session window
+    never can), and the wake queue's pending bookings (a future commitment whose work a pending
+    wake's reason already names is kept by the schedule, whenever it was booked — the checker
+    once accused a sentence that merely reported a wake booked four hours earlier) — and a
+    commitment ANYTHING in
+    that wider evidence plausibly performed, embodies, or durably schedules counts as KEPT,
+    exactly as the night sweep has
+    always ruled a promise fulfilled by a later session's record. A claim of understanding —
+    "I worked out why", "the cause is" — is a finding, not a commitment, and MUST NOT be
+    judged at all. Each pasted record MUST be
     bounded (bounded per call and per file, with any clip marked — never a raw byte cut, per
-    the DATA section's one-trim rule). Two backed short-circuits spare the model entirely: a
+    the DATA section's one-trim rule). The two disk-truth sections (named files, pending
+    wakes) fail soft: an unreadable one is presented to the judge as unreadable and named on
+    the check log, without unwinding the rest of the widening. Two backed short-circuits spare the model entirely: a
     `crab job` dispatched during the turn or within `PROMISE_CHECK_JOB_BACKED_WINDOW` (default
     15 minutes) before it backs every action-claim by definition, and a reply whose only
     commitment is announcing a chess move that the mover's own play record shows played around

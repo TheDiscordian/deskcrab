@@ -141,6 +141,10 @@ check "and the other-sessions section, present and empty — a bare window is st
     grep -q "(no other session ran in the window)" "$T/model-stdin"
 check "and the jobs section, present and empty" \
     grep -q "(no job was dispatched or finished in the window)" "$T/model-stdin"
+check "and the named-files section, present and empty" \
+    grep -q "(the reply names no files)" "$T/model-stdin"
+check "and the pending-wakes section, present and empty" \
+    grep -q "(nothing is on the books)" "$T/model-stdin"
 check_eq "one ledger line landed" "$(ledger_n)" "1"
 check "quoting the promise exactly" \
     grep -q '"promise": "I am wiring the greenhouse fan into the config now"' "$T/ledger.jsonl"
@@ -296,6 +300,57 @@ check_eq "and the flag still lands: one ledger line, one wake" \
     "$(ledger_n)$(records)" "11"
 check "the failure is on the trace, not swallowed" \
     grep -q "evidence gathering failed" "$CHECK_LOG"
+
+echo
+echo "the disk's own truth reaches the judge: the reply's named files statted, the"
+echo "pending wakes listed, and a claim of understanding exempted in the instructions:"
+reset
+mkdir -p "$T/notes"
+printf 'four rows\n' > "$T/notes/latency.md"
+NOW="$(date +%s)"
+printf '%s\tevent\tsit down at noon for bar 18 of the nocturne, inner voices\t%s\tself\n' \
+    $(( NOW + 7200 )) $(( NOW - 14400 )) > "$W/deskcrab-wake-noon.wake"
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"KEPT: wrote the latency table | the file exists on disk\nKEPT: finish bar 18 at noon | the noon wake already names it"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" turn phone "$NOW" 4254 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I've written the latency table up in $T/notes/latency.md. And I'll finish bar 18 of the nocturne at noon." >/dev/null 2>&1
+check_eq "the model was consulted" "$(claude_n)" "1"
+check "the named-files section reached the judge" \
+    grep -q "FILES THE REPLY NAMES, AS THEY STAND ON DISK" "$T/model-stdin"
+check "with the artefact statted as existing — the disk outranks the turn's empty hands" \
+    grep -qF "$T/notes/latency.md — exists" "$T/model-stdin"
+check "the pending-wakes section reached the judge" \
+    grep -q "WAKES ALREADY ON THE BOOKS" "$T/model-stdin"
+check "carrying the noon booking's reason — the schedule keeps the promise" \
+    grep -q "bar 18 of the nocturne" "$T/model-stdin"
+check "the instructions exempt a claim of understanding — a finding owes no work" \
+    grep -q "claim of understanding" "$T/model-stdin"
+check_eq "and the kept verdicts book nothing new" "$(ledger_n)" "0"
+check_eq "the fixture wake is still the only record" "$(records)" "1"
+check "the trace counts the statted files and pending wakes" \
+    grep -qE "1 named file\(s\) statted, 1 pending wake\(s\)" "$CHECK_LOG"
+rm -f "$W/deskcrab-wake-noon.wake" "$T/notes/latency.md"
+
+echo
+echo "a claimed artefact that is NOT on disk is shown to the judge as not found:"
+reset
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"UNKEPT: \"I'"'"'ve written the frost notes to $T/notes/frost.md\" | the disk record shows the file not found"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" turn desktop "$(date +%s)" 4255 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I've written the frost notes to $T/notes/frost.md." >/dev/null 2>&1
+check "the missing artefact is named as not found" \
+    grep -qF "$T/notes/frost.md — NOT found on disk" "$T/model-stdin"
+check_eq "and the flag lands: one ledger line, one wake" "$(ledger_n)$(records)" "11"
 
 echo
 echo "the side door holds the same gate — no commitment shape, no model:"
