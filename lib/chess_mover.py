@@ -21,6 +21,7 @@ failed is re-offered by the hub's store poll on a cooldown, so a turn is
 never silently lost.
 """
 
+import json
 import os
 import re
 import shlex
@@ -431,8 +432,13 @@ class Mover:
                       or os.path.expanduser("~/.local/bin/claude"))
         model = (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL")
                  or os.environ.get("CLAUDE_MODEL") or "sonnet")
+        # --output-format json: the run's own result object carries the exact
+        # usage the token ledger keeps (specs/metrics.md rule 15). The answer
+        # is read from its `result` field in _call; a stdout that is not that
+        # object (a stub, an older CLI) stays the whole answer as before.
         cmd = [claude, "-p", "--dangerously-skip-permissions",
                "--model", model, "--effort", effort,
+               "--output-format", "json",
                "--disable-slash-commands",
                "--system-prompt", SYSTEM_PROMPT]
         empty_mcp = Path(__file__).resolve().parent / "empty-mcp.json"
@@ -516,8 +522,42 @@ class Mover:
                            if any(m in ln.lower()
                                   for m in _CAUSE_MARKERS)),
                           lines[-1] if lines else "")
+            self._ledger(cmd, env, None, f"{err or ''}\n{out or ''}")
             return out or "", f"exit-{proc.returncode}: {detail[:200]}"
+        # The CLI's `--output-format json` result object: the answer is its
+        # `result` field, and its usage goes to the token ledger
+        # (specs/metrics.md rules 13, 15). Anything that does not parse as
+        # that object — a stub, an older CLI — is the whole answer, exactly
+        # as the plain-text mode was, and earns no record. Decoding before
+        # the move parse is load-bearing: raw JSON is full of hex ids whose
+        # substrings read as legal UCI squares.
+        try:
+            doc = json.loads((out or "").strip())
+        except (json.JSONDecodeError, ValueError):
+            return out or "", None
+        if isinstance(doc, dict) and "result" in doc:
+            self._ledger(cmd, env, doc, "")
+            return str(doc.get("result") or ""), None
         return out or "", None
+
+    @staticmethod
+    def _ledger(cmd, env, doc, error_text):
+        """Best-effort append to the token ledger; never allowed to change
+        the move path's outcome (specs/metrics.md rule 6)."""
+        try:
+            import token_ledger
+            model = ""
+            if "--model" in cmd:
+                model = cmd[cmd.index("--model") + 1]
+            status = "ok"
+            if doc is None:
+                status = "refused" if token_ledger.limit_re().search(
+                    error_text or "") else "error"
+            token_ledger.record_result_object(
+                doc, "chess", model=model,
+                account=env.get("CLAUDE_CONFIG_DIR", ""), status=status)
+        except Exception:
+            pass
 
     # -- the words ---------------------------------------------------------
     @staticmethod

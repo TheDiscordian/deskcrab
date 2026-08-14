@@ -84,6 +84,9 @@ classify_walk() {  # <verdict-line-ERE>
                     claude_classify "$MODEL" \
                         "Answer with only the verdict lines asked for, nothing else."
             ) >"$CLOG" 2>&1
+            # Recorded per attempt, before the next truncation wipes this
+            # one's stream (specs/metrics.md rule 14).
+            token_ledger_record "$CLOG" promise-check "$MODEL" "" "$ACCT"
             # A refusal is judged structurally, from the CLI's own events —
             # never by pattern-matching the answer's words — and it moves to
             # the next ACCOUNT, not the next model: a dry account is dry for

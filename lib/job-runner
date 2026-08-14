@@ -219,6 +219,14 @@ for ACCT in $(claude_accounts); do
 done
 trap - TERM
 
+# The token ledger (specs/metrics.md rule 13): the whole walk sits in one
+# stream, so the parser splits the attempts on the CLI's own init events and
+# reads the accounts off the swap markers each retry logged above. The hint
+# is the walk's own last account NUMBER — equal to the only account when the
+# walk never swapped, which is the one case the hint decides.
+token_ledger_record "$STREAMLOG" job "$JOB_MODEL" "$JOB_EFFORT" \
+    "$ACCT" "$(( $(date +%s) - START ))"
+
 # Renewed: the status write, the day journal, and the completion wake below
 # all still touch her files after a run that may have outlived the first
 # declaration's window.

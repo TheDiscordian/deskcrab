@@ -997,6 +997,31 @@ turn_metric() {  # <stage> [detail]
     return 0
 }
 
+# --- Token ledger: where a run's tokens actually went -----------------------
+# One appended record per CLI attempt, parsed from the stream the run just
+# wrote (specs/metrics.md). Evidence, never control flow: bounded, silent,
+# best-effort — a ledger that cannot be written costs the hosting run nothing
+# (rule 6) — and NO model call anywhere in it (rule 5). The account argument
+# is a hint for a single-attempt stream; a walk that swapped wrote its own
+# marker lines and the parser reads the accounts off those. The status
+# judgement rides the ONE shared limit signature, handed through the
+# environment (account-fallback.md rule 13): the spelling baked into
+# lib/token_ledger.py is a last resort for detached callers only, and letting
+# a hosted call fall to it would be the second copy that ages on its own.
+token_ledger_record() {  # <stream file> <kind> [model] [effort] [account] [duration s]
+    [ "${TOKEN_LEDGER:-1}" = "1" ] || return 0
+    [ -s "${1:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local -a durarg=()
+    [ "${6:-0}" -gt 0 ] 2>/dev/null && durarg=(--duration "$6")
+    { DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
+        timeout 20 python3 "$LIB_DIR/token_ledger.py" record "$1" \
+        --kind "$2" --model "${3:-}" --effort "${4:-}" --account "${5:-}" \
+        --chain "${CLAUDE_FALLBACK_CONFIG_DIR:-}" --pid $$ \
+        --dir "$METRICS_DIR" ${durarg[@]+"${durarg[@]}"}; } >/dev/null 2>&1 || true
+    return 0
+}
+
 # The last thing a dying session can still say. specs/turn-pipeline.md rule
 # 16a: a session killed while generating never reaches any of its own
 # branches, so SESSION_REPLY and SESSION_OUTCOME are both empty and the day
@@ -2003,6 +2028,9 @@ $(cat "$OLDFILE")"
               CLAUDE_CLASSIFY_STREAM=1 \
               claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS" \
             >>"$SUMLOG" 2>&1 || SUMRC=$?
+        # Recorded per attempt, before the next login's truncation wipes this
+        # one's stream (specs/metrics.md rule 14).
+        token_ledger_record "$SUMLOG" summariser "$CONVO_SUMMARY_MODEL" "" "$SUMACCT"
         if REFUSAL="$(claude_stream_refusal "$SUMLOG")"; then
             claude_limit_record "$SUMACCT" "$REFUSAL"
             continue
@@ -3879,6 +3907,11 @@ Output ONLY the replacement line: no preamble, no quotes, no commentary, no disp
       | CLAUDE_CLASSIFY_STREAM=1 \
         CLAUDE_CLASSIFY_TIMEOUT="${CLAUDISM_MIRROR_CALL_TIMEOUT:-90}" \
         claude_classify "$CLAUDE_MODEL" "$SYS"; } >"$MLOG" 2>&1 || true
+    # The token ledger (specs/metrics.md rule 13), before either branch below
+    # deletes the stream. This call runs on the ambient login (the RC-6 gap-4
+    # note in account-fallback.md), so that is the honest account hint.
+    token_ledger_record "$MLOG" claudism-mirror "$CLAUDE_MODEL" "" \
+        "${CLAUDE_CONFIG_DIR:--}"
     # Judged structurally, off the CLI's own events — never by matching her
     # answer's words (the compaction lesson, account-fallback.md rule 15).
     if claude_stream_refusal "$MLOG" >/dev/null; then
@@ -5183,7 +5216,13 @@ _wake_claude_run() {
 wake_claude_run_chain() {
     local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     WAKE_CHAIN_ATTEMPTS=0
+    # The last account this walk actually ran, left for the caller: the token
+    # ledger hook hands it to the parser as the account hint, which only
+    # decides a stream with no swap markers — exactly the walk whose last
+    # account is its only one.
+    WAKE_CHAIN_ACCT=""
     for ACCT in $(claude_accounts); do
+        WAKE_CHAIN_ACCT="$ACCT"
         CONFDIR="$(claude_account_dir "$ACCT")"
         # Marker only on this path — claude_swap_announce keeps the desktop
         # notification for a turn somebody is waiting on.
@@ -5223,7 +5262,8 @@ wake_claude_run_chain() {
         # claude_account_current, not the walk's own pick: the walk is the
         # thing that just came back empty, and the current is read straight
         # off the state file, which cannot go blank.
-        _wake_claude_run "$(claude_account_dir "$(claude_account_current)")"
+        WAKE_CHAIN_ACCT="$(claude_account_current)"
+        _wake_claude_run "$(claude_account_dir "$WAKE_CHAIN_ACCT")"
         WAKE_CHAIN_ATTEMPTS=1
     fi
 }
@@ -5324,9 +5364,15 @@ run_claude_wake() {
     # read out in its place.
     claim_debuglog
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+    local WAKE_T0
+    WAKE_T0="$(date +%s)"
     wake_claude_run_chain
     local CLAUDE_STATUS="$WAKE_CLAUDE_STATUS"
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
+    # The token ledger (specs/metrics.md rule 13), before any early return
+    # below can skip it and before the stream can be pruned.
+    token_ledger_record "$DEBUGLOG" wake "$WAKE_MODEL" "$WAKE_EFFORT" \
+        "${WAKE_CHAIN_ACCT:-}" "$(( $(date +%s) - WAKE_T0 ))"
 
     # A wake edits its drawers freely (wants, conduct, the journal) — the
     # repo and the rest of what constitutes her are read-only under the
@@ -5956,6 +6002,8 @@ claude_generate() {
     local TURN_DEADLINE=0
     [ "${TURN_CHAIN_TIMEOUT:-0}" -gt 0 ] \
         && TURN_DEADLINE=$(( $(date +%s) + TURN_CHAIN_TIMEOUT ))
+    local GEN_T0
+    GEN_T0="$(date +%s)"
     turn_metric gen-start
     local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     for ACCT in $(claude_accounts); do
@@ -5992,6 +6040,18 @@ claude_generate() {
     # terminator is harmless on the success path.
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
     turn_metric gen-end "status $GENERATE_CLAUDE_STATUS"
+
+    # The token ledger (specs/metrics.md rule 13): this one hook covers the
+    # desk and the phone turn — every caller of this walk — parsing the
+    # stream it just wrote, before anything can prune it.
+    local TL_KIND
+    case "${SESSION_KIND:-}" in
+        "desktop turn") TL_KIND=turn ;;
+        "phone turn")   TL_KIND=phone ;;
+        *)              TL_KIND="${SESSION_KIND:-turn}" ;;
+    esac
+    token_ledger_record "$DEBUGLOG" "$TL_KIND" "$MODEL" "$EFFORT" \
+        "$ACCT" "$(( $(date +%s) - GEN_T0 ))"
 
     # Whatever this turn's tools wrote is her own hand — declare it before the
     # self-change watcher judges the burst. Covers desktop and phone turns.

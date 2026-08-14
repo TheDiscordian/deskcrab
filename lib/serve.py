@@ -51,6 +51,10 @@ WEBAPP_DIR = LIB_DIR / "webapp"
 # server's no-dependencies promise holds.
 sys.path.insert(0, str(LIB_DIR))
 import sentence_stream
+# The token ledger's aggregation (specs/metrics.md rules 21-22): the metrics
+# page rides this server rather than getting one of its own. Stdlib-only, so
+# the no-dependencies promise holds here too.
+import token_ledger
 
 # Streaming voice granularity (PHONE_SENTENCE_STREAM in the config). Off, this
 # file behaves byte-for-byte as before the flag existed: one clip per completed
@@ -1458,6 +1462,28 @@ class Handler(BaseHTTPRequestHandler):
             if _webpush is None:
                 return self._json(501, {"error": "push unavailable: python-cryptography is not installed"}, extra)
             return self._json(200, {"key": _webpush.vapid_keys()[1]}, extra)
+
+        # The token ledger's views (specs/metrics.md rules 21-23): same
+        # process, same port, same auth as every other route. The data route
+        # ships hour buckets, never raw records, so months of ledger stay a
+        # cheap load and every filter is a client-side re-sum.
+        if path == "/metrics":
+            return self._send(200, (WEBAPP_DIR / "metrics.html").read_bytes(),
+                              "text/html; charset=utf-8", extra)
+        if path == "/metrics/data":
+            if not METRICS_DIR:
+                return self._json(501, {"error": "metrics are switched off"},
+                                  extra)
+            raw = (query.get("days") or ["7"])[0]
+            try:
+                days = max(1, min(366, int(raw)))
+            except ValueError:
+                days = 7
+            try:
+                doc = token_ledger.aggregate(METRICS_DIR, days)
+            except Exception:
+                doc = {"days": [], "buckets": []}
+            return self._json(200, doc, extra)
 
         if path == "/watch":
             # Turns spoken at the laptop land in the same conversation file, so

@@ -1212,7 +1212,35 @@ def limit_signature():
     return re.compile(raw, re.I) if raw else None
 
 
-def run_claude(prompt, model, timeout=600, log=None):
+def _ledger_record(doc, kind, model, account, status, duration):
+    """Append this run to the token ledger (specs/metrics.md rules 13, 15).
+    Fail-safe by contract: any trouble here is swallowed, because the ledger
+    may never change the outcome of the run that hosts it (rule 6)."""
+    try:
+        import token_ledger
+        token_ledger.record_result_object(doc, kind, model=model,
+                                          account=account, status=status,
+                                          duration=duration)
+    except Exception:
+        pass
+
+
+def _result_doc(stdout):
+    """The CLI's `--output-format json` result object, when that is what came
+    back: (doc, answer text). A stdout that is not that object — a stub, an
+    older CLI — is the whole answer, exactly as the plain-text mode was, and
+    earns no ledger record (specs/metrics.md rule 15)."""
+    text = stdout.strip()
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        return None, text
+    if isinstance(doc, dict) and "result" in doc:
+        return doc, str(doc.get("result") or "").strip()
+    return None, text
+
+
+def run_claude(prompt, model, timeout=600, log=None, kind="classify"):
     # Both callers here — the ingest distiller and the turn-end judge — are
     # classifiers: one question, one answer, no tools. They used to boot the
     # full interactive desktop for it, measured at 40,229 tokens of listings
@@ -1248,8 +1276,14 @@ def run_claude(prompt, model, timeout=600, log=None):
     for number, confdir in account_walk():
         env = dict(env_base)
         env["CLAUDE_CONFIG_DIR"] = confdir
+        # --output-format json: the run's own result object carries the exact
+        # usage the token ledger keeps (specs/metrics.md rule 15). The prompt
+        # is unchanged — this is the output side only — and a stdout that is
+        # not that object degrades to the plain-text behaviour below.
+        t0 = time.time()
         proc = subprocess.run(
-            [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"]
+            [claude_bin(), "-p", "--model", model,
+             "--dangerously-skip-permissions", "--output-format", "json"]
             + classify_flags(),
             input=prompt, capture_output=True, text=True, timeout=timeout,
             env=env, cwd=sterile_cwd())
@@ -1257,17 +1291,30 @@ def run_claude(prompt, model, timeout=600, log=None):
             if refused and log:
                 log(f"account {number} answered after "
                     f"{refused} account(s) refused")
-            return proc.stdout.strip()
+            doc, answer = _result_doc(proc.stdout)
+            if doc is not None:
+                _ledger_record(doc, kind, model, number, "ok",
+                               time.time() - t0)
+            return answer
         last = f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}"
         said = f"{proc.stderr}\n{proc.stdout}"
         if not (signature and signature.search(said)):
+            # Not a refusal, so the walk ends here — but the boot happened,
+            # and the attempt is the fact the ledger keeps (specs/metrics.md
+            # rules 11, 13). Zero usage is honest for a run that never
+            # answered.
+            _ledger_record(None, kind, model, number, "error",
+                           time.time() - t0)
             raise RuntimeError(last)
+        # A refused boot still happened; the ledger keeps it (rule 11).
+        _ledger_record(None, kind, model, number, "refused",
+                       time.time() - t0)
         refused += 1
     raise RuntimeError(f"every account refused ({refused} tried) — {last}")
 
 
 def extract_candidates(material, model):
-    body = run_claude(INGEST_PROMPT + material, model)
+    body = run_claude(INGEST_PROMPT + material, model, kind="ingest")
     m = re.search(r"\[.*\]", body, re.S)
     if not m:
         return []
@@ -1423,7 +1470,7 @@ def cmd_judge_turn(store, args):
             body = run_claude(
                 JUDGE_PROMPT + "\n=== INJECTED RECORDS ===\n" + records
                 + "\n\n=== THE TURN ===\n" + exchange,
-                args.model, timeout=120, log=jlog)
+                args.model, timeout=120, log=jlog, kind="memory-judge")
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             jlog(f"judge failed ({e})")
             return 0

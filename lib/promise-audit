@@ -142,6 +142,9 @@ for ACCT in $(claude_accounts); do
             claude_classify "$AUDIT_MODEL" \
                 "Answer with exactly one line and nothing else."
     ) >"$AUDLOG" 2>&1
+    # Recorded per attempt, before the next login's truncation wipes this
+    # one's stream (specs/metrics.md rule 14).
+    token_ledger_record "$AUDLOG" promise-audit "$AUDIT_MODEL" "" "$ACCT"
     # A refusal is not a verdict of NONE — and it is judged from the CLI's own
     # result events, never by pattern-matching the answer's text. A verdict
     # about a reply that QUOTES a limit phrase is a verdict, not an outage;

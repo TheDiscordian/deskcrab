@@ -58,12 +58,17 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # otherwise, and from inside an already-cocooned session nested bwrap dies
     # before it can exec — the stub is never called and every walk case fails
     # for a reason that is the invoking environment's, not the accounts'.
+    # DESKCRAB_METRICS_DIR is pinned for the same reason as the rest: the
+    # turn stamps and the token ledger both hang off it, and this file does
+    # not run under tests/lib/sandbox.sh — unpinned, every walk case below
+    # appends stub metrics to the LIVE ledger under ~/.local/share.
     PATH="$T/bin:$PATH" \
         DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
         ACCOUNT_STATE_FILE="$T/account-state" \
         COCOON_BWRAP="$REPO_DIR/tests/lib/cocoon-passthru" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
+        DESKCRAB_METRICS_DIR="$T/metrics" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
         env ${envs[@]+"${envs[@]}"} \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
@@ -716,6 +721,7 @@ run_runner() { # <id> [ENV=val ...]
     JOBS_DIR="$T/jobs" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         ACCOUNT_STATE_FILE="$T/account-state" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
+        DESKCRAB_METRICS_DIR="$T/metrics" \
         DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-plain" \
         env "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }
@@ -723,7 +729,7 @@ run_runner() { # <id> [ENV=val ...]
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner retryworks CLAUDE_FALLBACK_CONFIG_DIR="$T/two"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/retryworks.json" state)"
-[ "$out" = finished ] && ok "account 2 succeeds: the job is finished, not blocked" || fail "should finish on account 2" "$out"
+[ "$out" = collected ] && ok "account 2 succeeds: the job ends collected, not blocked" || fail "should finish on account 2" "$out"
 case "$(cat "$T/jobs/retryworks.log" 2>/dev/null)" in
     *"account 1 is over its limit — retrying as account 2"*) ok "the retry is recorded in the job log, by number" ;;
     *) fail "the log must say a numbered retry happened" "$(cat "$T/jobs/retryworks.log" 2>/dev/null | head -n2)" ;; esac
@@ -738,7 +744,7 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'claude_account_pick')"
 rm -f "$T/calls" "$T/jobs/blocked"
 run_runner curmoved CLAUDE_FALLBACK_CONFIG_DIR="$T/two"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/curmoved.json" state)"
-[ "$out" = finished ] && ok "moved current: the job finishes on account 2" || fail "moved-current job should finish" "$out"
+[ "$out" = collected ] && ok "moved current: the job finishes on account 2" || fail "moved-current job should finish" "$out"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "moved current: one call, no probe of the cooling account" || fail "the current must lead" "$n calls"
 case "$(cat "$T/jobs/curmoved.log" 2>/dev/null)" in
@@ -757,7 +763,7 @@ n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner walkall CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" STUB_OK_DIR="$T/three"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/walkall.json" state)"
-[ "$out" = finished ] && ok "a job carried by the third subscription finishes" \
+[ "$out" = collected ] && ok "a job carried by the third subscription finishes" \
     || fail "the runner must walk the whole list" "$out"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 3 ] && ok "three attempts: each account in numbered order" \
@@ -789,7 +795,7 @@ chmod +x "$T/claude-argv"
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner modelstays CLAUDE_BIN="$T/claude-argv" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" JOB_MODEL=fable
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/modelstays.json" state)"
-[ "$out" = finished ] && ok "the walk finishes on account 2" || fail "the model case must still finish" "$out"
+[ "$out" = collected ] && ok "the walk finishes on account 2" || fail "the model case must still finish" "$out"
 n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "both attempts ran --model fable" \
     || fail "every attempt must carry the dispatched model" "$(cat "$T/calls" 2>/dev/null)"
@@ -813,7 +819,7 @@ chmod +x "$T/claude-modelplain"
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner modellimitjob CLAUDE_BIN="$T/claude-modelplain" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" JOB_MODEL=fable
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/modellimitjob.json" state)"
-[ "$out" = finished ] && ok "a builder refused with the model-limit line finishes on account 2" \
+[ "$out" = collected ] && ok "a builder refused with the model-limit line finishes on account 2" \
     || fail "the model-limit wording must rotate the job's account" "$out"
 n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "…still on --model fable both times: accounts rotate, models never do" \
@@ -843,7 +849,7 @@ chmod +x "$T/claude-cutplain"
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner cutjob CLAUDE_BIN="$T/claude-cutplain" CLAUDE_FALLBACK_CONFIG_DIR="$T/two"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/cutjob.json" state)"
-[ "$out" = finished ] && ok "a cut build is carried to completion by account 2" \
+[ "$out" = collected ] && ok "a cut build is carried to completion by account 2" \
     || fail "the job walk must ride a cut to the next account" "$out"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 2 ] && ok "cut build: account 1 was cut, account 2 was tried at once" \
@@ -950,7 +956,7 @@ CALL:$T/two" ] && ok "wake (_wake_claude_run): account 1's dir is used, not the 
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner inherited CLAUDE_CONFIG_DIR="$T/dry" CLAUDE_FALLBACK_CONFIG_DIR="$T/two"
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/inherited.json" state)"
-[ "$out" = finished ] && ok "job: account 2 still carries it" \
+[ "$out" = collected ] && ok "job: account 2 still carries it" \
     || fail "the job must finish on account 2" "$out"
 [ "$(head -n1 "$T/calls" 2>/dev/null)" = "CALL:$A1" ] \
     && ok "job (lib/job-runner): the first attempt is account 1's dir, not the inherited login" \

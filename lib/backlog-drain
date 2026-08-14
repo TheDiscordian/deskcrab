@@ -95,6 +95,9 @@ classify_walk() {  # <verdict-line-ERE>
                     claude_classify "$MODEL" \
                         "Answer in exactly the form asked for, nothing else."
             ) >"$CLOG" 2>&1
+            # Recorded per attempt, before the next truncation wipes this
+            # one's stream (specs/metrics.md rules 13-14).
+            token_ledger_record "$CLOG" backlog-drain "$MODEL" "" "$ACCT"
             if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
                 say "account $ACCT refused — trying the next account"
                 claude_limit_record "$ACCT" "$REFUSAL"
