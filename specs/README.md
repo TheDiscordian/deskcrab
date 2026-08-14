@@ -54,6 +54,7 @@ The specs cite the defect dossier with these identifiers:
 | [chess-reflex.md](chess-reflex.md) | Position memory for betty-chess: every finished game's moves keyed by FEN, result-weighted ranking, the gate that answers known positions without a reasoning turn, and the similarity layer that briefs an unknown one from its nearest stored neighbours |
 | [memory-recall.md](memory-recall.md) | The vector store: query composition, retrieval, the recall block, reinforcement, decay |
 | [account-fallback.md](account-fallback.md) | The chain of logins: the moving default, refusal detection, the watched runner, swap announcements |
+| [metrics.md](metrics.md) | The token ledger: one record per CLI attempt parsed from artifacts the system already produces, backfill, `crab metrics`, and the phone server's metrics page |
 | [nightly.md](nightly.md) | Sleep (memory ingest), tidy (shelf maintenance), the self-change watcher and its canary |
 | [test-harness.md](test-harness.md) | The sandbox every test runs in, the four isolation gates, and the coverage the suite owes |
 

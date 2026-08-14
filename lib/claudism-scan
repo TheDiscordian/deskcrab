@@ -364,7 +364,8 @@ def propose_rewrites(hits, phrases, classify):
         lines += ["%d. [%s] %s" % (i + 1, h["key"], h["sentence"])
                   for i, h in enumerate(capped)]
         try:
-            body = memory.run_claude("\n".join(lines), model, timeout=600)
+            body = memory.run_claude("\n".join(lines), model, timeout=600,
+                                     kind="claudism-scan")
             for m in re.finditer(r"(?m)^\s*(\d+)[.)]\s+(.+?)\s*$", body):
                 i = int(m.group(1)) - 1
                 if 0 <= i < len(capped):

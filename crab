@@ -486,6 +486,26 @@ What you did tonight is journaled from your tool activity without your help, so 
         exit $?
         ;;
 
+    metrics)
+        # Where the tokens went (specs/metrics.md): a day's totals by session
+        # kind and model, from the durable ledger — pure reading, no model
+        # call anywhere in it.
+        #   crab metrics                 today
+        #   crab metrics 2026-08-13      any ledgered day
+        #   crab metrics backfill        one-shot ingest of surviving streams
+        #                                and her own CLI transcripts; idempotent
+        case "${2:-}" in
+            backfill)
+                exec python3 "$SCRIPT_DIR/lib/token_ledger.py" backfill \
+                    --dir "$METRICS_DIR"
+                ;;
+            *)
+                exec python3 "$SCRIPT_DIR/lib/token_ledger.py" report \
+                    ${2:+"$2"} --dir "$METRICS_DIR"
+                ;;
+        esac
+        ;;
+
     context)
         # The prompt itself, exactly as a live session receives it. Producing
         # it is a local operation and it stays ONE command: when he asks to see
@@ -583,7 +603,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] <desc>|job log <id>|job requeue <id>|jobs|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"
+        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] <desc>|job log <id>|job requeue <id>|jobs|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"
         exit 0
         ;;
 
@@ -595,7 +615,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] <desc>|job log <id>|job requeue <id>|jobs|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"
+            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] <desc>|job log <id>|job requeue <id>|jobs|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"
             exit 1
         fi
         stop_tts

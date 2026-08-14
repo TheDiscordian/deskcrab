@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token metrics</title>
+<style>
+  :root {
+    --bg: #14161a; --card: #1d2026; --ink: #e6e4de; --dim: #8f8d86;
+    --line: #2c3038; --accent: #d4a24e; --in: #6a9fd8; --out: #d4a24e;
+    --cc: #8f6fc4; --cr: #4d5a6b; --bad: #c96a5a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f2ec; --card: #ffffff; --ink: #23252a; --dim: #7a786f;
+      --line: #ddd9cf; --cr: #b9c2cf;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 system-ui, sans-serif;
+  }
+  h1 { font-size: 17px; margin: 2px 0 10px; font-weight: 600; }
+  h1 small { color: var(--dim); font-weight: 400; }
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+  }
+  select {
+    background: var(--card); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 6px; font: inherit; max-width: 46vw;
+  }
+  .cards { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; min-width: 96px; flex: 1 1 96px;
+  }
+  .card b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .card span { color: var(--dim); font-size: 12px; }
+  .chart { margin: 4px 0 14px; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+  .bar-row .lbl {
+    width: 86px; flex: none; color: var(--dim); font-size: 12px;
+    text-align: right; font-variant-numeric: tabular-nums;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bar-row .bar { flex: 1; display: flex; height: 14px; border-radius: 3px;
+    overflow: hidden; background: var(--card); }
+  .bar i { display: block; height: 100%; }
+  .bar .s-in { background: var(--in); }
+  .bar .s-out { background: var(--out); }
+  .bar .s-cc { background: var(--cc); }
+  .bar-row .val { width: 74px; flex: none; font-size: 12px; color: var(--dim);
+    font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  th, td { padding: 4px 8px; text-align: right; font-variant-numeric: tabular-nums;
+    border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--dim); font-weight: 500; }
+  th:first-child, td:first-child { text-align: left; }
+  .lim { color: var(--bad); }
+  .legend { color: var(--dim); font-size: 12px; margin: 2px 0 10px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    margin: 0 3px 0 10px; }
+  .empty { color: var(--dim); padding: 24px 0; text-align: center; }
+  h2 { font-size: 14px; margin: 14px 0 6px; color: var(--dim); font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Token metrics <small id="range"></small></h1>
+<div class="filters">
+  <select id="f-days">
+    <option value="1">1 day</option>
+    <option value="7" selected>7 days</option>
+    <option value="31">31 days</option>
+    <option value="92">3 months</option>
+    <option value="366">a year</option>
+  </select>
+  <select id="f-day"><option value="">every day</option></select>
+  <select id="f-hour"><option value="">every hour</option></select>
+  <select id="f-kind"><option value="">every kind</option></select>
+  <select id="f-model"><option value="">every model</option></select>
+  <select id="f-effort"><option value="">every effort</option></select>
+</div>
+<div class="cards" id="cards"></div>
+<div class="legend">by hour:<i style="background:var(--in)"></i>input
+  <i style="background:var(--cc)"></i>cache-create
+  <i style="background:var(--out)"></i>output ×20</div>
+<div class="chart" id="chart"></div>
+<h2>By session kind</h2>
+<table id="t-kind"></table>
+<h2>By model</h2>
+<table id="t-model"></table>
+<script>
+"use strict";
+let BUCKETS = [];
+
+const $ = id => document.getElementById(id);
+const fmt = n => n >= 1e7 ? (n / 1e6).toFixed(1) + "M"
+  : n >= 1e4 ? Math.round(n / 1e3) + "k" : String(n);
+
+function options(sel, values, label) {
+  const keep = sel.value;
+  sel.length = 1;
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = label ? label(v) : v;
+    sel.appendChild(o);
+  }
+  sel.value = values.includes(keep) ? keep : "";
+}
+
+function filtered() {
+  const day = $("f-day").value, hour = $("f-hour").value,
+    kind = $("f-kind").value, model = $("f-model").value,
+    effort = $("f-effort").value;
+  return BUCKETS.filter(b =>
+    (!day || b.d === day) && (hour === "" || String(b.h) === hour) &&
+    (!kind || b.kind === kind) && (!model || b.model === model) &&
+    (effort === "" || b.effort === effort));
+}
+
+function sums(rows) {
+  const t = { n: 0, in_: 0, out: 0, cc: 0, cr: 0, cost: 0, lim: 0 };
+  for (const b of rows) {
+    t.n += b.n; t.in_ += b.in; t.out += b.out; t.cc += b.cc; t.cr += b.cr;
+    t.cost += b.cost;
+    if (b.status === "refused" || b.status === "cut") t.lim += b.n;
+  }
+  return t;
+}
+
+function card(label, value) {
+  return `<div class="card"><b>${value}</b><span>${label}</span></div>`;
+}
+
+function tableOf(el, rows, keyf) {
+  const groups = new Map();
+  for (const b of rows) {
+    const k = keyf(b);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(b);
+  }
+  const entries = [...groups.entries()]
+    .map(([k, v]) => [k, sums(v)])
+    .sort((a, b) => (b[1].out + b[1].in_) - (a[1].out + a[1].in_));
+  let html = "<tr><th></th><th>runs</th><th>input</th><th>output</th>" +
+    "<th>cache-create</th><th>cache-read</th><th>cost</th><th>limited</th></tr>";
+  for (const [k, t] of entries) {
+    html += `<tr><td>${k}</td><td>${t.n}</td><td>${fmt(t.in_)}</td>` +
+      `<td>${fmt(t.out)}</td><td>${fmt(t.cc)}</td><td>${fmt(t.cr)}</td>` +
+      `<td>${t.cost ? "$" + t.cost.toFixed(2) : "—"}</td>` +
+      `<td class="lim">${t.lim || ""}</td></tr>`;
+  }
+  el.innerHTML = entries.length ? html : "";
+}
+
+function chart(rows) {
+  const el = $("chart");
+  const byHour = new Map();
+  for (const b of rows) {
+    const k = b.d + " " + String(b.h).padStart(2, "0");
+    if (!byHour.has(k)) byHour.set(k, { in_: 0, out: 0, cc: 0 });
+    const t = byHour.get(k);
+    t.in_ += b.in; t.out += b.out; t.cc += b.cc;
+  }
+  const entries = [...byHour.entries()].sort().slice(-72);
+  // Output is a sliver next to cache traffic; scale it up so the bar says
+  // something, and say so in the legend.
+  const max = Math.max(1, ...entries.map(([, t]) => t.in_ + t.cc + t.out * 20));
+  el.innerHTML = entries.map(([k, t]) => {
+    const w = v => (100 * v / max).toFixed(2) + "%";
+    return `<div class="bar-row"><span class="lbl">${k}h</span>` +
+      `<span class="bar"><i class="s-in" style="width:${w(t.in_)}"></i>` +
+      `<i class="s-cc" style="width:${w(t.cc)}"></i>` +
+      `<i class="s-out" style="width:${w(t.out * 20)}"></i></span>` +
+      `<span class="val">${fmt(t.in_ + t.cc)} + ${fmt(t.out)}</span></div>`;
+  }).join("") || '<div class="empty">nothing recorded in this range</div>';
+}
+
+function render() {
+  const rows = filtered();
+  const t = sums(rows);
+  $("cards").innerHTML =
+    card("input", fmt(t.in_)) + card("output", fmt(t.out)) +
+    card("cache-create", fmt(t.cc)) + card("cache-read", fmt(t.cr)) +
+    card("runs", t.n) +
+    (t.cost ? card("cost", "$" + t.cost.toFixed(2)) : "") +
+    (t.lim ? card("limit-hit", t.lim) : "");
+  chart(rows);
+  tableOf($("t-kind"), rows, b => b.kind);
+  tableOf($("t-model"), rows, b => b.model);
+}
+
+async function load() {
+  const days = $("f-days").value;
+  let doc = { days: [], buckets: [] };
+  try {
+    const r = await fetch("/metrics/data?days=" + days);
+    if (r.ok) doc = await r.json();
+  } catch (e) { /* offline: the empty state below says so */ }
+  BUCKETS = doc.buckets || [];
+  const uniq = f => [...new Set(BUCKETS.map(f))].sort();
+  options($("f-day"), uniq(b => b.d));
+  options($("f-hour"), uniq(b => String(b.h)).map(Number)
+    .sort((a, b) => a - b).map(String), h => h.padStart(2, "0") + ":00");
+  options($("f-kind"), uniq(b => b.kind));
+  options($("f-model"), uniq(b => b.model));
+  options($("f-effort"), uniq(b => b.effort).filter(e => e !== ""));
+  $("range").textContent = doc.days.length
+    ? doc.days[0] + " → " + doc.days[doc.days.length - 1] : "";
+  render();
+}
+
+for (const id of ["f-day", "f-hour", "f-kind", "f-model", "f-effort"])
+  $(id).addEventListener("change", render);
+$("f-days").addEventListener("change", load);
+load();
+</script>
+</body>
+</html>

@@ -57,11 +57,16 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # otherwise, and from inside an already-cocooned session nested bwrap dies
     # before it can exec — the stub is never called and every walk case fails
     # for a reason that is the invoking environment's, not the chain's.
+    # DESKCRAB_METRICS_DIR is pinned for the same reason as the rest: the
+    # turn stamps and the token ledger both hang off it, and this file does
+    # not run under tests/lib/sandbox.sh — unpinned, every walk case below
+    # appends stub metrics to the LIVE ledger under ~/.local/share.
     DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
         ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
         COCOON_BWRAP="$REPO_DIR/tests/lib/cocoon-passthru" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
+        DESKCRAB_METRICS_DIR="$T/metrics" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \
         env ${envs[@]+"${envs[@]}"} \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
@@ -596,6 +601,7 @@ run_runner() { # <id> [ENV=val ...]
     JOBS_DIR="$T/jobs" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         ACCOUNT_DEFAULT_FILE="$T/state-account-default" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
+        DESKCRAB_METRICS_DIR="$T/metrics" \
         DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-plain" \
         env "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }

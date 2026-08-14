@@ -38,6 +38,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/memory.py` | vector store (`crab memory`): sqlite-vec plus local ollama |
 | `lib/eng` | engineering records (`crab eng`): threads with state, the prompt block, the job hook's date test |
 | `lib/tiredness` | the unread-pile score (`crab tired`): file facts in, one number and word out |
+| `lib/token_ledger.py` | the durable token ledger (`crab metrics`): one record per CLI attempt, parsed from the stream it wrote |
 | `lib/job-runner` | detached builder, owned by systemd rather than by the turn |
 | `lib/job-status` | JSON state sidecars for detached jobs |
 | `lib/job-log-stream` | turns a builder's live stream into the human job log as it is written |
@@ -76,6 +77,7 @@ work here, the defect identifiers, the data-flow graph, and the lock table.
 | [memory-recall](specs/memory-recall.md) | query composition, retrieval, the recall block, reinforcement |
 | [engineering-records](specs/engineering-records.md) | threads with state: the record format, `crab eng`, the prompt block, the job hook |
 | [account-fallback](specs/account-fallback.md) | the chain of logins, the moving default, refusal detection |
+| [metrics](specs/metrics.md) | the token ledger: per-attempt records, backfill, `crab metrics`, the phone metrics page |
 | [nightly](specs/nightly.md) | sleep, tidy, the self-change watcher, and its canary |
 | [test-harness](specs/test-harness.md) | the one sandbox, four isolation gates, the coverage owed |
 
