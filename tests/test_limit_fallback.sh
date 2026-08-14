@@ -659,13 +659,17 @@ case "$out" in
     *) fail "the status line must say the number" "$out" ;; esac
 # The concept sweep: nothing this run emitted anywhere a human or she reads —
 # notifications, markers, the state file, the move log, the status line —
-# names a "primary" or an "fb". The concept is gone, not renamed.
+# names a "primary", a "fallback", or an "fb". The concept is gone, not
+# renamed. Word-matched on purpose: the sweep reads EMITTED strings, and the
+# configured variable name CLAUDE_FALLBACK_CONFIG_DIR — legitimate, kept for
+# back-compat — has FALLBACK fenced by underscores, which \b treats as word
+# characters, so the variable's own name can never trip it.
 if cat "$T/notifies" "$T/state-debug.log" "$T/account-state" 2>/dev/null \
-        | grep -qiwE 'primary|fb'; then
-    fail "an emitted string still says primary/fb" \
-        "$(cat "$T/notifies" "$T/state-debug.log" "$T/account-state" 2>/dev/null | grep -iwE 'primary|fb')"
+        | grep -qiwE 'primary|fb|fallback'; then
+    fail "an emitted string still says primary/fallback/fb" \
+        "$(cat "$T/notifies" "$T/state-debug.log" "$T/account-state" 2>/dev/null | grep -iwE 'primary|fb|fallback')"
 else
-    ok "no emitted string names a primary or an fb"
+    ok "no emitted string names a primary, a fallback, or an fb"
 fi
 if grep -qE 'CLAUDE_PRIMARY_TOKEN|claude_preferred_login|claude_account_confdir|claude_fallback_dirs|ACCOUNT_DEFAULT_FILE' \
     "$REPO_DIR/lib/common.sh" "$REPO_DIR/lib/job-runner" "$REPO_DIR/lib/promise-check" \
