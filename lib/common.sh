@@ -3599,10 +3599,14 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     # selection had moved, collected the refusal, and the reinforcement was
     # silently never judged. specs/account-fallback.md rules 28 and 29. The
     # state file path goes with them too, so a scratch instance's child reads
-    # the scratch state, never the live one's.
+    # the scratch state, never the live one's. The login is set ALWAYS,
+    # account 1 included (rule 3): "no override" is not an account name, and
+    # a guard shaped as "only when non-empty" hands the child the manager's
+    # leftover login the day the selection ever answers blank — the setsid
+    # branch below spells the same default, and the two must match.
     local -a acctenv=() login
     login="$(claude_child_login)"
-    [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
+    acctenv+=(--setenv=CLAUDE_CONFIG_DIR="${login:-$HOME/.claude}")
     acctenv+=(--setenv=ACCOUNT_STATE_FILE="$ACCOUNT_STATE_FILE")
     # Background CPU priority (jobs.md rule 2a): out-of-band work never
     # competes at par with the turn that is being spoken beside it.
@@ -4316,7 +4320,7 @@ wake_stream_last_words() {
 # lever; they are emitted together or not at all.
 #
 # `--bare` is not available on any of her paths. It refuses OAuth outright
-# ("Not logged in · Please run /login"), and the whole account chain is OAuth
+# ("Not logged in · Please run /login"), and the whole account list is OAuth
 # subscriptions. It costs nothing to confirm — the failure is instant, before
 # any API call — and it is confirmed in the probe results.
 CLAUDE_EMPTY_MCP="${CLAUDE_EMPTY_MCP:-$LIB_DIR/empty-mcp.json}"
@@ -4561,9 +4565,9 @@ claude_classify() {  # <model> <system prompt>  [question on stdin]
 # READ a file containing the words — and lib/common.sh, three lines from here,
 # is a file containing every one of them. A builder that opened this file and
 # then exited non-zero for any reason at all was recorded as blocked, which
-# rotates the durable account default and holds every further dispatch for half
-# an hour. specs/jobs.md rule 15: a real failure MUST NEVER match the blocked
-# signature.
+# cools an account that never refused, moves the durable current off it, and
+# holds every further dispatch for the cooldown. specs/jobs.md rule 15: a real
+# failure MUST NEVER match the blocked signature.
 #
 # So two things make a slice a refusal, and both are structural:
 #   * the limit signature appears in text the CLI ITSELF produced — a result

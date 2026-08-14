@@ -1116,6 +1116,18 @@ def sterile_cwd():
         return "/"
 
 
+def account_expand(d):
+    """Tilde and variable expansion for a configured directory. systemd's
+    EnvironmentFile hands values through unexpanded (the trap
+    lib/chess_mover.py guards CLAUDE_BIN and its own walk against): a literal
+    "$HOME/..." handed to CLAUDE_CONFIG_DIR names an empty login that answers
+    "Not logged in" while the real account sits logged in (2026-08-11). Every
+    dir — the list's entries AND the state file's — is expanded before it is
+    matched or handed out, so an unexpanded entry never wedges the walk onto a
+    dead login."""
+    return os.path.expanduser(os.path.expandvars(d))
+
+
 def account_list():
     """The accounts: one flat numbered list, all equal.
 
@@ -1129,8 +1141,10 @@ def account_list():
     dirs = [os.path.expanduser("~/.claude")]
     for d in re.split(r"[:\s]+",
                       os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", "")):
-        if d and d not in dirs:
-            dirs.append(d)
+        if d:
+            e = account_expand(d)
+            if e not in dirs:
+                dirs.append(e)
     return dirs
 
 
@@ -1159,15 +1173,20 @@ def account_walk():
         with open(account_state_path()) as fh:
             for line in fh:
                 f = line.rstrip("\n").split("\t")
-                if len(f) >= 4 and f[0] == "current" and f[2] in dirs:
-                    current = dirs.index(f[2]) + 1
-                elif len(f) >= 4 and f[0] == "cooldown" and f[2] in dirs:
+                if len(f) < 4:
+                    continue
+                d = account_expand(f[2])
+                if d not in dirs:
+                    continue
+                if f[0] == "current":
+                    current = dirs.index(d) + 1
+                elif f[0] == "cooldown":
                     try:
                         until = int(f[3])
                     except ValueError:
                         continue
                     if until > now:
-                        cooling[dirs.index(f[2]) + 1] = until
+                        cooling[dirs.index(d) + 1] = until
     except OSError:
         pass
     if not 1 <= current <= len(dirs):
