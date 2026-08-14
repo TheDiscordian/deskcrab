@@ -249,13 +249,15 @@ cannot be changed.
        still stands at the ply the call was answering — rule 15's photograph guard, applied
        in-process. A stale answer is discarded and the newest position stands to be answered.
     e. A failed attempt — a limit refusal, a timeout, no legal move in the reply — walks the
-       login chain (the recorded account default first, then `$CLAUDE_FALLBACK_CONFIG_DIR` in
-       order) within the same detection. Chain entries and the recorded default are tilde-
-       and variable-expanded before use: systemd's `EnvironmentFile` hands values through
-       unexpanded (the same trap rule 16b's `CLAUDE_BIN` handling guards against), and an
-       unexpanded `$HOME/...` handed to `CLAUDE_CONFIG_DIR` names an empty login that
-       answers "Not logged in" while the real account sits logged in — which also breaks
-       the recorded-default match, so the chain silently never rotates (2026-08-11). A
+       flat account list of [account-fallback.md](account-fallback.md): the current account
+       first, then the rest in numbered order, cooling accounts skipped, read from the shared
+       state file (read-only — recording a refusal is the session machinery's call, never a
+       chess move's). Every account directory — the list's entries AND the state file's — is
+       tilde- and variable-expanded before it is matched or used: systemd's `EnvironmentFile`
+       hands values through unexpanded (the same trap rule 16b's `CLAUDE_BIN` handling guards
+       against), and an unexpanded `$HOME/...` handed to `CLAUDE_CONFIG_DIR` names an empty
+       login that answers "Not logged in" while the real account sits logged in — which would
+       also break the state-file match, wedging the walk onto a dead login (2026-08-11). A
        position whose every attempt failed is re-offered by the store poll on a DOUBLING
        cooldown: `$DESKCRAB_CHESS_MOVER_RETRY` (default 20s) after the first failed round,
        twice that after the second, and so on, capped at

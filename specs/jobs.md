@@ -29,10 +29,10 @@ back to her.
    beside wakes and builders. Priority only — a job is never paused or killed for a turn.
 3. Dispatch MUST return immediately. The turn that asked MUST NOT wait on it.
 4. A job MUST receive every instance redirect explicitly: config path, state prefix, jobs directory,
-   wakes directory, memory directory, account default file, and the current login. A user unit gets
+   wakes directory, memory directory, account state file, and the current login. A user unit gets
    a bare environment, and a scratch instance's jobs must stay in the scratch instance.
-5. A job MUST be dispatched with the login the chain currently prefers, and MUST walk the chain
-   itself from there.
+5. A job MUST be dispatched with the account the selection answers with now, and MUST walk the
+   flat list itself from there.
 6. A job MUST be silent by contract: no speech, no notifications, no windows.
 7. A job's only channel back to her is one event wake on completion, carrying the outcome as its
    reason.
@@ -97,9 +97,9 @@ back to her.
 18a. A blocked job's brief MUST NOT wait on the user noticing it. When a job lands blocked, the
     runner arms one transient timer for the retry window plus a margin — past the marker's own
     expiry — and when it fires, the recorded brief is re-dispatched in the recorded workdir,
-    through the same preflight as any dispatch, at the login the chain prefers **at fire time**.
-    The login that refused is deliberately not forwarded into the timer's unit: the whole point
-    of firing after the window is that the chain has since moved.
+    through the same preflight as any dispatch, at the account the selection answers with **at
+    fire time**. The login that refused is deliberately not forwarded into the timer's unit: the
+    whole point of firing after the window is that the selection has since moved.
 18b. The retry is exactly one per brief, never a loop. The re-dispatch stamps `retry_of` on the
     new sidecar and `retry` on the origin's; the fire side refuses any sidecar whose `retry` is
     already spent, and the runner never arms a timer for a job that itself carries `retry_of`.

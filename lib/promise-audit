@@ -115,29 +115,28 @@ $(wants_titles "$WANTS_FILE")
 === THE EXCHANGE ===
 $EXCHANGE"
 
-# Through claude_classify, and through the ACCOUNT CHAIN.
+# Through claude_classify, and through the ACCOUNT SELECTION.
 #
 # Two things were wrong with the run this replaces. It booted a whole desktop
 # session — MCP servers, the skills catalogue, the project's own listings, some
 # forty thousand tokens — to answer one question with one line, and there are
 # more audits in a day than there are turns. And it invoked the CLI with no
-# CLAUDE_CONFIG_DIR at all, so when the chain had moved off a dry primary this
-# auditor went straight back to it, collected the refusal, and exited 0 with
-# `2>/dev/null` swallowing the evidence: the want he had just stated was
+# CLAUDE_CONFIG_DIR at all, so when the selection had moved off a dry account
+# this auditor went straight back to it, collected the refusal, and exited 0
+# with `2>/dev/null` swallowing the evidence: the want he had just stated was
 # silently never flagged. specs/account-fallback.md rules 17 and 29;
 # specs/prompt-assembly.md's classify profile.
 #
-# Each account is tried in the chain's own order and a refusal moves the
-# durable default exactly as it does everywhere else, so the auditor pays its
-# share of finding the login that answers instead of riding on other paths.
+# Each account is tried in the selection's own order and a refusal cools its
+# account exactly as it does everywhere else, so the auditor pays its share
+# of finding the login that answers instead of riding on other paths.
 VERDICT=""
 AUDLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-audit-stream-XXXXXX")"
 for ACCT in $(claude_accounts); do
-    CONFDIR="$(claude_account_confdir "$ACCT")"
+    CONFDIR="$(claude_account_dir "$ACCT")"
     : > "$AUDLOG"
     printf '%s' "$PROMPT" | (
-        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
-        else unset CLAUDE_CONFIG_DIR; fi
+        export CLAUDE_CONFIG_DIR="$CONFDIR"
         CLAUDE_CLASSIFY_TIMEOUT="${PROMISE_AUDIT_TIMEOUT:-120}" \
         CLAUDE_CLASSIFY_STREAM=1 \
             claude_classify "$AUDIT_MODEL" \
@@ -146,10 +145,10 @@ for ACCT in $(claude_accounts); do
     # A refusal is not a verdict of NONE — and it is judged from the CLI's own
     # result events, never by pattern-matching the answer's text. A verdict
     # about a reply that QUOTES a limit phrase is a verdict, not an outage;
-    # the old grep here rotated the durable default off exactly that.
+    # the old grep here benched an account off exactly that.
     if REFUSAL="$(claude_stream_refusal "$AUDLOG")"; then
-        audit_log "refused by ${CONFDIR:-primary} — trying the next login"
-        claude_limit_record "$CONFDIR" "$REFUSAL"
+        audit_log "account $ACCT refused — trying the next account"
+        claude_limit_record "$ACCT" "$REFUSAL"
         continue
     fi
     OUT="$(DESKCRAB_DEBUGLOG="$AUDLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"

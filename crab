@@ -77,9 +77,9 @@ case "${1:-}" in
 
     status)
         # What all of me is doing right now: live sessions and pending wakes.
-        # The default login leads the report: which account answers next is
-        # exactly the state that used to be invisible while builders walked a
-        # dry chain and every explanation was a guess.
+        # The account line leads the report: which account answers next is
+        # exactly the state that used to be invisible while builders walked
+        # dry logins and every explanation was a guess.
         # One implementation of the account line, shared with the prompt block.
         # `crab status` having its own copy while the prompt had none is how
         # she came to be the last one to know which login was answering.
@@ -507,18 +507,21 @@ What you did tonight is journaled from your tool activity without your help, so 
         shift
         export MEMORY_INGEST_MODEL MEMORY_EMBED_MODEL MEMORY_EMBED_URL MEMORY_JUDGE_MODEL 2>/dev/null
         # memory.py makes model calls (the ingest judge, the recall reinforcer):
-        # route them through her harness and the rotating account chain like
+        # route them through her harness and the flat account selection like
         # every other out-of-band child (account-fallback.md rules 17, 29). The
         # export above carried only the MEMORY_* knobs, so claude_bin() fell
-        # through to stock `claude` and claude_chain() collapsed to the primary
-        # login — the nightly `crab memory ingest` ran the coding-agent binary
-        # on a possibly-dry account, and a limit refusal raised instead of
-        # walking. CLAUDE_CONFIG_DIR is seeded to the durable default and unset
-        # for the primary, exactly as rule 2 demands.
+        # through to stock `claude` and the walk collapsed to one login — the
+        # nightly `crab memory ingest` ran the coding-agent binary on a
+        # possibly-dry account, and a limit refusal raised instead of walking.
+        # The python side selects from the shared state itself (its account
+        # walk is rule 29's read-only mirror), so what it needs is the list,
+        # the signature, and the state file path; CLAUDE_CONFIG_DIR is still
+        # seeded to the account the selection answers with, explicitly (rule
+        # 3), for any child that reads only the environment.
         export CLAUDE_BIN CLAUDE_FALLBACK_CONFIG_DIR 2>/dev/null
         export DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
-        __mem_login="$(claude_preferred_login)"
-        if [ -n "$__mem_login" ]; then export CLAUDE_CONFIG_DIR="$__mem_login"; else unset CLAUDE_CONFIG_DIR; fi
+        export ACCOUNT_STATE_FILE
+        export CLAUDE_CONFIG_DIR="$(claude_child_login)"
         exec "$SCRIPT_DIR/lib/memory.py" "$@"
         ;;
 

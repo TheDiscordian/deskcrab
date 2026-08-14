@@ -187,8 +187,8 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     connectors she actually uses — and MUST NOT inherit the desktop agent's. The measured cost of
     that inheritance is about 29 KB of listings on every session on every path, including every
     one-question classifier.
-18. The tool profile MUST be identical across every login in the account chain. A fallback account
-    that behaves differently from the primary is a second personality with the same name.
+18. The tool profile MUST be identical across every account in the flat list. An account that
+    behaves differently from another is a second personality with the same name.
 19. Rules addressed to the coding agent (sign-offs, punctuation conventions, "always work, never
     ask") MUST NEVER appear in her prompt on any path. Where a rule genuinely applies to both, it is
     written once, in her own conduct, in her own words.

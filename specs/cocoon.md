@@ -49,8 +49,9 @@ moved from a regex that reads commands to a mount namespace that does not.
    directory's library (her own writing, rule 3), the `STATE_PREFIX`
    directory and `/tmp` and `TMPDIR`, the runtime dir, the CLI's own config state (`~/.claude`
    and `~/.claude.json`, plus the account dir in play when `CLAUDE_CONFIG_DIR` is set — a turn
-   breaks without its history, sessions and session-env, and the fallback twins symlink their
-   shared surfaces into the primary), and the user cache. Every constituent path of rule 1 falls
+   breaks without its history, sessions and session-env, and the other accounts symlink their
+   shared surfaces into account 1's `~/.claude`, so that dir is bound whichever account has the
+   turn), and the user cache. Every constituent path of rule 1 falls
    under the read-only root, so a write there fails in the kernel with EROFS whatever spelling
    produced it — a redirection behind a newline, an interpreter one-liner, `sed --in-place`,
    `dd`, a pathless `git commit` run in a constituent cwd, a `$HOME` expansion, a relative path

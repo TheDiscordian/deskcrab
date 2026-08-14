@@ -352,40 +352,71 @@ class Mover:
         if override:
             yield "stub", shlex.split(override), self._env(None)
             return
-        for conf in self._accounts():
-            label = "primary" if conf is None else Path(conf).name
-            yield label, self._claude_cmd(effort), self._env(conf)
+        for number, conf in self._accounts():
+            yield f"account {number}", self._claude_cmd(effort), self._env(conf)
 
     @staticmethod
     def _accounts():
-        """Login config dirs to try, the recorded default first; None names
-        the primary login (no CLAUDE_CONFIG_DIR). The chain is
-        specs/account-fallback.md's, read-only: rotating the durable default
-        is the session machinery's call, never a chess move's."""
-        chain = [None]
+        """(number, config dir) pairs, in the order worth trying.
+
+        The flat numbered list of specs/account-fallback.md — account 1 is
+        ~/.claude, then the CLAUDE_FALLBACK_CONFIG_DIR entries — rotated to
+        the current account and with cooling accounts skipped, read from the
+        same state file every other walker shares; with everything cooling,
+        the soonest to expire alone (never empty). Read-only: recording a
+        refusal is the session machinery's call, never a chess move's.
+
+        systemd's EnvironmentFile hands values through unexpanded (the same
+        trap _claude_cmd guards CLAUDE_BIN against): a literal "$HOME/..."
+        handed to CLAUDE_CONFIG_DIR names an empty login that answers "Not
+        logged in" while the real account sits logged in (2026-08-11). Every
+        dir — the list's entries AND the state file's — is expanded before it
+        is matched or handed out, so an unexpanded entry never wedges the walk
+        onto a dead login."""
+        def expand(d):
+            return os.path.expanduser(os.path.expandvars(d))
+        dirs = [expand("~/.claude")]
         for d in re.split(r"[:\s]+",
                           os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", "")):
             if d:
-                # systemd's EnvironmentFile hands values through unexpanded
-                # (the same trap _claude_cmd guards CLAUDE_BIN against): a
-                # literal "$HOME/..." handed to CLAUDE_CONFIG_DIR names an
-                # empty login that answers "Not logged in" while the real
-                # account sits logged in (2026-08-11), and it never matches
-                # the recorded default below, so the chain never rotates.
-                chain.append(os.path.expanduser(os.path.expandvars(d)))
-        default_file = os.environ.get("ACCOUNT_DEFAULT_FILE") or os.path.join(
+                e = expand(d)
+                if e not in dirs:
+                    dirs.append(e)
+        state_file = os.environ.get("ACCOUNT_STATE_FILE") or os.path.join(
             os.environ.get("XDG_DATA_HOME",
                            os.path.expanduser("~/.local/share")),
-            "deskcrab", "account-default")
+            "deskcrab", "account-state")
+        current, cooling = 1, {}
+        now = time.time()
         try:
-            with open(default_file) as fh:
-                stored = fh.readline().split("\t")[0].strip()
+            with open(state_file) as fh:
+                for line in fh:
+                    f = line.rstrip("\n").split("\t")
+                    if len(f) < 4:
+                        continue
+                    d = expand(f[2])
+                    if d not in dirs:
+                        continue
+                    n = dirs.index(d) + 1
+                    if f[0] == "current":
+                        current = n
+                    elif f[0] == "cooldown":
+                        try:
+                            until = int(f[3])
+                        except ValueError:
+                            continue
+                        if until > now:
+                            cooling[n] = until
         except OSError:
-            stored = ""
-        if stored:
-            stored = os.path.expanduser(os.path.expandvars(stored))
-        start = chain.index(stored) if stored in chain else 0
-        return chain[start:] + chain[:start]
+            pass
+        if not 1 <= current <= len(dirs):
+            current = 1
+        order = [(i - 1) % len(dirs) + 1
+                 for i in range(current, current + len(dirs))]
+        free = [n for n in order if n not in cooling]
+        if not free:
+            free = [min(cooling, key=cooling.get)]
+        return [(n, dirs[n - 1]) for n in free]
 
     @staticmethod
     def _claude_cmd(effort):

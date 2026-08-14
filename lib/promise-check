@@ -63,22 +63,22 @@ CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/
 [ -x "$CLAUDE_BIN" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-# One classify question under the ACCOUNT CHAIN, the auditor's walk with one
-# extra rung: a login that answers but yields no line matching the verdict
-# pattern is retried once on the fallback model before the run gives up.
-# Reads the prompt on stdin; prints the answering model's output. Returns 1
-# when every login refused or nothing parseable came back from either model.
+# One classify question under the ACCOUNT SELECTION, the auditor's walk with
+# one extra rung: an account that answers but yields no line matching the
+# verdict pattern is retried once on the fallback model before the run gives
+# up. Reads the prompt on stdin; prints the answering model's output. Returns
+# 1 when every account refused or nothing parseable came back from either
+# model.
 classify_walk() {  # <verdict-line-ERE>
     local VERDICT_RE="$1" PROMPT ACCT CONFDIR MODEL OUT REFUSAL
     PROMPT="$(cat)"
     local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-promise-stream-XXXXXX")"
     for ACCT in $(claude_accounts); do
-        CONFDIR="$(claude_account_confdir "$ACCT")"
+        CONFDIR="$(claude_account_dir "$ACCT")"
         for MODEL in "$CHECK_MODEL" "$CHECK_FALLBACK_MODEL"; do
             : > "$CLOG"
             printf '%s' "$PROMPT" | (
-                if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
-                else unset CLAUDE_CONFIG_DIR; fi
+                export CLAUDE_CONFIG_DIR="$CONFDIR"
                 CLAUDE_CLASSIFY_TIMEOUT="${PROMISE_CHECK_TIMEOUT:-120}" \
                 CLAUDE_CLASSIFY_STREAM=1 \
                     claude_classify "$MODEL" \
@@ -86,11 +86,11 @@ classify_walk() {  # <verdict-line-ERE>
             ) >"$CLOG" 2>&1
             # A refusal is judged structurally, from the CLI's own events —
             # never by pattern-matching the answer's words — and it moves to
-            # the next LOGIN, not the next model: a dry account is dry for
+            # the next ACCOUNT, not the next model: a dry account is dry for
             # haiku too.
             if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
-                check_log "refused by ${CONFDIR:-primary} — trying the next login"
-                claude_limit_record "$CONFDIR" "$REFUSAL"
+                check_log "account $ACCT refused — trying the next account"
+                claude_limit_record "$ACCT" "$REFUSAL"
                 continue 2
             fi
             OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
@@ -104,8 +104,8 @@ classify_walk() {  # <verdict-line-ERE>
             fi
             check_log "$MODEL answered with nothing parseable$( [ "$MODEL" = "$CHECK_MODEL" ] && printf ' — falling to %s' "$CHECK_FALLBACK_MODEL")"
         done
-        # A login that answered — however unhelpfully — ends the walk; only
-        # a refusal moves the default and tries the next subscription.
+        # An account that answered — however unhelpfully — ends the walk;
+        # only a refusal moves the selection and tries the next account.
         break
     done
     rm -f "$CLOG"

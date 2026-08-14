@@ -123,11 +123,11 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 # it is the user's coding agent's memory and she is not that agent. A builder
 # is: it is a headless coding session working inside his project, and the
 # project's own memory index is precisely the rules it should arrive knowing.
-# A login refusing over a usage/session limit is not a dead job: the build moves
-# to the next account and only a chain with nothing left in it blocks. Accounts
-# known dry are skipped outright — paying a doomed CLI boot and refusal in front
-# of every build buys nothing. Each refusal stamps its account, so the next job
-# starts past it too.
+# An account refusing over a usage/session limit is not a dead job: the build
+# moves to the next account and only a walk with nothing left in it blocks.
+# Accounts known dry are skipped outright — paying a doomed CLI boot and refusal
+# in front of every build buys nothing. Each refusal cools its account, so the
+# next job starts past it too.
 #
 # ATT_OFF marks where the current attempt's output begins: every judgement below
 # reads only the final attempt's slice of the STREAM, so an earlier attempt's
@@ -135,25 +135,25 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
 RC=0
 ATTEMPT=0
+PREV_ACCT=""
 for ACCT in $(claude_accounts); do
-    CONFDIR="$(claude_account_confdir "$ACCT")"
+    CONFDIR="$(claude_account_dir "$ACCT")"
     ATTEMPT=$(( ATTEMPT + 1 ))
-    if [ -n "$CONFDIR" ]; then
-        if [ "$ATTEMPT" = 1 ]; then
-            echo "job-runner: default login is CLAUDE_CONFIG_DIR=$CONFDIR — building there" >> "$LOG"
-        else
-            echo "job-runner: login refused (limit) — retrying via CLAUDE_CONFIG_DIR=$CONFDIR" >> "$LOG"
-        fi
+    if [ "$ATTEMPT" = 1 ]; then
+        echo "job-runner: building as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
+    else
+        echo "job-runner: account $PREV_ACCT is over its limit — retrying as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
     fi
+    PREV_ACCT=$ACCT
     ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
     (
-        # "The primary login" is the ABSENCE of the variable, not whatever the
-        # environment arrived holding — and a job dispatched from a turn that
-        # was already on a fallback inherits it (job_start forwards it on
-        # purpose). Left standing, the chain's first slot re-ran the account
-        # that had just refused and the true primary was never tried.
-        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
-        else unset CLAUDE_CONFIG_DIR; fi
+        # Every account is addressed explicitly, account 1 included
+        # (specs/account-fallback.md rule 3) — never by whatever the
+        # environment arrived holding: a job dispatched from a turn inherits
+        # the turn's override (job_start forwards it on purpose), and a rule
+        # shaped as "absent means X" once re-ran the account that had just
+        # refused while another entry was never tried at all.
+        export CLAUDE_CONFIG_DIR="$CONFDIR"
         # The job profile: no MCP servers and no skills catalogue, and
         # deliberately no --tools restriction — a builder needs whatever the
         # work needs. See claude_profile_flags; --tools without the empty MCP
@@ -186,12 +186,12 @@ for ACCT in $(claude_accounts); do
     # for the limit signature made a builder that merely READ a file
     # containing the wording — lib/common.sh, which holds the signature's own
     # patterns — and then exited non-zero for any reason look like an account
-    # refusal: the durable default rotated and every further dispatch was held
+    # refusal: the current account rotated and every further dispatch was held
     # for half an hour, on the strength of a file the builder opened.
-    # claude_stream_refusal is the same judgement the turn and wake chains use
+    # claude_stream_refusal is the same judgement the turn and wake walks use
     # — and so is the mid-build CUT (specs/jobs.md rule 15a, account-fallback
     # rule 12a): a limit that stops a builder half-way through its work moves
-    # the build to the next login at once, exactly as a refusal does, instead
+    # the build to the next account at once, exactly as a refusal does, instead
     # of journalling the CLI's complaint as the builder's closing words. Four
     # builders died that way inside ten minutes on the night of 2026-08-11.
     # A final attempt that ends cut stays a real failure, never blocked — the
@@ -199,7 +199,7 @@ for ACCT in $(claude_accounts); do
     REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" \
         || REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")" \
         || break
-    claude_limit_record "$CONFDIR" "$REFUSAL"
+    claude_limit_record "$ACCT" "$REFUSAL"
 done
 trap - TERM
 
@@ -298,9 +298,9 @@ if [ "$STATE" = blocked ]; then
     else
         RETRY_IN=$(( JOB_BLOCK_RETRY + 60 ))
         # CLAUDE_CONFIG_DIR is deliberately NOT forwarded into the timer's
-        # unit: the fired dispatch must ask claude_preferred_login at fire
-        # time, so the brief goes out on whatever account the chain has since
-        # rotated to — never pinned to the login that just refused.
+        # unit: the fired dispatch must ask claude_child_login at fire
+        # time, so the brief goes out on whatever account the selection has
+        # since moved to — never pinned to the one that just refused.
         if systemd-run --user --collect --quiet --unit="deskcrab-job-retry-$ID" \
             --on-active="${RETRY_IN}s" \
             --setenv=PATH="$HOME/.local/bin:$PATH" \

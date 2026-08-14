@@ -1116,43 +1116,68 @@ def sterile_cwd():
         return "/"
 
 
-def fallback_dirs():
-    """The configured fallback logins, in order.
+def account_list():
+    """The accounts: one flat numbered list, all equal.
 
-    Same parse as claude_fallback_dirs in lib/common.sh, and read from the same
-    variable: the name is singular by history but the value is a CHAIN,
-    separated by whitespace or colons. Read rather than re-declared, so adding a
-    subscription stays a config edit and nothing else.
+    Account 1 is ~/.claude, accounts 2..N the CLAUDE_FALLBACK_CONFIG_DIR
+    entries in configured order — the variable name is historical, the
+    semantics are one flat list (specs/account-fallback.md rule 1). Same parse
+    as claude_account_list in lib/common.sh, read rather than re-declared, so
+    adding a subscription stays a config edit and nothing else. Duplicates are
+    dropped (rule 2).
     """
-    return [d for d in re.split(r"[:\s]+",
-                                os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", ""))
-            if d]
+    dirs = [os.path.expanduser("~/.claude")]
+    for d in re.split(r"[:\s]+",
+                      os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", "")):
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
 
 
-def claude_chain():
-    """Every login this run may use, in order, starting with the one in hand.
+def account_state_path():
+    return (os.environ.get("ACCOUNT_STATE_FILE")
+            or os.path.join(os.environ.get("XDG_DATA_HOME")
+                            or os.path.expanduser("~/.local/share"),
+                            "deskcrab", "account-state"))
 
-    Mirrors claude_accounts in lib/common.sh. The primary login is the ABSENCE
-    of CLAUDE_CONFIG_DIR — never whatever the environment happens to hold
-    (specs/account-fallback.md rule 2) — so it is the empty string here and the
-    variable is unset for it, not set to "". Duplicates are dropped (rule 5),
-    and the chain is rotated to start where this process was pointed, which for
-    a detached child is the login the chain currently prefers.
+
+def account_walk():
+    """(number, config dir) pairs, in the order worth trying.
+
+    Mirrors claude_accounts in lib/common.sh, against the same shared state
+    file: the whole list rotated to start at the current account, accounts
+    still cooling skipped — so a run firing beside others does not pay its own
+    doomed CLI boot on an account already known dry — and, with every account
+    cooling, the one whose cooldown ends soonest alone: the selection is never
+    empty (rules 7, 9, 10). Read-only on purpose: recording a refusal is the
+    shell paths' job (rule 29).
     """
-    ordered = []
-    for d in [""] + fallback_dirs():
-        if d not in ordered:
-            ordered.append(d)
-    here = os.environ.get("CLAUDE_CONFIG_DIR") or ""
-    if here in ordered:
-        i = ordered.index(here)
-        return ordered[i:] + ordered[:i]
-    # A login nobody configured: try it, then the chain that IS configured.
-    return [here] + ordered
-
-
-def account_name(confdir):
-    return os.path.basename(confdir) if confdir else "primary"
+    dirs = account_list()
+    current, cooling = 1, {}
+    now = time.time()
+    try:
+        with open(account_state_path()) as fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if len(f) >= 4 and f[0] == "current" and f[2] in dirs:
+                    current = dirs.index(f[2]) + 1
+                elif len(f) >= 4 and f[0] == "cooldown" and f[2] in dirs:
+                    try:
+                        until = int(f[3])
+                    except ValueError:
+                        continue
+                    if until > now:
+                        cooling[dirs.index(f[2]) + 1] = until
+    except OSError:
+        pass
+    if not 1 <= current <= len(dirs):
+        current = 1
+    order = [(i - 1) % len(dirs) + 1
+             for i in range(current, current + len(dirs))]
+    free = [n for n in order if n not in cooling]
+    if not free:
+        free = [min(cooling, key=cooling.get)]
+    return [(n, dirs[n - 1]) for n in free]
 
 
 def limit_signature():
@@ -1184,13 +1209,13 @@ def run_claude(prompt, model, timeout=600, log=None):
     # applied here because nothing shell-side wraps these runs. The sterile cwd
     # is the same rule from the other side: nothing to read there either.
     #
-    # And it walks the chain. It had ONE shot at whichever login was handed to
-    # it, so a judgement fired at an account that had just gone dry lost the
+    # And it walks the accounts. It had ONE shot at whichever login was handed
+    # to it, so a judgement fired at an account that had just gone dry lost the
     # whole turn's reinforcement — silently, because the caller's except clause
     # writes a line and returns 0 by design. The records that turn genuinely
     # used kept decaying as though they had been surfaced and ignored, which is
     # the opposite of what the judgement is for. specs/account-fallback.md rule
-    # 29: every out-of-band model call routes through the chain.
+    # 29: every out-of-band model call selects from the same flat list.
     #
     # A refusal is judged from the CLI's own channels and only ever on a run
     # that FAILED. A successful answer is never pattern-matched, whatever it
@@ -1199,15 +1224,11 @@ def run_claude(prompt, model, timeout=600, log=None):
     # channels are read — the CLI puts its refusal on whichever it likes.
     env_base = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
     signature = limit_signature()
-    chain = claude_chain()
     refused = 0
     last = ""
-    for confdir in chain:
+    for number, confdir in account_walk():
         env = dict(env_base)
-        if confdir:
-            env["CLAUDE_CONFIG_DIR"] = confdir
-        else:
-            env.pop("CLAUDE_CONFIG_DIR", None)
+        env["CLAUDE_CONFIG_DIR"] = confdir
         proc = subprocess.run(
             [claude_bin(), "-p", "--model", model, "--dangerously-skip-permissions"]
             + classify_flags(),
@@ -1215,15 +1236,15 @@ def run_claude(prompt, model, timeout=600, log=None):
             env=env, cwd=sterile_cwd())
         if proc.returncode == 0:
             if refused and log:
-                log(f"{account_name(confdir)} answered after "
-                    f"{refused} login(s) refused")
+                log(f"account {number} answered after "
+                    f"{refused} account(s) refused")
             return proc.stdout.strip()
         last = f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}"
         said = f"{proc.stderr}\n{proc.stdout}"
         if not (signature and signature.search(said)):
             raise RuntimeError(last)
         refused += 1
-    raise RuntimeError(f"every login refused ({refused} tried) — {last}")
+    raise RuntimeError(f"every account refused ({refused} tried) — {last}")
 
 
 def extract_candidates(material, model):

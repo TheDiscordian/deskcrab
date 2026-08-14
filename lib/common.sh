@@ -26,23 +26,22 @@ unset _INHERITED_CLAUDE_BIN
 # Defaults
 CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 CLAUDE_EFFORT="${CLAUDE_EFFORT:-low}"
-# Further `claude` logins to fall back to when the account in hand refuses to
-# run at all — session/usage limit reached, credits exhausted. Names other
-# Claude Code config directories (separate subscriptions' logins); the refused
-# run is retried with CLAUDE_CONFIG_DIR pointed at each in turn. Limit refusals
-# ONLY: an auth or network failure would fail on the next account too, and
-# must surface as itself. Unset = fail exactly as before.
-#
-# The name is singular by history but the value is a CHAIN: a third or fourth
-# subscription is another entry, separated by whitespace or colons, tried
-# left to right. One entry behaves exactly as it always did.
+# The rest of the account list: accounts 2..N, as Claude Code config
+# directories (separate subscriptions' logins), separated by whitespace or
+# colons, in the order they follow account 1 ($HOME/.claude). The variable
+# NAME is historical and kept for back-compat; the semantics are one flat
+# numbered list, no member special. When the account in hand refuses over a
+# session/usage limit, the run moves to the next available account. Limit
+# refusals ONLY: an auth or network failure would fail on the next account
+# too, and must surface as itself. Unset = one account, which fails exactly
+# as a lone login always did.
 CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # What a limit refusal looks like (case-insensitive ERE). A run that never
 # began outputs one line of the CLI's own refusal and nothing else; these are
 # the wordings observed live plus the session-limit variants. Shared by every
 # retry site and by job_output_blocked, so the two judgements can never drift.
 # "Not logged in · Please run /login" earned its place here on 2026-08-07: four
-# builder jobs in a row died on that single line while a fallback login was
+# builder jobs in a row died on that single line while another account was
 # answering fine seconds later. It reads like an auth failure — the one thing
 # this list is supposed to exclude — but a login is per-account by definition,
 # so refusing to walk past it strands every job on one dead credential.
@@ -133,7 +132,7 @@ TURN_STALL_TIMEOUT="${TURN_STALL_TIMEOUT:-120}"
 # And a ceiling on the WHOLE account walk, which the stall watchdog by
 # construction cannot be: a session that keeps emitting output is never
 # silent, and the walk itself was unbounded — one live run measured
-# duration_ms 644964 on a fallback account nobody was told about. 0 disables.
+# duration_ms 644964 on an account swap nobody was told about. 0 disables.
 TURN_CHAIN_TIMEOUT="${TURN_CHAIN_TIMEOUT:-900}"
 # A wake that fires beside an interactive turn used to be muted outright
 # (the old WAKE_MUTE_AFTER_TURN echo window) — its reply swallowed wholesale.
@@ -269,29 +268,37 @@ DEBUGLOG_LATEST="${STATE_PREFIX}-debug.log"
 # path may fail quietly again.
 SPEECH_LOG="${SPEECH_LOG:-${STATE_PREFIX}-speech.log}"
 SESSIONS_DIR="${STATE_PREFIX}-sessions"
-# Which login runs FIRST is a POSITION that moves, never a timer: the default
-# account. When the login in hand refuses over a limit, the next one in the
-# chain becomes the default — immediately, durably — and stays the default
-# until IT refuses in its turn, wrapping past the end of the chain back to the
-# primary. Nothing moves it back on its own: the expiry stamp this replaces
-# re-probed a dry primary every half hour — a full CLI boot and refusal in
-# front of a reply, all afternoon, when the refusal itself had said "resets
-# 5pm". Durable like last-origin (a reboot must not quietly hand the chain
-# back to a dry primary); a scratch instance overrides the path.
-ACCOUNT_DEFAULT_FILE="${ACCOUNT_DEFAULT_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/account-default}"
-# The default file holds only where the chain stands NOW; every move it has
-# ever made goes here, append-only. Without it "the chain moved" is a state
+# The accounts are one FLAT NUMBERED LIST — account 1 is $HOME/.claude,
+# accounts 2..N the CLAUDE_FALLBACK_CONFIG_DIR entries in configured order —
+# and this file is where the list's state lives: which account answers NOW
+# (the current), and until when each refused account is not worth another try
+# (its cooldown). A limit refusal cools the account that refused and advances
+# the current to the next account not cooling, wrapping past the end; the new
+# current stays current until IT refuses in its turn. Nothing switches back
+# early, and nothing re-probes an account inside its cooldown. Durable like
+# last-origin (a reboot must not forget which account answers, or re-probe
+# accounts known dry); a scratch instance overrides the path.
+ACCOUNT_STATE_FILE="${ACCOUNT_STATE_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/account-state}"
+# The state file holds only where the selection stands NOW; every move it has
+# ever made goes here, append-only. Without it "the accounts moved" is a state
 # with no history, and a turn that went quiet for ten minutes has no record
 # anywhere she can read saying why.
 #
-# Derived from ACCOUNT_DEFAULT_FILE rather than from XDG on its own, so pinning
+# Derived from ACCOUNT_STATE_FILE rather than from XDG on its own, so pinning
 # one pins BOTH. This file was independent for about ten minutes, and in that
-# time tests/test_limit_fallback.sh — which does pin the default file — wrote
-# forty-four fabricated swaps into the LIVE log, which the state block would
-# then have read back to her as real. A second knob a test has to know about is
-# a knob a test will not know about.
-ACCOUNT_LOG="${ACCOUNT_LOG:-$(dirname "$ACCOUNT_DEFAULT_FILE")/account-log}"
+# time the account suite — which does pin the state file — wrote forty-four
+# fabricated swaps into the LIVE log, which the state block would then have
+# read back to her as real. A second knob a test has to know about is a knob a
+# test will not know about.
+ACCOUNT_LOG="${ACCOUNT_LOG:-$(dirname "$ACCOUNT_STATE_FILE")/account-log}"
 ACCOUNT_LOG_KEEP="${ACCOUNT_LOG_KEEP:-500}"
+# How long a refused account cools before it is worth another CLI boot. A
+# rolling session limit resets on its own clock, measured in hours — five is
+# the window the CLI's own refusal names. Running out of usage credits (or a
+# weekly cap, or a login that needs a human at the keyboard) holds much
+# longer. Seconds, both knobs.
+ACCOUNT_COOLDOWN_SESSION="${ACCOUNT_COOLDOWN_SESSION:-18000}"
+ACCOUNT_COOLDOWN_CREDITS="${ACCOUNT_COOLDOWN_CREDITS:-86400}"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
 # stage. Two voices at once is never acceptable: the later speaker queues
@@ -1397,11 +1404,12 @@ _state_delta_line() {  # <anchor epoch>
               printf "%s", out }' "$WAKE_LEDGER" 2>/dev/null)"
     [ -n "$changes" ] && parts="$parts; queue changes: $changes"
 
-    # The chain moving is news of the same kind: it explains a silence.
+    # The accounts moving is news of the same kind: it explains a silence.
     local walks
-    walks="$(awk -F'\t' -v cut="$anchor" '$1 + 0 >= cut { n++; last = $2 " -> " $3 }
+    walks="$(awk -F'\t' -v cut="$anchor" \
+        '$1 + 0 >= cut { n++; last = "account " $2 " -> account " $3 }
         END { if (n > 0) printf "%d (last: %s)", n, last }' "$ACCOUNT_LOG" 2>/dev/null)"
-    [ -n "$walks" ] && parts="$parts; account chain walked $walks"
+    [ -n "$walks" ] && parts="$parts; accounts walked $walks"
 
     printf 'Since your last reply (%s, %d min ago)%s\n' \
         "$(date -d "@$anchor" '+%H:%M')" "$mins" \
@@ -1409,19 +1417,25 @@ _state_delta_line() {  # <anchor epoch>
     [ -n "$parts" ] || printf '  (nothing fired, nothing was booked, no job was dispatched, and the queue did not change.)\n'
 }
 
-# Which login answers next, and why the default last moved. `crab status` has
-# led with this for a while; the prompt was the one place it was missing, so
-# nothing she could read said which account was answering or that the chain had
-# moved at all.
+# Which account answers next, by number, and why the state last moved.
+# `crab status` has led with this for a while; the prompt was the one place it
+# was missing, so nothing she could read said which account was answering or
+# that the selection had moved at all.
 account_state_line() {
-    local acct why when
-    acct="$(claude_account_default)"
-    if [ "$acct" = "$CLAUDE_PRIMARY_TOKEN" ]; then acct="primary"; else acct="$(basename "$acct")"; fi
-    why="$(head -n1 "$ACCOUNT_DEFAULT_FILE" 2>/dev/null | cut -f3)"
-    when="$(head -n1 "$ACCOUNT_DEFAULT_FILE" 2>/dev/null | cut -f2)"
+    local n why when cooling
+    n="$(claude_account_pick)"
+    why="$(awk -F'\t' '$1 == "current" {print $5; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
+    when="$(awk -F'\t' '$1 == "current" {print $4; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
     case "${when:-}" in ''|*[!0-9]*) when="" ;; *) when="$(date -d "@$when" '+%H:%M')" ;; esac
-    printf 'Account: %s answers next' "$acct"
+    printf 'Account: account %s answers next' "$n"
     [ -n "$why" ] && printf ' (%s%s)' "$why" "${when:+, $when}"
+    # The cooldown table is the state that explains the selection: say how
+    # much of the list is benched, when any of it is.
+    cooling="$(awk -F'\t' -v now="$(date +%s)" \
+        '$1 == "cooldown" && $4 + 0 > now {n++} END {printf "%d", n + 0}' \
+        "$ACCOUNT_STATE_FILE" 2>/dev/null)"
+    [ "${cooling:-0}" -gt 0 ] 2>/dev/null \
+        && printf ' — %s of %s accounts cooling' "$cooling" "$(claude_account_count)"
     printf '\n'
 }
 
@@ -1963,10 +1977,10 @@ $(cat "$OLDFILE")"
     # ANSWER. The material being summarised is a conversation with her, and the
     # conversations that reach this threshold are frequently about accounts
     # running dry — so a faithful summary of an afternoon reads "the session
-    # limit was reached at 14:20 and the chain moved on", every phrase of it in
-    # the signature. That summary was read as a refusal: the account that wrote
-    # it was stamped dry, the durable default moved off it, the next login was
-    # made to write the same summary again, and when the chain ran out the
+    # limit was reached at 14:20 and the accounts moved on", every phrase of it
+    # in the signature. That summary was read as a refusal: the account that
+    # wrote it was cooled, the current moved off it, the next account was
+    # made to write the same summary again, and when the walk ran out the
     # compaction was abandoned with the turns still unfolded.
     # specs/account-fallback.md rule 15, rule 30 (capture what the CLI says on
     # its own channel), and rule 31 (a refusal is never committed as a summary).
@@ -1978,24 +1992,23 @@ $(cat "$OLDFILE")"
     # and its whole text is the answer: degrading to the old shape is right, and
     # a refusal on that path still reads as one, because a stream with nothing
     # but the CLI's own words in it is exactly what rule 12 describes.
-    local SUMRC=0 SUMCONF="" ACCT REFUSAL
+    local SUMRC=0 SUMACCT REFUSAL
     local SUMLOG="${STATE_PREFIX}-convo-sum-stream.$$"
     NEWSUM=""
-    for ACCT in $(claude_accounts); do
-        SUMCONF="$(claude_account_confdir "$ACCT")"
+    for SUMACCT in $(claude_accounts); do
         SUMRC=0
         : > "$SUMLOG"
-        { if [ -n "$SUMCONF" ]; then export CLAUDE_CONFIG_DIR="$SUMCONF"
-          else unset CLAUDE_CONFIG_DIR; fi
-          printf '%s' "$SUMMATERIAL" \
-              | CLAUDE_CLASSIFY_STREAM=1 claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS"
-        } >>"$SUMLOG" 2>&1 || SUMRC=$?
+        printf '%s' "$SUMMATERIAL" \
+            | CLAUDE_CONFIG_DIR="$(claude_account_dir "$SUMACCT")" \
+              CLAUDE_CLASSIFY_STREAM=1 \
+              claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS" \
+            >>"$SUMLOG" 2>&1 || SUMRC=$?
         if REFUSAL="$(claude_stream_refusal "$SUMLOG")"; then
-            claude_limit_record "$SUMCONF" "$REFUSAL"
+            claude_limit_record "$SUMACCT" "$REFUSAL"
             continue
         fi
         # Not a refusal. Anything else that went wrong goes wrong on the next
-        # login too, so it ends the walk rather than spending the chain.
+        # account too, so it ends the walk rather than spending the list.
         [ "$SUMRC" -eq 0 ] || break
         NEWSUM="$(DESKCRAB_DEBUGLOG="$SUMLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
         if [ -z "$NEWSUM" ] && ! grep -q '"type":' "$SUMLOG" 2>/dev/null; then
@@ -3577,22 +3590,20 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     # memory judge — invoke the CLI themselves, and a unit gets a bare
     # environment, so every one of them fired at whatever login the manager
     # happened to have and failed silently when that account was the dry one.
-    # Forwarded ONLY when it is actually set: passing it empty is not the same
-    # as not passing it, and a unit running with the variable defined-but-blank
-    # makes the CLI look for a login in "" and die in one second (the same
-    # mistake that killed every dispatched job for a day).
-    #
-    # ...and the login they are given is the one the chain currently PREFERS,
-    # which after a walk is not the one this process is holding: a turn exports
-    # the override inside its own subshell and nowhere else, so the parent's
-    # environment still says "primary" while the durable default the walk moved
-    # says otherwise. The memory judge is dispatched from exactly that spot — it
-    # booted the dry primary on every turn once the chain had moved, collected
-    # the refusal, and the reinforcement was silently never judged.
-    # specs/account-fallback.md rule 29.
+    # The login they are given is the account the selection answers with NOW,
+    # which after a walk is not the one this process is holding: a turn
+    # exports the override inside its own subshell and nowhere else, so the
+    # parent's environment still holds the account the turn STARTED on while
+    # the shared state says otherwise. The memory judge is dispatched from
+    # exactly that spot — it booted the dry account on every turn once the
+    # selection had moved, collected the refusal, and the reinforcement was
+    # silently never judged. specs/account-fallback.md rules 28 and 29. The
+    # state file path goes with them too, so a scratch instance's child reads
+    # the scratch state, never the live one's.
     local -a acctenv=() login
-    login="$(claude_preferred_login)"
+    login="$(claude_child_login)"
     [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
+    acctenv+=(--setenv=ACCOUNT_STATE_FILE="$ACCOUNT_STATE_FILE")
     # Background CPU priority (jobs.md rule 2a): out-of-band work never
     # competes at par with the turn that is being spoken beside it.
     local -a bgprio=()
@@ -3613,20 +3624,20 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
     # Close fds 8 and 9: the phone turn holds its serialising lock on 8 and a
     # wake holds the wake lock on 9. A child that lives for a whole claude
     # call would keep either lock held long after its turn had finished.
-    # Carry the harness and the login too, matching the systemd-run branch
-    # above (rules 28, 29): without CLAUDE_BIN a box with no user manager runs
-    # the memory judge on stock `claude`, and without CLAUDE_CONFIG_DIR it
-    # starts the chain at the primary while the walk has moved the default on.
-    # (An env array, not a `${login:+VAR=val}` prefix — a parameter expansion
-    # is not recognised as an assignment word, so it would be run as a command.
-    # `env` reads NAME=value arguments as assignments, and an empty login
-    # simply contributes no argument, so the primary stays unset per rule 2.)
+    # Carry the harness, the login, and the state too, matching the
+    # systemd-run branch above (rules 28, 29): without CLAUDE_BIN a box with
+    # no user manager runs the memory judge on stock `claude`, and without an
+    # explicit CLAUDE_CONFIG_DIR it starts the walk on whatever the
+    # environment happened to hold while the shared state says otherwise.
+    # Every account is addressed explicitly, account 1 included (rule 3), so
+    # the login is always non-empty here.
     local -a fbenv=(
         CLAUDE_BIN="${CLAUDE_BIN:-}"
         CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
+        ACCOUNT_STATE_FILE="$ACCOUNT_STATE_FILE"
+        CLAUDE_CONFIG_DIR="${login:-$HOME/.claude}"
     )
-    [ -n "$login" ] && fbenv+=(CLAUDE_CONFIG_DIR="$login")
     env "${fbenv[@]}" setsid "$@" >/dev/null 2>&1 8>&- 9>&- &
 }
 
@@ -3784,7 +3795,7 @@ _claudism_field() {  # <json> <key>
 # One mirror call: the flagged line, back in her hands. Prints her
 # replacement; prints nothing on any failure — and every caller reads
 # nothing as "the original stands". One attempt, on the ambient login: a
-# walk of a dry account chain is minutes of held speech, and fail-open is
+# walk of a dry account list is minutes of held speech, and fail-open is
 # cheaper than any of them.
 _claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [function] [fix]
     local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4" FN="${5:-}" FIX="${6:-}"
@@ -4285,18 +4296,6 @@ wake_stream_last_words() {
         END { if (last != "") print last }' "$DEBUGLOG" 2>/dev/null)" 160
 }
 
-# The fallback logins, in the order they should be tried, one per line. The
-# config value is a CHAIN — whitespace- or colon-separated — because a second
-# subscription runs out exactly the way the first one did, and a run that gives
-# up at the end of a two-account chain is no more finished than one that gave
-# up at the end of a one-account chain. Every retry site walks this list rather
-# than reading the variable, so adding an account is a config edit and nothing
-# else.
-claude_fallback_dirs() {
-    printf '%s\n' "$CLAUDE_FALLBACK_CONFIG_DIR" | tr ':[:space:]' '\n\n' \
-        | grep -v '^[[:space:]]*$' || true
-}
-
 # --- Per-path CLI profiles -------------------------------------------------
 # What each kind of run asks the CLI to put in front of her, measured against
 # the real CLI in tools/context-probe-results.md. Every number below is from
@@ -4441,9 +4440,10 @@ claude_profile_flags() {  # <turn|wake|job|classify>
 #     and CLAUDE_CONFIG_DIR        projects, session-env. A turn breaks
 #                                  without it (measured: the Bash tool dies
 #                                  on an EROFS session-env mkdir), and the
-#                                  fallback twins symlink their shared
-#                                  surfaces into the primary, so the primary
-#                                  is bound even when a twin is in play
+#                                  other accounts symlink their shared
+#                                  surfaces into account 1's ~/.claude, so
+#                                  that dir is bound whichever account has
+#                                  the turn
 #   * the user cache             — the CLI's own logging
 # Everything else on the machine — the repo, ~/.local/lib/deskcrab, the
 # ~/.local/bin entry points, ~/.config/deskcrab, the systemd units, the
@@ -4733,111 +4733,224 @@ claude_run_limited() {  # [byte offset]
 
 # The same question, plus "and there is somewhere else to go". Kept because it
 # is the honest name for the decision to retry at all.
-claude_limit_fallback_due() {
-    [ -n "$CLAUDE_FALLBACK_CONFIG_DIR" ] || return 1
+claude_limit_retry_due() {
+    [ "$(claude_account_count)" -gt 1 ] || return 1
     claude_run_limited
 }
 
-# Accounts are named by their config dir; the login already in the environment
-# is the token "-" (no CLAUDE_CONFIG_DIR override), which no directory can
-# collide with. These two translate between the token and the dir.
-CLAUDE_PRIMARY_TOKEN="-"
-claude_account_confdir() { [ "$1" = "$CLAUDE_PRIMARY_TOKEN" ] || printf '%s' "$1"; }
+# Accounts are one FLAT NUMBERED LIST (specs/account-fallback.md rules 1 to
+# 3): account 1 is $HOME/.claude, accounts 2..N the CLAUDE_FALLBACK_CONFIG_DIR
+# entries in configured order, duplicates dropped. Nothing about the head of
+# the list is special — every account is addressed by its number and run with
+# an explicit CLAUDE_CONFIG_DIR, account 1 included. "No override" is not an
+# account name: the variable is exported into a Claude Code session's
+# Bash-tool environment and forwarded to children, so any rule shaped as
+# "absent means X" reads a leftover as a decision — a three-account list once
+# behaved as two exactly that way.
+claude_account_list() {
+    { printf '%s\n' "$HOME/.claude"
+      printf '%s\n' "$CLAUDE_FALLBACK_CONFIG_DIR" | tr ':[:space:]' '\n\n'
+    } | grep -v '^[[:space:]]*$' | awk '!seen[$0]++'
+}
 
-# The current default account: the stored token, if it still names an account
-# in the chain — the conf may have changed since it was written — else the
-# primary. The file's first field is the token; the rest is a record of when
-# and why the default last moved, for `crab status` and debugging only.
-claude_account_default() {
-    local stored d
-    stored="$(head -n1 "$ACCOUNT_DEFAULT_FILE" 2>/dev/null | cut -f1)"
-    [ -n "$stored" ] || { printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; return; }
-    while IFS= read -r d; do
-        [ "$d" = "$stored" ] && { printf '%s\n' "$stored"; return; }
-    done <<EOF
-$CLAUDE_PRIMARY_TOKEN
-$(claude_fallback_dirs)
-EOF
-    printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"
+claude_account_count() { claude_account_list | wc -l; }
+
+claude_account_dir() {  # <number> -> that account's config dir
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    claude_account_list | sed -n "${1}p"
+}
+
+claude_account_number() {  # <config dir> -> its number, or nothing at all
+    claude_account_list | awk -v d="${1:-}" '$0 == d {print NR; exit}'
+}
+
+# The state file (specs/account-fallback.md rules 4 to 6): one `current` line
+# saying which account answers now, and one `cooldown` line per account known
+# dry. Every record carries the account's number for the reader and its
+# directory for resolution, so an edited configuration renumbers cleanly
+# instead of pointing at the wrong account; a recorded directory the
+# configuration no longer names is ignored.
+#
+#   current   <number> <dir> <epoch> <why>
+#   cooldown  <number> <dir> <until-epoch> <kind>
+
+# Which account answers now, as a number. No record, or a record the list no
+# longer names, means account 1.
+claude_account_current() {
+    local dir n
+    dir="$(awk -F'\t' '$1 == "current" {print $3; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
+    n="$(claude_account_number "${dir:-}")"
+    printf '%s\n' "${n:-1}"
+}
+
+# When account $1's cooldown ends, as an epoch — 0 when it is not cooling. An
+# expired cooldown is no cooldown: the account is selectable again, though it
+# is only reached when a refusal walks the selection onto it.
+claude_account_cooldown_until() {
+    local dir until
+    dir="$(claude_account_dir "$1")"
+    until="$(awk -F'\t' -v d="$dir" \
+        '$1 == "cooldown" && $3 == d {print $4; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
+    case "${until:-}" in ''|*[!0-9]*) until=0 ;; esac
+    if [ "$until" -gt "$(date +%s)" ]; then printf '%s\n' "$until"; else printf '0\n'; fi
 }
 
 # The login to hand a DETACHED child — a job, the promise auditor, the memory
-# judge — as the one to start from. Prints a config dir, or nothing at all,
-# which is how the primary login is named.
-#
-# The recorded default wins whenever there is a record, including when it names
-# the primary: that file is a deliberate, durable statement of which login
-# answers next, and it is the only thing that knows the chain moved. A turn
-# walks the chain inside its own subshell — claude_generate exports the
-# override there and nowhere else — so after a walk this process's environment
-# still says "primary" while the account that answered does not. With no record
-# at all, the pin this process is holding is the best evidence there is.
-claude_preferred_login() {
-    if [ -s "$ACCOUNT_DEFAULT_FILE" ]; then
-        claude_account_confdir "$(claude_account_default)"
-        return 0
+# judge — as the one to start from: the account the selection answers with
+# NOW, as a config dir, always non-empty. The shared state is fresher than
+# anything in this process's environment: a turn walks the accounts inside its
+# own subshell — claude_generate exports the override there and nowhere else —
+# so after a walk the environment still holds the account the turn STARTED on,
+# not the one that answered.
+claude_child_login() { claude_account_dir "$(claude_account_pick)"; }
+
+# Which cooldown a refusal earns (specs/account-fallback.md rule 8). A rolling
+# session limit resets on its own clock within hours; running out of usage
+# credits — or a weekly cap, or a login that needs a human at the keyboard —
+# holds much longer. Anything unrecognised takes the short cooldown: too eager
+# costs one refused CLI boot hours from now and corrects itself, too patient
+# benches an account that came back at lunch.
+claude_refusal_kind() {  # <refusal text> -> session|credits
+    if printf '%s' "${1:-}" | grep -qiE \
+        'usage credit|credit balance|insufficient credit|extra usage|weekly limit|not logged in|/login'; then
+        printf 'credits\n'
+    else
+        printf 'session\n'
     fi
-    printf '%s' "${CLAUDE_CONFIG_DIR:-}"
 }
 
-# This account refused over a limit — the default MOVES to the next account in
-# the chain, wrapping at the end, and stays there until that one refuses in
-# its turn. That is the whole mechanism: no per-account stamp, no expiry
-# window, no switchback. $2 is the refusal line, kept in the record for
-# status displays and debugging.
-claude_limit_record() {
-    local refused="${1:-}" next
-    [ -n "$refused" ] || refused="$CLAUDE_PRIMARY_TOKEN"
-    next="$({ printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs; } \
-        | awk -v r="$refused" '
-            NR == 1 {first = $0}
-            take    {print; done = 1; exit}
-            $0 == r {take = 1}
-            END     {if (take && !done) print first}')"
-    [ -n "$next" ] || next="$CLAUDE_PRIMARY_TOKEN"
-    mkdir -p "$(dirname "$ACCOUNT_DEFAULT_FILE")" 2>/dev/null
-    printf '%s\t%s\tmoved off %s: %s\n' "$next" "$(date +%s)" "$refused" \
-        "${2:-limit refusal}" > "$ACCOUNT_DEFAULT_FILE" 2>/dev/null
-    # ...and the move itself is kept. The default file says where the chain
-    # stands; this says what it has been through, which is what the state block
-    # reads to tell her the chain walked while she was away.
-    mkdir -p "$(dirname "$ACCOUNT_LOG")" 2>/dev/null
-    local from="$refused"
-    [ "$from" = "$CLAUDE_PRIMARY_TOKEN" ] && from="primary"
-    local to="$next"
-    [ "$to" = "$CLAUDE_PRIMARY_TOKEN" ] && to="primary"
-    log_append_bounded "$ACCOUNT_LOG" "$ACCOUNT_LOG_KEEP" \
-        "$(printf '%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$(basename "$from")" "$(basename "$to")" \
-            "$(utf8_trim "${2:-limit refusal}" 120)" \
-            "${SESSION_KIND:-session}")"
+# Account $1 (by number) refused over a limit: it cools for its refusal kind's
+# window, and when it was the account answering, the current advances to the
+# next account not in cooldown, wrapping past the end of the list. The new
+# current stays current until it refuses in its turn — an account coming off
+# cooldown waits to be reached, it is never switched back to — and with every
+# account cooling, the current lands on the one whose cooldown ends soonest,
+# so the selection that follows is never empty (rules 7 and 9). $2 is the
+# refusal line, kept in the record for status displays and debugging. A cut
+# (rule 12a) is recorded through here exactly as a refusal is.
+#
+# The read-modify-write runs under a lock, so two sessions refusing at once
+# each see the other's record instead of losing it. Fd 217: 8 and 9 are the
+# phone turn's and the wake's own locks, and single digits are the ones a
+# stray redirection elsewhere could collide with.
+claude_limit_record() {  # <account number> <refusal text>
+    local n="${1:-1}" refusal="${2:-limit refusal}"
+    local count kind len now until cur cur_until next i c tmp
+    local rec_tag rec_n rec_d rec_until rec_kind soonest soonest_at
+    count="$(claude_account_count)"
+    case "$n" in ''|*[!0-9]*) n="$(claude_account_number "$n")" ;; esac
+    { [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$n" -le "$count" ]; } 2>/dev/null || n=1
+    kind="$(claude_refusal_kind "$refusal")"
+    case "$kind" in credits) len="$ACCOUNT_COOLDOWN_CREDITS" ;; *) len="$ACCOUNT_COOLDOWN_SESSION" ;; esac
+    now="$(date +%s)"
+    until=$(( now + len ))
+    mkdir -p "$(dirname "$ACCOUNT_STATE_FILE")" 2>/dev/null
+    {
+        flock -w 10 217 2>/dev/null
+        cur="$(claude_account_current)"
+        tmp="$ACCOUNT_STATE_FILE.tmp.$$"
+        # The new cooldown table: every unexpired record for another account,
+        # re-resolved against today's list, plus this refusal's own.
+        {
+            if [ -f "$ACCOUNT_STATE_FILE" ]; then
+                while IFS=$'\t' read -r rec_tag rec_n rec_d rec_until rec_kind; do
+                    [ "$rec_tag" = cooldown ] || continue
+                    case "${rec_until:-}" in ''|*[!0-9]*) continue ;; esac
+                    [ "$rec_until" -gt "$now" ] || continue
+                    c="$(claude_account_number "$rec_d")"
+                    [ -n "$c" ] || continue
+                    [ "$c" -eq "$n" ] && continue
+                    printf 'cooldown\t%s\t%s\t%s\t%s\n' \
+                        "$c" "$rec_d" "$rec_until" "${rec_kind:-session}"
+                done < "$ACCOUNT_STATE_FILE"
+            fi
+            printf 'cooldown\t%s\t%s\t%s\t%s\n' "$n" "$(claude_account_dir "$n")" "$until" "$kind"
+        } > "$tmp" 2>/dev/null
+        # Does the current move? Only when the account that refused was the
+        # one answering — a refusal reported late, after another session
+        # already advanced past it, cools its account and changes nothing
+        # else — or when the recorded current is itself cooling.
+        cur_until="$(awk -F'\t' -v d="$(claude_account_dir "$cur")" \
+            '$1 == "cooldown" && $3 == d {print $4; exit}' "$tmp" 2>/dev/null)"
+        case "${cur_until:-}" in ''|*[!0-9]*) cur_until=0 ;; esac
+        if [ "$cur" -eq "$n" ] || [ "$cur_until" -gt "$now" ]; then
+            next=""
+            for i in $(seq 1 $(( count - 1 ))); do
+                c=$(( (n - 1 + i) % count + 1 ))
+                [ "$(awk -F'\t' -v d="$(claude_account_dir "$c")" \
+                    '$1 == "cooldown" && $3 == d {print $4; exit}' "$tmp")" ] && continue
+                next="$c"
+                break
+            done
+            if [ -z "$next" ]; then
+                # Everything is cooling: the account whose cooldown ends
+                # soonest answers (rule 9). The selection is never empty.
+                soonest=""; soonest_at=0
+                while IFS=$'\t' read -r rec_tag rec_n rec_d rec_until rec_kind; do
+                    [ "$rec_tag" = cooldown ] || continue
+                    if [ -z "$soonest" ] || [ "$rec_until" -lt "$soonest_at" ]; then
+                        soonest="$rec_n"; soonest_at="$rec_until"
+                    fi
+                done < "$tmp"
+                next="${soonest:-1}"
+            fi
+            printf 'current\t%s\t%s\t%s\t%s\n' "$next" "$(claude_account_dir "$next")" "$now" \
+                "$(printf 'account %s is over its limit (%s)' "$n" "$kind")" >> "$tmp"
+            # ...and the move itself is kept. The state file says where the
+            # selection stands; this says what it has been through, which is
+            # what the state block reads to tell her the accounts walked
+            # while she was away.
+            mkdir -p "$(dirname "$ACCOUNT_LOG")" 2>/dev/null
+            log_append_bounded "$ACCOUNT_LOG" "$ACCOUNT_LOG_KEEP" \
+                "$(printf '%s\t%s\t%s\t%s\t%s' "$now" "$n" "$next" \
+                    "$(utf8_trim "$refusal" 120)" \
+                    "${SESSION_KIND:-session}")"
+        else
+            # The current account still answers: its own record rides along
+            # unchanged.
+            awk -F'\t' '$1 == "current" {print; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null >> "$tmp"
+        fi
+        mv "$tmp" "$ACCOUNT_STATE_FILE" 2>/dev/null || rm -f "$tmp"
+    } 217>>"$ACCOUNT_STATE_FILE.lock" 2>/dev/null
     return 0
 }
 
-# Every account this run may use, one token per line: always the WHOLE chain,
-# rotated to start at the current default. A walk rides each refusal to the
-# next login (moving the default as it goes) and fails only when every one of
-# them has refused — so in the steady state the default is an account that
-# answered, the first boot succeeds, and it costs a refusal, never a timer,
-# to change which login leads.
+# Every account this run may use, one NUMBER per line, in the order to try
+# them: the whole list rotated to start at the current account, accounts
+# still cooling skipped (specs/account-fallback.md rules 7 and 10). Concurrent
+# sessions all read the same cooldowns, so a stampede of runs skips an account
+# already known dry instead of each paying its own doomed CLI boot.
+#
+# Rule 4a: this selection is NEVER empty. With every account cooling, the one
+# whose cooldown ends soonest is offered alone (rule 9) — and account 1 is a
+# constant, so the list under the rotation cannot go empty either. A walk over
+# an empty list is a session that invokes no model, leaves an empty stream
+# that every downstream judgement reads as clean, and exits 0 having done
+# nothing and said nothing (the 2026-08-11 silence hunt). The guarantee is
+# pinned here for every walk site at once rather than trusted to any one
+# caller.
 claude_accounts() {
-    # Rule 4a (specs/account-fallback.md): this list is NEVER empty. As coded
-    # it cannot be — the primary token is a constant and a stored default
-    # outside the chain resets to it — but a walk over an empty list is a
-    # session that invokes no model, leaves an empty stream that every
-    # downstream judgement reads as clean, and exits 0 having done nothing
-    # and said nothing (the 2026-08-11 silence hunt). The guarantee is worth
-    # more than the two lines it costs, so it is pinned here for every walk
-    # site at once rather than trusted to the rotation below staying whole.
-    local CHAIN
-    CHAIN="$({ printf '%s\n' "$CLAUDE_PRIMARY_TOKEN"; claude_fallback_dirs; } \
-        | awk -v d="$(claude_account_default)" '
-            $0 == d {found = 1}
-            found   {print; next}
-                    {held = held $0 "\n"}
-            END     {printf "%s", held}')"
-    [ -n "$CHAIN" ] || CHAIN="${CLAUDE_PRIMARY_TOKEN:--}"
-    printf '%s\n' "$CHAIN"
+    local count cur i n until any=0 soonest=1 soonest_at=0
+    count="$(claude_account_count)"
+    cur="$(claude_account_current)"
+    { [ "$cur" -ge 1 ] && [ "$cur" -le "$count" ]; } 2>/dev/null || cur=1
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        n=$(( (cur - 1 + i) % count + 1 ))
+        i=$(( i + 1 ))
+        until="$(claude_account_cooldown_until "$n")"
+        if [ "$until" -eq 0 ]; then
+            printf '%s\n' "$n"
+            any=1
+        elif [ "$soonest_at" -eq 0 ] || [ "$until" -lt "$soonest_at" ]; then
+            soonest="$n"; soonest_at="$until"
+        fi
+    done
+    [ "$any" -eq 1 ] || printf '%s\n' "$soonest"
 }
+
+# The account a run uses NOW: the head of the walk.
+claude_account_pick() { claude_accounts | head -n1; }
 
 # What did the wake actually DO? A silent reply is the model's SPEECH
 # decision, not its work record — two wakes on 2026-08-06 each dispatched a
@@ -4922,16 +5035,13 @@ claude_stream_note() { # <note> <detail>
 # she could not tell the user what had happened because nothing told her
 # either. The marker goes into the stream log on every path; the desktop
 # notification is for a turn somebody is waiting on, never for a wake (which
-# may well be firing at three in the morning).
-claude_swap_announce() { # <from token> <to token>
-    local from="$1" to="$2"
-    [ "$from" = "$CLAUDE_PRIMARY_TOKEN" ] && from="primary"
-    [ "$to" = "$CLAUDE_PRIMARY_TOKEN" ] && to="primary"
-    from="$(basename "$from")"; to="$(basename "$to")"
-    claude_stream_note "account-swap" "$from -> $to (limit refusal)"
+# may well be firing at three in the morning). Accounts are named by number,
+# here and everywhere a human or she reads (specs/account-fallback.md rule 25).
+claude_swap_announce() { # <from number> <to number>
+    claude_stream_note "account-swap" "account $1 -> account $2 (limit refusal)"
     [ "${SESSION_KIND:-}" = "autonomous wake" ] && return 0
     notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab-account \
-        "$NOTIFY_NAME" "$from is over its limit — trying $to" 2>/dev/null
+        "$NOTIFY_NAME" "account $1 is over its limit — switching to account $2" 2>/dev/null
     return 0
 }
 
@@ -4989,24 +5099,23 @@ _claude_watch() { # <pid> <stall seconds> <deadline epoch, 0 = none>
 }
 
 # One CLI run for a wake, under the stall watchdog, APPENDING to $DEBUGLOG.
-# $1 is a CLAUDE_CONFIG_DIR override ("" = the primary login) — the fallback
-# retry runs through here too, so a hung fallback account is reaped exactly
-# like a hung primary. Reads SYSTEM_PROMPT / PROMPT_TEXT / CLAUDE_BIN from the
-# caller's scope (bash dynamic scoping, same as build_system_prompt); leaves
-# the CLI's exit status in WAKE_CLAUDE_STATUS.
+# $1 is the selected account's config dir — every retry runs through here too,
+# so a hung retry is reaped exactly like a hung first attempt. Reads
+# SYSTEM_PROMPT / PROMPT_TEXT / CLAUDE_BIN from the caller's scope (bash
+# dynamic scoping, same as build_system_prompt); leaves the CLI's exit status
+# in WAKE_CLAUDE_STATUS.
 _wake_claude_run() {
     local CONFDIR="$1"
     (
         cd "$PROJECT_DIR" || exit 1
-        # The primary account is "no override" — which is only the primary if
-        # the variable is actually ABSENT. It is exported into a Claude Code
-        # session's Bash-tool environment and job_start deliberately forwards
-        # it, so a run inherited from a fallback turn used to walk the chain
-        # with its own first slot pointing back at the login that had just
-        # refused: three accounts became two, and the true primary was never
-        # tried. Unset, not left standing.
-        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
-        else unset CLAUDE_CONFIG_DIR; fi
+        # Always explicit, account 1 included (specs/account-fallback.md rule
+        # 3). "No override" was once an account name, and it read leftovers as
+        # decisions: the variable is exported into a Claude Code session's
+        # Bash-tool environment and job_start deliberately forwards it, so a
+        # run inherited from another account's turn walked with its first slot
+        # pointing back at the login that had just refused — three accounts
+        # behaved as two.
+        export CLAUDE_CONFIG_DIR="$CONFDIR"
         export "${CLAUDE_NO_AUTO_MEMORY?}"
         claude_profile_flags wake
         # The cocoon wall (specs/cocoon.md rules 1, 4, 4b): the wake's CLI
@@ -5033,10 +5142,10 @@ _wake_claude_run() {
 # The whole of a wake's CLI work: every account that is worth trying, in order,
 # for as long as the answer is a limit refusal — or a mid-flight limit CUT
 # (specs/account-fallback.md rule 12a), which is the same dry account seen
-# from further in. A login refusing over a
+# from further in. An account refusing over a
 # usage/session limit does not end the wake — it moves it to the next
-# subscription, still under the watchdog, until one answers or the chain is
-# spent; each refusal stamps that account so the next wake starts past it
+# account, still under the watchdog, until one answers or everything offered
+# is spent; each refusal cools that account so the next wake starts past it
 # instead of paying a doomed CLI boot for nothing. Every run APPENDS to the same
 # stream log; a combined log reads correctly everywhere downstream
 # (wake_stream_failed sees genuine output and stops calling the wake failed,
@@ -5048,42 +5157,46 @@ wake_claude_run_chain() {
     local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     WAKE_CHAIN_ATTEMPTS=0
     for ACCT in $(claude_accounts); do
-        CONFDIR="$(claude_account_confdir "$ACCT")"
+        CONFDIR="$(claude_account_dir "$ACCT")"
         # Marker only on this path — claude_swap_announce keeps the desktop
         # notification for a turn somebody is waiting on.
         [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
         # Where THIS attempt's output begins. Every account appends to one
         # stream, so without the mark a later account's silent network failure
-        # is judged against the refusal an earlier one left behind, and the
-        # default moves onto an account that never refused anything.
+        # is judged against the refusal an earlier one left behind, and an
+        # account that never refused anything is cooled.
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         WAKE_CHAIN_ATTEMPTS=$(( WAKE_CHAIN_ATTEMPTS + 1 ))
         _wake_claude_run "$CONFDIR"
         # Two shapes move the walk: the refusal (the run never began) and the
         # cut (the limit killed it mid-flight — specs/account-fallback.md rule
-        # 12a). Both mean this account is dry; the next login re-runs the same
-        # agenda at once, so the thought in progress gets said rather than
-        # waiting on a reset. Anything else — an answer, a network death — ends
-        # the walk and surfaces as itself.
+        # 12a). Both mean this account is dry; the next account re-runs the
+        # same agenda at once, so the thought in progress gets said rather
+        # than waiting on a reset. Anything else — an answer, a network death
+        # — ends the walk and surfaces as itself.
         REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
             || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
             || break
-        claude_limit_record "$CONFDIR" "$REFUSAL"
+        claude_limit_record "$ACCT" "$REFUSAL"
         PREV="$ACCT"
     done
     # Rule 4a (specs/account-fallback.md): zero attempts is not an outcome. A
     # loop over an empty list runs no CLI at all, and downstream that reads as
     # a CLEAN stream — no refusal, no error event — so the wake exits 0 having
     # done nothing and said nothing about it. claude_accounts guards its own
-    # emptiness now, so this branch should never run; if the rotation is ever
-    # broken again, the wake still makes exactly one attempt on the current
-    # default login, with a stream note naming the fall-through so the walk's
-    # absence is legible in the log rather than inferred from silence.
+    # emptiness now, so this branch should never run; if the selection is ever
+    # broken again, the wake still makes exactly one attempt on the account
+    # the selection answers with, with a stream note naming the fall-through
+    # so the walk's absence is legible in the log rather than inferred from
+    # silence.
     if [ "$WAKE_CHAIN_ATTEMPTS" -eq 0 ]; then
-        claude_stream_note "empty-account-chain" \
-            "the account list came back empty — one attempt on the default login"
-        _wake_claude_run "$(claude_preferred_login)"
+        claude_stream_note "empty-account-list" \
+            "the account list came back empty — one attempt on the current account"
+        # claude_account_current, not the walk's own pick: the walk is the
+        # thing that just came back empty, and the current is read straight
+        # off the state file, which cannot go blank.
+        _wake_claude_run "$(claude_account_dir "$(claude_account_current)")"
         WAKE_CHAIN_ATTEMPTS=1
     fi
 }
@@ -5106,7 +5219,7 @@ wake_claude_run_chain() {
 #     desk turn's answer as its own — four times inside twenty minutes,
 #     verbatim, in the session journal.
 # Every reader in here (extract_response, wake_stream_failed, wake_work_trace,
-# notice_own_writes, claude_limit_fallback_due) goes through $DEBUGLOG, so the
+# notice_own_writes, claude_limit_retry_due) goes through $DEBUGLOG, so the
 # per-session name is all it takes. tests/test_silent_wake.sh holds the line.
 # The reason a held note comes back under. A prefix, so the fired wake can be
 # recognised — by the cap that bounds how many may be waiting at once, and by
@@ -5189,7 +5302,7 @@ run_claude_wake() {
     # its agenda survives to a retry after the outage clears.
     #
     # The cut is the same failure wearing work clothes (specs/account-fallback
-    # rule 12a, wake-queue rule 23): the chain above already rode any cut to
+    # rule 12a, wake-queue rule 23): the walk above already rode any cut to
     # the next login, so a cut still standing on the WHOLE log means every
     # account was tried and the limit had the last word. Judged at offset 0 on
     # purpose — a genuine text block from any later account clears it.
@@ -5688,7 +5801,7 @@ extract_response() {
 
 # One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
 # CLAUDE_CONFIG_DIR override ("" = the login already in the environment); every
-# account in the chain runs through here, so the flags cannot drift between the
+# account in the list runs through here, so the flags cannot drift between the
 # first attempt and the retries. Reads TEXT / EFFORT / SYSTEM_PROMPT /
 # CLAUDE_BIN from claude_generate's scope (bash dynamic scoping, same as
 # _wake_claude_run).
@@ -5708,10 +5821,9 @@ _generate_claude_run() {
         cd "$PROJECT_DIR" || exit 1
         # Her turn, not the coding agent's — see CLAUDE_NO_AUTO_MEMORY.
         export "${CLAUDE_NO_AUTO_MEMORY?}"
-        # See _wake_claude_run: "the primary" means the variable is absent,
-        # never whatever the environment happened to arrive holding.
-        if [ -n "$CONFDIR" ]; then export CLAUDE_CONFIG_DIR="$CONFDIR"
-        else unset CLAUDE_CONFIG_DIR; fi
+        # See _wake_claude_run: every account is addressed explicitly, never
+        # by whatever the environment happened to arrive holding.
+        export CLAUDE_CONFIG_DIR="$CONFDIR"
         claude_profile_flags turn
         # The cocoon wall (specs/cocoon.md rules 1, 4, 4b): the turn's CLI
         # runs inside the read-only mount namespace — everything constituting
@@ -5779,13 +5891,13 @@ claude_generate() {
     #
     # Accounts known dry are skipped outright: a doomed attempt is a whole CLI
     # boot and refusal in front of every reply, the exact seconds a voice cannot
-    # afford. Each refusal stamps its account and moves to the next; the
+    # afford. Each refusal cools its account and moves to the next; the
     # streamer rides through the refusals (it is told how many retries are still
     # to come) and extract-response drops them whenever a genuine reply follows
     # in the same log.
     : > "$DEBUGLOG"
     # One wall clock for the WHOLE walk, handed down to each run's watchdog.
-    # Per-account timeouts would still let a three-account chain run for three
+    # Per-account timeouts would still let a three-account walk run for three
     # times as long as anyone is willing to stand there.
     local TURN_DEADLINE=0
     [ "${TURN_CHAIN_TIMEOUT:-0}" -gt 0 ] \
@@ -5793,23 +5905,23 @@ claude_generate() {
     turn_metric gen-start
     local ACCT CONFDIR PREV="" ATT=0 REFUSAL
     for ACCT in $(claude_accounts); do
-        CONFDIR="$(claude_account_confdir "$ACCT")"
+        CONFDIR="$(claude_account_dir "$ACCT")"
         [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
         # This attempt's own bytes begin here. Judging the whole accumulated
         # log instead let one account's refusal condemn the next account's
-        # ordinary network failure and move the durable default onto a login
-        # that had refused nothing.
+        # ordinary network failure and cool an account that had refused
+        # nothing.
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         _generate_claude_run "$CONFDIR"
         # As on the wake walk: a refusal OR a mid-flight cut moves to the next
-        # login at once (specs/account-fallback.md rule 12a). The streamer is
+        # account at once (specs/account-fallback.md rule 12a). The streamer is
         # already holding the synthetic refusal off the speakers, and the
         # retry's genuine reply appends behind it in the same log.
         REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
             || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
             || break
-        claude_limit_record "$CONFDIR" "$REFUSAL"
+        claude_limit_record "$ACCT" "$REFUSAL"
         PREV="$ACCT"
         # No time left for another whole CLI boot and refusal.
         if [ "$TURN_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$TURN_DEADLINE" ]; then
@@ -6060,11 +6172,11 @@ _run_claude_remote_locked() {
 
     local ERROR="" TURN_CUT
     # Same judgement as the desk turn: a cut standing on the whole log means
-    # the chain rode every account and the limit ended the last of them
+    # the walk rode every account and the limit ended the last of them
     # (specs/account-fallback.md rules 12a and 12c).
     TURN_CUT="$(claude_stream_limit_cut "$DEBUGLOG")" || TURN_CUT=""
     if claude_run_limited || [ -n "$TURN_CUT" ]; then
-        # Same routing as the desk turn: an all-refused chain reports the
+        # Same routing as the desk turn: an all-refused walk reports the
         # CLI's refusal as the extracted reply. That is the outage speaking,
         # not me — never the conversation's assistant block, and never
         # synthesized for the phone's speakers. The error field carries it
@@ -6275,8 +6387,8 @@ run_claude_and_respond() {
     notify_thinking_clear
 
     # The cut twin of the limited test below (specs/account-fallback.md rules
-    # 12a and 12c): the chain already rode any mid-flight cut to the next
-    # login, so a cut still standing on the whole log means every account was
+    # 12a and 12c): the walk already rode any mid-flight cut to the next
+    # account, so a cut still standing on the whole log means every account was
     # tried and the limit ended the last of them. Judged at offset 0 — one
     # genuine text block from any account clears it.
     local TURN_CUT
@@ -6290,8 +6402,8 @@ run_claude_and_respond() {
         # held them, its receipt reads empty, and the never-silent guard
         # below used to read that emptiness as a broken speech path and
         # replay exactly this text aloud. The notification and the journal
-        # carry the outage; the default has already rotated, so the next
-        # attempt leads with the next login.
+        # carry the outage; the current has already moved, so the next
+        # attempt leads with the next account.
         claudism_mirror_abort
         wait_tts_streamer
         live_turn_end desk "$TEXT" ""
@@ -6459,7 +6571,7 @@ run_claude_and_respond() {
 # work was attempted, there is nothing in the log to verify, and the standing
 # policy of dispatching a builder the moment work is noticed will keep firing
 # them into the same wall, one wasted wake per corpse. Signature match on the
-# CLI's own refusals (the shared CLAUDE_LIMIT_RE, so the fallback-retry sites
+# CLI's own refusals (the shared CLAUDE_LIMIT_RE, so the account-retry sites
 # and this judgement can never drift apart); anything else is a real failure
 # and stays one.
 job_output_blocked() {
@@ -6597,17 +6709,19 @@ job_start() {
     # variable defined-but-blank, the CLI looks for a login in "" and every
     # builder died in one second on "Not logged in". Worse, that is not a limit
     # refusal, so job-runner's account walk broke on the first attempt and no
-    # fallback login was ever tried. Every job dispatched from a session with
+    # second account was ever tried. Every job dispatched from a session with
     # no explicit config dir — which is all of them — was dead on arrival.
     #
-    # Which login: the one the chain prefers, not the one this shell inherited.
-    # specs/jobs.md rule 5 — a job is dispatched with the current preference and
-    # walks the chain itself from there, so a builder starting behind a moved
-    # default no longer pays a whole doomed CLI boot and refusal before its
-    # first real attempt.
+    # Which login: the account the selection answers with now, not the one
+    # this shell inherited. specs/jobs.md rule 5 — a job is dispatched with
+    # the current pick and walks the list itself from there, so a builder
+    # starting behind a moved selection no longer pays a whole doomed CLI boot
+    # and refusal before its first real attempt. The state file path goes with
+    # it, so a scratch dispatch reads scratch state.
     local -a acctenv=() login
-    login="$(claude_preferred_login)"
+    login="$(claude_child_login)"
     [ -n "$login" ] && acctenv+=(--setenv=CLAUDE_CONFIG_DIR="$login")
+    acctenv+=(--setenv=ACCOUNT_STATE_FILE="$ACCOUNT_STATE_FILE")
     # Background CPU priority (jobs.md rule 2a): a builder chewing a compile
     # yields the processor to a turn somebody is standing there waiting on.
     local -a bgprio=()

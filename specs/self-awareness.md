@@ -197,7 +197,7 @@ below is a fact placed before her, never a gate placed behind her.
 ## INTERACTIONS
 
 **Self-awareness may call:** the session registry and reaper, the job status reporter, the wake
-queue's list operation, the account chain's default reader, the tiredness scorer
+queue's list operation, the account selection's current reader, the tiredness scorer
 (`lib/tiredness`).
 
 **Self-awareness may be called by:** `crab status`, prompt assembly (as layer L2), and nothing else.
