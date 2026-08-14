@@ -148,7 +148,7 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
 
     # One photograph function, used before and after. Metadata only: name,
     # size, mtime — a rewrite that keeps the size still moves the mtime, and
-    # the account default is exactly that shape.
+    # the account state file is exactly that shape.
     _sb_photo() { # <out>
         {
             find "$_sb_live_data" "$_sb_live_state" "$_sb_live_conf" \
@@ -228,7 +228,7 @@ CONF
         DESKCRAB_CONF="$_sb_root/conf/deskcrab.conf" \
         DESKCRAB_STATE_PREFIX="$_sb_root/state/deskcrab" \
         DESKCRAB_PIDFILE="$_sb_root/run/deskcrab.pid" \
-        ACCOUNT_DEFAULT_FILE="$_sb_root/data/deskcrab/account-default" \
+        ACCOUNT_STATE_FILE="$_sb_root/data/deskcrab/account-state" \
         DESKCRAB_MEMORY_DIR="$_sb_root/data/deskcrab/memory" \
         WAKES_DIR="$_sb_root/data/deskcrab/wakes" \
         JOBS_DIR="$_sb_root/data/deskcrab/jobs" \

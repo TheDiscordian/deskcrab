@@ -11,11 +11,11 @@ echo "every knob points inside the sandbox:"
 
 # The list is the contract's list, in the contract's order: the config path,
 # the state prefix, the wakes directory, the jobs directory, the memory
-# directory, the account default file, the day journal directory, the state
+# directory, the account state file, the day journal directory, the state
 # home, the data home, and the recorder pid file — plus the homes and the
 # runtime directory that everything else is derived from.
 for knob in DESKCRAB_CONF DESKCRAB_STATE_PREFIX WAKES_DIR JOBS_DIR \
-            DESKCRAB_MEMORY_DIR ACCOUNT_DEFAULT_FILE DAY_JOURNAL_DIR \
+            DESKCRAB_MEMORY_DIR ACCOUNT_STATE_FILE DAY_JOURNAL_DIR \
             XDG_STATE_HOME XDG_DATA_HOME XDG_CONFIG_HOME XDG_CACHE_HOME \
             XDG_RUNTIME_DIR DESKCRAB_PIDFILE HOME TMPDIR ARCHIVE_DIR \
             NOTICE_STATE_DIR CLAUDE_BIN
@@ -90,9 +90,9 @@ check "notifications go to the witness log, not the desktop" \
 
 echo
 echo "the library loads against the sandbox, not the live instance:"
-out="$(sandbox_bash 'printf "%s|%s|%s" "$WAKES_DIR" "$JOBS_DIR" "$ACCOUNT_DEFAULT_FILE"')"
+out="$(sandbox_bash 'printf "%s|%s|%s" "$WAKES_DIR" "$JOBS_DIR" "$ACCOUNT_STATE_FILE"')"
 check_eq "common.sh derives its paths from the pinned knobs" \
-    "$out" "$WAKES_DIR|$JOBS_DIR|$ACCOUNT_DEFAULT_FILE"
+    "$out" "$WAKES_DIR|$JOBS_DIR|$ACCOUNT_STATE_FILE"
 out="$(sandbox_bash 'printf "%s" "$CONVOFILE"')"
 check_eq "the conversation is the sandbox's own" \
     "$out" "$DESKCRAB_STATE_PREFIX-convo.txt"

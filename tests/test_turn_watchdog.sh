@@ -68,7 +68,7 @@ printf '%s\n' \
 # clock has something to measure.
 cat > "$T/claude-stream" <<EOF
 #!/bin/bash
-echo "CALL:\${CLAUDE_CONFIG_DIR:-primary}" >> "$T/calls"
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none}" >> "$T/calls"
 if [ "\${CLAUDE_CONFIG_DIR:-}" = "\${STUB_OK_DIR-$T/fb}" ]; then
     cat "$T/fixture-reply"
     exit 0
@@ -97,7 +97,7 @@ chmod +x "$T/claude-hang"
 
 echo "a hung interactive turn is reaped, not waited on forever:"
 
-rm -f "$T/calls" "$ACCOUNT_DEFAULT_FILE"
+rm -f "$T/calls" "$ACCOUNT_STATE_FILE"
 start=$(date +%s)
 out="$(run TURN_STALL_TIMEOUT=1 CLAUDE_BIN="$T/claude-hang" 'claude_generate "hello" low')"
 elapsed=$(( $(date +%s) - start ))
@@ -113,7 +113,7 @@ pgrep -f "$T/claude-hang" >/dev/null 2>&1 \
 echo
 echo "a healthy turn pays nothing for the watchdog:"
 
-rm -f "$T/calls" "$ACCOUNT_DEFAULT_FILE"
+rm -f "$T/calls" "$ACCOUNT_STATE_FILE"
 start=$(date +%s)
 out="$(run STUB_OK_DIR= CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low')"
 elapsed=$(( $(date +%s) - start ))
@@ -126,15 +126,15 @@ elapsed=$(( $(date +%s) - start ))
 echo
 echo "every account swap is announced:"
 
-rm -f "$T/calls" "$T/notifies" "$ACCOUNT_DEFAULT_FILE"
+rm -f "$T/calls" "$T/notifies" "$ACCOUNT_STATE_FILE"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" \
     'claude_generate "hello" low')"
 [ "$out" = "CHAIN REPLY" ] && ok "the fallback answers as before" || fail "the chain must still walk" "$out"
 grep -q '"note":"account-swap"' "$T/state-debug.log" 2>/dev/null \
     && ok "the swap is marked in the stream log" \
     || fail "a swap must leave a marker" "$(grep -o '"note":"[a-z-]*"' "$T/state-debug.log" | tr '\n' ' ')"
-grep -q "NOTIFY:.*trying" "$T/notifies" 2>/dev/null \
-    && ok "the desk is told the login changed" \
+grep -q "NOTIFY:.*switching to account" "$T/notifies" 2>/dev/null \
+    && ok "the desk is told the account changed, by number" \
     || fail "a swap on a waiting turn must notify" "$(cat "$T/notifies" 2>/dev/null || echo none)"
 # The marker must not carry the refusal's words: claude_run_limited greps the
 # WHOLE log for the limit signature, so a marker quoting it would make a later
@@ -143,7 +143,7 @@ grep '"type":"deskcrab_note"' "$T/state-debug.log" | grep -qi "usage credits" \
     && fail "the marker must not repeat the refusal text" "$(grep '"type":"deskcrab_note"' "$T/state-debug.log")" \
     || ok "the marker carries no limit wording of its own"
 
-rm -f "$T/calls" "$T/notifies" "$ACCOUNT_DEFAULT_FILE"
+rm -f "$T/calls" "$T/notifies" "$ACCOUNT_STATE_FILE"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" CLAUDE_BIN="$T/claude-stream" '
     SESSION_KIND="autonomous wake" SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
@@ -160,7 +160,7 @@ grep -q '"note":"account-swap"' "$T/state-debug.log" 2>/dev/null \
 echo
 echo "the whole chain has a wall clock, not just each run:"
 
-rm -f "$T/calls" "$ACCOUNT_DEFAULT_FILE"
+rm -f "$T/calls" "$ACCOUNT_STATE_FILE"
 run TURN_CHAIN_TIMEOUT=1 CLAUDE_FALLBACK_CONFIG_DIR="$T/fb" STUB_OK_DIR=/never \
     CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low' >/dev/null
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
@@ -182,7 +182,7 @@ echo "the markers are invisible to every reader of the stream:"
 # A marker line is a JSON line of an unknown type; every reader already skips
 # those. If one ever stops doing so, the turn's own reply changes shape.
 printf '%s\n' \
-    '{"type":"deskcrab_note","note":"account-swap","detail":"primary -> fb","at":"12:00:00"}' \
+    '{"type":"deskcrab_note","note":"account-swap","detail":"account 1 -> account 2","at":"12:00:00"}' \
     '{"type":"assistant","message":{"model":"claude","content":[{"type":"text","text":"A real reply."}]}}' \
     '{"type":"result","result":"A real reply."}' > "$T/marker.log"
 out="$(DESKCRAB_DEBUGLOG="$T/marker.log" "$REPO_DIR/lib/extract-response")"

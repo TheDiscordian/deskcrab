@@ -205,7 +205,7 @@ refusal to audio.
 
 ## TESTS
 
-**Existing:** `tests/test_account_walk.sh` — the flat list parsed from the configuration; the
+**Existing:** `tests/test_limit_fallback.sh` — the flat list parsed from the configuration; the
 current advancing one position per refusal; cooldown-skip; the wrap; every-account-cooling
 offering the soonest to expire; the numbered messages; the walk on the turn, wake, and job paths;
 the TTS streamer riding through refusals; extract-response on a combined refusal+reply log. Holds

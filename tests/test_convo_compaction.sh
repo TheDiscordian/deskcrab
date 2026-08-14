@@ -213,7 +213,7 @@ STAMP=1
 
 # The CLI answering properly: real events, a real model, and a summary whose
 # text is full of the signature's words.
-LIMIT_WORDS='Between 14:05 and 14:40 the usage limit reached on the primary login, so the session limit was discussed and the chain moved on.'
+LIMIT_WORDS='Between 14:05 and 14:40 the usage limit reached on account 1, so the session limit was discussed and the accounts moved on.'
 stub_answer() { # <exit code>
     sandbox_stub claude <<EOF
 #!/usr/bin/env bash
@@ -241,7 +241,7 @@ EOF
 for RC in 0 1; do
     echo "a summary that talks about limits is a summary (cli exit $RC):"
     reset
-    rm -f "$ACCOUNT_DEFAULT_FILE"
+    rm -f "$ACCOUNT_STATE_FILE"
     stub_answer "$RC"
     build_convo 2 12
     BEFORE="$(md5sum < "$CONVOFILE")"
@@ -256,12 +256,12 @@ for RC in 0 1; do
         check_eq "[exit $RC] a failed run folds nothing" "$(md5sum < "$CONVOFILE")" "$BEFORE"
     fi
     check_eq "[exit $RC] no account was stamped dry over the summary's words" \
-        "$([ -s "$ACCOUNT_DEFAULT_FILE" ] && cat "$ACCOUNT_DEFAULT_FILE" || echo "unmoved")" \
+        "$([ -s "$ACCOUNT_STATE_FILE" ] && cat "$ACCOUNT_STATE_FILE" || echo "unmoved")" \
         "unmoved"
 
     echo "a genuine refusal skips the compaction and keeps the turns (cli exit $RC):"
     reset
-    rm -f "$ACCOUNT_DEFAULT_FILE"
+    rm -f "$ACCOUNT_STATE_FILE"
     stub_refusal "$RC"
     build_convo 2 12
     BEFORE="$(md5sum < "$CONVOFILE")"
@@ -269,6 +269,6 @@ for RC in 0 1; do
     check_eq "[exit $RC] the conversation is whole" "$(md5sum < "$CONVOFILE")" "$BEFORE"
     check_eq "[exit $RC] no refusal was committed as the summary" \
         "$([ -f "$SUMMARYFILE" ] && echo written || echo none)" "none"
-    check "[exit $RC] the refusal moved the durable default" \
-        test -s "$ACCOUNT_DEFAULT_FILE"
+    check "[exit $RC] the refusal cooled the account and moved the current" \
+        test -s "$ACCOUNT_STATE_FILE"
 done

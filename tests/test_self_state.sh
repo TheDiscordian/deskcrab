@@ -84,9 +84,9 @@ printf '%s\t%s\t120\tdesktop turn\ta turn that finished five minutes ago\n' \
     "$(date -d '-5 minutes' '+%Y-%m-%d %H:%M:%S')" "$(date -d '-5 minutes' '+%H:%M:%S')" \
     > "$DESKCRAB_STATE_PREFIX-sessions.log"
 
-# The chain walked during this turn — written by the real writer, so the shape
-# of both files is the shipped one and not this test's idea of it.
-sandbox_bash 'claude_limit_record "$CLAUDE_PRIMARY_TOKEN" "out of usage credits"' >/dev/null 2>&1
+# The accounts walked during this turn — written by the real writer, so the
+# shape of both files is the shipped one and not this test's idea of it.
+sandbox_bash 'claude_limit_record 1 "out of usage credits"' >/dev/null 2>&1
 
 # Twenty-five bookings and not one live timer. This is the state of the queue
 # on the afternoon of the failure, to the number.
@@ -149,13 +149,13 @@ check_eq "and the total counts both — two rows, two things worth seeing" \
     "$(printf '%s\n' "$OUT2" | grep -c 'Pending wakes (next 12h): 2 total')" "1"
 
 echo
-echo "the account line says which login answers next, and why it moved:"
+echo "the account line says which account answers next, and why it moved:"
 check "the block carries an account line at all" has "Account: " "$OUT"
-check "it names the login that answers next" has "Account: fallback-one answers next" "$OUT"
-check "and why the default last moved, from the default file" \
-    has "moved off -: out of usage credits" "$OUT"
-check "a chain walk during the turn is reported in the delta, with both ends" \
-    has "account chain walked 1 (last: primary -> fallback-one)" "$OUT"
+check "it names the account that answers next, by number" has "Account: account 2 answers next" "$OUT"
+check "and why the selection last moved, from the state file" \
+    has "account 1 is over its limit" "$OUT"
+check "an accounts walk during the turn is reported in the delta, with both ends" \
+    has "accounts walked 1 (last: account 1 -> account 2)" "$OUT"
 
 echo
 echo "every heading the prompt names is emitted verbatim by the block:"

@@ -74,16 +74,16 @@ out="$(witness)"
 [ "$out" = "AUTOMEM=[1]" ] && ok "autonomous wake (_wake_claude_run)" \
     || fail "the wake path must disable auto-memory" "$out"
 
-# The fallback login is a second full session on the same prompt; it must be
+# A second account is a second full session on the same prompt; it must be
 # no more porous than the first. Drive it by leaving a limit refusal in the
-# stream log, which is the condition claude_limit_fallback_due tests.
+# stream log, which is the condition claude_limit_retry_due tests.
 rm -f "$T/witness-file"
 printf '%s\n' \
     '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"You have hit your usage limit reached"}]}}' \
     '{"type":"result","is_error":true,"result":"usage limit reached"}' > "$T/fb-seed"
 run 'CLAUDE_FALLBACK_CONFIG_DIR="'"$T"'/fb"
      cp "'"$T"'/fb-seed" "$DEBUGLOG"
-     if claude_limit_fallback_due; then
+     if claude_limit_retry_due; then
         cd "$PROJECT_DIR" && env "$CLAUDE_NO_AUTO_MEMORY" \
             CLAUDE_CONFIG_DIR="$CLAUDE_FALLBACK_CONFIG_DIR" "$CLAUDE_BIN" >/dev/null
      fi'
@@ -97,8 +97,8 @@ out="$(witness)"
 # claude_classify, the one place the classifier shape is built, which exports
 # the prefix itself and runs from a directory with nothing in it. So the check
 # is that compact_convo has no hand-rolled invocation left and that the shared
-# helper carries the prefix — a second CLI line here is how the primary and the
-# fallback drifted apart the first time.
+# helper carries the prefix — a second CLI line here is how account 1 and a
+# second account drifted apart the first time.
 n_sum=$(grep -c 'claude_classify "\$CONVO_SUMMARY_MODEL"' "$REPO_DIR/lib/common.sh")
 n_raw=$(grep -c 'NEWSUM=\$(cd "\$PROJECT_DIR"' "$REPO_DIR/lib/common.sh")
 n_helper=$(sed -n '/^claude_classify()/,/^}/p' "$REPO_DIR/lib/common.sh" \

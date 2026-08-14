@@ -212,17 +212,19 @@ grep -q "^WAKE: wake-at --by job-runner 5s event" "$T/wakes" 2>/dev/null \
 rm -f "$LIVE"/deskcrab-selftest-jobtest.*
 
 echo
-echo "detach_turn_child — the login goes with the child, but only when there is one:"
+echo "detach_turn_child — the child is handed the account the selection answers with, always explicitly:"
 # The promise auditor and the memory judge invoke the CLI themselves, out of
 # band, in a transient unit of their own. A user unit gets a BARE environment,
 # so the one variable that says which account to use was the one variable not
 # forwarded: both always fired at whatever login the manager happened to hold,
 # and failed silently whenever that was the dry one.
 #
-# And it is forwarded ONLY when it is set. Passing it empty is not the same as
-# not passing it: a unit running with CLAUDE_CONFIG_DIR defined-but-blank makes
-# the CLI look for a login in "" and die in about a second — the mistake that
-# killed every dispatched job for a day.
+# Every account is addressed by an explicit CLAUDE_CONFIG_DIR now, account 1
+# included (specs/account-fallback.md rule 3): with no state recorded the
+# selection is account 1 ($HOME/.claude), and its directory is passed — never
+# nothing. "Absent means primary" once read a leftover pin as a decision and
+# died in about a second on "Not logged in" — the mistake that killed every
+# dispatched job for a day — so the child never runs on an unnamed login.
 #
 # The systemd-run stub records the argv and refuses the run (no --on-*), which
 # is the shipped fallback path: the caller then takes its own setsid, so the
@@ -230,21 +232,23 @@ echo "detach_turn_child — the login goes with the child, but only when there i
 count_arg() { local n; n="$(grep -c -- "$1" "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"; printf '%s' "${n:-0}"; }
 
 : > "$SANDBOX_SYSTEMD_LOG"
+rm -f "$ACCOUNT_STATE_FILE"
 run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
 check_eq "one unit was asked for" "$(count_arg 'deskcrab-probe-')" "1"
-check_eq "with CLAUDE_CONFIG_DIR unset, the variable is not passed AT ALL" \
-    "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
+check_eq "with no state recorded, account 1's dir is passed explicitly — never nothing" \
+    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$HOME/.claude")" "1"
 argv="$(grep -m1 'deskcrab-probe-' "$SANDBOX_SYSTEMD_LOG")"
 case "$argv" in
     *"--collect"*) ok "the child's unit is collected on exit, like a job's" ;;
     *) fail "a detached child's unit carries --collect" "$argv" ;;
 esac
-# CLAUDE_FALLBACK_CONFIG_DIR and the signature travel too: the memory judge
-# walks the chain itself (lib/memory.py run_claude), and a child that is handed
-# a login but not the list of logins after it has one shot at an account that
-# may already be dry. specs/account-fallback.md rules 13 and 29.
+# CLAUDE_FALLBACK_CONFIG_DIR, the signature, and the state file travel too: the
+# memory judge walks the accounts itself (lib/memory.py run_claude), and a child
+# handed one login but not the list of accounts after it — nor the state that
+# says which are cooling — has one shot at an account that may already be dry.
+# specs/account-fallback.md rules 13, 28 and 29.
 for redirect in DESKCRAB_CONF DESKCRAB_STATE_PREFIX DESKCRAB_MEMORY_DIR CLAUDE_BIN \
-                CLAUDE_FALLBACK_CONFIG_DIR DESKCRAB_CLAUDE_LIMIT_RE; do
+                CLAUDE_FALLBACK_CONFIG_DIR DESKCRAB_CLAUDE_LIMIT_RE ACCOUNT_STATE_FILE; do
     case "$argv" in
         *"--setenv=$redirect="*) ok "$redirect travels into the child" ;;
         *) fail "every state redirect must reach a detached child" "$redirect: $argv" ;;
@@ -252,22 +256,23 @@ for redirect in DESKCRAB_CONF DESKCRAB_STATE_PREFIX DESKCRAB_MEMORY_DIR CLAUDE_B
 done
 
 : > "$SANDBOX_SYSTEMD_LOG"
-# With NO record of where the chain stands, the pin this process is holding is
-# the best evidence there is. (When there IS a record it outranks the pin — see
-# the preference cases at the end of this file. An earlier case here leaves one
-# behind, so it is cleared rather than assumed absent.)
-rm -f "$ACCOUNT_DEFAULT_FILE"
+# A pin in the environment does not steer the dispatch: every account is
+# addressed explicitly from the shared state (rule 3), and with no state the
+# selection is account 1 — never whatever this process happened to be holding.
+# (When there IS a record it decides — see the selection cases at the end of
+# this file. An earlier case here leaves one behind, so it is cleared.)
+rm -f "$ACCOUNT_STATE_FILE"
 CLAUDE_CONFIG_DIR="$T/fallback-two" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
-check_eq "with a login in hand and nothing recorded, it is forwarded exactly once" \
-    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$T/fallback-two")" "1"
+check_eq "an inherited pin is ignored: the selection's own answer travels" \
+    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$HOME/.claude")" "1"
 
-# ...and an EMPTY one is not a login. This is the case that killed the day: the
-# variable present and blank is worse than absent.
+# ...and an EMPTY one changes nothing either. This shape once killed a day: the
+# variable present and blank made the CLI look for a login in "".
 : > "$SANDBOX_SYSTEMD_LOG"
-rm -f "$ACCOUNT_DEFAULT_FILE"
+rm -f "$ACCOUNT_STATE_FILE"
 CLAUDE_CONFIG_DIR="" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
-check_eq "an empty login is passed no more than a missing one" \
-    "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
+check_eq "an empty pin still yields exactly one explicit, non-empty login" \
+    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$HOME/.claude")" "1"
 
 echo
 echo "a refusal is judged from the CLI's own events, never from the stream's bytes:"
@@ -359,23 +364,23 @@ check "a quiet job stream is left alone" [ -f "$P-debug-job-lives.log" ]
 check "a quiet turn stream is still reaped" [ ! -f "$P-debug-someturn.log" ]
 
 echo
-echo "a detached child starts at the login the chain PREFERS:"
-# specs/account-fallback.md rule 29, and specs/jobs.md rule 5. A turn walks the
-# chain inside its own subshell — claude_generate exports the override there and
-# nowhere else — so once the chain has moved, this process's environment still
-# says "primary" while the durable default says otherwise. The memory judge is
-# dispatched from exactly that spot: it booted the dry primary on every turn,
-# collected the refusal, and the reinforcement was silently never judged.
+echo "a detached child starts at the account the selection answers with NOW:"
+# specs/account-fallback.md rules 28 and 29, and specs/jobs.md rule 5. A turn
+# walks the accounts inside its own subshell — claude_generate exports the
+# override there and nowhere else — so once the selection has moved, this
+# process's environment still holds the account the turn STARTED on while the
+# shared state says otherwise. The memory judge is dispatched from exactly that
+# spot: it booted the dry account on every turn, collected the refusal, and the
+# reinforcement was silently never judged.
 : > "$SANDBOX_SYSTEMD_LOG"
-printf '%s\t%s\tmoved off primary: usage limit reached\n' \
-    "$T/fallback-two" "$(date +%s)" > "$ACCOUNT_DEFAULT_FILE"
-mkdir -p "$T/fallback-two"
+mkdir -p "$T/fallback-one" "$T/fallback-two"
 cat >> "$DESKCRAB_CONF" <<CONF
 CLAUDE_FALLBACK_CONFIG_DIR="$T/fallback-one:$T/fallback-two"
 CONF
-mkdir -p "$T/fallback-one"
+printf 'current\t3\t%s\t%s\taccount 2 is over its limit (session)\n' \
+    "$T/fallback-two" "$(date +%s)" > "$ACCOUNT_STATE_FILE"
 run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
-check_eq "the moved default reaches the child, with nothing pinned in the environment" \
+check_eq "the moved selection reaches the child, with nothing pinned in the environment" \
     "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$T/fallback-two")" "1"
 
 # ...and a dispatched builder asks the same question. job_start cannot be run
@@ -383,15 +388,15 @@ check_eq "the moved default reaches the child, with nothing pinned in the enviro
 # real session on a real account, which this file has done by accident once
 # already — so the assertion is on the answer both dispatch sites use.
 check_eq "and a builder is dispatched from the same answer" \
-    "$(run 'claude_preferred_login')" "$T/fallback-two"
+    "$(run 'claude_child_login')" "$T/fallback-two"
 
-# A record naming the PRIMARY is a statement too: nothing is passed, which is
-# how the primary login is named — and it must survive a stale pin in the
-# environment, which is what a job dispatched from a fallback turn leaves.
+# A record naming account 1 is a statement too: its directory is passed
+# explicitly — and it must outrank a stale pin in the environment, which is
+# what a job dispatched from another account's turn leaves behind.
 : > "$SANDBOX_SYSTEMD_LOG"
-printf '%s\t%s\tmoved off %s: wrapped\n' "-" "$(date +%s)" "$T/fallback-two" \
-    > "$ACCOUNT_DEFAULT_FILE"
+printf 'current\t1\t%s\t%s\taccount 3 is over its limit (session)\n' \
+    "$HOME/.claude" "$(date +%s)" > "$ACCOUNT_STATE_FILE"
 CLAUDE_CONFIG_DIR="$T/fallback-two" run 'detach_turn_child probe /bin/true' >/dev/null 2>&1
-check_eq "a default naming the primary outranks a stale pin, and passes nothing" \
-    "$(count_arg 'CLAUDE_CONFIG_DIR')" "0"
-rm -f "$ACCOUNT_DEFAULT_FILE"
+check_eq "a record naming account 1 outranks a stale pin, explicitly" \
+    "$(count_arg "--setenv=CLAUDE_CONFIG_DIR=$HOME/.claude")" "1"
+rm -f "$ACCOUNT_STATE_FILE"

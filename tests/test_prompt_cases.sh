@@ -384,7 +384,7 @@ WAKES_DIR="$CS/wakes"
 DAY_JOURNAL_DIR="$CS/journal"
 NOTICE_STATE_DIR="$CS/notice"
 LAST_ORIGIN_FILE="$CS/last-origin"
-ACCOUNT_DEFAULT_FILE="$CS/account-default"
+ACCOUNT_STATE_FILE="$CS/account-state"
 $( [ -f "$CS/wants.md" ] && printf 'WANTS_FILE="%s"\n' "$CS/wants.md" )
 WAKE_QUIET_HOURS=""
 CLAUDE_BIN="$T/bin/claude"
@@ -409,7 +409,7 @@ in_case() { # <case state dir> <shell body>
         DESKCRAB_NO_DISPATCH=1 \
         WAKES_DIR="$CS/wakes" JOBS_DIR="$CS/jobs" \
         DAY_JOURNAL_DIR="$CS/journal" NOTICE_STATE_DIR="$CS/notice" \
-        ACCOUNT_DEFAULT_FILE="$CS/account-default" \
+        ACCOUNT_STATE_FILE="$CS/account-state" \
         CLAUDE_BIN="$T/bin/claude" \
         bash -c 'source "$1/lib/common.sh" >/dev/null 2>&1; shift; eval "$1"' \
         _ "$REPO_DIR" "$BODY" 2>/dev/null

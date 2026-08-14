@@ -103,15 +103,15 @@ wake "the same thought, with a second login configured" "$FB"
 grep -q "$FALLBACK_REPLY" "$CONVOFILE" \
     || die "the fallback's reply never reached the conversation: $(cat "$CONVOFILE")"
 grep -qi "session limit" "$CONVOFILE" \
-    && die "the primary's cut leaked into the conversation beside the reply: $(cat "$CONVOFILE")"
+    && die "account 1's cut leaked into the conversation beside the reply: $(cat "$CONVOFILE")"
 ls "$WAKES_DIR"/*.wake >/dev/null 2>&1 \
     && grep -q "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null \
     && die "a wake the fallback carried still re-booked itself: $(ls "$WAKES_DIR")"
 
-# The durable default moved off the cut primary, so the NEXT wake leads with
-# the login that answered instead of paying a doomed boot.
-[ "$(cut -f1 "$ACCOUNT_DEFAULT_FILE" 2>/dev/null)" = "$FB" ] \
-    || die "the cut did not move the durable default: $(cat "$ACCOUNT_DEFAULT_FILE" 2>/dev/null || echo "no record")"
+# The current moved off the cut account 1, so the NEXT wake leads with the
+# account that answered instead of paying a doomed boot.
+[ "$(awk -F'\t' '$1 == "current" {print $3; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)" = "$FB" ] \
+    || die "the cut did not move the current: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
 
 ok "a cut chain journals a failed run and re-books through outage-retry"
 ok "a fallback with credit carries the wake and nothing re-books"
