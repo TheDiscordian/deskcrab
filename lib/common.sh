@@ -2112,13 +2112,18 @@ wants_titles() { # [<wants file>]
 # pattern — matched only against the shelf's bullet lines, so a comment or
 # a rebuild note above the list can never validate a linkage. A title
 # fragment and the document name a line points at both work, because both
-# are how the shelf itself refers to a want. Prints the matched line's bold
-# title (the line itself when it has none) and returns 0; no shelf, no ref,
-# or no match returns 1 — an unmatched linkage is refused at the door,
-# never invented.
+# are how the shelf itself refers to a want. A ref under three characters
+# is refused unmatched: one or two letters land inside nearly every title
+# on the shelf, so a hit on them is an invented linkage laundered through
+# the gate, not a named want. Prints the matched line's bold title (the
+# line itself when it has none) and returns 0; no shelf, no ref, a ref too
+# short to name anything, or no match returns 1 — an unmatched linkage is
+# refused at the door, never invented.
 wants_match() {  # <ref> [<wants file>]
-    local ref="${1:-}" f="${2:-${WANTS_FILE:-}}" line
+    local ref="${1:-}" f="${2:-${WANTS_FILE:-}}" line squeezed
     [ -n "$ref" ] && [ -n "$f" ] && [ -s "$f" ] || return 1
+    squeezed="${ref//[[:space:]]/}"
+    [ "${#squeezed}" -ge 3 ] || return 1
     line="$(grep -iF -- "$ref" "$f" 2>/dev/null | grep -m1 '^- ')" || return 1
     [ -n "$line" ] || return 1
     printf '%s\n' "$line" | sed 's/.*\*\*\(.*\)\*\*.*/\1/'
@@ -6666,9 +6671,21 @@ job_start() {
 # hook of rule 27 compares against dispatch (rule 32) — and starts the unit.
 job_dispatch_sidecar() {  # <id> <workdir>
     local id="$1" workdir="$2" unit="deskcrab-job-$id"
-    "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" \
+    # The stamp is also the guard (jobs.md rules 32-33): a racing `crab job
+    # drop` may have deleted the sidecar between this dispatch's preflight
+    # and here — drop holds the record's lock around its check-and-delete,
+    # so by the time this locked write runs the record either exists or is
+    # gone, never half. A vanished record aborts the dispatch: a builder
+    # with no sidecar is exactly the untracked work the sidecars exist to
+    # prevent. (The status writer's own lock open recreates `<id>.lock` on
+    # the way to discovering the loss; it is swept back out.)
+    if ! "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" \
         state=dispatched started=now unit="$unit" \
-        model="$JOB_MODEL" effort="$JOB_EFFORT"
+        model="$JOB_MODEL" effort="$JOB_EFFORT" 2>/dev/null; then
+        [ -e "$JOBS_DIR/$id.json" ] || rm -f "$JOBS_DIR/$id.lock"
+        echo "Not dispatched — job $id's record could not be stamped (vanished mid-flight — a racing drop?). No builder started."
+        return 1
+    fi
     # CLAUDE_CONFIG_DIR is forwarded ONLY when it is actually set. Passing it
     # empty is not the same as not passing it: the unit then runs with the
     # variable defined-but-blank, the CLI looks for a login in "" and every
@@ -6757,19 +6774,28 @@ job_dispatch_queued() {
 # `crab job drop <id>` — the one way off the queue undispatched (jobs.md rule
 # 33). Only a queued record: a job that ran has a history worth keeping, and
 # silently deleting one would be the vanishing the sidecars exist to prevent.
+# The check and the delete run under the record writer's own <id>.lock (rule
+# 36), the state re-read inside it: without the lock, a drop racing `crab job
+# dispatch` could pass the queued check on a stale read and delete the
+# sidecar of a builder the dispatch was in the middle of stamping. Under the
+# lock the two serialise against the writer's stamp — a drop that arrives
+# second sees `dispatched` and refuses, and a dispatch that arrives second
+# finds the record gone and aborts in job_dispatch_sidecar.
 job_drop() {
     local id="${1:-}"
     [ -n "$id" ] || { echo "Usage: crab job drop <id>   (queued ids: crab jobs --state queued)"; return 1; }
     local sidecar="$JOBS_DIR/$id.json"
     [ -e "$sidecar" ] || { echo "No such job: $id   (ids: crab jobs)"; return 1; }
-    local state
-    state="$("$LIB_DIR/job-status" get "$sidecar" state 2>/dev/null)"
-    if [ "$state" != queued ]; then
-        echo "Job $id is '$state', not queued — a job that ran keeps its record (jobs.md rule 33)."
-        return 1
-    fi
-    rm -f "$JOBS_DIR/$id.json" "$JOBS_DIR/$id.log" "$JOBS_DIR/$id.lock"
-    echo "Queued job $id dropped, undispatched."
+    (
+        flock 9
+        state="$("$LIB_DIR/job-status" get "$sidecar" state 2>/dev/null)"
+        if [ "$state" != queued ]; then
+            echo "Job $id is '$state', not queued — a job that ran keeps its record (jobs.md rule 33)."
+            exit 1
+        fi
+        rm -f "$JOBS_DIR/$id.json" "$JOBS_DIR/$id.log" "$JOBS_DIR/$id.lock"
+        echo "Queued job $id dropped, undispatched."
+    ) 9>>"$JOBS_DIR/$id.lock"
 }
 
 # Re-dispatch a recorded job from its own sidecar: `crab job requeue <id>`.

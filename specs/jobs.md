@@ -185,7 +185,10 @@ the night drain ([nightly.md](nightly.md) rules 54-61) is where it is spent.
     names the want; the ref MUST match a bullet on the wants shelf (a title or the document name a
     shelf line points at), the match is validated at the door — an unmatched ref is refused, never
     dispatched and never queued, because a linkage that cannot be checked is a linkage that will be
-    invented — and the matched shelf title is recorded in the sidecar as `want`. A brief with no
+    invented — and a ref shorter than three characters is refused unmatched: one or two letters
+    land inside nearly every title on the shelf, so a fixed-string hit on them is an invented
+    linkage laundered through the gate, not a named want. The matched shelf title is recorded in
+    the sidecar as `want`. A brief with no
     want is not refused: it is QUEUED. The full record is written with state `queued`, no unit and
     no builder exist, and the night's drain dispatches it (nightly.md rule 56a). The gate stands
     only where a shelf exists: an instance with no `WANTS_FILE` configured has nobody whose wants
@@ -203,11 +206,18 @@ the night drain ([nightly.md](nightly.md) rules 54-61) is where it is spent.
     (judged on the recorded field, exactly as requeue judges it), and a fresh block marker. Dispatch
     re-stamps `started`/`started_epoch` — the record hook of rule 27 compares against dispatch, not
     against queueing — and `queued`/`queued_epoch` keep when the brief was shelved, so the wait is
-    never erased.
+    never erased. A dispatch whose sidecar vanishes between its preflight and its stamp — a racing
+    `drop` won the record — MUST abort rather than start a builder: the stamp's failure is the
+    drop's answer, and a builder with no sidecar is exactly the untracked work the sidecars exist
+    to prevent.
 33. A queued record is never reaped and never pruned: it has no unit and no pid to be dead, and
     ageing out silently would be work quietly dropped. `crab job drop <id>` is the one way a queued
     brief leaves the queue undispatched, and it refuses any state but `queued` — a job that ran has
-    a history worth keeping.
+    a history worth keeping. The drop's check and delete happen under the job's own `<id>.lock`
+    (rule 36), the state re-read inside it: a drop racing a dispatch serialises against the
+    writer's stamp, so whichever lands first wins whole — a drop arriving second sees `dispatched`
+    and refuses instead of deleting the record of a builder that just started, and a dispatch
+    arriving second finds the record gone and aborts (rule 32).
 34. Queued briefs are visible. `crab jobs` lists them between the running and the finished, oldest
     first with how long each has waited, and the state block's live copy carries their count, so a
     later turn can answer "what is waiting for tonight" without opening a single sidecar.
@@ -267,7 +277,7 @@ re-derived it by hand.
 | `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
-| `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36) |
+| `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
 | systemd unit `deskcrab-job-retry-<id>` | the one-shot timer that re-dispatches a blocked job's brief once the hold expires (rule 18a) |
 
@@ -367,9 +377,13 @@ lands on `history`; a queued record is neither reaped nor pruned while a dead `d
 reaped as died; `since` counts queued work apart from dispatched; `show` prints the whole record
 and the report renders queued, dispatched, and collected lines);
 `tests/test_job_queue_policy.sh` (rules 30–35: with a shelf, an unlinked brief queues; a matched
-`--want` dispatches and records the title; an unmatched one is refused outright; `-f`, `-O`, and
+`--want` dispatches and records the title; an unmatched one is refused outright, and so is a ref
+under three characters, however many titles it lands inside; `-f`, `-O`, and
 the night window dispatch; no shelf, no gate; `crab job dispatch` moves only a queued record
-through the full preflight, and `drop` removes only a queued one);
+through the full preflight, and `drop` removes only a queued one; the drop waits on the record
+writer's lock and re-judges the state inside it, so a drop that loses the race to a dispatch
+refuses on the winner's state; and a dispatch whose record vanished mid-flight aborts without
+starting a unit);
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
 unpushed and dirty counts, and the report's test tally; a clean exit whose report ends on an
 intention to wait lands `failed` with the verdict quoting it — with and without work in the tree —

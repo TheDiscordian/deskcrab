@@ -48,6 +48,11 @@ out="$(run 'wants_match "latch" && echo MATCHED || echo no')"
 check_eq "a comment above the list can never validate a linkage" "$out" "no"
 out="$(run 'wants_match "no such want anywhere" && echo MATCHED || echo no')"
 check_eq "an unknown ref does not match" "$out" "no"
+out="$(run 'wants_match "e" && echo MATCHED || echo no')"
+check_eq "a one-character ref cannot launder a linkage — it is inside every title" \
+    "$out" "no"
+out="$(run 'wants_match "of" && echo MATCHED || echo no')"
+check_eq "two characters are still too short to name a want" "$out" "no"
 
 echo
 echo "awake and unlinked, a brief QUEUES instead of dispatching (rule 30):"
@@ -148,3 +153,42 @@ check "a job that ran cannot be dropped" contains "$out" "not queued"
 check "its record survives" [ -e "$J/$QID.json" ]
 out="$(runq 'job_drop no-such-id')"
 check "an unknown id is an error, not a shrug" contains "$out" "No such job"
+
+echo
+echo "drop waits on the record writer's lock and re-judges inside it (rule 33):"
+# The dispatch side of the race, played by hand: a holder takes the record's
+# lock — exactly as the status writer's stamp does — and flips the state to
+# dispatched before releasing. A drop arriving mid-stamp must block on the
+# lock and then refuse on the winner's state; the pre-fix drop read the state
+# without the lock, saw queued, and deleted the record of a builder that was
+# in the middle of being dispatched.
+"$JS" new "$J" raceq "a brief being stamped as the drop arrives" "" /tmp queued
+(
+    exec 9>>"$J/raceq.lock"
+    flock 9
+    sleep 2
+    python3 - "$J/raceq.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["state"] = "dispatched"
+json.dump(d, open(p, "w"))
+PY
+) &
+HOLDER=$!
+out="$(runq 'job_drop raceq')"
+wait "$HOLDER"
+check "the drop waited out the lock and refused on the winner's state" \
+    contains "$out" "not queued"
+check "the stamped record survives" [ -e "$J/raceq.json" ]
+check_eq "still dispatched" "$("$JS" get "$J/raceq.json" state)" "dispatched"
+
+echo
+echo "a dispatch whose record vanished mid-flight aborts (rule 32):"
+out="$(runq 'job_dispatch_sidecar ghost-job /tmp')"
+check "the stamp's failure is the drop's answer" contains "$out" "No builder started"
+case "$(sandbox_systemd_calls)" in *deskcrab-job-ghost-job*)
+        fail "no unit may start for a record that is gone" "$(sandbox_systemd_calls)" ;;
+    *) ok "no unit was asked for" ;; esac
+check "and the writer's recreated lock file is swept back out" \
+    [ ! -e "$J/ghost-job.lock" ]
