@@ -72,8 +72,28 @@ assistant together on 2026-08-11; the session is recorded in
     so a resolved worry cannot be quoted back as present-tense fact. The rendering states plainly
     that the settled section is history, not live concerns.
     Detail in [prompt-assembly.md](prompt-assembly.md) rule 21a, which owns the layer.
+11a. The settled section carries only RECENT closures. A closure renders when its `settled_at`
+    falls inside a window (default 7 days, `DESKCRAB_ENG_PROMPT_WINDOW_DAYS`); whatever the window
+    says, the most recent closures always render up to a floor (default 5,
+    `DESKCRAB_ENG_PROMPT_MIN_CLOSED`) and never past a cap (default 25,
+    `DESKCRAB_ENG_PROMPT_MAX_CLOSED`), the cap binding last. An older closure is not rendered in
+    the block at all — it stays on disk, reachable exactly as before through
+    `crab eng list --state all`, `crab eng show <id>` and `crab eng search` — and whenever
+    anything is withheld the section's preamble says how many and names those doors, so the block
+    never reads as though the history is gone. OPEN records are never aged out, however old their
+    `last_touched`: an open thread is live by definition.
+    This is not a cut in the sense [prompt-assembly.md](prompt-assembly.md) rule 4 forbids. Rule 4
+    binds the ASSEMBLER, which must carry every layer it is handed whole; this is the drawer
+    deciding what it hands over — the same judgement that already renders a settled record as one
+    outcome line instead of its body prose. The reason closures appear at all — a resolved worry
+    must read as resolved rather than as a quotable present-tense fact — applies to threads recent
+    enough that she might still be carrying them as live. A thread settled a month ago is not a
+    live worry that needs disarming. Measured 2026-08-14: settling 37 threads and killing 3 in one
+    evening GREW the block from about 15.3 KB to about 20.1 KB, because an outcome line is longer
+    than the two dated lines it replaces and, before this rule, nothing ever left.
 12. The renderer is fail-safe: an empty or missing drawer contributes nothing, an unparseable
-    record is skipped, and no failure of the renderer may break a prompt build.
+    record is skipped, a bad aging knob falls back to its default, and no failure of the renderer
+    may break a prompt build.
 
 ### The job hook
 
@@ -118,7 +138,11 @@ self-change watcher's suppression file through `crab touching`.
 
 **Existing:** `tests/test_eng_records.sh` (round-trip, transitions bumping `last_touched`,
 `touched-since`, search, the prompt rendering of open versus settled records — a settled record's
-body prose stays out of the prompt — and migration preserving dates and idempotence);
+body prose stays out of the prompt — migration preserving dates and idempotence, and the aging of
+rule 11a: a closure inside the window renders and one well outside it does not, the floor holds
+when every closure is old, the cap holds when many are recent, open records never age out, the
+withheld pointer appears exactly when something was withheld, and one case is pinned to its
+measured byte size so regrowth is visible);
 `tests/test_eng_selfchange.sh` (rule 10a: a real `crab eng touch` declares its own write and the
 self-change watcher stays quiet about it, while an undeclared out-of-band edit to the same record
 still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md)).

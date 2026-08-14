@@ -184,6 +184,26 @@ def touched_epoch(meta):
     return 0
 
 
+def settled_epoch(meta):
+    v = (meta.get("settled_at") or "").strip()
+    for fmt in (TIMEFMT, "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return int(time.mktime(time.strptime(v, fmt)))
+        except ValueError:
+            continue
+    return 0
+
+
+def env_int(name, default):
+    """A knob read the way the rest of deskcrab reads one — but fail-safe,
+    because the one caller is the prompt renderer and no bad value may
+    break a prompt build: unset or unparseable means the default."""
+    try:
+        return int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
 def add_entry(body, note, stamp=None):
     """Newest first: the fresh entry goes above whatever is already there."""
     entry = "## %s\n\n%s\n" % (stamp or now(), note.strip())
@@ -327,9 +347,20 @@ def cmd_touched_since(argv):
 
 def cmd_prompt(argv):
     """The shelves-layer block (prompt-assembly rule 21a). Open records are
-    live threads with their dates; settled and dead ones are ONE line of
-    outcome each, body prose never shown — a resolved worry must read as
-    resolved, not as a quotable present-tense fact. Empty drawer, no block."""
+    live threads with their dates, never aged out however long untouched;
+    settled and dead ones are ONE line of outcome each, body prose never
+    shown — a resolved worry must read as resolved, not as a quotable
+    present-tense fact. That disarming is owed only to RECENT closures, the
+    ones she might still be carrying as live (engineering-records rule 11a):
+    the section renders closures settled inside a window, always at least
+    the few most recent whatever their age, never more than the cap, and
+    says how many older ones live on disk and how to reach them. Measured
+    2026-08-14: without this, one evening of correct settling GREW the
+    block from ~15.3 KB to ~20.1 KB, because an outcome line outlives its
+    thread forever. Empty drawer, no block."""
+    window = env_int("DESKCRAB_ENG_PROMPT_WINDOW_DAYS", 7)
+    floor = env_int("DESKCRAB_ENG_PROMPT_MIN_CLOSED", 5)
+    cap = env_int("DESKCRAB_ENG_PROMPT_MAX_CLOSED", 25)
     recs = [m for m, _ in all_records()]
     if not recs:
         return
@@ -337,6 +368,14 @@ def cmd_prompt(argv):
                    key=touched_epoch, reverse=True)
     closed = sorted((m for m in recs if m.get("state") in ("settled", "dead")),
                     key=lambda m: m.get("settled_at") or "", reverse=True)
+    # Recent means settled_at inside the window; the floor keeps the freshest
+    # few visible when everything is old, and the cap binds last. closed is
+    # newest-first, so the recent ones are a prefix of it.
+    cutoff = time.time() - window * 86400
+    n = sum(1 for m in closed if settled_epoch(m) >= cutoff)
+    n = max(0, min(max(n, floor), cap))
+    shown = closed[:n]
+    withheld = len(closed) - len(shown)
     out = ["YOUR ENGINEERING RECORDS — one thread per file in %s. Read one "
            "with 'crab eng show <id>'; every state change goes through "
            "'crab eng' (touch/settle/kill), never a hand edit, so the dates "
@@ -346,10 +385,16 @@ def cmd_prompt(argv):
         for m in opens:
             out.append("  - %s" % one_line(m))
     if closed:
-        out.append("SETTLED or DEAD — history, not live worries. The line "
-                   "below is the whole of what each still says; never quote "
-                   "one as a present-tense fact:")
-        for m in closed:
+        out.append("SETTLED or DEAD — recent history, not live worries. The "
+                   "line below is the whole of what each still says; never "
+                   "quote one as a present-tense fact:")
+        if withheld:
+            out.append("  (%d older closure%s not shown here but not gone: "
+                       "'crab eng list --state all' is the full history, "
+                       "'crab eng show <id>' one record, 'crab eng search "
+                       "<words>' finds by content.)"
+                       % (withheld, "s" if withheld != 1 else ""))
+        for m in shown:
             out.append("  - %s" % one_line(m))
     print("\n".join(out))
 

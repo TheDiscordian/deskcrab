@@ -183,3 +183,84 @@ check_eq "a bullet marking itself settled migrates settled" \
     "$(E field old-victory state)" "settled"
 OUT4="$(E migrate "$SANDBOX/index.md")"
 check "the index migration is idempotent too" contains "$OUT4" "0 records created, 2 already existed"
+
+echo
+echo "aging (engineering-records rule 11a) — the settled section carries only"
+echo "recent closures; the rest stay on disk behind the pointer line:"
+# A controlled drawer, written directly: the aging cases need settled_at
+# dates the tool would always stamp as now. The tool still reads them
+# through the one parser, so the shape is the record shape.
+rm -rf "$ENG"; mkdir -p "$ENG"
+mkrec() {  # <id> <state> <settled_at> [last_touched]
+    local id="$1" state="$2" sat="$3" touched="${4:-${3:-2026-01-01 00:00:00}}"
+    cat > "$ENG/$id.md" <<REC
+---
+id: $id
+title: $id
+opened: 2026-01-01 00:00:00
+last_touched: $touched
+state: $state
+settled_at: $sat
+settled_by: fixture outcome
+summary: $id
+---
+
+## 2026-01-01 00:00:00
+
+Body prose of $id.
+REC
+}
+ts() { date -d "$1" '+%Y-%m-%d %H:%M:%S'; }  # fixed 19-byte datetimes
+mkrec stale-open open "" "$(ts '-400 days')"
+mkrec fresh-a settled "$(ts '-1 day')"
+mkrec fresh-b settled "$(ts '-2 days')"
+for i in 0 1 2 3 4 5 6 7; do
+    mkrec "old-$i" settled "$(ts "-$((40 + i)) days")"
+done
+BLOCK="$(E prompt)"
+check "an open record never ages out, however old its last_touched" \
+    contains "$BLOCK" "stale-open"
+check "a closure inside the window renders" \
+    contains "$BLOCK" "fresh-a"
+check "the floor tops the window up to the five most recent closures" \
+    contains "$BLOCK" "old-2"
+refute "a closure well outside the window does not render" \
+    contains "$BLOCK" "old-7"
+check "the pointer line counts what was withheld and names the doors" \
+    contains "$BLOCK" "(5 older closures not shown here but not gone: 'crab eng list --state all'"
+check "the withheld closure is still reachable through list --state all" \
+    bash -c 'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" list --state all | grep -q old-7'
+check "and through show" \
+    bash -c 'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" show old-7 | grep -q "Body prose of old-7"'
+# The measured-bytes pin. Line 1 carries the sandbox's own path, so the pin
+# is everything after it: 1 preamble-free block of 1 open line, 2 section
+# headers, the pointer, and 5 closure lines, every datetime 19 bytes wide.
+# If this number grows, something new is riding the block — look before
+# raising it.
+check_eq "the block after its path line measures exactly its pinned bytes" \
+    "$(E prompt | tail -n +2 | wc -c)" "798"
+
+echo
+echo "the window, floor and cap are knobs, and the cap binds last:"
+BLOCK_WIDE="$(DESKCRAB_ENG_PROMPT_WINDOW_DAYS=100 E prompt)"
+check "a wider window lets an old closure back in" \
+    contains "$BLOCK_WIDE" "old-7"
+refute "and withholds nothing" contains "$BLOCK_WIDE" "older closure"
+BLOCK_FLOOR2="$(DESKCRAB_ENG_PROMPT_MIN_CLOSED=2 E prompt)"
+refute "a lower floor keeps window-expired closures out" \
+    contains "$BLOCK_FLOOR2" "old-0"
+check "while the in-window ones still render" contains "$BLOCK_FLOOR2" "fresh-b"
+for i in $(seq 0 29); do
+    mkrec "rc-$i" settled "$(ts "-$((i + 100)) seconds")"
+done
+BLOCK_CAP="$(E prompt)"
+check_eq "the cap holds at 25 when many closures are recent" \
+    "$(printf '%s\n' "$BLOCK_CAP" | grep -c '^  - rc-')" "25"
+check "counting everything else it withheld" \
+    contains "$BLOCK_CAP" "(15 older closures not shown"
+BLOCK_CAP3="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=3 E prompt)"
+check_eq "and the cap knob binds over window and floor alike" \
+    "$(printf '%s\n' "$BLOCK_CAP3" | grep -c '^  - ')" "4"
+BLOCK_BAD="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=banana E prompt)"
+check_eq "an unparseable knob falls back to its default, never a traceback" \
+    "$(printf '%s\n' "$BLOCK_BAD" | grep -c '^  - rc-')" "25"

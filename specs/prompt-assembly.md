@@ -129,13 +129,20 @@ L4 read 4,000 until 2026-08-11, sized for the shelf, the conduct index and the r
 engineering drawer joined the layer that day as records (rule 21a, [engineering-records.md](engineering-records.md)):
 one line per open thread and one line per settled outcome, which closes MAJ-24 — 34 KB of threads
 maintained nightly and reachable from no prompt path. 8,000 is the layer's steady-state number: a
-working drawer of a dozen open threads plus the settled tail, beside the shelf, conduct and the
-catches. On migration day the block alone measured 12,047 bytes, because 62 of the 64 migrated
-entries arrived `open` — the migration refuses to guess at settlement — so L4 reads `over` and
-rule 36's warning stands until the backlog is settled down through `crab eng`. That is the machinery working,
-not a budget error: settling a thread replaces its two dated lines with one outcome line, the
-drawer shrinks with every settlement, and the warning is the standing pressure to do it. The two
-speaking totals move by the same 4,000.
+working drawer of a dozen open threads plus the recent settled tail, beside the shelf, conduct and
+the catches. On migration day the block alone measured 12,047 bytes, because 62 of the 64 migrated
+entries arrived `open` — the migration refuses to guess at settlement — and this paragraph then
+claimed settling the backlog would shrink the drawer back under budget. Measured on 2026-08-14, it
+does not: settling 37 threads and killing 3 in one evening took 47 open threads to 7 and GREW the
+block from about 15.3 KB to about 20.1 KB, because a closure's one outcome line is longer than the
+two dated lines it replaces, and every closure ever made stayed in the block forever — the drawer
+grew monotonically with every thread ever closed. The actual mechanism that holds L4 near its
+number is the aging rule, [engineering-records.md](engineering-records.md) rule 11a: the settled
+section carries only recent closures (a settled-at window, a floor of the most recent few, a hard
+cap), the rest stay on disk behind `crab eng list --state all`, and the section says how many it
+is holding back. Settling remains the right bookkeeping — it is what moves a thread out of the
+open list and, once the window has passed, out of the block entirely. The two speaking totals move
+by the same 4,000.
 
 The dispute row read 1,800 until 2026-08-10 evening, sized for the first cut of the frame. The
 frame then took on two things the adversarial reviews demanded ([cocoon.md](cocoon.md) rules 8 and
@@ -208,7 +215,10 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     line — `settled <when>: <what settled it>` — and NEVER its body prose: a worry written before
     a question was settled must not be quotable as present-tense fact, which is the failure this
     whole drawer shape exists to end (2026-08-10, twice). The block states that the settled
-    section is history. The renderer is fail-safe: an empty drawer costs the block, an unreadable
+    section is history. The settled section carries only RECENT closures, with a pointer to the
+    rest on disk — the window, floor and cap, and why that withholding is the drawer's judgement
+    and not a rule 4 cut, are [engineering-records.md](engineering-records.md) rule 11a, which
+    owns the rendering. The renderer is fail-safe: an empty drawer costs the block, an unreadable
     record is skipped, and no failure of it may break a prompt build.
 22. There MUST be a `WHERE THINGS ARE` layer: one line per drawer, path plus a short description,
     covering at minimum the wants shelf and its bodies, conduct and its index, the engineering
@@ -616,8 +626,10 @@ it; a build inside the target clears it),
 `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
 assembled through the real assembler and graded against its assertions),
 `tests/test_eng_records.sh` (rule 21a: an open record renders as a live thread with its dates, a
-settled one as its one-line outcome with its body prose kept out of the prompt, and an empty
-drawer costs the block and nothing else).
+settled one as its one-line outcome with its body prose kept out of the prompt, an empty drawer
+costs the block and nothing else, and the aging of [engineering-records.md](engineering-records.md)
+rule 11a — recent closures render, old ones stay on disk behind the pointer line, open records
+never age out).
 
 **To be written:**
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
