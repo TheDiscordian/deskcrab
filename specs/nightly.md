@@ -243,8 +243,9 @@ night is where the day's promises are settled honestly, from the whole record at
 
 The engineering threads accumulate faster than waking hours spend them, and the stretch between
 sleep's stamp and the morning is machine time nobody is using. The drain turns that idle stretch
-into builders: the night's owed work — open threads, the promises the sweep found genuinely
-missed, the work already sitting on the wake queue's books — becomes dispatched jobs, round after
+into builders: the night's owed work — the queued backlog the daytime dispatch policy shelved
+([jobs.md](jobs.md) rules 30-34), open threads, the promises the sweep found genuinely missed,
+the work already sitting on the wake queue's books — becomes dispatched jobs, round after
 round, for hours, until a wall-clock cutoff — and then the night finishes normally, so the
 assistant ends it idle and available. Sleeping is an ACTIVE activity, the user's own design
 (2026-08-11 00:26 and 09:40): a night that only reads the day and then sits idle is not the sleep
@@ -261,15 +262,31 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     it starts carries the whole jobs contract — sidecar, live log, completion wake, the
     blocked-versus-failed distinction, the null-brief guard. The drain itself MUST NOT speak, book
     wakes, or open windows; its record is its ledger and the night's log.
-56. Dispatch stops at a configurable wall-clock cutoff (`BACKLOG_DRAIN_CUTOFF`, default 08:00
-    local): builders already in flight are left to finish, and nothing new starts past it. The
-    default gives the 03:10 night nearly five hours of builders — sleeping through the night is
-    doing, not idling — and still ends before the morning, so she meets it idle and available.
-    (The first cut defaulted to 04:00, fifty minutes after the timer: an active night that was
-    structurally a nap.) A drain
+56. Dispatch stops at a hard wall-clock cutoff (`BACKLOG_DRAIN_CUTOFF`, default 06:00 local, the
+    user's named line): no NEW dispatch at or past it, ever; builders already in flight are left
+    to finish. The cutoff MUST be re-checked immediately before every dispatch, not only at a
+    round's start — a selection call can take minutes, and a dispatch a minute past the line is a
+    dispatch past the line. The default gives the 03:10 night nearly three hours of builders —
+    sleeping through the night is doing, not idling — and ends well clear of the morning, so she
+    meets it idle and available. (The first cut defaulted to 04:00, fifty minutes after the
+    timer: an active night that was structurally a nap. The second defaulted to 08:00 and ran
+    builders into the morning; 06:00 is the user's stated hard line.) A drain
     that begins when the next cutoff is further away than the window cap
     (`BACKLOG_DRAIN_WINDOW_MAX`, default six hours) MUST NOT dispatch at all — a missed night
     caught up at noon (rule 2) still sleeps, but it does not fill the daylight with builders.
+56a. The queued backlog goes first. Each round, before any selection call, the drain dispatches
+    the records the daytime policy shelved ([jobs.md](jobs.md) rule 30) — oldest first, through
+    `crab job dispatch <id>`, never around the door — against the same cap and the same cutoff.
+    Queued briefs are already-written work: they cost no model call and no judgement, so they
+    spend the night's slots before the selector is asked to invent anything. The drain sets
+    `DESKCRAB_JOB_NIGHT=1` on every job-door call it makes, which is how the door knows the
+    night window is open (jobs.md rule 31); nothing else ever sets it. A queued dispatch the
+    door refuses for any reason but the block marker is skipped for the rest of the night and
+    named in the night log — never retried in a loop — and the block marker ends dispatch for
+    the night exactly as rule 60 says, because the wall in front of one builder stands in front
+    of them all. The dry run of rule 61 names each queued brief it would have dispatched and
+    starts none. The state machine is the dedupe: a dispatched record leaves `queued`, so the
+    ledger of rule 59 tracks only the selector's picks.
 57. Concurrent jobs are capped (`BACKLOG_DRAIN_CAP`, default 2), counting EVERY running job and not
     only the drain's own: the cap protects the machine and the accounts, not the feature. A full
     slate is waited out, never overridden. Two is the user's standing overnight ceiling — eight
@@ -278,7 +295,9 @@ that was asked for, and promised work must stop waiting for a live turn to perso
 58. Selection is judgement — one model call per round, under the account chain (rule 13 applies) —
     and a thread is dispatched only when it is genuinely actionable engineering work: never a note
     or an incident record with no work left in it, never work the threads record as done, never a
-    duplicate of a running or recently finished job, never a thread already on the drain's ledger,
+    duplicate of a running, queued, or recently finished job (a queued brief dispatches tonight on
+    its own — selecting its subject again buys the same work twice), never a thread already on the
+    drain's ledger,
     never a decision that is the user's to make, and never a thread that names a hand already on
     it. When nothing qualifies and nothing the drain dispatched tonight is still running, the
     drain ends; it MUST NOT poll an empty backlog to the cutoff.
@@ -413,6 +432,11 @@ misses and the pending wake reasons reach the selector as labelled sections, the
 raw catches do not, and an unreadable ledger is presented as unreadable, never silently omitted;
 the sweep runs before the drain inside `sleep-nightly run`; and a drain that cannot even parse its
 cutoff never unstamps the night (exercised through `sleep-nightly run`).
+`tests/test_backlog_drain_queue.sh` — rules 56 and 56a: the queued backlog dispatched oldest first
+through `crab job dispatch` before any selection, under the cap, with `DESKCRAB_JOB_NIGHT` set on
+every door call; the cutoff re-checked before each dispatch so nothing new starts past it; a
+refused queued brief skipped for the night while a blocked door ends it; and the dry run naming
+its would-dispatches without starting anything.
 `tests/test_backlog_drain_utf8.sh` — rule 58a: with an em-dash straddling every one of the four
 byte budgets at once, the prompt the selector receives is valid UTF-8, plain grep — no `-a` —
 still reads it, each split character is dropped whole at its boundary, an em-dash clear of the

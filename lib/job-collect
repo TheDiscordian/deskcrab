@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Collection: locate a builder's work after the run (specs/jobs.md rules 38-40).
+
+A job's outcome used to live nowhere but its prose log — which accounts it
+burned, what it committed, whether anything it built ever landed — so every
+morning audit re-derived it by hand, and twice a builder that exited zero
+having decided to WAIT was reported finished: once over an empty diff
+(2026-08-08 19:45), once over real uncommitted work and a promise to commit
+"after 01:30" made by a process that would not exist at 01:30 (2026-08-11
+01:18). Exit 0 means the process ended, not that the task happened.
+
+This reads the workdir and the report after the run and writes what it finds
+onto the sidecar, through lib/job-status — the one writer — so the record
+answers without anyone opening a log:
+
+    branch       the branch the workdir is on
+    commits      the commits made since dispatch ("shorthash subject", capped)
+    unpushed     how many of those sit on no remote
+    dirty        how many files the tree holds modified or untracked
+    tests        the last test tally the report states ("N passed, M failed")
+    collection   one line of verdict
+    collected_at when this ran
+
+and it holds the one gate rule 39 demands: a run that exited clean whose
+report ENDS ON AN INTENTION — standing by, waiting on another job, holding
+the commit until later — is `failed`, never finished, with the verdict
+quoting the waiting. The work beside it is still recorded in full; only the
+claim of completion is refused. Everything else that was `finished` moves to
+`collected`, the terminal state of a job whose work has been located — and a
+job MUST NOT fail for having produced no commits, because reading and
+reporting is real work. Any other state keeps itself and merely gains the
+facts, which is what makes a died or stopped job's work findable by hand
+(`crab job collect <id>`).
+
+    job-collect run <jobs-dir> <id>
+
+Prints the job's final state on stdout — the runner reads it there — and the
+verdict line on stderr, which the runner appends to the job's log. Exit 0
+even when there is nothing to collect: collection is evidence, never a gate,
+and a collector that cannot run costs the collection line, never the job's
+own outcome. Stdlib only, like job-status — this must run on an offline
+machine with nothing installed.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+LIB_DIR = os.path.dirname(os.path.realpath(__file__))
+JOB_STATUS = os.path.join(LIB_DIR, "job-status")
+
+# The report's closing words that are an intention rather than an outcome.
+# Judged on the TAIL of the report only — a builder may honestly narrate "I
+# waited for the compile" mid-report; it is ending on the wait that makes the
+# promise one nobody will keep. The shapes are the two dated corpses' own:
+# "Standing by for the monitor", "holding the commit until the 01:30 reset".
+WAIT_TAIL_BYTES = 800
+WAIT_PATTERNS = [
+    r"standing by\b",
+    r"\bwaiting (?:for|on|until)\b",
+    r"\bwill (?:commit|push|verify|finish|complete|re-?run|apply)\b[^.\n]*"
+    r"\b(?:after|when|once|at)\b",
+    r"\bholding (?:the |off (?:on )?)?(?:commit|push|merge)\b",
+    r"\bmonitor(?:ing)?\b[^.\n]*\b(?:job|jobs|pid|pids|session|process)",
+    r"\bonce (?:the|that|they|it)\b[^.\n]*\b(?:lands?|finish(?:es)?|"
+    r"completes?|exits?)\b",
+]
+
+TESTS_RE = re.compile(r"(\d+)\s+passed\b(?:\W+(\d+)\s+failed)?", re.IGNORECASE)
+
+
+def git(workdir, *args):
+    """One git question, or None when git or the repo cannot answer it."""
+    try:
+        r = subprocess.run(["git", "-C", workdir] + list(args),
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.rstrip("\n")
+
+
+def status_write(path, *pairs):
+    subprocess.run([JOB_STATUS, "set", path] + list(pairs),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def status_append(path, key, value):
+    subprocess.run([JOB_STATUS, "append", path, key, value],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def waiting_tail(report):
+    """The matched intention in the report's closing words, or None."""
+    tail = report[-WAIT_TAIL_BYTES:]
+    for pat in WAIT_PATTERNS:
+        m = re.search(pat, tail, re.IGNORECASE)
+        if m:
+            # The whole clause, for the verdict: from the match to the end of
+            # its sentence or line, whichever is nearer, squeezed to one line.
+            end = len(tail)
+            for stop in (".", "\n"):
+                at = tail.find(stop, m.end())
+                if at != -1:
+                    end = min(end, at)
+            return " ".join(tail[m.start():end].split())[:200]
+    return None
+
+
+def cmd_run(argv):
+    if len(argv) != 2:
+        print("usage: job-collect run <jobs-dir> <id>", file=sys.stderr)
+        return 1
+    jobs_dir, jid = argv
+    sidecar = os.path.join(jobs_dir, jid + ".json")
+    try:
+        with open(sidecar) as f:
+            job = json.load(f)
+    except (OSError, ValueError) as e:
+        print("job-collect: cannot read %s: %s" % (sidecar, e),
+              file=sys.stderr)
+        return 1
+
+    state = job.get("state", "?")
+    workdir = job.get("workdir", "")
+    started = job.get("started_epoch", 0)
+    facts = []
+    pairs = []
+
+    # The workdir's git facts. A missing tree or a directory that is no
+    # repository costs these lines and nothing else (rule 38).
+    commits = []
+    if workdir and os.path.isdir(workdir) and git(workdir, "rev-parse",
+                                                  "--git-dir") is not None:
+        branch = git(workdir, "rev-parse", "--abbrev-ref", "HEAD")
+        if branch:
+            pairs.append("branch=%s" % branch)
+        since = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started))
+        log = git(workdir, "log", "--branches", "--since=%s" % since,
+                  "--pretty=%h %s", "-n", "20")
+        commits = [ln for ln in (log or "").splitlines() if ln.strip()]
+        unpushed_log = git(workdir, "log", "--branches", "--not", "--remotes",
+                           "--since=%s" % since, "--pretty=%h")
+        unpushed = len([ln for ln in (unpushed_log or "").splitlines()
+                        if ln.strip()])
+        porcelain = git(workdir, "status", "--porcelain")
+        dirty = len([ln for ln in (porcelain or "").splitlines()
+                     if ln.strip()])
+        pairs.append("unpushed=%d" % unpushed)
+        pairs.append("dirty=%d" % dirty)
+        if commits:
+            facts.append("%d commit%s on %s%s" % (
+                len(commits), "" if len(commits) == 1 else "s",
+                branch or "?",
+                " (%d unpushed)" % unpushed if unpushed else ""))
+        else:
+            facts.append("no commits since dispatch")
+        if dirty:
+            facts.append("%d dirty file%s" % (dirty,
+                                              "" if dirty == 1 else "s"))
+    elif workdir:
+        facts.append("workdir %s is not a git tree it can be collected from"
+                     % workdir)
+
+    # The report: the test tally it states, and its closing words.
+    report = ""
+    try:
+        with open(os.path.join(jobs_dir, jid + ".log"),
+                  encoding="utf-8", errors="replace") as f:
+            report = f.read()
+    except OSError:
+        pass
+    tally = None
+    for m in TESTS_RE.finditer(report):
+        tally = ("%s passed, %s failed" % (m.group(1), m.group(2))
+                 if m.group(2) is not None else "%s passed" % m.group(1))
+    if tally:
+        pairs.append("tests=%s" % tally)
+        facts.append("tests: %s" % tally)
+
+    waiting = waiting_tail(report) if report else None
+
+    # The verdict — and rule 39's gate, on `finished` alone. Any other state
+    # keeps itself: a died job's facts are recorded, its death is not
+    # re-judged.
+    final = state
+    if state == "finished" and waiting:
+        final = "failed"
+        verdict = ("died waiting — the report ends on an intention, not an "
+                   "outcome: \"%s\". A promise made by a process that stops "
+                   "existing is a task that did not happen (rule 39)."
+                   % waiting) + (" Work on disk: %s." % "; ".join(facts)
+                                 if facts else "")
+    elif state == "finished":
+        final = "collected"
+        verdict = ("collected: %s" % "; ".join(facts)
+                   if facts else "collected: report only, no workdir facts")
+    else:
+        verdict = ("facts recorded on a %s job%s" % (
+            state, ": %s" % "; ".join(facts) if facts else ""))
+
+    # Everything lands through the one writer. commits= first clears the
+    # list so a by-hand re-collect never doubles it.
+    if pairs:
+        status_write(sidecar, *pairs)
+    status_write(sidecar, "commits=")
+    for c in commits:
+        status_append(sidecar, "commits", c)
+    status_write(sidecar, "collection=%s" % verdict, "collected_at=now")
+    if final != state:
+        status_write(sidecar, "state=%s" % final)
+
+    print("job-collect: %s" % verdict, file=sys.stderr)
+    print(final)
+    return 0
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] != "run":
+        sys.exit(__doc__.strip())
+    sys.exit(cmd_run(sys.argv[2:]))
+
+
+if __name__ == "__main__":
+    main()

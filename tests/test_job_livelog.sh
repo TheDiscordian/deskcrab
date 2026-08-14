@@ -103,8 +103,10 @@ chmod +x "$T/claude-ok"
 "$REPO_DIR/lib/job-status" new "$JOBS" oktest "succeed on purpose" ""
 CLAUDE_BIN="$T/claude-ok" WANTS_FILE="$T/wants.md" \
     "$REPO_DIR/lib/job-runner" oktest "$T/work" >/dev/null 2>&1
-check_eq "a clean run is still finished" \
-    "$("$REPO_DIR/lib/job-status" get "$JOBS/oktest.json" state)" "finished"
+# collected: a clean run's work is located by collection and the sidecar
+# lands in the terminal state (specs/jobs.md rules 38-39).
+check_eq "a clean run ends collected" \
+    "$("$REPO_DIR/lib/job-status" get "$JOBS/oktest.json" state)" "collected"
 out="$(grep -c "All done, verified." "$JOBS/oktest.log" 2>/dev/null)"
 check_eq "a result that repeats the last block is not written twice" "${out:-0}" "1"
 

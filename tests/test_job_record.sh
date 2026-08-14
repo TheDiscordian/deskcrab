@@ -73,8 +73,10 @@ STUB
 "$REPO_DIR/lib/job-status" new "$JOBS" rec2 "a build that writes back" ""
 "$REPO_DIR/lib/job-status" set "$JOBS/rec2.json" record="$RID"
 WANTS_FILE="$XDG_DATA_HOME/deskcrab/wants.md" "$REPO_DIR/lib/job-runner" rec2 "$T/work" >/dev/null 2>&1
-check_eq "the sidecar says finished" \
-    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec2.json" state)" "finished"
+# collected, not bare finished: a clean run's work is located by collection
+# and the sidecar lands in the terminal state (specs/jobs.md rules 38-39).
+check_eq "the sidecar says collected" \
+    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec2.json" state)" "collected"
 check "the record carries the builder's entry" \
     grep -q "shimmed and re-ran the load test" "$ENG/$RID.md"
 
@@ -83,8 +85,8 @@ echo "a job with no record is untouched by the hook:"
 cp "$DESKCRAB_SANDBOX_LIB/stubs/claude" "$SANDBOX_BIN/claude"; chmod +x "$SANDBOX_BIN/claude"
 "$REPO_DIR/lib/job-status" new "$JOBS" rec3 "a plain build, no record" ""
 WANTS_FILE="$XDG_DATA_HOME/deskcrab/wants.md" "$REPO_DIR/lib/job-runner" rec3 "$T/work" >/dev/null 2>&1
-check_eq "finished as ever" \
-    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec3.json" state)" "finished"
+check_eq "collected as any clean run now is" \
+    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec3.json" state)" "collected"
 check "and no record complaint anywhere in its log" \
     bash -c '! grep -q "engineering record" "$1"' _ "$JOBS/rec3.log"
 

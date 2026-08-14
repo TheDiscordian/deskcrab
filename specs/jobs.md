@@ -4,8 +4,8 @@
 
 A job is work that must outlive the turn that asked for it. It runs as its own headless session owned
 by systemd, not by the conversation, so the user can keep talking while it builds. This spec owns
-dispatch, the state sidecar, the blocked-versus-failed distinction, and the single channel a job has
-back to her.
+dispatch, the state sidecar, the blocked-versus-failed distinction, the queue and the dispatch
+policy, collection of a finished builder's work, and the single channel a job has back to her.
 
 ## CONTRACT
 
@@ -54,8 +54,12 @@ back to her.
 8. There MUST be exactly one field name for a job's state, one writer of it, and one lock. The
    schema field is `state`, and every writer uses it. A second field name means the sidecar keeps
    saying "running" and the next report reaps the job as died.
-9. The state values are: `running`, `finished`, `failed`, `stopped`, `blocked`, `died`. Every value
-   MUST be documented where the schema is documented.
+9. The state values are: `queued`, `dispatched`, `running`, `finished`, `collected`, `failed`,
+   `stopped`, `blocked`, `died`. Every value MUST be documented where the schema is documented.
+   `queued` is a brief on the shelf with no unit and no builder (rule 30); `dispatched` is the
+   moment between the dispatch call and the worker's first write, reaped exactly as `running` is
+   when the worker never appears; `collected` is a finished job whose work has been located and
+   recorded (rule 38).
 10. Writes to the sidecar MUST be atomic, so a concurrent reader or reaper never sees a half-written
     file.
 11. Any read-modify-write of the sidecar MUST hold the job's lock. The stop path currently races the
@@ -169,14 +173,97 @@ back to her.
     verifies with a real grep or test before claiming done: the record entry is where the
     verification is written down, dated, on the thread the work came from.
 
+### The queue and the dispatch policy
+
+The user's standing policy (2026-08-14): her waking hours belong to her wants, and everything else
+waits for the night. A builder dispatched the moment work is noticed competes with the turn somebody
+is standing there waiting on, burns daytime tokens on work nobody chose, and — the measured case —
+fires builder after builder while she is trying to talk. The queue is where un-chosen work waits;
+the night drain ([nightly.md](nightly.md) rules 54-61) is where it is spent.
+
+30. While she is awake, the job door dispatches only want-linked work. `crab job --want <ref>`
+    names the want; the ref MUST match a bullet on the wants shelf (a title or the document name a
+    shelf line points at), the match is validated at the door — an unmatched ref is refused, never
+    dispatched and never queued, because a linkage that cannot be checked is a linkage that will be
+    invented — and the matched shelf title is recorded in the sidecar as `want`. A brief with no
+    want is not refused: it is QUEUED. The full record is written with state `queued`, no unit and
+    no builder exist, and the night's drain dispatches it (nightly.md rule 56a). The gate stands
+    only where a shelf exists: an instance with no `WANTS_FILE` configured has nobody whose wants
+    could gate it, and dispatches as it always did — which is also what keeps every scratch harness
+    honest about what it is testing.
+31. Three hands pass the gate without a want, each for a stated reason, and every one of them still
+    faces the artifact guard of rule 1a and the block marker of rule 16: `-f` is a deliberate force
+    by whoever typed it; an automatic retry (`-O`, rule 18a) inherits the standing its origin
+    earned when it was first dispatched — re-gating it would turn "blocked briefs re-send
+    themselves" into "blocked briefs queue themselves twice"; and the night drain
+    (`DESKCRAB_JOB_NIGHT=1`, set by the drain and by nothing else) is the window the queue exists
+    for.
+32. `crab job dispatch <id>` dispatches a queued record in place: same id, same sidecar, history
+    intact. It MUST refuse a record whose state is not `queued`, a description rule 1a would refuse
+    (judged on the recorded field, exactly as requeue judges it), and a fresh block marker. Dispatch
+    re-stamps `started`/`started_epoch` — the record hook of rule 27 compares against dispatch, not
+    against queueing — and `queued`/`queued_epoch` keep when the brief was shelved, so the wait is
+    never erased.
+33. A queued record is never reaped and never pruned: it has no unit and no pid to be dead, and
+    ageing out silently would be work quietly dropped. `crab job drop <id>` is the one way a queued
+    brief leaves the queue undispatched, and it refuses any state but `queued` — a job that ran has
+    a history worth keeping.
+34. Queued briefs are visible. `crab jobs` lists them between the running and the finished, oldest
+    first with how long each has waited, and the state block's live copy carries their count, so a
+    later turn can answer "what is waiting for tonight" without opening a single sidecar.
+35. Model and effort are recorded on the sidecar at dispatch (`model`, `effort`) — what the builder
+    actually ran with, not what the configuration says on the day somebody asks.
+
+### Tracking and collection
+
+The defect cluster this section closes, each from a dated incident: a builder that exited zero
+having decided to "stand by" was reported finished over an empty diff (2026-08-08 19:45); a second
+did the same over real uncommitted work, promising a commit "after 01:30" from a process that would
+not exist at 01:30 (2026-08-11 01:18); and a job's outcome — which accounts it burned, what it
+committed, whether its work ever landed — lived nowhere but its prose log, so every morning audit
+re-derived it by hand.
+
+36. The sidecar carries the job's history: every state transition appends `{at, state}` to
+    `history`, written by the one writer of rule 8 and by nothing else. To make the single-writer
+    rule true under concurrency, every read-modify-write inside the writer takes the job's own lock
+    (the `<id>.lock` of the DATA table) — rule 11's race is closed inside the writer, where every
+    call site inherits the fix, not at whichever call sites remember to lock.
+37. The worker records its account walk: one `attempts` entry per attempt — time, login, outcome
+    (ran clean, refused, cut mid-run, or failed with the exit code) — so a morning reader can see
+    which logins a night's build burned on the way to its outcome without re-deriving it from the
+    stream.
+38. After a run that ended `finished` or `failed`, collection (`lib/job-collect`) reads the workdir
+    and the report and records on the sidecar: the branch, the commits made since dispatch, how
+    many of them are unpushed, how many files the tree holds dirty, any test tally the report
+    states, and a one-line `collection` verdict. A `finished` job whose collection ran moves to
+    `collected` — the terminal state of a job whose work has been located. Collection is evidence,
+    never a gate: a collector that cannot run costs the collection line, never the job's own
+    outcome, and a job MUST NOT fail for having produced no commits — reading and reporting is real
+    work.
+39. A job that dies waiting reports FAILURE, not success. A run that exited clean whose report ends
+    on an intention — standing by, waiting on another job, watching a monitor, holding the commit
+    until later — made a promise that outlives the process that made it, and exit 0 means the
+    process ended, not that the task happened. Collection judges the report's closing words: such a
+    run is `failed`, with the `collection` verdict quoting the waiting, whatever work sits beside
+    it in the tree — the work is still recorded in full (rule 38), so nothing real is lost, only
+    the claim of completion. The completion wake says failure. Waiting is not a terminal state for
+    a process that terminates.
+40. Work is findable after any death. `crab job collect <id>` runs the same collection by hand on a
+    job in any ended state — died mid-suite, stopped, blocked-then-forced, never pushed — recording
+    what is actually on disk without changing any state but `finished`'s. `crab job show <id>`
+    prints the whole record: state, times, want and engineering-record linkage, model and effort,
+    the account attempts, the history, and the collection. `crab jobs --state <s>` filters the
+    listing to one state, so "everything still queued" and "everything that died" are each one
+    command.
+
 ## DATA
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, started, started_epoch, unit, state, pid, pidstart, finished, finished_epoch, exit, retry, retry_of}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than the field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was. `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
-| `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar |
+| `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36) |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
 | systemd unit `deskcrab-job-retry-<id>` | the one-shot timer that re-dispatches a blocked job's brief once the hold expires (rule 18a) |
 
@@ -184,14 +271,18 @@ back to her.
 
 ```mermaid
 flowchart TD
-  J0["crab job, optional workdir, optional force"] --> G{"task empty, or a substitution<br/>artifact: null / None / undefined?"}
+  J0["crab job, optional workdir,<br/>optional force, optional want"] --> G{"task empty, or a substitution<br/>artifact: null / None / undefined?"}
   R0["crab job requeue &lt;id&gt;"] --> R1["description + workdir<br/>read from the sidecar"]
   R1 --> G
   G -->|yes| Gr["refuse: a broken command<br/>substitution, not a brief"]
-  G -->|no| J1{"block marker<br/>younger than the retry window?"}
+  G -->|no| WG{"a shelf exists, and no want,<br/>no -f, no -O, not the night?"}
+  WG -->|"yes (rule 30)"| Q["sidecar: state=queued<br/>— waits for the night"]
+  Q -->|"the drain: crab job dispatch &lt;id&gt;<br/>(same sidecar, rule 32)"| J1
+  Q -->|"crab job drop &lt;id&gt;"| QD["record removed, undispatched"]
+  WG -->|no| J1{"block marker<br/>younger than the retry window?"}
   J1 -->|yes, and no -f| J1b["refuse: the last one never began"]
-  J1 -->|no| J2["sidecar: state=running"]
-  J2 --> J3["systemd-run --collect --unit=deskcrab-job-&lt;id&gt;"]
+  J1 -->|no| J2["sidecar: state=dispatched,<br/>model + effort stamped"]
+  J2 --> J3["systemd-run --collect --unit=deskcrab-job-&lt;id&gt;<br/>worker's first write: state=running"]
   J3 --> J4["declare the workdir and the jobs dir<br/>as her own hand"]
   J4 --> J5["job profile prompt:<br/>task + index + named project excerpt"]
   J5 --> J6["walk the account chain<br/>judging each attempt on its own bytes"]
@@ -200,7 +291,11 @@ flowchart TD
   O --> Ob["failed — a real build failure"]
   O --> Oc["blocked — the final attempt was a refusal"]
   O --> Od["stopped — termination trap"]
-  Oa & Ob & Oc & Od --> J8["sidecar + day journal"]
+  Oa --> C["collection: branch, commits,<br/>tests, the report's closing words"]
+  C -->|"work located"| Ca["collected"]
+  C -->|"ended on an intention<br/>to wait (rule 39)"| Cb["failed — died waiting"]
+  Ob --> C2["collection records the facts;<br/>failed stays failed"]
+  Ca & Cb & C2 & Oc & Od --> J8["sidecar + day journal"]
   J8 --> J9["one event wake carrying the outcome"]
   Oc --> RT["one transient retry timer,<br/>JOB_BLOCK_RETRY + margin (rule 18a)"]
   RT -->|"still blocked, retry unspent,<br/>younger than JOB_RETRY_MAX_AGE"| R1
@@ -241,7 +336,6 @@ dispatching turn holds.
 
 | Id | What implementation must fix |
 |---|---|
-| `MAJ-11` | The stop path writes `status=stopped` where the schema field is `state`, so the sidecar keeps saying running and the next report reaps it as died — the exact confusion the trap exists to prevent. The same path is an unlocked read-modify-write racing the trap. |
 | `MAJ-12` | A failed job's one-time news can be consumed by a wake that ends silently. |
 | `MAJ-17` | Job output bypasses the live viewer entirely: the log is written outside every glob and the run is not in the stream format at all. |
 | `MAJ-28` | A repo job starts on 54 KB of project context in front of a 1.2 KB task. |
@@ -262,13 +356,29 @@ the sidecar, naming its origin, and refuses a spent, stale, failed, scratch, art
 workdir-less record);
 `tests/test_job_record.sh` (rules 7b and 27–29: dispatch refuses an unknown record and records a
 known one; a clean build with an untouched record ends failed naming it; a builder that touches
-its record finishes; a job with no record is untouched by the hook; requeue carries the record).
+its record finishes; a job with no record is untouched by the hook; requeue carries the record);
+`tests/test_job_track.sh` (rules 8, 9, 11, 36: the stop path writes the `state` field — the MAJ-11
+regression — and racing writers serialise on the job's lock inside the writer; every transition
+lands on `history`; a queued record is neither reaped nor pruned while a dead `dispatched` one is
+reaped as died; `since` counts queued work apart from dispatched; `show` prints the whole record
+and the report renders queued, dispatched, and collected lines);
+`tests/test_job_queue_policy.sh` (rules 30–35: with a shelf, an unlinked brief queues; a matched
+`--want` dispatches and records the title; an unmatched one is refused outright; `-f`, `-O`, and
+the night window dispatch; no shelf, no gate; `crab job dispatch` moves only a queued record
+through the full preflight, and `drop` removes only a queued one);
+`tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
+unpushed and dirty counts, and the report's test tally; a clean exit whose report ends on an
+intention to wait lands `failed` with the verdict quoting it — with and without work in the tree —
+while a working report collects; a failed job keeps its state but gains the facts; a non-git
+workdir and a missing log cost the collection line, never the outcome; and the runner moves a
+finished builder to `collected` end to end);
+`tests/test_backlog_drain_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the drain
+dispatches the queued backlog oldest first through the door before selecting, under the cap, with
+`DESKCRAB_JOB_NIGHT` set; the 06:00 default cutoff is re-checked before every dispatch; a refused
+queued brief is skipped for the night, a blocked door ends it, and the dry run starts nothing).
 
 **To be written:**
 
-- `tests/test_job_state.sh` — every state transition writes the `state` field; the stop path and the
-  termination trap race is exercised under the lock; a hard-killed worker is reaped as died and not
-  before.
 - `tests/test_job_dispatch.sh` — every instance redirect and the current login reach the worker;
   the unit carries the collect option; dispatch returns without waiting.
 - `tests/test_job_context.sh` — the job profile carries the task, the index, and a capped named
