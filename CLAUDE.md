@@ -75,7 +75,7 @@ work here, the defect identifiers, the data-flow graph, and the lock table.
 | [phone](specs/phone.md) | the server and the PWA: turns, the watch cursor, voice, auth, push |
 | [memory-recall](specs/memory-recall.md) | query composition, retrieval, the recall block, reinforcement |
 | [engineering-records](specs/engineering-records.md) | threads with state: the record format, `crab eng`, the prompt block, the job hook |
-| [account-fallback](specs/account-fallback.md) | the chain of logins, the moving default, refusal detection |
+| [account-fallback](specs/account-fallback.md) | the flat numbered account list, selection and cooldowns, refusal detection |
 | [nightly](specs/nightly.md) | sleep, tidy, the self-change watcher, and its canary |
 | [test-harness](specs/test-harness.md) | the one sandbox, four isolation gates, the coverage owed |
 
@@ -101,11 +101,11 @@ ship disabled: enabling one changes how the machine behaves towards its user, wh
 
 **State.** `$STATE_PREFIX-*` (default `/tmp/deskcrab-*`) is ephemeral: conversation, stream logs,
 locks, live records. `~/.local/share/deskcrab/` is durable: wakes, jobs, journal, memory, archive,
-account default, webpush. `~/.local/state/deskcrab/` holds watcher logs and archived streams.
+account state, webpush. `~/.local/state/deskcrab/` holds watcher logs and archived streams.
 
 **Scratch instance.** Every path that could reach the live instance is overridable, and the test
 sandbox pins all of them: `DESKCRAB_CONF`, `DESKCRAB_STATE_PREFIX`, `DESKCRAB_PIDFILE`,
-`DESKCRAB_MEMORY_DIR`, `WAKES_DIR`, `JOBS_DIR`, `DAY_JOURNAL_DIR`, `ACCOUNT_DEFAULT_FILE`, the XDG
+`DESKCRAB_MEMORY_DIR`, `WAKES_DIR`, `JOBS_DIR`, `DAY_JOURNAL_DIR`, `ACCOUNT_STATE_FILE`, the XDG
 homes. Two gates refuse the user manager when the wakes or jobs directory is not the live one;
 `DESKCRAB_ALLOW_SCRATCH_BOOKING=1` is the opt-in for a harness that has stubbed `systemd-run`. Every
 detached child must inherit the whole set.

@@ -152,7 +152,13 @@ it is ten minutes of silence with nothing on screen explaining it.
     memory store's ingest and judge, the summariser, the chess mover — MUST select from the same
     flat list by the same rule. The two Python walkers (the memory store, the chess mover) read
     the shared state and skip cooling accounts, and are read-only: recording a refusal is the
-    shell paths' job.
+    shell paths' job. Both MUST tilde- and variable-expand every account directory — the
+    configured list's entries AND the state file's — before it is matched or handed out:
+    systemd's `EnvironmentFile` hands values through unexpanded where every shell path expanded
+    them on the way in, and an unexpanded `$HOME/...` handed to `CLAUDE_CONFIG_DIR` names an
+    empty login that answers "Not logged in" while the real account sits logged in — and would
+    break the state-file match too, wedging the walk onto a dead login (2026-08-11, the chess
+    mover; [chessweb.md](chessweb.md) rule 16e carries the incident).
 30. The summariser MUST capture standard error, so a refusal that arrives only there cannot break the
     walk.
 31. A refusal MUST NEVER be committed as a summary. See [turn-pipeline.md](turn-pipeline.md) rule 27.
@@ -237,12 +243,12 @@ failure that is not a refusal spends no second account.
 login, so it can walk past an account that went dry between dispatch and run.
 `tests/test_turn_watchdog.sh` — the interactive walk is bounded, and a swap is announced: marked
 in the stream log on every path, notified on a turn, silent on a wake.
-
-**Required additions:**
-
-- `tests/test_nightly_harness_routing.sh` (TODO) — `crab memory ingest` and `lib/sleep-nightly`'s
-  `claudism-scan` child both run under `CLAUDE_BIN` (her harness, not stock `claude`) selecting
-  from the shared flat state, and `detach_turn_child`'s `setsid` fallback forwards `CLAUDE_BIN`,
-  the selected login, and the state file path. The 2026-08-11 fix is currently covered indirectly
-  by `test_no_project_memory`, `test_limit_fallback`, `test_sleep_*`, `test_claudism_scan` and
-  `test_memory` (all green); this names the dedicated regression the export sites still owe.
+`tests/test_nightly_harness_routing.sh` — the three out-of-band export sites of the 2026-08-11
+audit, offline, each child a stub that photographs its environment: `crab memory` hands
+`lib/memory.py` the harness (`CLAUDE_BIN`), the configured list, the one shared limit signature,
+and the shared state file path, and re-seeds `CLAUDE_CONFIG_DIR` to the account the selection
+answers with rather than the environment's leftover; `lib/sleep-nightly` seeds its direct
+children — the `claudism-scan` rewrite pass stands in — the same way; and `detach_turn_child`
+names the selected login explicitly in its systemd-run argv and forwards the whole set through
+its `setsid` fallback — on both branches, account 1 included, with nothing configured and no
+state on disk (rule 3).

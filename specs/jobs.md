@@ -86,8 +86,8 @@ back to her.
       line that is not JSON at all. A stream carries every byte of every tool result, so a raw
       signature match says "blocked" for a builder that merely READ a file containing the wording —
       and one such file is `lib/common.sh`, which holds the signature's own patterns. The
-      consequence is not local: a false block rotates the durable account default and holds every
-      further dispatch for the retry window.
+      consequence is not local: a false block cools an account that never refused, moves the
+      durable current off it, and holds every further dispatch for the cooldown.
     - A slice containing genuine model output is NEVER blocked, whatever words passed through it. A
       run that produced output is a run that happened.
 15a. A limit that cuts a build off MID-RUN (account-fallback.md rule 12a: genuine output, then the
@@ -282,5 +282,5 @@ its record finishes; a job with no record is untouched by the hook; requeue carr
   the unit carries the collect option; dispatch returns without waiting.
 - `tests/test_job_context.sh` — the job profile carries the task, the index, and a capped named
   excerpt, and never a whole project instruction file.
-- `tests/test_job_block.sh` — extend to pin the account default file and use a scratch jobs
+- `tests/test_job_block.sh` — extend to pin the account state file and use a scratch jobs
   directory throughout. See [test-harness.md](test-harness.md).

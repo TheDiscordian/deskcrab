@@ -14,7 +14,7 @@ during the very investigation that produced these specs.
 1. There MUST be exactly one sandbox helper, and it MUST be the only way a test sources the library
    or invokes the entry script.
 2. The helper MUST pin every knob that can reach live state: the config path, the state prefix, the
-   wakes directory, the jobs directory, the memory directory, the account default file, the day
+   wakes directory, the jobs directory, the memory directory, the account state file, the day
    journal directory, the state home, the data home, and the recorder pid file.
 3. The helper MUST stub every desktop tool from **one list**, in one place: the notifier, the
    synthesiser, the audio player, the window manager control, the markdown renderer, the media
@@ -147,7 +147,7 @@ repository under test.
 **The harness may be called by:** every test.
 
 **The harness must never:** read or write the live state directories, the live configuration, the
-live account default, or the user manager.
+live account state, or the user manager.
 
 ## VERIFIED-CORRECT RULES
 

@@ -132,7 +132,7 @@ slot is the loudest statement this machine can make that it was not listening.
 20. Out-of-band work (memory judge, promise audit, promise checker, claudism capture) MUST run
     after the user has their answer, MUST be detached, and MUST NOT hold any lock the turn held.
 21. Every detached child MUST inherit the full set of instance redirects: config path, state prefix,
-    memory directory, jobs directory, wakes directory, account default file, and the current
+    memory directory, jobs directory, wakes directory, account state file, and the current
     login. A child that inherits some of them writes into the live instance from a scratch one.
 22. The session's exit trap MUST journal the turn even when the turn was killed. A session killed
     without its trap MUST be reaped and journaled as interrupted, never allowed to vanish.

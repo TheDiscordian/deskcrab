@@ -87,10 +87,11 @@ below is a fact placed before her, never a gate placed behind her.
 
 ### The account line
 
-16. The block MUST carry the account state: which login answers next, and why the default last
-    moved. `crab status` leads with this; the prompt MUST NOT be the only place it is missing.
-17. When the chain was walked during this turn, the block MUST say so, with the from-account and the
-    to-account.
+16. The block MUST carry the account state: which account answers next, by number, and why the
+    state last moved. `crab status` leads with this; the prompt MUST NOT be the only place it is
+    missing.
+17. When the accounts were walked during this turn, the block MUST say so, with the from-account
+    and the to-account.
 18. The turn's session outcome MUST record which account answered.
 
 ### The arithmetic negative-claims rule
@@ -186,11 +187,11 @@ below is a fact placed before her, never a gate placed behind her.
 | `~/.local/share/deskcrab/wakes/<unit>.wake` | read | `fire \t kind \t reason \t booked_at \t booked_by` |
 | `~/.local/share/deskcrab/wakes/ledger.log` | read and written | append-only queue-change ledger |
 | `~/.local/share/deskcrab/jobs/<id>.json` | read | job state sidecar |
-| `~/.local/share/deskcrab/account-default` | read | `token \t epoch \t why it moved` |
+| `~/.local/share/deskcrab/account-state` | read | `current` and per-account `cooldown` lines, the format [account-fallback.md](account-fallback.md) owns; override per instance via `ACCOUNT_STATE_FILE` |
 | `~/.local/share/deskcrab/last-slept` | read | epoch, timestamp, records added — written by sleep, never here |
 | `~/.local/share/deskcrab/journal/*.jsonl` | read | one finished turn per line, epoch first; counted, never quoted |
 | `~/.local/share/deskcrab/claudism-flags/*.jsonl` | read | one flag per line, epoch first; counted, never quoted |
-| `~/.local/share/deskcrab/account-log` | read and written | append-only record of every default move |
+| `~/.local/share/deskcrab/account-log` | read and written | append-only record of every move of the current |
 | `${STATE_PREFIX}-jobs-surfaced` | written | the once-stamp for failed-job news |
 | systemd user timers | read | joined onto the records, never the primary source |
 

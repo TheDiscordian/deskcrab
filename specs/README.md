@@ -53,7 +53,7 @@ The specs cite the defect dossier with these identifiers:
 | [chessweb.md](chessweb.md) | The browser chess board: a SpeedyChess-protocol server over the betty-chess store — validation, the resident mover answering each user move in seconds, resume by replay |
 | [chess-reflex.md](chess-reflex.md) | Position memory for betty-chess: every finished game's moves keyed by FEN, result-weighted ranking, the gate that answers known positions without a reasoning turn, and the similarity layer that briefs an unknown one from its nearest stored neighbours |
 | [memory-recall.md](memory-recall.md) | The vector store: query composition, retrieval, the recall block, reinforcement, decay |
-| [account-fallback.md](account-fallback.md) | The chain of logins: the moving default, refusal detection, the watched runner, swap announcements |
+| [account-fallback.md](account-fallback.md) | The flat numbered account list: selection and cooldowns, refusal detection, the watched runner, swap announcements |
 | [nightly.md](nightly.md) | Sleep (memory ingest), tidy (shelf maintenance), the self-change watcher and its canary |
 | [test-harness.md](test-harness.md) | The sandbox every test runs in, the four isolation gates, and the coverage the suite owes |
 
@@ -87,7 +87,7 @@ flowchart LR
     WK["wakes/UNIT.wake"]
     WL["wakes/ledger.log"]
     JJ["jobs/ID.{json,log}"]
-    AD["account-default"]
+    AS["account-state"]
     AL["account-log"]
     OR["last-origin"]
     DJ["journal/DATE.jsonl"]
@@ -114,7 +114,7 @@ flowchart LR
   T & K & R & JB --> SD & SL & DJ
   K & JB --> WK & WL
   JB --> JJ
-  T & K & R & JB --> AD & AL
+  T & K & R & JB --> AS & AL
   T & R --> OR
   MP --> MD
   MP & T & K --> SU
@@ -125,7 +125,7 @@ flowchart LR
   RL --> XR & CDBG & SV
   LS & LT --> BP
   RC --> T
-  SD & SL & JJ & WK & WL & AD --> SS --> BP
+  SD & SL & JJ & WK & WL & AS --> SS --> BP
   WN & CD & EN --> BP
   DJ --> ING --> MD --> BP
   MD & DJ & WN & CD & EN --> NS
