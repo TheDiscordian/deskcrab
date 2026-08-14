@@ -22,7 +22,9 @@ import re
 import sys
 import time
 
-PRIMARY_TOKEN = "-"
+# The chain's token for account 1, the login with no config dir. The
+# accounts are a flat numbered list — no login outranks another.
+ACCOUNT_ONE_TOKEN = "-"
 
 # The shared limit signature, from lib/common.sh by way of the environment
 # (account-fallback.md rule 13: one signature, never a second copy that ages
@@ -57,19 +59,22 @@ def metrics_dir(arg=None):
 
 
 def account_name(token):
-    """A login's short name: `primary` for the primary token or an absent
-    override, else the config dir's basename."""
-    if not token or token == PRIMARY_TOKEN or token == "primary":
-        return "primary"
-    return os.path.basename(token.rstrip("/")) or "primary"
+    """A login's short name: the config dir's basename, or `account-1` for
+    the login with no config dir — the chain's `-` token, an absent override,
+    or `primary`, which is only ever accepted INBOUND here: it is what the
+    deployed swap markers spell account 1 as on the wire, never what this
+    ledger writes."""
+    if not token or token in (ACCOUNT_ONE_TOKEN, "primary"):
+        return "account-1"
+    return os.path.basename(token.rstrip("/")) or "account-1"
 
 
 def parse_chain(raw):
-    """The CONFIGURED chain, primary first: account_n is a position in this
-    list (spec rule 3), never in the rotated walk."""
+    """The CONFIGURED chain, account 1 first: account_n is a position in
+    this list (spec rule 3), never in the rotated walk."""
     toks = [t for t in re.split(r"[:\s]+", raw or "") if t]
     names = []
-    for t in [PRIMARY_TOKEN] + toks:
+    for t in [ACCOUNT_ONE_TOKEN] + toks:
         n = account_name(t)
         if n not in names:
             names.append(n)
@@ -114,6 +119,19 @@ def _is_error_result(ev):
     if not ev.get("is_error"):
         return False
     return ev.get("type") in (None, "result")
+
+
+def _is_traffic(ev):
+    """Model traffic: what makes a slice an attempt that happened. A result
+    line with no usage and no error is the caller's own terminator, not a
+    result (spec rule 8) — a stream holding only that never booted, and a
+    record for it would be a status-ok run that never was."""
+    t = ev.get("type")
+    if t == "result":
+        return isinstance(ev.get("usage"), dict) or bool(ev.get("is_error"))
+    if t in ("assistant", "user", "stream_event", "rate_limit_event"):
+        return True
+    return t == "system" and ev.get("subtype") == "init"
 
 
 def _genuine_text(ev):
@@ -173,7 +191,7 @@ def _usage_fields(u):
 
 
 def _dedupe_assistant_usage(events):
-    """Fallback when no result totals exist: usage per distinct message id,
+    """When no result totals exist: usage per distinct message id,
     synthetic events excluded (spec rules 9-10). The CLI repeats one message's
     usage across its streamed deltas, so the id is the unit; the per-message
     numbers are a start-of-message snapshot, hence `approx`."""
@@ -252,13 +270,9 @@ def parse_stream(path, kind, model="", effort="", account_hint="",
         ts_base = time.time()
     records = []
     for i, sl in enumerate(slices):
-        # A slice with no model traffic at all (the caller's terminator, a
-        # lone note) is not an attempt that happened.
-        if not any(ev.get("type") in ("assistant", "result", "user",
-                                      "stream_event", "rate_limit_event")
-                   or (ev.get("type") == "system"
-                       and ev.get("subtype") == "init")
-                   for ev in sl):
+        # A slice with no model traffic at all (the caller's usage-less
+        # terminator, a lone note) is not an attempt that happened.
+        if not any(_is_traffic(ev) for ev in sl):
             continue
         init = next((ev for ev in sl
                      if ev.get("type") == "system"

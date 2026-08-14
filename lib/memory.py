@@ -1259,6 +1259,12 @@ def run_claude(prompt, model, timeout=600, log=None, kind="classify"):
         last = f"claude exited {proc.returncode}: {proc.stderr.strip()[:200]}"
         said = f"{proc.stderr}\n{proc.stdout}"
         if not (signature and signature.search(said)):
+            # Not a refusal, so the walk ends here — but the boot happened,
+            # and the attempt is the fact the ledger keeps (specs/metrics.md
+            # rules 11, 13). Zero usage is honest for a run that never
+            # answered.
+            _ledger_record(None, kind, model, confdir, "error",
+                           time.time() - t0)
             raise RuntimeError(last)
         # A refused boot still happened; the ledger keeps it (rule 11).
         _ledger_record(None, kind, model, confdir, "refused",

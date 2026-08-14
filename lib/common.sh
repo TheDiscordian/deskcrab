@@ -996,14 +996,19 @@ turn_metric() {  # <stage> [detail]
 # best-effort — a ledger that cannot be written costs the hosting run nothing
 # (rule 6) — and NO model call anywhere in it (rule 5). The account argument
 # is a hint for a single-attempt stream; a walk that swapped wrote its own
-# marker lines and the parser reads the accounts off those.
+# marker lines and the parser reads the accounts off those. The status
+# judgement rides the ONE shared limit signature, handed through the
+# environment (account-fallback.md rule 13): the spelling baked into
+# lib/token_ledger.py is a last resort for detached callers only, and letting
+# a hosted call fall to it would be the second copy that ages on its own.
 token_ledger_record() {  # <stream file> <kind> [model] [effort] [account] [duration s]
     [ "${TOKEN_LEDGER:-1}" = "1" ] || return 0
     [ -s "${1:-}" ] || return 0
     command -v python3 >/dev/null 2>&1 || return 0
     local -a durarg=()
     [ "${6:-0}" -gt 0 ] 2>/dev/null && durarg=(--duration "$6")
-    { timeout 20 python3 "$LIB_DIR/token_ledger.py" record "$1" \
+    { DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
+        timeout 20 python3 "$LIB_DIR/token_ledger.py" record "$1" \
         --kind "$2" --model "${3:-}" --effort "${4:-}" --account "${5:-}" \
         --chain "${CLAUDE_FALLBACK_CONFIG_DIR:-}" --pid $$ \
         --dir "$METRICS_DIR" ${durarg[@]+"${durarg[@]}"}; } >/dev/null 2>&1 || true

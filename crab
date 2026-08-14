@@ -496,8 +496,20 @@ What you did tonight is journaled from your tool activity without your help, so 
         #                                and her own CLI transcripts; idempotent
         case "${2:-}" in
             backfill)
+                # The exec'd child sees no unexported shell variable, so her
+                # project dir, the extra logins' config dirs, and the chain
+                # all have to ride the argv — exactly as token_ledger_record
+                # already passes --chain. Left to the child's own environment
+                # reads, the ingest silently skipped her project-dir
+                # transcripts and every extra login, and numbered every
+                # account null. The cwds are spec rule 17's three: her
+                # project dir, the sterile classify cwd, the chess mover's.
+                BF_RUN="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
                 exec python3 "$SCRIPT_DIR/lib/token_ledger.py" backfill \
-                    --dir "$METRICS_DIR"
+                    --dir "$METRICS_DIR" \
+                    --her-cwds "$PROJECT_DIR:$BF_RUN/deskcrab-classify:$BF_RUN/deskcrab-chess-mover" \
+                    --claude-dirs "$HOME/.claude:${CLAUDE_FALLBACK_CONFIG_DIR:-}" \
+                    --chain "${CLAUDE_FALLBACK_CONFIG_DIR:-}"
                 ;;
             *)
                 exec python3 "$SCRIPT_DIR/lib/token_ledger.py" report \

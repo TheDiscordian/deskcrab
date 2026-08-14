@@ -22,12 +22,12 @@ YESTERDAY="$(date -d yesterday +%F)"
 mkdir -p "$MDIR"
 NOW="$(date +%s)"
 cat > "$MDIR/tokens-$TODAY.jsonl" <<EOF
-{"ts":$NOW,"kind":"wake","model":"claude-opus-5","effort":"medium","account":"primary","account_n":1,"attempt":1,"attempts":1,"status":"ok","src":"live","input":12,"output":1345,"cache_create":28310,"cache_read":132341,"cost":0.38}
-{"ts":$NOW,"kind":"turn","model":"claude-opus-5","effort":"low","account":"primary","account_n":1,"attempt":1,"attempts":2,"status":"refused","src":"live","input":0,"output":0,"cache_create":0,"cache_read":0}
+{"ts":$NOW,"kind":"wake","model":"claude-opus-5","effort":"medium","account":"account-1","account_n":1,"attempt":1,"attempts":1,"status":"ok","src":"live","input":12,"output":1345,"cache_create":28310,"cache_read":132341,"cost":0.38}
+{"ts":$NOW,"kind":"turn","model":"claude-opus-5","effort":"low","account":"account-1","account_n":1,"attempt":1,"attempts":2,"status":"refused","src":"live","input":0,"output":0,"cache_create":0,"cache_read":0}
 {"ts":$NOW,"kind":"turn","model":"claude-opus-5","effort":"low","account":".claude-alt","account_n":2,"attempt":2,"attempts":2,"status":"ok","src":"live","input":3,"output":25,"cache_create":9,"cache_read":90}
 EOF
 cat > "$MDIR/tokens-$YESTERDAY.jsonl" <<EOF
-{"ts":$((NOW - 86400)),"kind":"summariser","model":"claude-haiku","effort":"","account":"primary","account_n":1,"attempt":1,"attempts":1,"status":"ok","src":"live","input":7,"output":100,"cache_create":0,"cache_read":0}
+{"ts":$((NOW - 86400)),"kind":"summariser","model":"claude-haiku","effort":"","account":"account-1","account_n":1,"attempt":1,"attempts":1,"status":"ok","src":"live","input":7,"output":100,"cache_create":0,"cache_read":0}
 EOF
 
 # --- the server, exactly as the other phone tests start it -----------------

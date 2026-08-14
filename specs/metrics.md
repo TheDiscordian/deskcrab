@@ -29,14 +29,16 @@ two share a directory and nothing else.
    (the walk's total), so a chain that walked itself dry is legible in the ledger as the separate
    refusals it was.
 3. Every record MUST carry: `ts` (epoch), `kind` (the session kind), `model`, `effort`, `account`
-   (the login's short name, `primary` for the primary), `account_n` (the login's 1-based position
-   in the CONFIGURED chain — primary first, fallbacks in configured order — never its position in
+   (the login's short name: the config dir's basename, `account-1` for the login with no config
+   dir — the accounts are a flat numbered list, and no login outranks another), `account_n` (the
+   login's 1-based position in the CONFIGURED chain, in configured order — never its position in
    the rotated walk), `input`, `output`, `cache_create`, `cache_read`, `status`, and `src`
    (`live`, `stream-archive`, or `transcript`). When the stream carried them it also records
    `cost` (the CLI's own `total_cost_usd` share), `duration` (seconds), `sid` (the CLI session
    id), and `pid`.
 4. The session kinds are: `turn` (desk), `phone`, `wake`, `job`, `summariser`, `memory-judge`,
-   `ingest`, `chess`, `promise-audit`, `promise-check`, `claudism-mirror`, `claudism-scan`. A
+   `ingest`, `chess`, `promise-audit`, `promise-check`, `claudism-mirror`, `claudism-scan`,
+   `backlog-drain` (the nightly drain's selector). A
    backfilled record whose kind cannot be told from its artifact carries the best approximation
    and `approx: true` — never a guess dressed as knowledge.
 5. **NO MODEL CALL, ANYWHERE IN THE TRACKING PATH.** The ledger writer parses; it never asks. A
@@ -70,7 +72,10 @@ two share a directory and nothing else.
 12. Attempts are found structurally: each CLI boot opens its stream slice with a
     `system`/`init` event, and the account-swap marker notes
     ([account-fallback.md](account-fallback.md) rule 24) name the accounts either side of each
-    boundary. A stream with no init events at all is one attempt. When the markers cannot name
+    boundary. A stream with no init events at all is one attempt — but a slice with no model
+    traffic at all (marker notes and the caller's own usage-less terminator only, per rule 8) is
+    not an attempt and yields no record: a run that never booted must not appear as a status-ok
+    zero-usage row. When the markers cannot name
     an attempt's account, the caller's hint (the account the walk started on) covers a
     single-attempt stream, and an unknown stays `null` rather than becoming a guess.
 
@@ -80,11 +85,12 @@ two share a directory and nothing else.
     just wrote, before that stream is pruned or deleted: the desk turn and phone turn (one hook,
     in the shared generation walk), the wake chain, the detached job, the conversation
     summariser, the claudism mirror and the nightly claudism-scan rewrite pass, the promise
-    audit, the promise checker, the memory judge, the memory ingest distiller, and the chess
-    mover. A new invocation path added without a ledger hook is incomplete.
+    audit, the promise checker, the nightly backlog drain's selector, the memory judge, the
+    memory ingest distiller, and the chess mover. A new invocation path added without a ledger
+    hook is incomplete.
 14. Paths that truncate a per-attempt scratch stream (the summariser, the promise audit, the
-    promise checker) record each attempt inside their walk, before the truncation, or the
-    refused attempts vanish.
+    promise checker, the backlog drain's selector) record each attempt inside their walk, before
+    the truncation, or the refused attempts vanish.
 15. The Python callers that used to run the CLI in plain text mode (the memory judge, the
     ingest distiller — and through them the claudism-scan rewrite pass — and the chess mover)
     ask for `--output-format json` so the run's own result object carries usage, and read their
@@ -168,9 +174,12 @@ the metrics directory.
   totals; a multi-attempt walk split on init events with accounts read off the swap markers; a
   synthetic refusal recorded as `refused` with no usage; a mid-run cut falling back to deduped
   assistant sums with `approx`; the type-less `is_error` result line; the caller's terminator
-  ignored; malformed lines skipped without harm; per-day file naming; the locked append;
-  `report`'s aggregation arithmetic; backfill over an archive directory and a transcript
-  directory, twice, with identical totals; the recorder exiting 0 on garbage.
+  ignored, and a terminator-only stream yielding no record at all; malformed lines skipped
+  without harm; per-day file naming; the locked append; the shell hook handing the child the ONE
+  shared limit signature; `report`'s aggregation arithmetic; backfill over an archive directory
+  and a transcript directory, twice, with identical totals; the recorder exiting 0 on garbage;
+  and the `crab metrics backfill` arm itself handing the child the cwds, config dirs, and chain
+  the exec'd process cannot read from the parent shell.
 - `tests/test_metrics_serve.sh` — the routes on a real server over a real socket: unauthenticated
   `/metrics` and `/metrics/data` are 404, authenticated they serve the page and correct hour
   buckets, and the buckets re-sum to the seeded ledger's totals.

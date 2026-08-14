@@ -1045,8 +1045,11 @@ class TestIngest(StoreCase):
             f.write("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '"
                     + json.dumps(cands) + "'\n")
         os.chmod(stub, 0o755)
+        # DESKCRAB_METRICS_DIR pinned: this file does not run under
+        # tests/lib/sandbox.sh, and run_claude appends to the token ledger.
         env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
-                   XDG_RUNTIME_DIR=self.dir, CLAUDE_BIN=stub)
+                   XDG_RUNTIME_DIR=self.dir, CLAUDE_BIN=stub,
+                   DESKCRAB_METRICS_DIR=os.path.join(self.dir, "metrics"))
         proc = subprocess.run(
             [sys.executable, os.path.join(REPO, "lib", "memory.py"),
              "ingest", "--dry-run", "--journal-dir", jdir,
@@ -1210,8 +1213,11 @@ class TestJudgeTurn(StoreCase):
             if ids is None else ids
         with open(ids_file, "w") as f:
             json.dump([{"id": i, "kind": k, "text": "t"} for i, k in rows], f)
+        # DESKCRAB_METRICS_DIR pinned: this file does not run under
+        # tests/lib/sandbox.sh, and the judge appends to the token ledger.
         env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
                    XDG_RUNTIME_DIR=self.dir,
+                   DESKCRAB_METRICS_DIR=os.path.join(self.dir, "metrics"),
                    CLAUDE_BIN=self.stub_claude(verdict))
         proc = subprocess.run(
             [sys.executable, os.path.join(REPO, "lib", "memory.py"),
@@ -1367,8 +1373,14 @@ class TestJudgeLoginChain(StoreCase):
         ids_file = os.path.join(self.dir, "injected.json")
         with open(ids_file, "w") as f:
             json.dump([{"id": self.used, "kind": "note", "text": "t"}], f)
+        # DESKCRAB_METRICS_DIR is pinned to the scratch dir: this suite does
+        # not run under tests/lib/sandbox.sh, and the walk's refusal path
+        # appends to the token ledger — unpinned, every refusing case here
+        # wrote stub records into the LIVE ledger under ~/.local/share
+        # (test-harness gate 9: a test writes no live path).
         env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
                    XDG_RUNTIME_DIR=self.dir,
+                   DESKCRAB_METRICS_DIR=os.path.join(self.dir, "metrics"),
                    DESKCRAB_CLAUDE_LIMIT_RE=self.LIMIT_RE,
                    CLAUDE_FALLBACK_CONFIG_DIR=(self.second if chain is None else chain),
                    CLAUDE_BIN=self.stub_claude(refuse))
@@ -1393,9 +1405,24 @@ class TestJudgeLoginChain(StoreCase):
             "SELECT use_count, last_used_at FROM memories WHERE id=?",
             (rec_id,)).fetchone()
 
+    def ledger_records(self):
+        mdir = os.path.join(self.dir, "metrics")
+        out = []
+        if not os.path.isdir(mdir):
+            return out
+        for name in sorted(os.listdir(mdir)):
+            if name.startswith("tokens-"):
+                with open(os.path.join(mdir, name)) as f:
+                    out.extend(json.loads(l) for l in f if l.strip())
+        return out
+
     def test_a_refused_login_moves_to_the_next_and_the_judgement_lands(self):
         self.judge(refuse=["primary"])
         self.assertEqual(self.logins(), ["primary", self.second])
+        # The refused boot is on the ledger — and in the PINNED scratch dir,
+        # which is the write that used to land in the live one.
+        self.assertIn("refused",
+                      [r["status"] for r in self.ledger_records()])
         self.assertEqual(self.usage(self.used)[0], 1)
         with open(self.log) as f:
             log = f.read()
@@ -1432,6 +1459,7 @@ class TestJudgeLoginChain(StoreCase):
             json.dump([{"id": self.used, "kind": "note", "text": "t"}], f)
         env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
                    XDG_RUNTIME_DIR=self.dir,
+                   DESKCRAB_METRICS_DIR=os.path.join(self.dir, "metrics"),
                    DESKCRAB_CLAUDE_LIMIT_RE=self.LIMIT_RE,
                    CLAUDE_FALLBACK_CONFIG_DIR=self.second, CLAUDE_BIN=path)
         env.pop("CLAUDE_CONFIG_DIR", None)
@@ -1443,6 +1471,11 @@ class TestJudgeLoginChain(StoreCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.logins(), ["primary"])
         self.assertEqual(self.usage(self.used), (0, None))
+        # The failed boot is still an attempt the ledger keeps
+        # (specs/metrics.md rules 11, 13): one record, status error, zero
+        # usage — in the pinned scratch dir.
+        self.assertEqual([r["status"] for r in self.ledger_records()],
+                         ["error"])
 
     def test_with_no_chain_configured_nothing_changes(self):
         # One login, one attempt, the same skip as before this walk existed.
