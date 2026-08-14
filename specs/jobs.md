@@ -243,11 +243,15 @@ re-derived it by hand.
 39. A job that dies waiting reports FAILURE, not success. A run that exited clean whose report ends
     on an intention — standing by, waiting on another job, watching a monitor, holding the commit
     until later — made a promise that outlives the process that made it, and exit 0 means the
-    process ended, not that the task happened. Collection judges the report's closing words: such a
-    run is `failed`, with the `collection` verdict quoting the waiting, whatever work sits beside
-    it in the tree — the work is still recorded in full (rule 38), so nothing real is lost, only
-    the claim of completion. The completion wake says failure. Waiting is not a terminal state for
-    a process that terminates.
+    process ended, not that the task happened. Collection judges the report's CLOSING clause and
+    nothing above it: the matched wait must reach the end of the report — trailing whitespace and
+    closing punctuation aside — because a conclusive report honestly narrates the waits it found
+    and fixed ("the client was stuck waiting on a dead socket; I removed that wait entirely. …
+    Done."), and a wait the report merely mentions on its way to an outcome is history, never an
+    intention. A run that truly ends on one is `failed`, with the `collection` verdict quoting the
+    waiting, whatever work sits beside it in the tree — the work is still recorded in full
+    (rule 38), so nothing real is lost, only the claim of completion. The completion wake says
+    failure. Waiting is not a terminal state for a process that terminates.
 40. Work is findable after any death. `crab job collect <id>` runs the same collection by hand on a
     job in any ended state — died mid-suite, stopped, blocked-then-forced, never pushed — recording
     what is actually on disk without changing any state but `finished`'s. `crab job show <id>`
@@ -369,7 +373,8 @@ through the full preflight, and `drop` removes only a queued one);
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
 unpushed and dirty counts, and the report's test tally; a clean exit whose report ends on an
 intention to wait lands `failed` with the verdict quoting it — with and without work in the tree —
-while a working report collects; a failed job keeps its state but gains the facts; a non-git
+while a conclusive report that merely narrates a wait mid-tail collects, and the same wait words
+CLOSING a report fail it; a failed job keeps its state but gains the facts; a non-git
 workdir and a missing log cost the collection line, never the outcome; and the runner moves a
 finished builder to `collected` end to end);
 `tests/test_backlog_drain_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the drain

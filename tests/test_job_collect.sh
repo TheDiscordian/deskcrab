@@ -90,11 +90,21 @@ commits="$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[
 check "the real work is still on the record" contains "$commits" "real work beside the wait"
 
 echo
-echo "a wait narrated mid-report is not a wait died on:"
+echo "a wait narrated mid-tail of a conclusive report is not a wait died on:"
 mkjob mid1 finished 0
-printf 'I waited for the compile to finish, then ran the suite.\n9 passed, 0 failed. Committed and verified; nothing is left open.\n' > "$J/mid1.log"
+printf 'The client was stuck waiting on a dead socket; I removed that wait entirely.\nRan the suite: 9 passed, 0 failed. Committed and verified; nothing is left open. Done.\n' > "$J/mid1.log"
 state="$("$JC" run "$J" mid1 2>/dev/null)"
-check_eq "a conclusive report collects" "$state" "collected"
+check_eq "rule 39 judges the close, not a mention — the report collects" \
+    "$state" "collected"
+
+echo
+echo "…while the same wait words CLOSING the report are died on:"
+mkjob mid2 finished 0
+printf 'Reproduced the hang and traced it to the socket layer.\nNow waiting on the upstream socket fix before anything can be verified.\n' > "$J/mid2.log"
+state="$("$JC" run "$J" mid2 2>/dev/null)"
+check_eq "a report ending on a wait is failed" "$state" "failed"
+check "and the verdict quotes the closing wait" \
+    contains "$("$JS" get "$J/mid2.json" collection)" "waiting on the upstream socket fix"
 
 echo
 echo "any other state keeps itself and gains the facts (rule 40):"
@@ -172,12 +182,15 @@ echo
 echo "…and a builder that dies waiting is FAILED by the runner (rule 39):"
 python3 - "$T/claude-wait" <<'PY'
 import json, sys
+# The result event repeats the final text, exactly as the real CLI's does —
+# job-log-stream drops the repeat, so the log ENDS on the wait. A synthetic
+# "ok" result here would append a line after it, a shape no real stream has.
+text = ("Surveyed the tree; another hand holds it. Standing by for "
+        "the monitor to report the other jobs done.")
 lines = [
     json.dumps({"type": "assistant", "message": {"model": "stub", "content": [
-        {"type": "text",
-         "text": "Surveyed the tree; another hand holds it. Standing by for "
-                 "the monitor to report the other jobs done."}]}}),
-    json.dumps({"type": "result", "result": "ok"}),
+        {"type": "text", "text": text}]}}),
+    json.dumps({"type": "result", "result": text}),
 ]
 body = "#!/bin/bash\ncat > /dev/null\n"
 for l in lines:

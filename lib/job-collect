@@ -53,10 +53,14 @@ LIB_DIR = os.path.dirname(os.path.realpath(__file__))
 JOB_STATUS = os.path.join(LIB_DIR, "job-status")
 
 # The report's closing words that are an intention rather than an outcome.
-# Judged on the TAIL of the report only — a builder may honestly narrate "I
-# waited for the compile" mid-report; it is ending on the wait that makes the
-# promise one nobody will keep. The shapes are the two dated corpses' own:
-# "Standing by for the monitor", "holding the commit until the 01:30 reset".
+# Judged on the report's CLOSING CLAUSE only, never on a mention: a real
+# night build honestly narrates the waits it found and fixed ("the client
+# was stuck waiting on a dead socket; I removed that wait entirely"), and
+# matching these shapes anywhere in the tail flipped exactly that kind of
+# conclusive, finished report to died-waiting over a wait it had already
+# removed. It is ending on the wait that makes the promise one nobody will
+# keep. The shapes are the two dated corpses' own: "Standing by for the
+# monitor", "holding the commit until the 01:30 reset".
 WAIT_TAIL_BYTES = 800
 WAIT_PATTERNS = [
     r"standing by\b",
@@ -68,6 +72,13 @@ WAIT_PATTERNS = [
     r"\bonce (?:the|that|they|it)\b[^.\n]*\b(?:lands?|finish(?:es)?|"
     r"completes?|exits?)\b",
 ]
+
+# What may stand between the closing clause and the end of the report and
+# still leave it closing: whitespace and sentence-final punctuation (with
+# the quote, bracket and markdown characters that ride along with it).
+# Anything else after the clause is more report, and a wait with more
+# report after it was narrated, not died on.
+WAIT_CLOSERS = " \t\r\n.!?…\"')]}*_`"
 
 TESTS_RE = re.compile(r"(\d+)\s+passed\b(?:\W+(\d+)\s+failed)?", re.IGNORECASE)
 
@@ -95,18 +106,27 @@ def status_append(path, key, value):
 
 
 def waiting_tail(report):
-    """The matched intention in the report's closing words, or None."""
+    """The matched intention in the report's closing clause, or None.
+
+    Rule 39 demands the report END on the intention, so a match counts only
+    when its clause — the words from the match to the end of its sentence
+    or line, whichever is nearer — reaches the end of the report, trailing
+    whitespace and closing punctuation aside. A wait matched mid-tail
+    belongs to a report that went on to say something after it, which is
+    exactly what a died-waiting report cannot do.
+    """
     tail = report[-WAIT_TAIL_BYTES:]
     for pat in WAIT_PATTERNS:
-        m = re.search(pat, tail, re.IGNORECASE)
-        if m:
-            # The whole clause, for the verdict: from the match to the end of
-            # its sentence or line, whichever is nearer, squeezed to one line.
+        for m in re.finditer(pat, tail, re.IGNORECASE):
+            # The whole clause, for the verdict: from the match to the end
+            # of its sentence or line, squeezed to one line.
             end = len(tail)
             for stop in (".", "\n"):
                 at = tail.find(stop, m.end())
                 if at != -1:
                     end = min(end, at)
+            if tail[end:].strip(WAIT_CLOSERS):
+                continue  # prose follows the clause: narration, not a close
             return " ".join(tail[m.start():end].split())[:200]
     return None
 
