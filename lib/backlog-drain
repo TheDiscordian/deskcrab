@@ -35,10 +35,11 @@
 #                                   no new dispatch at or past it, re-checked
 #                                   before every dispatch ("@<epoch>" is the
 #                                   test's spelling)
-#   BACKLOG_DRAIN_CAP=2             max RUNNING jobs, counting everyone's —
-#                                   two is the user's standing overnight
-#                                   ceiling (2026-08-11): eight at once
-#                                   burned two logins inside an hour
+#   BACKLOG_DRAIN_CAP=2             max concurrent jobs (dispatched or
+#                                   running), counting everyone's — two is
+#                                   the user's standing overnight ceiling
+#                                   (2026-08-11): eight at once burned two
+#                                   logins inside an hour
 #   BACKLOG_DRAIN_POLL=300          seconds between rounds
 #   BACKLOG_DRAIN_WINDOW_MAX=21600  a start further than this from the next
 #                                   cutoff drains nothing (the noon catch-up)
@@ -117,12 +118,16 @@ classify_walk() {  # <verdict-line-ERE>
     return 1
 }
 
-running_jobs() {  # every sidecar whose state is running — the whole box's, not ours
-    local f n=0
+running_jobs() {  # every sidecar standing dispatched or running — the whole box's, not ours
+    # dispatched counts (nightly.md rule 57): a builder between the dispatch
+    # call and its worker's first write already holds a slot and an account,
+    # and a count blind to it overshot the cap in exactly the window where
+    # one round's dispatches had not yet spoken as the next round counted.
+    local f s n=0
     for f in "$JOBS_DIR"/*.json; do
         [ -e "$f" ] || continue
-        [ "$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)" = running ] \
-            && n=$(( n + 1 ))
+        s="$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)"
+        case "$s" in dispatched|running) n=$(( n + 1 )) ;; esac
     done
     printf '%s' "$n"
 }
@@ -147,8 +152,16 @@ cmd_run() {
     if [ ! -x "$CLAUDE_BIN" ]; then
         say "no claude binary — nothing selected, nothing dispatched"; return 0
     fi
+    # No selection material is not "nothing to drain": the queued backlog is
+    # the drain's FIRST material (nightly.md rule 56a), and it exists whether
+    # or not a single engineering thread does. This used to return here, and
+    # the shelved briefs of an instance with no threads file waited for a
+    # night that never worked them. Selection is switched off; the queue
+    # still drains.
+    local NO_THREADS=""
     if [ ! -s "$THREADS_FILE" ] && [ ! -d "$THREADS_DIR" ]; then
-        say "no engineering threads — nothing to drain"; return 0
+        NO_THREADS=1
+        say "no engineering threads — selection is off; the queued backlog still drains"
     fi
 
     local NOW CUTOFF
@@ -263,6 +276,30 @@ cmd_run() {
         fi
         if [ "$FREE" -le 0 ]; then
             # The queue filled the slate; selection waits for the next round.
+            NOW="$(date +%s)"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        # No engineering threads: the queued phase above was the whole round
+        # (rule 56a) — a selector with nothing to read is not called, so no
+        # model tokens are spent inventing work from an empty shelf. The
+        # night ends when the queue is dry and nothing of tonight's is still
+        # running.
+        if [ -n "$NO_THREADS" ]; then
+            if [ "$SENT_THIS_ROUND" -eq 0 ]; then
+                local ID ANY=""
+                for ID in $OUR_IDS; do
+                    [ "$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$ID.json" state 2>/dev/null)" = running ] \
+                        && ANY=1 && break
+                done
+                if [ -z "$ANY" ]; then
+                    REASON="the queue is dry and there are no engineering threads to select from"
+                    break
+                fi
+            fi
             NOW="$(date +%s)"
             local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
             [ "$S" -lt 1 ] && S=1

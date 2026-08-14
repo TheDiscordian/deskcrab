@@ -6,7 +6,11 @@
 # before every dispatch), with DESKCRAB_JOB_NIGHT set so the door knows the
 # window is open. A refusal that is not the block marker skips the brief for
 # the rest of the night; the block marker ends the night; the dry run starts
-# nothing. Run: bash tests/test_backlog_drain_queue.sh
+# nothing. A builder still standing `dispatched` holds its cap slot (rule
+# 57), and a night with no engineering threads at all still drains the queue
+# — the queue is the drain's FIRST material, and missing selection material
+# switches off the selector, never the queue.
+# Run: bash tests/test_backlog_drain_queue.sh
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -129,6 +133,37 @@ check_eq "one queued dispatch" "$(dispatch_calls)" "1"
 check_eq "the selector ran with the remaining slot" "$(claude_n)" "1"
 check "and was offered AT MOST the one slot left" \
     grep -q "Pick AT MOST 1 items" "$T/model-stdin"
+
+echo
+echo "a builder still standing dispatched holds its cap slot (rule 57):"
+reset
+"$JS" new "$T/jobs" pre-flight "a builder between the dispatch call and its worker's first write" "" /tmp dispatched
+mkqueued q-one 900
+mkqueued q-two 600
+out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+check_eq "exits clean" "$rc" "0"
+check_eq "only the one free slot was spent" "$(dispatch_calls)" "1"
+check "on the older brief" contains "$(calls)" "job dispatch q-one"
+case "$(calls)" in *"job dispatch q-two"*)
+        fail "the in-flight builder must hold its slot against the cap" "$(calls)" ;;
+    *) ok "the newer brief waited behind the in-flight builder" ;; esac
+check_eq "the slate was full, so no selection call was spent" "$(claude_n)" "0"
+
+echo
+echo "no engineering threads: the queue still drains (rule 56a):"
+reset
+mkqueued q-lone 900
+out="$(drain BACKLOG_DRAIN_THREADS_FILE="$T/no-threads.md" \
+             BACKLOG_DRAIN_THREADS_DIR="$T/no-eng-dir" \
+             BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+check_eq "exits clean" "$rc" "0"
+check "says selection is off, not that there is nothing to drain" \
+    contains "$out" "the queued backlog still drains"
+check "the shelved brief went out" contains "$out" "dispatched queued job 'q-lone'"
+check_eq "through the door" "$(sandbox_count_in 'job dispatch q-lone' "$T/crab-calls")" "1"
+check_eq "and no selection call was ever spent" "$(claude_n)" "0"
+check "the night ends when the queue is dry" \
+    contains "$out" "the queue is dry and there are no engineering threads"
 
 echo
 echo "the hard cutoff stands in front of every dispatch (rule 56):"
