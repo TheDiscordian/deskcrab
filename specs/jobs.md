@@ -33,6 +33,15 @@ back to her.
    a bare environment, and a scratch instance's jobs must stay in the scratch instance.
 5. A job MUST be dispatched with the account the selection answers with now, and MUST walk the
    flat list itself from there.
+5a. A builder runs on the model the dispatch named — `JOB_MODEL` — and NOTHING may downgrade or
+   substitute it: not a retry, not the block retry, not any attempt of the account walk. A
+   model-limit refusal ("You've reached your <model> limit") is an ACCOUNT that ran dry, not a
+   model to swap out: it matches the shared limit signature and rotates the walk to the next
+   account exactly as any limit refusal does ([account-fallback.md](account-fallback.md) rules 7
+   and 12). When every offered account refuses, the job is `blocked` — terminally, past the one
+   automatic retry of rule 18b: no re-queue, no additional wakes, nothing that accumulates and
+   mass-fires when credit returns. A build on a lesser model is not the build that was asked for,
+   and a silently substituted model is worse than a blocked job, because a blocked job says so.
 6. A job MUST be silent by contract: no speech, no notifications, no windows.
 7. A job's only channel back to her is one event wake on completion, carrying the outcome as its
    reason.

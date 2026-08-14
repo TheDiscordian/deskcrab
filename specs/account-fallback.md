@@ -218,8 +218,10 @@ answers with, with the fall-through named in its own stream. Also holds the 2026
 wording ("You've reached your Fable 5 limit. Run /usage-credits…"), which matched nothing in the
 signature and let two builder jobs die as ordinary failures with no rotation: the exact observed
 line is judged a refusal, matches the blocked-job signature, and rides the wake walk to the next
-account, cooling the account it dried up and moving the current. And the sweep: no emitted account
-string names a "primary" or a "fallback".
+account, cooling the account it dried up and moving the current — and on the job path, a builder
+refused with it finishes on the next account with `--model` unchanged on every attempt
+([jobs.md](jobs.md) rule 5a). And the sweep: no emitted account string names a "primary" or a
+"fallback".
 `tests/test_wake_limit_cut.sh` — the wake path end to end in the sandbox: a walk that ends cut
 journals a failed run naming the session limit, writes nothing to the conversation, and re-books
 through the outage-retry path; a walk with credit left delivers the later account's reply and

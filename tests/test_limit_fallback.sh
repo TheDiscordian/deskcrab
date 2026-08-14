@@ -768,6 +768,57 @@ out="$("$REPO_DIR/lib/job-status" get "$T/jobs/lonely.json" state)"
 n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 1 ] && ok "one account: a single attempt" || fail "must not retry with nowhere to go" "$n calls"
 
+echo "job-runner — the model is the dispatch's own, on every attempt (jobs.md rule 5a):"
+# The builder's argv is recorded whole: the model must be JOB_MODEL on the
+# first attempt AND on the retry after a refusal — the refusal changes the
+# account, never the model.
+cat > "$T/claude-argv" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none} ARGS:\$*" >> "$T/calls"
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "$A1" ]; then
+    echo "$REFUSAL"
+    exit 1
+fi
+echo "BUILT OK"
+EOF
+chmod +x "$T/claude-argv"
+rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
+run_runner modelstays CLAUDE_BIN="$T/claude-argv" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" JOB_MODEL=fable
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/modelstays.json" state)"
+[ "$out" = finished ] && ok "the walk finishes on account 2" || fail "the model case must still finish" "$out"
+n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 2 ] && ok "both attempts ran --model fable" \
+    || fail "every attempt must carry the dispatched model" "$(cat "$T/calls" 2>/dev/null)"
+grep "ARGS:" "$T/calls" 2>/dev/null | grep -v -- "--model fable" | grep -q . \
+    && fail "an attempt ran on a model the dispatch never named" "$(cat "$T/calls")" \
+    || ok "no attempt substituted another model"
+
+# The 2026-08-11 wording on the JOB path: a model-limit refusal is an ACCOUNT
+# that ran dry. It rotates the walk exactly like any limit refusal, and the
+# model itself is never swapped for a lesser one (jobs.md rule 5a).
+cat > "$T/claude-modelplain" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none} ARGS:\$*" >> "$T/calls"
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "$A1" ]; then
+    echo "$MODEL_LIMIT"
+    exit 1
+fi
+echo "BUILT OK"
+EOF
+chmod +x "$T/claude-modelplain"
+rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
+run_runner modellimitjob CLAUDE_BIN="$T/claude-modelplain" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" JOB_MODEL=fable
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/modellimitjob.json" state)"
+[ "$out" = finished ] && ok "a builder refused with the model-limit line finishes on account 2" \
+    || fail "the model-limit wording must rotate the job's account" "$out"
+n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 2 ] && ok "…still on --model fable both times: accounts rotate, models never do" \
+    || fail "the model-limit refusal must not change the model" "$(cat "$T/calls" 2>/dev/null)"
+[ "$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'claude_account_pick')" = "2" ] \
+    && ok "…and account 1 cools with the current moved, like any refusal" \
+    || fail "the model limit must cool the account it dried up" "$(cat "$T/account-state" 2>/dev/null || echo none)"
+rm -f "$T/account-state"
+
 echo "job-runner — a build the limit cut off finishes on the next account:"
 # Four builders died this way on the night of 2026-08-11: each one journalled
 # "failed (exit 1)" with the session-limit line standing as its closing words,
