@@ -139,6 +139,53 @@ case "${1:-}" in
         exit $?
         ;;
 
+    numb)
+        # The deliberate cousin of `touching`: settling in to work on part of
+        # yourself, and choosing not to be woken by your own hands for a while.
+        # Visible in status and liftable, so it is a decision and not a blind spot.
+        shift
+        if [ "${1:-}" = "--off" ]; then
+            numb_clear "${2:-}"
+            [ -n "${2:-}" ] && echo "Numb lifted for $2 — loud again on the next change." \
+                            || echo "All numbs lifted — loud again on the next change."
+            exit 0
+        fi
+        if [ $# -eq 0 ]; then
+            if out="$(numb_list)"; then
+                printf '%s\n' "$out" | while IFS="$(printf '\t')" read -r left p reason; do
+                    printf '%s — %s left%s\n' "$p" "$(( left / 60 )) min" \
+                        "${reason:+ — $reason}"
+                done
+            else
+                echo "Nothing numbed — every part of you is loud."
+            fi
+            exit 0
+        fi
+        win="${NUMB_WINDOW:-14400}"
+        [ "$1" = "-w" ] && { win="$2"; shift 2; }
+        reason=""
+        paths=""
+        while [ $# -gt 0 ]; do
+            [ "$1" = "--" ] && { shift; reason="$*"; break; }
+            paths="$paths $1"; shift
+        done
+        # A reason written without the -- separator lands here as paths, and a
+        # numb on a path that does not exist is a blind spot nobody chose. Refuse.
+        for p in $paths; do
+            [ -e "$p" ] && continue
+            echo "No such path: $p" >&2
+            echo "(a reason goes after --, not bare: crab numb <path>... -- <reason>)" >&2
+            exit 1
+        done
+        # shellcheck disable=SC2086
+        if [ -n "$paths" ] && numb_set "$win" "$reason" $paths; then
+            echo "Numbed for $(( win / 60 )) min. Lift it with: crab numb --off"
+            exit 0
+        fi
+        echo "Usage: crab numb [-w <seconds>] <path>... [-- <reason>]  |  crab numb  |  crab numb --off [path]"
+        exit 1
+        ;;
+
     checkpoint)
         # Durable mid-turn trace: intent, files touched, done, next. Append-only,
         # so a hard kill leaves the last checkpoint intact for the next hand.
@@ -657,7 +704,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"        exit 0
+        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"        exit 0
         ;;
 
     *)
@@ -668,7 +715,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"            exit 1
+            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"            exit 1
         fi
         stop_tts
         rotate_convo

@@ -123,6 +123,13 @@ like, what was played, and how those games ended". It informs; it never plays.
     hand, accepting a game id on the same terms as rule 5, and refuses loudly when the table is
     empty.
 
+15. **The legal moves are printed, never counted by eye.** Every board the CLI prints for an
+    active game carries a `legal (N): ...` line — the side to play's complete move list in SAN,
+    sorted — and `betty-chess status` prints the same line. This is not a convenience: reading a
+    drawn board and reasoning about which squares a king can reach is how a mate gets played into,
+    and the library that draws the board already knows the answer exactly. A finished game prints
+    no such line; its move list is empty and the state line says why.
+
 ## KNOWN LIMITS
 
 - The memory is only as good as the games in it. Six losses to the same trap will stop the gate

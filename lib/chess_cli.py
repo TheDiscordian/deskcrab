@@ -492,6 +492,18 @@ def history(board_moves: list[str]) -> str:
         [chess.Move.from_uci(u) for u in board_moves])
 
 
+def legal_line(board: chess.Board) -> str:
+    """Every legal move for the side to play, in SAN, sorted.
+
+    Printed with the board (chess-reflex.md rule 15) because counting escape
+    squares off the drawing loses games: a position that was already mate read
+    as two flights out of the ASCII art. The library knows exactly; make it say
+    so unasked.
+    """
+    sans = sorted(board.san(m) for m in board.legal_moves)
+    return f"legal ({len(sans)}): {' '.join(sans)}"
+
+
 def print_position(g: dict, board: chess.Board) -> None:
     key, desc, result = compute_state(g, board)
     print(render_unicode(g, board))
@@ -504,6 +516,7 @@ def print_position(g: dict, board: chess.Board) -> None:
         mover = "white" if board.turn == chess.WHITE else "black"
         print(f"{desc} ({side_name(g, mover)}), move "
               f"{board.fullmove_number}, ply {len(g['moves'])}")
+        print(legal_line(board))
     else:
         print(f"game over: {desc}  [{result}]")
 
@@ -652,6 +665,7 @@ def cmd_status(args):
             claims.append("fifty-move rule")
         if claims:
             print(f"draw claimable: {', '.join(claims)}")
+        print(legal_line(board))
     else:
         print(f"state: {desc}  [{result}]")
     print(f"history: {history(g['moves'])}")

@@ -372,3 +372,25 @@ out="$(chess move browser e5)"; rc=$?
 [ "$rc" -eq 0 ] && echo "$out" | grep -q "played e5" \
   && ok "a mirrored opponent move on a browser game needs no force" \
   || fail "opponent move on browser game: rc=$rc $out"
+
+# --- the legal moves are printed, not counted by eye (chess-reflex.md r15) --
+chess new eyeball >/dev/null
+out="$(chess status eyeball)"
+echo "$out" | grep -q "^legal (20): " && echo "$out" | grep -q "Nf3" \
+  && ok "status prints the side-to-play's whole legal move list" \
+  || fail "no legal line from status: $out"
+echo "$(chess show eyeball)" | grep -q "^legal (20): " \
+  && ok "the printed board carries the same line" \
+  || fail "show printed no legal line"
+# Mate on the board: no list at all, and nothing claims otherwise.
+chess new deadgame >/dev/null
+for m in f3 e5 g4 Qh4; do chess move deadgame "$m" >/dev/null; done
+out="$(chess status deadgame)"
+echo "$out" | grep -q "^legal" \
+  && fail "a finished game still advertised legal moves: $out" \
+  || ok "a finished game prints no legal line"
+# Every move in the line is playable as printed.
+first="$(chess status eyeball | sed -n 's/^legal ([0-9]*): //p' | cut -d' ' -f1)"
+chess move eyeball "$first" >/dev/null 2>&1 \
+  && ok "a move copied off the legal line is accepted verbatim ($first)" \
+  || fail "the legal line offered a move the CLI refused: $first"

@@ -53,6 +53,8 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab"
 SNAP="$STATE_DIR/notice-self.snap"
 SUPPRESS="$STATE_DIR/notice-self.suppress"
 PENDING="$STATE_DIR/notice-self.pending"
+# The paths covered by the last fire, sorted. The cooldown only silences these.
+REPORTED="$STATE_DIR/notice-self.reported"
 # When judgement last actually ran. The snapshot diff below reports every
 # change since that moment, so the suppression records consulted must cover
 # that same interval — see SUP_FLOOR.
@@ -68,7 +70,7 @@ JOBS_DIR="${JOBS_DIR:-$DATA_DIR/jobs}"
 # PathChanged= lines in a local drop-in for inotify to see them promptly.
 SELF_WATCH_EXTRA="${SELF_WATCH_EXTRA:-}"
 
-SETTLE="${NOTICE_SELF_SETTLE:-120}"           # burst debounce, seconds
+SETTLE="${NOTICE_SELF_SETTLE:-60}"            # post-fire cooldown, seconds
 MAX_DEFERRALS="${NOTICE_SELF_DEFERRALS:-15}"  # live-session pushbacks before judging anyway
 RECENT="${NOTICE_SELF_RECENT:-600}"           # "a session ran recently", for memory.db
 KEEP_REPORTS="${NOTICE_SELF_KEEP_REPORTS:-10}"
@@ -165,6 +167,17 @@ live_sessions() {
     return 1
 }
 
+# A cooldown must never silence a NEW cut. It exists only so that repeated
+# saves to the same file don't wake her once per save; anything touching a
+# path the last fire did not already cover is fresh news and is judged now.
+unreported_paths() {
+    [ -s "$REPORTED" ] || return 0
+    printf '%s\n' "$CHANGES" | cut -f2 | sort -u > "$CUR.paths"
+    comm -23 "$CUR.paths" "$REPORTED" | grep -q . && { rm -f "$CUR.paths"; return 0; }
+    rm -f "$CUR.paths"
+    return 1
+}
+
 defer() {
     # If the timer can't be placed there may never be another directory change
     # to re-trigger on, so a failure here falls through and judges now rather
@@ -178,22 +191,26 @@ defer() {
 }
 
 if [ "$ATTEMPT" -eq 0 ]; then
-    # A burst becomes ONE wake: hold judgement for a settle window. A fresh
-    # pending marker means a re-check is already booked — this trigger is part
-    # of the same burst, and that re-check will see it in the snapshot diff.
+    # The FIRST change of a burst is judged now, with no wait at all — a cut
+    # gets reacted to the moment it happens. What the settle window buys is
+    # only silence afterwards: a fresh pending marker means this trigger is
+    # the tail of a burst already reported, so it books one trailing re-check
+    # instead of waking again per save.
     if [ -f "$PENDING" ] \
-        && [ $(( NOW - $(cat "$PENDING" 2>/dev/null || echo 0) )) -lt $(( SETTLE * (MAX_DEFERRALS + 2) )) ]; then
-        rm -f "$CUR"
-        exit 0
+        && [ $(( NOW - $(cat "$PENDING" 2>/dev/null || echo 0) )) -lt "$SETTLE" ] \
+        && ! unreported_paths; then
+        defer
     fi
-    defer
 elif live_sessions && [ "$ATTEMPT" -lt "$MAX_DEFERRALS" ]; then
     # One of her is mid-work. Wait it out so its writes get their touching
     # records (turn paths record them at stream end) and are judged as hers.
     # Bounded on purpose: a wedged session must not silence this for ever.
     defer
 fi
-rm -f "$PENDING"
+# Stamp the fire time and the paths it covers: this is what the cooldown above
+# measures from, and the only set it is allowed to silence.
+date +%s > "$PENDING"
+printf '%s\n' "$CHANGES" | cut -f2 | sort -u > "$REPORTED"
 
 # --- attribution: which of these changes were her own hand? ------------------
 # Prune expired suppression records first, under the writers' lock.

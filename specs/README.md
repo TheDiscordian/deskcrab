@@ -143,6 +143,25 @@ flowchart LR
 | `${STATE_PREFIX}-remote.lock` | phone turns | one phone turn at a time |
 | `${STATE_PREFIX}-speech.lock` | `speak_once`, the streamer's voice thread | the speakers |
 | `notice-self.suppress.lock` | `touch_suppress` | write declarations |
+| `notice-self.numb.lock` | `numb_set`, `numb_clear` | the numb ledger |
 
 Advisory records that never block: `crab claim`, `crab checkpoint`, `crab touching`, `live-turn`,
 `live-speech`, `last-origin`.
+
+### Numbing
+
+`crab touching <paths>` is a reflex: one hand declaring the write it is making, windowed in
+minutes. **`crab numb`** is the deliberate form — the assistant choosing to work on part of
+itself for a stretch without the self-change watcher waking it about its own hands.
+
+- `crab numb [-w <seconds>] <paths...> [-- <reason>]` — suppress for `NUMB_WINDOW` (default
+  4h). Writes the same strong-tier records as `touch_suppress`, plus a row in
+  `notice-self.numb` so the numb is visible rather than a silent blind spot.
+- `crab numb` with no arguments lists live numbs and their remaining time.
+- `crab numb --off [path]` lifts one numb, or all of them, immediately; the watcher is loud
+  again on the very next change. A blanket lift never drops another hand's live `touching`.
+- Every path MUST exist on disk. A reason written without the `--` separator otherwise parses
+  as further paths and numbs a handful of words, so the whole call is refused with a message
+  naming the separator rather than accepting nonsense into the ledger.
+- Live numbs MUST appear in `crab status` and in the assembled prompt's state block, so a
+  numb that outlives its purpose is noticed and not merely forgotten.
