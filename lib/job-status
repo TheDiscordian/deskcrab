@@ -2,41 +2,69 @@
 """Status files for DeskCrab's detached background jobs (crab job / crab jobs).
 
 Each job is one small JSON file <id>.json beside its log <id>.log:
-    {id, description, workdir, started, started_epoch, unit, state,
-     pid, pidstart, finished, finished_epoch, exit, retry, retry_of}
-state: running | finished | failed | stopped | died | blocked
-       blocked is a run that never began — the CLI refused before any work was
-       attempted — and it is deliberately not the same outcome as failed.
+    {id, description, workdir, record, want, queued, queued_epoch, started,
+     started_epoch, model, effort, unit, state, pid, pidstart, attempts,
+     history, finished, finished_epoch, exit, retry, retry_of, branch,
+     commits, unpushed, dirty, tests, collection, collected_at}
+state: queued | dispatched | running | finished | collected | failed |
+       stopped | died | blocked
+       queued is a brief on the shelf — no unit, no builder — waiting for the
+       night drain (specs/jobs.md rule 30). dispatched is the moment between
+       the dispatch call and the worker's first write, reaped exactly as
+       running is when the worker never appears. blocked is a run that never
+       began — the CLI refused before any work was attempted — and it is
+       deliberately not the same outcome as failed. collected is a finished
+       job whose work has been located and recorded (rule 38).
+history: every state transition, appended here by cmd_set — [{at, state}, …]
+       — so the sidecar answers "when did it queue, when did it run" without
+       anyone reading logs (rule 36).
+attempts: one line per account attempt, appended by the worker (rule 37).
 retry / retry_of: the one automatic re-dispatch of a blocked job (specs/jobs.md
        rules 18a-18f). retry on the origin's sidecar is the spent shot — the
        new job's id, or "fired"/"abandoned" when nothing dispatched — and
        retry_of on the new one names the blocked job it came from, so every
        report prints the lineage (rule 18f).
+branch/commits/unpushed/dirty/tests/collection/collected_at: what collection
+       found in the workdir and the report (lib/job-collect, rules 38-40).
 
-    job-status new <dir> <id> <description> <unit> [workdir]
+    job-status new <dir> <id> <description> <unit> [workdir] [state]
     job-status set <file> key=value [key=value ...]
+    job-status append <file> <key> <value>
     job-status get <file> <key>
-    job-status report <dir> [show-finished] [keep-days] [--live] [--failed-since EPOCH]
+    job-status show <file>
+    job-status report <dir> [show-finished] [keep-days] [--live]
+                            [--failed-since EPOCH] [--state STATE]
     job-status since <dir> <epoch>
 
 `set` coerces digit values to ints, treats the value "now" as a timestamp
 (writing both <key> and <key>_epoch), and an empty value as "remove the key".
+Setting `state` appends a {at, state} entry to `history` in the same write.
+`append` grows a list field (attempts, commits) by one string entry.
+
+Every read-modify-write here — set, append, and report's reap — happens under
+the job's own <id>.lock (specs/jobs.md rules 11 and 36): the lock lives in the
+writer, so the stop path and the worker's termination trap cannot race however
+their call sites are arranged.
 
 `since` is the state block's delta: how many jobs were dispatched after an
-epoch and how many of them ended badly, as one phrase, printing nothing at all
-when neither happened. The block leads every list with a count, and a job
-dispatched between two turns is exactly the work a later turn must be able to
-report without having started it.
+epoch, how many of them ended badly, and how many sit queued for the night, as
+one phrase, printing nothing at all when none of it happened. The block leads
+every list with a count, and a job dispatched between two turns is exactly the
+work a later turn must be able to report without having started it.
 
-`report` prints one line per job — running first, recent finishes last — and
-reaps on the way: a file still claiming "running" whose unit is inactive and
-whose recorded pid is gone (start time checked, so a recycled pid cannot keep
-a dead job looking alive) is rewritten as "died". A SIGKILLed job never gets
-to record its own outcome, and vanishing without trace is exactly what the
-status files exist to prevent. Stdlib only, like serve.py — this must run on
-an offline machine with nothing installed.
+`report` prints one line per job — running first, queued briefs oldest-first
+after them, recent finishes last — and reaps on the way: a file claiming
+"running" (or "dispatched") whose unit is inactive and whose recorded pid is
+gone (start time checked, so a recycled pid cannot keep a dead job looking
+alive) is rewritten as "died". A SIGKILLed job never gets to record its own
+outcome, and vanishing without trace is exactly what the status files exist to
+prevent. A queued record is NEVER reaped — it has no pid to be dead — and
+never pruned by age: ageing out silently would be work quietly dropped
+(rule 33). Stdlib only, like serve.py — this must run on an offline machine
+with nothing installed.
 """
 
+import fcntl
 import json
 import os
 import subprocess
@@ -51,6 +79,49 @@ def write(path, data):
         json.dump(data, f, indent=1)
         f.write("\n")
     os.replace(tmp, path)
+
+
+def locked(path):
+    """The job's own lock, from the sidecar's path (…/<id>.json -> <id>.lock).
+
+    flock on a sibling file, held for the duration of a read-modify-write.
+    The lock is taken HERE, inside the one writer, so every call site — the
+    stop path, the worker's trap, the reaper, the collector — inherits it
+    (specs/jobs.md rules 11 and 36). Returns the open fd; the caller closes
+    it after os.replace has landed, which releases the lock.
+    """
+    lock = path[:-len(".json")] + ".lock" if path.endswith(".json") else path + ".lock"
+    fd = open(lock, "a")
+    fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
+    return fd
+
+
+def update(path, mutate):
+    """Read-modify-write one sidecar under its lock; mutate(data) edits it."""
+    fd = locked(path)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        mutate(data)
+        write(path, data)
+    finally:
+        fd.close()
+    return data
+
+
+def note_state(data, state):
+    """The history of rule 36: every state transition, appended in the same
+    write that makes it, by this file and nothing else. A repeat of the
+    current entry is not a transition — the stop path and the worker's trap
+    both write `stopped`, and the lock serialises them into one history
+    line, not two."""
+    hist = data.get("history")
+    if not isinstance(hist, list):
+        hist = []
+    if hist and isinstance(hist[-1], dict) and hist[-1].get("state") == state:
+        return
+    hist.append({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "state": state})
+    data["history"] = hist
 
 
 def proc_starttime(pid):
@@ -106,40 +177,68 @@ def ident(job):
 def cmd_new(argv):
     # workdir is optional and recorded verbatim: `crab job requeue` reads it
     # back so a redispatch runs where the original ran, without any hand
-    # retyping a field name (specs/jobs.md rule 7a).
+    # retyping a field name (specs/jobs.md rule 7a). The optional trailing
+    # state lets the dispatcher write "dispatched" or "queued"; the default
+    # stays "running" for every caller written before the states existed.
     d, jid, desc, unit = argv[:4]
     workdir = argv[4] if len(argv) > 4 else ""
+    state = argv[5] if len(argv) > 5 else "running"
     os.makedirs(d, exist_ok=True)
     now = time.time()
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
     data = {
         "id": jid,
         "description": desc,
-        "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        "started": stamp,
         "started_epoch": int(now),
         "unit": unit,
-        "state": "running",
+        "state": state,
     }
+    if state == "queued":
+        # A queued brief has not started; started/started_epoch are stamped
+        # again at dispatch (rule 32). queued/queued_epoch keep the shelving.
+        data["queued"] = stamp
+        data["queued_epoch"] = int(now)
     if workdir:
         data["workdir"] = workdir
+    note_state(data, state)
     write(os.path.join(d, jid + ".json"), data)
 
 
 def cmd_set(argv):
     path, pairs = argv[0], argv[1:]
-    with open(path) as f:
-        data = json.load(f)
-    for p in pairs:
-        k, _, v = p.partition("=")
-        if v == "now":
-            data[k] = time.strftime("%Y-%m-%d %H:%M:%S")
-            data[k + "_epoch"] = int(time.time())
-        elif v == "":
-            data.pop(k, None)
-        elif v.lstrip("-").isdigit():
-            data[k] = int(v)
-        else:
-            data[k] = v
-    write(path, data)
+
+    def mutate(data):
+        for p in pairs:
+            k, _, v = p.partition("=")
+            if v == "now":
+                data[k] = time.strftime("%Y-%m-%d %H:%M:%S")
+                data[k + "_epoch"] = int(time.time())
+            elif v == "":
+                data.pop(k, None)
+            elif v.lstrip("-").isdigit():
+                data[k] = int(v)
+            else:
+                data[k] = v
+            if k == "state" and v:
+                note_state(data, v)
+
+    update(path, mutate)
+
+
+def cmd_append(argv):
+    """Grow a list field by one string entry — the attempts and commits of
+    rules 37 and 38. Creating the list when the sidecar predates it."""
+    path, key, value = argv[0], argv[1], argv[2]
+
+    def mutate(data):
+        cur = data.get(key)
+        if not isinstance(cur, list):
+            cur = []
+        cur.append(value)
+        data[key] = cur
+
+    update(path, mutate)
 
 
 def cmd_get(argv):
@@ -148,11 +247,47 @@ def cmd_get(argv):
         print(json.load(f).get(key, ""))
 
 
+def ended_state_text(j):
+    """The state as every listing prints it for an ended job."""
+    state = j.get("state", "?")
+    if state == "failed":
+        state = "failed (exit %s)" % j.get("exit", "?")
+    elif state == "blocked":
+        # Never began — no attempt, nothing in the log worth reading.
+        state = "blocked (never ran)"
+    elif state == "collected":
+        commits = j.get("commits")
+        if isinstance(commits, list) and commits and j.get("branch"):
+            state = "collected (%d commit%s on %s)" % (
+                len(commits), "" if len(commits) == 1 else "s", j["branch"])
+    return state
+
+
+def line_for(j, now, width=140):
+    """One listing line for a job in any state — running, waiting, or done."""
+    state = j.get("state", "?")
+    if state in ("running", "dispatched"):
+        return "  - %s (%s so far)  %s — %s" % (
+            state, fmt_dur(now - j.get("started_epoch", now)),
+            ident(j), one_line(j.get("description", ""), width))
+    if state == "queued":
+        return "  - queued (%s waiting)  %s — %s" % (
+            fmt_dur(now - j.get("queued_epoch", j.get("started_epoch", now))),
+            ident(j), one_line(j.get("description", ""), width))
+    ran = ""
+    if j.get("finished_epoch") and j.get("started_epoch"):
+        ran = ", ran " + fmt_dur(j["finished_epoch"] - j["started_epoch"])
+    return "  - %s %s%s  %s — %s" % (
+        ended_state_text(j), (j.get("finished") or "?")[:16], ran,
+        ident(j), one_line(j.get("description", ""), width))
+
+
 def cmd_report(argv):
     # Flags may follow the positional args: --live (running work only, the
-    # prompt's copy) and --failed-since EPOCH (plus any job that ended badly
+    # prompt's copy), --failed-since EPOCH (plus any job that ended badly
     # after EPOCH, so a death that nobody has been told about yet still gets
-    # said once).
+    # said once), and --state STATE (only jobs in that one state — the query
+    # face of specs/jobs.md rule 40).
     live = "--live" in argv
     failed_since = None
     if "--failed-since" in argv:
@@ -161,6 +296,13 @@ def cmd_report(argv):
             failed_since = int(argv[i + 1])
         except (IndexError, ValueError):
             failed_since = None
+    only_state = None
+    if "--state" in argv:
+        i = argv.index("--state")
+        try:
+            only_state = argv[i + 1]
+        except IndexError:
+            only_state = None
     positional = []
     for a in argv:
         if a.startswith("--"):
@@ -185,20 +327,35 @@ def cmd_report(argv):
             jobs.append(job)
     now = time.time()
 
+    # The reap, through the one locked writer: a dead "dispatched" record is
+    # a worker that never appeared, and dies the same way a killed one does.
+    # A queued record is NEVER here — it has no pid to be dead (rule 33).
     for job in jobs:
-        if job.get("state") == "running" and not alive(job):
-            path = job.pop("_path")
-            job["state"] = "died"
-            job["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            job["finished_epoch"] = int(now)
-            write(path, job)
+        if job.get("state") in ("running", "dispatched") and not alive(job):
+            path = job["_path"]
+
+            def reap(data):
+                data["state"] = "died"
+                data["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                data["finished_epoch"] = int(now)
+                note_state(data, "died")
+
+            try:
+                fresh = update(path, reap)
+            except (OSError, ValueError):
+                continue
+            job.clear()
+            job.update(fresh)
             job["_path"] = path
 
-    # Finished records are a memory aid, not an archive.
+    # Finished records are a memory aid, not an archive. Queued ones are
+    # neither: a brief waiting for the night must never age out silently
+    # (rule 33 — `crab job drop` is the one way off the queue).
     for job in jobs[:]:
         done_at = job.get("finished_epoch", job.get("started_epoch", now))
-        if job.get("state") != "running" and now - done_at > keep_days * 86400:
-            for ext in (".json", ".log"):
+        if (job.get("state") not in ("running", "dispatched", "queued")
+                and now - done_at > keep_days * 86400):
+            for ext in (".json", ".log", ".lock"):
                 try:
                     os.unlink(job["_path"][:-len(".json")] + ext)
                 except OSError:
@@ -206,8 +363,20 @@ def cmd_report(argv):
             jobs.remove(job)
 
     jobs.sort(key=lambda j: j.get("started_epoch", 0))
-    running = [j for j in jobs if j.get("state") == "running"]
-    done = [j for j in jobs if j.get("state") != "running"][-show:]
+    running = [j for j in jobs if j.get("state") in ("running", "dispatched")]
+    queued = sorted((j for j in jobs if j.get("state") == "queued"),
+                    key=lambda j: j.get("queued_epoch",
+                                        j.get("started_epoch", 0)))
+    done = [j for j in jobs
+            if j.get("state") not in ("running", "dispatched", "queued")][-show:]
+
+    if only_state is not None:
+        wanted = [j for j in jobs if j.get("state") == only_state]
+        if only_state == "queued":
+            wanted = queued
+        print("\n".join(line_for(j, now) for j in wanted) if wanted
+              else "  (none in state %s)" % only_state)
+        return
 
     if live:
         lines = ["  - running (%s so far)  %s — %s" % (
@@ -216,6 +385,11 @@ def cmd_report(argv):
             for j in running]
         if not lines:
             lines.append("  (none running)")
+        if queued:
+            # A count, not the briefs: the prompt needs to know the shelf has
+            # weight, not to carry it (rule 34).
+            lines.append("  - %d brief%s queued for the night (crab jobs)" % (
+                len(queued), "" if len(queued) == 1 else "s"))
         if failed_since is not None:
             # News, once. Capped: a night in which five builders hit the same
             # wall is one thing to look at, not five lines of prompt.
@@ -235,33 +409,25 @@ def cmd_report(argv):
 
     lines = []
     for j in running:
-        lines.append("  - running (%s so far)  %s — %s" % (
-            fmt_dur(now - j.get("started_epoch", now)),
-            ident(j), one_line(j.get("description", ""))))
+        lines.append(line_for(j, now))
+    for j in queued:
+        lines.append(line_for(j, now))
     for j in done:
-        ran = ""
-        if j.get("finished_epoch") and j.get("started_epoch"):
-            ran = ", ran " + fmt_dur(j["finished_epoch"] - j["started_epoch"])
-        state = j.get("state", "?")
-        if state == "failed":
-            state = "failed (exit %s)" % j.get("exit", "?")
-        elif state == "blocked":
-            # Never began — no attempt, nothing in the log worth reading.
-            state = "blocked (never ran)"
-        lines.append("  - %s %s%s  %s — %s" % (
-            state, (j.get("finished") or "?")[:16], ran,
-            ident(j), one_line(j.get("description", ""))))
+        lines.append(line_for(j, now))
     print("\n".join(lines) if lines else "  (none)")
 
 
 def cmd_since(argv):
-    """Dispatched and badly-ended counts since an epoch, as one phrase."""
+    """Dispatched, badly-ended, and newly-queued counts since an epoch, as
+    one phrase. A queued record is not a dispatch — its started_epoch is
+    only the shelving until the drain re-stamps it (rule 32) — so it counts
+    apart, or the delta would claim builders that never started."""
     d = argv[0]
     try:
         cut = int(argv[1])
     except (IndexError, ValueError):
         return
-    started = ended = 0
+    started = ended = queued = 0
     if os.path.isdir(d):
         for name in sorted(os.listdir(d)):
             if not name.endswith(".json"):
@@ -270,6 +436,10 @@ def cmd_since(argv):
                 with open(os.path.join(d, name)) as f:
                     job = json.load(f)
             except (OSError, ValueError):
+                continue
+            if job.get("state") == "queued":
+                if job.get("queued_epoch", job.get("started_epoch", 0)) >= cut:
+                    queued += 1
                 continue
             if job.get("started_epoch", 0) >= cut:
                 started += 1
@@ -281,12 +451,54 @@ def cmd_since(argv):
         parts.append("%d job%s dispatched" % (started, "" if started == 1 else "s"))
     if ended:
         parts.append("%d ended badly" % ended)
+    if queued:
+        parts.append("%d queued for the night" % queued)
     if parts:
         print(", ".join(parts))
 
 
+def cmd_show(argv):
+    """The whole record, human-shaped (specs/jobs.md rule 40): state, times,
+    linkage, model, the account walk, every transition, and what collection
+    found. Only fields the sidecar holds are printed."""
+    path = argv[0]
+    with open(path) as f:
+        job = json.load(f)
+    scalars = [
+        ("state", "state"), ("description", "description"),
+        ("workdir", "workdir"), ("want", "want"), ("record", "record"),
+        ("model", "model"), ("effort", "effort"),
+        ("queued", "queued"), ("started", "dispatched"),
+        ("finished", "finished"), ("exit", "exit"),
+        ("unit", "unit"), ("pid", "pid"),
+        ("retry", "retry spent"), ("retry_of", "retry of"),
+        ("branch", "branch"), ("unpushed", "unpushed commits"),
+        ("dirty", "dirty files"), ("tests", "tests"),
+        ("collection", "collection"), ("collected_at", "collected at"),
+        ("summary", "summary"),
+    ]
+    print("job %s" % job.get("id", "?"))
+    for key, label in scalars:
+        v = job.get(key, "")
+        if v == "" or v is None:
+            continue
+        print("  %-14s %s" % (label + ":", v))
+    for key, label in (("commits", "commits"), ("attempts", "attempts"),
+                       ("history", "history")):
+        entries = job.get(key)
+        if not isinstance(entries, list) or not entries:
+            continue
+        print("  %s:" % label)
+        for e in entries:
+            if isinstance(e, dict):
+                print("    - %s  %s" % (e.get("at", "?"), e.get("state", "?")))
+            else:
+                print("    - %s" % e)
+
+
 def main():
-    cmds = {"new": cmd_new, "set": cmd_set, "get": cmd_get,
+    cmds = {"new": cmd_new, "set": cmd_set, "append": cmd_append,
+            "get": cmd_get, "show": cmd_show,
             "report": cmd_report, "since": cmd_since}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         sys.exit(__doc__.strip())

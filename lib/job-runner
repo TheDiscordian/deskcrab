@@ -65,8 +65,10 @@ DISPATCH_EPOCH="$("$LIB_DIR/job-status" get "$STATUS" started_epoch 2>/dev/null)
 ENG_DIR="$(deskcrab_home)/engineering/records"
 
 # The pid and its start time let `crab jobs` tell a hard-killed job from a
-# running one — a SIGKILLed worker never gets to write its own outcome.
-"$LIB_DIR/job-status" set "$STATUS" pid=$$ pidstart="$(_proc_starttime $$)" stream="$STREAMLOG"
+# running one — a SIGKILLed worker never gets to write its own outcome. The
+# same write moves the sidecar off `dispatched`: the worker exists now, and
+# state=running is its first word (specs/jobs.md rule 9).
+"$LIB_DIR/job-status" set "$STATUS" state=running pid=$$ pidstart="$(_proc_starttime $$)" stream="$STREAMLOG"
 # systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
 # Without it a deliberately stopped job would look identical to a crashed one.
 # The day journal gets the stop too, with whatever log the job managed to write.
@@ -180,7 +182,13 @@ for ACCT in $(claude_accounts); do
         exit "${PIPESTATUS[0]}"
     )
     RC=$?
-    [ "$RC" -ne 0 ] || break
+    if [ "$RC" -eq 0 ]; then
+        # The walk on the record (jobs.md rule 37): a morning reader sees
+        # which logins tonight's build burned without opening the stream.
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') account $ACCT: ran clean" 2>/dev/null
+        break
+    fi
     # Judged on the CLI's OWN events in this attempt's slice, never on its raw
     # bytes. A stream carries every byte of every tool result, so grepping it
     # for the limit signature made a builder that merely READ a file
@@ -196,9 +204,17 @@ for ACCT in $(claude_accounts); do
     # builders died that way inside ten minutes on the night of 2026-08-11.
     # A final attempt that ends cut stays a real failure, never blocked — the
     # blocked judgement below still demands no genuine output at all.
-    REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" \
-        || REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")" \
-        || break
+    if REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') account $ACCT: refused — $REFUSAL" 2>/dev/null
+    elif REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")"; then
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') account $ACCT: cut mid-run — $REFUSAL" 2>/dev/null
+    else
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') account $ACCT: failed (exit $RC)" 2>/dev/null
+        break
+    fi
     claude_limit_record "$ACCT" "$REFUSAL"
 done
 trap - TERM
@@ -247,6 +263,24 @@ if [ "$RC" -ne 0 ]; then
 fi
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
 
+# Collection (jobs.md rules 38-40): locate the work — branch, commits since
+# dispatch, dirty files, the report's test tally — and judge the report's
+# closing words. A finished job whose report ends on an intention to WAIT is
+# failed here, never finished (rule 39: a promise made by a process that
+# stops existing is a task that did not happen — two builders died exactly
+# that way, one over an empty diff); every other finished job moves to
+# collected. Its verdict line lands in the log via stderr; a collector that
+# cannot run costs the collection line, never the outcome — the state in
+# hand stands.
+COLLECTION=""
+if [ "$STATE" = finished ] || [ "$STATE" = failed ]; then
+    COLLECTED="$("$LIB_DIR/job-collect" run "$JOBS_DIR" "$ID" 2>>"$LOG")"
+    case "$COLLECTED" in
+        finished|collected|failed|stopped|died|blocked) STATE="$COLLECTED" ;;
+    esac
+    COLLECTION="$("$LIB_DIR/job-status" get "$STATUS" collection 2>/dev/null)"
+fi
+
 # The durable day record: the task in full, the report in full. A job is a
 # turn of the day like any other — it just had nobody waiting on it.
 day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" \
@@ -264,8 +298,14 @@ elif [ -n "$RECORD_UNTOUCHED" ]; then
     # in the one channel that reaches her, so the next reader knows what is
     # owed before deciding whether the work itself needs repeating.
     WAKE_REASON="Detached job $ID FAILED because engineering record '$RECORD' was never updated: the build ran, but its last_touched is older than the dispatch. Read $LOG, and if the work is real, write the outcome yourself with crab eng touch $RECORD — the thread must carry what happened to it. Task was: $(printf '%.200s' "$TASK")"
+elif [ "$STATE" = failed ] && case "$COLLECTION" in "died waiting"*) true ;; *) false ;; esac; then
+    # Rule 39's one channel to her: the run exited clean and is still a
+    # failure, because its report ends on an intention. Say exactly that, or
+    # the morning reads "failed" and goes hunting for a build error that
+    # does not exist.
+    WAKE_REASON="Detached job $ID FAILED by dying on a wait: its report ends on an intention, not an outcome, and a promise made by a process that stops existing is a task that did not happen. $COLLECTION Task was: $(printf '%.200s' "$TASK") — read $LOG and crab job show $ID before repeating any of it."
 else
-    WAKE_REASON="Detached job $ID finished ($STATE, exit $RC). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
+    WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
 fi
 # ...but not when this runner is a test. A scratch run gets its own JOBS_DIR so
 # it cannot dirty the live jobs directory — and on 2026-08-07 one still woke me

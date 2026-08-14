@@ -5,7 +5,10 @@
 # the night's last phase (specs/nightly.md rules 54-61). The owed work
 # accumulates faster than waking hours spend it, and the stretch between the
 # night's stamp and the morning is machine time nobody is using. This turns
-# that stretch into builders: each round, one model call reads the open
+# that stretch into builders: each round, the QUEUED briefs the daytime
+# dispatch policy shelved (specs/jobs.md rules 30-34) go out first, oldest
+# first, through `crab job dispatch` — already-written work, no model call —
+# and then one model call reads the open
 # engineering threads, the promise sweep's genuine end-of-day misses, and
 # the wake queue's pending reasons — the whole owed-work shelf (rule 58b) —
 # beside the job list and the drain's own ledger, picks what is GENUINELY
@@ -28,12 +31,15 @@
 #
 # Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
 #   BACKLOG_DRAIN=0                 switch the phase off
-#   BACKLOG_DRAIN_CUTOFF=08:00      local wall clock; no new dispatch at or
-#                                   past it ("@<epoch>" is the test's spelling)
-#   BACKLOG_DRAIN_CAP=2             max RUNNING jobs, counting everyone's —
-#                                   two is the user's standing overnight
-#                                   ceiling (2026-08-11): eight at once
-#                                   burned two logins inside an hour
+#   BACKLOG_DRAIN_CUTOFF=06:00      local wall clock, the user's hard line;
+#                                   no new dispatch at or past it, re-checked
+#                                   before every dispatch ("@<epoch>" is the
+#                                   test's spelling)
+#   BACKLOG_DRAIN_CAP=2             max concurrent jobs (dispatched or
+#                                   running), counting everyone's — two is
+#                                   the user's standing overnight ceiling
+#                                   (2026-08-11): eight at once burned two
+#                                   logins inside an hour
 #   BACKLOG_DRAIN_POLL=300          seconds between rounds
 #   BACKLOG_DRAIN_WINDOW_MAX=21600  a start further than this from the next
 #                                   cutoff drains nothing (the noon catch-up)
@@ -57,7 +63,7 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
 THREADS_FILE="${BACKLOG_DRAIN_THREADS_FILE:-$DATA_DIR/engineering.md}"
 THREADS_DIR="${BACKLOG_DRAIN_THREADS_DIR:-$DATA_DIR/engineering}"
 LEDGER="${BACKLOG_DRAIN_LEDGER:-$DATA_DIR/backlog-drain/dispatched.tsv}"
-CUTOFF_SPEC="${BACKLOG_DRAIN_CUTOFF:-08:00}"
+CUTOFF_SPEC="${BACKLOG_DRAIN_CUTOFF:-06:00}"
 CAP="${BACKLOG_DRAIN_CAP:-2}"
 POLL="${BACKLOG_DRAIN_POLL:-300}"
 WINDOW_MAX="${BACKLOG_DRAIN_WINDOW_MAX:-21600}"
@@ -111,14 +117,31 @@ classify_walk() {  # <verdict-line-ERE>
     return 1
 }
 
-running_jobs() {  # every sidecar whose state is running — the whole box's, not ours
-    local f n=0
+running_jobs() {  # every sidecar standing dispatched or running — the whole box's, not ours
+    # dispatched counts (nightly.md rule 57): a builder between the dispatch
+    # call and its worker's first write already holds a slot and an account,
+    # and a count blind to it overshot the cap in exactly the window where
+    # one round's dispatches had not yet spoken as the next round counted.
+    local f s n=0
     for f in "$JOBS_DIR"/*.json; do
         [ -e "$f" ] || continue
-        [ "$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)" = running ] \
-            && n=$(( n + 1 ))
+        s="$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)"
+        case "$s" in dispatched|running) n=$(( n + 1 )) ;; esac
     done
     printf '%s' "$n"
+}
+
+queued_jobs() {  # the queued backlog's ids, oldest first (nightly.md rule 56a)
+    local f id qe
+    for f in "$JOBS_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        [ "$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)" = queued ] || continue
+        id="$("$SCRIPT_DIR/lib/job-status" get "$f" id 2>/dev/null)"
+        [ -n "$id" ] || continue
+        qe="$("$SCRIPT_DIR/lib/job-status" get "$f" queued_epoch 2>/dev/null)"
+        case "$qe" in ''|*[!0-9]*) qe=0 ;; esac
+        printf '%s\t%s\n' "$qe" "$id"
+    done | sort -n | cut -f2
 }
 
 cmd_run() {
@@ -128,8 +151,16 @@ cmd_run() {
     if [ ! -x "$CLAUDE_BIN" ]; then
         say "no claude binary — nothing selected, nothing dispatched"; return 0
     fi
+    # No selection material is not "nothing to drain": the queued backlog is
+    # the drain's FIRST material (nightly.md rule 56a), and it exists whether
+    # or not a single engineering thread does. This used to return here, and
+    # the shelved briefs of an instance with no threads file waited for a
+    # night that never worked them. Selection is switched off; the queue
+    # still drains.
+    local NO_THREADS=""
     if [ ! -s "$THREADS_FILE" ] && [ ! -d "$THREADS_DIR" ]; then
-        say "no engineering threads — nothing to drain"; return 0
+        NO_THREADS=1
+        say "no engineering threads — selection is off; the queued backlog still drains"
     fi
 
     local NOW CUTOFF
@@ -166,7 +197,7 @@ cmd_run() {
     # shellcheck disable=SC2064
     trap "rm -rf '$WORK'" EXIT
 
-    local ROUNDS=0 DISPATCHED=0 OUR_IDS="" REASON=""
+    local ROUNDS=0 DISPATCHED=0 OUR_IDS="" REASON="" SKIP_QUEUED=""
     while :; do
         NOW="$(date +%s)"
         if [ "$NOW" -ge "$CUTOFF" ]; then
@@ -188,6 +219,87 @@ cmd_run() {
         FREE=$(( CAP - RUNNING ))
         if [ "$FREE" -le 0 ]; then
             say "round $ROUNDS: cap full ($RUNNING running, cap $CAP) — waiting"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        # The queued backlog goes first (nightly.md rule 56a): the briefs the
+        # daytime policy shelved are already-written work — no model call, no
+        # judgement to buy — so they spend the night's slots before the
+        # selector is asked to invent anything. Oldest first, through the
+        # door and never around it, DESKCRAB_JOB_NIGHT open so the door knows
+        # the window (jobs.md rule 31), the cutoff re-checked before EVERY
+        # dispatch (rule 56: a dispatch a minute past the line is a dispatch
+        # past the line). A refusal that is not the block marker skips the
+        # brief for the rest of the night — never a retry loop — and the
+        # block marker ends the night for everyone.
+        local SENT_THIS_ROUND=0 BLOCKED="" CUTOFF_HIT="" QID QOUT QRC
+        for QID in $(queued_jobs); do
+            [ "$FREE" -le 0 ] && break
+            case " $SKIP_QUEUED " in *" $QID "*) continue ;; esac
+            if [ "$(date +%s)" -ge "$CUTOFF" ]; then CUTOFF_HIT=1; break; fi
+            if [ -n "$DRY" ]; then
+                say "round $ROUNDS: would dispatch queued job '$QID'"
+                SKIP_QUEUED="$SKIP_QUEUED $QID"
+                SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+                DISPATCHED=$(( DISPATCHED + 1 ))
+                FREE=$(( FREE - 1 ))
+                continue
+            fi
+            QOUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job dispatch "$QID" 2>&1)"; QRC=$?
+            if [ "$QRC" -ne 0 ]; then
+                case "$QOUT" in
+                    *"the last job never began"*)
+                        say "the job door is blocked — ${QOUT%%$'\n'*}"
+                        BLOCKED=1; break ;;
+                    *)  say "round $ROUNDS: queued job '$QID' refused — ${QOUT%%$'\n'*} — skipped for the night"
+                        SKIP_QUEUED="$SKIP_QUEUED $QID"
+                        continue ;;
+                esac
+            fi
+            say "round $ROUNDS: dispatched queued job '$QID'"
+            OUR_IDS="$OUR_IDS $QID"
+            SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+            DISPATCHED=$(( DISPATCHED + 1 ))
+            FREE=$(( FREE - 1 ))
+        done
+        if [ -n "$BLOCKED" ]; then
+            REASON="the job door's block marker — no builder can begin, so none is asked to"
+            break
+        fi
+        if [ -n "$CUTOFF_HIT" ]; then
+            REASON="the cutoff ($CUTOFF_SPEC) — in-flight builders finish on their own"
+            break
+        fi
+        if [ "$FREE" -le 0 ]; then
+            # The queue filled the slate; selection waits for the next round.
+            NOW="$(date +%s)"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        # No engineering threads: the queued phase above was the whole round
+        # (rule 56a) — a selector with nothing to read is not called, so no
+        # model tokens are spent inventing work from an empty shelf. The
+        # night ends when the queue is dry and nothing of tonight's is still
+        # running.
+        if [ -n "$NO_THREADS" ]; then
+            if [ "$SENT_THIS_ROUND" -eq 0 ]; then
+                local ID ANY=""
+                for ID in $OUR_IDS; do
+                    [ "$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$ID.json" state 2>/dev/null)" = running ] \
+                        && ANY=1 && break
+                done
+                if [ -z "$ANY" ]; then
+                    REASON="the queue is dry and there are no engineering threads to select from"
+                    break
+                fi
+            fi
+            NOW="$(date +%s)"
             local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
             [ "$S" -lt 1 ] && S=1
             sleep "$S"
@@ -286,8 +398,9 @@ no decision from the user — and write a builder's brief for each. Skip,
 without exception:
 - notes, incident write-ups, decisions and diary entries with no work left;
 - anything the material itself records as done, landed, fixed, verified;
-- anything a RUNNING or recently finished job already covers — match the job
-  list below by substance, not wording;
+- anything a RUNNING, QUEUED, or recently finished job already covers — match
+  the job list below by substance, not wording; a queued brief dispatches
+  tonight on its own, so selecting its subject buys the same work twice;
 - every pick already on the drain's ledger below, whatever its source;
 - anything that waits on the user's decision or needs his voice in the room,
   and anything the material says is deliberately parked, held for a quiet
@@ -376,9 +489,13 @@ $LEDGER_TAIL"
             esac
         done <<< "$OUT"
 
-        local I SENT_THIS_ROUND=0 BLOCKED=""
+        # SENT_THIS_ROUND, BLOCKED and CUTOFF_HIT carry over from the queued
+        # phase above: the cap and the counters are the round's, not the
+        # phase's.
+        local I SEL_SENT=0
         for I in $(seq 1 "$N"); do
-            [ "$SENT_THIS_ROUND" -ge "$FREE" ] && break
+            [ "$SEL_SENT" -ge "$FREE" ] && break
+            if [ "$(date +%s)" -ge "$CUTOFF" ]; then CUTOFF_HIT=1; break; fi
             local KEY WD TITLE BRIEF SQUEEZED
             KEY="$(cat "$WORK/$I.key" 2>/dev/null)"
             WD="$(cat "$WORK/$I.wd" 2>/dev/null)"
@@ -415,15 +532,20 @@ $BRIEF"
             # dispatch call itself must never happen.
             if [ -n "$DRY" ]; then
                 say "round $ROUNDS: would dispatch '$KEY' — $TITLE"
+                SEL_SENT=$(( SEL_SENT + 1 ))
                 SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
                 DISPATCHED=$(( DISPATCHED + 1 ))
                 continue
             fi
+            # DESKCRAB_JOB_NIGHT is how the door knows the night window is
+            # open (jobs.md rule 31) — without it the daytime policy would
+            # queue the drain's own picks straight back onto the shelf it is
+            # draining.
             local OUTPUT RC JOB_ID
             if [ -n "$WD" ] && [ "$WD" != "-" ] && [ -d "$WD" ]; then
-                OUTPUT="$("$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
+                OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
             else
-                OUTPUT="$("$CRAB" job "$BRIEF" 2>&1)"; RC=$?
+                OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job "$BRIEF" 2>&1)"; RC=$?
             fi
             if [ "$RC" -ne 0 ]; then
                 case "$OUTPUT" in
@@ -444,11 +566,16 @@ $BRIEF"
             printf '%s\t%s\t%s\t%s\n' "$(date +%F)" "$KEY" "$JOB_ID" "$TITLE" >> "$LEDGER"
             OUR_IDS="$OUR_IDS $JOB_ID"
             say "round $ROUNDS: dispatched '$KEY' as job $JOB_ID — $TITLE"
+            SEL_SENT=$(( SEL_SENT + 1 ))
             SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
             DISPATCHED=$(( DISPATCHED + 1 ))
         done
         if [ -n "$BLOCKED" ]; then
             REASON="the job door's block marker — no builder can begin, so none is asked to"
+            break
+        fi
+        if [ -n "$CUTOFF_HIT" ]; then
+            REASON="the cutoff ($CUTOFF_SPEC) — in-flight builders finish on their own"
             break
         fi
 
