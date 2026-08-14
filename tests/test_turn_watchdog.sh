@@ -115,7 +115,9 @@ echo "a healthy turn pays nothing for the watchdog:"
 
 rm -f "$T/calls" "$ACCOUNT_STATE_FILE"
 start=$(date +%s)
-out="$(run STUB_OK_DIR= CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low')"
+# Account 1 answers on the first call — its dir is what the stub sees, because
+# every account is addressed explicitly (specs/account-fallback.md rule 3).
+out="$(run STUB_OK_DIR="$HOME/.claude" CLAUDE_BIN="$T/claude-stream" 'claude_generate "hello" low')"
 elapsed=$(( $(date +%s) - start ))
 [ "$out" = "CHAIN REPLY" ] && ok "the reply comes back unchanged" || fail "a watched run must still answer" "$out"
 # The poll ticks every second precisely so the turn is not held for a whole

@@ -70,7 +70,24 @@ class TestStoreIsolation(StoreCase):
     report her own plumbing as an intruder. A scratch store's declaration means
     nothing to that watcher and everything to whoever reads the file later: on
     2026-08-07 five /tmp/memtest-* records from this very file were sitting in
-    it. Same rule the job runner already applies to the wake it fires."""
+    it. Same rule the job runner already applies to the wake it fires.
+
+    What this class pins is the KNOB-LESS default — the explicit knobs
+    (NOTICE_SUPPRESS, NOTICE_STATE_DIR) rightly win when set, so a harness
+    that exports either as belt-and-braces isolation would flip the very
+    behaviour under test. The knobs are cleared here and restored after."""
+
+    KNOBS = ("NOTICE_SUPPRESS", "NOTICE_STATE_DIR")
+
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k, None) for k in self.KNOBS}
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        for k, v in self._saved.items():
+            if v is not None:
+                os.environ[k] = v
 
     def test_scratch_store_declares_beside_itself(self):
         declared = os.path.join(self.dir, "notice-self.suppress")

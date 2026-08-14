@@ -108,10 +108,17 @@ ls "$WAKES_DIR"/*.wake >/dev/null 2>&1 \
     && grep -q "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null \
     && die "a wake the fallback carried still re-booked itself: $(ls "$WAKES_DIR")"
 
-# The current moved off the cut account 1, so the NEXT wake leads with the
-# account that answered instead of paying a doomed boot.
-[ "$(awk -F'\t' '$1 == "current" {print $3; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)" = "$FB" ] \
-    || die "the cut did not move the current: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
+# Account 1 was cooled by the first scenario's cut — that record is exactly
+# why THIS wake made no doomed boot on it — so the NEXT wake leads with
+# account 2 too: the selection skips the cooling account (rules 7 and 10).
+# Asked of the selection itself, not read off the current line: the current
+# never moved here because nothing refused in this scenario, and that is the
+# design — a cooldown, not a re-cut, is what spares the boot.
+grep -q "^cooldown	1	" "$ACCOUNT_STATE_FILE" 2>/dev/null \
+    || die "the first scenario's cut left no cooldown for account 1: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
+NEXT="$(env CLAUDE_FALLBACK_CONFIG_DIR="$FB" bash -c '. "$1/lib/common.sh"; claude_account_pick' _ "$REPO" 2>/dev/null)"
+[ "$NEXT" = "2" ] \
+    || die "the next wake would not lead with account 2: pick=$NEXT, state: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
 
 ok "a cut chain journals a failed run and re-books through outage-retry"
 ok "a fallback with credit carries the wake and nothing re-books"
