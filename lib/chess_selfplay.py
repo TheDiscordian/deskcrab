@@ -26,6 +26,7 @@ speaks. State is the game files themselves; this process holds nothing that
 matters across chunks.
 
 Usage: chess_selfplay.py [--budget SECONDS] [--games N] [--deadline HH:MM]
+                         [--day]
 """
 
 import argparse
@@ -33,7 +34,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,7 +53,7 @@ import chess_mover  # noqa: E402
 import chess_reflex  # noqa: E402
 
 SP_DIR = chess_mover._chess_dir() / "selfplay"
-LOG_FILE = SP_DIR / ("night-" + time.strftime("%Y%m%d") + ".log")
+LOG_FILE = SP_DIR / ("night-" + chess_mover.night_key() + ".log")
 
 PLY_CAP = 240           # backstop: agree a draw rather than shuffle forever
 HOT_MINUTES = 15        # leave the accounts alone while a person's game moves
@@ -110,13 +111,24 @@ def selfplay_games():
     return out
 
 
-def created_today(g):
-    """Was this game created on today's calendar date (local)?"""
+def night_of(dt):
+    """The night a moment belongs to (specs/chess-selfplay.md rule 4): the
+    local calendar date twelve hours earlier, so noon D to noon D+1 is all
+    one night, D's."""
+    return (dt.astimezone() - timedelta(hours=12)).date()
+
+
+def created_tonight(g, now=None):
+    """Was this game created inside the current night's window? Rule 6 counts
+    games per night, same window as the move budget, so a chain crossing
+    midnight cannot open a second batch of games at 00:00."""
     try:
         stamp = datetime.fromisoformat(g.get("created", ""))
     except ValueError:
         return False
-    return stamp.astimezone().date() == datetime.now().astimezone().date()
+    if now is None:
+        now = datetime.now().astimezone()
+    return night_of(stamp) == night_of(now)
 
 
 def new_game(games):
@@ -288,22 +300,57 @@ def play_one_move(g, movers):
     return "failed"
 
 
+def resolve_deadline(started, deadline, day):
+    """The chunk's morning wall as an epoch, or None for a daytime refusal.
+
+    A start up to an hour past today's `deadline` HH:MM is a late night
+    chain still winding down: it keeps today's wall (already passed, so the
+    loop stops at once). Further past it, the wall used to roll to tomorrow
+    unconditionally — which read a 14:00 manual invocation as an evening
+    start aimed at tomorrow and let it grind until 07:00 the next day. Now
+    the roll only stands when tomorrow's wall is within 12 h (a real evening
+    start); otherwise the start is daytime, and without the explicit --day
+    flag the driver refuses rather than run all day (specs/chess-selfplay.md
+    rule 8). The night path — evening and small-hours starts — is unchanged.
+    """
+    hh, mm = deadline.split(":")
+    now_t = time.localtime(started)
+    deadline_ts = time.mktime(now_t[:3] + (int(hh), int(mm), 0) + now_t[6:])
+    if deadline_ts < started - 3600:  # started after the deadline hour: past
+        deadline_ts += 86400
+        if not day and deadline_ts - started > 12 * 3600:
+            return None  # a daytime start, and nobody said --day
+    return deadline_ts
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--budget", type=float, default=360.0,
                     help="seconds this chunk may spend before exiting")
     ap.add_argument("--games", type=int, default=nightly_games(),
-                    help="new self-play games allowed per calendar day")
+                    help="new self-play games allowed per night")
     ap.add_argument("--deadline", default="07:00",
                     help="local HH:MM after which no new work starts")
+    ap.add_argument("--day", action="store_true",
+                    help="a deliberate daytime chunk: run even when the "
+                         "start is nowhere near the night's wall")
     args = ap.parse_args()
 
     started = time.time()
-    hh, mm = args.deadline.split(":")
-    now_t = time.localtime()
-    deadline_ts = time.mktime(now_t[:3] + (int(hh), int(mm), 0) + now_t[6:])
-    if deadline_ts < started - 3600:  # started after the deadline hour: past
-        deadline_ts += 86400
+    deadline_ts = resolve_deadline(started, args.deadline, args.day)
+    if deadline_ts is None:
+        log(f"started {time.strftime('%H:%M', time.localtime(started))}, "
+            f"more than an hour past --deadline {args.deadline} and more "
+            "than 12 h before the next wall — a daytime start, not a night "
+            "chain. Pass --day for a deliberate daytime chunk.")
+        games = selfplay_games()
+        done = sum(1 for g in games if chess_cli.compute_state(
+            g, chess_cli.build_board(g))[0] != "active")
+        print("STATUS " + json.dumps({
+            "status": "daytime", "moves_this_chunk": 0,
+            "selfplay_finished": done, "selfplay_total": len(games)}),
+            flush=True)
+        sys.exit(2)
 
     movers = {"white": chess_mover.Mover(make_play("white"), log=log,
                                          metric=chess_cli.metric, alert=log),
@@ -324,7 +371,7 @@ def main():
         # cleanly, before any position is offered to a mover.
         if chess_mover.selfplay_budget_spent():
             log("nightly move budget spent "
-                f"({chess_mover.selfplay_calls_today()}"
+                f"({chess_mover.selfplay_calls_tonight()}"
                 f"/{chess_mover.selfplay_nightly_moves()}) — stopping")
             status = "budget-spent"
             break
@@ -333,8 +380,8 @@ def main():
             g, chess_cli.build_board(g))[0] == "active"]
         g = active[0] if active else None
         if g is None:
-            if sum(1 for x in games if created_today(x)) >= args.games:
-                log(f"games cap reached ({args.games} created today) "
+            if sum(1 for x in games if created_tonight(x)) >= args.games:
+                log(f"games cap reached ({args.games} created tonight) "
                     "— stopping")
                 status = "games-cap"
                 break
@@ -354,7 +401,7 @@ def main():
                 f"after {len(g['moves'])} plies")
         elif outcome == "budget-spent":
             log("nightly move budget spent "
-                f"({chess_mover.selfplay_calls_today()}"
+                f"({chess_mover.selfplay_calls_tonight()}"
                 f"/{chess_mover.selfplay_nightly_moves()}) — stopping")
             status = "budget-spent"
             break

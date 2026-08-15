@@ -126,9 +126,19 @@ def _chess_dir():
                                str(Path.home() / ".local/share/deskcrab/chess")))
 
 
+def night_key(now=None):
+    """The budget window's key (specs/chess-selfplay.md rule 4): the calendar
+    date of (now - 12 h), so the night of day D runs noon D to noon D+1 and a
+    session crossing midnight stays on the same night's records — a chain
+    started before midnight cannot draw a second budget at 00:00."""
+    if now is None:
+        now = time.time()
+    return time.strftime("%Y%m%d", time.localtime(now - 12 * 3600))
+
+
 def _selfplay_calls_file():
     return (_chess_dir() / "selfplay"
-            / ("model-calls-" + time.strftime("%Y%m%d") + ".log"))
+            / ("model-calls-" + night_key() + ".log"))
 
 
 def selfplay_nightly_moves():
@@ -139,9 +149,9 @@ def selfplay_nightly_moves():
         return 150
 
 
-def selfplay_calls_today():
-    """Lines in today's counter file — one per model attempt, appended with
-    O_APPEND so concurrent movers count truly."""
+def selfplay_calls_tonight():
+    """Lines in the night's counter file — one per model attempt, appended
+    with O_APPEND so concurrent movers count truly."""
     try:
         with open(_selfplay_calls_file(), encoding="utf-8",
                   errors="replace") as fh:
@@ -151,7 +161,7 @@ def selfplay_calls_today():
 
 
 def selfplay_budget_spent():
-    return selfplay_calls_today() >= selfplay_nightly_moves()
+    return selfplay_calls_tonight() >= selfplay_nightly_moves()
 
 
 def _selfplay_charge(detail):
@@ -383,7 +393,7 @@ class Mover:
         # driving (specs/chess-selfplay.md rule 5).
         if selfplay and selfplay_budget_spent():
             why = ("selfplay nightly move budget spent (%d/%d)"
-                   % (selfplay_calls_today(), selfplay_nightly_moves()))
+                   % (selfplay_calls_tonight(), selfplay_nightly_moves()))
             self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
             return "failed", why
         prompt = self._prompt(job, board)

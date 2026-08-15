@@ -23,7 +23,13 @@ PY="$VENV/bin/python"
 
 export DESKCRAB_CHESS_DIR="$SANDBOX/chess"
 mkdir -p "$DESKCRAB_CHESS_DIR/selfplay" "$DESKCRAB_CHESS_DIR/games"
-COUNTER="$DESKCRAB_CHESS_DIR/selfplay/model-calls-$(date +%Y%m%d).log"
+# The counter is keyed by NIGHT — the date of (now - 12 h) — not by the
+# calendar day (specs/chess-selfplay.md rule 4).
+COUNTER="$DESKCRAB_CHESS_DIR/selfplay/model-calls-$(date -d '12 hours ago' +%Y%m%d).log"
+# A wall a couple of hours ahead keeps every driver run below on the night
+# path whatever hour the suite runs at, so the daytime guard never trips
+# where it is not the case under test.
+NEAR_WALL="$(date -d '+2 hours' +%H:%M)"
 
 # The stub mover: records the call, then answers with the prompt itself —
 # the prompt lists every legal move in UCI, and the parser keeps the last
@@ -75,7 +81,8 @@ PYEOF
 echo
 echo "the driver stops cleanly at the nightly move budget:"
 OUT="$(DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=5 \
-       "$PY" "$REPO/lib/chess_selfplay.py" --budget 120 --games 4 2>&1)"
+       "$PY" "$REPO/lib/chess_selfplay.py" --budget 120 --games 4 \
+       --deadline "$NEAR_WALL" 2>&1)"
 STATUS_LINE="$(grep '^STATUS ' <<<"$OUT" | tail -n1)"
 contains "$STATUS_LINE" '"status": "budget-spent"' \
     && ok "the chunk ends on budget-spent" \
@@ -131,13 +138,123 @@ check "and the counter did not move for it" \
     [ "$(grep -c . "$COUNTER")" -eq 5 ]
 
 echo
-echo "the games cap creates nothing once the day is full:"
+echo "the games cap creates nothing once the night is full:"
 GAMES2="$SANDBOX/chess2"
 mkdir -p "$GAMES2"
 OUT2="$(DESKCRAB_CHESS_DIR="$GAMES2" \
-        "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 2>&1)"
+        "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 \
+        --deadline "$NEAR_WALL" 2>&1)"
 contains "$(grep '^STATUS ' <<<"$OUT2" | tail -n1)" '"status": "games-cap"' \
     && ok "the chunk ends on games-cap" \
     || fail "STATUS line: $(grep '^STATUS ' <<<"$OUT2" | tail -n1)"
 refute "no game was created" \
     bash -c 'ls "$1"/games/selfplay-*.json >/dev/null 2>&1' _ "$GAMES2"
+
+echo
+echo "the budget window is the night, not the calendar day:"
+NK="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import chess_mover as cm
+
+def at(y, mo, d, h, mi):
+    return time.mktime((y, mo, d, h, mi, 0, 0, 1, -1))
+
+print("pre-midnight:", cm.night_key(at(2026, 8, 14, 23, 30)))
+print("post-midnight:", cm.night_key(at(2026, 8, 15, 0, 30)))
+print("small-hours:", cm.night_key(at(2026, 8, 15, 4, 0)))
+print("next-afternoon:", cm.night_key(at(2026, 8, 15, 13, 0)))
+PYEOF
+)"
+contains "$NK" "pre-midnight: 20260814" \
+    && contains "$NK" "post-midnight: 20260814" \
+    && contains "$NK" "small-hours: 20260814" \
+    && ok "23:30, 00:30 and 04:00 across one midnight share the night key" \
+    || fail "night keys: $NK"
+contains "$NK" "next-afternoon: 20260815" \
+    && ok "the next afternoon opens the next night's key" \
+    || fail "night keys: $NK"
+
+GT="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys
+from datetime import datetime
+sys.path.insert(0, sys.argv[1])
+import chess_selfplay as sp
+
+tz = datetime.now().astimezone().tzinfo
+g = {"created": datetime(2026, 8, 14, 23, 0, tzinfo=tz).isoformat()}
+print("same-night:", sp.created_tonight(
+    g, now=datetime(2026, 8, 15, 1, 0, tzinfo=tz)))
+print("next-night:", sp.created_tonight(
+    g, now=datetime(2026, 8, 15, 13, 0, tzinfo=tz)))
+PYEOF
+)"
+contains "$GT" "same-night: True" \
+    && contains "$GT" "next-night: False" \
+    && ok "a game created before midnight still counts against the same night's games cap" \
+    || fail "created_tonight: $GT"
+
+echo
+echo "a daytime start is refused, and the night path keeps its walls:"
+DL="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import chess_selfplay as sp
+
+def at(y, mo, d, h, mi):
+    return time.mktime((y, mo, d, h, mi, 0, 0, 1, -1))
+
+wall = "07:00"
+print("daytime:", sp.resolve_deadline(at(2026, 8, 14, 14, 0), wall, False))
+print("daytime--day:",
+      sp.resolve_deadline(at(2026, 8, 14, 14, 0), wall, True)
+      == at(2026, 8, 15, 7, 0))
+print("evening:",
+      sp.resolve_deadline(at(2026, 8, 14, 22, 0), wall, False)
+      == at(2026, 8, 15, 7, 0))
+print("small-hours:",
+      sp.resolve_deadline(at(2026, 8, 15, 2, 0), wall, False)
+      == at(2026, 8, 15, 7, 0))
+print("just-past:",
+      sp.resolve_deadline(at(2026, 8, 15, 7, 30), wall, False)
+      == at(2026, 8, 15, 7, 0))
+PYEOF
+)"
+contains "$DL" "daytime: None" \
+    && ok "a 14:00 start against a 07:00 wall is refused (not aimed at tomorrow)" \
+    || fail "resolve_deadline: $DL"
+contains "$DL" "daytime--day: True" \
+    && ok "--day makes the same start a deliberate chunk with tomorrow's wall" \
+    || fail "resolve_deadline: $DL"
+contains "$DL" "evening: True" && contains "$DL" "small-hours: True" \
+    && contains "$DL" "just-past: True" \
+    && ok "evening, small-hours and just-past-the-wall starts keep their old walls" \
+    || fail "resolve_deadline: $DL"
+
+# End to end when the clock allows it: a wall 2 h behind us makes the start
+# daytime everywhere except the first two hours after midnight, where no
+# HH:MM can sit 1-12 h in the past (the unit cases above still cover it).
+if [ "$(date +%H)" -ge 2 ] 2>/dev/null; then
+  GAMES3="$SANDBOX/chess3"
+  mkdir -p "$GAMES3"
+  PAST_WALL="$(date -d '2 hours ago' +%H:%M)"
+  OUT3="$(DESKCRAB_CHESS_DIR="$GAMES3" \
+          "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 \
+          --deadline "$PAST_WALL" 2>&1)"; RC3=$?
+  contains "$(grep '^STATUS ' <<<"$OUT3" | tail -n1)" '"status": "daytime"' \
+      && ok "the driver refuses the daytime start with status daytime" \
+      || fail "STATUS line: $(grep '^STATUS ' <<<"$OUT3" | tail -n1)"
+  check "and exits non-zero" [ "$RC3" -ne 0 ]
+  contains "$OUT3" "Pass --day" \
+      && ok "the refusal names the --day flag" \
+      || fail "refusal output: $OUT3"
+  OUT4="$(DESKCRAB_CHESS_DIR="$GAMES3" \
+          "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 \
+          --deadline "$PAST_WALL" --day 2>&1)"
+  contains "$(grep '^STATUS ' <<<"$OUT4" | tail -n1)" '"status": "games-cap"' \
+      && ok "with --day the same invocation runs (and stops on its games cap)" \
+      || fail "STATUS line: $(grep '^STATUS ' <<<"$OUT4" | tail -n1)"
+else
+  echo "note: before 02:00 no HH:MM wall sits 1-12 h in the past —" \
+       "end-to-end daytime case skipped, unit cases above cover it"
+fi

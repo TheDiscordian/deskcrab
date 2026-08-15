@@ -37,19 +37,21 @@ are actually made.
 
 ### The nightly budget
 
-4. Self-play model calls are budgeted per calendar day: at most
-   `$DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES` (default 150) calls, counted at the mover's choke
-   point — one appended line per attempt in
-   `$DESKCRAB_CHESS_DIR/selfplay/model-calls-YYYYMMDD.log`, written with O_APPEND so concurrent
-   movers count truly. Reflex moves cost nothing and are never counted: the budget bounds spend,
-   not play.
+4. Self-play model calls are budgeted per NIGHT, not per calendar day. The night's key is the
+   calendar date of (now − 12 h), so the night of day D runs noon D to noon D+1 and a session
+   crossing midnight stays on the same night's key — a chain started before midnight cannot draw
+   a second budget at 00:00. At most `$DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES` (default 150)
+   calls per night, counted at the mover's choke point — one appended line per attempt in
+   `$DESKCRAB_CHESS_DIR/selfplay/model-calls-YYYYMMDD.log` (YYYYMMDD the night key), written
+   with O_APPEND so concurrent movers count truly. Reflex moves cost nothing and are never
+   counted: the budget bounds spend, not play.
 5. A self-play position arriving at the mover after the budget is spent is refused WITHOUT booting
    the CLI: the position resolves `failed` with a cause naming the budget and the count, loudly,
    through the mover's normal failure channels. This is the backstop that binds whatever loop is
    driving — including one the repo has never seen.
-6. New self-play games are budgeted per calendar day as well: at most
-   `$DESKCRAB_CHESS_SELFPLAY_NIGHTLY_GAMES` (default 4) games created per day, enforced in the
-   driver before it creates one.
+6. New self-play games are budgeted per night as well (rule 4's window): at most
+   `$DESKCRAB_CHESS_SELFPLAY_NIGHTLY_GAMES` (default 4) games created per night, enforced in
+   the driver before it creates one.
 
 ### The driver
 
@@ -57,7 +59,12 @@ are actually made.
    writing a second driver instead of extending this one is the 2026-08-15 failure again.
 8. The driver runs one bounded chunk per invocation (`--budget` seconds, default 360) and exits
    before the chunk budget so its caller never has to kill it. `--deadline HH:MM` (default 07:00)
-   is the morning wall: no new work starts past it.
+   is the morning wall: no new work starts past it. A start more than 1 h past the deadline
+   counts as an evening start aimed at tomorrow's wall ONLY when that wall is within 12 h;
+   further out it is a daytime start, and the driver refuses it — status `daytime`, a non-zero
+   exit, and a message naming `--day`, the explicit flag for a deliberate daytime chunk — so a
+   manual mid-day invocation can never loop until the next morning. The night path — evening
+   and small-hours starts — is unchanged.
 9. The driver checks the nightly move budget in its own loop, BEFORE submitting a position, and
    stops cleanly when it is spent — status `budget-spent`, nothing else booked, no reliance on
    rule 5's refusal. Rule 5 is the backstop; this is the manners.
@@ -71,15 +78,16 @@ are actually made.
     fifty-move) are claimed, and a hard ply cap (240) agrees a draw rather than shuffle forever.
 13. The driver ends every chunk with one machine-readable `STATUS {...}` line naming why it
     stopped (`budget` — the chunk's seconds, `budget-spent` — rule 9, `games-cap` — rule 6,
-    `deadline`, `failing`) and what it did (moves this chunk, games finished, games total).
+    `deadline`, `daytime` — rule 8's refusal, `failing`) and what it did (moves this chunk,
+    games finished, games total).
 
 ## DATA
 
 | Path | What it is |
 |---|---|
 | `$DESKCRAB_CHESS_DIR/games/selfplay-*.json` | the games, ordinary betty-chess records |
-| `$DESKCRAB_CHESS_DIR/selfplay/model-calls-YYYYMMDD.log` | rule 4's counter: one line per self-play model attempt |
-| `$DESKCRAB_CHESS_DIR/selfplay/night-YYYYMMDD.log` | the driver's own narrative log |
+| `$DESKCRAB_CHESS_DIR/selfplay/model-calls-YYYYMMDD.log` | rule 4's counter: one line per self-play model attempt; YYYYMMDD is the night key, the date of (now − 12 h) |
+| `$DESKCRAB_CHESS_DIR/selfplay/night-YYYYMMDD.log` | the driver's own narrative log, same night key |
 
 ## INTERACTIONS
 
@@ -99,5 +107,8 @@ invocation by default, honours `$DESKCRAB_CHESS_SELFPLAY_MODEL`, and ignores
 `$DESKCRAB_CHESS_MOVER_MODEL`; a real-game job still follows the mover knob); the budget binding in
 the driver (a chunk stops at `budget-spent` with the counter at the cap and not a call past it);
 the mover backstop (a self-play position past the cap is refused without the stub being called,
-while a real-game position on the same mover still answers); and the games cap (a day at its games
-cap creates nothing and says `games-cap`).
+while a real-game position on the same mover still answers); the games cap (a night at its games
+cap creates nothing and says `games-cap`); the night key (23:30 and 00:30 across one midnight
+share a key — no fresh budget at 00:00 — and an afternoon belongs to the coming night); and the
+daytime guard (a mid-day start refuses with status `daytime` naming `--day`, runs with the flag,
+and evening, small-hours, and just-past-the-wall starts keep their old walls).
