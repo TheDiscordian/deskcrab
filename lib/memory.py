@@ -1590,7 +1590,7 @@ extra sentence is pure cost. [] is a common and correct answer.
 
 def _judge_answer_ceiling():
     """Bytes a judge answer may reach before it is flagged as verbose
-    (memory-recall.md rule 42). A compliant answer is a few dozen bytes; the
+    (memory-recall.md rule 25a). A compliant answer is a few dozen bytes; the
     default leaves room for a stray preamble without hiding a regression."""
     try:
         return int(os.environ.get("MEMORY_JUDGE_ANSWER_CEILING", "600"))
