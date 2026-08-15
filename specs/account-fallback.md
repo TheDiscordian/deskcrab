@@ -52,27 +52,74 @@ it is ten minutes of silence with nothing on screen explaining it.
 
 ### The selection
 
-7. A run uses the current account when it is not in cooldown. On a limit refusal, the refused
-   account's cooldown is set and the current advances to the next account NOT in cooldown,
-   wrapping past the end of the list. The new current stays current until IT refuses in its turn:
-   no switch-back, and no probing an account inside its cooldown. An account whose cooldown has
-   lapsed becomes selectable again, but is only reached when a refusal walks the selection onto
-   it.
+7. A run uses the current account when it is not in cooldown for the run's model. On a limit
+   refusal, the refused account's cooldown is set (rules 8 and 8a) and the current advances to
+   the next account NOT in cooldown **for the refusing walk's model**, wrapping past the end of
+   the list. The new current stays current until IT refuses in its turn: no switch-back, and no
+   probing an account inside a cooldown that covers the walk's model. An account whose cooldown
+   has lapsed becomes selectable again, but is only reached when a refusal walks the selection
+   onto it. There is still exactly ONE current pointer, shared by every model: a walk whose
+   model a cooldown does not cover simply filters that cooldown out when it reads the state, so
+   a fable refusal that routes the current onto a fable-alive, opus-dead account costs an opus
+   walk nothing — its own filter skips it (rule 10).
 8. Cooldown length follows the refusal kind: a rolling session limit cools for
    `ACCOUNT_COOLDOWN_SESSION` (default five hours, the window the CLI's own refusal names); a
    usage-credits or otherwise hard stop — credit balance, extra usage, a weekly cap, a login that
    needs a human — cools for `ACCOUNT_COOLDOWN_CREDITS` (default twenty-four hours). Both are
    knobs. An unrecognised refusal wording takes the short cooldown: too eager costs one refused
    boot hours later and corrects itself; too patient benches an account that came back at lunch.
-9. The selection is NEVER empty. When every account is in cooldown, the one whose cooldown ends
-   soonest is offered, alone. A run always has an account to try.
-10. A walk returns every selectable account, in list order rotated to start at the current, and
-    rides each refusal to the next entry — recording each refusal as it goes — failing only when
-    every offered account has refused.
+8a. Cooldown SCOPE is a second, orthogonal classification of the same refusal text: every
+    cooldown record carries a scope — `all`, or one model family. An account-wide wording ("hit
+    your session limit", "session limit reached", "5-hour limit", "usage limit reached", a
+    weekly cap, a login that needs a human, or a generic "out of usage credits" naming no model)
+    cools the account for ALL models; a refusal that NAMES a model ("reached your Fable 5
+    limit", "out of usage credits. Run /usage-credits to keep using Fable 5") cools that account
+    FOR THAT MODEL FAMILY ONLY, with the family normalised from the wording. An account-wide
+    wording WINS when both appear in one refusal: the session window is the account's own clock,
+    and the model name inside such a wording is decoration. The distinction exists because the
+    premium model is a PER-ACCOUNT allowance cut before the account's other capacity: on
+    2026-08-15 an overnight selfplay burn drained every account's premium pool, the model-blind
+    cooldowns benched the same accounts' perfectly healthy ordinary capacity, the surviving
+    accounts absorbed every walk and hit genuine session limits, and by morning a conversation
+    turn died over "every login is over its limit" while the ordinary model worked fine on all
+    three. One model's drought MUST NEVER bench another model's healthy capacity. A record
+    without the scope field reads as `all` (back-compat; every pre-scope record was).
+8b. An account may cool under several scopes at once — a 24-hour model-scoped credits stop and a
+    5-hour account-wide session limit are both real, and neither may shorten the other. Records
+    are kept per account AND scope; for a given model, an account is selectable only when every
+    covering record (scope `all` or the model's family) has lapsed.
+9. The selection is NEVER empty. When every account is in cooldown for the walk's model, the one
+   whose covering cooldowns end soonest is offered, alone. A run always has an account to try.
+10. A walk KNOWS ITS MODEL, and returns every account selectable for it — skipping only
+    cooldowns scoped `all` or that model's family — in list order rotated to start at the
+    current, and rides each refusal to the next entry — recording each refusal, with the walk's
+    model, as it goes — failing only when every offered account has refused. Every walk site
+    passes its model: the desk turn and the phone turn (the generation model, dispute-raised
+    when it was), the wake, the job runner, the summariser, the promise audit and the promise
+    checker, the backlog drain's classify (its primary model), and the two Python walkers (the
+    memory store's ingest and judge, the chess mover) — same shared state file, same filter
+    rule. A selection asked with NO model (the status line, the child-login seed) treats every
+    unexpired cooldown as blocking, whatever its scope: the conservative pre-scope read, for
+    callers that are not about to boot any particular model.
+10a. **A conversation turn MUST NEVER die because the premium model is dry while the ordinary
+    one works.** When the dispute machinery raised the turn's model above `CLAUDE_MODEL`
+    ([cocoon.md](cocoon.md) rule 7) and the walk exhausts with every offered account refusing at
+    the dispute model, the turn re-runs the walk ONCE at `CLAUDE_MODEL` / `CLAUDE_EFFORT`, with
+    the dispute frame still in the prompt. The swap is announced like any other: a marker in the
+    stream names it ("dispute at the ordinary model — the premium one is dry everywhere") and
+    the desk notification says the same. The fallback fires at most once per turn, only when the
+    dispute model actually differs from `CLAUDE_MODEL`, only when the whole walk was refused —
+    never on a genuine answer, an ordinary failure, or a walk the wall clock abandoned. It is a
+    TURN rule and nothing else's: a builder job's model is never downgraded
+    ([jobs.md](jobs.md) rule 5a stands, pinning test and all).
 11. Every move of the current MUST be recorded: the state file says where the selection stands and
-    why it last moved; the append-only account log says what it has been through. `crab status`
-    and the state block MUST lead with which account answers next, by number, and why the state
-    last moved. See [self-awareness.md](self-awareness.md) rules 16 to 18.
+    why it last moved (naming the model family when the cooldown is scoped to one); the
+    append-only account log says what it has been through. `crab status` and the state block MUST
+    lead with which account answers next, by number, and why the state last moved. See
+    [self-awareness.md](self-awareness.md) rules 16 to 18. The account log's session-kind column
+    MUST name the real path that recorded the refusal: a detached builder writes `job`, the
+    backlog drain's classify writes `backlog-drain` — never a defaulted "session", which is how
+    the 2026-08-15 morning's builder refusals hid among the interactive ones.
 
 ### Detecting a refusal
 
@@ -150,8 +197,10 @@ it is ten minutes of silence with nothing on screen explaining it.
     silent hole in the walk.
 29. Every out-of-band model call — the promise audit, the promise checker and its sweep, the
     memory store's ingest and judge, the summariser, the chess mover — MUST select from the same
-    flat list by the same rule. The two Python walkers (the memory store, the chess mover) read
-    the shared state and skip cooling accounts, and are read-only: recording a refusal is the
+    flat list by the same rule, passing its own model (rule 10). The two Python walkers (the
+    memory store, the chess mover) read the shared state and skip accounts cooling for their
+    model — a record scoped to another family does not bench them, and a record without the
+    scope field reads as `all` (rule 8a) — and are read-only: recording a refusal is the
     shell paths' job. Both MUST tilde- and variable-expand every account directory — the
     configured list's entries AND the state file's — before it is matched or handed out:
     systemd's `EnvironmentFile` hands values through unexpanded where every shell path expanded
@@ -167,8 +216,8 @@ it is ten minutes of silence with nothing on screen explaining it.
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/account-state` | one `current` line: `current \t number \t dir \t epoch \t why`; one `cooldown` line per cooling account: `cooldown \t number \t dir \t until-epoch \t kind`; override per instance via `ACCOUNT_STATE_FILE` |
-| `~/.local/share/deskcrab/account-log` | append-only: epoch, from number, to number, reason, session kind |
+| `~/.local/share/deskcrab/account-state` | one `current` line: `current \t number \t dir \t epoch \t why`; one `cooldown` line per cooling account and scope: `cooldown \t number \t dir \t until-epoch \t kind \t scope` — scope is `all` or a model family, and a line without the field reads as `all` (rule 8a); override per instance via `ACCOUNT_STATE_FILE` |
+| `~/.local/share/deskcrab/account-log` | append-only: epoch, from number, to number, reason, session kind (the real path's own name — rule 11) |
 | the stream log | carries the swap marker lines |
 
 ## INTERACTIONS
@@ -227,7 +276,16 @@ line is judged a refusal, matches the blocked-job signature, and rides the wake 
 account, cooling the account it dried up and moving the current — and on the job path, a builder
 refused with it finishes on the next account with `--model` unchanged on every attempt
 ([jobs.md](jobs.md) rule 5a). And the sweep: no emitted account string names a "primary" or a
-"fallback".
+"fallback". Holds the 2026-08-15 model-scope rules too: a model-naming refusal writes a scoped
+cooldown that leaves the same account selectable for a walk at another family, while an
+account-wide session-limit wording blocks both; the incident's ping-pong pinned end to end — a
+premium-model refusal moves the current, and the ordinary-model wake that follows answers on its
+FIRST boot, paying zero extra; a model-less selection still treats every cooldown as blocking;
+per-scope records stack without shortening each other; an old-format record without the scope
+field parses as `all`; the dispute fallback (rule 10a) fires exactly once, only when every
+offered account refused at the raised model, never on a genuine answer and never on the job
+path; and the rebook delay (wake-queue.md rule 23a) honours the soonest expiry covering the
+wake's model.
 `tests/test_wake_limit_cut.sh` — the wake path end to end in the sandbox: a walk that ends cut
 journals a failed run naming the session limit, writes nothing to the conversation, and re-books
 through the outage-retry path; a walk with credit left delivers the later account's reply and

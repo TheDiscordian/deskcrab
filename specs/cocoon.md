@@ -151,7 +151,11 @@ moved from a regex that reads commands to a mount namespace that does not.
    `DISPUTE_EFFORT` (default high) unless the caller already asked for more, and when
    `DISPUTE_MODEL` is set, that model takes the turn. The 2026-08-10 spiral ran entirely on the
    loop's cheapest settings — the turns where being wrong costs the most were the ones bought at
-   the lowest price.
+   the lowest price. Strength never costs the turn its life: when every account refuses at the
+   raised model, the walk re-runs once at the ordinary model with the frame intact
+   ([account-fallback.md](account-fallback.md) rule 10a) — on 2026-08-15 a dispute turn died
+   over the premium model's per-account allowance while the ordinary model worked on the same
+   logins.
 8. A dispute turn carries the dispute layer ([prompt-assembly.md](prompt-assembly.md) rule 36b),
    which MUST state, in this spirit and at strength: his report of what he saw or heard IS what
    happened, and is not a claim to evaluate; the rejected theory is dead and may not be restated
