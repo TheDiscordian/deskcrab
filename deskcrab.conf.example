@@ -130,6 +130,17 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Nobody is waiting on a wake, so it can afford more thinking.
 # WAKE_EFFORT="medium"
 
+# Optional: the staleness gate on held wake notes (specs/wake-queue.md rule
+# 27b). A note held for a hot conversation comes back through the queue; before
+# it is delivered, a cheap bounded judge reads what has actually been said
+# since the note was written and drops it silently when the conversation has
+# already covered or overtaken it — a held note must not announce as fresh news
+# a thing the user was told half an hour ago. Only a positive verdict drops;
+# a judge that fails or times out delivers the note.
+# WAKE_STALE_GATE=1                 # set 0 to deliver held notes unjudged
+# WAKE_STALE_MODEL="claude-fable-5" # the staleness judge
+# WAKE_STALE_TIMEOUT=45             # seconds before the judge is abandoned
+
 # Optional: seconds without life signs before an autonomous wake is presumed
 # hung and reaped (default: 300). There is no wall-clock limit on wakes — a
 # session counts as alive while it streams output OR its process tree burns

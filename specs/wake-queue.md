@@ -181,10 +181,13 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        writing: that these words were not worth opening her mouth for. A wake that chose to speak
        has something it judges worth saying out loud and that choice stands whatever the clock
        says — rule 29 is untouched. What is held is a note, and a note keeps.
-     - **Held, never dropped.** The words go back through the queue's one door as an event wake
-       `WAKE_HOT_RETRY` out — comfortably past the hot window, so the retry is not a second
-       interruption — with the held words in the reason, so she meets them again in a quiet minute
-       and decides afresh with the conversation in front of her. The booking is capped
+     - **Held, never dropped — at hold time.** The words go back through the queue's one door as
+       an event wake `WAKE_HOT_RETRY` out — comfortably past the hot window, so the retry is not a
+       second interruption — with the held words in the reason, so she meets them again in a quiet
+       minute and decides afresh with the conversation in front of her. What the comeback then
+       faces at fire time is rule 27b's staleness gate, which may retire a note the intervening
+       conversation has already covered — journalled and ledgered, never silently. The booking is
+       capped
        (`WAKE_HOT_HOLD_CAP`, scoped to the held-reason prefix): a stack of held asides all landing
        on the first quiet minute is the same storm one delay later. The comeback is a booking like
        any other and the cap can refuse it, so the hold MUST read the booking's answer BEFORE the
@@ -198,6 +201,51 @@ for reduction here — every rule below makes the queue **visible and bounded**,
      - **Said in those words in the journal**, exactly as the night's hold and the busy hold are,
        and for the same reason — a wake the heat held is not a wake that had nothing to say, and
        the next session and the since-your-last-reply anchor both read that line.
+27b. A held note's comeback MUST be judged for **relevance** before it is delivered, not only for
+     heat. The hold judged one thing — is the conversation busy — and nothing ever compared the
+     note to what was said while it waited: on 2026-08-15 the user was told live at 00:48 that the
+     chess game was won, and a held note announced that same win as fresh news at 01:19, three
+     more stale notes queued behind it. A note is a claim about a moment, and the moment can pass
+     while the note stands in the queue.
+     - **The stamp arms the gate.** `wake_hold_for_heat` MUST stamp the held reason with the
+       moment the holding session BEGAN (`held at YYYY-MM-DD HH:MM`, human and speakable, parsed
+       back out by one expression) — the session's start and not the hold itself, because the
+       exchange that makes a note stale can land while the note's own session is still mid-flight,
+       and a window opening at the hold would exclude the very exchange that covered it. The stamp
+       rides the REASON because the reason is the only part of a booking that survives deferrals,
+       outage retries and restore verbatim; a record field would be re-minted as "now" by every
+       re-book and the window would silently shrink to nothing. The gate keys on the stamp, never
+       on the booker: any autonomous booking whose reason carries the stamp gets the same
+       judgement, whoever wrote it.
+     - **At fire time**, after the wake lock is taken (so the record judged against is as fresh as
+       it can be) and before the wake session exists, the gate gathers what has actually been said
+       between them since the stamp — from the day journal, the durable record: his words from
+       interactive turns (a wake's "user" slot holds its agenda, not him), her replies only where
+       they were DELIVERED, judged by the journal's own convention that a parenthesised outcome
+       reached nobody — which is also what keeps the holding wake's own journal line, the note
+       riding its outcome, from reading as the note having been said. One bounded question goes to
+       a cheap judge (`WAKE_STALE_MODEL`, default `claude-fable-5`, cut off at
+       `WAKE_STALE_TIMEOUT` seconds, the classifier invocation shape): has this already been said
+       to him, or has it been overtaken by later events? The answer is one line, `SAY` or `DROP`,
+       with the reason on it.
+     - **When nothing has been said since the stamp, the judge MUST NOT be called.** Nothing can
+       have gone stale, and the model call is the gate's whole cost.
+     - **On DROP the note is discarded silently to him and loudly to the record**: nothing spoken,
+       nothing notified, nothing shown, nothing appended to the conversation — and the drop with
+       its reason lands on the sessions log and the day journal (a parenthesised outcome carrying
+       the note's words), on the durable wake ledger under its own action (`dropped-stale`), and
+       on the gate's own trace log. A note that vanishes with no account of itself is the
+       empty-reply hole wearing a new face.
+     - **The gate fails OPEN, and only a positive verdict drops.** A judge that refuses, times
+       out, errors, or answers unparseably delivers the note and logs the failure plainly; an
+       unparseable stamp delivers unjudged; `WAKE_STALE_GATE=0` disables the gate whole. The gate
+       may only ever remove speech, never add or alter it — a lost real note is the worse failure,
+       and staleness is the only ground on which silence may win.
+     - **The boundary with rule 29 holds.** Rule 29 forbids judging a reply the wake WROTE and
+       deciding it is not worth voicing; nothing here reads a fresh reply. The gate reads a note
+       from a past session being replayed as news, and judges its freshness against the record of
+       what has been said since — never its worth. It exists on the user's instruction, the night
+       of the incident.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence.
 29. No mechanism may judge a wake's written reply after the fact and decide it is not worth voicing.
@@ -377,6 +425,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 | `${STATE_PREFIX}-wake-book.lock` | the booking queue, held across check-then-act |
 | `${STATE_PREFIX}-wake-urgent` | the urgent lane's claim: the epoch until which an event wake is waiting for the run lock or due back for it (rule 21b) |
 | `${STATE_PREFIX}-wake-defer-<key>` | consecutive blocked-lock deferrals of one kind-and-reason; cleared when that wake takes the lock (rule 21a) |
+| `${STATE_PREFIX}-stale-check.log` | the staleness gate's trace (rule 27b): one line per decision — skipped, said, dropped, or judge failure |
+| `${STATE_PREFIX}-stale-judge-<pid>.log` | the staleness judge's own stream, ledgered for tokens and removed by the gate |
 | transient units `deskcrab-wake-<epoch>-<pid>[.timer]` | systemd user manager; the record's shadow |
 | `systemd/deskcrab-wake.timer` | the random background interval |
 | `systemd/deskcrab-wake-restore.service` | restore at login |
@@ -520,6 +570,13 @@ into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rul
 sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue, a hold the
 cap refused is journalled as refused rather than as a comeback, and a display-only hold's comeback
 carries the built content itself, not a placeholder),
+`tests/test_wake_stale_note.sh` (rule 27b: the hold stamps the comeback's reason with a parseable
+held-at moment; a stamped note whose substance the intervening exchange already covered is
+DROPPED — nothing spoken, shown, notified or appended, the drop on the journal, the wake ledger
+and the trace, the note and the exchange both proven to have reached the judge; a note about
+something never mentioned since is SAID and delivered; no turns since the stamp means the judge
+is never invoked; a judge that fails delivers the note and logs the failure; an unstamped reason
+never arms the gate),
 `tests/test_wake_ledger_utf8.sh` (the ledger's UTF-8 guarantee: a reason whose em-dash straddles
 the 200-character trim boundary lands as valid UTF-8 with the partial character dropped whole,
 plain grep — no `-a` — still finds the record, an em-dash short of the boundary survives intact,

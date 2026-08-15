@@ -320,6 +320,23 @@ case "${1:-}" in
             exit 0
         fi
 
+        # A held note coming back through the queue faces one more question
+        # before anything else runs (specs/wake-queue.md rule 27b): the hold
+        # judged only HEAT, and on 2026-08-15 a note announcing a won chess
+        # game — which the user had been told about live at 00:48 — re-fired
+        # at 01:19 as fresh news, three more stale notes queued behind it.
+        # The gate reads the hold stamp out of the reason, gathers what has
+        # been said between them since from the day journal, and asks a cheap
+        # bounded judge whether the note is already covered or overtaken.
+        # Only a positive DROP retires it — journalled, ledgered, and traced,
+        # never silently — and a judge that fails delivers. Placed after the
+        # lock on purpose, so the record it judges against is as fresh as it
+        # can be; an unstamped reason falls straight through.
+        if wake_stale_note_drop; then
+            ensure_next_wake
+            exit 0
+        fi
+
         rotate_convo
         WAKE_SOURCE="on your own background timer"
         [ "$WAKE_KIND" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"

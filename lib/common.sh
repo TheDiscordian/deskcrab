@@ -186,6 +186,19 @@ CONVO_HOT_WINDOW="${CONVO_HOT_WINDOW:-120}"
 # storm waiting for a quiet minute.
 WAKE_HOT_RETRY="${WAKE_HOT_RETRY:-300}"
 WAKE_HOT_HOLD_CAP="${WAKE_HOT_HOLD_CAP:-3}"
+# The staleness gate on a held note's comeback (specs/wake-queue.md rule 27b).
+# The hold judges only HEAT — is the conversation busy — and nothing ever
+# compared the note to what was said while it waited: on 2026-08-15 he was
+# told live at 00:48 that the chess game was won, and a held note announced
+# the same win as fresh news at 01:19, with three more stale notes queued
+# behind it. Before a stamped held note is delivered, a cheap bounded judge
+# reads what has actually been said between them since the note was written
+# and answers one question: already said, or overtaken? Only a positive DROP
+# verdict retires a note — a judge that errors or times out delivers, because
+# a real note lost is the worse failure. 0 disables the gate entirely.
+WAKE_STALE_GATE="${WAKE_STALE_GATE:-1}"
+WAKE_STALE_MODEL="${WAKE_STALE_MODEL:-claude-fable-5}"
+WAKE_STALE_TIMEOUT="${WAKE_STALE_TIMEOUT:-45}"
 
 # Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
 SERVE_PORT="${SERVE_PORT:-8723}"
@@ -5293,6 +5306,14 @@ wake_claude_run_chain() {
 # anyone reading the queue and wondering why a chess aside is booked for
 # twenty past.
 WAKE_HELD_REASON_PREFIX="You had this to say while he was mid-conversation and it was held:"
+# The hold stamp inside a held reason: the moment the note's knowledge began,
+# carried IN the reason because the reason is the only part of a booking that
+# survives deferrals, outage retries and a reboot's restore verbatim — a
+# record field would be re-minted as "now" by every re-book, and the staleness
+# window (rule 27b) would silently shrink to nothing. Human and speakable on
+# purpose: the clause reads as prose in the fired wake's agenda, and the gate
+# parses it back out with this one expression.
+WAKE_HELD_STAMP_RE='held at [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}'
 
 # Put a held note back on the queue (specs/wake-queue.md rule 27a). Through
 # the module's one door — nothing here mints a unit or touches the wakes
@@ -5309,14 +5330,24 @@ WAKE_HELD_REASON_PREFIX="You had this to say while he was mid-conversation and i
 # "coming back in 5min" over a note that was already gone.
 wake_hold_for_heat() {  # <the held words>
     WAKE_HOLD_REFUSAL=""
-    local WORDS OUT
+    local WORDS OUT STAMP
     WORDS="$(utf8_trim "$1" 600)"
     [ -n "$(printf '%s' "$WORDS" | tr -d '[:space:]')" ] || {
         WAKE_HOLD_REFUSAL="nothing to hold"; return 1; }
+    # The stamp is the HOLDING SESSION'S START, not the moment of the hold
+    # (rule 27b). The note was written over the minutes this session ran, and
+    # the exchange that makes it stale can land DURING those minutes — on
+    # 2026-08-15 the user was told about a won chess game live at 00:48, while
+    # the wake whose note announced that same win was still mid-flight; a
+    # window opening at the hold itself would have excluded the very exchange
+    # that covered the note. Everything said after this session began is
+    # something the note cannot claim as its own news.
+    STAMP="$(date -d "@${SESSION_START:-$(date +%s)}" '+%Y-%m-%d %H:%M' \
+        2>/dev/null || date '+%Y-%m-%d %H:%M')"
     OUT="$("$SCRIPT_DIR/crab" wake-at --by hot-hold \
         --cap "$WAKE_HOT_HOLD_CAP" --cap-prefix "$WAKE_HELD_REASON_PREFIX" \
         "${WAKE_HOT_RETRY}s" event \
-        "$WAKE_HELD_REASON_PREFIX $WORDS — the conversation has had a chance to cool since. Say it now if it still stands, and let it go if it does not." \
+        "$WAKE_HELD_REASON_PREFIX $WORDS — held at $STAMP; the conversation has had a chance to cool since. Say it now if it still stands, and let it go if it does not." \
         2>&1)"
     case "$OUT" in
         *"Not booked"*)
@@ -5325,6 +5356,188 @@ wake_hold_for_heat() {  # <the held words>
             return 0 ;;
         *)
             WAKE_HOLD_REFUSAL="the comeback booking failed"; return 1 ;;
+    esac
+}
+
+# --- The staleness gate (specs/wake-queue.md rule 27b) ----------------------
+# A held note was judged only for HEAT — is the conversation busy — and never
+# for RELEVANCE against what was said while it waited. 2026-08-15: the user
+# was told live at 00:48 that the chess game was won; the held note announced
+# the same win as fresh news at 01:19, with three more stale notes queued
+# behind it. Before a stamped note is delivered, one bounded question goes to
+# a cheap judge: already said, or overtaken? The gate can only ever REMOVE
+# speech, never add it, and only on a positive DROP — a judge that errors,
+# times out or answers unparseably delivers the note, because a real note
+# lost is the worse failure. The boundary with rule 29 holds: nothing here
+# reads a reply a wake just wrote. It reads a note from a PAST session being
+# replayed as news, and judges its freshness, never its worth — on the user's
+# own instruction, the night of the incident.
+
+# One line per decision — the only trace of a gate that mostly says nothing,
+# and the only way to tell "judged and said" from "never armed".
+STALE_CHECK_LOG="${STATE_PREFIX}-stale-check.log"
+stale_check_log() {
+    printf '%s\t%s\n' "$(date '+%F %T')" "$1" >> "$STALE_CHECK_LOG" 2>/dev/null
+    return 0
+}
+
+# What has actually been said between them since an epoch, from the day
+# journal — the durable record, immune to the conversation file's rotation
+# and compaction, and carrying the one convention this gate needs: a
+# parenthesised outcome is a turn that reached nobody. His words count from
+# every interactive turn (a wake's "user" slot holds its agenda, not him);
+# her words count only when they were DELIVERED — which is also what keeps
+# the holding wake's own journal line, the hold note riding its outcome, from
+# reading as the note having been said. Bounded: each side clipped, the last
+# forty lines kept.
+wake_turns_since() {  # <epoch>  -> labelled lines, empty when nothing was said
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$DAY_JOURNAL_DIR" "$1" <<'PY'
+import json, os, sys, time
+d, cut = sys.argv[1], int(sys.argv[2])
+days = {time.strftime("%Y-%m-%d", time.localtime(t)) for t in (cut, time.time())}
+entries = []
+for day in sorted(days):
+    try:
+        fh = open(os.path.join(d, day + ".jsonl"), encoding="utf-8")
+    except OSError:
+        continue
+    with fh:
+        for raw in fh:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(e, dict) or e.get("kind") == "job":
+                continue
+            ep = e.get("epoch")
+            if not isinstance(ep, int) or ep < cut:
+                continue
+            entries.append(e)
+entries.sort(key=lambda e: e.get("epoch", 0))
+def clip(t, n):
+    t = " ".join((t or "").split())
+    return t if len(t) <= n else t[:n] + " …(clipped)"
+out = []
+for e in entries:
+    t = (e.get("time") or "")[11:16] or "??:??"
+    kind = e.get("kind", "?")
+    delivered = not (e.get("outcome") or "").strip().startswith("(")
+    if kind != "wake" and e.get("user"):
+        out.append("[%s] he said: %s" % (t, clip(e.get("user"), 600)))
+    if e.get("reply") and delivered:
+        who = "she said, unprompted" if kind == "wake" else "she said"
+        out.append("[%s] %s: %s" % (t, who, clip(e.get("reply"), 800)))
+print("\n".join(out[-40:]))
+PY
+}
+
+# One question to a cheap bounded judge, in the classifier's shape (the
+# claudism mirror's invocation: material on stdin, instructions as the system
+# prompt, no tools, one attempt on the ambient login — the account walk's
+# resilience buys nothing for a gate that fails open, and costs the wake's
+# latency). Prints the verdict line; returns 1 on refusal, timeout, or an
+# answer with no verdict in it.
+wake_stale_judge() {  # <note> <what has been said since>
+    local NOTE="$1" TURNS="$2" SYS OUT SLOG="${STATE_PREFIX}-stale-judge-$$.log"
+    SYS="You are the staleness gate on one held note (specs/wake-queue.md rule 27b).
+The assistant wrote the note below during a busy conversation; it was held
+rather than spoken, and it is now about to be delivered as if it were news.
+Under it is what has actually been said between her and the user since the
+note was written.
+
+One question: has the substance of this note already reached him, or has it
+been overtaken by what happened since? A note announcing a result he has
+since been told, or speaking to a situation the conversation has since moved
+past, must not arrive wearing the face of fresh news.
+
+When uncertain, answer SAY — a real note lost is the worse failure. DROP only
+when the record below plainly already covers the note's substance, or plainly
+supersedes it.
+
+Answer with exactly one line and nothing else:
+DROP: <one line — what already covers or supersedes it>
+SAY: <one line — why it is still news to him>"
+    : > "$SLOG"
+    { printf '=== THE HELD NOTE ===\n%s\n\n=== WHAT HAS BEEN SAID BETWEEN THEM SINCE IT WAS WRITTEN ===\n%s\n' \
+        "$NOTE" "$TURNS" \
+      | CLAUDE_CLASSIFY_STREAM=1 \
+        CLAUDE_CLASSIFY_TIMEOUT="$WAKE_STALE_TIMEOUT" \
+        claude_classify "$WAKE_STALE_MODEL" "$SYS"; } >"$SLOG" 2>&1 || true
+    # The token ledger (specs/metrics.md rule 13), before the stream is
+    # removed. The ambient login is the honest account hint, as the mirror's.
+    token_ledger_record "$SLOG" stale-judge "$WAKE_STALE_MODEL" "" \
+        "${CLAUDE_CONFIG_DIR:--}"
+    # Judged structurally, off the CLI's own events — never by matching the
+    # answer's words (account-fallback.md rule 15).
+    if claude_stream_refusal "$SLOG" >/dev/null; then
+        rm -f "$SLOG"
+        return 1
+    fi
+    OUT="$(DESKCRAB_DEBUGLOG="$SLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+    rm -f "$SLOG"
+    OUT="$(printf '%s\n' "$OUT" | tr -d '\r' | grep -m1 -E '^(SAY|DROP)\b')" \
+        || return 1
+    printf '%s\n' "$OUT"
+}
+
+# The gate itself, run at fire time before the wake session exists. Armed by
+# the STAMP, not the booker: any autonomous booking whose reason carries the
+# hold stamp gets the same judgement, whoever wrote it — hot-hold stamps
+# today, and any future holder that stamps is covered without another gate.
+# Returns 0 only when the note was positively judged stale and dropped — the
+# caller then ends the wake without a session; every other path, the unstamped
+# reason included, returns 1 and the wake proceeds exactly as before.
+wake_stale_note_drop() {  # reads WAKE_REASON, WAKE_ID, WAKE_KIND
+    [ "${WAKE_STALE_GATE:-1}" = "1" ] || return 1
+    local STAMP EPOCH NOTE TURNS VERDICT WHY
+    STAMP="$(printf '%s' "${WAKE_REASON:-}" \
+        | grep -oE "$WAKE_HELD_STAMP_RE" | tail -n1)"
+    [ -n "$STAMP" ] || return 1
+    STAMP="${STAMP#held at }"
+    EPOCH="$(date -d "$STAMP" +%s 2>/dev/null)" || EPOCH=""
+    case "$EPOCH" in ''|*[!0-9]*)
+        stale_check_log "a stamp that would not parse ($STAMP) — delivered unjudged"
+        return 1 ;;
+    esac
+    # The note alone, out of its wrapper: the judge reads the words that
+    # would be spoken, not the hold's own framing.
+    NOTE="${WAKE_REASON#"$WAKE_HELD_REASON_PREFIX"}"
+    NOTE="${NOTE# }"
+    NOTE="${NOTE% — held at *}"
+    TURNS="$(wake_turns_since "$EPOCH")" || TURNS=""
+    if [ -z "$(printf '%s' "$TURNS" | tr -d '[:space:]')" ]; then
+        # Nothing has been said since the note was written, so nothing can
+        # have gone stale — the judge is never called (rule 27b's bound).
+        stale_check_log "nothing said since $STAMP — the judge was never called"
+        return 1
+    fi
+    if ! VERDICT="$(wake_stale_judge "$NOTE" "$TURNS")"; then
+        stale_check_log "the staleness judge failed or timed out — the note is delivered rather than lost"
+        return 1
+    fi
+    case "$VERDICT" in
+        DROP*)
+            WHY="${VERDICT#DROP}"; WHY="${WHY#:}"; WHY="${WHY# }"
+            [ -n "$WHY" ] || WHY="the conversation since already covers it"
+            # Silent to him, loud to the record: the drop lands on the
+            # sessions log and the day journal (the registration's exit trap
+            # writes both), on the wake ledger as its own action, and on the
+            # gate's trace — a note that vanishes with no account of itself
+            # is the empty-reply hole wearing a new face.
+            session_register "autonomous wake"
+            SESSION_USER_TEXT="${WAKE_REASON:-}"
+            session_outcome "(stale — held note dropped unspoken; judged against the conversation since $STAMP: $WHY) $NOTE"
+            wake_ledger dropped-stale "${WAKE_ID:-?}" "${WAKE_KIND:-event}" \
+                "$NOTE" stale-judge
+            stale_check_log "DROP: $WHY"
+            return 0 ;;
+        *)
+            stale_check_log "SAY — the note still stands: ${VERDICT#SAY}"
+            return 1 ;;
     esac
 }
 
