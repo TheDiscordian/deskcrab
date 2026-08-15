@@ -89,8 +89,8 @@ which fails silently is worse than one that does not exist.
 23. The watcher MUST seed silently on first run, so an existing tree never fires.
 24. The watcher MUST settle a burst of changes into one wake.
 25. Her own writes MUST NEVER wake her. A change is dropped when a write declaration covers it, or a
-    live session's claim names it, or it is the memory database and one of her sessions ran
-    recently.
+    live session's claim names it, or its mtime falls inside one of her own run windows (rule 25b),
+    or it is the memory database and one of her sessions ran recently.
 
 25a. The watched drawers exclude `.git` internals. Several of them are git repositories of their
     own — conduct is, and any personal directory in the extra watch set may be — and there the
@@ -100,6 +100,19 @@ which fails silently is worse than one that does not exist.
     repository's internals are invisible by construction through `git ls-files`. Without this, a
     conduct commit made by her own hand at 00:37 woke her at 00:50 about its refs and logs
     (2026-08-11).
+25b. The run window. A creation or modification whose mtime falls inside the run window of one of
+    her own sessions — start to end, widened by a small grace either side (90 seconds by default,
+    `NOTICE_SELF_RUNWIN_GRACE`) — is her own hand and MUST stay quiet with no declaration at all.
+    The windows come from the live registrations (a session still running extends to now) and from
+    the finished-sessions log, including its reaped lines; the ledger records when a session ran
+    and never which paths its tools touched, so the window match alone is the rule. Two costs are
+    accepted by name: an outside edit made while she happens to be awake is silenced, and a file
+    arriving with an old mtime that lands inside some past window is silenced too — both judged
+    cheaper than the class this closes, a session writing its own drawers right up to its final
+    second and being reported to herself as an intruder (four times on 2026-08-14 alone, wants and
+    Library both). A deletion is NEVER excused by a run window — rule 28's discipline holds.
+    Detached builder jobs are not sessions and get no window from this rule; a job's writes are
+    excused only by the declarations the job runner makes.
 26. Write declarations come in two tiers. A **strong** declaration means the path was in a provable
     write position and excuses anything, including a subtree. A **weak** declaration means the path
     merely appeared in a command she ran, and excuses exact paths only, never a deletion.
@@ -428,9 +441,12 @@ reaches her through an event wake or through a record she reads.
 
 ## TESTS
 
-**Existing:** `tests/test_notice_selfchange.sh` — 40 assertions in the most hermetic sandbox in the
+**Existing:** `tests/test_notice_selfchange.sh` — 50 assertions in the most hermetic sandbox in the
 suite, and the model for every other test; among them, `.git` internals under a watched drawer and
-under an extra watch directory fire nothing (rule 25a). `tests/test_claudism_scan.sh` — the review reads the
+under an extra watch directory fire nothing (rule 25a), and the run window both ways (rule 25b): a
+write whose mtime sits inside her own window — a live registration, a finished session's log line,
+a reaped `?`-duration line, or the grace just past the end — stays quiet, while the same write with
+no session running still fires exactly one wake, and a deletion inside a live window still surfaces. `tests/test_claudism_scan.sh` — the review reads the
 spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
 skip; the wake is booked through the door in the review's own name; a dead model still writes the
 report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep

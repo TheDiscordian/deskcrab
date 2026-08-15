@@ -25,6 +25,14 @@
 #     A record counts if it was alive at any point since judgement last ran,
 #     not merely at this instant: the diff covers that whole interval, and the
 #     interval can outlast a declaration's window, or
+#   * its mtime falls inside the run window of one of her own sessions — the
+#     live registrations (a session still running extends to now) and the
+#     finished-sessions log, each start..end widened by a small grace. A hand
+#     of hers that was demonstrably running when the byte landed does not need
+#     to have declared itself: the ledger records when a session ran, never
+#     which paths its tools touched, so the window alone is the rule (spec
+#     rule 25b; deletions again exempt, and detached jobs are not sessions —
+#     their writes answer to the declarations the job runner makes), or
 #   * it is memory.db and any of her sessions ran recently — sqlite plumbing
 #     touches that file on ~every prompt build, and every opener of the store
 #     is her own code (deletions again exempt).
@@ -74,6 +82,7 @@ SETTLE="${NOTICE_SELF_SETTLE:-60}"            # post-fire cooldown, seconds
 MAX_DEFERRALS="${NOTICE_SELF_DEFERRALS:-15}"  # live-session pushbacks before judging anyway
 RECENT="${NOTICE_SELF_RECENT:-600}"           # "a session ran recently", for memory.db
 KEEP_REPORTS="${NOTICE_SELF_KEEP_REPORTS:-10}"
+RUNWIN_GRACE="${NOTICE_SELF_RUNWIN_GRACE:-90}"  # run-window slack, seconds each side
 
 TAB=$'\t'
 NOW=$(date +%s)
@@ -253,6 +262,57 @@ for f in "$SESSIONS_DIR"/*.claim; do
     CLAIMS="$CLAIMS $(tr 'A-Z' 'a-z' < "$f")"
 done
 
+# Her run windows, one "start<TAB>end" epoch pair per line (spec rule 25b).
+# Two sources. Live registrations: field 4 of the record is the start epoch,
+# and a session still running extends to now. The finished-sessions log:
+# start datetime plus a numeric duration; a reaped line carries "?" for the
+# duration and only the reaper's clock in field 2, which is an upper bound on
+# the death, resolved against the start's date (rolled a day forward when it
+# reads earlier — no session runs 24 hours). Built once per judgement, not
+# per path. The log is its own bound — a few hundred lines in /tmp, gone on
+# reboot — so no backstop is applied here: unlike a declaration, whose life
+# is measured against scan time, a window matches the MTIME, and "this byte
+# landed while I was running" does not weaken with age.
+RUNWINS="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-runwin.XXXXXX")"
+{
+    for f in "$SESSIONS_DIR"/*; do
+        [ -e "$f" ] || continue
+        case "$f" in *.claim|*.ckpt) continue ;; esac
+        pid="$(basename "$f")"
+        [ -d "/proc/$pid" ] || continue
+        IFS="$TAB" read -r _ _ _ epoch _ < "$f" || true
+        case "$epoch" in ''|*[!0-9]*) continue ;; esac
+        printf '%s\t%s\n' "$epoch" "$NOW"
+    done
+    [ -s "$SESSIONS_LOG" ] && awk -F'\t' -v now="$NOW" '
+        {
+            s = $1; gsub(/[-:]/, " ", s); st = mktime(s)
+            if (st < 0 || st > now) next
+            if ($3 ~ /^[0-9]+$/) { en = st + $3 }
+            else {
+                d = $1; sub(/ .*/, "", d)
+                e = d " " $2; gsub(/[-:]/, " ", e); en = mktime(e)
+                if (en < 0) next
+                if (en < st) en += 86400
+            }
+            print st "\t" en
+        }' "$SESSIONS_LOG"
+} > "$RUNWINS"
+
+in_own_run_window() {  # <path> — never consulted for deletions
+    [ -s "$RUNWINS" ] || return 1
+    local mt s e
+    mt="$(stat -c %Y "$1" 2>/dev/null)"
+    case "$mt" in ''|*[!0-9]*) return 1 ;; esac
+    while IFS="$TAB" read -r s e; do
+        case "$s" in ''|*[!0-9]*) continue ;; esac
+        case "$e" in ''|*[!0-9]*) continue ;; esac
+        [ "$mt" -ge $(( s - RUNWIN_GRACE )) ] && [ "$mt" -le $(( e + RUNWIN_GRACE )) ] \
+            && return 0
+    done < "$RUNWINS"
+    return 1
+}
+
 # Sets TOUCH_TIER to "" (strong), "weak", or "weakdir" on a hit.
 #   strong  — an exact file or a declared directory subtree; excuses anything.
 #   weak    — a file named in a command of mine; the caller refuses deletions.
@@ -328,6 +388,8 @@ while IFS="$TAB" read -r kind path; do
         :
     elif [ "$kind" != "deleted" ] && suppressed_by_claim "$path"; then
         why="claimed by a live session"
+    elif [ "$kind" != "deleted" ] && in_own_run_window "$path"; then
+        why="own run window (a session of mine was running when this landed)"
     elif [ "$kind" != "deleted" ] && [ "$path" = "$DATA_DIR/memory/memory.db" ] && recent_activity; then
         why="own plumbing (memory store, session active)"
     fi
@@ -342,7 +404,7 @@ done <<< "$CHANGES"
 # something to re-litigate on the next trigger.
 mv "$CUR" "$SNAP"
 printf '%s\n' "$NOW" > "$JUDGED"
-rm -f "$ACTIVE"
+rm -f "$ACTIVE" "$RUNWINS"
 
 if [ "${#FIRE_PATH[@]}" -eq 0 ]; then
     exit 0
@@ -354,7 +416,8 @@ REPORT="$STATE_DIR/notice-self-report-$NOW.md"
     echo "# Outside changes to your own files — $(date '+%F %T')"
     echo
     echo "These paths are part of you and changed on disk without a touching"
-    echo "record, a live claim, or your own plumbing explaining them."
+    echo "record, a live claim, a run window of yours, or your own plumbing"
+    echo "explaining them."
     for want_kind in deleted created modified; do
         header_done=0
         for i in "${!FIRE_PATH[@]}"; do

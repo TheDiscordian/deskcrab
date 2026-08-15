@@ -223,3 +223,82 @@ run
 echo "more index bytes" >> "$T/library/.git/index"
 run
 check "extra-dir .git internals fire nothing either" [ "$(wakes)" = 13 ]
+
+
+echo "== a write inside her own LIVE session's run window stays quiet (rule 25b) =="
+# The incident of 2026-08-14: a wake wrote a want document at 20:31:16 and the
+# watcher reported her own hand back to her as an intruder at 20:31:17 — four
+# times in one evening across the wants shelf and the library — because a
+# session writing right up to its final second leaves fresh mtimes with no
+# touching record and no claim. The ledger never records which paths a
+# session's tools touched, only when it ran, so the run window IS the rule.
+# (conduct/ and engineering/ carry no lingering suppression records by this
+# point; wants/ still sits under the strong touching record from earlier and
+# the library under the weak-directory ones, so neither can prove anything.)
+NOW=$(date +%s)
+mkdir -p "$DESKCRAB_STATE_PREFIX-sessions"
+# A registration in the real five-field shape: kind, pid, started, epoch, starttime.
+printf 'autonomous wake\t%s\t%s\t%s\t%s\n' "$$" \
+    "$(date -d "@$(( NOW - 60 ))" '+%Y-%m-%d %H:%M:%S')" "$(( NOW - 60 ))" "0" \
+    > "${DESKCRAB_STATE_PREFIX}-sessions/$$"
+echo "written by my own live wake" >> "$T/data/deskcrab/conduct/new-rule.md"
+echo "a rule filed as I ran" > "$T/data/deskcrab/conduct/late-rule.md"
+run
+check "own-session write stays quiet" [ "$(wakes)" = 13 ]
+check "own-session creation stays quiet too" \
+    bash -c "! grep -q 'late-rule.md' '$T/wake-calls'"
+check "run-window suppression logged with its reason" \
+    grep -q "quiet: modified.*new-rule.md (own run window" "$STATE/notice-self.log"
+
+echo "== but a deletion during her own run window still surfaces =="
+rm "$T/library/new-thing.md"
+run
+check "deletion inside a live window still fires" [ "$(wakes)" = 14 ]
+check "the deletion is named" contains "$(last_wake)" "deleted: new-thing.md"
+rm -f "${DESKCRAB_STATE_PREFIX}-sessions/$$"
+
+echo "== a FINISHED session's window from the log covers a write made while it ran =="
+# The window comes from the sessions log line common.sh writes at finish:
+# start datetime, end clock, duration, kind, outcome. The write's mtime is set
+# back inside the window, the way a wake's late write looks by the time a
+# deferred judgement finally runs.
+NOW=$(date +%s)
+printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -d "@$(( NOW - 300 ))" '+%Y-%m-%d %H:%M:%S')" \
+    "$(date -d "@$(( NOW - 120 ))" '+%H:%M:%S')" "180" \
+    "autonomous wake" "(wrote in my own drawers)" \
+    >> "$DESKCRAB_STATE_PREFIX-sessions.log"
+echo "landed mid-session" > "$T/data/deskcrab/engineering/mid-session-note.md"
+touch -d "@$(( NOW - 200 ))" "$T/data/deskcrab/engineering/mid-session-note.md"
+run
+check "write inside a finished session's window stays quiet" [ "$(wakes)" = 14 ]
+
+echo "== the grace forgives a write seconds past the session's end =="
+echo "final-second flush" > "$T/data/deskcrab/engineering/final-second.md"
+touch -d "@$(( NOW - 60 ))" "$T/data/deskcrab/engineering/final-second.md"  # 60s past end, inside the 90s grace
+run
+check "write inside the grace stays quiet" [ "$(wakes)" = 14 ]
+
+echo "== a reaped line ('?' duration) still yields its window =="
+# session_reap writes '?' for the duration and only the reaper's clock in
+# field 2. The end resolves against the start's date, rolling a day forward
+# when it reads earlier; a parse that failed here would either crash the
+# judgement or open a window that swallows everything.
+printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -d "@$(( NOW - 7200 ))" '+%Y-%m-%d %H:%M:%S')" \
+    "$(date -d "@$(( NOW - 7000 ))" '+%H:%M:%S')" "?" \
+    "autonomous wake" "(killed — no summary)" \
+    >> "$DESKCRAB_STATE_PREFIX-sessions.log"
+echo "written under a reaped session" > "$T/data/deskcrab/journal/reaped-era.md"
+touch -d "@$(( NOW - 7100 ))" "$T/data/deskcrab/journal/reaped-era.md"
+run
+check "write inside a reaped session's window stays quiet" [ "$(wakes)" = 14 ]
+
+echo "== an outside hand while NO session runs still raises exactly one notice =="
+# The other direction, and the one this feature must never weaken: no live
+# registration, every logged window ended at least two minutes ago, the grace
+# is 90 seconds — a fresh mtime belongs to nobody and must fire.
+echo "an outside hand entirely" >> "$T/data/deskcrab/conduct/new-rule.md"
+run
+check "outside write with no session running fires exactly one wake" [ "$(wakes)" = 15 ]
+check "the outside write is named" contains "$(last_wake)" "modified: new-rule.md"
