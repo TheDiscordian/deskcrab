@@ -234,7 +234,7 @@ judge), `crab memory`, and the nightly sleep.
 | Id | What implementation must fix |
 |---|---|
 | `MAJ-20` | The suppression declaration ignores every isolation knob and is written unconditionally when the store opens. Scratch store paths are in the live declaration file. |
-| `MAJ-22` | The wake query boundary is exclusive where it should be inclusive, so an agenda exactly at the budget composes an empty query. Latent today — live agendas are far under the budget — but it is the boundary the first long agenda hits, and the belief that it was firing was itself the harm. |
+| `MAJ-22` | The wake query boundary was exclusive where it should be inclusive, so an agenda clipped to exactly the budget was then thrown away whole — the query composed from the longest agendas lost precisely its subject (or went empty, with no want to fall back on). Closed 2026-08-15 by rule 9: the segment accounting charges the joining newline only where a join happens, so a budget-sized first segment is within the budget and is kept. Proven red-to-green, end to end, by `tests/test_recall_query_composition.sh`. |
 | `MAJ-26` | Retrieval alone resets the decay clock, so a note that is surfaced constantly and credited never is frozen at full confidence forever. |
 | `MAJ-32` | Ingest tail-clamped a single prompt with the cap saturated against the live journal, so the day's earliest material was never ingested. Closed 2026-08-11 by rule 29's windowing: one distiller pass per whole-chunk window, candidates concatenated, every pass reported. |
 | `MAJ-33` | Ingest's `--dry-run` guarded the decay pass and the cursor write but not the add loop, so a dry run with real distiller candidates wrote records into the live store. Closed 2026-08-11 by rule 41: a dry run adds nothing, decays nothing, advances nothing, and prints what it would have added. |
@@ -262,14 +262,26 @@ decay pass untouched; both kinds accepted from ingest candidates; a second simil
 its own row rather than a duplicate or a supersession; and the 'one night each' label on any block
 that renders them),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
-module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
+module), `tests/test_recall_query_composition.sh` (since 2026-08-15, the same query proven with
+NOTHING replaced: `crab remote` and `crab wake` — the entry points the live turn and the live wake
+actually run — drive `build_system_prompt` into the shipped `memory.py recall-block`, and the
+composed query is read at the embedder's own doorstep, a recording stand-in listening at
+`MEMORY_EMBED_URL`. It pins the conversation shape of rules 2 and 3 — the user's last turn first
+and holding the weighted share, her preceding reply behind it, and not one word of the wants
+shelf even while a want is fresh in hand; the wake shape of rules 4 and 5 — the reason, the one
+named want's shelf line and its most recent dated section, never the other wants and never the
+document's history; and the cap of rules 7 and 8 on BOTH shapes — an over-long user turn and an
+over-long agenda each come out clipped to the budget, the bite is named in the recall log through
+the `--log` path lib/common.sh actually wires, and a build that cut nothing logs nothing),
+`tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).
 
 **To be written or fixed:**
 
 - `tests/test_memory.py` — the query-budget case asserts only that the query is not too long, and
-  zero satisfies that. Add a lower bound. Add the inclusive-boundary case for an agenda exactly at
-  the budget.
+  zero satisfies that. Add a lower bound. (The inclusive-boundary case for an agenda exactly at
+  the budget is held end to end by `tests/test_recall_query_composition.sh` since 2026-08-15; a
+  unit spelling here would still be welcome.)
 - `tests/test_memory.py` — pass the recall log path explicitly at every call site, and pin every
   isolation knob. One test in this file currently writes into the live diagnostic log.
 - `tests/test_memory_isolation.sh` — open a scratch store and assert that nothing under the live

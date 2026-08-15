@@ -846,13 +846,21 @@ def wake_query(reason, wants_file, budget=RECALL_QUERY_CHARS, dropped=None):
         nonlocal used
         if not seg:
             return False
-        if used + len(seg) + 1 > budget:
+        # The joining newline is charged only where a join happens: the first
+        # segment costs its own length and nothing more, so a segment exactly
+        # the size of the budget is WITHIN the budget (rule 9). The old
+        # accounting charged +1 unconditionally, which made the boundary
+        # exclusive — a reason clipped to exactly the budget was then thrown
+        # away whole, and the longest agendas composed a query missing
+        # precisely their subject (MAJ-22).
+        need = len(seg) + (1 if parts else 0)
+        if used + need > budget:
             if dropped is not None:
                 dropped.append(f"{what or 'segment'} dropped ({len(seg)} "
                                f"chars, {budget - used} left)")
             return False
         parts.append(seg)
-        used += len(seg) + 1
+        used += need
         return True
 
     take(_clip(_segment(reason), budget, dropped, "wake reason"), "reason")

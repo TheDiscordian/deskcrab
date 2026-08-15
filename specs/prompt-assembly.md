@@ -611,6 +611,9 @@ herself, and a transcript whose last block is the previous night's note written 
 ## TESTS
 
 **Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
+`tests/test_recall_query_composition.sh` (the same query proven end to end: `crab remote` and
+`crab wake` drive the assembler into the real `memory.py recall-block`, and the query is read at
+the embedder's own doorstep — memory-recall.md carries the assertions),
 `tests/test_wake_voice.sh` (the register the wake agenda is written in: every operational rule it
 carries, its own byte ceiling, and a sweep of all four assembled profiles for text that models the
 word her conduct bans),
