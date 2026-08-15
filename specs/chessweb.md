@@ -120,7 +120,22 @@ cannot be changed.
    reason names no move and cannot go stale. The cap flags are inserted immediately after the
    wake command's literal `wake-at` element, ahead of the when/kind positionals (`wake_book`
    parses flags first); a `$DESKCRAB_CHESSWEB_WAKE_CMD` override that carries no `wake-at`
-   has no queue to cap and is handed the reason alone, untouched. And the **end-of-game
+   has no queue to cap and is handed the reason alone, untouched. But the cap alone bounds
+   only what PENDS, never the fire rate, and 2026-08-15 (00:48–01:11) proved it: a game at
+   browser speed put a move on the board every ten to thirty seconds, every post-move booking
+   found the previous wake already fired — nothing pending, cap satisfied — and the ledger
+   took a booking per move for twenty minutes; five of those wakes fired inside ninety
+   seconds, each with nothing to say about a board the last one had just covered. So the
+   post-move booking also carries a **per-game voice cooldown**
+   (`$DESKCRAB_CHESSWEB_VOICE_COOLDOWN` seconds, default 180; `0` disables): the first voice
+   after a quiet spell books at `1s` as ever, and while the cooldown holds, the booking is
+   made with its fuse stretched to the cooldown's remaining span instead — which parks it
+   PENDING, where the cap and the byte-identical reason can finally do their work: later
+   moves' bookings inside the window are refused by the cap or fold into the pending unit,
+   and the one wake that fires speaks about the board as it stands then. At most one voice
+   per game per cooldown; a refused booking never advances the cooldown clock (the bridge
+   reads the queue's own "Not booked"/"already pending" answer), so a drained or held wake
+   cannot push her voice ever further out. And the **end-of-game
    wake**, carrying the game id,
    how the game ended, and the movetext, because she should hear how her game finished. Neither
    wake is ever waited on: the next opponent move is answered whether or not the previous

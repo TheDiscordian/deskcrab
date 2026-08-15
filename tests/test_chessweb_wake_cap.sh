@@ -61,8 +61,13 @@ start_bridge() { # <chess dir> <wake log> <wake cmd> [serve args...]
     shift 3
     : > "$wakelog"
     : > "$SANDBOX/serve.log"
+    # The voice cooldown is OFF here on purpose: this file's assertions are
+    # about the cap flags' placement on every booking, and the cooldown
+    # (chessweb.md rule 7, its own test file) would stretch the second and
+    # third bookings' fuses away from the literal 1s these awks pin.
     DESKCRAB_CHESS_DIR="$dir" CHESSWEB_WAKE_LOG="$wakelog" \
         DESKCRAB_CHESSWEB_WAKE_CMD="$wakecmd" \
+        DESKCRAB_CHESSWEB_VOICE_COOLDOWN=0 \
         DESKCRAB_CHESS_MOVER_CMD="$MOVER_STUB" \
         CHESSWEB_MOVER_REPLIES="$REPLIES" \
         "$VENV_PY" -B "$REPO/lib/chessweb.py" serve --port 0 \

@@ -464,6 +464,10 @@ class Hub:
         # (rule 12), and /thinking asks the mover about this key's failures.
         self.think_key = None
         self.port = None
+        # The post-move voice cooldown clock, per game (chessweb.md rule 7):
+        # the earliest moment the NEXT post-move wake for that game may
+        # fire. Advanced only when the queue actually takes a booking.
+        self.voice_next = {}
         self.mover = chess_mover.Mover(self._post_model_move, log=log,
                                        metric=chess_cli.metric, alert=loud)
 
@@ -728,18 +732,30 @@ class Hub:
                 self.spoken_move_wake(g, san, desc)
             return True
 
-    def book_wake(self, reason, what, cap_prefix=None):
+    def book_wake(self, reason, what, cap_prefix=None, when=None):
         """cap_prefix, when given, asks the queue to hold at most ONE
         pending wake whose reason opens with it (wake-queue.md rule 44).
         The flags go immediately after the command's own 'wake-at'
         element, ahead of the when/kind positionals, because wake_book
-        parses flags first. A wake command with no literal 'wake-at' —
-        an overridden $DESKCRAB_CHESSWEB_WAKE_CMD in the tests — has no
-        queue to cap and is handed the reason alone, untouched."""
+        parses flags first. when, when given, replaces the command's own
+        literal '1s' fuse — the same documented bargain as the flag
+        insertion. A wake command with no literal 'wake-at' — an
+        overridden $DESKCRAB_CHESSWEB_WAKE_CMD in the tests — has no
+        queue to cap or to pace and is handed the reason alone,
+        untouched.
+
+        Returns True only when the queue took the booking. A cap refusal
+        or a coalesce ("Not booked", "already pending") is False, and the
+        caller's voice-cooldown clock must not advance on it (chessweb.md
+        rule 7): a refused booking rides a wake that is already pending,
+        and restamping on it would push her voice ever further out."""
         cmd = list(self.wake_cmd)
-        if cap_prefix and "wake-at" in cmd:
-            at = cmd.index("wake-at") + 1
-            cmd[at:at] = ["--cap", "1", "--cap-prefix", cap_prefix]
+        if "wake-at" in cmd:
+            if cap_prefix:
+                at = cmd.index("wake-at") + 1
+                cmd[at:at] = ["--cap", "1", "--cap-prefix", cap_prefix]
+            if when and "1s" in cmd:
+                cmd[cmd.index("1s")] = when
         cmd = cmd + [reason]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
@@ -747,10 +763,16 @@ class Hub:
             if r.returncode != 0:
                 log(f"wake failed ({r.returncode}): "
                     f"{(r.stderr or r.stdout).strip()}")
-            else:
-                log(f"wake booked: {what}")
+                return False
+            out = (r.stdout or "").strip()
+            if "Not booked" in out or "already pending" in out:
+                log(f"wake folded into a pending one: {what}")
+                return False
+            log(f"wake booked: {what}")
+            return True
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"wake failed: {e}")
+            return False
 
     def spoken_move_wake(self, g, san, desc):
         """After she plays, she wakes — a consequence of the move, never a
@@ -776,9 +798,29 @@ class Hub:
         job's one wake had to arrive through. The cap prefix is the unique
         per-game head of this very sentence, so the cap counts and drains
         one game's wakes alone (wake-queue.md rule 44, soonest-first: the
-        far end is cancelled, the one about to fire is kept)."""
+        far end is cancelled, the one about to fire is kept).
+
+        And the booking is PACED, because the cap bounds only what pends
+        (chessweb.md rule 7, measured 2026-08-15 00:48-01:11): at browser
+        speed a move landed every ten to thirty seconds, each booking
+        found the previous wake already fired — nothing pending, cap
+        satisfied — and five wakes on one game fired inside ninety
+        seconds, each with nothing left to say. The per-game cooldown
+        ($DESKCRAB_CHESSWEB_VOICE_COOLDOWN, default 180s, 0 disables)
+        books the first voice after a quiet spell at 1s as ever; inside
+        the window the fuse is stretched to the cooldown's remaining
+        span, which parks the booking PENDING — where the cap and the
+        byte-identical reason finally hold: later bookings in the window
+        are refused or fold in, and the one wake that fires speaks about
+        the board as it stands then. The clock advances only on a
+        booking the queue took, so a refusal cannot push her voice ever
+        further out."""
         gid = g["id"]
-        self.book_wake(
+        cooldown = voice_cooldown()
+        now = time.time()
+        fire_at = max(now + 1, self.voice_next.get(gid, 0.0))
+        fuse = f"{max(1, int(fire_at - now + 0.5))}s"
+        booked = self.book_wake(
             f"chessweb: you played a move in game {gid} against "
             f"{g['opponent']}; it is already on their board, and nothing "
             f"waits on this wake. If you feel like it, say one sentence to "
@@ -786,7 +828,10 @@ class Hub:
             f"reasoning or plans, they hear everything you say — or say "
             f"nothing at all. Board: betty-chess show {gid}",
             f"her voice after {san} in {gid}",
-            cap_prefix=f"chessweb: you played a move in game {gid}")
+            cap_prefix=f"chessweb: you played a move in game {gid}",
+            when=fuse)
+        if booked:
+            self.voice_next[gid] = fire_at + cooldown
 
     def resign_human(self, want_gid=None):
         """POST /resign (rule 19): the user gives up their own side of the
@@ -1274,6 +1319,18 @@ def default_wake_cmd():
     crab = Path(__file__).resolve().parent.parent / "crab"
     return [str(crab) if crab.is_file() else "crab",
             "wake-at", "--by", "chessweb", "1s", "event"]
+
+
+def voice_cooldown():
+    """The post-move voice cooldown in seconds (chessweb.md rule 7):
+    $DESKCRAB_CHESSWEB_VOICE_COOLDOWN, default 180, 0 disables. A value
+    that does not parse is the default, never a crash — a bad knob must
+    not cost her the game."""
+    raw = os.environ.get("DESKCRAB_CHESSWEB_VOICE_COOLDOWN", "")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 180.0
 
 
 def main(argv=None):

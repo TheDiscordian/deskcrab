@@ -6133,16 +6133,38 @@ wake_reply_is_filler() {  # <spoken-text>
     done
 
     CORE='nothing( (else|new|much|more|further|major|important|notable|significant|pressing|urgent|of note|of substance))?( (to|worth) (say|saying|report|reporting|add|adding|share|sharing|mention|mentioning|note|noting|flag|flagging|announce|announcing|update|updating|tell|telling|do))?'
-    CORE="$CORE|no (message|messages|update|updates|news|report|reports|comment|comments|reply|response|output|note|notes|change|changes|word)( to (report|share|say|add|give|offer))?"
+    CORE="$CORE|no (message text|reply text|message|messages|update|updates|news|report|reports|comment|comments|reply|response|output|note|notes|change|changes|word|words|text)( to (report|share|say|add|give|offer))?"
     CORE="$CORE|none|silence|silent|(all |still |everything |pretty )?(quiet|silent)|all clear|nada|zilch|n/a|nil"
     CORE="$CORE|(staying|stay|keeping|keep|remaining|remain) (quiet|silent)"
     CORE="$CORE|no need to (speak|talk|say anything|report)|standing by|holding my peace"
     # Not a sentence at all: the CLI's own stringified nothing. Measured on two
     # of three real wakes on 2026-08-07 — a wake that ended with no message text
     # arrived here as an assistant text block holding the literal word
-    # "undefined", and the desk said it out loud. Only the bare word counts;
-    # "the config value is undefined" is a real sentence and speaks.
-    CORE="$CORE|undefined|null"
+    # "undefined", and the desk said it out loud. And on 2026-08-15, 01:07, a
+    # wake with genuinely empty text arrived as the literal placeholder
+    # "*(no message text)*" and the desk read the absence out as words — the
+    # normalisation above has already stripped the brackets, so the bare
+    # phrase families here and in the no-family above are the whole test.
+    # Only the bare word counts; "the config value is undefined" is a real
+    # sentence and speaks.
+    CORE="$CORE|undefined|null|empty|blank|(empty|blank) (message|reply|response|text)"
+    # The first person announcing her own prior speech (rule 29a, 2026-08-15:
+    # "I've said my piece on that game twice already tonight", "I've said
+    # everything I have about that game tonight", "I've nothing further on
+    # that game tonight" — five in ninety seconds, two aloud). The lead-in
+    # strip above has already removed the "I've"; the optional pronoun below
+    # covers the forms it leaves. A topic phrase — "on that game", "about
+    # it" — is allowed ONLY here and on the nothing-further family, never on
+    # the plain nothing-to-say core: "Nothing to say about the backup" is a
+    # fact about the backup, and it speaks. The topic is bounded: a pronoun,
+    # or a determiner and at most two words, or a name-and-number ("browser
+    # 012" is what "browser-012" becomes above).
+    local TOPIC COUNT SELFSAID
+    TOPIC='( (on|about|regarding) (it|that|this|him|her|them|(that|this|the|the same|my|his|her|its|their) [a-z0-9]+( [a-z0-9]+)?|[a-z]+ [0-9]+))?'
+    COUNT='( (once|twice|thrice|again|already|(two|three|four|five|six|seven|eight|nine|ten|[0-9]+) times))*'
+    SELFSAID="(i ((have|ve|had|d) )?)?((already|just) )?said (my (piece|bit|say)|everything( i (have|had|ve|d))?( to say)?|it( all)?|all (i|that i) (have|had)|what i (have|had)( to say)?|enough)"
+    CORE="$CORE|nothing (else|new|more|further)( from me)?( (to|worth) (say|saying|report|reporting|add|adding|share|sharing|mention|mentioning|note|noting|flag|flagging|announce|announcing|update|updating|tell|telling|do))?$TOPIC"
+    CORE="$CORE|$SELFSAID$COUNT$TOPIC$COUNT"
     TAIL='( (here|now|right now|today|tonight|yet|for now|at the moment|at present|from me|on my end|this time|this wake|either|though|really|so far))*'
 
     # The single clause: the whole utterance is the no-op.
@@ -6154,7 +6176,7 @@ wake_reply_is_filler() {  # <spoken-text>
     # "the other session said the tests were green, but…") breaks the match
     # and the reply speaks. Punctuation is already spaces, so "No message —
     # the other session already said its piece" arrives here as one flat line.
-    local WHO OBJ ADV J_OTHER J_DONE J_CHANGE SINCE J_HEARD JUSTIFY ALONE CONN
+    local WHO OBJ ADV J_OTHER J_DONE J_CHANGE SINCE J_HEARD J_SELF J_REPEAT JUSTIFY ALONE CONN
     # …the other session already said it. WHO is only ever another voice of
     # hers; a subject outside this list (the disk, the job, the embedder) is
     # the world, and the reply speaks.
@@ -6175,7 +6197,16 @@ wake_reply_is_filler() {  # <spoken-text>
     # it" alone could be real news, and it speaks.
     J_HEARD="(he|she|the user) ((has|had|s) )?already (heard|seen|read|got) (it|that|this|it all|all of it|everything)( already)?( (from|at|on) ((the|that) )?((other|desk|phone) )?(session|conversation|turn|voice|end|side))?"
     J_HEARD="$J_HEARD|(he|she|the user) ((has|had|s) )?(heard|seen|read|got) (it|that|this|it all|all of it|everything) (from|at|on) ((the|that) )?((other|desk|phone) )?(session|conversation|turn|voice|end|side)"
-    JUSTIFY="$J_OTHER|$J_DONE|$J_CHANGE|$J_HEARD"
+    # …I already said it myself (2026-08-15) — the same first-person core the
+    # single clause now matches, standing as the excuse: "Nothing more from
+    # me — I've said my piece."
+    J_SELF="$SELFSAID$COUNT$TOPIC$COUNT"
+    # …the Nth trip round the same subject: "Fifth time round on the same
+    # game tonight — nothing further from me on it." An ordinal is required
+    # and the phrase is anchored into the whole-line match, so "the fifth
+    # time round the loop crashed" never gets here.
+    J_REPEAT="(second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|umpteenth|[0-9]+(st|nd|rd|th)) time (round|around|through|over|back)$TOPIC( (tonight|today|now|already|this evening))*"
+    JUSTIFY="$J_OTHER|$J_DONE|$J_CHANGE|$J_HEARD|$J_SELF|$J_REPEAT"
     CONN='( (because|since|as|so|and|but))?'
 
     # Two clauses: the no-op core wearing its excuse, either way round.
@@ -6187,7 +6218,7 @@ wake_reply_is_filler() {  # <spoken-text>
     # J_DONE is restricted here to its by-phrase form: a bare "that was
     # covered" with no no-op core beside it is ambiguous, and ambiguity
     # speaks.
-    ALONE="$J_OTHER|(it|that|this|everything|all of it) ((s|is|was|has been|had been) )?(all )?((already|just) )?(been )?(said|covered|answered|addressed) (by|at|on|in|from) ((the|that) )?((other|desk|phone|live|first|earlier|previous|second) )?(session|conversation|turn|voice|end|side)|$J_CHANGE|$J_HEARD"
+    ALONE="$J_OTHER|(it|that|this|everything|all of it) ((s|is|was|has been|had been) )?(all )?((already|just) )?(been )?(said|covered|answered|addressed) (by|at|on|in|from) ((the|that) )?((other|desk|phone|live|first|earlier|previous|second) )?(session|conversation|turn|voice|end|side)|$J_CHANGE|$J_HEARD|$J_REPEAT"
     printf '%s\n' "$T" | grep -Eq "^($ALONE)\$"
 }
 

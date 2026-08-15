@@ -20,6 +20,17 @@
 # any channel and is journalled as silence, because the empty reply is the
 # documented default when another session already covered it.
 #
+# And then the FIRST person (2026-08-15, MAJ-36): five wakes on one
+# browser-speed chess game fired inside ninety seconds, and the gate knew
+# the announcement of silence only without a subject — "I've said my piece
+# on that game twice already tonight", "I've nothing further on that game
+# tonight" walked through it, two of them aloud. And at 01:07 the worst
+# shape yet: a wake with genuinely EMPTY text arrived as the literal
+# placeholder "*(no message text)*", and the desk read the absence out as
+# words. Rule 29a now carries the first-person already-said core, the
+# repeat-count justification, the topic phrase on speech-history cores
+# only, and the bare absence placeholders.
+#
 # So this holds the whole path to the promise, from both ends:
 #
 #   1. the corpus, at unit level — every filler shape mutes, and every real
@@ -138,6 +149,27 @@ fail() { die "$*"; }
         "The other session already covered it."
         "Nothing changed."
         "Nothing has changed since then."
+        # The first-person shapes and the topic phrase (2026-08-15, rule
+        # 29a): five wakes on one browser-speed chess game inside ninety
+        # seconds, two of them aloud. The first four are the exact
+        # sentences the night produced.
+        "I've said my piece on that game twice already tonight."
+        "I've said everything I have about that game tonight."
+        "I've nothing further on that game tonight."
+        "Fifth time round on the same game tonight — nothing further from me on it."
+        "I've said my piece."
+        "Said my piece already."
+        "I've said enough."
+        "Nothing further on it."
+        "Nothing more about that game."
+        "Nothing new on that board tonight."
+        # The stringified absence (2026-08-15, 01:07): a wake with genuinely
+        # EMPTY text arrived as this literal placeholder, and the desk read
+        # the absence out as the words "no message text".
+        "*(no message text)*"
+        "(no message text)"
+        "no message text"
+        "Empty."
     )
     # Real speech that merely CONTAINS the words. Muting any of these is the
     # failure this gate must never become — several are shorter than the
@@ -190,6 +222,17 @@ fail() { die "$*"; }
         "Already done."
         "It was handled."
         "Done."
+        # First-person said-shapes with the world behind them, and ordinals
+        # that are about the world rather than her own rounds — the topic
+        # phrase (2026-08-15) must never widen the gate to any of these.
+        "I said everything I have to the recruiter."
+        "He said it all in the meeting."
+        "Said my piece to him about the tests, and he agreed to fix them."
+        "The fifth time round the loop crashed."
+        "Third time through the suite, two failures."
+        "Nothing further happened after the crash."
+        "Nothing new about the crash — the log rotated."
+        "The reply text is empty because the stream died."
     )
     for t in "${FILLER[@]}"; do
         wake_reply_is_filler "$t" || fail "filler would be spoken aloud: $t"
@@ -217,7 +260,10 @@ JOURNAL="${DESKCRAB_STATE_PREFIX}-sessions.log"
 for t in "Nothing to say." "Nothing to report." "No update." "Quiet here." \
          "Nothing new." "No message." "Silence." "Nothing." \
          "No message — the other session already said its piece." \
-         "The other session already covered it." ; do
+         "The other session already covered it." \
+         "I've nothing further on that game tonight." \
+         "I've said my piece on that game twice already tonight." \
+         "*(no message text)*" ; do
     run_wake "$t"
     [ -f "$WORK/spoken.txt" ] \
         && { echo "--- synthesized ---"; cat "$WORK/spoken.txt"; \
@@ -231,7 +277,7 @@ for t in "Nothing to say." "Nothing to report." "No update." "Quiet here." \
         fail "filler was appended to the conversation as a bubble: $t"
     fi
 done
-ok "10 fillers through the real wake path — nothing spoken, no bubble"
+ok "13 fillers through the real wake path — nothing spoken, no bubble"
 
 # The words are muted, not lost: the journal is where a wake nobody heard has
 # always belonged, and losing the trace would make the mute unauditable.
@@ -243,6 +289,8 @@ grep -qF "Nothing to say." "$JOURNAL" \
     || fail "the swallowed words themselves are not in the journal"
 grep -qF "already said its piece" "$JOURNAL" \
     || fail "the suppressed meta-narration is not in the journal — the mute lost the note"
+grep -qF "*(no message text)*" "$JOURNAL" \
+    || fail "the suppressed absence placeholder is not in the journal — the mute lost the note"
 ok "the muted words survive in the session journal"
 
 # --- 2a: the silent EXIT — no message text at all ---------------------------

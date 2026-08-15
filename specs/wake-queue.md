@@ -215,6 +215,22 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        and nothing else, matched whole and anchored. A reply carrying real content alongside the
        announcement ("Nothing to report on the build, but two tests fail") MUST fall through to
        speech — muting one real reply is a worse failure than voicing one stray no-op.
+     - The announcement in the FIRST person is the same announcement (2026-08-15, five wakes in
+       ninety seconds, two of them aloud: "I've said my piece on that game twice already tonight",
+       "I've said everything I have about that game tonight", "I've nothing further on that game
+       tonight"). The gate MUST match the first-person already-said core ("said my piece", "said
+       everything I have", with repeat counts), the repeat-count clause standing as the
+       justification ("Fifth time round on the same game tonight"), and — only on cores that
+       reference her own prior speech (said-my-piece; nothing further/more/else/new) — a short
+       topic phrase ("on that game", "about it"). The topic phrase is NEVER allowed on the plain
+       nothing-to-say core: "Nothing to say about the backup" is a fact about the backup and MUST
+       still speak.
+     - A reply whose entire text is a PLACEHOLDER naming the absence of a message — "*(no message
+       text)*", "(no message)", "no reply", the CLI's bare "undefined" — is not an announcement to
+       be weighed but the absence itself, stringified (2026-08-15, 01:07: the literal words "no
+       message text" were synthesised and spoken at the desk). It MUST terminate the delivery
+       exactly as a genuinely empty reply does: nothing spoken, nothing notified, nothing shown,
+       no bubble; the placeholder survives only on the journal line.
      - The muted words are never lost: they ride the wake's journal line (rule 25's), which is where
        a wake nobody heard has always belonged.
      - The gate is the backstop, never the instruction. The wake prompt MUST name the silent exit —
