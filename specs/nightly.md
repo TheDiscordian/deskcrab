@@ -225,7 +225,13 @@ night is where the day's promises are settled honestly, from the whole record at
     never performed is a miss exactly as a caught one is. The journal is the sweep's whole
     evidence, so it errs toward surfacing: a fulfilment the record cannot show is a miss the
     morning can dismiss in a sentence, where a miss the night dropped is a promise that died
-    twice.
+    twice. Erring toward surfacing has one hard exception, shared with the live judge
+    ([turn-pipeline.md](turn-pipeline.md) rule 32b): a NEGATIVE commitment — one to refrain
+    from acting ("I'm leaving X alone", "I won't touch Y", "nothing further from me on Z")
+    — is never a miss, however empty the day's record stands on it. Absence of action is
+    the keeping of it, so an abstention has no fulfilment the record could ever show; the
+    sweep's judge classifies each commitment's polarity before fulfilment and drops the
+    negative unjudged.
 53. Every miss lands as a sweep record on the durable ledger, and the day's misses are
     surfaced together as ONE morning event wake through the queue's one door, in the checker's
     own identity (`promise-check`), quoting the missed promises. A clean day books nothing —

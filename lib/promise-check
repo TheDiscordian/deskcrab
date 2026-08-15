@@ -538,6 +538,18 @@ something else — and a claim of understanding (\"I worked out why\", \"I
 realised\", \"the cause is\", \"what's happening is\"): that reports a finding,
 owes no work, and is never judged.
 
+Classify each commitment's POLARITY before judging it. A NEGATIVE
+commitment — one whose content is a commitment to REFRAIN from acting:
+\"I'm leaving X alone\", \"I won't touch Y\", \"nothing further from me on
+Z\", \"I'll stay out of it\" — is NEVER UNKEPT, whatever the records hold:
+absence of action IS the keeping of it, an empty record is exactly what a
+kept abstention looks like, and by construction no tool record can ever
+back it. Do not judge a negative commitment against the records at all —
+answer for it
+KEPT: <the commitment, shortened> | negative — a commitment to refrain, kept by the absence of action
+Only a POSITIVE commitment, one that obliges a concrete act, is judged
+against the records below.
+
 A commitment is KEPT when anything in ANY of the five records plausibly
 performed, embodies, or scheduled it — match by substance, not wording, and
 another session's call
@@ -596,6 +608,18 @@ want or opinion, a hypothetical, work she attributes to someone or
 something else — and a claim of understanding (\"I worked out why\", \"I
 realised\", \"the cause is\", \"what's happening is\"): that reports a finding,
 owes no work, and is never judged.
+
+Classify each commitment's POLARITY before judging it. A NEGATIVE
+commitment — one whose content is a commitment to REFRAIN from acting:
+\"I'm leaving X alone\", \"I won't touch Y\", \"nothing further from me on
+Z\", \"I'll stay out of it\" — is NEVER UNKEPT, whatever the record holds:
+absence of action IS the keeping of it, an empty record is exactly what a
+kept abstention looks like, and by construction no tool record can ever
+back it. Do not judge a negative commitment against the record at all —
+answer for it
+KEPT: <the commitment, shortened> | negative — a commitment to refrain, kept by the absence of action
+Only a POSITIVE commitment, one that obliges a concrete act, is judged
+against the record below.
 
 A commitment is KEPT when a tool call in the record plausibly performed it —
 match by substance, not wording. A call that durably scheduled the work
@@ -832,7 +856,12 @@ or not it was caught live. Judge fulfilment from the record — a later
 outcome or work trace naming the specific work — not from her later say-so
 alone. Offers, conversation plans, and bare wants are not commitments, and
 neither is a claim of understanding (\"I worked out why\", \"the cause is\"):
-a finding reported owes no work and is never a miss.
+a finding reported owes no work and is never a miss. Classify each
+commitment's POLARITY before fulfilment: a NEGATIVE commitment — one to
+REFRAIN from acting (\"I'm leaving X alone\", \"I won't touch Y\", \"nothing
+further from me on Z\") — is never a miss, however empty the day's record
+stands on it. Absence of action IS the keeping of it: an abstention has no
+fulfilment the record could ever show, so drop it unjudged.
 
 Answer with one line per genuine end-of-day miss and nothing else:
 MISS: <the promise, quoted verbatim> @ <HH:MM it was made> | <one sentence why it reads unfulfilled>

@@ -294,6 +294,8 @@ PROMISE_CHECK_EVIDENCE_WINDOW=bogus \
 check_eq "the model still ran" "$(claude_n)" "1"
 check "on the narrow prompt — the pre-widening header" \
     grep -q "=== THE TURN'S TOOL RECORD ===" "$T/model-stdin"
+check "which still classifies POLARITY first — the fallback is no blind spot" \
+    grep -q "POLARITY" "$T/model-stdin"
 check_eq "with no widened section offered" \
     "$(sandbox_count_in 'OTHER SESSIONS' "$T/model-stdin")" "0"
 check_eq "and the flag still lands: one ledger line, one wake" \
@@ -351,6 +353,37 @@ STUB
 check "the missing artefact is named as not found" \
     grep -qF "$T/notes/frost.md — NOT found on disk" "$T/model-stdin"
 check_eq "and the flag lands: one ledger line, one wake" "$(ledger_n)$(records)" "11"
+
+echo
+echo "a negative commitment — a promise to REFRAIN — is never flagged on an empty record:"
+# "I'm leaving the game alone entirely now." wears the commitment shape
+# (I'm VERBing), so the pre-check hands it to the judge — and the judge used
+# to hold no category for it: a promise NOT to act has, by construction, no
+# tool record that could ever back it, and an empty record was read as the
+# breach when it is the keeping. A chase wake was booked against exactly
+# this sentence on 2026-08-15. The judge now classifies polarity first and
+# short-circuits the negative to KEPT (turn-pipeline.md rule 32b).
+reset
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"KEPT: leaving the game alone | negative — a commitment to refrain, kept by the absence of action"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" turn wake "$(date +%s)" 4256 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I'm leaving the game alone entirely now." >/dev/null 2>&1
+check_eq "the pre-check hands it on — 'I'm leaving' wears the commitment shape" \
+    "$(claude_n)" "1"
+check "the judge is told to classify POLARITY before judging" \
+    grep -q "POLARITY" "$T/model-stdin"
+check "and that a negative commitment is kept by the absence of action" \
+    grep -q "kept by the absence of action" "$T/model-stdin"
+check "with the refrain shapes named in the instructions" \
+    grep -q "leaving X alone" "$T/model-stdin"
+check_eq "nothing ledgered, nothing booked — an abstention is not a debt" \
+    "$(ledger_n)$(records)" "00"
+check "and the trace records the kept verdict" grep -q "1 kept, 0 unkept" "$CHECK_LOG"
 
 echo
 echo "the side door holds the same gate — no commitment shape, no model:"
@@ -479,6 +512,8 @@ check "AND the 15:00 work trace that reconciles the drip-line promise" \
     grep -q "wrote ~/notes/drip-line.md" "$T/model-stdin"
 check "the refuting desk trace reached the judge (rule 32e)" \
     grep -q "did: ran no tools, touched nothing" "$T/model-stdin"
+check "the sweep's judge is told a REFRAIN commitment is never a miss" \
+    grep -q "REFRAIN" "$T/model-stdin"
 check "and the fulfilling desk trace beside it" \
     grep -q "did: wrote ~/notes/frost.md" "$T/model-stdin"
 check_eq "two sweep records landed on the ledger" \

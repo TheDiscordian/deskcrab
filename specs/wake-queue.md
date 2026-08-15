@@ -306,7 +306,13 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     exactly as the night sweep has
     always ruled a promise fulfilled by a later session's record. A claim of understanding —
     "I worked out why", "the cause is" — is a finding, not a commitment, and MUST NOT be
-    judged at all. Each pasted record MUST be
+    judged at all. A NEGATIVE commitment — one to refrain from acting ("I'm leaving X
+    alone", "I won't touch Y", "nothing further from me on Z") — MUST never be flagged
+    UNKEPT: absence of action is the keeping of it, an empty record is exactly what a kept
+    abstention looks like, and by construction no record can ever back it (a chase wake was
+    booked against "I'm leaving the game alone entirely now", 2026-08-15 00:52); the judge
+    rules on each commitment's polarity first and short-circuits the negative to KEPT
+    without consulting the records. Each pasted record MUST be
     bounded (bounded per call and per file, with any clip marked — never a raw byte cut, per
     the DATA section's one-trim rule). The two disk-truth sections (named files, pending
     wakes) fail soft: an unreadable one is presented to the judge as unreadable and named on

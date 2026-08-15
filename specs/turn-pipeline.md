@@ -225,7 +225,16 @@ ledger.
      and a bare want are not commitments. Neither is a claim of understanding — "I worked out
      why", "I realised", "the cause is" — which reports a finding and owes no work: the checker
      read "I worked out X" as "I did the work X" and accused a diagnosis of being an unkept
-     chore (2026-08-11 09:42). The record the judge holds is wider than the turn's
+     chore (2026-08-11 09:42). And polarity comes before judgement: a NEGATIVE commitment —
+     one whose content is a commitment to REFRAIN from acting ("I'm leaving X alone", "I
+     won't touch Y", "nothing further from me on Z") — MUST never be ruled UNKEPT, by the
+     live judge or by the sweep. Absence of action IS the keeping of it: an empty tool
+     record is exactly what a kept abstention looks like, and by construction no record can
+     ever back it — the checker read "I'm leaving the game alone entirely now" as an unkept
+     chore and booked a chase wake against a promise no tool call could ever keep
+     (2026-08-15 00:52). The judge's instructions MUST have it classify each commitment's
+     polarity first and short-circuit the negative to KEPT without consulting the records at
+     all. The record the judge holds is wider than the turn's
      own calls ([wake-queue.md](wake-queue.md) rule 43b): she runs several hands at once and
      the announced work is often performed by a parallel session or a dispatched builder, so
      the judge is handed the other sessions' recent tool records and the jobs ledger's recent
