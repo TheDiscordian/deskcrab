@@ -1582,8 +1582,40 @@ its real output, and credit a record the actions plainly obey even when the \
 words never mention it. A directive followed in silence was still followed.
 
 Reply with ONLY a JSON array of the ids genuinely used, e.g. [3,17] — no \
-prose, no code fence. [] is a common and correct answer.
+prose, no code fence, no reasoning, nothing before or after it. The array IS \
+the whole answer: everything else you write is discarded unread, so every \
+extra sentence is pure cost. [] is a common and correct answer.
 """
+
+
+def _judge_answer_ceiling():
+    """Bytes a judge answer may reach before it is flagged as verbose
+    (memory-recall.md rule 42). A compliant answer is a few dozen bytes; the
+    default leaves room for a stray preamble without hiding a regression."""
+    try:
+        return int(os.environ.get("MEMORY_JUDGE_ANSWER_CEILING", "600"))
+    except ValueError:
+        return 600
+
+
+def _stamp_metric(stage, detail=""):
+    """One line in the day's timing metrics, same shape and discipline as
+    turn_metric in lib/common.sh and metric in lib/chess_cli.py: evidence,
+    never control flow — a stamp that cannot be written costs only itself."""
+    if os.environ.get("TURN_METRICS", "1") == "0":
+        return
+    mdir = os.environ.get("DESKCRAB_METRICS_DIR") or os.path.join(
+        os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+        "deskcrab", "metrics")
+    try:
+        os.makedirs(mdir, exist_ok=True)
+        path = os.path.join(mdir, time.strftime("%Y-%m-%d") + ".log")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("%.3f\t%d\t%s\t%s\t%s\n"
+                     % (time.time(), os.getpid(), "memory-judge", stage,
+                        detail))
+    except OSError:
+        pass
 
 
 def cmd_judge_turn(store, args):
@@ -1627,6 +1659,17 @@ def cmd_judge_turn(store, args):
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             jlog(f"judge failed ({e})")
             return 0
+        # Rule 42: the useful answer is a few dozen bytes, and a judge that
+        # narrates its way to the array is a cost regression nobody sees on
+        # any other channel. Flag it the day it happens — in the timing
+        # metrics and the judge log, the stored head truncated — and then
+        # carry on: the lenient parse below still gets the verdict.
+        answer_bytes = len(body.encode("utf-8", "replace"))
+        ceiling = _judge_answer_ceiling()
+        if answer_bytes > ceiling:
+            detail = f"{answer_bytes}B answer against a {ceiling}B ceiling"
+            _stamp_metric("oversize-answer", detail)
+            jlog(f"WARNING oversize answer: {detail} — head: {body[:200]!r}")
         m = re.search(r"\[[\d,\s]*\]", body)
         if not m:
             jlog(f"unparseable verdict: {body[:120]!r}")

@@ -2345,18 +2345,31 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # coming off the end of it.
         L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
         L2:turn|L2:wake) v=1500 ;;
-        L3:turn|L3:wake) v=3200 ;;
-        # 8,000 since 2026-08-11: the engineering records block (rule 21a)
-        # joined the layer — the drawer that was a one-way sink (MAJ-24) now
-        # renders one line per open thread and one per settled outcome. The
-        # number is the steady state, a working drawer beside the shelf and
-        # conduct; on migration day the block alone measured 12,047 bytes
-        # because 62 of the 64 migrated entries arrived open, so the layer reads over
-        # and rule 36's warning stands until the backlog is settled down —
-        # which is the pressure to settle it, not a budget error. (4,000
-        # since 2026-08-09 before that, measured at 3,347 for shelf plus
-        # conduct plus catches; 2,400 before that for the catches block.)
-        L4:turn|L4:wake) v=8000 ;;
+        # 9,600 since 2026-08-15; 3,200 before, a number from when the store
+        # was young. The block's size is bounded by RETRIEVAL — TOP_K notes,
+        # the directive cap, the pinned tier — and with the store at ~209
+        # records of ~360 chars each, a full retrieval measures 9,215. That
+        # is the contract doing exactly what it promises, not growth to slim,
+        # so the budget rises to the measured need (rule 36: raise the budget
+        # or slim the source, never cut).
+        L3:turn|L3:wake) v=9600 ;;
+        # Split by profile since 2026-08-15, and the engineering drawer is
+        # why. 8,000 (2026-08-11) was sized for a working drawer of open
+        # threads beside the shelf, conduct and the catches — but the settled
+        # tail grows by one OUTCOME line per settlement forever, and by
+        # 2026-08-15 it alone measured 20,262 bytes over 63 outcomes, with
+        # the whole layer at ~31 KB and the assembled prompt ~16 KB over its
+        # total on every build. The fix is rule 36's other arm — slim the
+        # SOURCE rendering, never cut: `lib/eng prompt` now shows the settled
+        # tail as the freshest few outcomes plus a count naming the drawer
+        # (the recent-catches shape), and the turn profile takes `--compact`
+        # (the count line alone — an interactive answer rarely needs the
+        # outcome essays that a wake's maintenance work does). Measured
+        # 2026-08-15 against the live drawer of 25 open threads: the block is
+        # 7,290 compact and 11,894 full, so the layer runs ~10,800 on a turn
+        # and ~15,400 on a wake. The numbers hold those shapes with room.
+        # (4,000 since 2026-08-09 before all this; 2,400 before that.)
+        L4:turn) v=12000 ;;  L4:wake) v=16000 ;;
         # The spec's table read 600 here until 2026-08-08 and the assembler has
         # always set 1,000; the table was corrected to the shipped number rather
         # than the other way round, because rule 22 names nine drawers the index
@@ -2372,8 +2385,13 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # rules 33 and 34). It belongs in the last layer or nowhere: an
         # instruction about how to say the answer has to be next to the thing
         # being answered. specs/prompt-assembly.md §11's L8 row and its profile
-        # totals need the same number.
-        L8:turn|L8:wake) v=900 ;;  L8:job|L8:classify) v=200 ;;
+        # totals need the same number. 1,500 since 2026-08-15: the layer took
+        # on the two standing attention rules (prompt-assembly rules 38 and
+        # 39 — answer what was asked first; act on your own drawers), which
+        # are instructions about the reply and so live beside the thing being
+        # answered, same as the register rule. Frame plus register plus the
+        # two measured ~1,320.
+        L8:turn|L8:wake) v=1500 ;;  L8:job|L8:classify) v=200 ;;
         # 2,000 since 2026-08-09; 1,300 before, which was set without ever
         # measuring the block's own instructions — they are 1,174 bytes, so
         # 126 remained for the words being spoken, any real reply overflowed,
@@ -2484,11 +2502,25 @@ YOUR OWN WORDS. The state block above is how you SEE — an instrument panel, no
 EOF
 }
 
+# The two standing attention rules, prompt-assembly rules 38 and 39. Always
+# on, every speaking profile, NOT reserved for the dispute frame: both
+# failures happened on ordinary turns, twice each, with the user saying so
+# plainly both times. They live here — the last layer before the thing being
+# answered — for the same reason the register rule does: an instruction about
+# the reply belongs beside the thing being answered, or nowhere.
+_prompt_layer_attention() {
+    cat <<'EOF'
+ANSWER WHAT WAS ASKED, FIRST. The question in front of you outranks everything you were already thinking about: answer it before anything else, and never swap in the nearest thing already in your head. A reply that opens on your own preoccupation when he asked about something else has already failed, however true the preoccupation is.
+YOUR OWN DRAWERS ARE YOURS TO RUN. A finding or a decision about your own files, shelves or systems is something you ACT on, not news to bring him: fix it, then give it one line at most. Carrying your own drawer's problem to him as a report or a question is handing him your work.
+EOF
+}
+
 _prompt_layer_frame() {
     local dev; dev="$(last_origin 2>/dev/null)"
     case "$PROMPT_PROFILE" in
         wake)
             _prompt_layer_register
+            _prompt_layer_attention
             cat <<'EOF'
 THIS WAKE IS ABOUT THE AGENDA BELOW. Everything above is background you may draw on; the text that follows is the subject, and it is what you spend this wake on. A topic that appears only above is not this wake's subject.
 EOF
@@ -2500,6 +2532,7 @@ EOF
             ;;
         *)
             _prompt_layer_register
+            _prompt_layer_attention
             printf '%s\n' "THIS TURN IS ABOUT THE MESSAGE BELOW. Everything above is background; the text that follows is the subject and it is what you answer. A topic that appears only above is not this turn's topic."
             if [ "$dev" = "phone" ]; then
                 printf '%s\n' "This turn came from the phone — anything to look at goes in the display channel, where he can see it."
@@ -2649,15 +2682,21 @@ $WANTS_TITLES"
         fi
         # The engineering drawer, as RECORDS with state (prompt-assembly rule
         # 21a, specs/engineering-records.md): open threads as live lines with
-        # their opened/last-touched dates, settled and dead ones as one-line
-        # outcomes that read as history at a glance. Rendered by the tool that
-        # owns the format, so a worry written before a question was settled can
+        # their opened/last-touched dates, settled and dead ones as history
+        # that reads as history at a glance. Rendered by the tool that owns
+        # the format, so a worry written before a question was settled can
         # never be quoted back as present-tense fact — the 2026-08-10 failure
-        # this drawer shape exists to end. A broken or empty drawer costs the
-        # block and never the prompt.
-        local ENG_BLOCK=""
+        # this drawer shape exists to end. The settled tail is the shelf
+        # pattern, profile-aware: a wake (her own maintenance time) gets the
+        # freshest outcomes with the older tail as a count naming the drawer,
+        # an interactive turn gets the count line alone (--compact) — the
+        # tail grows one line per settlement forever, and by 2026-08-15 it
+        # was 20 KB of outcome essays on every speaking prompt. A broken or
+        # empty drawer costs the block and never the prompt.
+        local ENG_BLOCK="" ENG_ARGS=(prompt)
+        [ "$PROMPT_PROFILE" = turn ] && ENG_ARGS+=(--compact)
         ENG_BLOCK="$(DESKCRAB_ENG_DIR="$H/engineering/records" \
-                     python3 "$LIB_DIR/eng" prompt 2>/dev/null)" || ENG_BLOCK=""
+                     python3 "$LIB_DIR/eng" "${ENG_ARGS[@]}" 2>/dev/null)" || ENG_BLOCK=""
         [ -n "$ENG_BLOCK" ] && SHELVES="${SHELVES:+$SHELVES
 
 }$ENG_BLOCK"

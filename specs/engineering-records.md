@@ -67,9 +67,15 @@ assistant together on 2026-08-11; the session is recorded in
 
 11. The engineering drawer reaches the speaking prompts (turn and wake) through `lib/eng prompt`,
     rendered into the shelves layer. OPEN records render as live threads: title, id, `opened` and
-    `last_touched` dates. SETTLED and DEAD records render as the title plus ONE line —
-    `settled <when>: <what settled it>` (or `dead <when>: <reason>`) — and never their body prose,
-    so a resolved worry cannot be quoted back as present-tense fact. The rendering states plainly
+    `last_touched` dates — always, whole. SETTLED and DEAD records render as the title plus ONE
+    line — `settled <when>: <what settled it>` (or `dead <when>: <reason>`) — and never their body
+    prose, so a resolved worry cannot be quoted back as present-tense fact. The settled tail is
+    the shelf pattern, not the archive: the full rendering shows only recent closures (rule 11a's
+    window, floor and cap) with the older tail as a pointer naming the drawer and
+    `crab eng list --state all` as the way in; `--compact` (the interactive turn profile)
+    shows the count line alone. The tail grows one line per settlement forever, and by 2026-08-15
+    it alone was 20 KB of outcome essays on every speaking prompt — nothing is cut by this:
+    every outcome stays on disk, whole, one command away. The rendering states plainly
     that the settled section is history, not live concerns.
     Detail in [prompt-assembly.md](prompt-assembly.md) rule 21a, which owns the layer.
 11a. The settled section carries only RECENT closures. A closure renders when its `settled_at`
@@ -141,8 +147,8 @@ self-change watcher's suppression file through `crab touching`.
 body prose stays out of the prompt — migration preserving dates and idempotence, and the aging of
 rule 11a: a closure inside the window renders and one well outside it does not, the floor holds
 when every closure is old, the cap holds when many are recent, open records never age out, the
-withheld pointer appears exactly when something was withheld, and one case is pinned to its
-measured byte size so regrowth is visible);
+withheld pointer appears exactly when something was withheld, one case is pinned to its measured
+byte size so regrowth is visible, and `--compact` (the interactive turn) is the count line alone);
 `tests/test_eng_selfchange.sh` (rule 10a: a real `crab eng touch` declares its own write and the
 self-change watcher stays quiet about it, while an undeclared out-of-band edit to the same record
 still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md)).
