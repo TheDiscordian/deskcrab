@@ -240,6 +240,10 @@ cannot be changed.
        a two-line `--system-prompt`, `-p` with the prompt on stdin, a sterile cwd, auto-memory
        off. Model `$DESKCRAB_CHESS_MOVER_MODEL` (default `$CLAUDE_MODEL`, else `sonnet`);
        effort per rule 16b; per-attempt ceiling `$DESKCRAB_CHESS_MOVER_TIMEOUT` (default 90s).
+       A SELF-PLAY position is the exception: its model and its nightly budget are
+       [chess-selfplay.md](chess-selfplay.md)'s (rules 2–5 there), keyed off the job itself, and
+       the mover knob above is never consulted for one — the user's knob for real games must not
+       be spendable by the grind (2026-08-15).
     c. There is no queue. At most one position is ever being answered: a newer position arriving
        while a call is in flight kills the flight and takes the slot, and positions are
        deduplicated by `fen_key`, so the same position is never answered twice concurrently and

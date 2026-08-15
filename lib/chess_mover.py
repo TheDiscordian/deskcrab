@@ -104,6 +104,70 @@ def material_loss(board, move):
 POSTED_TTL = 10.0
 
 
+# --- Self-play: its own model, and a hard nightly budget --------------------
+# specs/chess-selfplay.md rules 2-5. On 2026-08-15 an overnight self-play
+# driver inherited DESKCRAB_CHESS_MOVER_MODEL — the user's knob for REAL
+# games — and made ~1,590 calls on the dearest model in the house, draining
+# its per-account allowance on every login; the refusals cooled whole
+# accounts and by morning a real question died on "every login is over its
+# limit". Both guards live HERE, keyed off the job, so no driver — the
+# repo's, or a copy written into a data directory by some future hand — can
+# opt back out of either.
+
+def is_selfplay(job):
+    """specs/chess-selfplay.md rule 1: the id prefix and the opponent name
+    are the whole test, so a game against a person can never trip it."""
+    return (str(job.get("gid", "")).startswith("selfplay-")
+            or job.get("opponent") == "selfplay")
+
+
+def _chess_dir():
+    return Path(os.environ.get("DESKCRAB_CHESS_DIR",
+                               str(Path.home() / ".local/share/deskcrab/chess")))
+
+
+def _selfplay_calls_file():
+    return (_chess_dir() / "selfplay"
+            / ("model-calls-" + time.strftime("%Y%m%d") + ".log"))
+
+
+def selfplay_nightly_moves():
+    try:
+        return int(os.environ.get("DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES",
+                                  "150"))
+    except ValueError:
+        return 150
+
+
+def selfplay_calls_today():
+    """Lines in today's counter file — one per model attempt, appended with
+    O_APPEND so concurrent movers count truly."""
+    try:
+        with open(_selfplay_calls_file(), encoding="utf-8",
+                  errors="replace") as fh:
+            return sum(1 for _ in fh)
+    except OSError:
+        return 0
+
+
+def selfplay_budget_spent():
+    return selfplay_calls_today() >= selfplay_nightly_moves()
+
+
+def _selfplay_charge(detail):
+    """One appended line per self-play model attempt. Best-effort: a counter
+    that cannot be written must not stop a move, but it fails loud enough to
+    read (the line lands in the caller's log via the alert path when the
+    refusal side later fires)."""
+    try:
+        path = _selfplay_calls_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("%s\t%s\n" % (time.strftime("%F %T"), detail))
+    except OSError:
+        pass
+
+
 def _env_secs(name, default):
     try:
         return float(os.environ.get(name, default))
@@ -313,13 +377,24 @@ class Mover:
         posted/stale/failed; why carries the round's most telling failure
         cause when the outcome is failed."""
         board = chess.Board(job["fen"])
+        selfplay = is_selfplay(job)
+        # The nightly budget binds BEFORE anything boots: a self-play
+        # position past the cap is refused without a CLI call, whoever is
+        # driving (specs/chess-selfplay.md rule 5).
+        if selfplay and selfplay_budget_spent():
+            why = ("selfplay nightly move budget spent (%d/%d)"
+                   % (selfplay_calls_today(), selfplay_nightly_moves()))
+            self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
+            return "failed", why
         prompt = self._prompt(job, board)
         effort = job.get("effort") or os.environ.get(
             "DESKCRAB_CHESS_MOVER_EFFORT", "medium")
         move = None
         last_why = ""
-        for label, cmd, env in self._attempts(effort):
+        for label, cmd, env in self._attempts(effort, selfplay):
             t0 = time.time()
+            if selfplay:
+                _selfplay_charge(f"{job['gid']} ply {job['ply']} {label}")
             self.metric("model-start",
                         f"{job['gid']} ply {job['ply']} effort {effort} "
                         f"{label}")
@@ -348,13 +423,14 @@ class Mover:
         return ("posted" if self.play(job, move) else "stale"), None
 
     # -- the call ----------------------------------------------------------
-    def _attempts(self, effort):
+    def _attempts(self, effort, selfplay=False):
         override = os.environ.get("DESKCRAB_CHESS_MOVER_CMD")
         if override:
             yield "stub", shlex.split(override), self._env(None)
             return
         for number, conf in self._accounts():
-            yield f"account {number}", self._claude_cmd(effort), self._env(conf)
+            yield (f"account {number}", self._claude_cmd(effort, selfplay),
+                   self._env(conf))
 
     @staticmethod
     def _accounts():
@@ -420,7 +496,7 @@ class Mover:
         return [(n, dirs[n - 1]) for n in free]
 
     @staticmethod
-    def _claude_cmd(effort):
+    def _claude_cmd(effort, selfplay=False):
         # A conf-set CLAUDE_BIN can arrive with $HOME still in it: systemd's
         # EnvironmentFile hands values through unexpanded, where every shell
         # path expanded them on the way in.
@@ -430,8 +506,14 @@ class Mover:
         if not claude or not os.path.exists(claude):
             claude = (shutil.which("claude")
                       or os.path.expanduser("~/.local/bin/claude"))
-        model = (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL")
-                 or os.environ.get("CLAUDE_MODEL") or "sonnet")
+        if selfplay:
+            # specs/chess-selfplay.md rule 2: the grind has its own knob and
+            # NEVER reads the real-game one — inheriting it is how a night of
+            # self-play drained the user's own model allowance (2026-08-15).
+            model = os.environ.get("DESKCRAB_CHESS_SELFPLAY_MODEL") or "sonnet"
+        else:
+            model = (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL")
+                     or os.environ.get("CLAUDE_MODEL") or "sonnet")
         # --output-format json: the run's own result object carries the exact
         # usage the token ledger keeps (specs/metrics.md rule 15). The answer
         # is read from its `result` field in _call; a stdout that is not that
