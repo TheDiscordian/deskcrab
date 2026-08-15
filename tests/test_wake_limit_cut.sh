@@ -95,6 +95,16 @@ REBOOK="$(grep -l "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null | head -n1)"
 grep -q "greenhouse latch" "$REBOOK" \
     || die "the re-book lost the wake's agenda: $(cat "$REBOOK")"
 
+# specs/wake-queue.md rule 23a: a walk the limits ended does not re-book into
+# the drought it just measured. The cut cooled the only account for the
+# session window (~5 h), so the re-book is due around that expiry — never on
+# the half-hour outage slot that produced the 2026-08-15 morning's
+# eight-second refusal/re-book ping-pong. Upper bound is the cap plus jitter.
+DUE="$(cut -f1 "$REBOOK" 2>/dev/null | head -n1)"
+IN=$(( ${DUE:-0} - $(date +%s) ))
+[ "$IN" -ge 17000 ] && [ "$IN" -le 21800 ] \
+    || die "the re-book ignores the cooldown expiry: due in ${IN}s (record: $(cat "$REBOOK"))"
+
 # --- 2. credit elsewhere: the fallback answers and the thought gets said ---
 : > "$CONVOFILE"
 rm -f "$WAKES_DIR"/*.wake 2>/dev/null

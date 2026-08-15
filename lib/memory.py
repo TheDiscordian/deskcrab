@@ -1155,17 +1155,35 @@ def account_state_path():
                             "deskcrab", "account-state"))
 
 
-def account_walk():
-    """(number, config dir) pairs, in the order worth trying.
+_MODEL_FAMILY_RE = re.compile(r"fable|opus|sonnet|haiku", re.I)
+
+
+def model_family(model):
+    """The model family inside a model string, lowercased — "" when none is
+    named. Mirrors claude_model_family in lib/common.sh (specs/
+    account-fallback.md rule 8a)."""
+    m = _MODEL_FAMILY_RE.search(model or "")
+    return m.group(0).lower() if m else ""
+
+
+def account_walk(model=""):
+    """(number, config dir) pairs, in the order worth trying for `model`.
 
     Mirrors claude_accounts in lib/common.sh, against the same shared state
     file: the whole list rotated to start at the current account, accounts
-    still cooling skipped — so a run firing beside others does not pay its own
-    doomed CLI boot on an account already known dry — and, with every account
-    cooling, the one whose cooldown ends soonest alone: the selection is never
-    empty (rules 7, 9, 10). Read-only on purpose: recording a refusal is the
-    shell paths' job (rule 29).
+    still cooling FOR THIS MODEL skipped — a cooldown scoped `all` covers
+    every model, one scoped to a family covers only its own, and a record
+    without the scope field reads as `all` (rules 8a, 8b; every pre-scope
+    record was account-wide) — so a run firing beside others does not pay its
+    own doomed CLI boot on an account already known dry, while another
+    family's drought benches nobody here. With no model named, every
+    unexpired cooldown blocks: the conservative pre-scope read (rule 10).
+    With every account cooling for the model, the one whose covering
+    cooldowns end soonest alone: the selection is never empty (rules 7, 9,
+    10). Read-only on purpose: recording a refusal is the shell paths' job
+    (rule 29).
     """
+    fam = model_family(model)
     dirs = account_list()
     current, cooling = 1, {}
     now = time.time()
@@ -1185,8 +1203,15 @@ def account_walk():
                         until = int(f[3])
                     except ValueError:
                         continue
-                    if until > now:
-                        cooling[dirs.index(d) + 1] = until
+                    scope = f[5] if len(f) >= 6 and f[5] else "all"
+                    if fam and scope not in ("all", fam):
+                        continue
+                    n = dirs.index(d) + 1
+                    # The LATEST covering record decides: an account under
+                    # both an account-wide session limit and a model-scoped
+                    # credits stop is selectable only when both have lapsed.
+                    if until > now and until > cooling.get(n, 0):
+                        cooling[n] = until
     except OSError:
         pass
     if not 1 <= current <= len(dirs):
@@ -1273,7 +1298,7 @@ def run_claude(prompt, model, timeout=600, log=None, kind="classify"):
     signature = limit_signature()
     refused = 0
     last = ""
-    for number, confdir in account_walk():
+    for number, confdir in account_walk(model):
         env = dict(env_base)
         env["CLAUDE_CONFIG_DIR"] = confdir
         # --output-format json: the run's own result object carries the exact

@@ -299,6 +299,17 @@ ACCOUNT_LOG_KEEP="${ACCOUNT_LOG_KEEP:-500}"
 # longer. Seconds, both knobs.
 ACCOUNT_COOLDOWN_SESSION="${ACCOUNT_COOLDOWN_SESSION:-18000}"
 ACCOUNT_COOLDOWN_CREDITS="${ACCOUNT_COOLDOWN_CREDITS:-86400}"
+# A wake whose whole walk was refused over limits re-books at the soonest
+# cooldown expiry covering its model, never on the plain outage slot — a
+# re-book fired into the drought it just measured is another refused walk
+# eight seconds later (specs/wake-queue.md rule 23a; the 2026-08-15 morning's
+# 136-wake ping-pong). The jitter spreads a stack of refused wakes off the
+# same second; the cap keeps a state file claiming next week from parking an
+# agenda that long. Every other outage keeps WAKE_OUTAGE_RETRY, the historic
+# free half hour. Seconds, all three knobs.
+WAKE_OUTAGE_RETRY="${WAKE_OUTAGE_RETRY:-1800}"
+WAKE_REBOOK_MAX="${WAKE_REBOOK_MAX:-21600}"
+WAKE_REBOOK_JITTER="${WAKE_REBOOK_JITTER:-90}"
 # Speech mutex: every path that puts audio on the speakers — the interactive
 # TTS streamer and a wake's speak_once — holds this flock for the whole speak
 # stage. Two voices at once is never acceptable: the later speaker queues
@@ -1447,7 +1458,7 @@ _state_delta_line() {  # <anchor epoch>
 # was missing, so nothing she could read said which account was answering or
 # that the selection had moved at all.
 account_state_line() {
-    local n why when cooling
+    local n why when cooling scoped
     n="$(claude_account_pick)"
     why="$(awk -F'\t' '$1 == "current" {print $5; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
     when="$(awk -F'\t' '$1 == "current" {print $4; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
@@ -1455,12 +1466,28 @@ account_state_line() {
     printf 'Account: account %s answers next' "$n"
     [ -n "$why" ] && printf ' (%s%s)' "$why" "${when:+, $when}"
     # The cooldown table is the state that explains the selection: say how
-    # much of the list is benched, when any of it is.
-    cooling="$(awk -F'\t' -v now="$(date +%s)" \
-        '$1 == "cooldown" && $4 + 0 > now {n++} END {printf "%d", n + 0}' \
-        "$ACCOUNT_STATE_FILE" 2>/dev/null)"
-    [ "${cooling:-0}" -gt 0 ] 2>/dev/null \
-        && printf ' — %s of %s accounts cooling' "$cooling" "$(claude_account_count)"
+    # much of the list is benched, when any of it is. Distinct ACCOUNTS, not
+    # records — an account may cool under several scopes at once (rule 8b) —
+    # and an account benched only for one model family is named as such, so
+    # "3 of 3 cooling" never again reads as a total outage while every other
+    # model works fine (the 2026-08-15 morning).
+    cooling="$(awk -F'\t' -v now="$(date +%s)" '
+        $1 == "cooldown" && $4 + 0 > now {
+            seen[$3] = 1
+            if (!(NF >= 6 && $6 != "" && $6 != "all")) wide[$3] = 1
+        }
+        END {
+            n = s = 0
+            for (d in seen) { n++; if (!(d in wide)) s++ }
+            printf "%d\t%d", n, s
+        }' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
+    scoped="${cooling#*	}"
+    cooling="${cooling%%	*}"
+    if [ "${cooling:-0}" -gt 0 ] 2>/dev/null; then
+        printf ' — %s of %s accounts cooling' "$cooling" "$(claude_account_count)"
+        [ "${scoped:-0}" -gt 0 ] 2>/dev/null \
+            && printf ' (%s only for one model)' "$scoped"
+    fi
     printf '\n'
 }
 
@@ -2020,7 +2047,7 @@ $(cat "$OLDFILE")"
     local SUMRC=0 SUMACCT REFUSAL
     local SUMLOG="${STATE_PREFIX}-convo-sum-stream.$$"
     NEWSUM=""
-    for SUMACCT in $(claude_accounts); do
+    for SUMACCT in $(claude_accounts "$CONVO_SUMMARY_MODEL"); do
         SUMRC=0
         : > "$SUMLOG"
         printf '%s' "$SUMMATERIAL" \
@@ -2032,7 +2059,7 @@ $(cat "$OLDFILE")"
         # one's stream (specs/metrics.md rule 14).
         token_ledger_record "$SUMLOG" summariser "$CONVO_SUMMARY_MODEL" "" "$SUMACCT"
         if REFUSAL="$(claude_stream_refusal "$SUMLOG")"; then
-            claude_limit_record "$SUMACCT" "$REFUSAL"
+            claude_limit_record "$SUMACCT" "$REFUSAL" "$CONVO_SUMMARY_MODEL"
             continue
         fi
         # Not a refusal. Anything else that went wrong goes wrong on the next
@@ -4826,13 +4853,17 @@ claude_account_number() {  # <config dir> -> its number, or nothing at all
 
 # The state file (specs/account-fallback.md rules 4 to 6): one `current` line
 # saying which account answers now, and one `cooldown` line per account known
-# dry. Every record carries the account's number for the reader and its
-# directory for resolution, so an edited configuration renumbers cleanly
-# instead of pointing at the wrong account; a recorded directory the
-# configuration no longer names is ignored.
+# dry — per account AND scope, because an account may cool under several
+# scopes at once (rule 8b). Every record carries the account's number for the
+# reader and its directory for resolution, so an edited configuration
+# renumbers cleanly instead of pointing at the wrong account; a recorded
+# directory the configuration no longer names is ignored.
 #
 #   current   <number> <dir> <epoch> <why>
-#   cooldown  <number> <dir> <until-epoch> <kind>
+#   cooldown  <number> <dir> <until-epoch> <kind> <scope>
+#
+# scope is `all` or a model family; a line without the field — every record
+# written before scope existed — reads as `all` (rule 8a).
 
 # Which account answers now, as a number. No record, or a record the list no
 # longer names, means account 1.
@@ -4843,16 +4874,60 @@ claude_account_current() {
     printf '%s\n' "${n:-1}"
 }
 
-# When account $1's cooldown ends, as an epoch — 0 when it is not cooling. An
-# expired cooldown is no cooldown: the account is selectable again, though it
-# is only reached when a refusal walks the selection onto it.
-claude_account_cooldown_until() {
-    local dir until
-    dir="$(claude_account_dir "$1")"
-    until="$(awk -F'\t' -v d="$dir" \
-        '$1 == "cooldown" && $3 == d {print $4; exit}' "$ACCOUNT_STATE_FILE" 2>/dev/null)"
+# The model FAMILY inside a model string or a refusal wording, lowercased —
+# nothing when no family is named. "fable", "claude-fable-5" and "keep using
+# Fable 5" all answer fable; a family the wording never names answers empty,
+# which every caller treats as "no model named".
+claude_model_family() {  # <model string or wording> -> family | nothing
+    printf '%s' "${1:-}" \
+        | grep -oiE 'fable|opus|sonnet|haiku' | head -n1 | tr '[:upper:]' '[:lower:]'
+}
+
+# Which SCOPE a refusal earns (specs/account-fallback.md rule 8a): `all`, or
+# one model family. Account-wide wordings win when both appear — the session
+# window is the account's own clock, and a model name inside such a wording
+# is decoration. Only a refusal that names a model with no account-wide
+# wording is the per-model allowance running dry, which must never bench the
+# account's other capacity (the 2026-08-15 drought).
+claude_refusal_scope() {  # <refusal text> -> all | family
+    local fam
+    if printf '%s' "${1:-}" | grep -qiE \
+        'session limit|5-hour limit|usage limit|weekly limit|not logged in|/login'; then
+        printf 'all\n'
+        return 0
+    fi
+    fam="$(claude_model_family "${1:-}")"
+    printf '%s\n' "${fam:-all}"
+}
+
+# Until when account (by DIR, $1) is blocked for model family $2, read from
+# state file $3: the LATEST unexpired until among the cooldown records
+# covering that family — scope `all` always covers, a model scope covers its
+# own family, and an account cooling under both is selectable for the family
+# only when both have lapsed (specs/account-fallback.md rules 8a and 8b).
+# An empty family means NO model was named, and then EVERY unexpired record
+# blocks, whatever its scope: the conservative pre-scope read (rule 10).
+# Prints 0 when nothing covering is still cooling.
+_account_blocked_until() {  # <dir> <family> <state file>
+    awk -F'\t' -v d="${1:-}" -v fam="${2:-}" -v now="$(date +%s)" '
+        $1 == "cooldown" && $3 == d {
+            scope = (NF >= 6 && $6 != "") ? $6 : "all"
+            if (fam != "" && scope != "all" && scope != fam) next
+            if ($4 + 0 > now && $4 + 0 > best) best = $4 + 0
+        }
+        END { printf "%d", best + 0 }' "${3:-$ACCOUNT_STATE_FILE}" 2>/dev/null
+}
+
+# When account $1's cooldown ends for model $2 (optional; "" = any scope
+# blocks), as an epoch — 0 when it is not cooling for that model. An expired
+# cooldown is no cooldown: the account is selectable again, though it is only
+# reached when a refusal walks the selection onto it.
+claude_account_cooldown_until() {  # <number> [model]
+    local until
+    until="$(_account_blocked_until "$(claude_account_dir "$1")" \
+        "$(claude_model_family "${2:-}")" "$ACCOUNT_STATE_FILE")"
     case "${until:-}" in ''|*[!0-9]*) until=0 ;; esac
-    if [ "$until" -gt "$(date +%s)" ]; then printf '%s\n' "$until"; else printf '0\n'; fi
+    printf '%s\n' "$until"
 }
 
 # The login to hand a DETACHED child — a job, the promise auditor, the memory
@@ -4880,27 +4955,34 @@ claude_refusal_kind() {  # <refusal text> -> session|credits
 }
 
 # Account $1 (by number) refused over a limit: it cools for its refusal kind's
-# window, and when it was the account answering, the current advances to the
-# next account not in cooldown, wrapping past the end of the list. The new
+# window, under the scope its wording earns (rules 8 and 8a — length and scope
+# are orthogonal reads of the same text), and when it was the account
+# answering, the current advances to the next account not in cooldown FOR THE
+# REFUSING WALK'S MODEL ($3), wrapping past the end of the list. The new
 # current stays current until it refuses in its turn — an account coming off
 # cooldown waits to be reached, it is never switched back to — and with every
-# account cooling, the current lands on the one whose cooldown ends soonest,
-# so the selection that follows is never empty (rules 7 and 9). $2 is the
-# refusal line, kept in the record for status displays and debugging. A cut
-# (rule 12a) is recorded through here exactly as a refusal is.
+# account cooling for that model, the current lands on the one whose covering
+# cooldowns end soonest, so the selection that follows is never empty (rules
+# 7 and 9). Another model's walk filters again from wherever the current
+# lands — a fable refusal routing it onto a fable-alive, opus-dead account
+# costs an opus walk nothing (rule 7). $2 is the refusal line, kept in the
+# record for status displays and debugging. A cut (rule 12a) is recorded
+# through here exactly as a refusal is.
 #
 # The read-modify-write runs under a lock, so two sessions refusing at once
 # each see the other's record instead of losing it. Fd 217: 8 and 9 are the
 # phone turn's and the wake's own locks, and single digits are the ones a
 # stray redirection elsewhere could collide with.
-claude_limit_record() {  # <account number> <refusal text>
-    local n="${1:-1}" refusal="${2:-limit refusal}"
-    local count kind len now until cur cur_until next i c tmp
-    local rec_tag rec_n rec_d rec_until rec_kind soonest soonest_at
+claude_limit_record() {  # <account number> <refusal text> [model of the refusing walk]
+    local n="${1:-1}" refusal="${2:-limit refusal}" fam scope
+    local count kind len now until cur cur_until next i c c_until tmp
+    local rec_tag rec_n rec_d rec_until rec_kind rec_scope soonest soonest_at
     count="$(claude_account_count)"
     case "$n" in ''|*[!0-9]*) n="$(claude_account_number "$n")" ;; esac
     { [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$n" -le "$count" ]; } 2>/dev/null || n=1
     kind="$(claude_refusal_kind "$refusal")"
+    scope="$(claude_refusal_scope "$refusal")"
+    fam="$(claude_model_family "${3:-}")"
     case "$kind" in credits) len="$ACCOUNT_COOLDOWN_CREDITS" ;; *) len="$ACCOUNT_COOLDOWN_SESSION" ;; esac
     now="$(date +%s)"
     until=$(( now + len ))
@@ -4909,53 +4991,61 @@ claude_limit_record() {  # <account number> <refusal text>
         flock -w 10 217 2>/dev/null
         cur="$(claude_account_current)"
         tmp="$ACCOUNT_STATE_FILE.tmp.$$"
-        # The new cooldown table: every unexpired record for another account,
-        # re-resolved against today's list, plus this refusal's own.
+        # The new cooldown table: every unexpired record that is not this
+        # account under this same scope, re-resolved against today's list,
+        # plus this refusal's own. Records for the SAME account under OTHER
+        # scopes ride along untouched (rule 8b): a model-scoped credits stop
+        # and an account-wide session limit are both real, and neither may
+        # shorten the other.
         {
             if [ -f "$ACCOUNT_STATE_FILE" ]; then
-                while IFS=$'\t' read -r rec_tag rec_n rec_d rec_until rec_kind; do
+                while IFS=$'\t' read -r rec_tag rec_n rec_d rec_until rec_kind rec_scope; do
                     [ "$rec_tag" = cooldown ] || continue
                     case "${rec_until:-}" in ''|*[!0-9]*) continue ;; esac
                     [ "$rec_until" -gt "$now" ] || continue
                     c="$(claude_account_number "$rec_d")"
                     [ -n "$c" ] || continue
-                    [ "$c" -eq "$n" ] && continue
-                    printf 'cooldown\t%s\t%s\t%s\t%s\n' \
-                        "$c" "$rec_d" "$rec_until" "${rec_kind:-session}"
+                    [ "$c" -eq "$n" ] && [ "${rec_scope:-all}" = "$scope" ] && continue
+                    printf 'cooldown\t%s\t%s\t%s\t%s\t%s\n' \
+                        "$c" "$rec_d" "$rec_until" "${rec_kind:-session}" "${rec_scope:-all}"
                 done < "$ACCOUNT_STATE_FILE"
             fi
-            printf 'cooldown\t%s\t%s\t%s\t%s\n' "$n" "$(claude_account_dir "$n")" "$until" "$kind"
+            printf 'cooldown\t%s\t%s\t%s\t%s\t%s\n' \
+                "$n" "$(claude_account_dir "$n")" "$until" "$kind" "$scope"
         } > "$tmp" 2>/dev/null
         # Does the current move? Only when the account that refused was the
         # one answering — a refusal reported late, after another session
         # already advanced past it, cools its account and changes nothing
-        # else — or when the recorded current is itself cooling.
-        cur_until="$(awk -F'\t' -v d="$(claude_account_dir "$cur")" \
-            '$1 == "cooldown" && $3 == d {print $4; exit}' "$tmp" 2>/dev/null)"
+        # else — or when the recorded current is itself cooling for this
+        # walk's model.
+        cur_until="$(_account_blocked_until "$(claude_account_dir "$cur")" "$fam" "$tmp")"
         case "${cur_until:-}" in ''|*[!0-9]*) cur_until=0 ;; esac
-        if [ "$cur" -eq "$n" ] || [ "$cur_until" -gt "$now" ]; then
+        if [ "$cur" -eq "$n" ] || [ "$cur_until" -gt 0 ]; then
             next=""
             for i in $(seq 1 $(( count - 1 ))); do
                 c=$(( (n - 1 + i) % count + 1 ))
-                [ "$(awk -F'\t' -v d="$(claude_account_dir "$c")" \
-                    '$1 == "cooldown" && $3 == d {print $4; exit}' "$tmp")" ] && continue
+                [ "$(_account_blocked_until "$(claude_account_dir "$c")" "$fam" "$tmp")" -gt 0 ] \
+                    2>/dev/null && continue
                 next="$c"
                 break
             done
             if [ -z "$next" ]; then
-                # Everything is cooling: the account whose cooldown ends
-                # soonest answers (rule 9). The selection is never empty.
+                # Everything is cooling for this model: the account whose
+                # covering cooldowns end soonest answers (rule 9). The
+                # selection is never empty.
                 soonest=""; soonest_at=0
-                while IFS=$'\t' read -r rec_tag rec_n rec_d rec_until rec_kind; do
-                    [ "$rec_tag" = cooldown ] || continue
-                    if [ -z "$soonest" ] || [ "$rec_until" -lt "$soonest_at" ]; then
-                        soonest="$rec_n"; soonest_at="$rec_until"
+                for c in $(seq 1 "$count"); do
+                    c_until="$(_account_blocked_until "$(claude_account_dir "$c")" "$fam" "$tmp")"
+                    [ "${c_until:-0}" -gt 0 ] 2>/dev/null || continue
+                    if [ -z "$soonest" ] || [ "$c_until" -lt "$soonest_at" ]; then
+                        soonest="$c"; soonest_at="$c_until"
                     fi
-                done < "$tmp"
+                done
                 next="${soonest:-1}"
             fi
             printf 'current\t%s\t%s\t%s\t%s\n' "$next" "$(claude_account_dir "$next")" "$now" \
-                "$(printf 'account %s is over its limit (%s)' "$n" "$kind")" >> "$tmp"
+                "$(printf 'account %s is over its limit (%s%s)' "$n" "$kind" \
+                    "$([ "$scope" = all ] || printf ', %s only' "$scope")")" >> "$tmp"
             # ...and the move itself is kept. The state file says where the
             # selection stands; this says what it has been through, which is
             # what the state block reads to tell her the accounts walked
@@ -4977,20 +5067,27 @@ claude_limit_record() {  # <account number> <refusal text>
 
 # Every account this run may use, one NUMBER per line, in the order to try
 # them: the whole list rotated to start at the current account, accounts
-# still cooling skipped (specs/account-fallback.md rules 7 and 10). Concurrent
-# sessions all read the same cooldowns, so a stampede of runs skips an account
-# already known dry instead of each paying its own doomed CLI boot.
+# still cooling FOR THIS WALK'S MODEL skipped (specs/account-fallback.md
+# rules 7 and 10). $1 is the walk's model; a cooldown scoped to another model
+# family does not bench this walk, so one model's drought never costs another
+# model's healthy capacity (rule 8a — the 2026-08-15 morning). Called with NO
+# model, every unexpired cooldown blocks, whatever its scope: the
+# conservative pre-scope read, for callers that are not about to boot any
+# particular model (the status line, the child-login seed). Concurrent
+# sessions all read the same cooldowns, so a stampede of runs skips an
+# account already known dry instead of each paying its own doomed CLI boot.
 #
-# Rule 4a: this selection is NEVER empty. With every account cooling, the one
-# whose cooldown ends soonest is offered alone (rule 9) — and account 1 is a
-# constant, so the list under the rotation cannot go empty either. A walk over
-# an empty list is a session that invokes no model, leaves an empty stream
-# that every downstream judgement reads as clean, and exits 0 having done
-# nothing and said nothing (the 2026-08-11 silence hunt). The guarantee is
-# pinned here for every walk site at once rather than trusted to any one
-# caller.
-claude_accounts() {
-    local count cur i n until any=0 soonest=1 soonest_at=0
+# Rule 4a: this selection is NEVER empty. With every account cooling for the
+# model, the one whose covering cooldowns end soonest is offered alone (rule
+# 9) — and account 1 is a constant, so the list under the rotation cannot go
+# empty either. A walk over an empty list is a session that invokes no model,
+# leaves an empty stream that every downstream judgement reads as clean, and
+# exits 0 having done nothing and said nothing (the 2026-08-11 silence hunt).
+# The guarantee is pinned here for every walk site at once rather than
+# trusted to any one caller.
+claude_accounts() {  # [model]
+    local fam count cur i n until any=0 soonest=1 soonest_at=0
+    fam="$(claude_model_family "${1:-}")"
     count="$(claude_account_count)"
     cur="$(claude_account_current)"
     { [ "$cur" -ge 1 ] && [ "$cur" -le "$count" ]; } 2>/dev/null || cur=1
@@ -4998,7 +5095,8 @@ claude_accounts() {
     while [ "$i" -lt "$count" ]; do
         n=$(( (cur - 1 + i) % count + 1 ))
         i=$(( i + 1 ))
-        until="$(claude_account_cooldown_until "$n")"
+        until="$(_account_blocked_until "$(claude_account_dir "$n")" "$fam" "$ACCOUNT_STATE_FILE")"
+        case "${until:-}" in ''|*[!0-9]*) until=0 ;; esac
         if [ "$until" -eq 0 ]; then
             printf '%s\n' "$n"
             any=1
@@ -5009,8 +5107,43 @@ claude_accounts() {
     [ "$any" -eq 1 ] || printf '%s\n' "$soonest"
 }
 
-# The account a run uses NOW: the head of the walk.
-claude_account_pick() { claude_accounts | head -n1; }
+# The account a run uses NOW: the head of the walk, for the caller's model
+# when it names one.
+claude_account_pick() { claude_accounts "${1:-}" | head -n1; }
+
+# How long a wake whose WHOLE walk was refused over limits waits before
+# re-booking (specs/wake-queue.md rule 23a): until the soonest cooldown
+# expiry covering its model — per account the latest covering record, across
+# accounts the earliest of those — plus a small jitter, capped at
+# WAKE_REBOOK_MAX. Re-booking on the plain outage slot fired straight back
+# into the drought: refusal/re-book pairs eight seconds apart, 136 wakes in
+# the 2026-08-15 morning. With nothing covering still cooling — a pruned
+# state file, a cooldown that lapsed while the walk was failing — the plain
+# WAKE_OUTAGE_RETRY slot stands, because nothing measured says more.
+claude_limit_rebook_delay() {  # [model] -> seconds
+    local fam now soonest delay cap jitter dir
+    fam="$(claude_model_family "${1:-}")"
+    now="$(date +%s)"
+    soonest=0
+    for dir in $(claude_account_list); do
+        delay="$(_account_blocked_until "$dir" "$fam" "$ACCOUNT_STATE_FILE")"
+        case "${delay:-}" in ''|*[!0-9]*) delay=0 ;; esac
+        [ "$delay" -gt 0 ] || continue
+        if [ "$soonest" -eq 0 ] || [ "$delay" -lt "$soonest" ]; then
+            soonest="$delay"
+        fi
+    done
+    if [ "$soonest" -gt "$now" ]; then
+        delay=$(( soonest - now ))
+    else
+        delay="$WAKE_OUTAGE_RETRY"
+    fi
+    cap="${WAKE_REBOOK_MAX:-21600}"
+    [ "$delay" -gt "$cap" ] 2>/dev/null && delay="$cap"
+    jitter="${WAKE_REBOOK_JITTER:-90}"
+    [ "$jitter" -ge 1 ] 2>/dev/null || jitter=1
+    printf '%s\n' $(( delay + 10 + RANDOM % jitter ))
+}
 
 # What did the wake actually DO? A silent reply is the model's SPEECH
 # decision, not its work record — two wakes on 2026-08-06 each dispatched a
@@ -5221,7 +5354,9 @@ wake_claude_run_chain() {
     # decides a stream with no swap markers — exactly the walk whose last
     # account is its only one.
     WAKE_CHAIN_ACCT=""
-    for ACCT in $(claude_accounts); do
+    # The walk knows its model (specs/account-fallback.md rule 10): an
+    # account cooling only for another family still answers a wake.
+    for ACCT in $(claude_accounts "$WAKE_MODEL"); do
         WAKE_CHAIN_ACCT="$ACCT"
         CONFDIR="$(claude_account_dir "$ACCT")"
         # Marker only on this path — claude_swap_announce keeps the desktop
@@ -5244,7 +5379,7 @@ wake_claude_run_chain() {
         REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
             || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
             || break
-        claude_limit_record "$ACCT" "$REFUSAL"
+        claude_limit_record "$ACCT" "$REFUSAL" "$WAKE_MODEL"
         PREV="$ACCT"
     done
     # Rule 4a (specs/account-fallback.md): zero attempts is not an outcome. A
@@ -5412,8 +5547,20 @@ run_claude_wake() {
         # shape of wake that most needed rescuing — the one whose kind had been
         # blanked by the arity bug — was the one shape the outage retry refused
         # to re-book. Its agenda died with the outage.
+        #
+        # A walk the LIMITS refused outright — every account cooling for this
+        # wake's model — does not re-book into the drought it just measured:
+        # the delay is the soonest cooldown expiry covering the model, plus
+        # jitter, capped (specs/wake-queue.md rule 23a; the 2026-08-15
+        # morning's eight-second refusal/re-book ping-pong). Every other
+        # outage keeps the free half-hour slot — nothing measured says when
+        # a network death clears.
+        local WAKE_RETRY_IN="$WAKE_OUTAGE_RETRY"
+        if [ -n "$LIMIT_CUT" ] || claude_run_limited; then
+            WAKE_RETRY_IN="$(claude_limit_rebook_delay "$WAKE_MODEL")"
+        fi
         "$SCRIPT_DIR/crab" wake-at --by "${WAKE_BOOKED_BY:-outage-retry}" \
-            1800s "${WAKE_KIND:-scheduled}" "${WAKE_REASON:-}" >/dev/null
+            "${WAKE_RETRY_IN}s" "${WAKE_KIND:-scheduled}" "${WAKE_REASON:-}" >/dev/null
         # An error dressed as a reply must never be judged for memory use —
         # consume the recall sidecar without spawning the judge.
         rm -f "${STATE_PREFIX}-memory-injected-$$.json"
@@ -5957,6 +6104,50 @@ _generate_claude_run() {
     GENERATE_CLAUDE_STATUS=$CLAUDE_WATCH_STATUS
 }
 
+# The interactive walk itself, factored out of claude_generate so the dispute
+# fallback (specs/account-fallback.md rule 10a) can run it a second time at
+# the ordinary model without a second copy of the loop. Reads MODEL / EFFORT /
+# TURN_DEADLINE / DEBUGLOG from the caller's scope (bash dynamic scoping, same
+# as _generate_claude_run), selects for MODEL (rule 10), and leaves three
+# facts behind: GENERATE_WALK_ACCT, the last account it actually ran (the
+# token ledger's hint); GENERATE_WALK_REFUSED, set only when EVERY offered
+# account refused or was cut; GENERATE_WALK_ABANDONED, set when the wall
+# clock ended the walk with accounts still unoffered.
+_generate_claude_walk() {
+    local ACCT CONFDIR PREV="" ATT=0 REFUSAL
+    GENERATE_WALK_ACCT=""
+    GENERATE_WALK_REFUSED=""
+    GENERATE_WALK_ABANDONED=""
+    for ACCT in $(claude_accounts "$MODEL"); do
+        GENERATE_WALK_ACCT="$ACCT"
+        CONFDIR="$(claude_account_dir "$ACCT")"
+        [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
+        # This attempt's own bytes begin here. Judging the whole accumulated
+        # log instead let one account's refusal condemn the next account's
+        # ordinary network failure and cool an account that had refused
+        # nothing.
+        ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+        case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
+        _generate_claude_run "$CONFDIR"
+        # As on the wake walk: a refusal OR a mid-flight cut moves to the next
+        # account at once (specs/account-fallback.md rule 12a). The streamer is
+        # already holding the synthetic refusal off the speakers, and the
+        # retry's genuine reply appends behind it in the same log.
+        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
+            || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
+            || { GENERATE_WALK_REFUSED=""; break; }
+        GENERATE_WALK_REFUSED=1
+        claude_limit_record "$ACCT" "$REFUSAL" "$MODEL"
+        PREV="$ACCT"
+        # No time left for another whole CLI boot and refusal.
+        if [ "$TURN_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$TURN_DEADLINE" ]; then
+            claude_stream_note "chain-abandoned" "past this turn's wall clock"
+            GENERATE_WALK_ABANDONED=1
+            break
+        fi
+    done
+}
+
 # One turn of generation: prompt in, response text out. No speech, no windows,
 # no conversation writes — every caller (desktop, wake, remote) layers its own
 # output on top of this. The stream still lands in DEBUGLOG, so a TTS streamer
@@ -6005,32 +6196,31 @@ claude_generate() {
     local GEN_T0
     GEN_T0="$(date +%s)"
     turn_metric gen-start
-    local ACCT CONFDIR PREV="" ATT=0 REFUSAL
-    for ACCT in $(claude_accounts); do
-        CONFDIR="$(claude_account_dir "$ACCT")"
-        [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
-        # This attempt's own bytes begin here. Judging the whole accumulated
-        # log instead let one account's refusal condemn the next account's
-        # ordinary network failure and cool an account that had refused
-        # nothing.
-        ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
-        case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
-        _generate_claude_run "$CONFDIR"
-        # As on the wake walk: a refusal OR a mid-flight cut moves to the next
-        # account at once (specs/account-fallback.md rule 12a). The streamer is
-        # already holding the synthetic refusal off the speakers, and the
-        # retry's genuine reply appends behind it in the same log.
-        REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
-            || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
-            || break
-        claude_limit_record "$ACCT" "$REFUSAL"
-        PREV="$ACCT"
-        # No time left for another whole CLI boot and refusal.
-        if [ "$TURN_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$TURN_DEADLINE" ]; then
-            claude_stream_note "chain-abandoned" "past this turn's wall clock"
-            break
-        fi
-    done
+    _generate_claude_walk
+    # A conversation turn must never die because the premium model is dry
+    # while the ordinary one works (specs/account-fallback.md rule 10a).
+    # Exactly when the dispute machinery raised the model above CLAUDE_MODEL
+    # and EVERY offered account refused at that model — never on a genuine
+    # answer, an ordinary failure, or a walk the wall clock abandoned — the
+    # walk re-runs once at the loop's own model and effort, dispute frame
+    # still in the prompt. On 2026-08-15 a dispute turn died over the premium
+    # model's per-account allowance at 09:52 while the ordinary model worked
+    # fine on the same logins. At most once: the re-run sets MODEL to
+    # CLAUDE_MODEL, so the condition cannot hold a second time — and the job
+    # path is untouched, a builder's model is never downgraded (jobs.md rule
+    # 5a).
+    if [ -n "$GENERATE_WALK_REFUSED" ] && [ -z "$GENERATE_WALK_ABANDONED" ] \
+            && [ -n "$PROMPT_DISPUTE" ] && [ "$MODEL" != "$CLAUDE_MODEL" ]; then
+        claude_stream_note "dispute-model-fallback" \
+            "dispute at the ordinary model — the premium one is dry everywhere"
+        [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \
+            -h string:x-dunst-stack-tag:deskcrab-account "$NOTIFY_NAME" \
+            "dispute at the ordinary model — the premium one is dry everywhere" 2>/dev/null
+        MODEL="$CLAUDE_MODEL"
+        EFFORT="$CLAUDE_EFFORT"
+        turn_metric dispute-fallback "premium model dry everywhere — model $MODEL, effort $EFFORT"
+        _generate_claude_walk
+    fi
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally
     # ends its stream with a {"type":"result"} line, but if it crashed, was
@@ -6051,7 +6241,7 @@ claude_generate() {
         *)              TL_KIND="${SESSION_KIND:-turn}" ;;
     esac
     token_ledger_record "$DEBUGLOG" "$TL_KIND" "$MODEL" "$EFFORT" \
-        "$ACCT" "$(( $(date +%s) - GEN_T0 ))"
+        "$GENERATE_WALK_ACCT" "$(( $(date +%s) - GEN_T0 ))"
 
     # Whatever this turn's tools wrote is her own hand — declare it before the
     # self-change watcher judges the burst. Covers desktop and phone turns.

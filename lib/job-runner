@@ -24,6 +24,14 @@ START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
+# The account log's session-kind column names the path that recorded the
+# refusal (specs/account-fallback.md rule 11). This runner never calls
+# session_register — nothing interactive to register — so without this the
+# column defaulted to "session" and a night of builder refusals hid among
+# the interactive ones. Not exported: the builder's own CLI session has no
+# business inheriting it.
+SESSION_KIND=job
+
 mkdir -p "$JOBS_DIR"
 LOG="$JOBS_DIR/$ID.log"
 STATUS="$JOBS_DIR/$ID.json"
@@ -138,7 +146,9 @@ ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
 RC=0
 ATTEMPT=0
 PREV_ACCT=""
-for ACCT in $(claude_accounts); do
+# The walk knows its model (specs/account-fallback.md rule 10): an account
+# whose cooldown is scoped to another family still takes a build.
+for ACCT in $(claude_accounts "$JOB_MODEL"); do
     CONFDIR="$(claude_account_dir "$ACCT")"
     ATTEMPT=$(( ATTEMPT + 1 ))
     if [ "$ATTEMPT" = 1 ]; then
@@ -215,7 +225,7 @@ for ACCT in $(claude_accounts); do
             "$(date '+%F %T') account $ACCT: failed (exit $RC)" 2>/dev/null
         break
     fi
-    claude_limit_record "$ACCT" "$REFUSAL"
+    claude_limit_record "$ACCT" "$REFUSAL" "$JOB_MODEL"
 done
 trap - TERM
 
