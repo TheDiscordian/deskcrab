@@ -75,6 +75,19 @@ rule: degradation must never be as quiet as working.
 23. Identifiers the judge names that were not injected MUST be discarded.
 24. A reply shaped like an error MUST NOT be judged.
 25. Surfaced-but-unused records get nothing and keep decaying.
+42. **The judge's answer is the id array and nothing else, and verbosity is surfaced, never paid
+    for silently.** The judge is a one-question classifier whose entire useful output is a JSON
+    array of ids, and on 2026-08-15 it was averaging ~4.4k output tokens per judgement — 830k in a
+    day — narrating its way to `[3,17]` after every turn, wake and phone exchange on the machine.
+    Three duties, one per layer: the prompt MUST state that the array is the whole answer and that
+    anything else is discarded unread; the parser MUST stay lenient regardless (the array is fished
+    out of whatever came back — a verdict is never lost to the model disobeying the shape rule);
+    and an answer whose byte length exceeds the ceiling (`MEMORY_JUDGE_ANSWER_CEILING`, default
+    600 bytes) MUST stamp a warning line into the day's timing metrics (kind `memory-judge`, stage
+    `oversize-answer`, the sizes in the detail) and log a TRUNCATED head of the answer in the judge
+    log — so a verbosity regression surfaces in the metrics the same day, instead of on the bill a
+    week later. The stamp is evidence, never control flow: the judgement itself proceeds
+    unchanged, and a metrics directory that cannot be written costs only the stamp.
 26. The nightly pass MUST run confidence decay: an active note neither retrieved nor used within the
     decay window loses confidence per pass and retires below the floor. Directives never decay.
 
@@ -221,9 +234,11 @@ rule 36, the recency factor and its floor of rule 37, the schema migration for `
 duplicate fill of rule 39, the backfill edges of rule 40, the ingest windowing of rule 29 — one
 window when the day fits, whole-chunk windows when it does not, an oversized chunk surviving alone
 and whole, and a multi-window ingest handing every window to the distiller with its passes reported
-and nothing lost — and the dry-run guard of rule 41: real candidates from a stubbed distiller, the
+and nothing lost — the dry-run guard of rule 41: real candidates from a stubbed distiller, the
 record count unchanged afterwards, no cursor written, and the would-add report naming the
-candidate),
+candidate — and the answer-shape duties of rule 42: the prompt naming the array as the whole
+answer, a verbose stubbed verdict still parsed but stamping `oversize-answer` into the day's
+timing metrics with a truncated head in the judge log, and a compact verdict stamping nothing),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).

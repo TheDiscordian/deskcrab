@@ -1323,6 +1323,48 @@ class TestJudgeTurn(StoreCase):
             os.path.join(self.dir, "deskcrab-classify")))
         self.assertEqual(os.listdir(cwd), [])
 
+    def test_an_oversize_answer_stamps_the_timing_metrics(self):
+        """memory-recall.md rule 42. Measured 2026-08-15: ~4.4k output tokens
+        per judgement, 830k in a day, narrating the way to a ten-byte array.
+        A verbose answer must still be parsed (lenient by contract), but it
+        must leave a warning in the day's timing metrics and a truncated head
+        in the judge log, so the regression surfaces the day it happens."""
+        essay = "Considering the records at length. " * 40
+        self.judge(essay + f"[{self.used}]")
+        # The verdict was not lost to the verbosity.
+        self.assertEqual(self.usage(self.used)[0], 1)
+        metrics = os.path.join(self.dir, "metrics",
+                               datetime.now().strftime("%Y-%m-%d") + ".log")
+        with open(metrics) as f:
+            lines = [ln for ln in f.read().splitlines()
+                     if "\tmemory-judge\toversize-answer\t" in ln]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("B answer against a 600B ceiling", lines[0])
+        with open(self.log) as f:
+            log_text = f.read()
+        self.assertIn("WARNING oversize answer", log_text)
+        # The stored head is truncated, never the whole essay.
+        self.assertNotIn(essay[:300], log_text)
+
+    def test_a_compact_answer_stamps_nothing(self):
+        self.judge(f"[{self.used}]")
+        metrics = os.path.join(self.dir, "metrics",
+                               datetime.now().strftime("%Y-%m-%d") + ".log")
+        stamped = ""
+        if os.path.exists(metrics):
+            with open(metrics) as f:
+                stamped = f.read()
+        self.assertNotIn("oversize-answer", stamped)
+
+    def test_the_prompt_demands_the_bare_array(self):
+        """Rule 42's first duty: the model is TOLD the array is the whole
+        answer and everything else is discarded unread."""
+        self.judge("[]")
+        with open(self.seen_prompt) as f:
+            prompt = f.read()
+        self.assertIn("The array IS the whole answer", prompt)
+        self.assertIn("discarded unread", prompt)
+
     def test_reinforcement_lands_in_the_score(self):
         # End state of the whole path: the judged record now outranks its
         # pre-judgement self in score_row.
