@@ -95,6 +95,16 @@ REBOOK="$(grep -l "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null | head -n1)"
 grep -q "greenhouse latch" "$REBOOK" \
     || die "the re-book lost the wake's agenda: $(cat "$REBOOK")"
 
+# specs/wake-queue.md rule 23a: a walk the limits ended does not re-book into
+# the drought it just measured. The cut cooled the only account for the
+# session window (~5 h), so the re-book is due around that expiry — never on
+# the half-hour outage slot that produced the 2026-08-15 morning's
+# eight-second refusal/re-book ping-pong. Upper bound is the cap plus jitter.
+DUE="$(cut -f1 "$REBOOK" 2>/dev/null | head -n1)"
+IN=$(( ${DUE:-0} - $(date +%s) ))
+[ "$IN" -ge 17000 ] && [ "$IN" -le 21800 ] \
+    || die "the re-book ignores the cooldown expiry: due in ${IN}s (record: $(cat "$REBOOK"))"
+
 # --- 2. credit elsewhere: the fallback answers and the thought gets said ---
 : > "$CONVOFILE"
 rm -f "$WAKES_DIR"/*.wake 2>/dev/null
@@ -120,5 +130,42 @@ NEXT="$(env CLAUDE_FALLBACK_CONFIG_DIR="$FB" bash -c '. "$1/lib/common.sh"; clau
 [ "$NEXT" = "2" ] \
     || die "the next wake would not lead with account 2: pick=$NEXT, state: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
 
+# --- 3. a mixed walk keeps the ordinary outage slot (wake-queue rule 23a) --
+# Account 1 is cut; the second login dies on the network with no limit text
+# and no output. The walk was NOT wholly refused — its last attempt is an
+# outage nothing measured a clearing time for — so the re-book stays on the
+# free half-hour slot, never the cooldown-keyed wait. Judged from the walk's
+# own per-attempt outcomes: the whole-log re-grep read this exact stream
+# (account 1's limit text standing, nothing genuine after it) as a drought
+# and parked the agenda on a ~5-hour cooldown the network death never earned.
+NETDEAD="$WORK/netdead-login"
+mkdir -p "$NETDEAD"
+sandbox_stub claude <<EOF
+#!/usr/bin/env bash
+cat > /dev/null
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "$NETDEAD" ]; then
+    echo "curl: (6) could not resolve host" >&2
+    exit 6
+fi
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"true"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"'"$LIMIT_LINE"'"}]}}'
+printf '%s\n' '{"is_error":true,"duration_api_ms":31572,"num_turns":9}'
+exit 1
+EOF
+: > "$CONVOFILE"
+rm -f "$WAKES_DIR"/*.wake "$ACCOUNT_STATE_FILE" 2>/dev/null
+wake "a mixed walk: a cut, then a network death" "$NETDEAD"
+
+grep -qi "session limit" "$CONVOFILE" \
+    && die "the mixed walk's cut leaked into the conversation: $(cat "$CONVOFILE")"
+REBOOK="$(grep -l "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null | head -n1)"
+[ -n "$REBOOK" ] \
+    || die "the mixed walk never re-booked: $(ls "$WAKES_DIR" 2>/dev/null)"
+DUE="$(cut -f1 "$REBOOK" 2>/dev/null | head -n1)"
+IN=$(( ${DUE:-0} - $(date +%s) ))
+[ "$IN" -ge 60 ] && [ "$IN" -le 4000 ] \
+    || die "a mixed walk took the drought's wait: due in ${IN}s (record: $(cat "$REBOOK"))"
+
 ok "a cut chain journals a failed run and re-books through outage-retry"
 ok "a fallback with credit carries the wake and nothing re-books"
+ok "a mixed walk re-books on the ordinary outage slot, not the drought's"

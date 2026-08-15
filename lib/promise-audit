@@ -132,7 +132,7 @@ $EXCHANGE"
 # of finding the login that answers instead of riding on other paths.
 VERDICT=""
 AUDLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-audit-stream-XXXXXX")"
-for ACCT in $(claude_accounts); do
+for ACCT in $(claude_accounts "$AUDIT_MODEL"); do
     CONFDIR="$(claude_account_dir "$ACCT")"
     : > "$AUDLOG"
     printf '%s' "$PROMPT" | (
@@ -151,7 +151,7 @@ for ACCT in $(claude_accounts); do
     # the old grep here benched an account off exactly that.
     if REFUSAL="$(claude_stream_refusal "$AUDLOG")"; then
         audit_log "account $ACCT refused — trying the next account"
-        claude_limit_record "$ACCT" "$REFUSAL"
+        claude_limit_record "$ACCT" "$REFUSAL" "$AUDIT_MODEL"
         continue
     fi
     OUT="$(DESKCRAB_DEBUGLOG="$AUDLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"

@@ -6,6 +6,12 @@
 # predicate, the wake-path walk, extract-response on a combined refusal+reply
 # log, the TTS streamer riding through a refusal, the mid-flight limit CUT and
 # its ride to the next account, and the job-runner's attempts along the list.
+# Also the model-aware machinery of the 2026-08-15 drought (rules 8a, 8b, 10,
+# 10a; wake-queue rule 23a): refusal scope classification, the per-model walk
+# filter and the ping-pong pin, scoped records stacking and old records
+# parsing as all, the dispute-model fallback, the job path never downgrading,
+# the account log's real session kinds, the re-book delay, the status line's
+# scoped bench, and the Python walkers' matching filter.
 # Run: bash tests/test_limit_fallback.sh
 #
 # The gap the walk was written for: on 2026-08-07 one account ran out of usage
@@ -15,7 +21,13 @@
 set -u
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-T="$(mktemp -d /tmp/deskcrab-limitfb.XXXXXX)"
+# The scratch root must NOT live under the live prefix (/tmp/deskcrab*):
+# every sandboxed test photographs that glob before and after its run, so a
+# root named there is another lane's leak accusation waiting to happen — and
+# it happened, cross-lane. The crabtest-* naming is the sandbox helper's own,
+# which the leak photograph never matches; TMPDIR, when a harness pins one,
+# scopes the root off /tmp entirely.
+T="$(mktemp -d "${TMPDIR:-/tmp}/crabtest-limitfb-XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
 PASS=0 FAIL=0
@@ -573,6 +585,46 @@ case "$out" in
     *) fail "the empty list must be legible in the stream, not inferred" "$out" ;;
 esac
 
+echo "wholly refused is the walk's own attempt record (wake-queue rule 23a):"
+# The long cooldown-keyed re-book belongs only to a walk EVERY attempt of
+# which was a limit refusal or cut. The whole-log re-grep could not tell that
+# walk from a mixed one — an account's refusal standing in the log, then the
+# next account dying silently on the network — and sent the mixed walk into
+# a wait keyed to cooldowns it never measured.
+rm -f "$T/calls" "$T/account-state"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" STUB_OK_DIR=/never \
+    CLAUDE_BIN="$T/claude-stream" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    echo "all-limited=$WAKE_CHAIN_ALL_LIMITED"')"
+case "$out" in
+    *"all-limited=1"*) ok "a walk refused on every attempt records itself wholly refused" ;;
+    *) fail "every-attempt-refused must set the walk's own record" "$out" ;;
+esac
+cat > "$T/claude-mixed" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none}" >> "$T/calls"
+if [ "\${CLAUDE_CONFIG_DIR:-}" = "$A1" ]; then
+    cat "$T/fix-refusal"
+    exit 1
+fi
+echo "curl: (6) could not resolve host" >&2
+exit 6
+EOF
+chmod +x "$T/claude-mixed"
+rm -f "$T/calls" "$T/account-state"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-mixed" '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    echo "all-limited=$WAKE_CHAIN_ALL_LIMITED"')"
+case "$out" in
+    *"all-limited=0"*) ok "a mixed walk — a refusal, then a network death — is not wholly refused" ;;
+    *) fail "a network death must keep the walk off the long re-book" "$out" ;;
+esac
+rm -f "$T/account-state"
+
 echo "the model-limit wording moves the walk — 2026-08-11's two dead builders:"
 # A stub that refuses with the exact observed line on every account but
 # account 2: the walk must ride it to the account that answers, and the
@@ -973,6 +1025,429 @@ strip="env -u CLAUDE_CONFIG""_DIR"
 hits="$(grep -cF "$strip" "$(readlink -f "$0")")"
 [ "$hits" = 0 ] && ok "the harness does not strip the variable the code must ignore itself" \
     || fail "the suite must not remove CLAUDE_CONFIG_DIR on the code's behalf" "$hits uses"
+
+echo
+echo "cooldown scope — classified on the CLI's whole refusal line (rule 8a):"
+# The 2026-08-15 drought: the premium model is a per-account allowance cut
+# before the account's other capacity, so a refusal NAMING a model cools that
+# family only, and only a wording naming NO model cools everything. Driven
+# through the pipeline's OWN composition, never a hand-fed wording: every
+# production path hands claude_limit_record whatever claude_stream_refusal
+# PRINTED, so the cases put the wording into a captured stream, judge it, and
+# feed THAT output onward. Feeding the full line by hand green-washed a
+# detector that printed only the signature's matched substring — for the
+# observed credits line the leftmost match is "out of usage credits", the
+# model name sits after it, and the truncated text classified as `all`.
+pipeline_scope() { # <refusal wording> -> the scope the pipeline lands
+    printf '%s\n' \
+        '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"'"$1"'"}]}}' \
+        '{"type":"result","is_error":true,"result":"'"$1"'"}' > "$T/scope-fix"
+    run SCOPE_FIX="$T/scope-fix" \
+        'R="$(claude_stream_refusal "$SCOPE_FIX")" || { echo NODETECT; exit 1; }
+         claude_refusal_scope "$R"'
+}
+out="$(pipeline_scope "$REFUSAL")"
+[ "$out" = fable ] && ok "the observed credits-with-model line scopes to fable off the stream" \
+    || fail "scope must be read off the whole owning line, not the match" "$out"
+out="$(pipeline_scope "$MODEL_LIMIT")"
+[ "$out" = fable ] && ok "the observed model-limit wording scopes to fable off the stream" \
+    || fail "a model-naming refusal must scope to its family" "$out"
+out="$(pipeline_scope "Session limit reached - resets 3am")"
+[ "$out" = all ] && ok "a model-less session limit is the whole account" \
+    || fail "session wordings naming no model must scope to all" "$out"
+out="$(pipeline_scope "You've hit your session limit for Fable 5")"
+[ "$out" = fable ] && ok "a model named inside a session wording wins — the allowance is that model's" \
+    || fail "model-name presence must win over the account-wide phrase list" "$out"
+out="$(pipeline_scope "You're out of usage credits")"
+[ "$out" = all ] && ok "generic out-of-credits with no model named is the whole account" \
+    || fail "no model named means all" "$out"
+out="$(pipeline_scope "Opus weekly limit reached")"
+[ "$out" = opus ] && ok "a weekly cap naming a model scopes to that model" \
+    || fail "model-name presence must win over the weekly phrase" "$out"
+out="$(run 'claude_refusal_kind "Opus weekly limit reached"')"
+[ "$out" = credits ] && ok "…and its kind stays credits — length and scope are orthogonal reads" \
+    || fail "the weekly cap must keep the long cooldown" "$out"
+# The roster the family read rides is the knob's, never a baked list.
+out="$(run CLAUDE_MODEL_FAMILIES="fable opus sonnet haiku griffin" \
+    'claude_model_family "keep using Griffin 9"')"
+[ "$out" = griffin ] && ok "claude_model_family reads the CLAUDE_MODEL_FAMILIES roster" \
+    || fail "the family roster must be the knob's" "$out"
+
+echo
+echo "the model-aware walk — one family's drought benches nobody else (rules 7, 10):"
+rm -f "$T/account-state"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" REF="$MODEL_LIMIT" \
+    'claude_limit_record 1 "$REF" fable' >/dev/null
+out="$(awk -F'\t' '$1 == "cooldown" {print $5 "/" $6}' "$T/account-state")"
+[ "$out" = "session/fable" ] && ok "the record carries kind AND scope — length stays the kind's own" \
+    || fail "the cooldown row must carry its scope" "$out"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts fable | tr "\n" ","')"
+[ "$out" = "2,3," ] && ok "a fable walk skips the fable-cooled account" \
+    || fail "the refused family must skip its cooldown" "$out"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts opus | tr "\n" ","')"
+[ "$out" = "2,3,1," ] && ok "an opus walk still offers the same account — the drought is not its" \
+    || fail "another family must not be benched (the incident's defect)" "$out"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts | tr "\n" ","')"
+[ "$out" = "2,3," ] && ok "a model-less selection treats every cooldown as blocking (legacy read)" \
+    || fail "no model named must stay the conservative read" "$out"
+
+# An account-wide session limit blocks both families.
+rm -f "$T/account-state"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" \
+    'claude_limit_record 1 "Session limit reached - resets 3am" fable' >/dev/null
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts fable | tr "\n" ","'):$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts opus | tr "\n" ","')"
+[ "$out" = "2,3,:2,3," ] && ok "an account-wide session limit blocks fable and opus alike" \
+    || fail "scope all must cover every model" "$out"
+
+# Back-compat: a pre-scope record has five fields and reads as all.
+rm -f "$T/account-state"
+now=$(date +%s)
+printf 'cooldown\t1\t%s\t%s\tsession\ncurrent\t1\t%s\t1\tx\n' \
+    "$A1" "$(( now + 3000 ))" "$A1" > "$T/account-state"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts opus | tr "\n" ","')"
+[ "$out" = "2,3," ] && ok "an old-format record without the scope field still parses, as all" \
+    || fail "pre-scope records must read as account-wide" "$out"
+
+# Rule 8b: scopes stack, and the latest covering record decides.
+rm -f "$T/account-state"
+printf 'cooldown\t1\t%s\t%s\tsession\tall\ncooldown\t1\t%s\t%s\tcredits\tfable\n' \
+    "$A1" "$(( now + 3000 ))" "$A1" "$(( now + 80000 ))" > "$T/account-state"
+out="$(run 'claude_account_cooldown_until 1 fable')"
+[ "$out" = "$(( now + 80000 ))" ] && ok "fable waits for BOTH records — the later one decides" \
+    || fail "stacked scopes must not shorten each other" "$out"
+out="$(run 'claude_account_cooldown_until 1 opus')"
+[ "$out" = "$(( now + 3000 ))" ] && ok "opus waits only for the account-wide record" \
+    || fail "another family must not inherit the fable stop" "$out"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" REF="$MODEL_LIMIT" \
+    'claude_limit_record 1 "$REF" fable' >/dev/null
+n="$(awk -F'\t' '$1 == "cooldown" && $2 == 1' "$T/account-state" | wc -l)"
+[ "$n" = 2 ] && ok "re-recording one scope leaves the account's other scope standing" \
+    || fail "a record may only replace its own account+scope" "$(cat "$T/account-state")"
+
+echo
+echo "the incident's ping-pong, pinned — a fable drought costs an opus wake nothing:"
+# The stub refuses any fable run with the observed model-limit wording and
+# answers every other model: the overnight selfplay's shape.
+cat > "$T/claude-bymodel" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none} ARGS:\$*" >> "$T/calls"
+case " \$* " in *" fable "*) cat "$T/fix-modellimit"; exit 1 ;; esac
+cat "$T/fixture-reply"
+exit 0
+EOF
+chmod +x "$T/claude-bymodel"
+rm -f "$T/calls" "$T/account-state"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" CLAUDE_BIN="$T/claude-bymodel" \
+    WAKE_MODEL=fable '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain' >/dev/null
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 3 ] && ok "the fable wake rode the whole list dry, once each" \
+    || fail "the fable walk must try each account once" "$n calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts fable | wc -l')"
+[ "$out" = 1 ] && ok "every account now cools for fable: the soonest is offered alone" \
+    || fail "an all-dry family must offer the soonest alone" "$out"
+rm -f "$T/calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" CLAUDE_BIN="$T/claude-bymodel" \
+    WAKE_MODEL=opus '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE RETRY REPLY" ] && ok "the opus wake that follows answers" \
+    || fail "healthy opus capacity must still answer" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "…on its FIRST boot: zero extra boots, no ping-pong" \
+    || fail "the fable drought must cost an opus wake nothing" "$n calls"
+rm -f "$T/account-state"
+
+echo
+echo "the verbatim credits line, end to end — the truncated-scope defect's own shape:"
+# The wording whose signature match lands AHEAD of the model name: "You're
+# out of usage credits. Run /usage-credits to keep using Fable 5". Ridden
+# through the wake-chain composition — the stub refuses every fable run with
+# the verbatim line's stream fixture — the walk must land fable-scoped
+# cooldowns, and an opus walk that follows must answer on its first boot.
+# Before the detectors printed the owning line, the truncated match carried
+# no model name, the scope classified `all`, and the account was benched for
+# every model for twenty-four hours.
+cat > "$T/claude-credmodel" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none} ARGS:\$*" >> "$T/calls"
+case " \$* " in *" fable "*) cat "$T/fix-refusal"; exit 1 ;; esac
+cat "$T/fixture-reply"
+exit 0
+EOF
+chmod +x "$T/claude-credmodel"
+rm -f "$T/calls" "$T/account-state"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-credmodel" \
+    WAKE_MODEL=fable '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain' >/dev/null
+out="$(awk -F'\t' '$1 == "cooldown" {print $6}' "$T/account-state" 2>/dev/null | sort -u | tr '\n' ',')"
+[ "$out" = "fable," ] && ok "every cooldown the walk recorded is scoped fable" \
+    || fail "the verbatim line must land model-scoped cooldowns" \
+            "$(cat "$T/account-state" 2>/dev/null || echo "no record")"
+rm -f "$T/calls"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-credmodel" \
+    WAKE_MODEL=opus '
+    SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
+    : > "$DEBUGLOG"
+    wake_claude_run_chain
+    printf "{\"type\":\"result\"}\n" >> "$DEBUGLOG"
+    extract_response')"
+[ "$out" = "WAKE RETRY REPLY" ] && ok "the opus walk that follows still uses the account" \
+    || fail "the healthy model must keep the account" "$out"
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "…on its FIRST boot — the credits line benched nothing else" \
+    || fail "the fable-scoped bench must cost the opus walk nothing" "$n calls"
+rm -f "$T/account-state"
+
+echo
+echo "the dispute fallback — a turn never dies because the premium model is dry (rule 10a):"
+# The 09:52 shape: DISPUTE_MODEL raised the turn to fable, the walk found
+# every account's fable allowance dry, and the turn died while opus worked
+# fine on the same logins. Production transcript shape: her reply exists and
+# his pushback is already appended below it.
+printf 'User [12:00]: how goes it\nAssistant [12:00]: an answer he may yet reject\nUser [12:01]: you are wrong. stop arguing with me.\n' \
+    > "$T/state-convo.txt"
+rm -f "$T/calls" "$T/account-state" "$T/notifies"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" CLAUDE_BIN="$T/claude-bymodel" \
+    CLAUDE_MODEL=opus CLAUDE_EFFORT=low DISPUTE_MODEL=fable DISPUTE_EFFORT=high \
+    'claude_generate "you are wrong. stop arguing with me." low')"
+[ "$out" = "WAKE RETRY REPLY" ] && ok "the dispute turn survives: the ordinary model answers" \
+    || fail "a dry premium model must not kill the turn" "$out"
+n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 3 ] && ok "the walk first spent every account at the dispute model" \
+    || fail "the raised model must be walked in full first" "$(cat "$T/calls" 2>/dev/null)"
+n="$(grep -c "ARGS:.*--model opus" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "then exactly one boot at the ordinary model carried it" \
+    || fail "the fallback walk must run at CLAUDE_MODEL" "$(cat "$T/calls" 2>/dev/null)"
+grep -q "ARGS:.*--model fable.*--effort high" "$T/calls" \
+    && ok "the dispute attempts ran at dispute effort" \
+    || fail "the raised walk must carry DISPUTE_EFFORT" "$(head -n1 "$T/calls")"
+grep -q "ARGS:.*--model opus.*--effort low" "$T/calls" \
+    && ok "…and the fallback dropped to the loop's own effort" \
+    || fail "the fallback must run at CLAUDE_EFFORT" "$(tail -n1 "$T/calls")"
+grep -qF '"note":"dispute-model-fallback"' "$T/state-debug.log" \
+    && ok "the stream marker names the swap" \
+    || fail "the fallback must be legible in the stream" "$(grep note "$T/state-debug.log" | tail -n3)"
+grep -qF "dispute at the ordinary model — the premium one is dry everywhere" "$T/notifies" \
+    && ok "…and the desk notification says the same" \
+    || fail "the fallback must be notified" "$(cat "$T/notifies" 2>/dev/null)"
+
+# Exactly once: with the ordinary model dry too, the second walk ends the
+# turn — no third walk, ever. The opus refusals wear the account-wide session
+# wording, so nothing here depends on the first walk's scoped cooldowns.
+cat > "$T/claude-alldry" <<EOF
+#!/bin/bash
+echo "CALL:\${CLAUDE_CONFIG_DIR:-none} ARGS:\$*" >> "$T/calls"
+case " \$* " in *" fable "*) cat "$T/fix-modellimit"; exit 1 ;; esac
+printf '%s\n' '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"Session limit reached - resets 3am"}]}}'
+printf '%s\n' '{"type":"result","is_error":true,"result":"Session limit reached - resets 3am"}'
+exit 1
+EOF
+chmod +x "$T/claude-alldry"
+rm -f "$T/calls" "$T/account-state" "$T/notifies"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" CLAUDE_BIN="$T/claude-alldry" \
+    CLAUDE_MODEL=opus CLAUDE_EFFORT=low DISPUTE_MODEL=fable DISPUTE_EFFORT=high \
+    'claude_generate "you are wrong. stop arguing with me." low' >/dev/null
+n="$(grep -c CALL "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 6 ] && ok "everything dry: two walks of three, and not one boot more" \
+    || fail "the fallback must fire exactly once" "$n calls"
+n="$(grep -cF '"note":"dispute-model-fallback"' "$T/state-debug.log" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "one marker: the fallback fired once and stopped" \
+    || fail "the marker must appear exactly once" "$n markers"
+
+# Never on an ordinary turn: no pushback means no raised model and no
+# fallback, however dry the walk ends.
+rm -f "$T/calls" "$T/account-state" "$T/state-convo.txt"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-alldry" \
+    CLAUDE_MODEL=opus DISPUTE_MODEL=fable \
+    'claude_generate "what is on the calendar tomorrow" low' >/dev/null
+n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 0 ] && ok "an ordinary turn never touches the dispute model" \
+    || fail "no pushback must mean no raised walk" "$(cat "$T/calls" 2>/dev/null)"
+grep -qF '"note":"dispute-model-fallback"' "$T/state-debug.log" \
+    && fail "an ordinary all-refused turn fired the dispute fallback" "$(grep note "$T/state-debug.log" | tail -n2)" \
+    || ok "…and the fallback never fires without a dispute"
+
+# Never past the turn's wall clock: the deadline is asked again immediately
+# before the fallback boots. The raised walk here is stubbed to consume the
+# whole wall clock and end refused WITHOUT the in-loop abandon mark — the
+# seam between the last recorded refusal and the fallback branch, which the
+# pre-boot check exists for — and the fallback must not boot: one walk call,
+# the skip named in the stream, no fallback marker.
+printf 'User [12:00]: how goes it\nAssistant [12:00]: an answer he may yet reject\nUser [12:01]: you are wrong. stop arguing with me.\n' \
+    > "$T/state-convo.txt"
+rm -f "$T/walkcount" "$T/notifies"
+run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-bymodel" \
+    CLAUDE_MODEL=opus CLAUDE_EFFORT=low DISPUTE_MODEL=fable DISPUTE_EFFORT=high \
+    TURN_CHAIN_TIMEOUT=1 WALKCOUNT="$T/walkcount" '
+    _generate_claude_walk() {
+        echo walk >> "$WALKCOUNT"
+        sleep 1.2
+        GENERATE_WALK_ACCT=1
+        GENERATE_WALK_REFUSED=1
+        GENERATE_WALK_ABANDONED=""
+        GENERATE_CLAUDE_STATUS=1
+    }
+    claude_generate "you are wrong. stop arguing with me." low' >/dev/null 2>&1
+n="$(wc -l < "$T/walkcount" 2>/dev/null)"
+[ "${n:-0}" = 1 ] && ok "past the wall clock, the fallback walk never boots" \
+    || fail "a lapsed deadline must skip the fallback walk" "${n:-0} walks"
+grep -qF '"note":"dispute-fallback-skipped"' "$T/state-debug.log" \
+    && ok "…and the skip is named in the stream" \
+    || fail "the skipped fallback must be legible in the stream" \
+            "$(grep note "$T/state-debug.log" 2>/dev/null | tail -n3)"
+rm -f "$T/state-convo.txt" "$T/walkcount"
+
+# Never for jobs: a builder's model is never downgraded (jobs.md rule 5a) —
+# an all-dry fable job blocks at fable, with no opus attempt anywhere.
+rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
+run_runner fabledry CLAUDE_BIN="$T/claude-bymodel" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" JOB_MODEL=fable
+out="$("$REPO_DIR/lib/job-status" get "$T/jobs/fabledry.json" state)"
+[ "$out" = blocked ] && ok "a job with fable dry everywhere blocks — it does not downgrade" \
+    || fail "the job must block rather than swap models" "$out"
+n="$(grep -c "ARGS:.*--model fable" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 2 ] && ok "both job attempts ran --model fable" \
+    || fail "every job attempt must carry the dispatched model" "$(cat "$T/calls" 2>/dev/null)"
+n="$(grep -c "ARGS:.*--model opus" "$T/calls" 2>/dev/null)"
+[ "${n:-0}" = 0 ] && ok "…and no job attempt ran another model" \
+    || fail "the dispute fallback must never reach the job path" "$(cat "$T/calls" 2>/dev/null)"
+rm -f "$T/account-state"
+
+echo
+echo "the account log names the real path (rule 11):"
+rm -f "$T/account-log" "$T/calls" "$T/jobs/blocked" "$T/account-state"
+run_runner kindlabel ACCOUNT_LOG="$T/account-log" CLAUDE_FALLBACK_CONFIG_DIR="$T/two"
+out="$(cut -f5 "$T/account-log" 2>/dev/null | head -n1)"
+[ "$out" = job ] && ok "a builder's refusal is logged with kind job, not session" \
+    || fail "the job runner must record its real session kind" "${out:-empty}"
+rm -f "$T/account-log" "$T/account-state"
+
+echo
+echo "the re-book delay honours the soonest matching expiry (wake-queue rule 23a):"
+now=$(date +%s)
+rm -f "$T/account-state"
+printf 'cooldown\t1\t%s\t%s\tsession\tfable\ncooldown\t2\t%s\t%s\tsession\tall\n' \
+    "$A1" "$(( now + 600 ))" "$T/two" "$(( now + 3000 ))" > "$T/account-state"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" WAKE_REBOOK_JITTER=1 'claude_limit_rebook_delay fable')"
+[ "$out" -ge 605 ] && [ "$out" -le 615 ] && ok "a fable wake waits for the soonest cooldown covering fable (${out}s)" \
+    || fail "the delay must track the soonest covering expiry" "${out}s"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" WAKE_REBOOK_JITTER=1 'claude_limit_rebook_delay opus')"
+[ "$out" -ge 3005 ] && [ "$out" -le 3015 ] && ok "an opus wake ignores the fable record and waits for its own (${out}s)" \
+    || fail "another family's record must not set the delay" "${out}s"
+printf 'cooldown\t1\t%s\t%s\tcredits\tall\n' "$A1" "$(( now + 90000 ))" > "$T/account-state"
+out="$(run WAKE_REBOOK_JITTER=1 'claude_limit_rebook_delay opus')"
+[ "$out" -ge 21605 ] && [ "$out" -le 21615 ] && ok "a distant expiry is capped at WAKE_REBOOK_MAX (${out}s)" \
+    || fail "the cap must bound the wait" "${out}s"
+rm -f "$T/account-state"
+out="$(run WAKE_REBOOK_JITTER=1 WAKE_OUTAGE_RETRY=300 'claude_limit_rebook_delay opus')"
+[ "$out" -ge 305 ] && [ "$out" -le 315 ] && ok "nothing cooling: the plain outage slot stands (${out}s)" \
+    || fail "no covering record must fall back to WAKE_OUTAGE_RETRY" "${out}s"
+
+echo
+echo "the status line tells a scoped bench from a total one:"
+rm -f "$T/account-state"
+now=$(date +%s)
+printf 'cooldown\t1\t%s\t%s\tsession\tfable\ncurrent\t2\t%s\t%s\tx\n' \
+    "$A1" "$(( now + 3000 ))" "$T/two" "$now" > "$T/account-state"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'account_state_line')"
+case "$out" in
+    *"1 of 2 accounts cooling (1 only for one model)"*) ok "a model-scoped bench is named as such" ;;
+    *) fail "the line must say the bench is one model's" "$out" ;; esac
+printf 'cooldown\t1\t%s\t%s\tsession\tall\ncurrent\t2\t%s\t%s\tx\n' \
+    "$A1" "$(( now + 3000 ))" "$T/two" "$now" > "$T/account-state"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'account_state_line')"
+case "$out" in
+    *"only for one model"*) fail "an account-wide bench must not claim a scope" "$out" ;;
+    *"1 of 2 accounts cooling"*) ok "an account-wide bench keeps the plain count" ;;
+    *) fail "the cooling count went missing" "$out" ;; esac
+rm -f "$T/account-state"
+
+echo
+echo "the Python walkers filter by their model too (rule 29):"
+now=$(date +%s)
+# One fable-scoped record on account 1: a fable walk skips it, an opus walk
+# does not, and a walk with no model treats it as blocking (rule 10).
+printf 'cooldown\t1\t%s\t%s\tsession\tfable\n' "$A1" "$(( now + 3000 ))" > "$T/pywalk-state"
+# The same record in the pre-scope five-field shape: it must read as all.
+printf 'cooldown\t1\t%s\t%s\tsession\n' "$A1" "$(( now + 3000 ))" > "$T/pywalk-old"
+# A file, not -c: lib/memory.py re-execs itself into the store's venv python
+# off sys.argv when sqlite-vec is not importable system-wide, and a -c run's
+# argv does not survive that.
+cat > "$T/pywalk.py" <<PYEOF
+import os, sys
+sys.path.insert(0, "$REPO_DIR/lib")
+import memory
+print(",".join(str(n) for n, _ in memory.account_walk("fable")))
+print(",".join(str(n) for n, _ in memory.account_walk("opus")))
+print(",".join(str(n) for n, _ in memory.account_walk()))
+os.environ["ACCOUNT_STATE_FILE"] = "$T/pywalk-old"
+print(",".join(str(n) for n, _ in memory.account_walk("opus")))
+PYEOF
+out="$(ACCOUNT_STATE_FILE="$T/pywalk-state" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
+    python3 "$T/pywalk.py")"
+[ "$out" = "2
+1,2
+2
+2" ] && ok "memory.py: fable skips the scoped account, opus keeps it, no-model and old rows block" \
+    || fail "the memory walker must filter by family and read old rows as all" "$(printf '%s' "$out" | tr '\n' '|')"
+# The roster reaches the walkers through the environment (rule 29): with an
+# opus-scoped record standing, a walk at a model the BAKED list has never
+# heard of reads its family only when DESKCRAB_MODEL_FAMILIES names it — env
+# present, the opus record does not cover griffin and account 1 stays; env
+# absent, the family read comes up empty and the conservative no-model read
+# blocks on every record.
+printf 'cooldown\t1\t%s\t%s\tsession\topus\n' "$A1" "$(( now + 3000 ))" > "$T/pywalk-env"
+cat > "$T/pywalk2.py" <<PYEOF
+import os, sys
+sys.path.insert(0, "$REPO_DIR/lib")
+import memory
+print(",".join(str(n) for n, _ in memory.account_walk("griffin-9")))
+os.environ.pop("DESKCRAB_MODEL_FAMILIES", None)
+print(",".join(str(n) for n, _ in memory.account_walk("griffin-9")))
+PYEOF
+out="$(ACCOUNT_STATE_FILE="$T/pywalk-env" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
+    DESKCRAB_MODEL_FAMILIES="fable opus sonnet haiku griffin" \
+    python3 "$T/pywalk2.py")"
+[ "$out" = "1,2
+2" ] && ok "memory.py prefers the exported roster, baked list only as fallback" \
+    || fail "the walker must read DESKCRAB_MODEL_FAMILIES first" "$(printf '%s' "$out" | tr '\n' '|')"
+# python-chess lives in the mover's own venv (the same read-only borrow
+# test_chess.sh makes); with no venv on this box the parse — a mirror of
+# memory.py's, asserted above — is held by test_chess.sh instead.
+CHESS_PY="${DESKCRAB_CHESS_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/chess/venv}/bin/python"
+[ -x "$CHESS_PY" ] && "$CHESS_PY" -c 'import chess' 2>/dev/null || CHESS_PY=""
+command -v python3 >/dev/null && python3 -c 'import chess' 2>/dev/null && CHESS_PY=python3
+if [ -n "$CHESS_PY" ]; then
+    out="$(ACCOUNT_STATE_FILE="$T/pywalk-state" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
+        "$CHESS_PY" -c '
+import sys
+sys.path.insert(0, "'"$REPO_DIR"'/lib")
+import chess_mover
+print(",".join(str(n) for n, _ in chess_mover.Mover._accounts("fable")))
+print(",".join(str(n) for n, _ in chess_mover.Mover._accounts("opus")))')"
+    [ "$out" = "2
+1,2" ] && ok "chess_mover.py: the same filter, from the same state file" \
+        || fail "the chess walker must filter by family" "$(printf '%s' "$out" | tr '\n' '|')"
+    out="$(ACCOUNT_STATE_FILE="$T/pywalk-env" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
+        DESKCRAB_MODEL_FAMILIES="fable opus sonnet haiku griffin" \
+        "$CHESS_PY" -c '
+import sys
+sys.path.insert(0, "'"$REPO_DIR"'/lib")
+import chess_mover
+print(",".join(str(n) for n, _ in chess_mover.Mover._accounts("griffin-9")))')"
+    [ "$out" = "1,2" ] && ok "chess_mover.py reads the same exported roster" \
+        || fail "the chess walker must read DESKCRAB_MODEL_FAMILIES first" "$out"
+else
+    ok "chess_mover.py: python-chess not importable here — the parse mirrors memory.py's, held by test_chess.sh"
+fi
+rm -f "$T/pywalk-state" "$T/pywalk-old" "$T/pywalk-env" "$T/pywalk.py" "$T/pywalk2.py"
 
 echo
 echo "$PASS passed, $FAIL failed"

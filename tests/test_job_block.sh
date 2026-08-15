@@ -300,13 +300,17 @@ check "the raw bytes DO carry the wording — that is the trap" \
 check_eq "reading a file that contains the wording is not a refusal" "$(refusal)" "NONE"
 
 # The CLI's own result event. No model output anywhere: nothing was attempted.
+# The printed text is the WHOLE owning line, never the signature's matched
+# substring: the scope read downstream (account-fallback.md rule 8a) needs
+# the model name that can sit after the match in the same line.
 python3 - "$S" <<'PYEOF'
 import json, sys
 with open(sys.argv[1], "w") as f:
     f.write(json.dumps({"type": "result", "is_error": True,
                         "result": "You're out of usage credits. Run /usage-credits"}) + "\n")
 PYEOF
-check_eq "the CLI's own result event is" "$(refusal)" "out of usage credits"
+check_eq "the CLI's own result event is, whole line" "$(refusal)" \
+    "You're out of usage credits. Run /usage-credits"
 
 # A synthetic assistant message is the CLI speaking, not the model.
 python3 - "$S" <<'PYEOF'
@@ -316,7 +320,8 @@ with open(sys.argv[1], "w") as f:
                         "message": {"model": "<synthetic>", "content": [
                             {"type": "text", "text": "session limit reached for this account"}]}}) + "\n")
 PYEOF
-check_eq "and so is a synthetic api-error message" "$(refusal)" "session limit reached"
+check_eq "and so is a synthetic api-error message, whole line" "$(refusal)" \
+    "session limit reached for this account"
 
 # A run that PRODUCED something is a run that happened, whatever words went
 # through it. Rule 15: a real failure must never wear the blocked signature.

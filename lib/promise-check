@@ -73,7 +73,9 @@ classify_walk() {  # <verdict-line-ERE>
     local VERDICT_RE="$1" PROMPT ACCT CONFDIR MODEL OUT REFUSAL
     PROMPT="$(cat)"
     local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-promise-stream-XXXXXX")"
-    for ACCT in $(claude_accounts); do
+    # Selected for the checker's primary model (specs/account-fallback.md
+    # rule 10); a refusal is recorded with the model that was refused.
+    for ACCT in $(claude_accounts "$CHECK_MODEL"); do
         CONFDIR="$(claude_account_dir "$ACCT")"
         for MODEL in "$CHECK_MODEL" "$CHECK_FALLBACK_MODEL"; do
             : > "$CLOG"
@@ -93,7 +95,7 @@ classify_walk() {  # <verdict-line-ERE>
             # haiku too.
             if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
                 check_log "account $ACCT refused — trying the next account"
-                claude_limit_record "$ACCT" "$REFUSAL"
+                claude_limit_record "$ACCT" "$REFUSAL" "$MODEL"
                 continue 2
             fi
             OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"

@@ -353,19 +353,34 @@ class Mover:
         if override:
             yield "stub", shlex.split(override), self._env(None)
             return
-        for number, conf in self._accounts():
+        for number, conf in self._accounts(self._model()):
             yield f"account {number}", self._claude_cmd(effort), self._env(conf)
 
     @staticmethod
-    def _accounts():
-        """(number, config dir) pairs, in the order worth trying.
+    def _model():
+        """The mover's own model — the walk filters cooldowns by it
+        (specs/account-fallback.md rule 10), and _claude_cmd puts it on the
+        argv. One reader, two users, so they cannot drift."""
+        return (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL")
+                or os.environ.get("CLAUDE_MODEL") or "sonnet")
+
+    @staticmethod
+    def _accounts(model=""):
+        """(number, config dir) pairs, in the order worth trying for `model`.
 
         The flat numbered list of specs/account-fallback.md — account 1 is
         ~/.claude, then the CLAUDE_FALLBACK_CONFIG_DIR entries — rotated to
-        the current account and with cooling accounts skipped, read from the
-        same state file every other walker shares; with everything cooling,
-        the soonest to expire alone (never empty). Read-only: recording a
-        refusal is the session machinery's call, never a chess move's.
+        the current account and with accounts cooling FOR THIS MODEL skipped:
+        a cooldown scoped `all` covers every model, one scoped to a family
+        covers only its own, and a record without the scope field reads as
+        `all` (rules 8a, 8b) — so another family's drought never benches a
+        mover call, which is the drought this machinery was rebuilt for (the
+        2026-08-15 selfplay burn drained the premium pools and the
+        model-blind cooldowns benched every account's healthy capacity).
+        Read from the same state file every other walker shares; with
+        everything cooling for the model, the soonest to expire alone (never
+        empty). Read-only: recording a refusal is the session machinery's
+        call, never a chess move's.
 
         systemd's EnvironmentFile hands values through unexpanded (the same
         trap _claude_cmd guards CLAUDE_BIN against): a literal "$HOME/..."
@@ -376,6 +391,17 @@ class Mover:
         onto a dead login."""
         def expand(d):
             return os.path.expanduser(os.path.expandvars(d))
+        # The family roster's one spelling is common.sh's, handed through the
+        # environment as DESKCRAB_MODEL_FAMILIES (specs/account-fallback.md
+        # rule 29); the baked list is a last resort for a mover started
+        # outside the shell paths — which this service usually is.
+        fams = [f for f in re.split(
+            r"[\s:]+",
+            os.environ.get("DESKCRAB_MODEL_FAMILIES", "").strip()
+            or "fable opus sonnet haiku") if f]
+        fam_m = re.search("|".join(re.escape(f) for f in fams),
+                          model or "", re.I)
+        fam = fam_m.group(0).lower() if fam_m else ""
         dirs = [expand("~/.claude")]
         for d in re.split(r"[:\s]+",
                           os.environ.get("CLAUDE_FALLBACK_CONFIG_DIR", "")):
@@ -406,7 +432,13 @@ class Mover:
                             until = int(f[3])
                         except ValueError:
                             continue
-                        if until > now:
+                        scope = f[5] if len(f) >= 6 and f[5] else "all"
+                        if fam and scope not in ("all", fam):
+                            continue
+                        # The latest covering record decides (rule 8b): an
+                        # account cooling under two scopes at once is
+                        # selectable only when both have lapsed.
+                        if until > now and until > cooling.get(n, 0):
                             cooling[n] = until
         except OSError:
             pass
@@ -419,8 +451,8 @@ class Mover:
             free = [min(cooling, key=cooling.get)]
         return [(n, dirs[n - 1]) for n in free]
 
-    @staticmethod
-    def _claude_cmd(effort):
+    @classmethod
+    def _claude_cmd(cls, effort):
         # A conf-set CLAUDE_BIN can arrive with $HOME still in it: systemd's
         # EnvironmentFile hands values through unexpanded, where every shell
         # path expanded them on the way in.
@@ -430,8 +462,7 @@ class Mover:
         if not claude or not os.path.exists(claude):
             claude = (shutil.which("claude")
                       or os.path.expanduser("~/.local/bin/claude"))
-        model = (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL")
-                 or os.environ.get("CLAUDE_MODEL") or "sonnet")
+        model = cls._model()
         # --output-format json: the run's own result object carries the exact
         # usage the token ledger keeps (specs/metrics.md rule 15). The answer
         # is read from its `result` field in _call; a stdout that is not that

@@ -73,6 +73,12 @@ DRAIN_FALLBACK_MODEL="${BACKLOG_DRAIN_FALLBACK_MODEL:-sonnet}"
 CRAB="${CRAB_BIN:-$SCRIPT_DIR/crab}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 
+# The account log names the path that recorded each refusal
+# (specs/account-fallback.md rule 11) — this drain's classifies are their own
+# kind, never a defaulted "session". Not exported: nothing dispatched from
+# here should inherit it.
+SESSION_KIND=backlog-drain
+
 say() { printf 'backlog-drain: %s\n' "$1"; }
 
 # Rule 58a's second half: a cut that actually happens is announced. The byte
@@ -101,7 +107,9 @@ classify_walk() {  # <verdict-line-ERE>
     local VERDICT_RE="$1" PROMPT ACCT CONFDIR MODEL OUT REFUSAL
     PROMPT="$(cat)"
     local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-drain-stream-XXXXXX")"
-    for ACCT in $(claude_accounts); do
+    # Selected for the drain's primary model (specs/account-fallback.md rule
+    # 10); a refusal is recorded with the model that was actually refused.
+    for ACCT in $(claude_accounts "$DRAIN_MODEL"); do
         CONFDIR="$(claude_account_dir "$ACCT")"
         for MODEL in "$DRAIN_MODEL" "$DRAIN_FALLBACK_MODEL"; do
             : > "$CLOG"
@@ -117,7 +125,7 @@ classify_walk() {  # <verdict-line-ERE>
             token_ledger_record "$CLOG" backlog-drain "$MODEL" "" "$ACCT"
             if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
                 say "account $ACCT refused — trying the next account"
-                claude_limit_record "$ACCT" "$REFUSAL"
+                claude_limit_record "$ACCT" "$REFUSAL" "$MODEL"
                 continue 2
             fi
             OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
