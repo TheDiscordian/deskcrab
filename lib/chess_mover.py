@@ -315,7 +315,7 @@ class Mover:
         board = chess.Board(job["fen"])
         prompt = self._prompt(job, board)
         effort = job.get("effort") or os.environ.get(
-            "DESKCRAB_CHESS_MOVER_EFFORT", "medium")
+            "DESKCRAB_CHESS_MOVER_EFFORT", "low")
         move = None
         last_why = ""
         for label, cmd, env in self._attempts(effort):

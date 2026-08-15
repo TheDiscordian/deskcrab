@@ -363,7 +363,11 @@ def s_resume(port, chess_dir):
     c.expect_move("e7", "e5")
     ok("restarted bridge replayed the stored game on join alone")
 
-    c.send(NEWGAME)  # rule 4 on an active game: resync, never a fresh start
+    # Rule 4 on an active game: never a fresh start, and never silent — the
+    # seat is told the way out first, then the sync still follows.
+    c.send(NEWGAME)
+    f = c.expect(ERROR)
+    assert b"Resign ends it" in f.get(1, b""), f
     c.expect(TEAM)
     c.expect_move("e2", "e4")
     c.expect_move("e7", "e5")

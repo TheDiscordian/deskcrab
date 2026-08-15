@@ -23,9 +23,14 @@ import os
 
 import chess
 
-# The quiet default is medium, not low: the per-move minutes were the queue
-# in front of the call, not the thinking inside it.
-LOW, HIGH = "medium", "high"
+# The two levels, each its own knob because the pair has been adjudicated
+# twice. Quiet ran at medium from 2026-08-10 — the per-move minutes were the
+# queue in front of the call, not the thinking inside it — and on 2026-08-15
+# the user lowered both a notch as an experiment, over her objection, to see
+# whether she still wins at low/medium. The knobs make the next adjudication
+# a config line, not an edit.
+LOW = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "low")
+HIGH = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 
 PIECE_VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
                chess.ROOK: 5, chess.QUEEN: 9}
