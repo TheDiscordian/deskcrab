@@ -78,15 +78,15 @@ flowchart TD
 |---:|---:|---:|---:|---:|
 | L1 identity | 10,400 | 10,400 | 800 | 0 |
 | L2 state | 1,500 | 1,500 | 0 | 0 |
-| L3 memory | 3,200 | 3,200 | 0 | 0 |
-| L4 shelves | 8,000 | 8,000 | 0 | 0 |
+| L3 memory | 9,600 | 9,600 | 0 | 0 |
+| L4 shelves | 12,000 | 16,000 | 0 | 0 |
 | L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
-| L8 turn frame | 900 | 900 | 200 | 200 |
+| L8 turn frame | 1,500 | 1,500 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 37,900** | **≤ 30,500** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 48,900** | **≤ 45,500** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -136,6 +136,22 @@ rule 36's warning stands until the backlog is settled down through `crab eng`. T
 not a budget error: settling a thread replaces its two dated lines with one outcome line, the
 drawer shrinks with every settlement, and the warning is the standing pressure to do it. The two
 speaking totals move by the same 4,000.
+
+Three rows moved on 2026-08-15, the day the assembly was reconciled to what it actually measures —
+at revive that morning the wake build warned 48,958 bytes against 30,500, everything carried and
+nothing wrong but the numbers, which is rule 36's tripwire working and also rule 36's definition of
+a budget that needs fixing. L3 read 3,200, a number from when the store was young; the block's size
+is bounded by retrieval (TOP_K notes, the directive cap, the pinned tier), and with the store at
+~209 records of ~360 characters a full retrieval measures 9,215 — the contract doing exactly what
+it promises, so the budget rises to the measured need: 9,600. L4 read 8,000 for both speaking
+profiles; the engineering drawer's settled tail grows one outcome line per settlement FOREVER, and
+it alone had reached 20,262 bytes over 63 outcomes — so the SOURCE rendering slims (rule 21a as
+amended: the freshest outcomes plus a count naming the drawer, the count line alone on the turn
+profile) and the row splits to the measured shapes, 12,000 turn and 16,000 wake, against a layer
+measuring ~10,800 and ~15,400 on the live drawer of 25 open threads. L8 read 900 and took on the
+two standing attention rules (rules 38 and 39 below), measured ~1,320 with frame and register:
+1,500. The turn total moves to 48,900 and the wake total to 45,500 — and, as ever, this table and
+`tests/test_prompt_profiles.sh` state the same totals on purpose.
 
 The dispute row read 1,800 until 2026-08-10 evening, sized for the first cut of the frame. The
 frame then took on two things the adversarial reviews demanded ([cocoon.md](cocoon.md) rules 8 and
@@ -204,12 +220,20 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
 21a. The engineering drawer rides the shelves layer as RECORDS, not prose
     ([engineering-records.md](engineering-records.md)), rendered by `lib/eng prompt` on the turn
     and wake profiles. An OPEN record is a live thread: title, id, its `opened` and `last_touched`
-    dates, body on disk behind `crab eng show`. A SETTLED or DEAD record is the title plus ONE
-    line — `settled <when>: <what settled it>` — and NEVER its body prose: a worry written before
-    a question was settled must not be quotable as present-tense fact, which is the failure this
-    whole drawer shape exists to end (2026-08-10, twice). The block states that the settled
-    section is history. The renderer is fail-safe: an empty drawer costs the block, an unreadable
-    record is skipped, and no failure of it may break a prompt build.
+    dates, body on disk behind `crab eng show` — always, whole, on both profiles. A SETTLED or
+    DEAD record is the title plus ONE line — `settled <when>: <what settled it>` — and NEVER its
+    body prose: a worry written before a question was settled must not be quotable as
+    present-tense fact, which is the failure this whole drawer shape exists to end (2026-08-10,
+    twice). The settled tail's PROMPT rendering is the shelf pattern, not the archive, because the
+    tail grows one line per settlement forever and by 2026-08-15 it alone was 20 KB of outcome
+    essays riding every speaking prompt: the wake profile (her own maintenance time, where
+    settlement work happens) carries the freshest few outcomes
+    (`DESKCRAB_ENG_SETTLED_RECENT`, default 10) with the older tail as a count naming the drawer
+    and its command; the turn profile carries the count line alone (`--compact`). Nothing is cut:
+    every outcome stays on disk, whole, one `crab eng list --state settled` away — the same
+    bargain as wants titles and the recent catches. The block states that the settled section is
+    history. The renderer is fail-safe: an empty drawer costs the block, an unreadable record is
+    skipped, and no failure of it may break a prompt build.
 22. There MUST be a `WHERE THINGS ARE` layer: one line per drawer, path plus a short description,
     covering at minimum the wants shelf and its bodies, conduct and its index, the engineering
     records and the pre-records archive of threads, the day journal, the memory store, the library,
@@ -334,6 +358,27 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     now forbids both cuts: the whole quote and the whole instructions ride, a reply long enough to
     push the layer past its number reads `over` in the manifest, and rule 36's warning is where
     the excess is dealt with.
+
+### The standing attention rules
+
+Two conduct failures the user has corrected twice each, in plain words both times, and which the
+dispute frame alone cannot fix because both happen on ordinary turns with nobody pushing back. On
+2026-08-15: a plain question was answered with an unrelated preoccupation until he said so
+outright; and a wake that found a problem in her own wants drawer filed it with him as news
+instead of fixing it, so he had to tell her to act on her own files. They are ALWAYS ON — every
+turn and every wake, both emitted in the frame layer beside the register rule, because an
+instruction about the reply belongs beside the thing being answered (the same argument that put
+the register rule in L8).
+
+38. **The frame layer MUST carry the answer-first rule, on every speaking profile:** answer the
+    question that was asked before anything else — never the nearest thing already in your head —
+    and a reply that opens on the speaker's own preoccupation when he asked about something else
+    has already failed, however true the preoccupation is. Stated as a standing instruction in her
+    own register, not as dispute-time machinery.
+39. **The frame layer MUST carry the drawer-ownership rule, on every speaking profile:** a finding
+    or a decision about her own files, drawers or systems is hers to ACT on, never news to bring
+    him or a question to ask him — act, then a one-line mention at most. Bringing him her own
+    drawer's problem as a report is handing him her work.
 
 ## DATA
 
@@ -614,10 +659,13 @@ layer over its budget is carried whole and manifests `over`, never `trimmed` or 
 over its target opens the prompt with the warning and leaves the record; the state block renders
 it; a build inside the target clears it),
 `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
-assembled through the real assembler and graded against its assertions),
+assembled through the real assembler and graded against its assertions — and, structurally on
+every assembled case, desk and phone origins alike, rules 38 and 39: both standing attention rules
+present in the prompt),
 `tests/test_eng_records.sh` (rule 21a: an open record renders as a live thread with its dates, a
-settled one as its one-line outcome with its body prose kept out of the prompt, and an empty
-drawer costs the block and nothing else).
+settled one as its one-line outcome with its body prose kept out of the prompt, the settled tail
+as the freshest few plus the count line naming the drawer — the count line alone under
+`--compact` — and an empty drawer costs the block and nothing else).
 
 **To be written:**
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the

@@ -325,11 +325,30 @@ def cmd_touched_since(argv):
     sys.exit(0 if touched_epoch(meta) > cut else 1)
 
 
+def settled_recent():
+    """How many of the freshest outcomes the full rendering shows
+    (prompt-assembly rule 21a). The tail behind them is a count and the
+    drawer's own command — the recent-catches shape, not a cut: every
+    outcome stays on disk, whole, one `crab eng list` away."""
+    try:
+        return int(os.environ.get("DESKCRAB_ENG_SETTLED_RECENT", "10"))
+    except ValueError:
+        return 10
+
+
 def cmd_prompt(argv):
     """The shelves-layer block (prompt-assembly rule 21a). Open records are
-    live threads with their dates; settled and dead ones are ONE line of
-    outcome each, body prose never shown — a resolved worry must read as
-    resolved, not as a quotable present-tense fact. Empty drawer, no block."""
+    live threads with their dates, always, whole. Settled and dead ones are
+    history whose PROMPT rendering is the shelf pattern, not the archive:
+    the full rendering (wakes, her own maintenance time) shows the freshest
+    few outcomes — one line each, body prose never shown, a resolved worry
+    must read as resolved — with the older tail as a count naming the
+    drawer; `--compact` (interactive turns) shows the count line alone. The
+    tail grows by one line per settlement FOREVER, and by 2026-08-15 it was
+    20 KB of outcome essays riding every speaking prompt — history nobody
+    asked that turn for, while the drawer held every word one command away.
+    Empty drawer, no block."""
+    compact = "--compact" in argv
     recs = [m for m, _ in all_records()]
     if not recs:
         return
@@ -346,11 +365,25 @@ def cmd_prompt(argv):
         for m in opens:
             out.append("  - %s" % one_line(m))
     if closed:
-        out.append("SETTLED or DEAD — history, not live worries. The line "
-                   "below is the whole of what each still says; never quote "
-                   "one as a present-tense fact:")
-        for m in closed:
-            out.append("  - %s" % one_line(m))
+        shown = [] if compact else closed[:settled_recent()]
+        rest = len(closed) - len(shown)
+        if shown:
+            out.append("SETTLED or DEAD — history, not live worries. The "
+                       "line below is the whole of what each still says; "
+                       "never quote one as a present-tense fact:")
+            for m in shown:
+                out.append("  - %s" % one_line(m))
+        if rest:
+            tail = ("one outcome line each in the drawer: 'crab eng list "
+                    "--state settled' has every one, and none is a "
+                    "present-tense fact.")
+            if shown:
+                out.append("  …and %d older settled or dead thread%s — "
+                           "history, %s"
+                           % (rest, "s" if rest != 1 else "", tail))
+            else:
+                out.append("SETTLED or DEAD — %d thread%s of history, %s"
+                           % (rest, "s" if rest != 1 else "", tail))
     print("\n".join(out))
 
 

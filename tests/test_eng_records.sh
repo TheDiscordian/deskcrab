@@ -98,6 +98,31 @@ check "the block names the tool as the only writer" \
     contains "$BLOCK" "crab eng"
 
 echo
+echo "the settled tail is the shelf pattern — fresh outcomes shown, the rest counted:"
+# Two closed records exist and the recent window default is 10, so the full
+# rendering above showed both. Shrink the window to one: the newest outcome
+# (the killed record — closed after the settlement) rides, the older one
+# becomes part of the counted tail naming the drawer.
+NARROW="$(DESKCRAB_ENG_SETTLED_RECENT=1 bash -c \
+    'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" prompt')"
+check "the newest outcome is shown" contains "$NARROW" "overtaken by events"
+refute "the older outcome fell behind the count" \
+    contains "$NARROW" "the state was never lost"
+check "and the count names the drawer" \
+    contains "$NARROW" "…and 1 older settled or dead thread"
+check "with the command that opens it" \
+    contains "$NARROW" "crab eng list --state settled"
+COMPACT="$(E prompt --compact)"
+check "compact keeps the open threads whole" \
+    contains "$COMPACT" "opened 20"
+refute "compact shows no outcome line at all" \
+    contains "$COMPACT" "overtaken by events"
+check "compact counts the whole closed tail" \
+    contains "$COMPACT" "2 threads of history"
+check "and still names the drawer" \
+    contains "$COMPACT" "crab eng list --state settled"
+
+echo
 echo "the block reaches the assembled prompt, and its absence costs nothing:"
 cat > "$DESKCRAB_CONF" <<EOF
 ASSISTANT_NAME="Crab"
@@ -112,13 +137,19 @@ printf '# Wants\n\n- 🎼 **Learn to read a score**\n' > "$D/wants.md"
 PROMPT="$(sandbox_bash 'build_system_prompt --profile turn')"
 check "the turn prompt carries the records block" \
     contains "$PROMPT" "YOUR ENGINEERING RECORDS"
-check "with the settled one-liner" \
+refute "the turn is compact: the outcome essays stay in the drawer" \
     contains "$PROMPT" "the state was never lost — commit abc123"
+check "with the counted tail naming the drawer instead" \
+    contains "$PROMPT" "crab eng list --state settled"
 refute "and without the settled record's body prose" \
     contains "$PROMPT" "is broken and drops its state"
 PROMPT_WAKE="$(sandbox_bash 'build_system_prompt --profile wake')"
 check "the wake prompt carries it too" \
     contains "$PROMPT_WAKE" "YOUR ENGINEERING RECORDS"
+check "and the wake — her maintenance time — gets the fresh outcomes" \
+    contains "$PROMPT_WAKE" "the state was never lost — commit abc123"
+refute "but never the settled record's body prose" \
+    contains "$PROMPT_WAKE" "is broken and drops its state"
 rm -rf "$ENG"
 PROMPT2="$(sandbox_bash 'build_system_prompt --profile turn')"
 refute "an empty drawer costs the block" \

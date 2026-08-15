@@ -166,7 +166,7 @@ check "the index is never trimmed — it reports over budget instead" \
 # numbers on purpose. Until 2026-08-09 this function held numbers 400 under
 # the table: the 2026-08-08 L4 raise moved the spec alone, which is exactly
 # the drift the paragraph above forbids.
-total_budget() { case "$1" in turn) echo 37900 ;; wake) echo 30500 ;;
+total_budget() { case "$1" in turn) echo 48900 ;; wake) echo 45500 ;;
                               job) echo 2000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"
@@ -300,8 +300,12 @@ refute "no manifest state anywhere reads trimmed or cut" \
 
 # The TOTAL running past the profile's target is the warned condition: the
 # prompt itself opens with the fact, the record stands for the outside, and
-# still nothing is cut.
-SQUEEZE='PROMPT_BUDGET_L1_TURN=500 PROMPT_BUDGET_L2_TURN=100 PROMPT_BUDGET_L4_TURN=100 PROMPT_BUDGET_L5_TURN=100 PROMPT_BUDGET_L6_TURN=1000 PROMPT_BUDGET_L7_TURN=100 PROMPT_BUDGET_L8_TURN=100'
+# still nothing is cut. L3 is pinned too, even though this fixture assembles
+# it absent: an ABSENT layer still contributes its budget to the target the
+# total is measured against, and when L3's default rose to 9,600 (2026-08-15)
+# the unpinned allowance quietly outgrew this fixture's whole assembled body
+# — the squeeze must not depend on any layer's default.
+SQUEEZE='PROMPT_BUDGET_L1_TURN=500 PROMPT_BUDGET_L2_TURN=100 PROMPT_BUDGET_L3_TURN=100 PROMPT_BUDGET_L4_TURN=100 PROMPT_BUDGET_L5_TURN=100 PROMPT_BUDGET_L6_TURN=1000 PROMPT_BUDGET_L7_TURN=100 PROMPT_BUDGET_L8_TURN=100'
 BODY="$(run "$SQUEEZE build_system_prompt --profile turn")"
 check "an over-budget total is announced inside the prompt" \
     contains "$BODY" "PROMPT OVER BUDGET"

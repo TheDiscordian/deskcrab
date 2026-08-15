@@ -719,6 +719,22 @@ structural_checks() { # <case state dir> <case source dir>
         && ok "rule 25 — at most one regroup block is emitted" \
         || bad "rule 25 — at most one regroup block is emitted" "$regroups regroup blocks"
 
+    # rules 38 and 39 — the standing attention rules, always on, every
+    # speaking profile, desk and phone origins alike: answer what was asked
+    # first, and act on your own drawers instead of reporting them.
+    if grep -qiF 'ANSWER WHAT WAS ASKED, FIRST' <<<"$P"; then
+        ok "rule 38 — the answer-first rule stands in the prompt"
+    else
+        bad  "rule 38 — the answer-first rule stands in the prompt" \
+             "nothing tells her the question outranks her own preoccupation"
+    fi
+    if grep -qiF 'YOUR OWN DRAWERS ARE YOURS TO RUN' <<<"$P"; then
+        ok "rule 39 — the drawer-ownership rule stands in the prompt"
+    else
+        bad  "rule 39 — the drawer-ownership rule stands in the prompt" \
+             "nothing tells her a finding about her own files is hers to act on"
+    fi
+
     # rules 1 and 2 — one assembler, four profiles.
     if grep -qF -- '--profile' "$REPO_DIR/lib/common.sh"; then
         ok "rule 1 — the assembler takes a profile"
