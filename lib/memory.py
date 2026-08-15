@@ -5,10 +5,14 @@
 # sqlite-vec 2026-08-06 — scale and SQL editability beat hand-editable JSONL,
 # and `memory dump` gives back the readable-text view that argument wanted).
 #
-# Two record kinds. A `directive` is the user's voice: never decayed or
+# Four record kinds. A `directive` is the user's voice: never decayed or
 # auto-retired, only superseded by a newer directive, over-retrieved by
 # design. A `note` is the assistant's own soft memory. `pinned` records are
-# always retrieved regardless of similarity.
+# always retrieved regardless of similarity. An `observation` is one night's
+# shape — gaps, texture, recurrence, unfinished threads — and a `miss` is one
+# asking she had nothing for: both accumulate as a series, never decay, never
+# dedup, and are NEVER retrieved by similarity into a prompt
+# (specs/memory-recall.md rules 42-45).
 #
 # Fail-safe contract: `recall-block` must NEVER break a prompt build — with
 # the embedder down it emits the pinned tier plus a loud warning and exits 0.
@@ -176,6 +180,51 @@ DECAY_RETIRE_FLOOR = 0.3
 # record is simply added; true conflicts below 0.92 wait for the ingest
 # session's judgement.
 SUPERSEDE_SIM = 0.92
+# The hidden kinds (memory-recall.md rules 42-45). An `observation` is the
+# shape of one night; a `miss` is one question about the user that a record
+# could have answered and none did. Neither is ever returned by the
+# similarity retrieval that feeds the recall block — excluded from the query
+# outright, not ranked low. For a miss that is not a preference: its text
+# names its subject in the user's own words, so it is the best possible
+# embedding match for the NEXT asking of the same question, and surfacing it
+# would read a record of not-knowing as though it were knowledge. Both stay
+# readable on request through the deliberate CLI paths (list, search).
+HIDDEN_KINDS = ("observation", "miss")
+RECALL_KINDS = ("directive", "note")
+RECORD_KINDS = RECALL_KINDS + HIDDEN_KINDS
+
+# The memories table, spelled once: the CREATE in Store.__init__ and the
+# rebuild in Store._widen_kind_check must agree, or a migrated store and a
+# fresh one drift apart.
+MEMORIES_COLUMNS_SQL = """
+    id         INTEGER PRIMARY KEY,
+    text       TEXT NOT NULL,
+    kind       TEXT NOT NULL
+               CHECK (kind IN ('directive','note','observation','miss')),
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    source     TEXT NOT NULL DEFAULT 'self',
+    topics     TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    status     TEXT NOT NULL DEFAULT 'active'
+               CHECK (status IN ('active','superseded','retired')),
+    supersedes INTEGER REFERENCES memories(id),
+    created    TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    -- Reinforcement (13:15 design revision): bumped by `memory
+    -- reinforce` only when a memory is judged GENUINELY USED at
+    -- turn end (`judge-turn`, fired detached by every turn path
+    -- via fire_memory_judge), never on mere retrieval. Read by
+    -- score_row.
+    last_used_at TEXT,
+    use_count  INTEGER NOT NULL DEFAULT 0,
+    -- Temporal grounding (2026-08-11): when the thing this
+    -- record DESCRIBES happened — distinct from `created`, when
+    -- the record was written about it. NULL means unknown, and
+    -- unknown is left unknown rather than guessed. Rendered in
+    -- relative human terms by the recall block; read by
+    -- score_row's recency-of-relevance factor (notes only).
+    occurred   TEXT
+"""
 
 
 def default_dir():
@@ -365,34 +414,7 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=5000")
         self.db.executescript(f"""
-            CREATE TABLE IF NOT EXISTS memories (
-                id         INTEGER PRIMARY KEY,
-                text       TEXT NOT NULL,
-                kind       TEXT NOT NULL CHECK (kind IN ('directive','note')),
-                pinned     INTEGER NOT NULL DEFAULT 0,
-                source     TEXT NOT NULL DEFAULT 'self',
-                topics     TEXT NOT NULL DEFAULT '',
-                confidence REAL NOT NULL DEFAULT 1.0,
-                status     TEXT NOT NULL DEFAULT 'active'
-                           CHECK (status IN ('active','superseded','retired')),
-                supersedes INTEGER REFERENCES memories(id),
-                created    TEXT NOT NULL,
-                last_seen  TEXT NOT NULL,
-                -- Reinforcement (13:15 design revision): bumped by `memory
-                -- reinforce` only when a memory is judged GENUINELY USED at
-                -- turn end (`judge-turn`, fired detached by every turn path
-                -- via fire_memory_judge), never on mere retrieval. Read by
-                -- score_row.
-                last_used_at TEXT,
-                use_count  INTEGER NOT NULL DEFAULT 0,
-                -- Temporal grounding (2026-08-11): when the thing this
-                -- record DESCRIBES happened — distinct from `created`, when
-                -- the record was written about it. NULL means unknown, and
-                -- unknown is left unknown rather than guessed. Rendered in
-                -- relative human terms by the recall block; read by
-                -- score_row's recency-of-relevance factor (notes only).
-                occurred   TEXT
-            );
+            CREATE TABLE IF NOT EXISTS memories ({MEMORIES_COLUMNS_SQL});
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
                 embedding float[{EMBED_DIM}] distance_metric=cosine
             );
@@ -402,6 +424,32 @@ class Store:
         if "occurred" not in cols:
             self.db.execute("ALTER TABLE memories ADD COLUMN occurred TEXT")
             self.db.commit()
+        self._widen_kind_check()
+
+    def _widen_kind_check(self):
+        """Stores born before the observation/miss kinds carry the two-kind
+        CHECK, and sqlite cannot ALTER a constraint in place: the table is
+        rebuilt around the data. Every column travels by name — ids
+        explicitly, so the vec table's rowids still point at the same records
+        and the vectors are never touched; use_count and last_used_at ride
+        with the rest. Runs after the `occurred` backfill above, so a store
+        old enough to lack both is first given the column, then rebuilt."""
+        sql = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table'"
+            " AND name='memories'").fetchone()[0]
+        if "'observation'" in sql:
+            return
+        cols = ("id, text, kind, pinned, source, topics, confidence, status,"
+                " supersedes, created, last_seen, last_used_at, use_count,"
+                " occurred")
+        self.db.executescript(f"""
+            BEGIN;
+            CREATE TABLE memories_migrate ({MEMORIES_COLUMNS_SQL});
+            INSERT INTO memories_migrate ({cols}) SELECT {cols} FROM memories;
+            DROP TABLE memories;
+            ALTER TABLE memories_migrate RENAME TO memories;
+            COMMIT;
+        """)
 
     def embed_text(self, rec_text, topics=""):
         body = rec_text if not topics else f"{rec_text} [topics: {topics}]"
@@ -422,9 +470,12 @@ class Store:
         self.db.commit()
         return cur.lastrowid
 
-    def knn(self, vec, k):
+    def knn(self, vec, k, kinds=None):
         """Raw KNN against active records: rows with cosine similarity at
-        index 9, best raw similarity first."""
+        index 9, best raw similarity first. `kinds` restricts the match to
+        those kinds IN THE QUERY — the retrieval that feeds a prompt excludes
+        the hidden kinds outright rather than ranking them low
+        (memory-recall.md rule 43)."""
         # Superseded/retired rows keep their vectors (history is kept), so the
         # KNN budget must span the WHOLE vec table or low-similarity active
         # rows fall off the end of the join filter. The corpus is small enough
@@ -432,14 +483,19 @@ class Store:
         total = self.db.execute("SELECT count(*) FROM memories_vec").fetchone()[0]
         if total == 0:
             return []
+        where = "v.embedding MATCH ? AND v.k = ? AND m.status = 'active'"
+        params = [pack(vec), total]
+        if kinds:
+            where += " AND m.kind IN (%s)" % ",".join("?" * len(kinds))
+            params += list(kinds)
         rows = self.db.execute(
             "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
             "       m.confidence, m.created, m.last_seen, 1.0 - v.distance AS sim,"
             "       m.last_used_at, m.use_count, m.occurred"
             " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
-            " WHERE v.embedding MATCH ? AND v.k = ? AND m.status = 'active'"
+            f" WHERE {where}"
             " ORDER BY sim DESC",
-            (pack(vec), total)).fetchall()
+            params).fetchall()
         return rows[:k] if k else rows
 
     def vec_of(self, rec_id):
@@ -458,7 +514,7 @@ class Store:
                 return True
         return False
 
-    def search(self, query, k=TOP_K):
+    def search(self, query, k=TOP_K, deliberate=False):
         """The retrieval rule from the design's 13:15 revision — two pools
         with different floors, queried separately so the assistant's own
         chatter can never crowd the user's rules out: notes take the top-K
@@ -466,11 +522,17 @@ class Store:
         everything above the deliberately looser DIRECTIVE_FLOOR (capped, raw
         cosine — never decayed or boosted), and every pinned record rides
         along regardless. Near-duplicates of an already-taken record are
-        squashed so K slots hold K distinct things."""
+        squashed so K slots hold K distinct things.
+
+        The default query is restricted to those two kinds IN THE SQL —
+        observations and misses never reach a prompt this way, however well
+        they match (rule 43). `deliberate` is the CLI search verb's opt-in: a
+        typed query is a request to read, so the hidden kinds are matched too
+        and returned as their own pool, raw cosine, after the others."""
         t0 = time.monotonic()
         qvec = embed([query], query=True)[0]
         t1 = time.monotonic()
-        rows = self.knn(qvec, 0)
+        rows = self.knn(qvec, 0, kinds=None if deliberate else RECALL_KINDS)
         now = datetime.now().astimezone()
         picked, seen = [], set()
 
@@ -494,6 +556,13 @@ class Store:
                 break
             if row[2] == "directive" and row[9] >= DIRECTIVE_FLOOR:
                 directives += take(row)
+        if deliberate:
+            hidden = 0
+            for row in rows:
+                if hidden >= k:
+                    break
+                if row[2] in HIDDEN_KINDS and row[9] >= SIM_FLOOR:
+                    hidden += take(row)
         for row in self.pinned_rows():
             if row[0] not in seen:
                 picked.append(row)
@@ -514,9 +583,17 @@ class Store:
         knowing WHEN fills an existing record's unknown `occurred` — new
         knowledge about an old record, not a new record — and never overwrites
         one already known."""
+        if kind in HIDDEN_KINDS:
+            # Rule 44: one record per night, one per asking. A similar record
+            # on another day is the recurrence the series exists to
+            # accumulate, not a redundancy to squash — deduplicating the knee
+            # asked about three times into one row destroys the n the kind is
+            # for. No dedup, no supersession, ever.
+            return "added", self.insert(text, kind, pinned, source, topics,
+                                        occurred=occurred)
         vec = self.embed_text(text, topics)
         best = None
-        for row in self.knn(vec, 5):
+        for row in self.knn(vec, 5, kinds=(kind,)):
             if row[2] == kind:
                 best = row
                 break
@@ -541,10 +618,15 @@ class Store:
                                     occurred=occurred)
 
     def pinned_rows(self):
+        # The hidden kinds are excluded even here: every caller of this tier
+        # is prompt-facing (the recall block and its degraded path), and a
+        # pinned observation riding it would auto-surface an n=1 anecdote —
+        # exactly what rule 43 forbids. The deliberate list still shows it.
         return self.db.execute(
             "SELECT id, text, kind, pinned, source, topics, confidence,"
             "       created, last_seen, 1.0, last_used_at, use_count, occurred"
             " FROM memories WHERE status='active' AND pinned=1"
+            "   AND kind NOT IN ('observation','miss')"
             " ORDER BY kind DESC, id").fetchall()
 
     def reinforce(self, ids):
@@ -913,6 +995,13 @@ def build_block(rows, warning=""):
 
     directives = [r for r in rows if r[2] == "directive"]
     notes = [r for r in rows if r[2] == "note"]
+    # Retrieval never hands the hidden kinds in (rule 43); these sections
+    # exist so that a deliberate future caller CANNOT render one unlabelled.
+    # The label is the enforcement (rule 45): an observation is one night and
+    # a miss is one asking, and neither may be spoken as a pattern from an n
+    # of one — a miss over-read aloud is accusation-shaped.
+    observations = [r for r in rows if r[2] == "observation"]
+    misses = [r for r in rows if r[2] == "miss"]
     out = ["## What I remember (retrieved, not exhaustive"
            " — 'crab memory search <query>' for more)"]
     if warning:
@@ -923,7 +1012,15 @@ def build_block(rows, warning=""):
     if notes:
         out.append("\nWhat I know from my own time:")
         out.extend(line(r) for r in notes)
-    return "\n".join(out), directives + notes
+    if observations:
+        out.append("\nShapes I have seen (one night each — a series may be "
+                   "spoken, with its n; a single night never):")
+        out.extend(line(r) for r in observations)
+    if misses:
+        out.append("\nWhat I was asked and had nothing for (one asking each "
+                   "— never to be spoken as a pattern):")
+        out.extend(line(r) for r in misses)
+    return "\n".join(out), directives + notes + observations + misses
 
 
 def format_block(rows, warning=""):
@@ -988,6 +1085,19 @@ extract ONLY what earns a permanent record:
 - the assistant finished, discovered, or was proven wrong about something \
 she would otherwise re-derive -> kind "note"
 - a stable fact about the machine, a person, or a project -> kind "note"
+- the day's SHAPE, beyond its contents -> kind "observation": gaps (how long \
+the silences ran, and whether the return continued the subject or opened a \
+new one), texture (where the user was playful, where he pushed back twice on \
+the same thing, where the assistant went clinical), recurrence (a subject \
+that keeps coming back across days), and unfinished threads (raised and \
+never resolved — the thread that just stopped, not the one that concluded). \
+Record the night as one night; one night is never a pattern.
+- the user asked something about HIMSELF — his life, plans, history, the \
+people and things around him — that a record could have held, and the \
+assistant had nothing anywhere -> kind "miss": one line, naming the question \
+in his own words. The test: would a person who lives in this house have \
+known? General knowledge the assistant happened not to know is ignorance, \
+not a blind spot, and is NOT a miss.
 Do NOT record: transient state, step-by-step narration, anything scoped to a \
 single conversation, greetings, weather, or anything a file on disk already \
 answers. Few good records beat many weak ones; an empty day is a valid answer.
@@ -999,8 +1109,8 @@ A standing fact with no event behind it, or a date you are not sure of, gets \
 NO "occurred" field at all: an unknown left unknown beats a guess.
 
 Reply with ONLY a JSON array (no prose, no code fence):
-[{"text": "...", "kind": "directive"|"note", "topics": "comma,separated", \
-"occurred": "YYYY-MM-DD"}]
+[{"text": "...", "kind": "directive"|"note"|"observation"|"miss", \
+"topics": "comma,separated", "occurred": "YYYY-MM-DD"}]
 
 MATERIAL:
 """
@@ -1366,7 +1476,7 @@ def cmd_ingest(store, args):
     for cand in candidates:
         text = (cand.get("text") or "").strip()
         kind = cand.get("kind", "note")
-        if not text or kind not in ("directive", "note"):
+        if not text or kind not in RECORD_KINDS:
             counts["rejected"] += 1
             continue
         # `occurred` rides when the distiller dated the thing; a stamp that
@@ -1517,8 +1627,10 @@ def cmd_add(store, args):
 
 
 def cmd_search(store, args):
+    # A typed query is a deliberate read (rule 43): the hidden kinds are
+    # matched and shown here, and only here — never by the recall block.
     query = " ".join(args.query).strip()
-    rows, embed_ms, knn_ms = store.search(query, k=args.n)
+    rows, embed_ms, knn_ms = store.search(query, k=args.n, deliberate=True)
     for r in rows:
         flags = ("" if not r[3] else " pinned") + \
                 ("" if not r[11] else f" used×{r[11]}")
@@ -1649,7 +1761,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("add", help="add a record")
-    p.add_argument("--kind", choices=("directive", "note"), default="note")
+    p.add_argument("--kind", choices=RECORD_KINDS, default="note")
     p.add_argument("--pin", action="store_true")
     p.add_argument("--source", default="conversation")
     p.add_argument("--topics", default="")
@@ -1667,7 +1779,7 @@ def main():
     p.set_defaults(fn=cmd_search)
 
     p = sub.add_parser("list", help="list records")
-    p.add_argument("--kind", choices=("directive", "note"))
+    p.add_argument("--kind", choices=RECORD_KINDS)
     p.add_argument("--all", action="store_true", help="include superseded/retired")
     p.set_defaults(fn=cmd_list)
 

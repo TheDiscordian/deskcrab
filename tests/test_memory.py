@@ -703,6 +703,277 @@ class TestDecayPass(StoreCase):
             (rec,)).fetchone(), (1.0, "active"))
 
 
+class TestHiddenKinds(StoreCase):
+    """Observation and miss (memory-recall.md rules 42-45): readable on
+    request, never auto-surfaced, never decayed, never deduplicated."""
+
+    MISS = ("Asked what the doctor said about his knee. No record anywhere — "
+            "never mentioned to me.")
+    OBS = ("He went quiet for eleven minutes and came back to the same "
+           "subject when he returned.")
+
+    def seed(self):
+        self.miss = self.store.insert(self.MISS, kind="miss",
+                                      topics="health, knee, doctor")
+        self.obs = self.store.insert(self.OBS, kind="observation",
+                                     topics="gaps, silence")
+        self.note = self.store.insert(
+            "The knee appointment was Thursday at the clinic.", kind="note",
+            topics="health, knee")
+
+    def test_a_miss_never_answers_the_question_that_created_it(self):
+        """The exact failure rule 43 exists for: a miss names its subject in
+        the user's own words, so it is the best possible embedding match for
+        the NEXT asking of the same question — and it must lose anyway,
+        because surfacing it reads a record of not-knowing as knowledge."""
+        self.seed()
+        rows, _, _ = self.store.search("what did the doctor say about my knee")
+        ids = [r[0] for r in rows]
+        self.assertIn(self.note, ids)
+        self.assertNotIn(self.miss, ids)
+        self.assertNotIn(self.obs, ids)
+        # Excluded, not merely under the floor: asked DELIBERATELY, the same
+        # query finds the miss, and finds it matching strongly.
+        rows, _, _ = self.store.search("what did the doctor say about my knee",
+                                       deliberate=True)
+        by_id = {r[0]: r for r in rows}
+        self.assertIn(self.miss, by_id)
+        self.assertGreater(by_id[self.miss][9], memory.SIM_FLOOR)
+
+    def test_an_observation_never_surfaces_however_well_it_matches(self):
+        self.seed()
+        query = "he goes quiet and then comes back to the same subject"
+        rows, _, _ = self.store.search(query)
+        self.assertNotIn(self.obs, [r[0] for r in rows])
+        rows, _, _ = self.store.search(query, deliberate=True)
+        by_id = {r[0]: r for r in rows}
+        self.assertIn(self.obs, by_id)
+        self.assertGreater(by_id[self.obs][9], memory.SIM_FLOOR)
+
+    def test_the_recall_block_never_carries_them(self):
+        self.seed()
+        out = os.path.join(self.dir, "injected.json")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "recall-block", "--query",
+             "what did the doctor say about my knee", "--ids-out", out],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("knee appointment was Thursday", proc.stdout)
+        self.assertNotIn("No record anywhere", proc.stdout)
+        self.assertNotIn("eleven minutes", proc.stdout)
+        with open(out) as f:
+            injected = {r["id"] for r in json.load(f)}
+        self.assertNotIn(self.miss, injected)
+        self.assertNotIn(self.obs, injected)
+
+    def test_a_pinned_hidden_record_stays_off_the_pinned_tier(self):
+        # Every caller of the pinned tier is prompt-facing; a pinned
+        # observation riding it would auto-surface an n=1 anecdote.
+        vec = [0.1] * memory.EMBED_DIM
+        self.store.insert("one night's shape", kind="observation",
+                          pinned=True, vec=vec)
+        d = self.store.insert("Nothing outward-facing while unattended.",
+                              kind="directive", pinned=True, vec=vec)
+        self.assertEqual([r[0] for r in self.store.pinned_rows()], [d])
+
+    def test_neither_kind_decays(self):
+        vec = [0.1] * memory.EMBED_DIM
+        obs = self.store.insert("one night's shape", kind="observation",
+                                vec=vec)
+        miss = self.store.insert("asked, had nothing", kind="miss", vec=vec)
+        for rec in (obs, miss):
+            self.store.db.execute("UPDATE memories SET last_seen=? WHERE id=?",
+                                  (days_ago(memory.DECAY_STALE_DAYS + 100),
+                                   rec))
+        self.store.db.commit()
+        self.assertEqual(self.store.decay_pass(), (0, 0))
+        for rec in (obs, miss):
+            self.assertEqual(self.store.db.execute(
+                "SELECT confidence, status FROM memories WHERE id=?",
+                (rec,)).fetchone(), (1.0, "active"))
+
+    def test_no_dedup_no_supersession_the_series_accumulates(self):
+        """Rule 44: the knee asked about three times is three records. The
+        dedup path would fold the identical text into one row and the
+        supersede path would retire the earlier asking — either destroys the
+        n the series exists for."""
+        actions = [self.store.add_deduped(self.MISS, kind="miss",
+                                          occurred=f"2026-08-{d:02d}")[0]
+                   for d in (7, 9, 11)]
+        self.assertEqual(actions, ["added", "added", "added"])
+        rows = self.store.db.execute(
+            "SELECT status, occurred FROM memories WHERE kind='miss'"
+            " ORDER BY id").fetchall()
+        self.assertEqual(rows, [("active", "2026-08-07"),
+                                ("active", "2026-08-09"),
+                                ("active", "2026-08-11")])
+        a1, _ = self.store.add_deduped(self.OBS, kind="observation")
+        a2, _ = self.store.add_deduped(self.OBS, kind="observation")
+        self.assertEqual((a1, a2), ("added", "added"))
+
+    def test_ingest_accepts_both_kinds(self):
+        cands = [{"text": self.OBS, "kind": "observation",
+                  "topics": "gaps", "occurred": "2026-08-13"},
+                 {"text": self.MISS, "kind": "miss",
+                  "topics": "health, knee", "occurred": "2026-08-13"},
+                 {"text": "bad kind", "kind": "gossip"}]
+        cfile = os.path.join(self.dir, "cands.json")
+        with open(cfile, "w") as f:
+            json.dump(cands, f)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "ingest", "--from-json", cfile],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("2 added", proc.stdout)
+        self.assertIn("1 rejected", proc.stdout)
+        kinds = sorted(k for (k,) in self.store.db.execute(
+            "SELECT kind FROM memories"))
+        self.assertEqual(kinds, ["miss", "observation"])
+
+    def test_the_prompt_puts_the_house_test_in_words(self):
+        # The discrimination test travels in the distiller's own instructions,
+        # in words, or every trivia question he asks becomes a "miss".
+        self.assertIn("would a person who lives in this house have known",
+                      memory.INGEST_PROMPT.lower())
+        self.assertIn('"observation"', memory.INGEST_PROMPT)
+        self.assertIn('"miss"', memory.INGEST_PROMPT)
+        for shape in ("silences", "recurrence", "unfinished"):
+            self.assertIn(shape, memory.INGEST_PROMPT)
+
+    def test_rendered_anywhere_they_are_labelled_one_night_each(self):
+        # Rule 45: the label IS the enforcement against speaking an n=1
+        # anecdote as a pattern. Retrieval never hands these in; a deliberate
+        # caller that does must get the labelled sections, and the sidecar
+        # must still name every row.
+        rows = [fake_row(kind="observation", rec_id=1, text="one quiet gap"),
+                fake_row(kind="miss", rec_id=2, text="asked, had nothing")]
+        block, kept = memory.build_block(rows)
+        self.assertIn("one night each", block)
+        self.assertIn("one asking each", block)
+        self.assertIn("one quiet gap", block)
+        self.assertIn("asked, had nothing", block)
+        self.assertEqual(len(kept), 2)
+
+
+class TestKindCheckMigration(StoreCase):
+    """A store born before the observation/miss kinds carries the two-kind
+    CHECK, which sqlite cannot widen in place: reopening rebuilds the table
+    around the data. What must survive: every row, every id, the vectors
+    (by rowid), use_count and last_used_at, the supersedes link — and the
+    CHECK must still refuse an unknown kind afterwards."""
+
+    def legacy_store(self, with_occurred=True):
+        d = tempfile.mkdtemp(prefix="memtest-legacy-")
+        db = memory.sqlite3.connect(os.path.join(d, "memory.db"))
+        db.enable_load_extension(True)
+        memory.sqlite_vec.load(db)
+        db.enable_load_extension(False)
+        occurred_col = ",\n                occurred   TEXT" \
+            if with_occurred else ""
+        db.executescript(f"""
+            CREATE TABLE memories (
+                id         INTEGER PRIMARY KEY,
+                text       TEXT NOT NULL,
+                kind       TEXT NOT NULL CHECK (kind IN ('directive','note')),
+                pinned     INTEGER NOT NULL DEFAULT 0,
+                source     TEXT NOT NULL DEFAULT 'self',
+                topics     TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                status     TEXT NOT NULL DEFAULT 'active'
+                           CHECK (status IN ('active','superseded','retired')),
+                supersedes INTEGER REFERENCES memories(id),
+                created    TEXT NOT NULL,
+                last_seen  TEXT NOT NULL,
+                last_used_at TEXT,
+                use_count  INTEGER NOT NULL DEFAULT 0{occurred_col}
+            );
+            CREATE VIRTUAL TABLE memories_vec USING vec0(
+                embedding float[{memory.EMBED_DIM}] distance_metric=cosine
+            );
+        """)
+        now = memory.now_iso()
+        rows = [
+            (1, "An old note, well used.", "note", 0, "self", "wow", 0.8,
+             "active", None, now, now, days_ago(3), 7),
+            (2, "Wake him at seven.", "directive", 1, "conversation", "", 1.0,
+             "superseded", None, now, now, None, 0),
+            (3, "Wake him at nine.", "directive", 1, "conversation", "", 1.0,
+             "active", 2, now, now, days_ago(1), 2),
+        ]
+        db.executemany(
+            "INSERT INTO memories (id, text, kind, pinned, source, topics,"
+            " confidence, status, supersedes, created, last_seen,"
+            " last_used_at, use_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows)
+        self.vecs = {i: [i * 0.1] * memory.EMBED_DIM for i in (1, 2, 3)}
+        db.executemany(
+            "INSERT INTO memories_vec (rowid, embedding) VALUES (?,?)",
+            [(i, memory.pack(v)) for i, v in self.vecs.items()])
+        if with_occurred:
+            db.execute("UPDATE memories SET occurred='2026-08-01' WHERE id=1")
+        db.commit()
+        db.close()
+        return d
+
+    def reopen_and_check(self, d):
+        store = memory.Store(d)
+        try:
+            # The CHECK is widened: a hidden kind inserts, a bogus one still
+            # refuses.
+            obs = store.insert("one night's shape", kind="observation",
+                               vec=[0.5] * memory.EMBED_DIM)
+            self.assertEqual(obs, 4)
+            with self.assertRaises(Exception):
+                store.db.execute(
+                    "INSERT INTO memories (text, kind, created, last_seen)"
+                    " VALUES ('x', 'gossip', 'now', 'now')")
+            # Every row travelled whole, ids and all.
+            self.assertEqual(store.db.execute(
+                "SELECT id, text, kind, status, use_count FROM memories"
+                " WHERE id<=3 ORDER BY id").fetchall(),
+                [(1, "An old note, well used.", "note", "active", 7),
+                 (2, "Wake him at seven.", "directive", "superseded", 0),
+                 (3, "Wake him at nine.", "directive", "active", 2)])
+            self.assertIsNotNone(store.db.execute(
+                "SELECT last_used_at FROM memories WHERE id=1").fetchone()[0])
+            self.assertEqual(store.db.execute(
+                "SELECT supersedes FROM memories WHERE id=3").fetchone()[0], 2)
+            # The vectors still hang off the same rowids.
+            for i, v in self.vecs.items():
+                got = store.vec_of(i)
+                self.assertAlmostEqual(got[0], v[0], places=5)
+            self.assertEqual(store.db.execute(
+                "SELECT count(*) FROM memories_vec").fetchone()[0], 4)
+        finally:
+            store.db.close()
+
+    def test_populated_legacy_store_migrates_whole(self):
+        d = self.legacy_store()
+        try:
+            self.reopen_and_check(d)
+            # Idempotent: a second open finds the widened CHECK and rebuilds
+            # nothing.
+            again = memory.Store(d)
+            try:
+                self.assertEqual(again.db.execute(
+                    "SELECT count(*) FROM memories").fetchone()[0], 4)
+            finally:
+                again.db.close()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_store_missing_occurred_takes_both_migrations(self):
+        d = self.legacy_store(with_occurred=False)
+        try:
+            self.reopen_and_check(d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestSearchScoring(StoreCase):
     def test_directives_do_not_crowd_note_slots(self):
         # Two pools, queried separately: the note pool is notes-only, so a

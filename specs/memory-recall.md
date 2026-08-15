@@ -2,10 +2,12 @@
 
 ## PURPOSE
 
-The long-term store holds two kinds of record: directives, which are the user's standing rules, and
-notes, which are her own soft memory. This spec owns what the store is asked, what it returns, how
-the recall block is composed, how a record earns its keep, and how a record retires. Its central
-rule: degradation must never be as quiet as working.
+The long-term store holds four kinds of record: directives, which are the user's standing rules;
+notes, which are her own soft memory; observations, each the shape of one night — gaps, texture,
+recurrence, unfinished threads; and misses, each a question about the user that a record could have
+answered and none did. This spec owns what the store is asked, what it returns, how the recall
+block is composed, how a record earns its keep, and how a record retires. Its central rule:
+degradation must never be as quiet as working.
 
 ## CONTRACT
 
@@ -135,6 +137,33 @@ rule: degradation must never be as quiet as working.
     date stays unknown, and rule 36's 'recorded …' fallback still gives such a row honest
     when-ness. The backfill is `crab memory backfill-occurred`, idempotent, with `--dry-run`.
 
+### Observations and misses
+
+42. Two further kinds exist, emitted by the ingest distiller from the day's material
+    (design-memory-store.md, 2026-08-06 23:20 and 2026-08-07 13:00). An `observation` is a shape
+    seen in one night: gaps (how long the silences ran, and whether the return continued the
+    subject or opened a new one), texture, recurrence across days, unfinished threads raised and
+    never resolved. A `miss` is a shape in what she never saw: the user asked something about
+    himself — his life, plans, history, the people and things around him — that a record could
+    have held, and none did. The discrimination test for a miss MUST be put to the distiller in
+    words: *would a person who lives in this house have known?* General knowledge she happened not
+    to know is ignorance, not a blind spot, and MUST NOT be logged.
+43. **Neither kind is ever returned by similarity retrieval that feeds the recall block.** Excluded
+    outright from the query, not merely ranked low. For a miss this is not a preference: its text
+    names its subject in the user's own words, so it is the best possible embedding match for the
+    next asking of the same question, and surfacing it would read a record of not-knowing as
+    though it were knowledge. Both kinds stay visible to a deliberate listing — the CLI list and
+    search paths — readable on request, never auto-surfaced. A pinned row of either kind MUST NOT
+    ride the pinned tier into a prompt.
+44. **Neither kind decays, and neither is deduplicated or superseded on write.** Each record is one
+    night, or one asking; a similar record on another day is the recurrence the kind exists to
+    accumulate, not a redundancy to squash — collapsing the knee asked about three times into one
+    row destroys the n the series is for. The decay pass stays keyed on notes.
+45. If observations are ever rendered into a prompt block anywhere, they get their own labelled
+    section and the label says **'one night each'** — the label IS the enforcement against
+    speaking an n=1 anecdote as a pattern. Misses rendered anywhere get the same discipline with a
+    harder edge: each is one asking, and an over-read miss is accusation-shaped.
+
 ### Isolation
 
 31. Every path in the store MUST honour every instance redirect: the state prefix, the memory
@@ -158,7 +187,9 @@ rule: degradation must never be as quiet as working.
 | `${STATE_PREFIX}-memory-judge.log` | one line per judgement |
 
 Record kinds: `directive` (the user's standing rules — never decayed, only superseded by a newer
-directive) and `note` (her own soft memory).
+directive), `note` (her own soft memory), `observation` (one night's shape — never decayed, never
+deduplicated, never retrieved by similarity into a prompt; rules 42 to 45) and `miss` (one asking
+she had nothing for — same lifecycle and same exclusion, harder edge).
 
 Temporal fields, distinct on purpose: `created` (when the record was written), `last_seen` (when
 retrieval last surfaced it), `last_used_at` (when the judge last credited it), and `occurred` (when
@@ -223,7 +254,13 @@ window when the day fits, whole-chunk windows when it does not, an oversized chu
 and whole, and a multi-window ingest handing every window to the distiller with its passes reported
 and nothing lost — and the dry-run guard of rule 41: real candidates from a stubbed distiller, the
 record count unchanged afterwards, no cursor written, and the would-add report naming the
-candidate),
+candidate — and, since 2026-08-14, the observation/miss contract of rules 42 to 45: a schema
+migration on a populated pre-widening store that keeps every row, vector, use count and last-use
+stamp; an observation and a miss absent from a similarity search and a recall block their text
+would otherwise dominate, while a deliberate search still reads them; both kinds surviving the
+decay pass untouched; both kinds accepted from ingest candidates; a second similar miss landing as
+its own row rather than a duplicate or a supersession; and the 'one night each' label on any block
+that renders them),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_turn_reinforce.sh` and `tests/test_wake_reinforce.sh` (turn to judge to
 reinforce, end to end, including a wordless wake).
