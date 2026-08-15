@@ -10,8 +10,11 @@ source "$SCRIPT_DIR/lib/lifecycle"
 # The running whisper-stream's pid. Overridable so a scratch instance does not
 # read the LIVE desk's recording state: user_busy consults this file, and a
 # scratch test that happened to run while someone was holding push-to-talk was
-# told the user was busy by an instance it has nothing to do with.
-PIDFILE="${DESKCRAB_PIDFILE:-/tmp/deskcrab.pid}"
+# told the user was busy by an instance it has nothing to do with. The default
+# hangs off STATE_PREFIX (test-harness.md rule 13a) — on the canonical install
+# it resolves to exactly the /tmp/deskcrab.pid it always was, and a scratch
+# copy's `crab start`/`stop` can no longer kill the live recorder.
+PIDFILE="${DESKCRAB_PIDFILE:-${STATE_PREFIX}.pid}"
 
 case "${1:-}" in
     start)
@@ -20,7 +23,7 @@ case "${1:-}" in
         # Kill any leftover whisper-stream
         [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 
-        WHISPER_OUT="/tmp/deskcrab-whisper.txt"
+        WHISPER_OUT="${STATE_PREFIX}-whisper.txt"
         rm -f "$WHISPER_OUT"
 
         notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Listening..."
@@ -37,7 +40,7 @@ case "${1:-}" in
         # Dismiss listening notification immediately
         notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" ""
 
-        WHISPER_OUT="/tmp/deskcrab-whisper.txt"
+        WHISPER_OUT="${STATE_PREFIX}-whisper.txt"
 
         # Wait for whisper to finish its current step
         PREV_SIZE=-1

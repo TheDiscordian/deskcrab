@@ -222,9 +222,43 @@ SERVE_CERT="${SERVE_CERT:-}"
 SERVE_KEY="${SERVE_KEY:-}"
 TLS_DIR="${TLS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/tls}"
 
-# Runtime state. Overridable from the environment so a test run can be pointed
-# at a scratch conversation instead of stomping the live one.
-STATE_PREFIX="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}"
+# Runtime state. Isolation is the DEFAULT, not the remembered override
+# (test-harness.md rules 13a-13b). This used to be one line —
+# `${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}` — which handed the LIVE prefix to
+# every copy of this code anywhere on the machine unless the caller remembered
+# to export the override: during the 2026-08-07 13:27 emergency, test wakes
+# running from a /tmp checkout spoke their "help" turns into the real
+# conversation at the desk. Now the live prefix is claimed, never inherited:
+#   explicit   an exported (or conf-set) DESKCRAB_STATE_PREFIX wins, as ever;
+#   canonical  the resolved library directory (LIB_DIR walks symlinks via
+#              readlink -f before dirname, so the deploy symlink resolves to
+#              the checkout) IS what ~/.local/lib/deskcrab points at — this is
+#              the installed instance, and only it defaults to /tmp/deskcrab;
+#   isolated   anything else — a /tmp checkout, a scratch worktree, a harness
+#              that forgot the override — gets a stable prefix of its own,
+#              hashed from the resolved library path, under $TMPDIR so a run
+#              inside a sandbox lands inside that sandbox.
+if [ -n "${DESKCRAB_STATE_PREFIX:-}" ]; then
+    STATE_PREFIX="$DESKCRAB_STATE_PREFIX"
+    STATE_PREFIX_WHY="explicit"
+elif [ "$(readlink -f "${HOME:-}/.local/lib/deskcrab" 2>/dev/null)" = "$LIB_DIR" ]; then
+    STATE_PREFIX="/tmp/deskcrab"
+    STATE_PREFIX_WHY="canonical"
+else
+    STATE_PREFIX="${TMPDIR:-/tmp}/deskcrab-$(printf '%s' "$LIB_DIR" | sha256sum | cut -c1-8)"
+    STATE_PREFIX_WHY="isolated"
+fi
+# Children inherit the ANSWER, not the question: without this a scratch crab's
+# serve.py, job-runner or claudism helper would re-default to the live prefix
+# on its own — the same hole, one process deep.
+export DESKCRAB_STATE_PREFIX="$STATE_PREFIX"
+# No silent choice (rule 13b). One line, appended, saying which prefix this run
+# took and why. A witness, never a gate: an unwritable log does not stop a run.
+# The sandbox pins DESKCRAB_PREFIX_LOG so a canonical-install-shaped layout
+# under test records its choice without writing beside the live instance.
+printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "${0##*/}" \
+    "$STATE_PREFIX" "$STATE_PREFIX_WHY" \
+    >> "${DESKCRAB_PREFIX_LOG:-${STATE_PREFIX}-prefix.log}" 2>/dev/null || true
 # Reply audio for the phone, and the ONE glob the hourly sweep deletes by. It
 # hangs off STATE_PREFIX rather than a hardcoded /tmp/deskcrab-remote-*.opus
 # because the sweep is a pattern delete: a scratch instance running with its
@@ -1957,7 +1991,7 @@ convo_append() {
 # call. Appends only ever go to the end, so those first lines are still exactly
 # the block that was summarized, and turns that landed meanwhile survive.
 compact_convo() {
-    local OLDFILE="/tmp/deskcrab-convo-old.$$"
+    local OLDFILE="${STATE_PREFIX}-convo-old.$$"
     local LINES
     LINES=$({ flock -w 60 9; _compact_split "$OLDFILE"; } 9>"$CONVOLOCK")
     [ -n "$LINES" ] || return 0
@@ -2127,7 +2161,7 @@ _compact_split() {
 # would otherwise hand back a conversation missing turns that were never
 # summarised, and say nothing.
 _compact_drop() {
-    local NEWFILE="/tmp/deskcrab-convo-new.$$" HAD WANT HAVE
+    local NEWFILE="${STATE_PREFIX}-convo-new.$$" HAD WANT HAVE
     HAD=$(wc -l < "$CONVOFILE" 2>/dev/null) || HAD=""
     [ -n "$HAD" ] || return 1
     WANT=$(( HAD - $1 ))

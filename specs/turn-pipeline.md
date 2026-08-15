@@ -306,8 +306,8 @@ file rather than re-instrumented every time the question comes up.
 
 | Path | Owner | Format |
 |---|---|---|
-| `/tmp/deskcrab-whisper.txt` | capture | raw transcriber output, deleted after read |
-| `${DESKCRAB_PIDFILE:-/tmp/deskcrab.pid}` | capture | recorder pid |
+| `${STATE_PREFIX}-whisper.txt` | capture | raw transcriber output, deleted after read |
+| `${DESKCRAB_PIDFILE:-${STATE_PREFIX}.pid}` | capture | recorder pid |
 | `${STATE_PREFIX}-convo.txt` | conversation store | `User [YYYY-MM-DD HH:MM]: …` / `Assistant […]: …` blocks |
 | `${STATE_PREFIX}-convo-summary.txt` | compaction | condensed prose, opens with its time span |
 | `${STATE_PREFIX}-convo.lock` | all writers | flock |

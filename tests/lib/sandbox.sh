@@ -227,6 +227,7 @@ CONF
         XDG_RUNTIME_DIR="$_sb_root/run" \
         DESKCRAB_CONF="$_sb_root/conf/deskcrab.conf" \
         DESKCRAB_STATE_PREFIX="$_sb_root/state/deskcrab" \
+        DESKCRAB_PREFIX_LOG="$_sb_root/witness/prefix-choice.log" \
         DESKCRAB_PIDFILE="$_sb_root/run/deskcrab.pid" \
         ACCOUNT_STATE_FILE="$_sb_root/data/deskcrab/account-state" \
         DESKCRAB_MEMORY_DIR="$_sb_root/data/deskcrab/memory" \

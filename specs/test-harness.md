@@ -15,7 +15,8 @@ during the very investigation that produced these specs.
    or invokes the entry script.
 2. The helper MUST pin every knob that can reach live state: the config path, the state prefix, the
    wakes directory, the jobs directory, the memory directory, the account state file, the day
-   journal directory, the state home, the data home, and the recorder pid file.
+   journal directory, the state home, the data home, the recorder pid file, and the prefix-choice
+   log (rule 13b).
 3. The helper MUST stub every desktop tool from **one list**, in one place: the notifier, the
    synthesiser, the audio player, the window manager control, the markdown renderer, the media
    tools, the transcriber, and the CLI itself.
@@ -85,6 +86,27 @@ during the very investigation that produced these specs.
     guard on its own side; the booking side MUST get the same guard, in the same shape.
 13. Every gate MUST be enforced by the code, not only by the test. A gate that lives in the test is a
     gate that the next test forgets.
+13a. **Isolation is the default; the live prefix is claimed, never inherited.** The library resolves
+    its own real path — `readlink -f` on `${BASH_SOURCE[0]}` *before* any `dirname`, because a
+    symlinked deploy directory otherwise walks to the wrong root — and compares that with what the
+    installed symlink `~/.local/lib/deskcrab` resolves to. Only a run whose resolved library
+    directory IS the installed one may default to the live state prefix (`/tmp/deskcrab`). Every
+    other run — a /tmp checkout, a scratch worktree, a harness that forgot the override — defaults
+    to a stable prefix of its own, derived from the resolved library path:
+    `${TMPDIR:-/tmp}/deskcrab-<first 8 hex of sha256 of that path>`. Stable, so a scratch instance
+    sees its own state across runs; derived from the path, so two scratch checkouts never share a
+    conversation; under `$TMPDIR`, so a run inside a sandbox lands inside that sandbox. An explicit
+    `DESKCRAB_STATE_PREFIX` wins over both, exactly as before. The resolved choice is re-exported
+    as `DESKCRAB_STATE_PREFIX`, so every child a run spawns inherits the answer instead of
+    re-deciding it from a default of its own. This is rule 13 applied to the fourth gate: before
+    it, isolation was opt-in through the override, and a copy of the code run from anywhere on the
+    machine was born holding the live conversation, its locks, and its mouth.
+13b. **No silent choice.** Every run that loads the library appends one line — timestamp, pid,
+    entry script, the prefix chosen, and which of the three reasons chose it (`canonical` /
+    `isolated` / `explicit`) — to `${STATE_PREFIX}-prefix.log`, overridable as
+    `DESKCRAB_PREFIX_LOG`, which the sandbox pins (rule 2) so a canonical-install-shaped layout
+    under test records its choice without writing beside the live instance. The record is a
+    witness, never a gate: a run that cannot write the line still runs.
 
 ### Test quality
 
@@ -187,6 +209,10 @@ The harness tests itself:
 - `tests/test_sandbox.sh` — the helper pins every knob in the list; a test that tries to write a
   live path fails; a test that tries to book a real wake fails; a test that tries to start a real
   model session fails.
+- `tests/test_state_prefix_isolation.sh` — rules 13a-13b: a copy of the repo run with no override
+  derives its own stable prefix, never the live one, and creates nothing under the live prefix; a
+  canonical-install-shaped layout still resolves the live prefix; an explicit
+  `DESKCRAB_STATE_PREFIX` beats both; the choice, and the reason it was made, are recorded.
 - `tests/run.sh --list` — every test file is executable, is listed, and either sources the sandbox
   helper or is one of the named exceptions. The roll call also runs before the suite does, so a file
   that skips the helper stops the run rather than passing quietly inside it. Four files predate the
