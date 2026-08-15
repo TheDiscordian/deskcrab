@@ -12,6 +12,12 @@
 # log. specs/nightly.md rule 58a carries the guarantee; utf8_head in
 # lib/common.sh — the document-shaped counterpart of the one shared trim
 # (specs/wake-queue.md, DATA) — is the implementation.
+#
+# Rule 58a's second half rides the same material: a section that actually
+# outgrew its budget is named on the night log — which section, its true
+# size in bytes, the budget it was cut to — while a night whose material
+# fits its budgets announces nothing, and a missing file is an empty
+# section, never an over-run.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -129,3 +135,45 @@ GOT_INDEX="$(awk '/^=== THE INDEX ===$/ { f = 1; next }
 check_eq "the index section is exactly the 1999 bytes that fit — no stray lead byte" \
     "$GOT_INDEX" "$IP"
 check_eq "and its byte count says the same" "$(blen "$GOT_INDEX")" "1999"
+
+# ---------------------------------------------------------------------------
+# Rule 58a's second half: every section above outgrew its budget, so every
+# one of the four cuts must be announced on the night log — the section by
+# name, its true size in bytes, and the budget it was cut to.
+echo
+echo "each actual cut is announced on the night log, size and budget named:"
+TB="$(wc -c < "$T/engineering.md")"
+OB="$(wc -c < "$T/eng/OPEN.md")"
+IB="$(wc -c < "$T/eng/INDEX.md")"
+JB="$(wc -c < "$T/jobs-text")"
+check "the thread log's cut is announced" contains "$out" \
+    "the thread log outgrew its budget — $TB bytes against 24000, cut to the budget on a character boundary"
+check "the open list's cut is announced" contains "$out" \
+    "the open list outgrew its budget — $OB bytes against 12000, cut to the budget on a character boundary"
+check "the index's cut is announced" contains "$out" \
+    "the index outgrew its budget — $IB bytes against 2000, cut to the budget on a character boundary"
+check "the job list's cut is announced" contains "$out" \
+    "the job list outgrew its budget — $JB bytes against 6000, cut to the budget on a character boundary"
+
+# And the other direction: material inside every budget — with the index
+# file missing outright — runs the same round and announces nothing. A
+# section inside its budget passes without a word; a missing file is an
+# empty section, not an over-run.
+echo
+echo "a night whose material fits its budgets announces nothing:"
+printf '## a small thread — open\nstill owed, still small.\n' > "$T/engineering.md"
+printf -- '- the one open thread\n' > "$T/eng/OPEN.md"
+rm -f "$T/eng/INDEX.md"
+printf 'no jobs are running\n' > "$T/jobs-text"
+out2="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
+    BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
+    BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
+    BACKLOG_DRAIN_LEDGER="$T/drain/dispatched.tsv" \
+    BACKLOG_DRAIN_POLL=1 BACKLOG_DRAIN_ROUNDS_MAX=1 \
+    BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" \
+    "$REPO/lib/backlog-drain" run 2>&1)"; rc2=$?
+check_eq "the drain exits clean again" "$rc2" "0"
+check "the selector still ran over the small material" \
+    contains "$out2" "the backlog is dry"
+check_eq "no section is announced as outgrown — the missing index included" \
+    "$(printf '%s' "$out2" | grep -c 'outgrew its budget')" "0"

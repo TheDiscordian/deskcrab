@@ -334,7 +334,14 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     selector's prompt and the night's stream log as invalid UTF-8 — the same defect that made grep
     read the entire wake ledger as binary. The partial character is dropped whole, characters
     clear of the boundary are content and survive, and the prompt handed to the selector MUST be
-    valid UTF-8 whatever lands on any of the four budgets.
+    valid UTF-8 whatever lands on any of the four budgets. And a cut that actually happens is
+    announced: a section that outgrew its budget MUST be named on the night log at the moment it
+    is bounded — which section, its true size in bytes, and the budget it was cut to — because
+    the bound itself is design, but a trim nobody can see is silent truncation, the thing the
+    standing rule forbids everywhere ([prompt-assembly.md](prompt-assembly.md) rule 36 is the
+    same rule at the prompt's own scale; there nothing is ever cut, here the cut is the design
+    and the announcement is what keeps it honest). A section inside its budget passes without a
+    word, and a section whose file is missing is an empty section, not an over-run.
 58b. The drain's material is the whole owed-work shelf, not the threads alone. Beside the thread
     log, the open list and the index, the selector MUST be handed, each as its own labelled and
     bounded section: the promise sweep's genuine end-of-day misses from the recent nights (the
@@ -471,7 +478,9 @@ its would-dispatches without starting anything.
 `tests/test_backlog_drain_utf8.sh` — rule 58a: with an em-dash straddling every one of the four
 byte budgets at once, the prompt the selector receives is valid UTF-8, plain grep — no `-a` —
 still reads it, each split character is dropped whole at its boundary, an em-dash clear of the
-boundary survives intact, and the budgets themselves still hold.
+boundary survives intact, and the budgets themselves still hold; each outgrown section is named
+on the night log with its true size and its budget, and a night whose material fits its budgets
+announces nothing.
 `tests/test_sleep_stamp_coverage.sh` — rule 14a: the header parsed to chunks, chars and passes;
 the pass-count fallback where the header predates stating it; a field the log never states is
 omitted; a log with no header still stamps and still counts as slept; and the status command

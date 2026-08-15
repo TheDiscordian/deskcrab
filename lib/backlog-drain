@@ -75,6 +75,23 @@ CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/
 
 say() { printf 'backlog-drain: %s\n' "$1"; }
 
+# Rule 58a's second half: a cut that actually happens is announced. The byte
+# bound on each section of the selector's material is design, but a trim
+# nobody can see is silent truncation — the thing the standing rule forbids
+# everywhere (specs/prompt-assembly.md rule 36 is the same rule at the
+# prompt's own scale). A section that outgrew its budget is named on the
+# night log at the moment it is bounded: which section, its true size in
+# bytes, and the budget it was cut to. A section inside its budget passes
+# without a word, and a missing file is an empty section, never an over-run.
+section_overrun() {  # <section name> <true bytes> <budget bytes>
+    [ "$2" -gt "$3" ] 2>/dev/null || return 0
+    say "round ${ROUNDS:-0}: the $1 outgrew its budget — $2 bytes against $3, cut to the budget on a character boundary (rule 58a)"
+}
+file_overrun() {  # <section name> <file> <budget bytes>
+    [ -f "$2" ] || return 0
+    section_overrun "$1" "$(wc -c < "$2" 2>/dev/null || echo 0)" "$3"
+}
+
 # One selection question under the ACCOUNT SELECTION — promise-check's walk,
 # with the drain's models. An account that answers but yields no line matching
 # the verdict pattern is retried once on the fallback model before the round
@@ -216,8 +233,10 @@ cmd_run() {
         # `crab jobs` first — the reporting path reaps hard-killed workers,
         # so the count below is of jobs actually running — and its text is
         # the duplicate-evidence the selector reads.
-        local JOBS_TEXT RUNNING FREE
-        JOBS_TEXT="$("$CRAB" jobs 2>/dev/null | utf8_head 6000)"
+        local JOBS_RAW JOBS_TEXT RUNNING FREE
+        JOBS_RAW="$("$CRAB" jobs 2>/dev/null)"
+        section_overrun "job list" "$(printf '%s' "$JOBS_RAW" | wc -c)" 6000
+        JOBS_TEXT="$(printf '%s' "$JOBS_RAW" | utf8_head 6000)"
         RUNNING="$(running_jobs)"
         FREE=$(( CAP - RUNNING ))
         if [ "$FREE" -le 0 ]; then
@@ -312,10 +331,15 @@ cmd_run() {
         # utf8_head, never a bare `head -c`, for every one of these — a byte
         # cut through a multibyte character would hand the selector and the
         # night's stream log invalid UTF-8 (rule 58a; the wake ledger's
-        # incident, in prompt form).
+        # incident, in prompt form). And a section that actually outgrew its
+        # budget says so on the night log first: the bound is design, a cut
+        # nobody can see is not (rule 58a's second half).
         local THREADS OPENF INDEXF LISTING LEDGER_TAIL
+        file_overrun "thread log" "$THREADS_FILE" 24000
         THREADS="$(utf8_head 24000 "$THREADS_FILE" 2>/dev/null)"
+        file_overrun "open list" "$THREADS_DIR/OPEN.md" 12000
         OPENF="$(utf8_head 12000 "$THREADS_DIR/OPEN.md" 2>/dev/null)"
+        file_overrun "index" "$THREADS_DIR/INDEX.md" 2000
         INDEXF="$(utf8_head 2000 "$THREADS_DIR/INDEX.md" 2>/dev/null)"
         LISTING="$(ls -1 "$THREADS_DIR" 2>/dev/null | head -80)"
         LEDGER_TAIL="$(tail -n 40 "$LEDGER" 2>/dev/null)"
