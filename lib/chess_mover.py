@@ -391,7 +391,16 @@ class Mover:
         onto a dead login."""
         def expand(d):
             return os.path.expanduser(os.path.expandvars(d))
-        fam_m = re.search(r"fable|opus|sonnet|haiku", model or "", re.I)
+        # The family roster's one spelling is common.sh's, handed through the
+        # environment as DESKCRAB_MODEL_FAMILIES (specs/account-fallback.md
+        # rule 29); the baked list is a last resort for a mover started
+        # outside the shell paths — which this service usually is.
+        fams = [f for f in re.split(
+            r"[\s:]+",
+            os.environ.get("DESKCRAB_MODEL_FAMILIES", "").strip()
+            or "fable opus sonnet haiku") if f]
+        fam_m = re.search("|".join(re.escape(f) for f in fams),
+                          model or "", re.I)
         fam = fam_m.group(0).lower() if fam_m else ""
         dirs = [expand("~/.claude")]
         for d in re.split(r"[:\s]+",

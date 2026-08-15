@@ -1155,14 +1155,24 @@ def account_state_path():
                             "deskcrab", "account-state"))
 
 
-_MODEL_FAMILY_RE = re.compile(r"fable|opus|sonnet|haiku", re.I)
+# The family roster's one spelling lives in lib/common.sh
+# (CLAUDE_MODEL_FAMILIES), exported to every child as DESKCRAB_MODEL_FAMILIES
+# (specs/account-fallback.md rule 29). This baked copy is a last resort for a
+# walker started outside the shell paths.
+_MODEL_FAMILY_FALLBACK = "fable opus sonnet haiku"
 
 
 def model_family(model):
     """The model family inside a model string, lowercased — "" when none is
     named. Mirrors claude_model_family in lib/common.sh (specs/
-    account-fallback.md rule 8a)."""
-    m = _MODEL_FAMILY_RE.search(model or "")
+    account-fallback.md rule 8a): the roster comes from the environment
+    (DESKCRAB_MODEL_FAMILIES) whenever the shell paths handed it through,
+    and the baked list stands only when nothing did."""
+    fams = [f for f in re.split(
+        r"[\s:]+",
+        os.environ.get("DESKCRAB_MODEL_FAMILIES", "").strip()
+        or _MODEL_FAMILY_FALLBACK) if f]
+    m = re.search("|".join(re.escape(f) for f in fams), model or "", re.I)
     return m.group(0).lower() if m else ""
 
 

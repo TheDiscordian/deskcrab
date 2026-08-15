@@ -54,6 +54,15 @@ CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # it, and "run /usage-credits" is the CLI's own remedy line; neither phrase
 # appears in auth or network failures, which must still surface as themselves.
 CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage|reached your .* limit|run /usage-credits|not logged in|please run /login}"
+# The model-family roster, in ONE spelling (specs/account-fallback.md rule
+# 29). claude_model_family reads a model string or a refusal wording against
+# these, and the cooldown scope machinery (rule 8a) rides the answer.
+# Exported as DESKCRAB_MODEL_FAMILIES so the Python walkers (lib/memory.py,
+# lib/chess_mover.py) filter by the same roster instead of ageing baked
+# copies of their own — their baked list is a last resort for a walker
+# started outside the shell paths, such as the chessweb service.
+CLAUDE_MODEL_FAMILIES="${CLAUDE_MODEL_FAMILIES:-fable opus sonnet haiku}"
+export DESKCRAB_MODEL_FAMILIES="$CLAUDE_MODEL_FAMILIES"
 PROJECT_DIR="${PROJECT_DIR:-$HOME}"
 # The auto-memory of the directory she is started in is not HER memory.
 # `claude` reads $HOME/.claude/projects/<cwd-slug>/memory/MEMORY.md straight
@@ -3699,6 +3708,7 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
             --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
             --setenv=CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}" \
             --setenv=DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
+            --setenv=DESKCRAB_MODEL_FAMILIES="$CLAUDE_MODEL_FAMILIES" \
             "${acctenv[@]}" \
             "$@" >/dev/null 2>&1; then
         return 0
@@ -3717,6 +3727,7 @@ detach_turn_child() {  # <unit-suffix> <command> [args...]
         CLAUDE_BIN="${CLAUDE_BIN:-}"
         CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
+        DESKCRAB_MODEL_FAMILIES="$CLAUDE_MODEL_FAMILIES"
         ACCOUNT_STATE_FILE="$ACCOUNT_STATE_FILE"
         CLAUDE_CONFIG_DIR="${login:-$HOME/.claude}"
     )
@@ -4638,8 +4649,15 @@ claude_classify() {  # <model> <system prompt>  [question on stdin]
 #
 #   claude_stream_refusal <stream file> [byte offset]
 #
-# Prints the matched refusal text and returns 0; prints nothing and returns 1
-# otherwise. The offset is where this attempt's output begins, so an earlier
+# Prints the WHOLE CLI-owned line holding the match — never the signature's
+# matched substring — and returns 0; prints nothing and returns 1 otherwise.
+# The whole line matters because every production path hands this output to
+# claude_limit_record, whose scope read (rule 8a) needs the model name that
+# can sit AFTER the match in the same line: in "You're out of usage credits.
+# Run /usage-credits to keep using Fable 5" the leftmost match is "out of
+# usage credits", and a scope read off the match alone carried no model name
+# and benched the account for every model. The offset is where this
+# attempt's output begins, so an earlier
 # attempt's refusal kept as history can never be read as the latest one's
 # outcome (specs/account-fallback.md rule 14, specs/jobs.md rule 14).
 #
@@ -4708,7 +4726,14 @@ if real:
 for text in own:
     m = rx.search(text)
     if m:
-        print(m.group(0))
+        # The whole owning line, not the match: the scope read downstream
+        # (rule 8a) needs the model name that can sit after the match.
+        for tline in text.splitlines():
+            if rx.search(tline):
+                print(tline.strip())
+                break
+        else:
+            print(m.group(0))
         sys.exit(0)
 sys.exit(1)
 PY
@@ -4719,7 +4744,10 @@ PY
 #
 #   claude_stream_limit_cut <stream file> [byte offset]
 #
-# Prints the matched limit text and returns 0 when this slice holds genuine
+# Prints the WHOLE CLI-owned line holding the limit match (as
+# claude_stream_refusal does, and for the same reason: the scope read
+# downstream needs the model name that can sit after the match — rule 8a)
+# and returns 0 when this slice holds genuine
 # model output and then the CLI's OWN limit-signature text with no genuine text
 # block after it; prints nothing and returns 1 otherwise. Disjoint from
 # claude_stream_refusal on purpose: that one is the run that never began (no
@@ -4799,7 +4827,14 @@ if not real:
 for text in tail:
     m = rx.search(text)
     if m:
-        print(m.group(0))
+        # The whole owning line, not the match: the scope read downstream
+        # (rule 8a) needs the model name that can sit after the match.
+        for tline in text.splitlines():
+            if rx.search(tline):
+                print(tline.strip())
+                break
+        else:
+            print(m.group(0))
         sys.exit(0)
 sys.exit(1)
 PY
@@ -4877,25 +4912,30 @@ claude_account_current() {
 # The model FAMILY inside a model string or a refusal wording, lowercased —
 # nothing when no family is named. "fable", "claude-fable-5" and "keep using
 # Fable 5" all answer fable; a family the wording never names answers empty,
-# which every caller treats as "no model named".
+# which every caller treats as "no model named". The roster is
+# CLAUDE_MODEL_FAMILIES — the one spelling, defined beside the limit
+# signature and exported to the Python walkers — never a pattern baked here.
 claude_model_family() {  # <model string or wording> -> family | nothing
+    local pat
+    pat="$(printf '%s' "${CLAUDE_MODEL_FAMILIES:-fable opus sonnet haiku}" \
+        | tr -s '[:space:]:' '|')"
+    pat="${pat#|}"; pat="${pat%|}"
     printf '%s' "${1:-}" \
-        | grep -oiE 'fable|opus|sonnet|haiku' | head -n1 | tr '[:upper:]' '[:lower:]'
+        | grep -oiE "$pat" | head -n1 | tr '[:upper:]' '[:lower:]'
 }
 
 # Which SCOPE a refusal earns (specs/account-fallback.md rule 8a): `all`, or
-# one model family. Account-wide wordings win when both appear — the session
-# window is the account's own clock, and a model name inside such a wording
-# is decoration. Only a refusal that names a model with no account-wide
-# wording is the per-model allowance running dry, which must never bench the
-# account's other capacity (the 2026-08-15 drought).
+# one model family. Model-name presence WINS: a limit the CLI attributes to
+# one model is that model's allowance whatever clock it runs on — "Opus
+# weekly limit reached" scopes opus — and only a wording naming NO model
+# cools the whole account. The caller hands the CLI's whole owning refusal
+# line (claude_stream_refusal and claude_stream_limit_cut print it), never
+# the limit signature's matched substring: the leftmost alternative can land
+# ahead of the model name in the same line — "out of usage credits" out of
+# "…keep using Fable 5" — and a scope read off the match alone benched the
+# account for every model, re-creating the drought rule 8a exists to prevent.
 claude_refusal_scope() {  # <refusal text> -> all | family
     local fam
-    if printf '%s' "${1:-}" | grep -qiE \
-        'session limit|5-hour limit|usage limit|weekly limit|not logged in|/login'; then
-        printf 'all\n'
-        return 0
-    fi
     fam="$(claude_model_family "${1:-}")"
     printf '%s\n' "${fam:-all}"
 }
@@ -5347,8 +5387,16 @@ _wake_claude_run() {
 # exactly once. Leaves the last run's exit status in WAKE_CLAUDE_STATUS, like
 # the single run it replaced.
 wake_claude_run_chain() {
-    local ACCT CONFDIR PREV="" ATT=0 REFUSAL
+    local ACCT CONFDIR PREV="" ATT=0 REFUSAL LIMITED=0
     WAKE_CHAIN_ATTEMPTS=0
+    # Did the LIMITS have the last word on EVERY attempt? The wholly-refused
+    # judgement (specs/wake-queue.md rule 23a) is the walk's own per-attempt
+    # record, never a re-grep of the whole accumulated log: an earlier
+    # account's refusal plus a later account's silent network death wears the
+    # same whole-log shape — limit text standing, no genuine output — and
+    # judged that way a mixed walk took the long cooldown-keyed re-book that
+    # belongs to a drought it never measured.
+    WAKE_CHAIN_ALL_LIMITED=0
     # The last account this walk actually ran, left for the caller: the token
     # ledger hook hands it to the parser as the account hint, which only
     # decides a stream with no swap markers — exactly the walk whose last
@@ -5379,9 +5427,15 @@ wake_claude_run_chain() {
         REFUSAL="$(claude_stream_refusal "$DEBUGLOG" "$ATT")" \
             || REFUSAL="$(claude_stream_limit_cut "$DEBUGLOG" "$ATT")" \
             || break
+        LIMITED=$(( LIMITED + 1 ))
         claude_limit_record "$ACCT" "$REFUSAL" "$WAKE_MODEL"
         PREV="$ACCT"
     done
+    # Every attempt this walk made was a limit refusal or cut — the shape the
+    # long re-book (rule 23a) is owed. A walk that broke out early has an
+    # attempt the limits did NOT end, whatever the accumulated log reads.
+    [ "$WAKE_CHAIN_ATTEMPTS" -gt 0 ] && [ "$LIMITED" -eq "$WAKE_CHAIN_ATTEMPTS" ] \
+        && WAKE_CHAIN_ALL_LIMITED=1
     # Rule 4a (specs/account-fallback.md): zero attempts is not an outcome. A
     # loop over an empty list runs no CLI at all, and downstream that reads as
     # a CLEAN stream — no refusal, no error event — so the wake exits 0 having
@@ -5548,15 +5602,19 @@ run_claude_wake() {
         # blanked by the arity bug — was the one shape the outage retry refused
         # to re-book. Its agenda died with the outage.
         #
-        # A walk the LIMITS refused outright — every account cooling for this
-        # wake's model — does not re-book into the drought it just measured:
-        # the delay is the soonest cooldown expiry covering the model, plus
-        # jitter, capped (specs/wake-queue.md rule 23a; the 2026-08-15
-        # morning's eight-second refusal/re-book ping-pong). Every other
-        # outage keeps the free half-hour slot — nothing measured says when
-        # a network death clears.
+        # A walk the LIMITS refused outright — every attempt a refusal or
+        # cut, every account cooling for this wake's model — does not re-book
+        # into the drought it just measured: the delay is the soonest
+        # cooldown expiry covering the model, plus jitter, capped
+        # (specs/wake-queue.md rule 23a; the 2026-08-15 morning's
+        # eight-second refusal/re-book ping-pong). The judgement is the
+        # walk's OWN per-attempt record, never a re-grep of the whole log:
+        # judged there, an earlier account's refusal plus a later account's
+        # silent network death read as a drought, and a mixed walk waited on
+        # cooldowns it never measured. Every other outage keeps the free
+        # half-hour slot — nothing measured says when a network death clears.
         local WAKE_RETRY_IN="$WAKE_OUTAGE_RETRY"
-        if [ -n "$LIMIT_CUT" ] || claude_run_limited; then
+        if [ "${WAKE_CHAIN_ALL_LIMITED:-0}" -eq 1 ]; then
             WAKE_RETRY_IN="$(claude_limit_rebook_delay "$WAKE_MODEL")"
         fi
         "$SCRIPT_DIR/crab" wake-at --by "${WAKE_BOOKED_BY:-outage-retry}" \
@@ -6211,15 +6269,27 @@ claude_generate() {
     # 5a).
     if [ -n "$GENERATE_WALK_REFUSED" ] && [ -z "$GENERATE_WALK_ABANDONED" ] \
             && [ -n "$PROMPT_DISPUTE" ] && [ "$MODEL" != "$CLAUDE_MODEL" ]; then
-        claude_stream_note "dispute-model-fallback" \
-            "dispute at the ordinary model — the premium one is dry everywhere"
-        [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \
-            -h string:x-dunst-stack-tag:deskcrab-account "$NOTIFY_NAME" \
-            "dispute at the ordinary model — the premium one is dry everywhere" 2>/dev/null
-        MODEL="$CLAUDE_MODEL"
-        EFFORT="$CLAUDE_EFFORT"
-        turn_metric dispute-fallback "premium model dry everywhere — model $MODEL, effort $EFFORT"
-        _generate_claude_walk
+        if [ "$TURN_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$TURN_DEADLINE" ]; then
+            # The wall clock is asked again HERE, immediately before the
+            # fallback boots (specs/account-fallback.md rule 10a). The
+            # walk's own in-loop check runs only after each recorded
+            # refusal, so a deadline that lapses in the seam between the
+            # last refusal and this branch would boot a walk the turn has
+            # no time to hear. A lapsed deadline skips the fallback and the
+            # turn reports the outage it measured — as today's, not as a
+            # second walk's.
+            claude_stream_note "dispute-fallback-skipped" "past this turn's wall clock"
+        else
+            claude_stream_note "dispute-model-fallback" \
+                "dispute at the ordinary model — the premium one is dry everywhere"
+            [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \
+                -h string:x-dunst-stack-tag:deskcrab-account "$NOTIFY_NAME" \
+                "dispute at the ordinary model — the premium one is dry everywhere" 2>/dev/null
+            MODEL="$CLAUDE_MODEL"
+            EFFORT="$CLAUDE_EFFORT"
+            turn_metric dispute-fallback "premium model dry everywhere — model $MODEL, effort $EFFORT"
+            _generate_claude_walk
+        fi
     fi
 
     # Guarantee the TTS streamer always receives a stop signal. claude normally

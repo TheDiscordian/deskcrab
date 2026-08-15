@@ -69,14 +69,21 @@ it is ten minutes of silence with nothing on screen explaining it.
    knobs. An unrecognised refusal wording takes the short cooldown: too eager costs one refused
    boot hours later and corrects itself; too patient benches an account that came back at lunch.
 8a. Cooldown SCOPE is a second, orthogonal classification of the same refusal text: every
-    cooldown record carries a scope — `all`, or one model family. An account-wide wording ("hit
+    cooldown record carries a scope — `all`, or one model family. A refusal that NAMES a model
+    ("reached your Fable 5 limit", "out of usage credits. Run /usage-credits to keep using
+    Fable 5", "Opus weekly limit reached") cools that account FOR THAT MODEL FAMILY ONLY, with
+    the family normalised from the wording — model-name presence WINS, even when the wording
+    also matches a weekly or usage phrase, because a limit the CLI attributes to one model is
+    that model's allowance whatever clock it runs on. Only a wording naming NO model ("hit
     your session limit", "session limit reached", "5-hour limit", "usage limit reached", a
-    weekly cap, a login that needs a human, or a generic "out of usage credits" naming no model)
-    cools the account for ALL models; a refusal that NAMES a model ("reached your Fable 5
-    limit", "out of usage credits. Run /usage-credits to keep using Fable 5") cools that account
-    FOR THAT MODEL FAMILY ONLY, with the family normalised from the wording. An account-wide
-    wording WINS when both appear in one refusal: the session window is the account's own clock,
-    and the model name inside such a wording is decoration. The distinction exists because the
+    model-less weekly cap, a login that needs a human, a generic "out of usage credits") cools
+    the account for ALL models. The text this classification reads MUST be the CLI's whole
+    owning refusal line, never the limit signature's matched substring: the signature's
+    leftmost alternative can land ahead of the model name in the same line — in "You're out of
+    usage credits. Run /usage-credits to keep using Fable 5" the match is "out of usage
+    credits" — and a scope read off the match alone carried no model name, classified as
+    `all`, and benched the account for every model for twenty-four hours, re-creating the
+    incident this rule exists to prevent. The distinction exists because the
     premium model is a PER-ACCOUNT allowance cut before the account's other capacity: on
     2026-08-15 an overnight selfplay burn drained every account's premium pool, the model-blind
     cooldowns benched the same accounts' perfectly healthy ordinary capacity, the surviving
@@ -109,7 +116,10 @@ it is ten minutes of silence with nothing on screen explaining it.
     stream names it ("dispute at the ordinary model — the premium one is dry everywhere") and
     the desk notification says the same. The fallback fires at most once per turn, only when the
     dispute model actually differs from `CLAUDE_MODEL`, only when the whole walk was refused —
-    never on a genuine answer, an ordinary failure, or a walk the wall clock abandoned. It is a
+    never on a genuine answer, an ordinary failure, or a walk the wall clock abandoned. The
+    turn's wall-clock deadline is asked again immediately before the fallback walk boots: a
+    deadline that lapsed while the raised walk was refusing SKIPS the fallback — the turn
+    reports the outage it measured rather than booting a walk it has no time to hear. It is a
     TURN rule and nothing else's: a builder job's model is never downgraded
     ([jobs.md](jobs.md) rule 5a stands, pinning test and all).
 11. Every move of the current MUST be recorded: the state file says where the selection stands and
@@ -201,7 +211,12 @@ it is ten minutes of silence with nothing on screen explaining it.
     memory store, the chess mover) read the shared state and skip accounts cooling for their
     model — a record scoped to another family does not bench them, and a record without the
     scope field reads as `all` (rule 8a) — and are read-only: recording a refusal is the
-    shell paths' job. Both MUST tilde- and variable-expand every account directory — the
+    shell paths' job. The model-family roster itself has ONE spelling: `CLAUDE_MODEL_FAMILIES`
+    in the shell library, exported to every child as `DESKCRAB_MODEL_FAMILIES`. The Python
+    walkers MUST prefer that variable and keep their baked copy only as a last resort for a
+    walker started outside the shell paths (the chessweb service) — three hand-maintained
+    spellings of the same list is how one of them silently stops recognising a family the
+    others learned. Both MUST tilde- and variable-expand every account directory — the
     configured list's entries AND the state file's — before it is matched or handed out:
     systemd's `EnvironmentFile` hands values through unexpanded where every shell path expanded
     them on the way in, and an unexpanded `$HOME/...` handed to `CLAUDE_CONFIG_DIR` names an
@@ -276,20 +291,34 @@ line is judged a refusal, matches the blocked-job signature, and rides the wake 
 account, cooling the account it dried up and moving the current — and on the job path, a builder
 refused with it finishes on the next account with `--model` unchanged on every attempt
 ([jobs.md](jobs.md) rule 5a). And the sweep: no emitted account string names a "primary" or a
-"fallback". Holds the 2026-08-15 model-scope rules too: a model-naming refusal writes a scoped
-cooldown that leaves the same account selectable for a walk at another family, while an
-account-wide session-limit wording blocks both; the incident's ping-pong pinned end to end — a
+"fallback". Holds the 2026-08-15 model-scope rules too: the scope cases are driven through the
+pipeline's own composition — the wording goes into a captured stream, `claude_stream_refusal`
+judges it, and whatever THAT printed is what the scope read gets, because a hand-fed full line
+once green-washed a detector that was printing only the signature's matched substring; a
+model-naming refusal writes a scoped cooldown that leaves the same account selectable for a walk
+at another family — including the verbatim credits-with-model line, whose signature match lands
+ahead of the model name, ridden through the wake chain to a fable-scoped cooldown that a
+following opus walk never pays for — while a model-less session-limit wording blocks every
+family, and a model named inside a weekly or session wording wins the scope (kind untouched);
+the incident's ping-pong pinned end to end — a
 premium-model refusal moves the current, and the ordinary-model wake that follows answers on its
 FIRST boot, paying zero extra; a model-less selection still treats every cooldown as blocking;
 per-scope records stack without shortening each other; an old-format record without the scope
-field parses as `all`; the dispute fallback (rule 10a) fires exactly once, only when every
-offered account refused at the raised model, never on a genuine answer and never on the job
-path; and the rebook delay (wake-queue.md rule 23a) honours the soonest expiry covering the
+field parses as `all`; the walk's own wholly-refused record (`WAKE_CHAIN_ALL_LIMITED`) is set by
+an every-attempt-refused walk and NOT by a mixed one whose last attempt died on the network; the
+dispute fallback (rule 10a) fires exactly once, only when every
+offered account refused at the raised model, never on a genuine answer, never on the job
+path, and never past the turn's wall clock — a deadline that lapsed during the raised walk
+skips the fallback with the skip named in the stream; the family roster reaches
+`claude_model_family` from `CLAUDE_MODEL_FAMILIES` and both Python walkers from
+`DESKCRAB_MODEL_FAMILIES`, with their baked list standing only when the environment carries
+nothing; and the rebook delay (wake-queue.md rule 23a) honours the soonest expiry covering the
 wake's model.
 `tests/test_wake_limit_cut.sh` — the wake path end to end in the sandbox: a walk that ends cut
 journals a failed run naming the session limit, writes nothing to the conversation, and re-books
 through the outage-retry path; a walk with credit left delivers the later account's reply and
-re-books nothing.
+re-books nothing; and a mixed walk — a cut, then a network death on the next login — re-books on
+the ordinary outage slot, never the drought's cooldown-keyed wait.
 `tests/test_convo_compaction.sh` — the summariser's own judgement, at both exit codes: a summary
 whose text is full of the signature's words is committed and folds its blocks away and cools
 nobody, while a stream carrying the CLI's synthetic refusal and no genuine output skips the

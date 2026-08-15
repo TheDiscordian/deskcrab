@@ -145,7 +145,11 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     claiming next week never parks the agenda that long. Only a walk the limits refused
     outright earns this wait: every other outage — network, crash, stall reap, rule 24a's
     launcher death — keeps the free half-hour slot, because nothing measured says when IT
-    clears.
+    clears. WHOLLY REFUSED is judged from the walk's OWN per-attempt outcomes — every attempt
+    a limit refusal or cut — never by re-grepping the whole accumulated log: an earlier
+    account's refusal plus a later account's silent network death wears the same whole-log
+    shape (limit text standing, no genuine output), and judged that way a mixed walk was sent
+    into the long cooldown-keyed wait for a drought it never measured.
 24. A wake that produced no output on a clean exit MUST be journaled as silence, not as a crash.
 24a. A wake whose CLI exited **non-zero** with no genuine model output is rule 23's outage in
     different clothes, and MUST be treated the same way: journal the failure and re-book the kinded
