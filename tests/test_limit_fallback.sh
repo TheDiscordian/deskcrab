@@ -60,8 +60,11 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # for a reason that is the invoking environment's, not the accounts'.
     # DESKCRAB_METRICS_DIR is pinned for the same reason as the rest: the
     # turn stamps and the token ledger both hang off it, and this file does
-    # not run under tests/lib/sandbox.sh — unpinned, every walk case below
-    # appends stub metrics to the LIVE ledger under ~/.local/share.
+    # not run under the sandbox helper (worded so, not by its path: the
+    # roll call in run.sh greps for the path's literal mention, and naming
+    # it in this comment read as using it, wedging the whole suite) —
+    # unpinned, every walk case below appends stub metrics to the LIVE
+    # ledger under ~/.local/share.
     PATH="$T/bin:$PATH" \
         DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
