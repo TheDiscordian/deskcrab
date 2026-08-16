@@ -20,6 +20,13 @@
 #    7. session_finish gives the place back however the turn ends
 #    8. TURN_ORDER_WAIT=0 is the old behaviour, exactly
 #
+# The whole file runs with TURN_INTERRUPT=0: it pins the BACKSTOP. Under the
+# shipped default an ordinary second utterance CUTS the turn in flight
+# instead of queueing behind it (specs/turn-pipeline.md rule 15f), which is
+# tests/test_turn_interrupt.sh's subject; what is proven here is the queue
+# that catches everything the cut does not — the order of what delivers, the
+# supersede close for pushback, the sweep, the bound, and the knob.
+#
 # Everything is stubbed and confined to the sandbox: no claude, no speakers,
 # no notifications, no timers.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
@@ -52,6 +59,7 @@ PROMISE_AUDIT=0
 MEMORY_JUDGE=0
 PROMISE_CHECK=0
 CLAUDISM_CAPTURE=0
+TURN_INTERRUPT=0
 CLAUDE_BIN="$SANDBOX_BIN/claude"
 PROJECT_DIR="$WORK"
 LAST_ORIGIN_FILE="$WORK/last-origin"

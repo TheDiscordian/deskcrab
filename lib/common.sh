@@ -188,6 +188,20 @@ LIVE_SPEECH_WINDOW="${LIVE_SPEECH_WINDOW:-180}"
 # bound on that wait: past it the reply goes out anyway and the turn records
 # that it did. 0 disables ordering entirely.
 TURN_ORDER_WAIT="${TURN_ORDER_WAIT:-180}"
+# Cut-and-consolidate (specs/turn-pipeline.md rule 15f). A new utterance of
+# his arriving while a turn is still in flight CUTS that turn — its voice
+# stopped at once, its run aborted — and the new turn folds both inputs and
+# the part-written reply into ONE answer. His correction, 2026-08-07 13:23:
+# interrupt design is cut-and-consolidate, never queueing. STRONG pushback
+# keeps its harder close (supersede, rule 15c) — a rejected theory is not
+# folded forward. 0 switches the cut off and leaves the pure delivery queue,
+# the backstop; with TURN_ORDER_WAIT=0 there are no tickets and so no cuts.
+TURN_INTERRUPT="${TURN_INTERRUPT:-1}"
+# How much of a cut turn's part-written reply the interrupt layer may quote
+# (specs/prompt-assembly.md rule 36c). A bound at CAPTURE, cut UTF-8-safe,
+# and announced inside the block when it clips — the journal keeps the whole
+# text, so this is a quote's length, never a loss.
+TURN_INTERRUPT_PARTIAL_MAX="${TURN_INTERRUPT_PARTIAL_MAX:-16000}"
 # How hot the conversation is. A message from him younger than this and he is
 # mid-exchange: he is still typing, still angry, still owed the answer to the
 # last thing he said. Two mechanisms read it — a reply whose moment has passed
@@ -2447,6 +2461,14 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # block now clips its quote to what the budget leaves (rule 37), so
         # this number is instructions plus roughly 750 bytes of quote.
         regroup:turn|regroup:wake) v=2000 ;;
+        # The interrupt layer (rule 36c, turn-pipeline rule 15f): the frame's
+        # own instructions measure just over 1,100 bytes, and roughly 1,500
+        # more holds the quoted context of one ordinary cut — the cut turn's
+        # one-line input off its ticket and the sentence or three a voice
+        # interrupted mid-writing has usually got out. A longer snapshot
+        # makes the layer read `over` and rides whole (rule 4), up to the
+        # capture bound TURN_INTERRUPT_PARTIAL_MAX.
+        interrupt:turn) v=2600 ;;
         # The dispute frame is a turn-only layer: a wake has no message to be
         # pushed back on. Sized to its measured text plus margin — 1,800
         # until 2026-08-10 evening; the frame then took on the named register
@@ -2883,6 +2905,18 @@ $WANTS_TITLES"
     fi
     _prompt_layer regroup "the conversation above" "$REGROUP"
 
+    # ---- interrupt --------------------------------------------------------
+    # Conditional, like regroup and dispute: rendered only when the caller
+    # that took this turn's seat CUT a turn in flight on the way
+    # (specs/turn-pipeline.md rule 15f, prompt-assembly rule 36c). The note
+    # was built at the moment of the cut — the cut turn's input off its
+    # ticket, the part-written reply snapshotted from its stream log — and
+    # rides here between regroup and dispute, so a folded voice is folded
+    # and a rejected theory still dies (the frame carries that seam itself).
+    local INTERRUPT=""
+    [ "$PROMPT_PROFILE" = turn ] && INTERRUPT="$(_interrupt_context)"
+    _prompt_layer interrupt "the cut turn's own journal entry" "$INTERRUPT"
+
     # ---- dispute ----------------------------------------------------------
     # Conditional, like regroup: rendered only when the caller that took the
     # message ran dispute_detect and set PROMPT_DISPUTE. specs/cocoon.md.
@@ -3244,19 +3278,30 @@ _turn_order_silence() {  # <the superseded turn's pid>
 # either drop a lock somebody was standing on or wait on itself.
 turn_order_take() {  # <device> <user-text>
     TURN_SEQ=""
+    TURN_INTERRUPT_NOTE=""
+    local _CUT_TICKETS=""
     [ "${TURN_ORDER_WAIT:-0}" -gt 0 ] || return 0
     mkdir -p "$TURN_ORDER_DIR" 2>/dev/null || return 0
+    # The stream log this turn will write, recorded on the ticket so the turn
+    # that CUTS this one (rule 15f) can snapshot the part-written reply. The
+    # phone's log is a local born later in _run_claude_remote_locked, but its
+    # name is deterministic in this same process, so it is known here.
+    local TLOG="$DEBUGLOG"
+    [ "$1" = phone ] && TLOG="${DESKCRAB_REMOTE_LOG:-${STATE_PREFIX}-remote-$$.log}"
     # A braced group, not a subshell: the sequence number has to survive into
     # the caller's scope, and `( ... )` would take it to the grave.
     {
         if flock -w 10 6; then
-            local next f seq
+            local next f seq c_pid c_start c_epoch c_dev c_log c_text
             next="$(cat "$TURN_ORDER_DIR/next" 2>/dev/null)"
             case "$next" in ''|*[!0-9]*) next=0 ;; esac
             next=$(( next + 1 ))
             printf '%s\n' "$next" > "$TURN_ORDER_DIR/next"
-            # Zero-padded so the shell's glob order IS the arrival order.
-            printf '%s\t%s\t%s\t%s\n' "$$" "$(_proc_starttime $$)" "$(date +%s)" "$1" \
+            # Zero-padded so the shell's glob order IS the arrival order. The
+            # user text rides flattened and bounded (utf8_trim — the record
+            # is one line; the verbatim text is on the conversation).
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$$" "$(_proc_starttime $$)" \
+                "$(date +%s)" "$1" "$TLOG" "$(utf8_trim "$2" 2000)" \
                 > "$(printf '%s/%09d.ticket' "$TURN_ORDER_DIR" "$next")"
             if _turn_order_is_pushback "$2"; then
                 for f in "$TURN_ORDER_DIR"/[0-9]*.ticket; do
@@ -3267,12 +3312,86 @@ turn_order_take() {  # <device> <user-text>
                     printf '%s\t%s\n' "$next" "$2" > "${f%.ticket}.superseded"
                     _turn_order_silence "$(cut -f1 "$f")"
                 done
+            elif [ "${TURN_INTERRUPT:-1}" = "1" ]; then
+                # Cut-and-consolidate (rule 15f): an ordinary new utterance
+                # never queues behind the turn it interrupted. Every live
+                # earlier turn is CUT — marker first, so its own watchdog and
+                # gates read the close before a word more moves; then its
+                # voice, streamer and synthesiser both, by the pid in its
+                # ticket and never process-wide (rule 15e's discipline). Its
+                # ticket's fields are read here, under the lock, before the
+                # cut turn can release them; the snapshot of its stream log
+                # happens after the lock, in _turn_interrupt_note.
+                for f in "$TURN_ORDER_DIR"/[0-9]*.ticket; do
+                    [ -e "$f" ] || continue
+                    seq="$(basename "$f" .ticket)"
+                    [ "$((10#$seq))" -lt "$next" ] || continue
+                    [ -s "${f%.ticket}.cut" ] && continue
+                    [ -s "${f%.ticket}.superseded" ] && continue
+                    _turn_ticket_alive "$f" || continue
+                    IFS=$'\t' read -r c_pid c_start c_epoch c_dev c_log c_text < "$f"
+                    printf '%s\t%s\n' "$next" "$(utf8_trim "$2" 2000)" \
+                        > "${f%.ticket}.cut"
+                    _turn_order_silence "$c_pid"
+                    _CUT_TICKETS="$_CUT_TICKETS$(printf '%s\t%s\t%s' \
+                        "${c_dev:-desk}" "${c_log:-}" "${c_text:-}")
+"
+                done
             fi
             TURN_SEQ="$next"
         fi
     } 6>"$TURN_ORDER_LOCK"
     turn_metric turn-order-taken "${TURN_SEQ:-none}"
+    _turn_interrupt_note
     return 0
+}
+
+# The interrupt layer's raw material (specs/prompt-assembly.md rule 36c),
+# built the moment the cut lands: one section per turn this message cut — the
+# input its ticket recorded, and the part-written reply snapshotted from its
+# stream log RIGHT NOW, which is the interrupt point. Extraction is the one
+# extractor's partial mode, built on the shared chunker registry
+# (lib/sentence_stream.py) — never a second stream parser. The snapshot is
+# bounded here at capture, UTF-8-safe (utf8_head — it is document-shaped),
+# and a clipped snapshot says so and names the journal, which keeps the cut
+# turn's part-written text whole; an empty one is stated as exactly that.
+_turn_interrupt_note() {
+    [ -n "${_CUT_TICKETS:-}" ] || return 0
+    local dev log text part max
+    max="${TURN_INTERRUPT_PARTIAL_MAX:-16000}"
+    while IFS=$'\t' read -r dev log text; do
+        [ -n "$dev$log$text" ] || continue
+        part=""
+        [ -n "$log" ] && [ -r "$log" ] && \
+            part="$(DESKCRAB_DEBUGLOG="$log" DESKCRAB_INCLUDE_PARTIAL=1 \
+                "$LIB_DIR/extract-response" 2>/dev/null)"
+        if [ "$(printf '%s' "$part" | wc -c)" -gt "$max" ]; then
+            part="$(printf '%s' "$part" | utf8_head "$max")
+(… the snapshot stops here, at $max bytes — the cut turn's own journal entry keeps the whole of it)"
+        fi
+        [ -n "$part" ] || part="(not one word yet — the run was cut before any text landed)"
+        TURN_INTERRUPT_NOTE="$TURN_INTERRUPT_NOTE--- the message you were answering (from the ${dev:-desk}) ---
+${text:-(its text was not recorded — read the conversation above)}
+--- how far your reply had got when he spoke over it ---
+$part
+--- end ---
+"
+    done <<< "$_CUT_TICKETS"
+    _CUT_TICKETS=""
+    return 0
+}
+
+# The interrupt layer itself (prompt-assembly rule 36c): rendered at prompt
+# build from the note the cut left behind. Instructions wrap the quoted
+# context, and both ride whole (rule 4 — a long snapshot reads `over`, never
+# trimmed here).
+_interrupt_context() {
+    [ -n "${TURN_INTERRUPT_NOTE:-}" ] || return 0
+    cat <<EOF
+HE SPOKE OVER YOU — this message arrived while you were still answering him, and that answer was CUT the moment he spoke: its voice was stopped mid-sentence and its run aborted. Nothing more of it will be said or shown; whatever it had already got out of the speakers, he heard. This is what was cut:
+$TURN_INTERRUPT_NOTE
+His NEW message — the one this turn is about — is the question you answer now. Compose ONE reply: answer the new message, and fold into the same reply whatever of the older message still needs answering once the new one has been heard — one voice, one natural utterance, never two stitched together, never a reply and an appendix. Do not restate what the cut-off answer already said aloud as if it were news; carry it forward as something already said. Do not answer the two messages separately, and do not defer the older one to a turn that never comes. If the new message rejects or corrects what the cut-off answer was saying, that theory is dead — fold nothing of it forward. And say nothing about the machinery of being interrupted: he knows he spoke over you, and a sentence about it is a sentence about the plumbing.
+EOF
 }
 
 # Has a later message rejected what this turn is answering? Prints that
@@ -3286,6 +3405,54 @@ turn_order_superseded() {
     return 0
 }
 
+# Where this turn's cut marker would be (rule 15f). Fails when this turn
+# holds no seat — a wake, or the queue switched off — which is what keeps
+# every cut test inert outside an interactive turn.
+_turn_order_cut_file() {
+    [ -n "${TURN_SEQ:-}" ] || return 1
+    printf '%s/%09d.cut' "$TURN_ORDER_DIR" "$TURN_SEQ"
+}
+
+# Has a newer ordinary message CUT this turn mid-flight? Prints that message
+# when it has (rule 15f) — the shape of turn_order_superseded, for the close
+# that folds instead of holding.
+turn_order_cut() {
+    local f
+    f="$(_turn_order_cut_file)" || return 1
+    [ -s "$f" ] || return 1
+    cut -f2- "$f"
+    return 0
+}
+
+# Close a turn his newer message CUT (rule 15f), above every delivery sink:
+# the voice is already dead (the cutter killed it at the marker; this reads
+# the receipt and retires the live-speech notice — our own streamer pid, so
+# it can never touch another turn's voice), nothing is delivered anywhere,
+# the journal keeps the part-written words in full, and the outcome names
+# the message that cut it. No notification: nothing was lost — the surviving
+# reply folds this exchange in, and the interruption was his own act. The
+# part-written text is read through the one extractor's partial mode, so the
+# journal holds what the interrupt layer quoted from. Returns 1 untouched
+# when this turn was not cut.
+_turn_cut_close() {  # <device> <the turn's user text>
+    local CUT_BY PART
+    CUT_BY="$(turn_order_cut)" || return 1
+    turn_hold_voice
+    claudism_mirror_cleanup
+    PART="$(DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_INCLUDE_PARTIAL=1 \
+        "$LIB_DIR/extract-response" 2>/dev/null)"
+    SESSION_REPLY="$PART"
+    live_turn_end "$1" "$2" ""
+    if [ "${_TURN_HELD_SPOKEN_CHARS:-0}" -gt 0 ] 2>/dev/null; then
+        session_outcome "(cut — he spoke over this and the next reply folds it in: $(printf '%.80s' "$CUT_BY") | part-spoken, $_TURN_HELD_SPOKEN_CHARS chars out | part-written: $(printf '%.160s' "$PART"))"
+    else
+        session_outcome "(cut — he spoke over this and the next reply folds it in: $(printf '%.80s' "$CUT_BY") | part-written: $(printf '%.160s' "${PART:-nothing — it was cut before any text landed}"))"
+    fi
+    turn_metric turn-cut "folded into the turn that cut it"
+    turn_order_release
+    return 0
+}
+
 # Give up this turn's place. Idempotent, and called from session_finish so a
 # turn that dies anywhere — signal, watchdog, a hand with pkill — cannot leave
 # a ticket the next reply queues behind forever.
@@ -3293,7 +3460,7 @@ turn_order_release() {
     [ -n "${TURN_SEQ:-}" ] || return 0
     local base
     base="$(printf '%s/%09d' "$TURN_ORDER_DIR" "$TURN_SEQ")"
-    rm -f "$base.ticket" "$base.superseded" 2>/dev/null
+    rm -f "$base.ticket" "$base.superseded" "$base.cut" 2>/dev/null
     TURN_SEQ=""
     return 0
 }
@@ -3314,12 +3481,20 @@ turn_order_wait() {
     [ -n "${TURN_SEQ:-}" ] || return 0
     local DEADLINE=$(( $(date +%s) + TURN_ORDER_WAIT )) f seq waiting
     while :; do
+        # A turn his newer message has CUT stops waiting at once (rule 15f):
+        # nothing it would deliver is going out, and holding its bookkeeping
+        # behind earlier turns delays only the fold's own record.
+        turn_order_cut >/dev/null 2>&1 && return 0
         waiting=""
         for f in "$TURN_ORDER_DIR"/[0-9]*.ticket; do
             [ -e "$f" ] || continue
             seq="$(basename "$f" .ticket)"
             [ "$((10#$seq))" -lt "$((10#$TURN_SEQ))" ] || continue
             [ -s "${f%.ticket}.superseded" ] && continue
+            # A cut earlier ticket is a reply that is never going to be
+            # spoken — rule 15d's discipline extends to the cut (rule 15f):
+            # waiting on it would delay a live answer behind a dead one.
+            [ -s "${f%.ticket}.cut" ] && continue
             if ! _turn_ticket_alive "$f"; then
                 rm -f "$f" "${f%.ticket}.superseded" 2>/dev/null
                 continue
@@ -5544,12 +5719,28 @@ claude_swap_announce() { # <from number> <to number>
 # noticing: a flat 10 s sleep put ten dead seconds on the end of every turn.
 _claude_watch() { # <pid> <stall seconds> <deadline epoch, 0 = none>
     local CPID="$1" STALL="$2" DEADLINE="${3:-0}"
-    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M NOW TICK=0
+    local LAST_ACTIVE PREV_CPU CUR_CPU LOG_M NOW TICK=0 CUTF=""
     CLAUDE_WATCH_REAPED=""
+    CLAUDE_WATCH_CUT=""
+    # The cut marker (specs/turn-pipeline.md rule 15f): a newer message of
+    # his closes this run rather than letting it finish and speak. Only a
+    # turn holding a seat can be cut — a wake carries no TURN_SEQ, so its
+    # runs are never watched for one. Checked every second, not every tenth:
+    # the test is one stat, and each second of a cut run still generating is
+    # a second the consolidated reply's context drifts.
+    [ "${TURN_INTERRUPT:-1}" = "1" ] && CUTF="$(_turn_order_cut_file 2>/dev/null)" || CUTF=""
     LAST_ACTIVE=$(date +%s)
     PREV_CPU=$(_tree_cpu "$CPID")
     while kill -0 "$CPID" 2>/dev/null; do
         sleep 1
+        if [ -n "$CUTF" ] && [ -s "$CUTF" ]; then
+            CLAUDE_WATCH_CUT=1
+            CLAUDE_WATCH_REAPED="cut — he spoke over this turn (rule 15f)"
+            kill "$CPID" 2>/dev/null
+            sleep 2
+            kill -9 "$CPID" 2>/dev/null
+            break
+        fi
         TICK=$(( TICK + 1 ))
         [ $(( TICK % 10 )) -eq 0 ] || continue
         CUR_CPU=$(_tree_cpu "$CPID")
@@ -5574,7 +5765,11 @@ _claude_watch() { # <pid> <stall seconds> <deadline epoch, 0 = none>
     done
     wait "$CPID" 2>/dev/null
     CLAUDE_WATCH_STATUS=$?
-    [ -z "$CLAUDE_WATCH_REAPED" ] || claude_stream_note "reaped" "$CLAUDE_WATCH_REAPED"
+    if [ -n "$CLAUDE_WATCH_CUT" ]; then
+        claude_stream_note "turn-cut" "$CLAUDE_WATCH_REAPED"
+    elif [ -n "$CLAUDE_WATCH_REAPED" ]; then
+        claude_stream_note "reaped" "$CLAUDE_WATCH_REAPED"
+    fi
     return 0
 }
 
@@ -6532,6 +6727,11 @@ tts_verify_spoken() {
     [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] || return 0
     # …unless he told me to shut up. Asked-for silence is not a failure.
     [ -f "$SHUTUP_MARKER" ] && { rm -f "${_TTS_RECEIPT:-}"; return 0; }
+    # …and a turn his newer message CUT (rule 15f) was silenced on purpose:
+    # the belt for the race where the cut lands after this turn passed its
+    # delivery gates — replaying the held fragment as a "broken speech path"
+    # would say aloud exactly what the cut exists to keep off the speakers.
+    turn_order_cut >/dev/null 2>&1 && { rm -f "${_TTS_RECEIPT:-}"; return 0; }
     if [ -f "${_TTS_RECEIPT:-}" ]; then
         CHARS=$(sed -n 's/^chars=//p' "$_TTS_RECEIPT" | head -1)
         ERR=$(sed -n 's/^error=//p' "$_TTS_RECEIPT" | head -1)
@@ -6619,11 +6819,23 @@ _generate_claude_run() {
 # account refused or was cut; GENERATE_WALK_ABANDONED, set when the wall
 # clock ended the walk with accounts still unoffered.
 _generate_claude_walk() {
-    local ACCT CONFDIR PREV="" ATT=0 REFUSAL
+    local ACCT CONFDIR PREV="" ATT=0 REFUSAL WALK_CUTF=""
     GENERATE_WALK_ACCT=""
     GENERATE_WALK_REFUSED=""
     GENERATE_WALK_ABANDONED=""
+    CLAUDE_WATCH_CUT=""
+    [ "${TURN_INTERRUPT:-1}" = "1" ] && WALK_CUTF="$(_turn_order_cut_file 2>/dev/null)" || WALK_CUTF=""
     for ACCT in $(claude_accounts "$MODEL"); do
+        # A cut turn boots no CLI at all (rule 15f): the marker can land in
+        # the seam between two attempts — or before the first — and a walk
+        # that pressed on would speak for a question he has already moved
+        # past. Not a refusal: the walk simply stops, and the caller's cut
+        # branch does the bookkeeping.
+        if [ -n "$WALK_CUTF" ] && [ -s "$WALK_CUTF" ]; then
+            CLAUDE_WATCH_CUT=1
+            GENERATE_WALK_REFUSED=""
+            break
+        fi
         GENERATE_WALK_ACCT="$ACCT"
         CONFDIR="$(claude_account_dir "$ACCT")"
         [ -z "$PREV" ] || claude_swap_announce "$PREV" "$ACCT"
@@ -6634,6 +6846,13 @@ _generate_claude_walk() {
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
         _generate_claude_run "$CONFDIR"
+        # The run ended because he spoke over it (rule 15f): the walk ends
+        # with it — a limit-shaped tail in a killed run's log is the kill
+        # talking, never a refusal to ride to the next account.
+        if [ -n "${CLAUDE_WATCH_CUT:-}" ]; then
+            GENERATE_WALK_REFUSED=""
+            break
+        fi
         # As on the wake walk: a refusal OR a mid-flight cut moves to the next
         # account at once (specs/account-fallback.md rule 12a). The streamer is
         # already holding the synthetic refusal off the speakers, and the
@@ -7057,6 +7276,23 @@ _run_claude_remote_locked() {
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
 
+    # Cut-and-consolidate (specs/turn-pipeline.md rule 15f), the phone half:
+    # he spoke again — on either device — while this was generating, and the
+    # newer message's turn aborted this run and folds this exchange into its
+    # own single reply. Closed here, above the limit test and every delivery
+    # sink: nothing is synthesised, nothing enters the conversation, and the
+    # client is told in the one field it renders for a turn arriving with
+    # nothing playable. The memory judge runs (a memory that shaped the
+    # part-written words shaped them); the judges of what he was TOLD do
+    # not, and the stream log is read for the work trace before it goes.
+    if _turn_cut_close phone "$TEXT"; then
+        fire_memory_judge "$TEXT" "$SESSION_REPLY" "$(wake_work_trace)"
+        rm -f "$DEBUGLOG"
+        python3 -c 'import json,sys; print(json.dumps({"spoken":"","display":"","audio":"","error":sys.argv[1]}))' \
+            "cut — you spoke over this; the reply to what you said next answers both"
+        return 0
+    fi
+
     local ERROR="" TURN_CUT
     # Same judgement as the desk turn: a cut standing on the whole log means
     # the walk rode every account and the limit ended the last of them
@@ -7087,6 +7323,16 @@ _run_claude_remote_locked() {
         # Delivery order, exactly as the desk turn takes it (rules 15a-15e).
         local ORDERED=1 SUPERSEDER="" ORDER_NOTE=""
         turn_order_wait || ORDERED=0
+        # The late cut (rule 15f), as on the desk: his newer message landed
+        # after generation finished but before delivery. The cutter already
+        # snapshotted this turn's log, so the fold carries these words.
+        if _turn_cut_close phone "$TEXT"; then
+            fire_memory_judge "$TEXT" "$SESSION_REPLY" "$(wake_work_trace)"
+            rm -f "$DEBUGLOG"
+            python3 -c 'import json,sys; print(json.dumps({"spoken":"","display":"","audio":"","error":sys.argv[1]}))' \
+                "cut — you spoke over this; the reply to what you said next answers both"
+            return 0
+        fi
         SUPERSEDER="$(turn_order_superseded || true)"
         if [ -n "$SUPERSEDER" ]; then
             # Held: written down, marked as unsaid, never synthesised. The
@@ -7273,6 +7519,22 @@ run_claude_and_respond() {
 
     notify_thinking_clear
 
+    # Cut-and-consolidate (specs/turn-pipeline.md rule 15f): while this was
+    # generating, he said something new. That message's own turn has already
+    # silenced this one's voice and aborted its run; what remains here is
+    # bookkeeping — the part-written words go to the journal, the outcome
+    # names the message that cut this, and NOTHING is delivered or reported
+    # as a failure, because the surviving turn's one reply folds this
+    # exchange in. Above the limit test on purpose: a killed run's log tail
+    # can wear a refusal's face, and a cut turn has no outage to report.
+    if _turn_cut_close desk "$TEXT"; then
+        # The memory judge still runs, as on the held path: a memory that
+        # shaped the part-written reply shaped it. The three judges of what
+        # he was TOLD do not — he was told none of this.
+        fire_memory_judge "$TEXT" "$SESSION_REPLY" "$(wake_work_trace)"
+        return 0
+    fi
+
     # The cut twin of the limited test below (specs/account-fallback.md rules
     # 12a and 12c): the walk already rode any mid-flight cut to the next
     # account, so a cut still standing on the whole log means every account was
@@ -7325,6 +7587,14 @@ run_claude_and_respond() {
         #      itself. It is written down and it is not said.
         local ORDERED=1 SUPERSEDER="" ORDER_NOTE=""
         turn_order_wait || ORDERED=0
+        # The late cut (rule 15f): his new message landed after this turn's
+        # generation finished but before a word of it was delivered — the
+        # 12:31 shape. Same close as the early one; the cutter snapshotted
+        # this turn's log, so the fold still carries these words forward.
+        if _turn_cut_close desk "$TEXT"; then
+            fire_memory_judge "$TEXT" "$SESSION_REPLY" "$(wake_work_trace)"
+            return 0
+        fi
         SUPERSEDER="$(turn_order_superseded || true)"
         if [ -n "$SUPERSEDER" ]; then
             # Held. The words land in the transcript marked as words she did

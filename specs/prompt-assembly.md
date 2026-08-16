@@ -49,11 +49,12 @@ flowchart TD
   L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles, recent claudism catches"]
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
+  INT["conditional INTERRUPT<br/>he spoke over a turn — the cut context, turn-pipeline rule 15f"]
   DSP["conditional DISPUTE<br/>he is pushing back — specs/cocoon.md"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
   L8["L8 TURN FRAME<br/>names the message below as the subject"]
   MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
-  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> DSP --> L7 --> L8 --> MSG
+  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> INT --> DSP --> L7 --> L8 --> MSG
 ```
 
 6. **L8 MUST be the last thing in the system prompt, and the user's latest message MUST be the user
@@ -89,8 +90,9 @@ flowchart TD
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 1,500 | 1,500 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
+| conditional interrupt | 2,600 | 0 | 0 | 0 |
 | conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 48,900** | **≤ 45,500** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 51,500** | **≤ 45,500** | **≤ 2,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -171,6 +173,13 @@ pointed at — in place of the unfalsifiable "in your own voice", and the condit
 reconciles regroup's "carry it forward" with dispute's "the theory is dead" when both layers fire.
 Measured at 1,989 bytes alone and 2,328 with the reconciliation present; 2,400 holds the larger
 shape with room, and the turn total moves by the same 600.
+
+The interrupt row (rule 36c, [turn-pipeline.md](turn-pipeline.md) rule 15f) is sized as the
+frame's own instructions — measured just over 1,100 bytes — plus roughly 1,500 bytes of quoted
+context per ordinary cut: the cut turn's one-line input off its ticket and a part-written reply a
+sentence or three long, which is what a voice interrupted mid-writing has usually got out. Rule 4
+holds here as everywhere: a longer snapshot makes the layer read `over` and rides whole up to the
+capture bound (`TURN_INTERRUPT_PARTIAL_MAX`), and the turn total moves by the row's 2,600.
 
 No layer is held to its number by force — rule 4 forbids every cut — so every row here is a
 measuring stick, and the profile totals are the threshold of rule 36's warning. Measured on an idle
@@ -364,6 +373,26 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     theory (cocoon rule 8a). The sentence is emitted only when regroup actually fired: rule 29
     forbids pointing at a block that is not there.
 
+36c. **The interrupt layer.** A turn whose message CUT the turn in flight
+    ([turn-pipeline.md](turn-pipeline.md) rule 15f) carries one conditional layer between the
+    regroup layer and the dispute layer: the frame saying he spoke over a turn of hers and that
+    turn was cut, then — for each turn this message cut — the cut turn's input as its ticket
+    recorded it and the part-written reply snapshotted from that turn's stream log at the moment
+    of the cut, extracted through the one extractor's partial mode (`lib/extract-response`,
+    `DESKCRAB_INCLUDE_PARTIAL=1`, built on the shared chunker registry of
+    `lib/sentence_stream.py` — never a second stream parser). The instructions ask for ONE reply:
+    answer the new message, fold in whatever of the cut exchange still stands — never restate the
+    part-written text as news, never two replies, never a deferral — and nothing of a theory the
+    new message itself rejects. Turn-only, like the dispute layer. The snapshot is bounded at
+    CAPTURE, not by the assembler (`TURN_INTERRUPT_PARTIAL_MAX`, default 16,000 bytes, cut
+    UTF-8-safe through `utf8_head`; the one-line ticket fields ride through `utf8_trim` — a bare
+    byte cut on words anyone wrote is the defect those helpers exist to end), and a snapshot the
+    bound clipped SAYS SO inside the block and names the journal as holding the whole text: the
+    cut turn's part-written reply rides its own journal entry in full, so the bound is a quote's
+    length, never a loss. An empty snapshot — the run was cut before any text landed — is stated
+    as exactly that, because rule 29's discipline holds inside a block too: nothing points at
+    text that is not there.
+
 37. **In the regroup block, the quote and the instructions are both emitted whole.** The block is
     instructions wrapped around a quote of the words being spoken. Under the trim era's generic
     cut a long reply pushed the closing instructions — don't restate, don't queue, silence is
@@ -449,6 +478,7 @@ only place either fact is known the moment it happens.
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
+| `${STATE_PREFIX}-turn-order/<seq>.ticket` + the cut turn's stream log | interrupt | conditional, rule 36c: the input off the ticket, the part-written reply through the extractor's partial mode |
 | `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build whose total ran over its target (the name is historical — nothing is cut), removed by one inside it, rendered by the state block |
 | `${STATE_PREFIX}-prompt-dupes.txt` | — | rule 40a: written by a speaking build that dropped a duplicate block, removed by one that dropped none, rendered by the state block |
 

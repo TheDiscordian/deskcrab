@@ -10,6 +10,16 @@ showed a single closing thought. Every block is kept now, in order.
 Each block may carry its own ---DISPLAY--- section; the spoken halves are
 joined into the reply and the display halves are concatenated after a single
 delimiter, so the turn still has exactly one display channel.
+
+DESKCRAB_INCLUDE_PARTIAL=1 also folds in the text a run got out as streamed
+deltas and never finished — the reply a cut-off turn was mid-writing
+(specs/turn-pipeline.md rule 15f: the turn that cut it reads this to know
+what was being said). The deltas are walked through the SAME shared registry
+both live voices are built on (lib/sentence_stream.py, its replay cursors
+and all), never through a second parser, and a delta block whose text a
+completed event already carries is dropped — the completed block IS that
+text, finished. Off by default: a completed log reads identically either
+way, and no existing caller changes.
 """
 
 import json
@@ -18,6 +28,12 @@ import sys
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 DELIM = "---DISPLAY---"
+
+partials = None
+if os.environ.get("DESKCRAB_INCLUDE_PARTIAL") == "1":
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from sentence_stream import BlockRegistry
+    partials = BlockRegistry(lambda chunk: None)
 
 result_text = ""
 error_text = ""
@@ -42,6 +58,30 @@ for line in open(LOG):
         for block in d.get("message", {}).get("content", []):
             if block.get("type") == "text" and block.get("text", "").strip():
                 blocks.append((block["text"].strip(), synthetic))
+    elif d.get("type") == "stream_event" and partials is not None:
+        partials.stream_event(d.get("event") or {})
+
+if partials is not None:
+    # Whatever the deltas accumulated that no completed event owns. Judged by
+    # whitespace-collapsed content, the registry's own fingerprint discipline:
+    # a delta run is a PREFIX of its completed block, so a block that finished
+    # is dropped here and rides above as the completed text it became.
+    done = [" ".join(t.split()) for t, _ in blocks]
+    if result_text:
+        done.append(" ".join(result_text.split()))
+    maps = list(partials.messages.values())
+    if not any(m is partials.blocks for m in maps):
+        maps.append(partials.blocks)       # deltas that arrived before any
+                                           # message_start live only here
+    for mb in maps:
+        for b in mb.values():
+            raw = b.raw.strip()
+            if not raw:
+                continue
+            fp = " ".join(raw.split())
+            if any(c.startswith(fp) or fp.startswith(c) for c in done):
+                continue
+            blocks.append((raw, False))
 
 # A usage-limit fallback retry APPENDS a second run to the same log, so a
 # refusal and a genuine reply can share the stream. When anything real was

@@ -105,6 +105,40 @@ slot is the loudest statement this machine can make that it was not listening.
      superseded also means not delivered, so the out-of-band work that judges what he was TOLD —
      the promise audit, the promise checker, the claudism capture — does not run for it; the memory
      judge does, because a memory that shaped the reply shaped it whether or not it was spoken.
+15f. **Cut-and-consolidate: an ordinary new utterance CUTS the turn in flight — queueing is the
+     backstop, never the design.** His correction, recorded 2026-08-07 13:23: interrupt design is
+     cut-and-consolidate, never queueing — the serialise-and-queue build that preceded it was
+     killed for exactly that. When a message of his arrives, on either device, while an
+     interactive turn still holds a live ticket, and the message is not rule 15c's STRONG
+     pushback (which keeps its harder close: the theory is dead, and nothing of it is folded
+     forward), the arriving turn MUST close the in-flight turn at the moment its own seat is
+     taken:
+     - the in-flight turn's VOICE is stopped at once, by the pid in its ticket, never
+       process-wide (rule 15e's discipline). The catch-all's `stop_tts` has always taken the
+       box's synthesiser at a new query, killing whatever was already handed over; the cut is
+       what kills the STREAMER too, so it cannot reopen a synthesiser for every sentence the
+       un-aborted run would have kept writing — the superseded reply talking on after the
+       interruption, measured in `tests/test_turn_interrupt.sh`'s red run;
+     - the in-flight turn's MODEL RUN is aborted rather than allowed to finish and speak: its own
+       watchdog reads the cut marker within a beat and reaps the CLI, and the account walk boots
+       no further attempt for a cut turn;
+     - the arriving turn composes ONE reply from the consolidated context: the cut turn's input
+       (already on the conversation by rule 9, and quoted whole in the interrupt layer —
+       [prompt-assembly.md](prompt-assembly.md) rule 36c), whatever partial reply the aborted run
+       had already produced — snapshotted from its stream log at the moment of the cut, through
+       the one extractor's partial mode, which is built on the shared chunker registry and never
+       a second parser — and the new utterance. One run, one reply, one audio stream.
+     A cut turn delivers NOTHING anywhere: no speech — and the never-silent guarantee MUST NOT
+     read the cut's silence as a broken speech path — no window, no conversation block, and not
+     even rule 15c's held block, because the fold IS the record: the surviving reply carries the
+     words forward, the journal keeps the part-written text in full, and the cut turn's outcome
+     names the message that cut it. No notification either — nothing was lost and the
+     interruption was his own act; the surviving reply is the receipt. The out-of-band judges
+     follow rule 15e's split: the memory judge runs, the three that judge what he was TOLD do
+     not. Nothing waits on a cut ticket, and a cut turn stops waiting the moment it is cut (rule
+     15d's discipline, both directions). `TURN_INTERRUPT=0` switches the cut off and restores the
+     pure delivery queue — the backstop `tests/test_turn_order.sh`'s ordering cases pin — and
+     with the queue off entirely (`TURN_ORDER_WAIT=0`) no tickets exist, so nothing can be cut.
 
 16. A turn that produced no text MUST report itself: a notification and a session outcome line. It
     MUST NEVER be silent in the way a wake is silent. Answering a question with nothing is a
@@ -314,8 +348,9 @@ file rather than re-instrumented every time the question comes up.
 | `${STATE_PREFIX}-debug-<pid>.log` | the turn | stream-json, one file per session |
 | `${STATE_PREFIX}-debug.log` | `claim_debuglog` | symlink to the newest session log |
 | `${STATE_PREFIX}-live-turn` | turn | `epoch \t device \t status \t user text \t reply` |
-| `${STATE_PREFIX}-turn-order/<seq>.ticket` | `turn_order_take` (rule 15a) | `pid \t proc-start \t epoch \t device`; zero-padded seq, so glob order is arrival order |
+| `${STATE_PREFIX}-turn-order/<seq>.ticket` | `turn_order_take` (rule 15a) | `pid \t proc-start \t epoch \t device \t stream-log \t user text (flattened, bounded)`; zero-padded seq, so glob order is arrival order; readers of the first four fields tolerate the short pre-15f form |
 | `${STATE_PREFIX}-turn-order/<seq>.superseded` | `turn_order_take` (rule 15c) | `superseding-seq \t the message that closed it` |
+| `${STATE_PREFIX}-turn-order/<seq>.cut` | `turn_order_take` (rule 15f) | `cutting-seq \t the new utterance (flattened, bounded)`; read by the cut turn's watchdog, its delivery gates, and the guarantee's belt |
 | `${STATE_PREFIX}-turn-order/next` | `turn_order_take` | the monotonic ticket counter |
 | `${STATE_PREFIX}-turn-order.lock` | every queue operation | flock, on fd 6 — never 9, which is the conversation lock in one hand and the wake lock in another |
 | `~/.local/share/deskcrab/sessions/<pid>` | session registry | `kind \t pid \t started \t epoch \t proc-start` |
@@ -431,6 +466,7 @@ catch-all text query, `crab remote` (phone), and the phone server.
 | Recommendation §4.2 | The "Thinking" notification is dismissed only after generation returns, so a stalled turn leaves it stuck on screen. |
 | Recommendation §4.6 | Detached children do not inherit the current login, so they always fire at the ambient account and fail quietly. |
 | Rule 15b, speech half | Ordering covers DELIVERY — the conversation, the journal, the window, the notification, the phone's audio. It does not cover the desk streamer, which speaks as the model writes, so two ordinary questions can still be answered aloud in the order they finished rather than the order they were asked. The case that mattered is closed by rule 15e: a rejected theory is silenced the instant he rejects it, and whatever was already out of her mouth was said before his message existed. Two ordinary answers heard out of order are both still wanted, which is why this is a defect and not a fire. Closing it means holding a non-head turn's streamer until it reaches the head — `claim_debuglog` split from `start_tts_streamer`, the streamer started late, safe only because it tails from the top of the file. |
+| Rule 15f, phone playback half | A cut phone turn is closed above every delivery sink, its run aborted, so nothing NEW of it is synthesised — but a clip already handed to the handset keeps playing, and the phone's live sentence-stream voice ([phone.md](phone.md) rule 17) does not read the cut marker mid-clip. Closing it means a stop signal on the watch channel the client honours at once, aimed by the cut turn's identity. |
 
 ## TESTS
 
@@ -442,7 +478,20 @@ catch-all text query, `crab remote` (phone), and the phone server.
 arrival order; a pushback message supersedes the turn in flight behind it, whose reply is written
 to the transcript marked unsaid, journalled in full, and never spoken; nothing waits on a
 superseded ticket; a ticket whose process is gone is swept rather than waited on; the bound expires
-and the outcome says so; `TURN_ORDER_WAIT=0` restores the old behaviour exactly.
+and the outcome says so; `TURN_ORDER_WAIT=0` restores the old behaviour exactly. The suite runs
+with `TURN_INTERRUPT=0`: it pins the BACKSTOP — under the shipped default an ordinary second
+utterance cuts the first turn instead of queueing behind it (rule 15f), which is
+`tests/test_turn_interrupt.sh`'s subject.
+
+`tests/test_turn_interrupt.sh` — rule 15f: a second utterance mid-flight silences the in-flight
+reply at the interrupt point (nothing past the cut is voiced — the streamer reopens no
+synthesiser for what the un-aborted run would have kept writing) and aborts its run, so exactly
+one model run completes; the surviving turn's prompt carries the cut turn's input, its
+part-written reply, and the interrupt frame; the cut turn delivers nothing — no conversation
+block and no held block, its outcome naming the cutting message and keeping the part-written
+words — the queue is left empty and no third run happens; `TURN_INTERRUPT=0` restores the pure
+queue, STRONG pushback still supersedes rather than cuts, and neither a cut turn nor anything
+behind a cut ticket waits.
 
 `tests/test_undelivered_reply.sh` — rule 16a: a turn killed mid-generation whose stream log holds a
 finished reply journals that reply with the undelivered outcome; killed with nothing in the log, it
