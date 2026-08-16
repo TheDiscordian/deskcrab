@@ -666,10 +666,13 @@ separation on every invocation), `tests/test_regroup.sh` (the conditional block,
 a long quote arrives whole, the instructions stand whole, no clip marker anywhere),
 `tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges),
 `tests/test_prompt_profiles.sh` (each profile's layers, order, measured sizes, the totals against
-the table above, the user's message never embedded in the system prompt — and rules 4 and 36: a
+the table above, the user's message never embedded in the system prompt — rules 4 and 36: a
 layer over its budget is carried whole and manifests `over`, never `trimmed` or `cut`; a total
 over its target opens the prompt with the warning and leaves the record; the state block renders
-it; a build inside the target clears it),
+it; a build inside the target clears it — and rules 38 and 39 positionally, not merely present:
+on both speaking profiles the two standing attention rules sit in the frame, below the ranking
+rule and above the subject line, the last words before the thing being answered, and neither
+reaches the job or classify profile),
 `tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
 assembled through the real assembler and graded against its assertions — and, structurally on
 every assembled case, desk and phone origins alike, rules 38 and 39: both standing attention rules

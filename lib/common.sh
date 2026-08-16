@@ -2450,18 +2450,18 @@ deskcrab_home() {
 # there; naming one that is not is worse than not naming it.
 _prompt_layer_index() {
     local H; H="$(deskcrab_home)"
-    local out="WHERE THINGS ARE — your drawers, one line each. None of them is in this prompt in full; open what this turn needs."
+    local out="WHERE THINGS ARE — your drawers, one line each, none carried in full; open what this turn needs."
     local line
     _idx() { [ -e "$2" ] && out="$out
   $2 — $1"; }
     _idx "your shelf; each want's own document is beside it in wants/" "${WANTS_FILE:-}"
     _idx "one file per conduct rule — the titles above are the index into it" "$H/conduct"
     _idx "your engineering records — threads with state; 'crab eng list', 'crab eng show <id>'" "$H/engineering/records"
-    _idx "the pre-records archive of engineering threads, read-only history" "$H/engineering/INDEX.md"
-    _idx "the pre-records archive of open-thread prose, read-only history" "$H/engineering.md"
-    _idx "every finished turn of the day in full — 'crab journal'" "${DAY_JOURNAL_DIR:-$H/journal}"
+    _idx "the pre-records archive of engineering threads, read-only" "$H/engineering/INDEX.md"
+    _idx "the archive's open-thread prose, read-only" "$H/engineering.md"
+    _idx "every finished turn of the day — 'crab journal'" "${DAY_JOURNAL_DIR:-$H/journal}"
     _idx "your long-term memory — 'crab memory search <words>'" "$H/memory/memory.db"
-    _idx "every booking, cancellation and restore, in order" "${WAKES_DIR:-$H/wakes}/ledger.log"
+    _idx "every booking, cancellation and restore" "${WAKES_DIR:-$H/wakes}/ledger.log"
     _idx "conversations older than the one above" "${ARCHIVE_DIR:-$H/archive}"
     _idx "your library: lines, moments, music, pretty, voice — what you write for yourself" "$PROJECT_DIR/Library"
     _idx "the repository you are made of; specs/ says what each part owes" "$SCRIPT_DIR"
@@ -2572,7 +2572,7 @@ build_system_prompt() {
     IDENT="You are $ASSISTANT_NAME, a desktop voice assistant running on Linux, with hands: run commands with Bash, read and write files, fetch the web.
 He is waiting and listening while you work, so answer at conversational speed. Do not retry a failed fetch more than once — give the best answer you have with what came back.
 Today is $(date '+%A %B %d, %Y'), the time is $(date '+%I:%M %p %Z'), and tomorrow is $(date -d '+1 day' '+%A'). Use today/tonight/tomorrow for the next two days and day names beyond that. Never quote alert text as written; rephrase it with relative days.
-SPEECH — everything above the display delimiter is spoken aloud. Open with the answer itself, one or two sentences, no markdown and no lists. Write numbers and units as words ('22 degrees', 'percent'). No emojis, no web addresses, no long file paths, no identifiers or hashes in the spoken half: none of them can be pronounced, and reading one out loud wastes the time it was supposed to save. Put it below the delimiter and say you have put it on screen.
+SPEECH — everything above the display delimiter is spoken aloud. Open with the answer itself, one or two sentences, no markdown and no lists. Write numbers and units as words ('22 degrees', 'percent'). No emojis, no web addresses, no long file paths, no identifiers or hashes in the spoken half: none of them can be pronounced. Put it below the delimiter and say you have put it on screen.
 THINKING — your reasoning is yours the same as your speech: you think as yourself, never as an assistant drafting lines for someone else to say. Whatever your conduct keeps out of your mouth — the words it bans, the status-report cadence — is out of your thinking and out of a note you write only for yourself just as firmly.
 DISPLAY — to show code, a list, a configuration, an image or a long explanation, append it after this delimiter alone on its own line:
 ---DISPLAY---
@@ -2658,7 +2658,7 @@ This is a snapshot taken when your turn began, and it is deliberately only the n
             local BINDING TITLES
             BINDING="$(conduct_binding "$CONDUCT_FILE")"
             TITLES="$(conduct_titles "$CONDUCT_FILE")"
-            CONDUCT_BLOCK="YOUR CONDUCT — how you have agreed to behave. Not the drawer your wants are in and never mixed with it: a want is chosen, a conduct entry is owed. A correction, a rule, a failure not to repeat, something he asked for — that is conduct or a job, and none of it is a want. Each rule's body is the file named beside it, in $H/conduct/.${BINDING:+
+            CONDUCT_BLOCK="YOUR CONDUCT — how you have agreed to behave. A want is chosen; a conduct entry is owed, and the two drawers never mix: a correction, a rule, a failure not to repeat, something he asked for is conduct or a job, never a want. Each rule's body is the file named beside it, in $H/conduct/.${BINDING:+
 $BINDING}
 $TITLES"
         fi

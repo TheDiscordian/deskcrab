@@ -213,6 +213,42 @@ refute "the assembler takes no message and cannot embed one" \
              "a message he typed"
 
 echo
+echo "the standing attention rules sit in the frame, where they fire:"
+# Rules 38 and 39. Presence anywhere is not enough — the 2026-08-15 morning
+# failures are exactly what a rule buried mid-prompt looks like, and the
+# drawer failure was a WAKE's, so both speaking profiles are held to it. The
+# contract is positional: ranking rule, then answer-first, then
+# drawer-ownership, then the subject line — the last words before the thing
+# being answered. A builder or classifier carries neither: it has no
+# conversation to answer and no drawers of hers to run.
+first_at() { printf '%s' "$1" | grep -obF "$2" | head -n1 | cut -d: -f1; }
+for p in turn wake; do
+    body="$(run "build_system_prompt --profile $p")"
+    subject='THIS TURN IS ABOUT THE MESSAGE BELOW'
+    [ "$p" = wake ] && subject='THIS WAKE IS ABOUT THE AGENDA BELOW'
+    r="$(first_at "$body" 'HOW TO WEIGH WHAT IS ABOVE')"
+    a="$(first_at "$body" 'ANSWER WHAT WAS ASKED, FIRST')"
+    d="$(first_at "$body" 'YOUR OWN DRAWERS ARE YOURS TO RUN')"
+    s="$(first_at "$body" "$subject")"
+    check "$p: the answer-first rule is in the prompt" [ -n "$a" ]
+    check "$p: the drawer-ownership rule is in the prompt" [ -n "$d" ]
+    if [ -n "$r" ] && [ -n "$a" ] && [ -n "$d" ] && [ -n "$s" ]; then
+        check "$p: answer-first sits below the ranking rule" [ "$r" -lt "$a" ]
+        check "$p: drawer-ownership follows it" [ "$a" -lt "$d" ]
+        check "$p: both stand above the subject line, last before the message" \
+            [ "$d" -lt "$s" ]
+    else
+        fail "$p: the frame's fixed points are all present" \
+             "ranking=[$r] answer=[$a] drawers=[$d] subject=[$s]"
+    fi
+done
+for p in job classify; do
+    body="$(run "build_system_prompt --profile $p")"
+    refute "$p: no attention rules — nothing of hers to answer or to run" \
+        contains "$body" 'ANSWER WHAT WAS ASKED'
+done
+
+echo
 echo "the shelves are titles, and the bodies stay on disk:"
 TURN="$(run 'build_system_prompt --profile turn')"
 check "a want title is in the prompt" contains "$TURN" "Learn to read a score"
