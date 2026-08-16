@@ -82,6 +82,36 @@ which fails silently is worse than one that does not exist.
     as a directory is unreachable by every reader and still trips the watcher.
 21. Tidy MUST run its model call under the account chain.
 
+21a. The shelf-line check. Before tidy's model job is dispatched, the tidy unit runs the machine
+    check `lib/shelf-check` over the wants shelf. A shelf entry is ONE line — the discipline the
+    shelf's own header claimed when the record behind this rule was written (2026-08-07: "a
+    shelf line is a line, the history lives in `wants/<slug>.md`"; the header has since been
+    rebuilt after a clobber, but the claim is the shelf's design and this rule holds it): the
+    line is the title and at most a short status clause, and the history lives in the want's
+    own `wants/<slug>.md` document. The
+    check measures every entry line (selected by the one shelf reader's pattern,
+    [prompt-assembly.md](prompt-assembly.md) rule 20) against the shelf-line budget:
+    `WANTS_SHELF_LINE_BUDGET`, default 500 bytes — the number this spec states as the
+    operationalisation of "a line", sized so a title with a status clause passes (the live
+    shelf's longest honest line measured 305 bytes on 2026-08-16) and a line carrying its
+    nightly findings does not (the 2026-08-07 shelf averaged 2.6 KB per line exactly that way).
+    The check REPORTS and NEVER rewrites: deciding which sentences are topic and which are
+    history is her judgement, never a machine's, so the check MUST NOT edit, move, or reorder a
+    byte of the shelf or of any want document. An entry over the budget is named with its title,
+    its measured size in bytes, the budget, and the `wants/<slug>.md` document its history
+    belongs in — the document the line itself points at, or the plain statement that the line
+    names none.
+21b. The check's finding is never silent, and never a gate. A check that found over-budget
+    entries prints them in its own name (`shelf-check:`) to its caller's log, writes
+    `${STATE_PREFIX}-shelf-overruns.txt` — the same shape as the assembler's rule 36/40a
+    records ([prompt-assembly.md](prompt-assembly.md)) — and exits non-zero; the state block
+    renders the record while it stands, which puts the fact in `crab status` and in every
+    speaking prompt until a later check finds the shelf clean and removes it. A clean shelf, a
+    missing shelf, or an unset `WANTS_FILE` prints one line, removes the record, and exits
+    zero. The check's exit status MUST NOT block the tidy job behind it — moving the flagged
+    history into the want's document is exactly the judgement work tidy's own brief names, and
+    a shelf that needs tidying is the last reason to skip the tidy.
+
 ### The self-change watcher
 
 22. The watcher is driven by a path unit using the kernel's own change notification. No polling
@@ -385,6 +415,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/last-slept` | sleep | epoch, timestamp, then yield and coverage on one line: added, chunks, chars, passes (rule 14a) |
 | `~/.local/share/deskcrab/sleep/<date>.log` | sleep | the night's ingest output |
 | `~/.local/share/deskcrab/wants.md`, `wants/` | tidy | the shelf and its bodies |
+| `${STATE_PREFIX}-shelf-overruns.txt` | the shelf-line check | rules 21a/21b: written when entries stand over the budget, removed by a clean check, rendered by the state block |
 | `~/.local/share/deskcrab/conduct/` | tidy | conduct and its per-rule files |
 | `~/.local/share/deskcrab/engineering/` | tidy | open threads and their index |
 | `~/.local/state/deskcrab/notice-self.snapshot` | the watcher | the tree as last judged |
@@ -401,8 +432,10 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/backlog-drain/dispatched.tsv` | the backlog drain | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
-service, the self-change path and service, the transcription path and service, the canary timer and
-service, the phone server service. **The tidy timer and service are missing and must be added.**
+service, the tidy timer and service (the shelf-line check runs as the service's `ExecStartPre`,
+never gating the job — rules 21a/21b), the self-change path and service, the transcription path
+and service, the canary timer and service, the phone server service. The tidy prompt still lives
+as the unit's embedded command string (`MAJ-23`); `tests/test_tidy.sh` is still owed.
 
 ## INTERACTIONS
 
@@ -437,7 +470,7 @@ reaches her through an event wake or through a record she reads.
 
 | Id | What implementation must fix |
 |---|---|
-| `MAJ-23` | The tidy units are not in the repository. The one nightly process that moves lines between the shelf, conduct and the engineering threads, and deletes orphaned want documents, lives as an embedded command string with no test and no review path. |
+| `MAJ-23` | The tidy units are in the repository now, but the prompt of the one nightly process that moves lines between the shelf, conduct and the engineering threads, and deletes orphaned want documents, still lives as an embedded command string in the service file, and `tests/test_tidy.sh` does not exist. The shelf-line check (rules 21a/21b) is tested; the tidy job itself is not. |
 | `MAJ-24` | The engineering threads are maintained nightly and named in no prompt path. |
 | `MAJ-25` | The rot check has no caller. The stamp is write-only, so a stalled ingest surfaces nowhere. |
 | `MAJ-32` | Ingest tail-clamped its input against a journal several times the cap, so the day's earliest material was never ingested. Closed 2026-08-11: the ingest now windows on whole chunk boundaries and runs the distiller once per window, reporting each pass ([memory-recall.md](memory-recall.md) rule 29). |
@@ -495,6 +528,14 @@ phase that exits zero saying nothing is named `PHASE SILENT` in the night log it
 that dies leaving only noise in another voice draws both complaints, did-not-finish landing in
 the log file too; a phase that fails after speaking draws only did-not-finish — and every such
 night still stamps and still exits with the ingest's zero.
+
+`tests/test_shelf_check.sh` — rules 21a/21b: a synthetic over-long shelf line is flagged with its
+measured size, the budget, and the `wants/<slug>.md` document its line points at; a line naming
+no document is flagged as exactly that; a genuinely one-line shelf is silent — one line, exit
+zero, no record; the record stands under `${STATE_PREFIX}-shelf-overruns.txt`, renders in the
+state block and the assembled prompt, and a later clean check removes it; the budget answers
+`WANTS_SHELF_LINE_BUDGET`; and the shelf file is byte-identical before and after every check —
+the check reports and never rewrites.
 
 **To be written:**
 

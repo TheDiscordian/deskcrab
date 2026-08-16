@@ -108,6 +108,13 @@ CONVO_SUMMARY_MODEL="${CONVO_SUMMARY_MODEL:-haiku}"
 # Durable "wants" file the assistant maintains and pursues during autonomous
 # wakes (crab wake / crab wake-at). Unset = feature off.
 WANTS_FILE="${WANTS_FILE:-}"
+# A shelf line is a line (specs/nightly.md rule 21a): the byte budget one
+# wants entry may occupy before lib/shelf-check names it as carrying its
+# history. 500 fits a title and a short status clause (the live shelf's
+# longest honest line measured 305 bytes when this was set); the 2026-08-07
+# shelf averaged 2.6 KB per line, each night's findings appended to the line
+# instead of to the want's own document, and that is the shape this flags.
+WANTS_SHELF_LINE_BUDGET="${WANTS_SHELF_LINE_BUDGET:-500}"
 # Local-time hours (HH-HH, wraps midnight) during which autonomous wakes stay
 # fully silent — no speech, no windows. Unset = no quiet hours.
 WAKE_QUIET_HOURS="${WAKE_QUIET_HOURS:-}"
@@ -302,6 +309,18 @@ SEAMFILE="${STATE_PREFIX}-convo-seam.txt"
 # every turn spoke without its Continuity section), and the fix he chose is
 # that a budget may only ever WARN, never cut.
 PROMPT_CUTS_FILE="${STATE_PREFIX}-prompt-cuts.txt"
+# The dropped-duplicate record, specs/prompt-assembly.md rule 40a — the same
+# shape and the same lifecycle as the record above: a speaking build that
+# dropped a duplicate block writes its drop lines here, a build that dropped
+# none removes it, and the state block renders it while it stands. A drop is
+# not a cut — the block rides once, whole, where it first appeared — but a
+# standing record is a source to fix: the same words are reaching two layers.
+PROMPT_DUPES_FILE="${STATE_PREFIX}-prompt-dupes.txt"
+# The shelf-line record, specs/nightly.md rules 21a/21b: written by
+# lib/shelf-check when a wants shelf entry is carrying its history on the
+# line, removed by a check that finds the shelf clean, rendered by the state
+# block while it stands. The check reports and never rewrites.
+SHELF_OVERRUNS_FILE="${STATE_PREFIX}-shelf-overruns.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
 # of the worst silence in this thing. A wake firing beside a desktop turn ran
@@ -1569,6 +1588,34 @@ self_state_report() {
             printf '  Truncation is never the answer to growth: raise the budget or slim the source (specs/prompt-assembly.md rule 36).\n'
         fi
     fi
+    # The dropped-duplicate record, specs/prompt-assembly.md rule 40a: the
+    # last speaking prompt carried the same block through two layers. The
+    # block rode once, whole, where it first appeared; the echo was dropped
+    # and is named here until a build assembles with no duplicates. A
+    # standing record is a source to fix, never a working state.
+    if [ -s "$PROMPT_DUPES_FILE" ]; then
+        printf 'DUPLICATE BLOCKS DROPPED — the last assembled prompt carried the same block through two layers; each block rode once, where it first appeared, and the echo was dropped and named (specs/prompt-assembly.md rule 40):\n'
+        awk -F'\t' '$1 == "dedup" && NF >= 5 {
+            prior = $3; sub(/^dup-of=/, "", prior)
+            printf "  - %s repeated a block already carried by %s: %s\n", $2, prior, $5
+        }' "$PROMPT_DUPES_FILE" 2>/dev/null
+        printf '  The duplication is a source to fix: the same words are reaching two layers.\n'
+    fi
+    # The shelf-line record, specs/nightly.md rules 21a/21b: the nightly
+    # check found wants entries carrying their history on the line. The
+    # check only reports — moving the prose is her judgement, never a
+    # machine's.
+    if [ -s "$SHELF_OVERRUNS_FILE" ]; then
+        local shelf_budget
+        shelf_budget="$(head -n 1 "$SHELF_OVERRUNS_FILE" 2>/dev/null \
+            | sed -n 's/.*budget=\([0-9]*\).*/\1/p')"
+        printf 'SHELF LINES OVER BUDGET — a shelf line is a line, and these are carrying their history, which belongs in the want'\''s own document (specs/nightly.md rule 21a):\n'
+        awk -F'\t' -v b="${shelf_budget:-the}" 'NR > 1 && NF >= 3 {
+            if ($2 == "-") printf "  - %s — %s bytes against %s, and the line names no document\n", $3, $1, b
+            else printf "  - %s — %s bytes against %s; the history belongs in wants/%s\n", $3, $1, b, $2
+        }' "$SHELF_OVERRUNS_FILE" 2>/dev/null
+        printf '  Moving the prose is your judgement, never the machine'\''s: the check only reports.\n'
+    fi
     # A numb is a choice to be blind for a while, so it is never silent: it
     # rides at the top of the block until it expires or is lifted, or it stops
     # being a decision and becomes a part of me I forgot was switched off.
@@ -2412,6 +2459,74 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
     printf '%s' "$v"
 }
 
+# One copy of anything — specs/prompt-assembly.md rules 40 and 40a. On
+# 2026-08-07 the memory index rode every prompt twice, put there by the CLI
+# rather than by this assembler; that door is closed per-invocation now, and
+# this pass exists so the CLASS is dead here whatever future source doubles.
+# As the document layers (L1–L5) are emitted, every paragraph block is held
+# against every block those layers have already emitted this build, by
+# CONTENT IDENTITY — the block's text with its whitespace runs collapsed,
+# never its source path — and a block whose identical twin an earlier layer
+# already carries is dropped, with the drop recorded for the manifest. This
+# is not a cut (rule 4a): the words ride once, whole, where they first
+# appeared, and the drop is never silent. Duplication within one layer is
+# that layer's own content and is not judged; a block whose collapsed text
+# is under the 100-byte floor is not judged either, so a bare heading or a
+# short line two documents legitimately share can never orphan the text
+# under its twin. L6, regroup and dispute never pass through here: the
+# transcript is evidence no pass may remove a word of (rule 34), and the
+# regroup and dispute quotes are mandated whole (rule 37).
+#
+# No command substitution around this: the seen-set and the drop list are
+# the caller's state, and a $(...) subshell would throw both away. The
+# deduped text is returned in PROMPT_DEDUP_OUT.
+_prompt_dedup() {  # <layer key> <text>
+    local key="$1" text="$2" floor="${PROMPT_DEDUP_FLOOR:-100}"
+    PROMPT_DEDUP_OUT="$text"
+    # Direct callers outside build_system_prompt get no ledger and no pass.
+    declare -p _PROMPT_SEEN >/dev/null 2>&1 || return 0
+    local line block="" pend="" out="" norm prior dropped=0
+    # Close the block in hand: judge it, then keep or drop it. Shares the
+    # caller's locals by dynamic scope, like _idx in the index layer.
+    _dedup_close() {
+        [ -n "$block" ] || return 0
+        norm="${block//[$'\t\r\n']/ }"
+        while [ "${norm//  / }" != "$norm" ]; do norm="${norm//  / }"; done
+        norm="${norm# }"; norm="${norm% }"
+        if [ "${#norm}" -ge "$floor" ]; then
+            prior="${_PROMPT_SEEN[$norm]:-}"
+            if [ -n "$prior" ] && [ "$prior" != "$key" ]; then
+                dropped=$((dropped + 1))
+                PROMPT_DEDUP_DROPS="$PROMPT_DEDUP_DROPS$(printf 'dedup\t%s\tdup-of=%s\tdropped\t%s bytes: %s' \
+                    "$key" "$prior" "$(printf '%s' "$block" | wc -c)" \
+                    "$(utf8_trim "$norm" 80)")
+"
+                block=""; pend=""
+                return 0
+            fi
+            [ -n "$prior" ] || _PROMPT_SEEN["$norm"]="$key"
+        fi
+        out="$out$pend$block"; pend=""; block=""
+    }
+    while IFS= read -r line; do
+        case "$line" in
+            *[![:space:]]*) block="$block$line
+" ;;
+            *) _dedup_close; pend="$pend$line
+" ;;
+        esac
+    done <<< "$text"
+    _dedup_close
+    unset -f _dedup_close
+    # Nothing dropped: the layer passes through byte-identical, whatever the
+    # reassembly above would have done to its blank runs.
+    [ "$dropped" -gt 0 ] || return 0
+    out="$out$pend"
+    # The herestring read added a trailing newline the layer may not have had.
+    case "$text" in *$'\n') ;; *) out="${out%$'\n'}" ;; esac
+    PROMPT_DEDUP_OUT="$out"
+}
+
 # Emit one layer, whole, and measure it. Rule 4: NO layer is ever trimmed,
 # anywhere, for any reason — the assembler used to cut layers to their
 # budgets, behaviour a subagent wrote into the spec and the user never asked
@@ -2419,21 +2534,41 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
 # a layer past its number reports `over` in the manifest and is carried in
 # full, and a build whose TOTAL is past the profile's target says so inside
 # the prompt itself (rule 36), where she can decide what to do or raise it
-# with him. States: full | over | absent — never trimmed, never cut.
+# with him. States: full | over | absent — never trimmed, never cut. The one
+# thing a build leaves out is the second copy of a block it is already
+# carrying (rules 40/40a): the document layers pass through _prompt_dedup,
+# and every drop lands in the manifest directly under this layer's row.
 _prompt_layer() {  # <key> <where the rest is> <text>
     local key="$1" where="$2" text="$3" budget bytes state=full
+    local did_dedup=0 drops_before=""
     budget="$(_prompt_budget "$key" "$PROMPT_PROFILE")"
+    if [ "$budget" -gt 0 ]; then
+        case "$key" in
+            L1|L2|L3|L4|L5)
+                did_dedup=1
+                drops_before="${PROMPT_DEDUP_DROPS:-}"
+                _prompt_dedup "$key" "$text"
+                text="$PROMPT_DEDUP_OUT"
+                ;;
+        esac
+    fi
     if [ "$budget" -le 0 ] || [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ]; then
         PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t0\t%s\tabsent' "$key" "$budget")
 "
-        return 0
+    else
+        bytes=$(printf '%s' "$text" | wc -c)
+        [ "$bytes" -gt "$budget" ] && state=over
+        PROMPT_BODY="$PROMPT_BODY$text
+"
+        PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t%s\t%s\t%s' "$key" "$bytes" "$budget" "$state")
+"
     fi
-    bytes=$(printf '%s' "$text" | wc -c)
-    [ "$bytes" -gt "$budget" ] && state=over
-    PROMPT_BODY="$PROMPT_BODY$text
-"
-    PROMPT_MANIFEST="$PROMPT_MANIFEST$(printf '%s\t%s\t%s\t%s' "$key" "$bytes" "$budget" "$state")
-"
+    # This layer's drop records follow its own row, so the manifest reads as
+    # a story: the layer, then what was held out of it and why.
+    if [ "$did_dedup" = 1 ] && [ "${PROMPT_DEDUP_DROPS:-}" != "$drops_before" ]; then
+        PROMPT_MANIFEST="$PROMPT_MANIFEST${PROMPT_DEDUP_DROPS#"$drops_before"}"
+    fi
+    return 0
 }
 
 # Where her drawers live. Everything she owns is a sibling of the wants shelf,
@@ -2560,6 +2695,12 @@ build_system_prompt() {
     case "$PROMPT_PROFILE" in turn|wake|job|classify) ;; *) return 1 ;; esac
 
     local PROMPT_BODY="" PROMPT_MANIFEST=""
+    # The de-duplication ledger, rules 40/40a: which blocks this build has
+    # already carried (keyed by their whitespace-collapsed text), and the
+    # drop lines the manifest and the standing record will carry. Locals
+    # here, shared with _prompt_layer/_prompt_dedup by dynamic scope.
+    local -A _PROMPT_SEEN=()
+    local PROMPT_DEDUP_DROPS="" PROMPT_DEDUP_OUT=""
     local H; H="$(deskcrab_home)"
 
     # ---- L1 IDENTITY ------------------------------------------------------
@@ -2796,6 +2937,26 @@ $PROMPT_BODY"
             fi
         else
             rm -f "$PROMPT_CUTS_FILE"
+        fi
+        # The dropped-duplicate record, rule 40a — same shape, same
+        # lifecycle: a speaking build that dropped a duplicate block leaves
+        # its drop lines standing, a build that dropped none removes them,
+        # and the state block renders the record until the duplication's
+        # source is fixed. One build of lag in the rendered record is
+        # inherent and acceptable, exactly as it is for rule 36's.
+        if [ -n "$PROMPT_DEDUP_DROPS" ]; then
+            if printf 'profile=%s\tdrops=%s\n%s' \
+                    "$PROMPT_PROFILE" \
+                    "$(printf '%s' "$PROMPT_DEDUP_DROPS" | grep -c '^dedup')" \
+                    "$PROMPT_DEDUP_DROPS" \
+                    > "$PROMPT_DUPES_FILE.tmp.$$" 2>/dev/null; then
+                mv "$PROMPT_DUPES_FILE.tmp.$$" "$PROMPT_DUPES_FILE" 2>/dev/null \
+                    || rm -f "$PROMPT_DUPES_FILE.tmp.$$"
+            else
+                rm -f "$PROMPT_DUPES_FILE.tmp.$$"
+            fi
+        else
+            rm -f "$PROMPT_DUPES_FILE"
         fi
     fi
 

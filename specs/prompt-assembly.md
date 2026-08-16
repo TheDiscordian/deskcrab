@@ -31,6 +31,10 @@ drawer she owns openable. Its acceptance criteria are the sixteen intent cases a
    quietly deciding which part of her prompt she could live without. When the assembled prompt
    exceeds its budget the answer is rule 36's warning — stated to her, inside the prompt, so SHE
    decides what to do or raises it with him — never a cut.
+4a. The one thing a build may leave out is the SECOND copy of a block it is already carrying —
+   rule 40's de-duplication — which removes no words from the prompt: the block rides once,
+   whole, where it first appeared, and every drop is named in the manifest. Dropping an echo is
+   not a cut, and rules 24, 25 and 31 already forbid the echo.
 5. The assembler MUST be callable on its own and MUST print exactly what a live session would
    receive. Producing the prompt is a local operation and MUST stay one command. When the user asks
    to see the context, that command is the answer.
@@ -389,10 +393,46 @@ the register rule in L8).
     him or a question to ask him — act, then a one-line mention at most. Bringing him her own
     drawer's problem as a report is handing him her work.
 
+### One copy of anything — the de-duplication pass
+
+On 2026-08-07 the memory index rode every prompt twice — once inline in the project instruction
+file, once as the auto-memory index, both put there by the CLI rather than by the assembler, and
+that particular door is closed per-invocation now (rule 16's machinery). The pass below exists so
+the CLASS is dead inside the assembler itself: whatever future source doubles — a sheet quoting a
+shelf, two files carrying the same section, a drawer rendered by two readers — the second copy
+never reaches the model, and the drop is never silent.
+
+40. **No block may be emitted twice in one build.** As the document layers — L1 through L5 — are
+    assembled, the assembler MUST hold every paragraph block it is about to emit against every
+    block those layers have already emitted in this build, by CONTENT IDENTITY: the block's own
+    text with its whitespace runs collapsed, never its source path, so the same words arriving
+    through two different files are still the same block. A block whose identical twin was
+    already emitted by an EARLIER layer of this build is dropped; the first copy rides whole,
+    untouched, where it first appeared. Duplication within one layer is that layer's own content
+    and is not judged. A block whose collapsed text is under 100 bytes is never judged either —
+    a bare heading, a delimiter, a short line two documents legitimately share must not orphan
+    the text under its twin. Only L1 through L5 participate: L6 is the evidence for what was
+    said and no pass may remove a word of it (rule 34's discipline), the regroup and dispute
+    quotes are mandated whole (rule 37), and L7 and L8 are single-source frames.
+40a. **Every drop is recorded in the build's own manifest, and never silently.** Each dropped
+    block adds one `dedup` line to the manifest, directly under the row of the layer it was
+    dropped from — the layer it was dropped from, the layer already carrying it, its size in
+    bytes, and a whitespace-collapsed preview cut on a character boundary — so
+    `crab context --layers` shows what was dropped and why. A build with no duplication emits
+    no `dedup` lines: an empty drop list, no record, no warning. A speaking build that dropped
+    at least one duplicate MUST leave `${STATE_PREFIX}-prompt-dupes.txt` carrying those same
+    lines; a speaking build that dropped none MUST remove it; and the state block MUST render
+    the record while it stands — the same shape as rule 36's record, which puts the fact in
+    `crab status` and in every later speaking prompt until the duplication's source is fixed.
+    One build of lag in the rendered record is inherent and acceptable, exactly as it is for
+    rule 36. A standing record is a source to fix — the same words are reaching two layers —
+    never a working state.
+
 ## DATA
 
-The assembler reads; the one state it owns is the over-budget record of rule 36, written because
-the assembler is the only place the overrun is known the moment it happens.
+The assembler reads; the state it owns is two records of the same shape — the over-budget record
+of rule 36 and the dropped-duplicate record of rule 40a — written because the assembler is the
+only place either fact is known the moment it happens.
 
 | Source | Layer | Notes |
 |---|---|---|
@@ -410,6 +450,7 @@ the assembler is the only place the overrun is known the moment it happens.
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
 | `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build whose total ran over its target (the name is historical — nothing is cut), removed by one inside it, rendered by the state block |
+| `${STATE_PREFIX}-prompt-dupes.txt` | — | rule 40a: written by a speaking build that dropped a duplicate block, removed by one that dropped none, rendered by the state block |
 
 ## INTERACTIONS
 
@@ -421,9 +462,10 @@ the regroup context builder.
 classifier. It MUST also be callable directly from a shell for inspection.
 
 **Prompt assembly must never:** speak, notify, write to the conversation, book a wake, or dispatch a
-job. It is a pure function of the state it reads, with one owned write: the over-budget record of
-rule 36 — a condition that waited for a caller to notice was once invisible for two days, and the
-assembler is the only place it is known the moment it happens.
+job. It is a pure function of the state it reads, with two owned writes of one shape: the
+over-budget record of rule 36 and the dropped-duplicate record of rule 40a — a condition that
+waited for a caller to notice was once invisible for two days, and the assembler is the only place
+either is known the moment it happens.
 
 ## VERIFIED-CORRECT RULES
 
@@ -680,7 +722,13 @@ present in the prompt),
 `tests/test_eng_records.sh` (rule 21a: an open record renders as a live thread with its dates, a
 settled one as its one-line outcome with its body prose kept out of the prompt, the settled tail
 as recent closures behind the rule 11a window with the pointer line — the count line alone under
-`--compact` — an empty drawer costs the block and nothing else, and open records never age out).
+`--compact` — an empty drawer costs the block and nothing else, and open records never age out),
+`tests/test_prompt_dedup.sh` (rules 40 and 40a: a build carrying the same block through two
+layers emits it once, names the drop in the manifest under the layer it was dropped from, leaves
+the standing record and renders it in the next state block; a build with no duplication emits no
+`dedup` lines and removes the record; a block under the floor is never judged; and the transcript
+layer is exempt — the same words in L1 and L6 ride twice, because no pass may remove a word of
+the evidence).
 
 **To be written:**
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the

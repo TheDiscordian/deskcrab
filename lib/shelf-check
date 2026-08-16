@@ -1,0 +1,93 @@
+#!/bin/bash
+# The nightly shelf-line check — specs/nightly.md rules 21a and 21b.
+#
+# A shelf entry is ONE line: the title and at most a short status clause,
+# with the history in the want's own wants/<slug>.md document. On 2026-08-07
+# the shelf measured 21,285 bytes across eight "lines" — an average of 2.6 KB
+# each, every night's findings appended to the line instead of to the
+# document — and the shelf grew until it could barely be read. This check is
+# that discipline enforced by a machine instead of by intentions: it MEASURES
+# and REPORTS, and it never rewrites — deciding which sentences are topic and
+# which are history is her judgement, never a builder's, so this script never
+# writes a byte into the shelf or any want document.
+#
+# What it does: every shelf entry line (selected through the one shelf
+# reader, wants_titles — two readers with different patterns is how the
+# promise auditor was handed an empty list) is measured in bytes against
+# WANTS_SHELF_LINE_BUDGET. Over-budget entries are named — title, size,
+# budget, and the wants/<slug>.md document the line itself points at — on
+# stdout in this check's own name, and in ${STATE_PREFIX}-shelf-overruns.txt,
+# the record the state block renders into `crab status` and every speaking
+# prompt until a later check finds the shelf clean and removes it (the same
+# shape as the assembler's rule 36/40a records). Exit 1 when entries stand
+# over the budget, 0 otherwise; the tidy unit runs this as `ExecStartPre=-`,
+# so the report never gates the tidy job behind it.
+set -u
+
+# Deployment is by symlink (specs/nightly.md rule 6a): resolve this file's
+# real path before taking dirname, or a run through ~/.local/lib/deskcrab
+# sources a common.sh that does not exist.
+. "$(dirname "$(readlink -f "$0")")/common.sh"
+
+record="$SHELF_OVERRUNS_FILE"
+shelf="${WANTS_FILE:-}"
+budget="${WANTS_SHELF_LINE_BUDGET:-500}"
+
+# A clean outcome — nothing over, nothing to measure, or no shelf at all —
+# says so in one line, removes any standing record, and exits zero.
+clean_exit() {
+    rm -f "$record"
+    printf 'shelf-check: %s\n' "$1"
+    exit 0
+}
+
+[ -n "$shelf" ] || clean_exit "no shelf is configured (WANTS_FILE unset); nothing to measure"
+[ -s "$shelf" ] || clean_exit "the shelf at $shelf is missing or empty; nothing to measure"
+
+# The one shelf reader picks the entry lines; each title it returns is the
+# line's own prefix, so a file line is an entry exactly when it starts with
+# one of them. Everything else — headers, comments, prose — is not an entry
+# and is never measured.
+mapfile -t _titles < <(wants_titles "$shelf")
+
+total=0
+over=""
+while IFS= read -r line; do
+    is_entry=""
+    for t in "${_titles[@]}"; do
+        [ -n "$t" ] && [ "${line:0:${#t}}" = "$t" ] && { is_entry=1; break; }
+    done
+    [ -n "$is_entry" ] || continue
+    total=$((total + 1))
+    bytes=$(printf '%s' "$line" | wc -c)
+    [ "$bytes" -gt "$budget" ] || continue
+    # The document the line itself points at ("→ slug.md", backticks
+    # tolerated); a line naming none is flagged as exactly that.
+    doc="$(printf '%s' "$line" | sed -n 's/.*→ *`\{0,1\}\([^ `]*\.md\)`\{0,1\}.*/\1/p')"
+    [ -n "$doc" ] || doc="-"
+    title_txt="$(printf '%s' "$line" | sed 's/.*\*\*\(.*\)\*\*.*/\1/')"
+    over="$over$(printf '%s\t%s\t%s' "$bytes" "$doc" "$title_txt")
+"
+done < "$shelf"
+
+[ -n "$over" ] || clean_exit "$total shelf lines, every one inside the $budget-byte budget"
+
+n=$(printf '%s' "$over" | grep -c .)
+{
+    printf 'file=%s\tbudget=%s\tchecked=%s\n' "$shelf" "$budget" "$(date '+%Y-%m-%d %H:%M')"
+    printf '%s' "$over"
+} > "$record.tmp.$$" 2>/dev/null && mv "$record.tmp.$$" "$record" 2>/dev/null \
+    || rm -f "$record.tmp.$$"
+
+printf 'shelf-check: %s of %s shelf lines over the %s-byte budget — a shelf line is a line; the history belongs in the want'\''s own document:\n' \
+    "$n" "$total" "$budget"
+printf '%s' "$over" | while IFS=$'\t' read -r bytes doc title_txt; do
+    if [ "$doc" = "-" ]; then
+        printf 'shelf-check:   %s — %s bytes, and the line names no document\n' \
+            "$title_txt" "$bytes"
+    else
+        printf 'shelf-check:   %s — %s bytes; history belongs in wants/%s\n' \
+            "$title_txt" "$bytes" "$doc"
+    fi
+done
+exit 1

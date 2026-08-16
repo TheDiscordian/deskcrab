@@ -48,6 +48,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/notice-newfiles` | emitter: files landing in a watched directory become a wake |
 | `lib/notice-selfchange` | emitter: another hand changed the files that constitute her |
 | `lib/canary-selfchange` | proves that watcher is still being triggered at all |
+| `lib/shelf-check` | the nightly shelf-line measure: an over-long wants line is named, never rewritten |
 | `lib/sleep-nightly` | the nightly memory ingest, and its rot check |
 | `lib/claudism-scan` | the nightly claudism review: one journal day in, a report with rewrites and counts out |
 | `lib/claudism-corpus` | the same scoring run by hand over an archived transcript directory, bucketed by date |
