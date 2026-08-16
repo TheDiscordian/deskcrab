@@ -225,6 +225,16 @@ deferred_when_spec() {  # <when, as she stated it>
     printf '20m'
 }
 
+# The turn-cluster window (specs/wake-queue.md rules 10b and 43a), seconds.
+# Audits from turns that finished within this window of each other are one
+# cluster, and their catches ride ONE wake as a short list rather than one
+# wake each: three turns finishing inside a minute — a desk turn overlapping
+# two wakes — each fired its own audit and each booked its own nag for the
+# same shelf (2026-08-07 12:12, defect b). A turn-cluster is minutes wide,
+# never an afternoon; the fold itself, and the lock that makes it safe under
+# three concurrent audits, live behind the queue's one door.
+PROMISE_CLUSTER_WINDOW="${PROMISE_CLUSTER_WINDOW:-300}"
+
 # DEFERRED: she committed to future work and the turn is over. The remedy is
 # not the wants shelf — it is an alarm at the moment she named, briefing her on
 # the promise so she does it or books it deliberately.
@@ -269,8 +279,13 @@ if [ "${VERDICT%%:*}" = "DEFERRED" ]; then
     # The reason MUST open with DEFERRED_PROMISE_REASON_PREFIX (common.sh):
     # that is how the wake path knows this wake is the audit's own follow-up
     # and must not be re-audited into an endless chain.
+    # The cluster fold is PINNED to the fire moment for this class: a promise
+    # fires when she said it would, so it folds only with another caught
+    # promise due within the same window, and books alone otherwise.
     BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-audit \
         --cap "$DEFERRED_WAKE_CAP" --cap-prefix "$DEFERRED_PROMISE_REASON_PREFIX" \
+        --cluster "$PROMISE_CLUSTER_WINDOW" --cluster-pin-fire \
+        --cluster-item "$ACTION (you said it at $(date '+%H:%M') $WHEN_NOTE)" \
         "$WHEN_SPEC" event "$DEFERRED_PROMISE_REASON_PREFIX \"$ACTION\" — you said it at $(date '+%H:%M') $WHEN_NOTE, and this audit fired because the turn ended with no booking behind the sentence. Do it now, or book it deliberately with 'crab wake-at' with the work named in the reason; the promise does not get to die with the turn." 2>&1)"
     case "$BOOKING" in
         *"Not booked"*|*"already pending"*) audit_log "not booked (${BOOKING%%$'\n'*}): $ACTION" ;;
@@ -306,8 +321,13 @@ PROMISE_WAKE_CAP="${PROMISE_WAKE_CAP:-3}"
 # The cap scoped to this class's own prefix: the count is the same set it has
 # always been — every want-flag opens with it — but the deferred-promise wakes
 # above must neither fill this cap nor be drained by it.
+# And the turn-cluster fold (specs/wake-queue.md rules 10b and 43a): a
+# want-flag booked while another of this class from the same cluster is still
+# pending does not become a second wake — the caught sentence joins the
+# pending wake's reason as one more item on its list.
 BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-audit --cap "$PROMISE_WAKE_CAP" \
     --cap-prefix "$PROMISE_AUDIT_REASON_PREFIX" \
+    --cluster "$PROMISE_CLUSTER_WINDOW" --cluster-item "$REASON" \
     5s event "$PROMISE_AUDIT_REASON_PREFIX \"$REASON\" — check your wants shelf, and if it is genuinely not there, record it now: a one-line entry on the shelf, plus a document under wants/ for its thinking. If it IS already there, do nothing and end with no message text — say nothing." 2>&1)"
 case "$BOOKING" in
     *"Not booked"*|*"already pending"*) audit_log "not booked (${BOOKING%%$'\n'*}): $REASON" ;;

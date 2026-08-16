@@ -55,6 +55,16 @@ WAKE_RUNTIME_MAX="${WAKE_RUNTIME_MAX:-7200}"
 # Where the LIVE queue lives, regardless of what this instance was pointed at.
 # The fourth gate below compares against it.
 WAKE_LIVE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes"
+# The turn-cluster fold (specs/wake-queue.md rule 10b). Each folded item is cut
+# through utf8_trim at this bound before it joins the reason's list, so every
+# item's opening clause stays legible and the reason stays whole UTF-8 however
+# many one cluster catches.
+WAKE_CLUSTER_ITEM_MAX="${WAKE_CLUSTER_ITEM_MAX:-200}"
+# The connective the fold writes once and then extends with '; "item"'. A
+# plain constant, not a config knob: the fold recognises an already-folded
+# reason by this exact text, and two instances disagreeing about it would
+# each start a second list on the other's wake.
+WAKE_CLUSTER_FOLD_MARK=" Also caught in this same cluster: "
 
 # --- The ledger ------------------------------------------------------------
 # Appended and trimmed through log_append_bounded (lib/common.sh): several
@@ -349,6 +359,90 @@ wake_pending_equivalent() {  # <fire-epoch> <kind> <reason>
     return 1
 }
 
+# The turn-cluster fold (specs/wake-queue.md rule 10b). Three turns finishing
+# inside one minute each fired a promise audit, each audit caught its own
+# sentence, and each booked its own wake — three timers nagging her to check
+# the same shelf (2026-08-07 12:12, defect b of that entry). A booker that
+# declares a cluster window says: my bookings of one class this close together
+# are one nag. When a pending booking of the same booker, kind and class
+# (the --cap-prefix) was BOOKED within the window, the new booking is not made
+# at all — its item joins the pending record's reason as a short list, and the
+# pending wake's fire moment is never touched. This runs INSIDE the booking
+# lock and ABOVE the cap, the identical-reason coalesce and the slot search:
+# a folded booking never reaches any of them, which is the point — the slot
+# allocator spreading three same-shelf nags onto three different seconds is
+# still three nags.
+#
+# The candidate's own booked-at is the cluster's anchor and the rewrite keeps
+# it, so the window cannot slide forward with every catch and chain a quiet
+# afternoon into one ever-growing wake. And the merged reason is re-ARMED, not
+# only re-recorded: the fired wake's agenda travels in the unit's argv, so a
+# record-only rewrite would nag about the first item and silently drop the
+# rest. Record first, rollback on a failed re-arm (rules 4 and 5); a fold that
+# cannot re-arm puts the old booking back exactly as it stood and reports
+# failure, so the caller books the item separately rather than losing it.
+#
+# When the class's fire moment is a PROMISE — the auditor's deferred wakes
+# fire at the moment she named — the pin additionally requires the pending
+# fire to fall within the window of the new booking's own, or there is no
+# fold: a promised moment is never traded for tidiness.
+_wake_cluster_fold() {  # <by> <kind> <class-prefix> <window> <item> <fire-epoch> <pin-fire>
+    local by="$1" kind="$2" prefix="$3" window="$4" item="$5" fire="$6" pin="$7"
+    local now f diff best="" bestat=""
+    [ -n "$prefix" ] || return 1
+    now=$(date +%s)
+    for f in "$WAKES_DIR"/*.wake; do
+        [ -e "$f" ] || continue
+        wake_record_read "$f" || continue
+        [ "$WK_BOOKED_BY" = "$by" ] || continue
+        [ "$WK_KIND" = "$kind" ] || continue
+        case "$WK_REASON" in "$prefix"*) ;; *) continue ;; esac
+        [ "$WK_FIRE" -gt "$now" ] || continue
+        case "$WK_BOOKED_AT" in ''|*[!0-9]*) continue ;; esac
+        diff=$(( now - WK_BOOKED_AT ))
+        [ "$diff" -ge 0 ] && [ "$diff" -le "$window" ] || continue
+        if [ -n "$pin" ]; then
+            diff=$(( WK_FIRE - fire )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
+            [ "$diff" -le "$window" ] || continue
+        fi
+        # The cluster's first booking is its anchor; fold onto the earliest.
+        if [ -z "$best" ] || [ "$WK_BOOKED_AT" -lt "$bestat" ]; then
+            best="${f##*/}"; best="${best%.wake}"; bestat="$WK_BOOKED_AT"
+        fi
+    done
+    [ -n "$best" ] || return 1
+    wake_record_read "$WAKES_DIR/$best.wake" || return 1
+
+    local merged
+    item="$(utf8_trim "$item" "$WAKE_CLUSTER_ITEM_MAX")"
+    case "$WK_REASON" in
+        *"$WAKE_CLUSTER_FOLD_MARK"*) merged="$WK_REASON; \"$item\"" ;;
+        *) merged="$WK_REASON$WAKE_CLUSTER_FOLD_MARK\"$item\"" ;;
+    esac
+
+    local oldfire="$WK_FIRE" oldkind="$WK_KIND" oldreason="$WK_REASON"
+    local oldat="$WK_BOOKED_AT" oldby="$WK_BOOKED_BY" oldeffort="$WK_EFFORT"
+    # Retire the old pair before re-booking — the tidy spread's own dance, at
+    # the SAME fire moment rather than a new one.
+    if _wake_manager_is_live; then
+        systemctl --user stop "$best.timer" >/dev/null 2>&1
+        systemctl --user reset-failed "$best.timer" "$best.service" >/dev/null 2>&1
+    fi
+    wake_state_clear "$best"
+    local newunit
+    newunit="$(_wake_new_unit)"
+    wake_state_write "$newunit" "$oldfire" "$oldkind" "$merged" "$oldat" "$oldby" "$oldeffort"
+    if _wake_book "$newunit" "$(( oldfire - now ))s" "$oldkind" "$merged" "$oldby" "$oldeffort"; then
+        wake_ledger folded "$newunit" "$oldkind" "$merged" "$by (cluster fold, was $best)"
+        echo "Folded into the cluster's pending wake: $newunit still fires $(date -d "@$oldfire" '+%H:%M:%S'), now carrying this item too."
+        return 0
+    fi
+    wake_state_clear "$newunit"
+    wake_state_write "$best" "$oldfire" "$oldkind" "$oldreason" "$oldat" "$oldby" "$oldeffort"
+    wake_ledger fold-failed "$best" "$oldkind" "$oldreason" "$by"
+    return 1
+}
+
 # How long to wait before a booking, in seconds, avoiding moments that are
 # already taken. Prints a delay, not a moment.
 #
@@ -541,14 +635,23 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
 # --effort pins the fired session's reasoning effort (rule 13a). Refused here,
 # at booking time, when it is not a level the CLI knows — a bad value carried
 # to the claude invocation would fail hours later with nobody watching.
+# --cluster declares the turn-cluster fold (rule 10b) with its window in
+# seconds; --cluster-item names the one caught item this booking carries, and
+# --cluster-pin-fire pins the fold to the fire moment for a class whose fire
+# time is a promise. A cluster needs its class named with --cap-prefix — an
+# unclassed fold would fold across every reason its booker ever wrote — and
+# that is refused here, at booking time, like a bad effort level.
 wake_book() {
-    local by="" cap="" capprefix="" effort=""
+    local by="" cap="" capprefix="" effort="" cluster="" clusteritem="" clusterpin=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --by)  by="${2:-}"; shift 2 || return 1 ;;
             --cap) cap="${2:-}"; shift 2 || return 1 ;;
             --cap-prefix) capprefix="${2:-}"; shift 2 || return 1 ;;
             --effort) effort="${2:-}"; shift 2 || return 1 ;;
+            --cluster) cluster="${2:-}"; shift 2 || return 1 ;;
+            --cluster-item) clusteritem="${2:-}"; shift 2 || return 1 ;;
+            --cluster-pin-fire) clusterpin=1; shift ;;
             *) break ;;
         esac
     done
@@ -557,14 +660,27 @@ wake_book() {
         *) echo "wake_book: '--effort $effort' is not a level the CLI knows (low, medium, high) — nothing scheduled." >&2
            return 1 ;;
     esac
+    if [ -n "$cluster" ]; then
+        case "$cluster" in
+            *[!0-9]*) echo "wake_book: '--cluster $cluster' is not a window in seconds — nothing scheduled." >&2
+                      return 1 ;;
+        esac
+        if [ -z "$capprefix" ]; then
+            echo "wake_book: a --cluster fold needs its class named with --cap-prefix — nothing scheduled." >&2
+            return 1
+        fi
+    fi
     [ -n "$by" ] || by="${DESKCRAB_WAKE_ORIGIN:-herself}"
     # One booker at a time, for the WHOLE check-then-act. Two wakes finishing
     # in the same second each found no pending floor and each booked one.
-    _wake_under_lock "wake_book" _wake_book_locked "$by" "$cap" "$capprefix" "$effort" "$@"
+    _wake_under_lock "wake_book" _wake_book_locked "$by" "$cap" "$capprefix" "$effort" \
+        "$cluster" "$clusteritem" "$clusterpin" "$@"
 }
 
-_wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <when> [kind] [reason]
-    local by="$1" cap="$2" capprefix="$3" effort="$4" when="${5:-}" kind="${6:-scheduled}" reason="${7:-}"
+_wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <cluster> <cluster-item> <cluster-pin> <when> [kind] [reason]
+    local by="$1" cap="$2" capprefix="$3" effort="$4"
+    local cluster="$5" clusteritem="$6" clusterpin="$7"
+    local when="${8:-}" kind="${9:-scheduled}" reason="${10:-}"
     [ -n "$when" ] || { echo "wake_book: no moment given."; return 1; }
     mkdir -p "$WAKES_DIR"
     _wake_norm "$kind" "$reason"; kind="$WK_N_KIND"; reason="$WK_N_REASON"
@@ -574,6 +690,14 @@ _wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <when> [kind] [reason]
     if [ -z "$fire" ]; then
         echo "Cannot make sense of '$when' — nothing scheduled."
         return 1
+    fi
+
+    # The turn-cluster fold, ABOVE everything else that could make a second
+    # wake out of the same cluster's nag: a folded booking never reaches the
+    # cap, the identical-reason coalesce or the slot search.
+    if [ -n "$cluster" ] && [ "$cluster" -gt 0 ] \
+        && _wake_cluster_fold "$by" "$kind" "$capprefix" "$cluster" "$clusteritem" "$fire" "$clusterpin"; then
+        return 0
     fi
 
     [ -n "$cap" ] && ! _wake_cap_admits "$by" "$cap" "$capprefix" && return 0

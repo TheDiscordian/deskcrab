@@ -59,6 +59,36 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     Readers hold no lock and a zero-length record does not exist as far as any of them is
     concerned, so an in-place write makes the booking vanish from the state block, the spacing
     search and the coalescing test for as long as it takes.
+10b. **The turn-cluster fold.** A booker MAY declare, on the one door, that its bookings of one
+    class arriving close together are one nag, not several: `--cluster <seconds>` names the
+    window, `--cluster-item <text>` names the one caught item this booking carries, and the class
+    is the `--cap-prefix` already on the call (a cluster with no class prefix is refused at
+    booking time). When a pending booking of the same booker, kind and class was **booked** within
+    the window, the new booking is not made at all: the item is FOLDED onto the pending record —
+    the reason grows a short list carrying every caught item — and the pending wake's fire moment
+    is NEVER moved. Three turns finishing inside one minute each fired an audit, each audit booked
+    its own wake, and three timers nagged her to check the same shelf (2026-08-07 12:12); the fold
+    is the repair for defect (b) of that entry, and it sits ABOVE the slot allocator: a folded
+    booking never reaches the cap, the spacing search or a timer of its own, rather than reaching
+    them and landing on a different second.
+    - The whole find-then-fold runs under the booking lock (rule 6). Three audits in separate
+      processes in the same second must produce exactly one wake; an unlocked read-then-write
+      race is three.
+    - The fold's anchor is the pending record's own booked-at, which the rewrite MUST preserve —
+      resetting it to the fold's moment would slide the window forward with every catch and chain
+      a quiet afternoon into one ever-growing wake.
+    - The merged reason is what the fired session will actually read, so the fold MUST re-arm the
+      timer with it (the fired wake's agenda travels in the unit's argv, not the record) at the
+      SAME fire moment, record first, rollback on a failed re-arm exactly as rules 4 and 5 demand
+      — and a fold whose re-arm fails books separately rather than losing the item. Each folded
+      item is cut through the one-trim rule (the DATA section: `utf8_trim`, never a bare byte
+      cut) at its own bound, so every item's opening clause stays legible however many the
+      cluster catches. Every fold lands on the durable ledger under its own action (`folded`).
+    - A class whose fire moment is a PROMISE — the auditor's deferred wakes fire at the moment
+      she named — MUST pin the fold: `--cluster-pin-fire` additionally requires the pending
+      booking's fire moment to fall within the window of the new booking's own, or the fold does
+      not happen and the booking proceeds alone. A promised moment is never traded for tidiness;
+      when in doubt, book separately.
 11. Every wake unit MUST be booked with the collect option, so a failed unit does not leak into the
     user manager.
 12. Every wake unit MUST carry a runtime ceiling. The in-process stall watchdog cannot by
@@ -263,8 +293,36 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        from a past session being replayed as news, and judges its freshness against the record of
        what has been said since — never its worth. It exists on the user's instruction, the night
        of the incident.
+27c. A wake whose delivery moment finds an interactive turn IN FLIGHT is held WHOLE — the spoken
+     half included — and comes back through the queue exactly as rule 27a's hold does. In flight
+     is mechanical, read from the delivery queue's own tickets
+     ([turn-pipeline.md](turn-pipeline.md) rule 15a): a desk or phone turn takes its ticket before
+     the prompt is built and releases it when the reply has been delivered, judged alive by pid
+     and process start time, so "in flight" means exactly "he asked something and the answer has
+     not landed yet". A wake's words arriving inside that window land in the answer's slot, and a
+     reply landing in another message's slot is the loudest statement this machine can make that
+     it was not listening (the 2026-08-10 ordering incident, [turn-pipeline.md](turn-pipeline.md)
+     rule 15a). The regroup context shown to the wake at prompt time changes what the words SAY,
+     never the slot they land in — that is this rule's job.
+     - The boundary with rule 29 holds: nothing reads the reply. The gate reads the pipeline's own
+       state — tickets and pids — and decides WHEN, never WHETHER. The words go back through the
+       queue's one door with the held stamp, so rule 27b judges the comeback for staleness and a
+       wake that chose to speak is spoken in the first quiet minute unless the record proves the
+       exchange already covered it. Rule 20 holds too: the session ran, the work is journalled,
+       the audit and the judges fired — only the delivery moves.
+     - Held, never dropped, on rule 27a's own terms: the same booking (the hot-hold identity, the
+       held-reason prefix, the stamp, the cap), the same read-the-booking-answer-first
+       discipline. The journal line says in those words that a turn was in flight, and a hold the
+       cap refused is journalled as refused — the words surviving on that line only, never as a
+       promise the queue never accepted.
+     - The gate is off when the delivery queue is off (`TURN_ORDER_WAIT=0` books no tickets and
+       leaves nothing to read), and `WAKE_FLIGHT_HOLD=0` switches it off alone. A ticket whose
+       process is gone is not a turn — the same recycled-pid discipline the queue itself keeps.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
-    restate it, never queue its own thought for later, and never default to silence.
+    restate it, never queue its own thought for later, and never default to silence. Rule 27c is
+    not that queueing: the choice it forbids is the WRITER'S — a reply that answers "later" instead
+    of folding — while 27c holds a folded reply's delivery for the seconds the other turn is still
+    owed its slot, and hands the words straight back through the queue.
 29. No mechanism may judge a wake's written reply after the fact and decide it is not worth voicing.
     Silence is chosen while writing or not at all.
 29a. The one standing exception, on the user's instruction (2026-08-07, reaffirmed 2026-08-10): a
@@ -343,9 +401,9 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     identity as `booked_by`. Three further identities reach a record without being subsystems:
     `outage-retry`, when a wake that failed before the model ran — or was cut off mid-run by a
     limit the whole chain shared (account-fallback.md rule 12a) — re-books itself and cannot name
-    its original booker, `hot-hold`, when a wake's own non-urgent output was held for a hot
-    conversation and books itself back past the heat (rule 27a), and `herself`, the default when
-    nobody says. Any prose that enumerates the bookers — here, in the other specs, or in the prompt
+    its original booker, `hot-hold`, when a wake's own output was held for a hot conversation or
+    for a turn in flight and books itself back past the moment (rules 27a and 27c), and `herself`,
+    the default when nobody says. Any prose that enumerates the bookers — here, in the other specs, or in the prompt
     — MUST name the whole set, and it is eight hands and eleven names, not four of either.
 42. Each MUST route through `book()`, and therefore through the coalescing, spacing, and locking
     rules.
@@ -366,6 +424,15 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     endless chain. And the auditor MUST NOT book the deferred wake when a record booked by her own
     hand already stands from the same turn: the catcher exists for the promise with no body, not
     to accuse the kept one.
+    Both classes book through the turn-cluster fold (rule 10b), each against its own prefix,
+    under `PROMISE_CLUSTER_WINDOW` (seconds, default 300 — a turn-cluster is minutes wide, the
+    overlap of a desk turn and a wake or two, never an afternoon): three want-sentences caught
+    inside one window become ONE wake whose reason lists all three, not three wakes each nagging
+    her to check the same shelf. The deferred class MUST pin the fold on the fire moment
+    (`--cluster-pin-fire`) — a promise fires when she said it would, and folds only with a
+    promise due within the same window — and the fold changes nothing else about the class: the
+    kept-promise silence and the two separately scoped caps (rule 44) stand exactly as written,
+    with the fold tried first, so fewer bookings ever reach them.
 43b. The promise checker (`lib/promise-check`, [turn-pipeline.md](turn-pipeline.md) rules 32a-32d)
     books a third class beside the auditor's two: the **unkept-commitment** wake — her reply
     claimed a concrete action in the first person and nothing in the turn's evidence shows it
@@ -495,8 +562,9 @@ flowchart TD
   G1 -->|yes| G1a["journal the failure<br/>re-book kinded, 30 min"]
   G1 -->|no| G2{"anything to deliver?"}
   G2 -->|no| G2a["journal the work trace<br/>silence, not a crash"]
-  G2 -->|yes| G3{"quiet hours<br/>or user busy?"}
-  G3 -->|yes| G3a["suppress speech<br/>journal what was swallowed"]
+  G2 -->|yes| G3{"quiet hours, a turn in flight,<br/>or user busy?"}
+  G3 -->|yes, a turn in flight| G3b["hold whole: journal, re-book the words<br/>through the queue (rule 27c)"]
+  G3 -->|yes, otherwise| G3a["suppress speech<br/>journal what was swallowed"]
   G3 -->|no| G4["append to the conversation<br/>then speak, then show"]
   G1a & G2a & G3a & G4 --> E["ensure_next_wake"]
   E --> E1["restore — ledger every restoration"]
@@ -574,6 +642,13 @@ reset by a taken lock — and the urgent lane's yield, expiry and event-exemptio
 `tests/test_promise_deferred.sh` (rules 43a and the scoped cap of 44: a reply that commits to later
 work books the alarm, an already-done reply books nothing, a kept promise is left alone, and neither
 audit class counts or drains the other's bookings),
+`tests/test_promise_cluster.sh` (rule 10b and 43a's fold: three verdicts caught inside one window
+— sequentially and as three concurrent processes — are ONE pending wake whose reason lists all
+three items with the first booking's fire moment and booked-at untouched, three verdicts spread
+past the window are three wakes, a deferred fold happens only when the promised moments fall
+within one window of each other and never moves the pending one, a cluster without a class prefix
+is refused, the fold lands on the ledger as `folded`, and a folded item is cut through `utf8_trim`
+so the reason stays whole UTF-8),
 `tests/test_promise_check.sh` (rule 43b: the unkept-commitment wake is an event wake in the
 checker's own name, effort low on the record, prefix on the reason and the promise quoted verbatim;
 the audit skips the prefix; the rebook bound and the auditor's deferred wake each stop a duplicate
@@ -587,6 +662,12 @@ into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rul
 sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue, a hold the
 cap refused is journalled as refused rather than as a comeback, and a display-only hold's comeback
 carries the built content itself, not a placeholder),
+`tests/test_wake_flight_hold.sh` (rule 27c: a SPOKEN wake fired while a desk turn holds a live
+delivery-queue ticket reaches no speaker, no notifier, no window and no conversation, journals
+that a turn was in flight, and books its words back through the queue under the hot-hold identity
+with the held stamp on the reason; the same wake with the ticket's process dead — or the ticket
+released — delivers in full, which is what makes the hold mean something; `WAKE_FLIGHT_HOLD=0`
+restores the old behaviour exactly),
 `tests/test_wake_stale_note.sh` (rule 27b: the hold stamps the comeback's reason with a parseable
 held-at moment; a stamped note whose substance the intervening exchange already covered is
 DROPPED — nothing spoken, shown, notified or appended, the drop on the journal, the wake ledger
