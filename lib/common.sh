@@ -4379,7 +4379,17 @@ Output ONLY the replacement line: no preamble, no quotes, no commentary, no disp
         rm -f "$MLOG"
         return 0
     fi
-    OUT="$(DESKCRAB_DEBUGLOG="$MLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+    # The refusal check above knows only the limit signatures, so an auth or
+    # API failure walks past it — and the extractor's error-only fallback
+    # would then stand the CLI's own words in as her rewrite. 2026-08-20,
+    # 01:06 and 01:10: "Failed to authenticate: OAuth session expired and
+    # could not be refreshed" spliced into the written reply in place of her
+    # sentence, logged as outcome=rewrite. DESKCRAB_DROP_SYNTHETIC=1
+    # (speech-output rules 7a/42a) is the refusal check's sibling: an
+    # error-only stream is an empty rewrite, every caller reads nothing as
+    # "the original stands", and the flag row says the mirror failed.
+    OUT="$(DESKCRAB_DROP_SYNTHETIC=1 DESKCRAB_DEBUGLOG="$MLOG" \
+        "$LIB_DIR/extract-response" 2>/dev/null)"
     rm -f "$MLOG"
     turn_metric mirror-call-end
     printf '%s' "$OUT"

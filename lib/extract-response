@@ -88,10 +88,21 @@ if partials is not None:
 # said, the refusal (synthetic events, error results) is dropped — the outage
 # is plumbing, not her words. When the stream holds ONLY the refusal, its text
 # still stands in as the reply, so a run with no fallback reports why it has
-# no answer exactly as before.
+# no answer exactly as before — a MAIN turn's shape. A subcall whose output is
+# spliced into a reply already written must never receive the CLI's error text
+# as content (specs/speech-output.md rule 7a): DESKCRAB_DROP_SYNTHETIC=1 makes
+# an error-only stream print nothing instead, and every such caller reads
+# nothing as "keep what was already written". On 2026-08-20 the claudism
+# mirror's resay hit an OAuth failure and this fallback handed the auth error
+# back as her rewritten sentence.
 real = [t for t, synthetic in blocks if not synthetic]
 if real:
     blocks = real
+elif os.environ.get("DESKCRAB_DROP_SYNTHETIC") == "1":
+    # Only the CLI's own voice in the stream. A genuine result event (the
+    # sessions that emit a result and no assistant events at all) still
+    # prints below; the error result never stands in.
+    blocks = []
 else:
     blocks = [t for t, _ in blocks]
     result_text = result_text or error_text

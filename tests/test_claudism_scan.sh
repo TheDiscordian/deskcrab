@@ -1,7 +1,8 @@
 #!/bin/bash
 # The nightly claudism review — specs/nightly.md rules 39 to 45 — and, at the
 # end, the live mirror's flag-log and family shape, specs/speech-output.md
-# rules 51-52, held here beside the nightly reading that consumes it. Run:
+# rules 51-52, held here beside the nightly reading that consumes it, plus
+# the error-only subcall discipline of rules 7a/42a. Run:
 # bash tests/test_claudism_scan.sh
 #
 # Detection and review only, so the assertions are about what the scan READS
@@ -300,3 +301,51 @@ DIRECT="$(CLAUDE_BIN="$T/claude-stub2" CLAUDISMS_FILE="$MLIST" CLAUDISM_FLAGS_DI
     sandbox_bash 'claudism_mirror_direct wake "Honestly, the kettle is on."')"
 check_eq "a resay that lands on the sibling anyway still goes out — informed, never gated (rule 41)" \
     "$DIRECT" "Genuinely: the kettle is on."
+
+echo
+echo "an error-only stream: a main turn's report, a subcall's nothing (rules 7a/42a):"
+# The live failure of 2026-08-20, 01:06 and 01:10: the mirror's resay hit an
+# OAuth failure, extract-response stood the CLI's error text in as the reply
+# (right for a main turn, its rule-7 shape), and the caller spliced it into
+# the written reply in place of her sentence, logging outcome=rewrite. The
+# stream below is that failure's shape verbatim.
+AUTHERR="Failed to authenticate: OAuth session expired and could not be refreshed"
+AUTHLOG="$T/auth-only.log"
+cat > "$AUTHLOG" <<'LOG'
+{"type":"assistant","message":{"model":"<synthetic>","id":"msg_err","content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]},"is_api_error_message":true}
+{"type":"result","result":"Failed to authenticate: OAuth session expired and could not be refreshed","is_error":true}
+LOG
+check_eq "without the flag, an error-only stream reports itself exactly as before (rule 7)" \
+    "$(DESKCRAB_DEBUGLOG="$AUTHLOG" "$REPO/lib/extract-response")" "$AUTHERR"
+check_eq "with the flag, the same stream prints nothing at all (rule 7a)" \
+    "$(DESKCRAB_DROP_SYNTHETIC=1 DESKCRAB_DEBUGLOG="$AUTHLOG" "$REPO/lib/extract-response")" ""
+cat > "$T/good.log" <<'LOG'
+{"type":"assistant","message":{"model":"m","id":"msg_g","content":[{"type":"text","text":"The kettle is on."}]}}
+{"type":"result","result":"The kettle is on."}
+LOG
+check_eq "a genuine reply extracts identically under the flag" \
+    "$(DESKCRAB_DROP_SYNTHETIC=1 DESKCRAB_DEBUGLOG="$T/good.log" "$REPO/lib/extract-response")" \
+    "The kettle is on."
+
+echo
+echo "and through the mirror: the draft stands, the row says the mirror failed (rule 42a):"
+cat > "$T/claude-auth-stub" <<STUB
+#!/bin/bash
+cat > /dev/null
+printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","id":"msg_err","content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]},"is_api_error_message":true}'
+printf '%s\n' '{"type":"result","result":"Failed to authenticate: OAuth session expired and could not be refreshed","is_error":true}'
+STUB
+chmod +x "$T/claude-auth-stub"
+FL3="$T/flags-auth"
+DIRECT="$(CLAUDE_BIN="$T/claude-auth-stub" CLAUDISMS_FILE="$MLIST" CLAUDISM_FLAGS_DIR="$FL3" \
+    sandbox_bash 'claudism_mirror_direct wake "Honestly, the kettle is on."')"
+check_eq "an auth-failed mirror call leaves the draft exactly as written" \
+    "$DIRECT" "Honestly, the kettle is on."
+refute "the CLI's error text reaches the reply nowhere" \
+    contains "$DIRECT" "Failed to authenticate"
+ROW="$(cat "$FL3"/*.jsonl 2>/dev/null)"
+check "the flag row reads original-mirror-failed" \
+    contains "$ROW" '"outcome": "original-mirror-failed"'
+refute "never rewrite — the receipt may not claim a catch that did not happen" \
+    contains "$ROW" '"outcome": "rewrite"'
+refute "and carries no after — nothing replaced the line" contains "$ROW" '"after"'

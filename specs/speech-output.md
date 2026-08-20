@@ -43,6 +43,15 @@ text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as
    channel.
 7. A refusal MUST be dropped whenever a genuine reply follows it in the same log. An error-only
    stream still reports itself.
+7a. It reports itself only to a MAIN turn. A subcall — a second model run whose output is spliced
+    into a reply already written, the mirror's resay first among them — must never receive the
+    CLI's error text as content. `DESKCRAB_DROP_SYNTHETIC=1` is the subcall's opt-in: with it set,
+    a stream holding ONLY synthetic/error blocks prints nothing at all, and any stream with a
+    genuine block in it extracts exactly as without the flag. Default off, byte-identical for
+    every existing caller. On 2026-08-20 (01:06 and 01:10) the mirror call hit "Failed to
+    authenticate: OAuth session expired and could not be refreshed"; the stand-in came back as
+    the rewrite, the caller tested it only for non-blankness, and the CLI's auth error was
+    spliced into her written reply in place of her sentence and logged as a clean catch.
 8. A refusal MUST be recognised only by the CLI's own synthetic marker, never by pattern-matching
    reply text. A genuine reply that quotes a limit phrase must not be gagged as an outage.
 9. An empty stream MUST print nothing at all, not a blank line. The callers test emptiness with a
@@ -172,6 +181,17 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     or machine-substituted text: an unreadable list, a helper that will not import, a mirror
     call that errors or refuses or times out, a splice that cannot find its sentence — every one
     of them speaks the original and says so in the speech log.
+42a. The resay call's stream is read with the drop-synthetic flag (rule 7a) — the sibling of the
+    refusal check beside it. The refusal check knows only the limit signatures, so an auth or API
+    failure walks straight past it into the extractor, whose error-only fallback stands the CLI's
+    own words in as the reply — right for a main turn that must say why it has no answer,
+    machine-substituted text (rule 42) the moment it is spliced into hers. With the flag, an
+    error-only mirror stream is an empty rewrite: every caller already reads nothing as "the
+    original stands", so the draft goes out unaltered and the flag row reads
+    `original-mirror-failed` with no `after` — never `rewrite`. The gap this closes is
+    2026-08-20's: the user heard the unrepaired line, read the auth error in its place in the
+    written reply, and the flag log claimed a clean catch — a receipt that lied exactly when the
+    mirror call failed auth.
 43. The streamer's outcome record (`rewrite-spoken` / `released` / `failopen` / `post-commit`,
     per seq) is the single source of truth for what reached the speakers. The caller MUST commit
     the spliced reply only on `rewrite-spoken` and the original otherwise, so the conversation
@@ -402,6 +422,12 @@ Rules 51–52 are held by `tests/test_claudism_scan.sh` (the rewrite row's befor
 family block reaching the mirror call's prompt, and the fail-open shape of both), with the desk
 fire record's `function` field asserted in `tests/test_claudism_mirror.sh` where the streamer
 already runs.
+
+Rules 7a and 42a are held by `tests/test_claudism_scan.sh`: an error-only stream — the CLI's own
+auth failure, a synthetic assistant block plus an error result, the 2026-08-20 shape verbatim —
+extracts as itself without the flag and as nothing with it, a genuine reply extracts identically
+either way, and through the whole-draft pass the draft comes back byte-identical while the flag
+row reads `original-mirror-failed` with no `after`.
 
 **To be written:**
 
