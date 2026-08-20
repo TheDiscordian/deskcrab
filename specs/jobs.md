@@ -188,7 +188,7 @@ The user's standing policy (2026-08-14): her waking hours belong to her wants, a
 waits for the night. A builder dispatched the moment work is noticed competes with the turn somebody
 is standing there waiting on, burns daytime tokens on work nobody chose, and — the measured case —
 fires builder after builder while she is trying to talk. The queue is where un-chosen work waits;
-the night drain ([nightly.md](nightly.md) rules 54-61) is where it is spent.
+the night's work ([nightly.md](nightly.md) rules 54-61) is where it is spent.
 
 30. While she is awake, the job door dispatches only want-linked work. `crab job --want <ref>`
     names the want; the ref MUST match a bullet on the wants shelf (a title or the document name a
@@ -199,7 +199,7 @@ the night drain ([nightly.md](nightly.md) rules 54-61) is where it is spent.
     linkage laundered through the gate, not a named want. The matched shelf title is recorded in
     the sidecar as `want`. A brief with no
     want is not refused: it is QUEUED. The full record is written with state `queued`, no unit and
-    no builder exist, and the night's drain dispatches it (nightly.md rule 56a). The gate stands
+    no builder exist, and the night's work dispatches it (nightly.md rule 56a). The gate stands
     only where a shelf exists: an instance with no `WANTS_FILE` configured has nobody whose wants
     could gate it, and dispatches as it always did — which is also what keeps every scratch harness
     honest about what it is testing.
@@ -207,8 +207,8 @@ the night drain ([nightly.md](nightly.md) rules 54-61) is where it is spent.
     faces the artifact guard of rule 1a and the block marker of rule 16: `-f` is a deliberate force
     by whoever typed it; an automatic retry (`-O`, rule 18a) inherits the standing its origin
     earned when it was first dispatched — re-gating it would turn "blocked briefs re-send
-    themselves" into "blocked briefs queue themselves twice"; and the night drain
-    (`DESKCRAB_JOB_NIGHT=1`, set by the drain and by nothing else) is the window the queue exists
+    themselves" into "blocked briefs queue themselves twice"; and the night's work
+    (`DESKCRAB_JOB_NIGHT=1`, set by it and by nothing else) is the window the queue exists
     for.
 32. `crab job dispatch <id>` dispatches a queued record in place: same id, same sidecar, history
     intact. It MUST refuse a record whose state is not `queued`, a description rule 1a would refuse
@@ -300,7 +300,7 @@ flowchart TD
   G -->|yes| Gr["refuse: a broken command<br/>substitution, not a brief"]
   G -->|no| WG{"a shelf exists, and no want,<br/>no -f, no -O, not the night?"}
   WG -->|"yes (rule 30)"| Q["sidecar: state=queued<br/>— waits for the night"]
-  Q -->|"the drain: crab job dispatch &lt;id&gt;<br/>(same sidecar, rule 32)"| J1
+  Q -->|"the night's work: crab job dispatch &lt;id&gt;<br/>(same sidecar, rule 32)"| J1
   Q -->|"crab job drop &lt;id&gt;"| QD["record removed, undispatched"]
   WG -->|no| J1{"block marker<br/>younger than the retry window?"}
   J1 -->|yes, and no -f| J1b["refuse: the last one never began"]
@@ -400,7 +400,7 @@ while a conclusive report that merely narrates a wait mid-tail collects, and the
 CLOSING a report fail it; a failed job keeps its state but gains the facts; a non-git
 workdir and a missing log cost the collection line, never the outcome; and the runner moves a
 finished builder to `collected` end to end);
-`tests/test_backlog_drain_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the drain
+`tests/test_night_work_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the night's work
 dispatches the queued backlog oldest first through the door before selecting, under the cap, with
 `DESKCRAB_JOB_NIGHT` set; the 06:00 default cutoff is re-checked before every dispatch; a refused
 queued brief is skipped for the night, a blocked door ends it, and the dry run starts nothing).

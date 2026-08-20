@@ -89,7 +89,7 @@ check_eq "and prints nothing rather than inventing fields" "$out" ""
 echo
 echo "the stamp itself, through a full sleep-nightly run:"
 # The ingest is a stub that replays the real night's output; everything else
-# sleep runs afterwards (the review, the drain, the sweep) runs against
+# sleep runs afterwards (the review, the sweep, the night's work) runs against
 # sandbox paths and may fail loudly — the night still counts.
 cat > "$T/ingest-full" <<'BODY'
 ingest: 461 new chunks, 499751 chars -> sonnet for judgement in 4 passes...

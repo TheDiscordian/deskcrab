@@ -56,9 +56,9 @@ which fails silently is worse than one that does not exist.
     (rule 9) — the stamp MUST NOT be stricter than the night it records.
 
 14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-stamp
-    phase — the claudism review, the promise sweep, the backlog drain — owes the night log at
+    phase — the claudism review, the promise sweep, the night's work — owes the night log at
     least one line opening with its own name (`claudism-scan:`, `promise-check:`,
-    `backlog-drain:`); sleep watches each phase's stretch of the log, and when a phase exits
+    `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
     leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
     its exit status — in the night log itself as well as on stderr. A phase's non-zero exit is
     likewise named in the log, not on stderr alone, where only the journal would carry it. The
@@ -252,8 +252,8 @@ deliberately cheap: a pattern pre-check gates the model, so a commitment phrased
 patterns is never judged, and a wake the checker booked may itself have come to nothing. The
 night is where the day's promises are settled honestly, from the whole record at once.
 
-51. After a night that happened — ingest succeeded, stamp written — and BEFORE the backlog
-    drain, sleep runs the promise
+51. After a night that happened — ingest succeeded, stamp written — and BEFORE the night's
+    work, sleep runs the promise
     sweep (`lib/promise-check sweep`) over the day that just ended: the day's journal, every
     channel's replies with the outcome and work trace each session left, beside the day's
     promise ledger. One model call, the checker's own model and fallback, under the account
@@ -288,10 +288,10 @@ night is where the day's promises are settled honestly, from the whole record at
     ran from one that never started. The guards ahead of the mode dispatch (no CLI, no python)
     still exit silently on purpose: a sweep that cannot start is exactly what rule 14b flags.
 
-### The backlog drain — part of sleep, and the night's owed-work sweep
+### The night's work — part of sleep, and the night's owed-work sweep
 
 The engineering threads accumulate faster than waking hours spend them, and the stretch between
-sleep's stamp and the morning is machine time nobody is using. The drain turns that idle stretch
+sleep's stamp and the morning is machine time nobody is using. The night's work turns that idle stretch
 into builders: the night's owed work — the queued backlog the daytime dispatch policy shelved
 ([jobs.md](jobs.md) rules 30-34), open threads, the promises the sweep found genuinely missed,
 the work already sitting on the wake queue's books — becomes dispatched jobs, round after
@@ -301,17 +301,17 @@ assistant ends it idle and available. Sleeping is an ACTIVE activity, the user's
 that was asked for, and promised work must stop waiting for a live turn to personally remember it.
 
 54. After a night that happened — ingest succeeded, stamp written — and AFTER the promise sweep,
-    as the night's last phase, sleep runs the backlog drain (`lib/backlog-drain run`) over the
+    as the night's last phase, sleep runs the night's work (`lib/night-work run`) over the
     open owed work. The sweep runs first on purpose: its reconciled end-of-day misses are part of
-    the drain's material (rule 58b), and the drain is the phase that holds the night open until
+    the night's material (rule 58b), and the night's work is the phase that holds the night open until
     the cutoff, so everything else finishes before it starts. Its
     failure MUST NOT unstamp or fail the night: the stamp and the exit stay the ingest's own
     (rules 8 and 10), exactly as the review's and the sweep's must not.
-55. The drain dispatches only through the job door (`crab job`), never around it, so every builder
+55. The night's work dispatches only through the job door (`crab job`), never around it, so every builder
     it starts carries the whole jobs contract — sidecar, live log, completion wake, the
-    blocked-versus-failed distinction, the null-brief guard. The drain itself MUST NOT speak, book
+    blocked-versus-failed distinction, the null-brief guard. The night's work itself MUST NOT speak, book
     wakes, or open windows; its record is its ledger and the night's log.
-56. Dispatch stops at a hard wall-clock cutoff (`BACKLOG_DRAIN_CUTOFF`, default 06:00 local, the
+56. Dispatch stops at a hard wall-clock cutoff (`NIGHT_WORK_CUTOFF`, default 06:00 local, the
     user's named line): no NEW dispatch at or past it, ever; builders already in flight are left
     to finish. The cutoff MUST be re-checked immediately before every dispatch, not only at a
     round's start — a selection call can take minutes, and a dispatch a minute past the line is a
@@ -319,18 +319,18 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     sleeping through the night is doing, not idling — and ends well clear of the morning, so she
     meets it idle and available. (The first cut defaulted to 04:00, fifty minutes after the
     timer: an active night that was structurally a nap. The second defaulted to 08:00 and ran
-    builders into the morning; 06:00 is the user's stated hard line.) A drain
+    builders into the morning; 06:00 is the user's stated hard line.) A run
     that begins when the next cutoff is further away than the window cap
-    (`BACKLOG_DRAIN_WINDOW_MAX`, default six hours) MUST NOT dispatch at all — a missed night
+    (`NIGHT_WORK_WINDOW_MAX`, default six hours) MUST NOT dispatch at all — a missed night
     caught up at noon (rule 2) still sleeps, but it does not fill the daylight with builders.
-56a. The queued backlog goes first. Each round, before any selection call, the drain dispatches
+56a. The queued backlog goes first. Each round, before any selection call, the night's work dispatches
     the records the daytime policy shelved ([jobs.md](jobs.md) rule 30) — oldest first, through
     `crab job dispatch <id>`, never around the door — against the same cap and the same cutoff.
     Queued briefs are already-written work: they cost no model call and no judgement, so they
     spend the night's slots before the selector is asked to invent anything. The queue is the
-    drain's FIRST material, and it drains even when no engineering threads exist at all: missing
+    night's FIRST material, and it is taken up even when no engineering threads exist at all: missing
     selection material switches off the selector, never the queue, and such a queue-only night
-    ends when the queue is dry and nothing of the night's is still in flight. The drain sets
+    ends when the queue is dry and nothing of the night's is still in flight. The night's work sets
     `DESKCRAB_JOB_NIGHT=1` on every job-door call it makes, which is how the door knows the
     night window is open (jobs.md rule 31); nothing else ever sets it. A queued dispatch the
     door refuses for any reason but the block marker is skipped for the rest of the night and
@@ -339,8 +339,8 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     of them all. The dry run of rule 61 names each queued brief it would have dispatched and
     starts none. The state machine is the dedupe: a dispatched record leaves `queued`, so the
     ledger of rule 59 tracks only the selector's picks.
-57. Concurrent jobs are capped (`BACKLOG_DRAIN_CAP`, default 2), counting EVERY job standing
-    `dispatched` or `running` and not only the drain's own: a builder between the dispatch call
+57. Concurrent jobs are capped (`NIGHT_WORK_CAP`, default 2), counting EVERY job standing
+    `dispatched` or `running` and not only the night's own: a builder between the dispatch call
     and its worker's first write already holds a slot and an account, so a count blind to
     `dispatched` overshot the cap in exactly the window where one round's dispatches had not yet
     spoken as the next round counted. The cap protects the machine and the accounts, not the
@@ -352,10 +352,10 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     or an incident record with no work left in it, never work the threads record as done, never a
     duplicate of a running, queued, or recently finished job (a queued brief dispatches tonight on
     its own — selecting its subject again buys the same work twice), never a thread already on the
-    drain's ledger,
+    night's ledger,
     never a decision that is the user's to make, and never a thread that names a hand already on
-    it. When nothing qualifies and nothing the drain dispatched tonight is still running, the
-    drain ends; it MUST NOT poll an empty backlog to the cutoff.
+    it. When nothing qualifies and nothing the night's work dispatched tonight is still running, the
+    night's work ends; it MUST NOT poll an empty backlog to the cutoff.
 58a. The material the selector reads — the thread log, the open list, the index, the job list — is
     bounded by bytes, and every one of those cuts MUST fall on a character boundary, through
     `utf8_head`, the document-shaped counterpart of the one shared trim
@@ -372,7 +372,7 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     same rule at the prompt's own scale; there nothing is ever cut, here the cut is the design
     and the announcement is what keeps it honest). A section inside its budget passes without a
     word, and a section whose file is missing is an empty section, not an over-run.
-58b. The drain's material is the whole owed-work shelf, not the threads alone. Beside the thread
+58b. The night's material is the whole owed-work shelf, not the threads alone. Beside the thread
     log, the open list and the index, the selector MUST be handed, each as its own labelled and
     bounded section: the promise sweep's genuine end-of-day misses from the recent nights (the
     `type: sweep` records of the durable ledger — the honest pass's verdicts, never the live
@@ -388,9 +388,11 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     never silently omitted — the selector must know it is judging from less than the whole
     shelf.
 59. Every dispatch lands on a durable ledger — night, thread key, job id, title — and the ledger is
-    read back into every later round and every later night, so the drain never re-dispatches a
-    thread on its own initiative. The ledger is the drain's one write and MUST be declared
-    (rule 6).
+    read back into every later round and every later night, so the night's work never re-dispatches a
+    thread on its own initiative. The ledger is the night's one write and MUST be declared
+    (rule 6). A ledger still standing under the mechanism's former name is moved to the new
+    path once, at the next run's start, declared on the night log — the record of what past
+    nights dispatched is what keeps this rule honest across the rename.
 60. A brief MUST be self-contained: the builder arrives knowing only the brief's text, so it names
     the working directory by absolute path, the thread it came from, the concrete work, and the
     verification owed before reporting done — a brief that only waits on or watches other work is
@@ -428,8 +430,8 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
 | `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase, uses only |
 | `~/.local/share/deskcrab/claudisms/functions.tsv` | the claudism review | one line per night and function: uses, mentions, spoken words |
-| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) | live catches and end-of-day misses ([turn-pipeline.md](turn-pipeline.md) DATA); the drain reads the sweep records back as owed-work material (rule 58b) |
-| `~/.local/share/deskcrab/backlog-drain/dispatched.tsv` | the backlog drain | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) | live catches and end-of-day misses ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the sweep records back as owed-work material (rule 58b) |
+| `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
 service, the tidy timer and service (the shelf-line check runs as the service's `ExecStartPre`,
@@ -492,23 +494,23 @@ skip; the wake is booked through the door in the review's own name; a dead model
 report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day.
-`tests/test_backlog_drain.sh` — rules 54-61: the daylight window guard; the cap counted from every
+`tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every
 dispatched-or-running job; validation skips null-shaped briefs, thin briefs, and threads already on
 the ledger; a
-NOTHING verdict with nothing of tonight's running ends the drain early; a blocked job door ends it
+NOTHING verdict with nothing of tonight's running ends the night's work early; a blocked job door ends it
 for the night; the cutoff stops dispatch; the owed-work material (rule 58b) — the sweep's ledger
 misses and the pending wake reasons reach the selector as labelled sections, the live checker's
 raw catches do not, and an unreadable ledger is presented as unreadable, never silently omitted;
-the sweep runs before the drain inside `sleep-nightly run`; and a drain that cannot even parse its
+the sweep runs before the night's work inside `sleep-nightly run`; and a run that cannot even parse its
 cutoff never unstamps the night (exercised through `sleep-nightly run`).
-`tests/test_backlog_drain_queue.sh` — rules 56 and 56a: the queued backlog dispatched oldest first
+`tests/test_night_work_queue.sh` — rules 56 and 56a: the queued backlog dispatched oldest first
 through `crab job dispatch` before any selection, under the cap, with `DESKCRAB_JOB_NIGHT` set on
 every door call; a builder still standing `dispatched` holds its cap slot; a night with no
-engineering threads at all still drains the queue, spends no selection call, and ends when the
+engineering threads at all still takes up the queue, spends no selection call, and ends when the
 queue is dry; the cutoff re-checked before each dispatch so nothing new starts past it; a
 refused queued brief skipped for the night while a blocked door ends it; and the dry run naming
 its would-dispatches without starting anything.
-`tests/test_backlog_drain_utf8.sh` — rule 58a: with an em-dash straddling every one of the four
+`tests/test_night_work_utf8.sh` — rule 58a: with an em-dash straddling every one of the four
 byte budgets at once, the prompt the selector receives is valid UTF-8, plain grep — no `-a` —
 still reads it, each split character is dropped whole at its boundary, an em-dash clear of the
 boundary survives intact, and the budgets themselves still hold; each outgrown section is named

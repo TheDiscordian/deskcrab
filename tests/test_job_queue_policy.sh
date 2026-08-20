@@ -2,7 +2,7 @@
 # The dispatch policy — specs/jobs.md rules 30-35. While she is awake the job
 # door dispatches only want-linked work; everything else QUEUES for the night.
 # Three hands pass without a want — a deliberate -f, a retry inheriting its
-# origin's standing, and the drain's night window — and the queue has exactly
+# origin's standing, and the night window — and the queue has exactly
 # two exits: `crab job dispatch <id>` through the full preflight, and a
 # deliberate `crab job drop <id>`. Run: bash tests/test_job_queue_policy.sh
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
@@ -85,7 +85,7 @@ out="$(run 'job_start -f "a deliberately forced brief"')"
 check "-f dispatches" contains "$out" "Would dispatch"
 out="$(run 'job_start -O someorigin "a retry keeps its origin'"'"'s standing"')"
 check "-O dispatches" contains "$out" "Would dispatch"
-out="$(run 'DESKCRAB_JOB_NIGHT=1 job_start "the drain'"'"'s own pick"')"
+out="$(run 'DESKCRAB_JOB_NIGHT=1 job_start "the night'"'"'s own pick"')"
 check "the night window dispatches" contains "$out" "Would dispatch"
 
 echo

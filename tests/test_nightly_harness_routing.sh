@@ -101,7 +101,7 @@ CRAB
 chmod +x "$T/crab-ok"
 mkdir -p "$T/night-lib"
 make_dumper "$T/night-lib/claudism-scan" "$T/scan-env"
-for n in promise-check backlog-drain; do
+for n in promise-check night-work; do
     printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" > "$T/night-lib/$n"
     chmod +x "$T/night-lib/$n"
 done

@@ -36,7 +36,7 @@ stub() {  # <dir> <name>  (body on stdin)
 }
 chatty_except() {  # <dir> <name to leave out>
     local n
-    for n in claudism-scan backlog-drain promise-check; do
+    for n in claudism-scan night-work promise-check; do
         [ "$n" = "$2" ] && continue
         printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" | stub "$1" "$n"
     done
@@ -66,8 +66,8 @@ check_eq "no did-not-finish in the log" "$(sandbox_count_in 'did not finish' "$L
 
 echo
 echo "a phase that exits zero saying nothing — the silent-corpse shape:"
-chatty_except "$T/lib-mute" backlog-drain
-printf '#!/bin/bash\nexit 0\n' | stub "$T/lib-mute" backlog-drain
+chatty_except "$T/lib-mute" night-work
+printf '#!/bin/bash\nexit 0\n' | stub "$T/lib-mute" night-work
 out="$(run_night "$T/lib-mute" "$T/data-mute")"; rc=$?
 check_eq "the night still exits zero" "$rc" "0"
 [ -f "$T/data-mute/deskcrab/last-slept" ] && ok "and still stamped" \
@@ -75,7 +75,7 @@ check_eq "the night still exits zero" "$rc" "0"
 LOG="$(night_log "$T/data-mute")"
 [ -n "$LOG" ] || die "no night log written" "$out"
 check "PHASE SILENT lands in the night log itself, naming the phase" \
-    grep -q "PHASE SILENT.*backlog-drain" "$LOG"
+    grep -q "PHASE SILENT.*night-work" "$LOG"
 check "and on stderr with it" contains "$out" "PHASE SILENT"
 check_eq "the phases that spoke are not accused" \
     "$(sandbox_count_in 'PHASE SILENT' "$LOG")" "1"

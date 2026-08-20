@@ -41,14 +41,14 @@ check "and runs through to its own closing line (rule 53a)" \
 check "with no corpse voice" clean_of_corpse "$out"
 
 echo
-echo "backlog-drain through the symlink:"
-out="$("$DEPLOY/backlog-drain" 2>&1)"; rc=$?
+echo "night-work through the symlink:"
+out="$("$DEPLOY/night-work" 2>&1)"; rc=$?
 check_eq "no mode answers with usage, exit 2" "$rc" "2"
 check "no corpse voice on the way there" clean_of_corpse "$out"
 
-out="$(env BACKLOG_DRAIN=0 "$DEPLOY/backlog-drain" run 2>&1)"; rc=$?
+out="$(env NIGHT_WORK=0 "$DEPLOY/night-work" run 2>&1)"; rc=$?
 check_eq "a switched-off run exits 0" "$rc" "0"
-check "and says so in its own name" contains "$out" "backlog-drain: off"
+check "and says so in its own name" contains "$out" "night-work: off"
 check "with no corpse voice" clean_of_corpse "$out"
 
 echo
@@ -75,13 +75,13 @@ CRAB
 chmod +x "$T/crab-stub"
 mkdir -p "$T/night-journal"
 out="$(env CRAB_BIN="$T/crab-stub" XDG_DATA_HOME="$T/night-data" \
-    DAY_JOURNAL_DIR="$T/night-journal" BACKLOG_DRAIN=0 \
+    DAY_JOURNAL_DIR="$T/night-journal" NIGHT_WORK=0 \
     "$DEPLOY/sleep-nightly" run 2>&1)"; rc=$?
 check_eq "the night exits with the ingest's own zero" "$rc" "0"
 STAMP="$T/night-data/deskcrab/last-slept"
 [ -f "$STAMP" ] && ok "the night stamped" || fail "the night must stamp" "$out"
 check "no corpse voice anywhere in the night" clean_of_corpse "$out"
-check "the drain spoke for itself" contains "$out" "backlog-drain:"
+check "the night's work spoke for itself" contains "$out" "night-work:"
 check "the sweep spoke for itself" contains "$out" "promise-check: sweep"
 NIGHTLOG="$(ls "$T/night-data/deskcrab/sleep/"*.log 2>/dev/null | head -1)"
 if [ -n "$NIGHTLOG" ]; then

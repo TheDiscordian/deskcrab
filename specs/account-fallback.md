@@ -103,7 +103,7 @@ it is ten minutes of silence with nothing on screen explaining it.
     model, as it goes — failing only when every offered account has refused. Every walk site
     passes its model: the desk turn and the phone turn (the generation model, dispute-raised
     when it was), the wake, the job runner, the summariser, the promise audit and the promise
-    checker, the backlog drain's classify (its primary model), and the two Python walkers (the
+    checker, the night-work classify (its primary model), and the two Python walkers (the
     memory store's ingest and judge, the chess mover) — same shared state file, same filter
     rule. A selection asked with NO model (the status line, the child-login seed) treats every
     unexpired cooldown as blocking, whatever its scope: the conservative pre-scope read, for
@@ -128,7 +128,7 @@ it is ten minutes of silence with nothing on screen explaining it.
     lead with which account answers next, by number, and why the state last moved. See
     [self-awareness.md](self-awareness.md) rules 16 to 18. The account log's session-kind column
     MUST name the real path that recorded the refusal: a detached builder writes `job`, the
-    backlog drain's classify writes `backlog-drain` — never a defaulted "session", which is how
+    night-work classify writes `night-work` — never a defaulted "session", which is how
     the 2026-08-15 morning's builder refusals hid among the interactive ones.
 
 ### Detecting a refusal

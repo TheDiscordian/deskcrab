@@ -43,7 +43,7 @@ two share a directory and nothing else.
    id), and `pid`.
 4. The session kinds are: `turn` (desk), `phone`, `wake`, `job`, `summariser`, `memory-judge`,
    `ingest`, `chess`, `promise-audit`, `promise-check`, `claudism-mirror`, `claudism-scan`,
-   `backlog-drain` (the nightly drain's selector). A
+   `night-work` (the night-work selector). A
    backfilled record whose kind cannot be told from its artifact carries the best approximation
    and `approx: true` — never a guess dressed as knowledge.
 5. **NO MODEL CALL, ANYWHERE IN THE TRACKING PATH.** The ledger writer parses; it never asks. A
@@ -90,11 +90,11 @@ two share a directory and nothing else.
     just wrote, before that stream is pruned or deleted: the desk turn and phone turn (one hook,
     in the shared generation walk), the wake chain, the detached job, the conversation
     summariser, the claudism mirror and the nightly claudism-scan rewrite pass, the promise
-    audit, the promise checker, the nightly backlog drain's selector, the memory judge, the
+    audit, the promise checker, the nightly night-work selector, the memory judge, the
     memory ingest distiller, and the chess mover. A new invocation path added without a ledger
     hook is incomplete.
 14. Paths that truncate a per-attempt scratch stream (the summariser, the promise audit, the
-    promise checker, the backlog drain's selector) record each attempt inside their walk, before
+    promise checker, the night-work selector) record each attempt inside their walk, before
     the truncation, or the refused attempts vanish.
 15. The Python callers that used to run the CLI in plain text mode (the memory judge, the
     ingest distiller — and through them the claudism-scan rewrite pass — and the chess mover)

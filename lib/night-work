@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# backlog-drain — the night spends itself on the owed work.
+# night-work — the night spends itself on the owed work.
 #
 # Part of sleep, run after the stamp, the review and the promise sweep, as
 # the night's last phase (specs/nightly.md rules 54-61). The owed work
@@ -11,12 +11,12 @@
 # and then one model call reads the open
 # engineering threads, the promise sweep's genuine end-of-day misses, and
 # the wake queue's pending reasons — the whole owed-work shelf (rule 58b) —
-# beside the job list and the drain's own ledger, picks what is GENUINELY
+# beside the job list and the night's own ledger, picks what is GENUINELY
 # actionable without the user's voice in the room — never a note, never
 # settled work, never a duplicate of a job running or already dispatched —
 # and writes a self-contained brief per pick. Each brief goes
 # through the job door (`crab job`), never around it, so every builder
-# carries the whole jobs contract. Then the drain waits, re-reads what is
+# carries the whole jobs contract. Then the night waits, re-reads what is
 # still open, and goes again — for hours, until the wall-clock cutoff, at
 # which point
 # dispatch stops, in-flight builders are left to finish, and the sleep
@@ -24,30 +24,30 @@
 # active activity, the user's own design: reading the day and then idling
 # until morning is not it.
 #
-#   backlog-drain run     drain until the cutoff, the cap permitting
+#   night-work run     take up the owed work until the cutoff, the cap permitting
 #
 # Every failure path exits 0 with a trace line on stdout (the night's log):
-# a broken drain costs the drain, never the night.
+# a broken night's work costs only itself, never the night.
 #
 # Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
-#   BACKLOG_DRAIN=0                 switch the phase off
-#   BACKLOG_DRAIN_CUTOFF=06:00      local wall clock, the user's hard line;
+#   NIGHT_WORK=0                 switch the phase off
+#   NIGHT_WORK_CUTOFF=06:00      local wall clock, the user's hard line;
 #                                   no new dispatch at or past it, re-checked
 #                                   before every dispatch ("@<epoch>" is the
 #                                   test's spelling)
-#   BACKLOG_DRAIN_CAP=2             max concurrent jobs (dispatched or
+#   NIGHT_WORK_CAP=2             max concurrent jobs (dispatched or
 #                                   running), counting everyone's — two is
 #                                   the user's standing overnight ceiling
 #                                   (2026-08-11): eight at once burned two
 #                                   logins inside an hour
-#   BACKLOG_DRAIN_POLL=300          seconds between rounds
-#   BACKLOG_DRAIN_WINDOW_MAX=21600  a start further than this from the next
-#                                   cutoff drains nothing (the noon catch-up)
-#   BACKLOG_DRAIN_ROUNDS_MAX=0      0 = rounds bounded by the cutoff alone
-#   BACKLOG_DRAIN_MODEL=opus        the selector; picking work is judgement
-#   BACKLOG_DRAIN_FALLBACK_MODEL=sonnet
-#   BACKLOG_DRAIN_TIMEOUT=600       seconds per selection call
-#   BACKLOG_DRAIN_THREADS_FILE / _THREADS_DIR / _LEDGER   the material paths
+#   NIGHT_WORK_POLL=300          seconds between rounds
+#   NIGHT_WORK_WINDOW_MAX=21600  a start further than this from the next
+#                                   cutoff takes up nothing (the noon catch-up)
+#   NIGHT_WORK_ROUNDS_MAX=0      0 = rounds bounded by the cutoff alone
+#   NIGHT_WORK_MODEL=opus        the selector; picking work is judgement
+#   NIGHT_WORK_FALLBACK_MODEL=sonnet
+#   NIGHT_WORK_TIMEOUT=600       seconds per selection call
+#   NIGHT_WORK_THREADS_FILE / _THREADS_DIR / _LEDGER   the material paths
 #   DESKCRAB_NO_DISPATCH=1          dry-run: real selection, nothing started,
 #                                   no ledger written (rule 61)
 set -uo pipefail
@@ -60,26 +60,26 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
-THREADS_FILE="${BACKLOG_DRAIN_THREADS_FILE:-$DATA_DIR/engineering.md}"
-THREADS_DIR="${BACKLOG_DRAIN_THREADS_DIR:-$DATA_DIR/engineering}"
-LEDGER="${BACKLOG_DRAIN_LEDGER:-$DATA_DIR/backlog-drain/dispatched.tsv}"
-CUTOFF_SPEC="${BACKLOG_DRAIN_CUTOFF:-06:00}"
-CAP="${BACKLOG_DRAIN_CAP:-2}"
-POLL="${BACKLOG_DRAIN_POLL:-300}"
-WINDOW_MAX="${BACKLOG_DRAIN_WINDOW_MAX:-21600}"
-ROUNDS_MAX="${BACKLOG_DRAIN_ROUNDS_MAX:-0}"
-DRAIN_MODEL="${BACKLOG_DRAIN_MODEL:-opus}"
-DRAIN_FALLBACK_MODEL="${BACKLOG_DRAIN_FALLBACK_MODEL:-sonnet}"
+THREADS_FILE="${NIGHT_WORK_THREADS_FILE:-$DATA_DIR/engineering.md}"
+THREADS_DIR="${NIGHT_WORK_THREADS_DIR:-$DATA_DIR/engineering}"
+LEDGER="${NIGHT_WORK_LEDGER:-$DATA_DIR/night-work/dispatched.tsv}"
+CUTOFF_SPEC="${NIGHT_WORK_CUTOFF:-06:00}"
+CAP="${NIGHT_WORK_CAP:-2}"
+POLL="${NIGHT_WORK_POLL:-300}"
+WINDOW_MAX="${NIGHT_WORK_WINDOW_MAX:-21600}"
+ROUNDS_MAX="${NIGHT_WORK_ROUNDS_MAX:-0}"
+NIGHT_WORK_MODEL="${NIGHT_WORK_MODEL:-opus}"
+NIGHT_WORK_FALLBACK_MODEL="${NIGHT_WORK_FALLBACK_MODEL:-sonnet}"
 CRAB="${CRAB_BIN:-$SCRIPT_DIR/crab}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 
 # The account log names the path that recorded each refusal
-# (specs/account-fallback.md rule 11) — this drain's classifies are their own
+# (specs/account-fallback.md rule 11) — the night's classifies are their own
 # kind, never a defaulted "session". Not exported: nothing dispatched from
 # here should inherit it.
-SESSION_KIND=backlog-drain
+SESSION_KIND=night-work
 
-say() { printf 'backlog-drain: %s\n' "$1"; }
+say() { printf 'night-work: %s\n' "$1"; }
 
 # Rule 58a's second half: a cut that actually happens is announced. The byte
 # bound on each section of the selector's material is design, but a trim
@@ -99,30 +99,30 @@ file_overrun() {  # <section name> <file> <budget bytes>
 }
 
 # One selection question under the ACCOUNT SELECTION — promise-check's walk,
-# with the drain's models. An account that answers but yields no line matching
+# with the night's own models. An account that answers but yields no line matching
 # the verdict pattern is retried once on the fallback model before the round
 # gives up. Reads the prompt on stdin; prints the answering model's output.
 # Returns 1 when every account refused or nothing parseable came back.
 classify_walk() {  # <verdict-line-ERE>
     local VERDICT_RE="$1" PROMPT ACCT CONFDIR MODEL OUT REFUSAL
     PROMPT="$(cat)"
-    local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-drain-stream-XXXXXX")"
-    # Selected for the drain's primary model (specs/account-fallback.md rule
+    local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-night-work-stream-XXXXXX")"
+    # Selected for the night's primary model (specs/account-fallback.md rule
     # 10); a refusal is recorded with the model that was actually refused.
-    for ACCT in $(claude_accounts "$DRAIN_MODEL"); do
+    for ACCT in $(claude_accounts "$NIGHT_WORK_MODEL"); do
         CONFDIR="$(claude_account_dir "$ACCT")"
-        for MODEL in "$DRAIN_MODEL" "$DRAIN_FALLBACK_MODEL"; do
+        for MODEL in "$NIGHT_WORK_MODEL" "$NIGHT_WORK_FALLBACK_MODEL"; do
             : > "$CLOG"
             printf '%s' "$PROMPT" | (
                 export CLAUDE_CONFIG_DIR="$CONFDIR"
-                CLAUDE_CLASSIFY_TIMEOUT="${BACKLOG_DRAIN_TIMEOUT:-600}" \
+                CLAUDE_CLASSIFY_TIMEOUT="${NIGHT_WORK_TIMEOUT:-600}" \
                 CLAUDE_CLASSIFY_STREAM=1 \
                     claude_classify "$MODEL" \
                         "Answer in exactly the form asked for, nothing else."
             ) >"$CLOG" 2>&1
             # Recorded per attempt, before the next truncation wipes this
             # one's stream (specs/metrics.md rules 13-14).
-            token_ledger_record "$CLOG" backlog-drain "$MODEL" "" "$ACCT"
+            token_ledger_record "$CLOG" night-work "$MODEL" "" "$ACCT"
             if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
                 say "account $ACCT refused — trying the next account"
                 claude_limit_record "$ACCT" "$REFUSAL" "$MODEL"
@@ -137,7 +137,7 @@ classify_walk() {  # <verdict-line-ERE>
                 printf '%s\n' "$OUT" | tr -d '\r'
                 return 0
             fi
-            say "$MODEL answered with nothing parseable$( [ "$MODEL" = "$DRAIN_MODEL" ] && printf ' — falling to %s' "$DRAIN_FALLBACK_MODEL")"
+            say "$MODEL answered with nothing parseable$( [ "$MODEL" = "$NIGHT_WORK_MODEL" ] && printf ' — falling to %s' "$NIGHT_WORK_FALLBACK_MODEL")"
         done
         break
     done
@@ -173,22 +173,42 @@ queued_jobs() {  # the queued backlog's ids, oldest first (nightly.md rule 56a)
 }
 
 cmd_run() {
-    if [ "${BACKLOG_DRAIN:-1}" != 1 ]; then
-        say "off (BACKLOG_DRAIN=${BACKLOG_DRAIN:-})"; return 0
+    if [ "${NIGHT_WORK:-1}" != 1 ]; then
+        say "off (NIGHT_WORK=${NIGHT_WORK:-})"; return 0
     fi
     if [ ! -x "$CLAUDE_BIN" ]; then
         say "no claude binary — nothing selected, nothing dispatched"; return 0
     fi
-    # No selection material is not "nothing to drain": the queued backlog is
-    # the drain's FIRST material (nightly.md rule 56a), and it exists whether
-    # or not a single engineering thread does. This used to return here, and
-    # the shelved briefs of an instance with no threads file waited for a
-    # night that never worked them. Selection is switched off; the queue
-    # still drains.
+
+    # One-time move of the durable ledger: this mechanism was called the
+    # backlog drain until 2026-08-20, and its dispatch record lived under
+    # that name. The picks on it are what keeps rule 59's dedup honest
+    # across the rename, so the file moves rather than starting over —
+    # declared here (rule 6), once; after the first night this runs, the
+    # legacy path is gone and this block never speaks again. The literal
+    # old name below is deliberate: it is the only way to find the file
+    # the old code wrote.
+    local LEGACY_LEDGER="$DATA_DIR/backlog-drain/dispatched.tsv"
+    if [ ! -e "$LEDGER" ] && [ -f "$LEGACY_LEDGER" ]; then
+        mkdir -p "$(dirname "$LEDGER")"
+        touch_suppress "$(dirname "$LEDGER")" 2>/dev/null
+        if mv "$LEGACY_LEDGER" "$LEDGER" 2>/dev/null; then
+            say "the dispatch ledger moved from the mechanism's old name — $LEGACY_LEDGER -> $LEDGER, records intact"
+            rmdir "$(dirname "$LEGACY_LEDGER")" 2>/dev/null
+        else
+            say "the ledger at $LEGACY_LEDGER could not be moved to $LEDGER — tonight judges from a fresh ledger"
+        fi
+    fi
+    # No selection material is not "nothing to take up": the queued backlog
+    # is the night's FIRST material (nightly.md rule 56a), and it exists
+    # whether or not a single engineering thread does. This used to return
+    # here, and the shelved briefs of an instance with no threads file waited
+    # for a night that never worked them. Selection is switched off; the
+    # night still takes up the queue.
     local NO_THREADS=""
     if [ ! -s "$THREADS_FILE" ] && [ ! -d "$THREADS_DIR" ]; then
         NO_THREADS=1
-        say "no engineering threads — selection is off; the queued backlog still drains"
+        say "no engineering threads — selection is off; the night still takes up the queued backlog"
     fi
 
     local NOW CUTOFF
@@ -196,10 +216,10 @@ cmd_run() {
     case "$CUTOFF_SPEC" in
         @*) CUTOFF="${CUTOFF_SPEC#@}"
             case "$CUTOFF" in ''|*[!0-9]*)
-                say "cannot parse BACKLOG_DRAIN_CUTOFF '$CUTOFF_SPEC'"; return 2 ;;
+                say "cannot parse NIGHT_WORK_CUTOFF '$CUTOFF_SPEC'"; return 2 ;;
             esac ;;
         *)  if ! CUTOFF="$(date -d "today $CUTOFF_SPEC" +%s 2>/dev/null)"; then
-                say "cannot parse BACKLOG_DRAIN_CUTOFF '$CUTOFF_SPEC'"; return 2
+                say "cannot parse NIGHT_WORK_CUTOFF '$CUTOFF_SPEC'"; return 2
             fi
             # The cutoff names a time of night, and sleep starts before it:
             # 03:10 against an 04:00 cutoff is today, 23:50 against it is
@@ -210,18 +230,18 @@ cmd_run() {
     esac
 
     # The daylight guard (rule 56): Persistent=true means a machine that was
-    # off at 03:10 sleeps at noon, and a noon drain would fill the day's
-    # working hours with builders. A caught-up night still sleeps; it does
-    # not drain.
+    # off at 03:10 sleeps at noon, and a noon round of builders would fill
+    # the day's working hours. A caught-up night still sleeps; it does not
+    # take up the backlog.
     if [ $(( CUTOFF - NOW )) -gt "$WINDOW_MAX" ]; then
-        say "next cutoff ($CUTOFF_SPEC) is $(( (CUTOFF - NOW) / 60 )) min away — outside the ${WINDOW_MAX}s drain window; a daylight catch-up drains nothing"
+        say "next cutoff ($CUTOFF_SPEC) is $(( (CUTOFF - NOW) / 60 )) min away — outside the ${WINDOW_MAX}s night-work window; a daylight catch-up takes up nothing"
         return 0
     fi
 
     local DRY=""
     [ -n "${DESKCRAB_NO_DISPATCH:-}" ] && DRY=1 && say "dry-run (DESKCRAB_NO_DISPATCH) — selection is real, dispatch and the ledger are not"
 
-    local WORK; WORK="$(mktemp -d "${TMPDIR:-/tmp}/deskcrab-drain-XXXXXX")"
+    local WORK; WORK="$(mktemp -d "${TMPDIR:-/tmp}/deskcrab-night-work-XXXXXX")"
     # shellcheck disable=SC2064
     trap "rm -rf '$WORK'" EXIT
 
@@ -233,7 +253,7 @@ cmd_run() {
             break
         fi
         if [ "$ROUNDS_MAX" -gt 0 ] 2>/dev/null && [ "$ROUNDS" -ge "$ROUNDS_MAX" ]; then
-            REASON="the round cap (BACKLOG_DRAIN_ROUNDS_MAX=$ROUNDS_MAX)"
+            REASON="the round cap (NIGHT_WORK_ROUNDS_MAX=$ROUNDS_MAX)"
             break
         fi
         ROUNDS=$(( ROUNDS + 1 ))
@@ -417,14 +437,14 @@ PY
         [ -n "$PENDING" ] || PENDING="
 (nothing is on the books)"
 
-        local PROMPT="You are the nightly owed-work drain of a desktop assistant: while she
+        local PROMPT="You do the night's work of a desktop assistant: while she
 sleeps, her open owed work becomes detached builder jobs. Below is the whole
 shelf: her engineering threads (a newest-first prose log, the open list, the
 index and the thread directory listing), the promises the night sweep found
 genuinely missed at end of day, and the wakes already on the books (owed
 work often parks there — and a live waked session cannot commit to her own
 repository, so builder-shaped work on a wake otherwise waits forever). Then
-the current job list, and the ledger of picks this drain has ALREADY
+the current job list, and the ledger of picks the night's work has ALREADY
 dispatched on earlier rounds and nights.
 
 Pick AT MOST $FREE items, from ANY of those sources, that are genuinely
@@ -436,7 +456,7 @@ without exception:
 - anything a RUNNING, QUEUED, or recently finished job already covers — match
   the job list below by substance, not wording; a queued brief dispatches
   tonight on its own, so selecting its subject buys the same work twice;
-- every pick already on the drain's ledger below, whatever its source;
+- every pick already on the night-work ledger below, whatever its source;
 - anything that waits on the user's decision or needs his voice in the room,
   and anything the material says is deliberately parked, held for a quiet
   moment, or claimed by another hand;
@@ -487,12 +507,12 @@ $PENDING
 === THE JOB LIST (running and recently finished) ===
 $JOBS_TEXT
 
-=== ALREADY DISPATCHED BY THIS DRAIN (night, key, job id, title) ===
+=== ALREADY DISPATCHED BY THE NIGHT'S WORK (night, key, job id, title) ===
 $LEDGER_TAIL"
 
         local OUT
         if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(TASK|NOTHING)\b')"; then
-            REASON="no selection from $DRAIN_MODEL or $DRAIN_FALLBACK_MODEL — nothing more can be judged tonight"
+            REASON="no selection from $NIGHT_WORK_MODEL or $NIGHT_WORK_FALLBACK_MODEL — nothing more can be judged tonight"
             break
         fi
 
@@ -559,7 +579,7 @@ $LEDGER_TAIL"
                 continue
             fi
 
-            BRIEF="Nightly owed-work drain, from the open item '$KEY': $TITLE
+            BRIEF="The night's work, from the open item '$KEY': $TITLE
 
 $BRIEF"
             # The dry-run stops HERE, before the door: rule 61 promises real
@@ -574,8 +594,8 @@ $BRIEF"
             fi
             # DESKCRAB_JOB_NIGHT is how the door knows the night window is
             # open (jobs.md rule 31) — without it the daytime policy would
-            # queue the drain's own picks straight back onto the shelf it is
-            # draining.
+            # queue the night's own picks straight back onto the shelf it is
+            # working.
             local OUTPUT RC JOB_ID
             if [ -n "$WD" ] && [ "$WD" != "-" ] && [ -d "$WD" ]; then
                 OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
@@ -593,7 +613,7 @@ $BRIEF"
             fi
             JOB_ID="$(printf '%s\n' "$OUTPUT" | sed -n 's/^Job \([^ ]*\) dispatched.*/\1/p' | head -1)"
             [ -n "$JOB_ID" ] || JOB_ID="?"
-            # The ledger is the drain's one write, declared before made
+            # The ledger is the night's one write, declared before made
             # (rules 6 and 59) so her own night never reads as an
             # intruder's hand.
             mkdir -p "$(dirname "$LEDGER")"
@@ -640,5 +660,5 @@ $BRIEF"
 
 case "${1:-}" in
     run) cmd_run ;;
-    *)   echo "Usage: backlog-drain run" >&2; exit 2 ;;
+    *)   echo "Usage: night-work run" >&2; exit 2 ;;
 esac

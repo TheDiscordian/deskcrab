@@ -1,8 +1,8 @@
 #!/bin/bash
 # The selector's material stays valid UTF-8, whatever lands on a byte budget.
-# Run: bash tests/test_backlog_drain_utf8.sh
+# Run: bash tests/test_night_work_utf8.sh
 #
-# The gap this was written for: the drain bounded all four pieces of its
+# The gap this was written for: the night's work bounded all four pieces of its
 # selection material with a bare `head -c` — the thread log at 24000 bytes,
 # the open list at 12000, the index at 2000, the job list at 6000 — and a
 # multibyte character straddling any of those budgets went into the model's
@@ -23,7 +23,7 @@ set -u
 
 REPO="$SANDBOX_REPO"
 T="$SANDBOX"
-mkdir -p "$T/eng" "$T/jobs" "$T/drain"
+mkdir -p "$T/eng" "$T/jobs" "$T/night-work"
 
 blen() { printf '%s' "$1" | wc -c; }
 pad()  { head -c "$1" /dev/zero | tr '\0' "$2"; }
@@ -68,7 +68,7 @@ CRAB
 chmod +x "$T/crab"
 
 # The selector, stubbed: its stdin — the assembled prompt, the thing under
-# test — is kept, and its answer ends the drain after one round.
+# test — is kept, and its answer ends the night's work after one round.
 sandbox_stub claude <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
@@ -81,13 +81,13 @@ NOW="$(date +%s)"
 echo
 echo "one round over material sheared at every boundary:"
 out="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
-    BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
-    BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
-    BACKLOG_DRAIN_LEDGER="$T/drain/dispatched.tsv" \
-    BACKLOG_DRAIN_POLL=1 BACKLOG_DRAIN_ROUNDS_MAX=1 \
-    BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" \
-    "$REPO/lib/backlog-drain" run 2>&1)"; rc=$?
-check_eq "the drain exits clean" "$rc" "0"
+    NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
+    NIGHT_WORK_THREADS_DIR="$T/eng" \
+    NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
+    NIGHT_WORK_POLL=1 NIGHT_WORK_ROUNDS_MAX=1 \
+    NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" \
+    "$REPO/lib/night-work" run 2>&1)"; rc=$?
+check_eq "the night's work exits clean" "$rc" "0"
 check "the selector ran and its NOTHING ended the round" \
     contains "$out" "the backlog is dry"
 [ -s "$T/model-stdin" ] || die "the selector never received a prompt" "$out"
@@ -166,13 +166,13 @@ printf -- '- the one open thread\n' > "$T/eng/OPEN.md"
 rm -f "$T/eng/INDEX.md"
 printf 'no jobs are running\n' > "$T/jobs-text"
 out2="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
-    BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
-    BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
-    BACKLOG_DRAIN_LEDGER="$T/drain/dispatched.tsv" \
-    BACKLOG_DRAIN_POLL=1 BACKLOG_DRAIN_ROUNDS_MAX=1 \
-    BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" \
-    "$REPO/lib/backlog-drain" run 2>&1)"; rc2=$?
-check_eq "the drain exits clean again" "$rc2" "0"
+    NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
+    NIGHT_WORK_THREADS_DIR="$T/eng" \
+    NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
+    NIGHT_WORK_POLL=1 NIGHT_WORK_ROUNDS_MAX=1 \
+    NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" \
+    "$REPO/lib/night-work" run 2>&1)"; rc2=$?
+check_eq "the night's work exits clean again" "$rc2" "0"
 check "the selector still ran over the small material" \
     contains "$out2" "the backlog is dry"
 check_eq "no section is announced as outgrown — the missing index included" \

@@ -1,5 +1,5 @@
 #!/bin/bash
-# The night drain works the queued backlog — specs/nightly.md rules 56 and
+# The night takes up the queued backlog — specs/nightly.md rules 56 and
 # 56a, specs/jobs.md rules 30-34. Queued briefs are already-written work, so
 # each round they go out first, oldest first, through `crab job dispatch`,
 # under the same cap and the same hard cutoff (default 06:00, re-checked
@@ -7,10 +7,10 @@
 # window is open. A refusal that is not the block marker skips the brief for
 # the rest of the night; the block marker ends the night; the dry run starts
 # nothing. A builder still standing `dispatched` holds its cap slot (rule
-# 57), and a night with no engineering threads at all still drains the queue
-# — the queue is the drain's FIRST material, and missing selection material
+# 57), and a night with no engineering threads at all still takes up the queue
+# — the queue is the night's FIRST material, and missing selection material
 # switches off the selector, never the queue.
-# Run: bash tests/test_backlog_drain_queue.sh
+# Run: bash tests/test_night_work_queue.sh
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -19,7 +19,7 @@ T="$SANDBOX"
 JS="$REPO/lib/job-status"
 mkdir -p "$T/eng" "$T/jobs"
 
-# Enough thread material that the drain has something to select from when a
+# Enough thread material that the night's work has something to select from when a
 # case lets it get that far; the model stub answers NOTHING so the queued
 # phase stays the only dispatcher.
 printf '## a note\nNothing to do.\n' > "$T/engineering.md"
@@ -28,7 +28,7 @@ printf '# Open\n' > "$T/eng/OPEN.md"
 
 # The door, stubbed: every call recorded WITH the night flag's value, so the
 # assertions can see both what was asked and under which window. `job
-# dispatch` flips the real sidecar to dispatched — the drain reads states
+# dispatch` flips the real sidecar to dispatched — the night's work reads states
 # back through the real job-status — and a refusal file switches the answer.
 cat > "$T/crab" <<CRAB
 #!/bin/bash
@@ -69,15 +69,15 @@ printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
 
 NOW="$(date +%s)"
-drain() {
+night_work() {
     env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
         PROMISE_LEDGER="$T/promise-ledger.jsonl" WAKES_DIR="$T/dwakes" \
-        BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
-        BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
-        BACKLOG_DRAIN_LEDGER="$T/drain/dispatched.tsv" \
-        BACKLOG_DRAIN_POLL=1 \
+        NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
+        NIGHT_WORK_THREADS_DIR="$T/eng" \
+        NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
+        NIGHT_WORK_POLL=1 \
         "$@" \
-        "$REPO/lib/backlog-drain" run 2>&1
+        "$REPO/lib/night-work" run 2>&1
 }
 calls() { cat "$T/crab-calls" 2>/dev/null; }
 dispatch_calls() { sandbox_count_in '^job dispatch ' "$T/crab-calls"; }
@@ -102,7 +102,7 @@ reset
 mkqueued q-old 7200
 mkqueued q-mid 3600
 mkqueued q-new 60
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check_eq "two dispatches — the cap of two, filled from the queue" "$(dispatch_calls)" "2"
 check "the oldest went out" contains "$(calls)" "job dispatch q-old"
@@ -128,7 +128,7 @@ echo
 echo "a queued dispatch counts against the same cap the selector gets:"
 reset
 mkqueued q-solo 600
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "one queued dispatch" "$(dispatch_calls)" "1"
 check_eq "the selector ran with the remaining slot" "$(claude_n)" "1"
 check "and was offered AT MOST the one slot left" \
@@ -140,7 +140,7 @@ reset
 "$JS" new "$T/jobs" pre-flight "a builder between the dispatch call and its worker's first write" "" /tmp dispatched
 mkqueued q-one 900
 mkqueued q-two 600
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check_eq "only the one free slot was spent" "$(dispatch_calls)" "1"
 check "on the older brief" contains "$(calls)" "job dispatch q-one"
@@ -150,15 +150,15 @@ case "$(calls)" in *"job dispatch q-two"*)
 check_eq "the slate was full, so no selection call was spent" "$(claude_n)" "0"
 
 echo
-echo "no engineering threads: the queue still drains (rule 56a):"
+echo "no engineering threads: the night still takes up the queue (rule 56a):"
 reset
 mkqueued q-lone 900
-out="$(drain BACKLOG_DRAIN_THREADS_FILE="$T/no-threads.md" \
-             BACKLOG_DRAIN_THREADS_DIR="$T/no-eng-dir" \
-             BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+out="$(night_work NIGHT_WORK_THREADS_FILE="$T/no-threads.md" \
+             NIGHT_WORK_THREADS_DIR="$T/no-eng-dir" \
+             NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
-check "says selection is off, not that there is nothing to drain" \
-    contains "$out" "the queued backlog still drains"
+check "says selection is off, not that there is nothing to take up" \
+    contains "$out" "the night still takes up the queued backlog"
 check "the shelved brief went out" contains "$out" "dispatched queued job 'q-lone'"
 check_eq "through the door" "$(sandbox_count_in 'job dispatch q-lone' "$T/crab-calls")" "1"
 check_eq "and no selection call was ever spent" "$(claude_n)" "0"
@@ -170,7 +170,7 @@ echo "the hard cutoff stands in front of every dispatch (rule 56):"
 reset
 for i in 1 2 3 4 5; do mkqueued "q-c$i" $(( 1000 - i )); done
 : > "$T/dispatch-sleep"   # each door call takes a second
-out="$(drain BACKLOG_DRAIN_CAP=9 BACKLOG_DRAIN_CUTOFF="@$(( $(date +%s) + 2 ))")"; rc=$?
+out="$(night_work NIGHT_WORK_CAP=9 NIGHT_WORK_CUTOFF="@$(( $(date +%s) + 2 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "stops naming the cutoff" contains "$out" "stopped at the cutoff"
 n="$(dispatch_calls)"
@@ -183,7 +183,7 @@ reset
 mkqueued q-bad 900
 mkqueued q-good 600
 : > "$T/refuse-q-bad"
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=2)"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=2)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "the refusal is named and skipped" contains "$out" "skipped for the night"
 check_eq "the bad brief was asked exactly once across both rounds" \
@@ -196,8 +196,8 @@ echo "the block marker ends the night for everyone (rule 60):"
 reset
 mkqueued q-walled 900
 : > "$T/door-blocked"
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
-check_eq "exits clean — a wall is not the drain's failure" "$rc" "0"
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+check_eq "exits clean — a wall is not the night's failure" "$rc" "0"
 check "names the block" contains "$out" "the job door is blocked"
 check_eq "exactly one attempt, then the night ends" "$(dispatch_calls)" "1"
 check_eq "and no selection was spent against the wall" "$(claude_n)" "0"
@@ -206,7 +206,7 @@ echo
 echo "the dry run names its would-dispatches and starts nothing (rule 61):"
 reset
 mkqueued q-dry 900
-out="$(drain DESKCRAB_NO_DISPATCH=1 BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work DESKCRAB_NO_DISPATCH=1 NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "says what it would have dispatched" contains "$out" "would dispatch queued job 'q-dry'"
 check_eq "the door was never called" "$(dispatch_calls)" "0"
@@ -214,5 +214,5 @@ check_eq "and the record stays queued" "$("$JS" get "$T/jobs/q-dry.json" state)"
 
 echo
 echo "the knob's default is the user's hard line:"
-check "BACKLOG_DRAIN_CUTOFF defaults to 06:00" \
-    grep -q 'BACKLOG_DRAIN_CUTOFF:-06:00' "$REPO/lib/backlog-drain"
+check "NIGHT_WORK_CUTOFF defaults to 06:00" \
+    grep -q 'NIGHT_WORK_CUTOFF:-06:00' "$REPO/lib/night-work"

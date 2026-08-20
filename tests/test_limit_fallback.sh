@@ -733,7 +733,7 @@ else
 fi
 if grep -qE 'CLAUDE_PRIMARY_TOKEN|claude_preferred_login|claude_account_confdir|claude_fallback_dirs|ACCOUNT_DEFAULT_FILE' \
     "$REPO_DIR/lib/common.sh" "$REPO_DIR/lib/job-runner" "$REPO_DIR/lib/promise-check" \
-    "$REPO_DIR/lib/promise-audit" "$REPO_DIR/lib/backlog-drain" \
+    "$REPO_DIR/lib/promise-audit" "$REPO_DIR/lib/night-work" \
     "$REPO_DIR/lib/memory.py" "$REPO_DIR/lib/chess_mover.py"; then
     fail "the old machinery still exists somewhere" \
         "$(grep -lE 'CLAUDE_PRIMARY_TOKEN|claude_preferred_login|ACCOUNT_DEFAULT_FILE' "$REPO_DIR"/lib/* )"

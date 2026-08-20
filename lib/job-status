@@ -9,7 +9,7 @@ Each job is one small JSON file <id>.json beside its log <id>.log:
 state: queued | dispatched | running | finished | collected | failed |
        stopped | died | blocked
        queued is a brief on the shelf — no unit, no builder — waiting for the
-       night drain (specs/jobs.md rule 30). dispatched is the moment between
+       night's work (specs/jobs.md rule 30). dispatched is the moment between
        the dispatch call and the worker's first write, reaped exactly as
        running is when the worker never appears. blocked is a run that never
        began — the CLI refused before any work was attempted — and it is
@@ -420,7 +420,7 @@ def cmd_report(argv):
 def cmd_since(argv):
     """Dispatched, badly-ended, and newly-queued counts since an epoch, as
     one phrase. A queued record is not a dispatch — its started_epoch is
-    only the shelving until the drain re-stamps it (rule 32) — so it counts
+    only the shelving until the night's work re-stamps it (rule 32) — so it counts
     apart, or the delta would claim builders that never started."""
     d = argv[0]
     try:

@@ -1,14 +1,14 @@
 #!/bin/bash
-# The backlog drain — specs/nightly.md rules 54-61. The night's idle stretch
+# The night's work — specs/nightly.md rules 54-61. The night's idle stretch
 # dispatches builders at the open engineering threads, through the job door,
 # capped, until a wall-clock cutoff. The assertions here are about what the
-# drain itself owns: the daylight window guard, the cap counted from every
+# night's work itself owns: the daylight window guard, the cap counted from every
 # running job, the validation that stands between the model's answer and a
 # dispatched builder, the ledger that stops a thread being dispatched twice,
 # the early end on a dry backlog, the hard stop on a blocked door and at the
-# cutoff — and that a drain which cannot even parse its own cutoff never
+# cutoff — and that a run which cannot even parse its own cutoff never
 # unstamps the night. What the model judges is the model's; what reaches the
-# door is ours. Run: bash tests/test_backlog_drain.sh
+# door is ours. Run: bash tests/test_night_work.sh
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -18,7 +18,7 @@ mkdir -p "$T/eng" "$T/jobs"
 
 # The threads: one genuinely actionable, one note with no work left, one
 # covered by a running job. The MODEL is stubbed, so what these prove is that
-# the material reaches the prompt — the drain-side skips are proven against
+# the material reaches the prompt — the night-side skips are proven against
 # the stub's own answers below.
 cat > "$T/engineering.md" <<'EOF'
 ## a latch that sticks (OPEN)
@@ -73,18 +73,18 @@ CRAB
 chmod +x "$T/crab"
 
 NOW="$(date +%s)"
-LEDGER="$T/drain/dispatched.tsv"
+LEDGER="$T/night-work/dispatched.tsv"
 
-drain() {  # [env overrides...] — runs the drain with the harness's paths pinned;
+night_work() {  # [env overrides...] — runs the night's work with the harness's paths pinned;
            # the overrides come LAST, so a test may repoint any pinned path
     env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
         PROMISE_LEDGER="$PLEDGER" WAKES_DIR="$DWAKES" \
-        BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
-        BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
-        BACKLOG_DRAIN_LEDGER="$LEDGER" \
-        BACKLOG_DRAIN_POLL=1 \
+        NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
+        NIGHT_WORK_THREADS_DIR="$T/eng" \
+        NIGHT_WORK_LEDGER="$LEDGER" \
+        NIGHT_WORK_POLL=1 \
         "$@" \
-        "$REPO/lib/backlog-drain" run 2>&1
+        "$REPO/lib/night-work" run 2>&1
 }
 calls()     { cat "$T/crab-calls" 2>/dev/null; }
 job_calls() { sandbox_count_in '^job ' "$T/crab-calls"; }
@@ -103,9 +103,9 @@ printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
 
-echo "the daylight window guard: a catch-up run far from the cutoff drains nothing:"
+echo "the daylight window guard: a catch-up run far from the cutoff takes up nothing:"
 reset
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 90000 ))")"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 90000 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "says it is outside the window" \
     contains "$out" "outside the"
@@ -115,9 +115,9 @@ check_eq "nothing reached the door" "$(job_calls)" "0"
 echo
 echo "a selection round: validation stands between the model and the door:"
 reset
-mkdir -p "$T/drain"
+mkdir -p "$T/night-work"
 printf '2026-01-01\talready-ledgered\told-1\tDispatched last night\n' > "$LEDGER"
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check_eq "the selector ran once" "$(claude_n)" "1"
 check "the prompt carried the thread log" \
@@ -152,13 +152,13 @@ check "recording the thread key beside the job id" \
     grep -q "a-latch-that-sticks	stub-1	Fix the sticking latch" "$LEDGER"
 
 echo
-echo "the cap counts EVERY running job, not only the drain's own — and defaults"
+echo "the cap counts EVERY running job, not only the night's own — and defaults"
 echo "to the user's overnight ceiling of two:"
 reset
 for i in 1 2 3 4; do
     printf '{"id": "busy-%s", "state": "running"}\n' "$i" > "$T/jobs/busy-$i.json"
 done
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "a full slate is waited out, everyone's jobs counted, at the default cap of 2" \
     contains "$out" "cap full (4 running, cap 2)"
@@ -167,7 +167,7 @@ check_eq "nothing reached the door" "$(job_calls)" "0"
 rm -f "$T"/jobs/busy-*.json
 
 echo
-echo "a dry backlog ends the drain early — no polling an empty list to the cutoff:"
+echo "a dry backlog ends the night's work early — no polling an empty list to the cutoff:"
 reset
 sandbox_stub claude <<STUB
 #!/bin/bash
@@ -176,7 +176,7 @@ cat > /dev/null
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"NOTHING: every thread is a note or already covered"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "names the dry backlog as its stop" contains "$out" "the backlog is dry"
 check_eq "one selection call, not a poll loop" "$(claude_n)" "1"
@@ -192,8 +192,8 @@ cat > /dev/null
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"TASK: a-latch-that-sticks | - | Fix the sticking latch\nBRIEF:\nIn /tmp/greenhouse, from the thread a-latch-that-sticks: free the latch, oil the hinge, and run the latch test suite before reporting done. Verify by closing the door twice.\nEND"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
-check_eq "exits clean — a wall is not the drain's failure" "$rc" "0"
+out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+check_eq "exits clean — a wall is not the night's failure" "$rc" "0"
 check "names the block" contains "$out" "the job door is blocked"
 check "and stops for the night" contains "$out" "no builder can begin"
 check_eq "no second dispatch was attempted" "$(job_calls)" "1"
@@ -203,7 +203,7 @@ check_eq "no second dispatch was attempted" "$(job_calls)" "1"
 echo
 echo "the cutoff stops dispatch before anything else happens:"
 reset
-out="$(drain BACKLOG_DRAIN_CUTOFF="@$NOW")"; rc=$?
+out="$(night_work NIGHT_WORK_CUTOFF="@$NOW")"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "names the cutoff" contains "$out" "stopped at the cutoff"
 check_eq "no selection past the cutoff" "$(claude_n)" "0"
@@ -219,7 +219,7 @@ cat > /dev/null
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"TASK: a-latch-that-sticks | - | Fix the sticking latch\nBRIEF:\nIn /tmp/greenhouse, from the thread a-latch-that-sticks: free the latch, oil the hinge, and run the latch test suite before reporting done. Verify by closing the door twice.\nEND"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
-out="$(drain DESKCRAB_NO_DISPATCH=1 BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work DESKCRAB_NO_DISPATCH=1 NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "announces the dry-run" contains "$out" "dry-run"
 check "says what it would have dispatched" contains "$out" "would dispatch 'a-latch-that-sticks'"
@@ -242,30 +242,30 @@ chmod +x "$T/crab-sleep"
 mkdir -p "$T/data-sleep"
 out="$(env CRAB_BIN="$T/crab-sleep" XDG_DATA_HOME="$T/data-sleep-home" \
     JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" \
-    BACKLOG_DRAIN_THREADS_FILE="$T/engineering.md" \
-    BACKLOG_DRAIN_THREADS_DIR="$T/eng" \
-    BACKLOG_DRAIN_CUTOFF="not-a-time" \
+    NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
+    NIGHT_WORK_THREADS_DIR="$T/eng" \
+    NIGHT_WORK_CUTOFF="not-a-time" \
     "$REPO/lib/sleep-nightly" run 2>&1)"; rc=$?
 check_eq "sleep exits with the ingest's own zero" "$rc" "0"
 STAMP="$T/data-sleep-home/deskcrab/last-slept"
 [ -f "$STAMP" ] && ok "the night stamped" || fail "the night must stamp" "$out"
-check "the drain ran inside the sleep pipeline" \
-    contains "$out" "backlog-drain:"
+check "the night's work ran inside the sleep pipeline" \
+    contains "$out" "night-work:"
 check "an unparseable cutoff is loud" \
-    contains "$out" "cannot parse BACKLOG_DRAIN_CUTOFF"
+    contains "$out" "cannot parse NIGHT_WORK_CUTOFF"
 check "and the night still counts" \
-    contains "$out" "the backlog drain did not finish — the night still counts"
+    contains "$out" "the night's work did not finish — the night still counts"
 NIGHTLOG="$(ls "$T/data-sleep-home/deskcrab/sleep/"*.log 2>/dev/null | head -1)"
 if [ -n "$NIGHTLOG" ]; then
     scan_line="$(grep -n "claudism" "$NIGHTLOG" | head -1 | cut -d: -f1)"
     sweep_line="$(grep -n "promise-check:" "$NIGHTLOG" | head -1 | cut -d: -f1)"
-    drain_line="$(grep -n "backlog-drain:" "$NIGHTLOG" | head -1 | cut -d: -f1)"
-    if [ -n "$scan_line" ] && [ -n "$sweep_line" ] && [ -n "$drain_line" ] \
-            && [ "$sweep_line" -gt "$scan_line" ] && [ "$drain_line" -gt "$sweep_line" ]; then
-        ok "the sweep runs after the review, and the drain last — its misses are drain material"
+    night_line="$(grep -n "night-work:" "$NIGHTLOG" | head -1 | cut -d: -f1)"
+    if [ -n "$scan_line" ] && [ -n "$sweep_line" ] && [ -n "$night_line" ] \
+            && [ "$sweep_line" -gt "$scan_line" ] && [ "$night_line" -gt "$sweep_line" ]; then
+        ok "the sweep runs after the review, and the night's work last — its misses are the night's material"
     else
-        fail "the order must be review, sweep, drain (rule 54)" \
-            "scan=$scan_line sweep=$sweep_line drain=$drain_line"
+        fail "the order must be review, sweep, night's work (rule 54)" \
+            "scan=$scan_line sweep=$sweep_line night=$night_line"
     fi
 else
     fail "no night log written" "$out"
@@ -282,8 +282,8 @@ cat > "$T/model-stdin"
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"NOTHING: judging from less than the whole shelf"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
-out="$(drain PROMISE_LEDGER="$T/ledger-as-dir" \
-    BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))" BACKLOG_DRAIN_ROUNDS_MAX=1)"; rc=$?
+out="$(night_work PROMISE_LEDGER="$T/ledger-as-dir" \
+    NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "the selector was told the shelf is short" \
     grep -q "the promise ledger could not be read tonight" "$T/model-stdin"
@@ -293,7 +293,7 @@ check "and the night log names it" \
 echo
 echo "the off switch:"
 reset
-out="$(drain BACKLOG_DRAIN=0 BACKLOG_DRAIN_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+out="$(night_work NIGHT_WORK=0 NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
-check "says it is off" contains "$out" "off (BACKLOG_DRAIN=0)"
+check "says it is off" contains "$out" "off (NIGHT_WORK=0)"
 check_eq "and does nothing" "$(claude_n)$(job_calls)" "00"

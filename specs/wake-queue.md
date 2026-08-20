@@ -533,9 +533,9 @@ reason, the sessions log outcome, checkpoints, the account log reason, the held-
 stream last-words tail, notification bodies. A byte-bounded cut of MULTI-LINE material — a
 document handed whole into a prompt, where the flatten a one-line field wants would destroy the
 structure the reader needs — takes the identical repair through `utf8_head` beside it, the
-document-shaped counterpart with the newlines kept; the backlog drain's selection material
+document-shaped counterpart with the newlines kept; the night-work selection material
 ([nightly.md](nightly.md) rule 58a) is its callers. The incident above was fixed here first and
-found five more unguarded copies of the same byte cut the same night, and four more in the drain's
+found five more unguarded copies of the same byte cut the same night, and four more in the night's
 document cuts the same week; a private copy of the pipeline is how the next one appears.
 
 ## The lifecycle

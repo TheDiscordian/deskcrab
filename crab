@@ -535,7 +535,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         fi
         if [ "${1:-}" = "dispatch" ]; then
             # A QUEUED record dispatched in place — same id, same sidecar,
-            # history intact (specs/jobs.md rule 32). The night drain's door;
+            # history intact (specs/jobs.md rule 32). The night-work door;
             # by hand it is the deliberate "work the queue now".
             job_dispatch_queued "${2:-}"
             exit $?
