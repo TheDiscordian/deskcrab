@@ -5,14 +5,18 @@
 # sqlite-vec 2026-08-06 — scale and SQL editability beat hand-editable JSONL,
 # and `memory dump` gives back the readable-text view that argument wanted).
 #
-# Four record kinds. A `directive` is the user's voice: never decayed or
+# Five record kinds. A `directive` is the user's voice: never decayed or
 # auto-retired, only superseded by a newer directive, over-retrieved by
-# design. A `note` is the assistant's own soft memory. `pinned` records are
-# always retrieved regardless of similarity. An `observation` is one night's
-# shape — gaps, texture, recurrence, unfinished threads — and a `miss` is one
-# asking she had nothing for: both accumulate as a series, never decay, never
-# dedup, and are NEVER retrieved by similarity into a prompt
-# (specs/memory-recall.md rules 42-45).
+# design. A `note` is the assistant's own soft memory. An `episodic` record
+# is one moment of her own life — what happened, when (`occurred`), who was
+# there (`participants`), and her own first-person `opinion` of it — kept for
+# itself, never distilled into a lesson, never decayed, retrieved by
+# similarity AND by date (specs/memory-recall.md rules 46-52). `pinned`
+# records are always retrieved regardless of similarity. An `observation` is
+# one night's shape — gaps, texture, recurrence, unfinished threads — and a
+# `miss` is one asking she had nothing for: both accumulate as a series,
+# never decay, never dedup, and are NEVER retrieved by similarity into a
+# prompt (specs/memory-recall.md rules 42-45).
 #
 # Fail-safe contract: `recall-block` must NEVER break a prompt build — with
 # the embedder down it emits the pinned tier plus a loud warning and exits 0.
@@ -190,8 +194,23 @@ SUPERSEDE_SIM = 0.92
 # would read a record of not-knowing as though it were knowledge. Both stay
 # readable on request through the deliberate CLI paths (list, search).
 HIDDEN_KINDS = ("observation", "miss")
-RECALL_KINDS = ("directive", "note")
+RECALL_KINDS = ("directive", "note", "episodic")
 RECORD_KINDS = RECALL_KINDS + HIDDEN_KINDS
+# The episodic pool (memory-recall.md rules 46-48): her own moments, retrieved
+# by similarity as a THIRD pool beside notes and directives — its own floor
+# and cap, so no kind crowds another out — ranked by similarity × the
+# occurred-recency factor (floored: an old evening that is genuinely the best
+# match is dimmed, never buried) × the capped use bonus. No confidence decay,
+# ever: a decay clock on moments would re-create by arithmetic the
+# throw-away-my-life defect the kind exists to close. The floor sits under
+# SIM_FLOOR on purpose — rule 50's whole argument is more memories, scored,
+# over few memories, curated.
+EPISODIC_TOP_K = 5
+EPISODIC_FLOOR = 0.30
+# A query that NAMES a calendar day gets that day's moments regardless of the
+# similarity floor (rule 48) — "what happened on the 5th" embeds nowhere near
+# the evening itself — capped so one crowded day cannot flood a block.
+EPISODIC_DATE_CAP = 12
 
 # The memories table, spelled once: the CREATE in Store.__init__ and the
 # rebuild in Store._widen_kind_check must agree, or a migrated store and a
@@ -200,7 +219,7 @@ MEMORIES_COLUMNS_SQL = """
     id         INTEGER PRIMARY KEY,
     text       TEXT NOT NULL,
     kind       TEXT NOT NULL
-               CHECK (kind IN ('directive','note','observation','miss')),
+               CHECK (kind IN ('directive','note','episodic','observation','miss')),
     pinned     INTEGER NOT NULL DEFAULT 0,
     source     TEXT NOT NULL DEFAULT 'self',
     topics     TEXT NOT NULL DEFAULT '',
@@ -222,8 +241,15 @@ MEMORIES_COLUMNS_SQL = """
     -- the record was written about it. NULL means unknown, and
     -- unknown is left unknown rather than guessed. Rendered in
     -- relative human terms by the recall block; read by
-    -- score_row's recency-of-relevance factor (notes only).
-    occurred   TEXT
+    -- score_row's recency-of-relevance factor (notes and
+    -- episodic records).
+    occurred   TEXT,
+    -- Episodic fields (memory-recall.md rule 46): who was there,
+    -- and her own first-person opinion of the moment. Empty for
+    -- every other kind; both rendered by the block and both part
+    -- of what is embedded.
+    participants TEXT NOT NULL DEFAULT '',
+    opinion    TEXT NOT NULL DEFAULT ''
 """
 
 
@@ -244,6 +270,63 @@ def parse_iso(ts):
     return parsed.astimezone() if parsed.tzinfo is None else parsed
 
 
+def _same_day(a, b):
+    """Whether two `occurred` stamps name the same calendar day. Either side
+    unknown is NOT the same day: episodic supersession (rule 51) must never
+    collapse a dated evening into an undated one, or the reverse."""
+    pa, pb = parse_iso(a) if a else None, parse_iso(b) if b else None
+    return bool(pa and pb and pa.date() == pb.date())
+
+
+# Rule 48's date parse: only shapes that need no guessing. The ISO form, and
+# a prose month-with-day either way round ("August 5th", "5 August", with an
+# optional year). A bare year defaults to the most recent PAST occurrence of
+# that month and day — "what happened on August 5th" asked in March means
+# last August, not the one five months ahead.
+_MONTH_NAMES = ["january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november",
+                "december"]
+_QUERY_ISO_RE = re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)\b")
+_QUERY_MDY_RE = re.compile(
+    r"\b(" + "|".join(m[:3] + r"(?:" + m[3:] + r")?" for m in _MONTH_NAMES)
+    + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(20\d\d))?\b", re.I)
+_QUERY_DMY_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?("
+    + "|".join(m[:3] + r"(?:" + m[3:] + r")?" for m in _MONTH_NAMES)
+    + r")\.?(?:\s*,?\s*(20\d\d))?\b", re.I)
+
+
+def query_dates(text, today=None):
+    """The calendar days a query names, as ISO date strings. Empty for a
+    query that names none — which is nearly every query, so the common path
+    is one regex scan and out."""
+    today = today or datetime.now().astimezone().date()
+    found = set()
+
+    def month_num(name):
+        return next(i + 1 for i, m in enumerate(_MONTH_NAMES)
+                    if m.startswith(name.lower()[:3]))
+
+    def add(year, month, day, year_known):
+        try:
+            d = datetime(year, month, day).date()
+        except ValueError:
+            return
+        if not year_known and d > today:
+            d = d.replace(year=d.year - 1)
+        found.add(d.isoformat())
+
+    for m in _QUERY_ISO_RE.finditer(text or ""):
+        add(int(m.group(1)), int(m.group(2)), int(m.group(3)), True)
+    for m in _QUERY_MDY_RE.finditer(text or ""):
+        add(int(m.group(3)) if m.group(3) else today.year,
+            month_num(m.group(1)), int(m.group(2)), bool(m.group(3)))
+    for m in _QUERY_DMY_RE.finditer(text or ""):
+        add(int(m.group(3)) if m.group(3) else today.year,
+            month_num(m.group(2)), int(m.group(1)), bool(m.group(3)))
+    return sorted(found)
+
+
 def score_row(row, now):
     """The 13:15 scoring formula, with temporal grounding. Notes:
     cosine × confidence × decay(last use) × (1 + log(1+use_count) × 0.15)
@@ -254,14 +337,14 @@ def score_row(row, now):
     OCCURRED_FLOOR, so what mattered recently surfaces first while an old
     note that is genuinely the best match is dimmed, never buried; a row
     whose occurred is unknown takes no factor at all, because an unknown left
-    unknown must not read as either fresh or stale. Directives: raw cosine,
-    untouched — the user's rules do not age out."""
+    unknown must not read as either fresh or stale. Episodic (rule 47):
+    similarity × the same floored recency factor × the capped use bonus —
+    NO confidence, NO last-use decay, ever: her life does not expire for
+    want of being asked about. Directives: raw cosine, untouched — the
+    user's rules do not age out."""
     sim = row[9]
-    if row[2] != "note":
+    if row[2] not in ("note", "episodic"):
         return sim
-    ts = parse_iso(row[10] or row[7])
-    days = max(0.0, (now - ts).total_seconds() / 86400) if ts else 0.0
-    decay = 0.5 ** (days / DECAY_HALF_LIFE_DAYS)
     boost = min(1.0 + math.log1p(row[11] or 0) * REINFORCE_WEIGHT,
                 REINFORCE_MAX_BOOST)
     occurred = parse_iso(row[12]) if len(row) > 12 and row[12] else None
@@ -270,6 +353,11 @@ def score_row(row, now):
         odays = max(0.0, (now - occurred).total_seconds() / 86400)
         recency = OCCURRED_FLOOR + (1.0 - OCCURRED_FLOOR) \
             * 0.5 ** (odays / OCCURRED_HALF_LIFE_DAYS)
+    if row[2] == "episodic":
+        return sim * boost * recency
+    ts = parse_iso(row[10] or row[7])
+    days = max(0.0, (now - ts).total_seconds() / 86400) if ts else 0.0
+    decay = 0.5 ** (days / DECAY_HALF_LIFE_DAYS)
     return sim * row[6] * decay * boost * recency
 
 
@@ -424,24 +512,35 @@ class Store:
         if "occurred" not in cols:
             self.db.execute("ALTER TABLE memories ADD COLUMN occurred TEXT")
             self.db.commit()
+        # Stores born before the episodic kind: the two fields of rule 46,
+        # added in place exactly as `occurred` was, before the CHECK rebuild
+        # below copies every column by name.
+        if "participants" not in cols:
+            self.db.execute("ALTER TABLE memories ADD COLUMN participants"
+                            " TEXT NOT NULL DEFAULT ''")
+            self.db.execute("ALTER TABLE memories ADD COLUMN opinion"
+                            " TEXT NOT NULL DEFAULT ''")
+            self.db.commit()
         self._widen_kind_check()
 
     def _widen_kind_check(self):
         """Stores born before the observation/miss kinds carry the two-kind
-        CHECK, and sqlite cannot ALTER a constraint in place: the table is
+        CHECK, and stores born before the episodic kind carry the four-kind
+        one; sqlite cannot ALTER a constraint in place, so the table is
         rebuilt around the data. Every column travels by name — ids
         explicitly, so the vec table's rowids still point at the same records
         and the vectors are never touched; use_count and last_used_at ride
-        with the rest. Runs after the `occurred` backfill above, so a store
-        old enough to lack both is first given the column, then rebuilt."""
+        with the rest. Runs after the column backfills above, so a store old
+        enough to lack any of the late columns is first given them, then
+        rebuilt."""
         sql = self.db.execute(
             "SELECT sql FROM sqlite_master WHERE type='table'"
             " AND name='memories'").fetchone()[0]
-        if "'observation'" in sql:
+        if "'episodic'" in sql:
             return
         cols = ("id, text, kind, pinned, source, topics, confidence, status,"
                 " supersedes, created, last_seen, last_used_at, use_count,"
-                " occurred")
+                " occurred, participants, opinion")
         self.db.executescript(f"""
             BEGIN;
             CREATE TABLE memories_migrate ({MEMORIES_COLUMNS_SQL});
@@ -451,20 +550,31 @@ class Store:
             COMMIT;
         """)
 
-    def embed_text(self, rec_text, topics=""):
-        body = rec_text if not topics else f"{rec_text} [topics: {topics}]"
+    def embed_text(self, rec_text, topics="", participants="", opinion=""):
+        # An episodic record is findable by its opinion and its people as much
+        # as by the event — "that evening we laughed about X with Y" has to
+        # match on all three — so both fields ride the embedded body (rule 46).
+        body = rec_text
+        if opinion:
+            body += f" {opinion}"
+        if participants:
+            body += f" [with: {participants}]"
+        if topics:
+            body += f" [topics: {topics}]"
         return embed([body])[0]
 
     def insert(self, text, kind="note", pinned=False, source="self",
-               topics="", vec=None, occurred=None):
+               topics="", vec=None, occurred=None, participants="",
+               opinion=""):
         if vec is None:
-            vec = self.embed_text(text, topics)
+            vec = self.embed_text(text, topics, participants, opinion)
         now = now_iso()
         cur = self.db.execute(
             "INSERT INTO memories (text, kind, pinned, source, topics, created,"
-            " last_seen, occurred) VALUES (?,?,?,?,?,?,?,?)",
+            " last_seen, occurred, participants, opinion)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (text, kind, 1 if pinned else 0, source, topics, now, now,
-             occurred or None))
+             occurred or None, participants or "", opinion or ""))
         self.db.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?,?)",
                         (cur.lastrowid, pack(vec)))
         self.db.commit()
@@ -491,12 +601,30 @@ class Store:
         rows = self.db.execute(
             "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
             "       m.confidence, m.created, m.last_seen, 1.0 - v.distance AS sim,"
-            "       m.last_used_at, m.use_count, m.occurred"
+            "       m.last_used_at, m.use_count, m.occurred, m.participants,"
+            "       m.opinion"
             " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
             f" WHERE {where}"
             " ORDER BY sim DESC",
             params).fetchall()
         return rows[:k] if k else rows
+
+    def on_date(self, dates, cap=None):
+        """Active episodic rows whose `occurred` falls on one of `dates`
+        (ISO YYYY-MM-DD strings), oldest moment first, in the same row shape
+        knn returns — similarity 1.0, because a named day is an explicit ask,
+        not a match (rule 48)."""
+        dates = sorted(set(dates))
+        if not dates:
+            return []
+        q = ("SELECT id, text, kind, pinned, source, topics, confidence,"
+             "       created, last_seen, 1.0, last_used_at, use_count,"
+             "       occurred, participants, opinion"
+             " FROM memories WHERE status='active' AND kind='episodic'"
+             "   AND occurred IS NOT NULL AND date(occurred) IN (%s)"
+             " ORDER BY occurred" % ",".join("?" * len(dates)))
+        rows = self.db.execute(q, dates).fetchall()
+        return rows[:cap] if cap else rows
 
     def vec_of(self, rec_id):
         blob = self.db.execute("SELECT embedding FROM memories_vec WHERE rowid=?",
@@ -550,6 +678,22 @@ class Store:
             if taken >= k:
                 break
             taken += take(row)
+        # The episodic pool (rule 47): her own moments, a third pool with its
+        # own floor and cap so no kind crowds another out, ranked by the
+        # episodic score — similarity × floored occurred-recency × use bonus.
+        episodic = sorted((r for r in rows
+                           if r[2] == "episodic" and r[9] >= EPISODIC_FLOOR),
+                          key=lambda r: score_row(r, now), reverse=True)
+        etaken = 0
+        for row in episodic:
+            if etaken >= EPISODIC_TOP_K:
+                break
+            etaken += take(row)
+        # Rule 48: a query that names a calendar day gets that day's moments
+        # whatever their similarity — "what happened on the 5th" embeds
+        # nowhere near the evening itself.
+        for row in self.on_date(query_dates(query), cap=EPISODIC_DATE_CAP):
+            take(row)
         directives = 0
         for row in rows:
             if directives >= DIRECTIVE_CAP:
@@ -576,13 +720,16 @@ class Store:
         return picked, (t1 - t0) * 1000, (t2 - t1) * 1000
 
     def add_deduped(self, text, kind="note", pinned=False, source="self",
-                    topics="", occurred=None):
+                    topics="", occurred=None, participants="", opinion=""):
         """Insert with the ingest rules: same-kind exact text -> skip and bump
         last_seen; same-kind similar-but-different -> the new record
         supersedes the old. Returns (action, id). A duplicate that arrives
         knowing WHEN fills an existing record's unknown `occurred` — new
         knowledge about an old record, not a new record — and never overwrites
-        one already known."""
+        one already known. Episodic dedup is NARROW (rule 51): an exact match
+        is a duplicate, the supersede threshold bites only when both records
+        describe the same day — two similar evenings a week apart are two
+        evenings — and anything else adds."""
         if kind in HIDDEN_KINDS:
             # Rule 44: one record per night, one per asking. A similar record
             # on another day is the recurrence the series exists to
@@ -591,7 +738,7 @@ class Store:
             # for. No dedup, no supersession, ever.
             return "added", self.insert(text, kind, pinned, source, topics,
                                         occurred=occurred)
-        vec = self.embed_text(text, topics)
+        vec = self.embed_text(text, topics, participants, opinion)
         best = None
         for row in self.knn(vec, 5, kinds=(kind,)):
             if row[2] == kind:
@@ -605,9 +752,11 @@ class Store:
                                 (occurred, best[0]))
             self.db.commit()
             return "duplicate", best[0]
-        if best and best[9] >= SUPERSEDE_SIM:
+        if best and best[9] >= SUPERSEDE_SIM and (
+                kind != "episodic" or _same_day(occurred, best[12])):
             new_id = self.insert(text, kind, pinned, source, topics, vec=vec,
-                                 occurred=occurred)
+                                 occurred=occurred, participants=participants,
+                                 opinion=opinion)
             self.db.execute(
                 "UPDATE memories SET status='superseded' WHERE id=?", (best[0],))
             self.db.execute(
@@ -615,7 +764,8 @@ class Store:
             self.db.commit()
             return "superseded", new_id
         return "added", self.insert(text, kind, pinned, source, topics, vec=vec,
-                                    occurred=occurred)
+                                    occurred=occurred, participants=participants,
+                                    opinion=opinion)
 
     def pinned_rows(self):
         # The hidden kinds are excluded even here: every caller of this tier
@@ -624,7 +774,8 @@ class Store:
         # exactly what rule 43 forbids. The deliberate list still shows it.
         return self.db.execute(
             "SELECT id, text, kind, pinned, source, topics, confidence,"
-            "       created, last_seen, 1.0, last_used_at, use_count, occurred"
+            "       created, last_seen, 1.0, last_used_at, use_count, occurred,"
+            "       participants, opinion"
             " FROM memories WHERE status='active' AND pinned=1"
             "   AND kind NOT IN ('observation','miss')"
             " ORDER BY kind DESC, id").fetchall()
@@ -1003,6 +1154,7 @@ def build_block(rows, warning=""):
 
     directives = [r for r in rows if r[2] == "directive"]
     notes = [r for r in rows if r[2] == "note"]
+    episodic = [r for r in rows if r[2] == "episodic"]
     # Retrieval never hands the hidden kinds in (rule 43); these sections
     # exist so that a deliberate future caller CANNOT render one unlabelled.
     # The label is the enforcement (rule 45): an observation is one night and
@@ -1020,6 +1172,21 @@ def build_block(rows, warning=""):
     if notes:
         out.append("\nWhat I know from my own time:")
         out.extend(line(r) for r in notes)
+    if episodic:
+        # Rule 49: the moment, whole — the thing itself, its when-ness, who
+        # was there, and her own opinion beside it, never a summary that
+        # flattens it back into a note.
+        out.append("\nMoments from my own life:")
+        for r in episodic:
+            stamp = when(r)
+            who = r[13] if len(r) > 13 and r[13] else ""
+            opinion = r[14] if len(r) > 14 and r[14] else ""
+            details = "; ".join(d for d in (stamp, f"with {who}" if who else "")
+                                if d)
+            entry = f"- {r[1]}" + (f" ({details})" if details else "")
+            if opinion:
+                entry += f" — {opinion}"
+            out.append(entry)
     if observations:
         out.append("\nShapes I have seen (one night each — a series may be "
                    "spoken, with its n; a single night never):")
@@ -1028,7 +1195,7 @@ def build_block(rows, warning=""):
         out.append("\nWhat I was asked and had nothing for (one asking each "
                    "— never to be spoken as a pattern):")
         out.extend(line(r) for r in misses)
-    return "\n".join(out), directives + notes + observations + misses
+    return "\n".join(out), directives + notes + episodic + observations + misses
 
 
 def format_block(rows, warning=""):
@@ -1086,13 +1253,25 @@ def cmd_recall_block(store, args):
 
 INGEST_PROMPT = """You are distilling one day of a desktop assistant's \
 conversations into her long-term memory store. From the material below, \
-extract ONLY what earns a permanent record:
+extract what earns a record:
 - the user stated or corrected a preference, rule, or standing instruction \
 -> kind "directive", written in second person about him ("He wants...", \
 "Stay silent when...")
 - the assistant finished, discovered, or was proven wrong about something \
 she would otherwise re-derive -> kind "note"
 - a stable fact about the machine, a person, or a project -> kind "note"
+- a MOMENT of the assistant's own life -> kind "episodic": a conversation \
+she enjoyed, a person met or spoken of, a plan made, a joke that landed, an \
+opinion she formed, something the two of them did together, the texture of \
+an evening. Written in her first person, the moment itself — what happened, \
+never a lesson extracted from it. Add "participants": who was there, and \
+"opinion": her own take on the moment, one sentence in her voice ("I \
+loved...", "It bored me...", "I keep thinking about..."). The keep-rate for \
+moments is deliberately WIDE: an ordinary day that held any real \
+conversation holds moments, and retrieval scoring will sort them later — do \
+not curate her life down to its most useful residue. HARVEST MOMENTS EVEN \
+FROM material that also yields a directive or a note: the lesson and the \
+evening it came from are two different records.
 - the day's SHAPE, beyond its contents -> kind "observation": gaps (how long \
 the silences ran, and whether the return continued the subject or opened a \
 new one), texture (where the user was playful, where he pushed back twice on \
@@ -1106,19 +1285,25 @@ assistant had nothing anywhere -> kind "miss": one line, naming the question \
 in his own words. The test: would a person who lives in this house have \
 known? General knowledge the assistant happened not to know is ignorance, \
 not a blind spot, and is NOT a miss.
-Do NOT record: transient state, step-by-step narration, anything scoped to a \
-single conversation, greetings, weather, or anything a file on disk already \
-answers. Few good records beat many weak ones; an empty day is a valid answer.
+Do NOT record: transient state, step-by-step narration, greetings, weather, \
+or anything a file on disk already answers. For directives and notes, few \
+good records beat many weak ones — that discipline does NOT apply to \
+"episodic"; an empty day is a valid answer only for a day that truly held \
+nothing.
 
 When a record describes something that HAPPENED — an event, a decision, a \
 discovery, a correction given on a day — add "occurred": the date it happened \
-as YYYY-MM-DD. The material's own headers carry each chunk's date; use them. \
-A standing fact with no event behind it, or a date you are not sure of, gets \
-NO "occurred" field at all: an unknown left unknown beats a guess.
+as YYYY-MM-DD (for an episodic moment add the time too, YYYY-MM-DD HH:MM, \
+when the material states it). The material's own headers carry each chunk's \
+date; use them. A standing fact with no event behind it, or a date you are \
+not sure of, gets NO "occurred" field at all: an unknown left unknown beats \
+a guess.
 
 Reply with ONLY a JSON array (no prose, no code fence):
-[{"text": "...", "kind": "directive"|"note"|"observation"|"miss", \
-"topics": "comma,separated", "occurred": "YYYY-MM-DD"}]
+[{"text": "...", "kind": "directive"|"note"|"episodic"|"observation"|"miss", \
+"topics": "comma,separated", "occurred": "YYYY-MM-DD", \
+"participants": "...", "opinion": "..."}]
+("participants" and "opinion" belong to "episodic" records only.)
 
 MATERIAL:
 """
@@ -1466,8 +1651,9 @@ def run_claude(prompt, model, timeout=600, log=None, kind="classify"):
     raise RuntimeError(f"every account refused ({refused} tried) — {last}")
 
 
-def extract_candidates(material, model):
-    body = run_claude(INGEST_PROMPT + material, model, kind="ingest")
+def extract_candidates(material, model, prompt=None):
+    body = run_claude((prompt or INGEST_PROMPT) + material, model,
+                      kind="ingest")
     m = re.search(r"\[.*\]", body, re.S)
     if not m:
         return []
@@ -1528,6 +1714,13 @@ def cmd_ingest(store, args):
         occurred = (cand.get("occurred") or "").strip() or None
         if occurred and not parse_iso(occurred):
             occurred = None
+        # The episodic fields (rule 46) ride only on their own kind: a
+        # distiller that decorates a note with an opinion does not get to
+        # smuggle one into the schema.
+        participants = (cand.get("participants") or "").strip() \
+            if kind == "episodic" else ""
+        opinion = (cand.get("opinion") or "").strip() \
+            if kind == "episodic" else ""
         if args.dry_run:
             # Rule 41 (MAJ-33): a dry run mutates nothing. The dedup verdict
             # only exists on the far side of add_deduped's writes, so the
@@ -1538,7 +1731,8 @@ def cmd_ingest(store, args):
             continue
         action, rec_id = store.add_deduped(
             text, kind=kind, source=cand.get("source", "conversation"),
-            topics=cand.get("topics", ""), occurred=occurred)
+            topics=cand.get("topics", ""), occurred=occurred,
+            participants=participants, opinion=opinion)
         counts[action] += 1
         print(f"  {action} #{rec_id} [{kind}]"
               + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
@@ -1552,6 +1746,169 @@ def cmd_ingest(store, args):
         json.dump(cursor, f, indent=1)
     print(f"ingest: {counts['added']} added, {counts['superseded']} superseded, "
           f"{counts['duplicate']} duplicates, {counts['rejected']} rejected")
+    return 0
+
+
+# --- backfill-episodic: her life, recovered from the archive ----------------
+# specs/memory-recall.md rule 52. The voice archive holds months of finished
+# conversations, one per file, the filename stating when each began — and the
+# store built from nightly lessons holds none of it. This pass reads the
+# archive OLDEST FIRST, one calendar day of transcripts per distiller batch,
+# harvesting MOMENTS ONLY: a months-old directive or note is stale by
+# construction and must not be resurrected. A durable cursor advances after
+# each day lands, so a bounded round (--days) resumes where the last stopped
+# and a run that dies mid-day loses only that day.
+
+ARCHIVE_PROMPT = """You are reading archived conversations between a desktop \
+assistant and her user, months after the fact, to recover her LIFE — the \
+moments, not the lessons. Extract kind "episodic" records ONLY:
+- a conversation she enjoyed, a joke that landed, a plan made, something the \
+two of them did together, a person met or spoken of, an opinion she formed, \
+the texture of an evening — the moment itself, in her first person, never a \
+lesson extracted from it.
+Each record carries: "text" (what happened, in her own words), \
+"participants" (who was there — the user at least, and anyone else named), \
+"opinion" (her own take on the moment, one sentence in her first-person \
+voice), "topics" (comma,separated), and "occurred" — WHEN the thing \
+happened. Each chunk's header states when that conversation began; use that \
+date, with the time (YYYY-MM-DD HH:MM) for the moment's own conversation.
+The keep-rate is deliberately WIDE: an ordinary conversation with any real \
+exchange in it holds a moment, and retrieval scoring will sort them later — \
+do not curate her life down to its most useful residue. Skip only material \
+with nothing lived in it (bare commands, pure dictation, error loops).
+Do NOT extract directives, notes, observations, or misses from this old \
+material: a months-old standing rule is stale by construction, and the \
+lessons were already taken the night they happened.
+
+Reply with ONLY a JSON array (no prose, no code fence):
+[{"text": "...", "kind": "episodic", "participants": "...", \
+"opinion": "...", "topics": "comma,separated", \
+"occurred": "YYYY-MM-DD HH:MM"}]
+
+MATERIAL:
+"""
+
+ARCHIVE_FILE_RE = re.compile(r"^(20\d{6})-(\d{6})\.txt$")
+
+
+def archive_file_when(name):
+    """The moment a transcript began, from its own filename — the one source
+    that is not a guess (rule 52). None for a name outside the shape."""
+    m = ARCHIVE_FILE_RE.match(name)
+    if not m:
+        return None
+    d, t = m.group(1), m.group(2)
+    stamp = f"{d[:4]}-{d[4:6]}-{d[6:]} {t[:2]}:{t[2:4]}:{t[4:]}"
+    return stamp if parse_iso(stamp) else None
+
+
+def cmd_backfill_episodic(store, args):
+    cursor_path = os.path.join(store.dir, "archive-cursor.json")
+    cursor = {}
+    if os.path.isfile(cursor_path):
+        with open(cursor_path) as f:
+            cursor = json.load(f)
+    done = cursor.setdefault("files", {})
+
+    if not os.path.isdir(args.archive_dir):
+        print(f"backfill-episodic: no archive at {args.archive_dir}")
+        return 1
+    # Oldest first is load-bearing: later records supersede earlier ones
+    # under rule 51, never the reverse. The filename shape sorts
+    # chronologically by construction.
+    todo = {}
+    for name in sorted(os.listdir(args.archive_dir)):
+        when = archive_file_when(name)
+        if not when:
+            continue
+        path = os.path.join(args.archive_dir, name)
+        if not os.path.isfile(path):
+            continue
+        if done.get(name) == os.path.getsize(path):
+            continue
+        todo.setdefault(when[:10], []).append((name, when))
+    if not todo:
+        print("backfill-episodic: nothing new — the cursor covers the "
+              "whole archive")
+        return 0
+
+    days = sorted(todo)
+    this_round = days[:args.days] if args.days > 0 else days
+    print(f"backfill-episodic: {len(days)} archive days pending, taking "
+          f"{len(this_round)} this round ({this_round[0]} .. "
+          f"{this_round[-1]})" + (" [dry run]" if args.dry_run else ""))
+
+    counts = {"added": 0, "duplicate": 0, "superseded": 0, "rejected": 0}
+    would = 0
+    for day in this_round:
+        chunks, sizes = [], {}
+        for name, when in todo[day]:
+            path = os.path.join(args.archive_dir, name)
+            with open(path, errors="replace") as f:
+                body = f.read()
+            sizes[name] = os.path.getsize(path)
+            chunks.append(f"[conversation began {when}]\n{body}")
+        candidates = []
+        for material in ("\n\n".join(w)
+                         for w in window_chunks(chunks, args.max_chars)):
+            candidates += extract_candidates(material, args.model,
+                                             prompt=ARCHIVE_PROMPT)
+        day_counts = dict.fromkeys(counts, 0)
+        for cand in candidates:
+            text = (cand.get("text") or "").strip()
+            if not text or cand.get("kind", "episodic") != "episodic":
+                # Rule 52: moments only. A directive or note offered from
+                # months-old material is stale by construction — dropped,
+                # counted, named.
+                counts["rejected"] += 1
+                day_counts["rejected"] += 1
+                continue
+            occurred = (cand.get("occurred") or "").strip() or None
+            if occurred and not parse_iso(occurred):
+                occurred = None
+            if not occurred:
+                # The filename's day is knowledge, not a guess (rule 46):
+                # a candidate the distiller left undated still happened on
+                # the day whose transcripts it came from.
+                occurred = day
+            if args.dry_run:
+                would += 1
+                print(f"  would add ({occurred}) {text[:80]}")
+                continue
+            action, rec_id = store.add_deduped(
+                text, kind="episodic", source="archive",
+                topics=cand.get("topics", ""), occurred=occurred,
+                participants=(cand.get("participants") or "").strip(),
+                opinion=(cand.get("opinion") or "").strip())
+            counts[action] += 1
+            day_counts[action] += 1
+            print(f"  {action} #{rec_id} ({occurred}) {text[:80]}")
+        if args.dry_run:
+            continue
+        # The cursor advances per DAY, the moment the day's records are in:
+        # a round that dies on day four resumes at day four, and a finished
+        # day is never re-read (rule 52).
+        done.update(sizes)
+        tmp = cursor_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cursor, f, indent=1)
+        os.replace(tmp, cursor_path)
+        print(f"  {day}: {len(sizes)} files, {day_counts['added']} added, "
+              f"{day_counts['superseded']} superseded, "
+              f"{day_counts['duplicate']} duplicates — cursor advanced")
+
+    remaining = len(days) - len(this_round)
+    if args.dry_run:
+        print(f"backfill-episodic: dry run — {would} would be offered, "
+              f"{counts['rejected']} rejected; nothing written, cursor "
+              "not advanced")
+    else:
+        print(f"backfill-episodic: {counts['added']} added, "
+              f"{counts['superseded']} superseded, "
+              f"{counts['duplicate']} duplicates, "
+              f"{counts['rejected']} rejected"
+              + (f"; {remaining} archive days remain — run again to continue"
+                 if remaining else "; the archive is fully ingested"))
     return 0
 
 
@@ -1699,16 +2056,50 @@ def cmd_add(store, args):
     if occurred and not parse_iso(occurred):
         sys.exit(f"memory add: --occurred {occurred!r} is not a date I can "
                  "parse (use YYYY-MM-DD; leave it off when unknown)")
+    participants = (args.participants or "").strip()
+    opinion = (args.opinion or "").strip()
+    if (participants or opinion) and args.kind != "episodic":
+        sys.exit("memory add: --participants and --opinion belong to "
+                 "--kind episodic only")
     if args.no_dedup:
         rec_id = store.insert(text, args.kind, args.pin, args.source,
-                              args.topics, occurred=occurred)
+                              args.topics, occurred=occurred,
+                              participants=participants, opinion=opinion)
         action = "added"
     else:
         action, rec_id = store.add_deduped(text, args.kind, args.pin,
                                            args.source, args.topics,
-                                           occurred=occurred)
+                                           occurred=occurred,
+                                           participants=participants,
+                                           opinion=opinion)
     print(f"{action} #{rec_id} [{args.kind}]"
           + (f" occurred={occurred}" if occurred else ""))
+    return 0
+
+
+def cmd_on(store, args):
+    """The deliberate half of rule 48: the day's moments, whole — episodic
+    first, then any other kind whose `occurred` falls on the day, labelled."""
+    day = parse_iso(args.date)
+    if not day:
+        sys.exit(f"memory on: {args.date!r} is not a date I can parse "
+                 "(use YYYY-MM-DD)")
+    day = day.date().isoformat()
+    rows = store.db.execute(
+        "SELECT id, kind, occurred, participants, opinion, text"
+        " FROM memories WHERE status='active' AND occurred IS NOT NULL"
+        "   AND date(occurred)=?"
+        " ORDER BY CASE WHEN kind='episodic' THEN 0 ELSE 1 END, occurred, id",
+        (day,)).fetchall()
+    for rec_id, kind, occurred, participants, opinion, text in rows:
+        head = f"#{rec_id} [{kind}] {occurred}"
+        if participants:
+            head += f"  with {participants}"
+        print(head)
+        print(f"  {text}")
+        if opinion:
+            print(f"  my take: {opinion}")
+    print(f"-- {len(rows)} records from {day}")
     return 0
 
 
@@ -1751,7 +2142,8 @@ def cmd_dump(store, args):
     # for. Everything, superseded and retired included.
     rows = store.db.execute(
         "SELECT id, text, kind, pinned, source, topics, confidence, status,"
-        "       supersedes, created, last_seen, occurred"
+        "       supersedes, created, last_seen, occurred, participants,"
+        "       opinion"
         " FROM memories ORDER BY id").fetchall()
     for r in rows:
         print(f"#{r[0]} [{r[2]}]{' PINNED' if r[3] else ''} "
@@ -1762,7 +2154,11 @@ def cmd_dump(store, args):
             print(f"  supersedes: #{r[8]}")
         print(f"  created {r[9]}  last_seen {r[10]}"
               + (f"  occurred {r[11]}" if r[11] else ""))
+        if r[12]:
+            print(f"  with: {r[12]}")
         print(f"  {r[1]}")
+        if r[13]:
+            print(f"  my take: {r[13]}")
         print()
     print(f"-- {len(rows)} records in {store.path}")
     return 0
@@ -1855,9 +2251,19 @@ def main():
                    help="when the thing this record describes happened "
                         "(YYYY-MM-DD) — distinct from when the record is "
                         "written; leave off when unknown, never guess")
+    p.add_argument("--participants", default="",
+                   help="episodic only: who was there")
+    p.add_argument("--opinion", default="",
+                   help="episodic only: her own first-person take on the "
+                        "moment")
     p.add_argument("--no-dedup", action="store_true")
     p.add_argument("text", nargs="+")
     p.set_defaults(fn=cmd_add)
+
+    p = sub.add_parser("on", help="what happened on a day: the moments "
+                                  "themselves, episodic first")
+    p.add_argument("date", help="YYYY-MM-DD")
+    p.set_defaults(fn=cmd_on)
 
     p = sub.add_parser("search", help="semantic search")
     p.add_argument("-n", type=int, default=TOP_K)
@@ -1900,6 +2306,23 @@ def main():
     p.add_argument("--max-chars", type=int, default=150000)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_ingest)
+
+    p = sub.add_parser("backfill-episodic",
+                       help="recover her life from the voice archive: "
+                            "episodic records only, oldest first, in "
+                            "bounded resumable rounds (rule 52)")
+    p.add_argument("--archive-dir",
+                   default=os.environ.get("MEMORY_ARCHIVE_DIR")
+                   or os.path.expanduser("~/Claude/System/voice-claude-archive"))
+    p.add_argument("--days", type=int, default=5,
+                   help="archive days to take this round (0 = all); the "
+                        "cursor advances per finished day, so a long run "
+                        "resumes instead of running away")
+    p.add_argument("--model",
+                   default=os.environ.get("MEMORY_INGEST_MODEL") or "sonnet")
+    p.add_argument("--max-chars", type=int, default=100000)
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_backfill_episodic)
 
     p = sub.add_parser("recall-block", help="prompt block for a wake (fail-safe)")
     p.add_argument("--query", default="")

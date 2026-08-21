@@ -588,11 +588,13 @@ def days_ago(n):
 
 
 def fake_row(kind="note", sim=0.8, conf=1.0, created_days=0, used_days=None,
-             uses=0, text="x", rec_id=1, occurred_days=None):
+             uses=0, text="x", rec_id=1, occurred_days=None,
+             participants="", opinion=""):
     return (rec_id, text, kind, 0, "self", "", conf, days_ago(created_days),
             days_ago(0), sim,
             None if used_days is None else days_ago(used_days), uses,
-            None if occurred_days is None else days_ago(occurred_days))
+            None if occurred_days is None else days_ago(occurred_days),
+            participants, opinion)
 
 
 class TestScoreFormula(unittest.TestCase):
@@ -859,6 +861,337 @@ class TestHiddenKinds(StoreCase):
         self.assertEqual(len(kept), 2)
 
 
+class TestEpisodic(StoreCase):
+    """The episodic kind (memory-recall.md rules 46-51): her own moments,
+    retrieved by similarity AND by date, rendered whole, never decayed,
+    deduplicated only narrowly."""
+
+    MOMENT = ("We stayed up late talking about terrible sci-fi films and he "
+              "did all the robot voices.")
+
+    def seed_moment(self, occurred="2026-08-05 21:30"):
+        return self.store.insert(
+            self.MOMENT, kind="episodic", occurred=occurred,
+            participants="the user",
+            opinion="I laughed harder than I have in weeks.")
+
+    def test_a_moment_is_retrieved_by_similarity(self):
+        # The deliberate opposite of the hidden kinds (rule 47): the moment
+        # itself answers "that evening we talked about X" — not a lesson.
+        rec = self.seed_moment()
+        self.store.insert("Correct robot-voice pronunciation before speaking.",
+                          kind="note")
+        rows, _, _ = self.store.search(
+            "that evening we laughed about bad sci-fi films")
+        self.assertIn(rec, [r[0] for r in rows])
+
+    def test_the_block_renders_the_moment_whole(self):
+        # Rule 49: its own labelled section, the when-ness, who was there,
+        # and her opinion beside the thing itself.
+        rows = [fake_row(kind="episodic", rec_id=1, text=self.MOMENT,
+                         occurred_days=3, participants="the user",
+                         opinion="I laughed harder than I have in weeks.")]
+        block, kept = memory.build_block(rows)
+        self.assertIn("Moments from my own life:", block)
+        self.assertIn(self.MOMENT, block)
+        self.assertIn("three days ago", block)
+        self.assertIn("with the user", block)
+        self.assertIn("— I laughed harder than I have in weeks.", block)
+        self.assertEqual([r[0] for r in kept], [1])
+
+    def test_a_date_query_returns_the_day_not_a_lesson(self):
+        """Rule 48: 'what happened on the 5th' embeds nowhere near the
+        evening itself, so the day's moments ride regardless of the
+        similarity floor. Proven with the floor raised past anything an
+        embedding can reach: the similarity pool is out of the game entirely,
+        and the named day's moment still arrives — as an ask, similarity 1.0
+        — while another day's moment does not arrive at all."""
+        rec = self.seed_moment("2026-08-05 21:30")
+        other = self.store.insert("A quiet walk before the rain came.",
+                                  kind="episodic", occurred="2026-08-12",
+                                  participants="the user",
+                                  opinion="The air smelled wonderful.")
+        real_floor = memory.EPISODIC_FLOOR
+        memory.EPISODIC_FLOOR = 0.99
+        try:
+            for query in ("what happened on August 5th?",
+                          "the evening of 2026-08-05"):
+                rows, _, _ = self.store.search(query)
+                episodic = {r[0]: r for r in rows if r[2] == "episodic"}
+                self.assertIn(rec, episodic, query)
+                self.assertEqual(episodic[rec][9], 1.0, query)
+                self.assertNotIn(other, episodic, query)
+        finally:
+            memory.EPISODIC_FLOOR = real_floor
+        # And the day listing itself is day-keyed, whole, oldest first.
+        self.assertEqual([r[0] for r in self.store.on_date(["2026-08-05"])],
+                         [rec])
+
+    def test_query_dates_parses_only_what_needs_no_guessing(self):
+        today = datetime(2026, 8, 21).date()
+        self.assertEqual(memory.query_dates("on 2026-08-05, we", today=today),
+                         ["2026-08-05"])
+        self.assertEqual(memory.query_dates("that August 5th evening",
+                                            today=today), ["2026-08-05"])
+        self.assertEqual(memory.query_dates("the 5th of August", today=today),
+                         ["2026-08-05"])
+        self.assertEqual(memory.query_dates("December 25, 2025", today=today),
+                         ["2025-12-25"])
+        # A bare month-and-day still ahead of today is LAST year's (rule 48).
+        self.assertEqual(memory.query_dates("on September 3rd", today=today),
+                         ["2025-09-03"])
+        # An impossible date is nothing, not a guess; datelessness is empty.
+        self.assertEqual(memory.query_dates("February 30", today=today), [])
+        self.assertEqual(memory.query_dates("no dates in here", today=today),
+                         [])
+
+    def test_on_verb_lists_the_day_whole(self):
+        self.seed_moment("2026-08-05 21:30")
+        self.store.insert("He fixed the fence latch.", kind="note",
+                          occurred="2026-08-05")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "on", "2026-08-05"],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(self.MOMENT, proc.stdout)
+        self.assertIn("with the user", proc.stdout)
+        self.assertIn("my take: I laughed harder", proc.stdout)
+        self.assertIn("2026-08-05 21:30", proc.stdout)
+        # Episodic first, the note after it, labelled.
+        self.assertLess(proc.stdout.index(self.MOMENT),
+                        proc.stdout.index("fence latch"))
+        self.assertIn("-- 2 records from 2026-08-05", proc.stdout)
+
+    def test_a_moment_never_decays(self):
+        # Rule 47: a decay clock on moments would re-create by arithmetic the
+        # throw-away-my-life defect the kind exists to close.
+        rec = self.store.insert("An evening I would keep.", kind="episodic",
+                                vec=[0.1] * memory.EMBED_DIM,
+                                occurred="2026-03-01")
+        self.store.db.execute(
+            "UPDATE memories SET last_seen=? WHERE id=?",
+            (days_ago(memory.DECAY_STALE_DAYS + 100), rec))
+        self.store.db.commit()
+        self.assertEqual(self.store.decay_pass(), (0, 0))
+        self.assertEqual(self.store.db.execute(
+            "SELECT confidence, status FROM memories WHERE id=?",
+            (rec,)).fetchone(), (1.0, "active"))
+
+    def test_episodic_score_takes_no_confidence_and_no_use_decay(self):
+        # sim × floored occurred-recency × use bonus. Confidence and the
+        # last-use decay clock touch it not at all.
+        fresh = fake_row(kind="episodic", sim=0.8, occurred_days=0)
+        self.assertAlmostEqual(memory.score_row(fresh, datetime.now()
+                                                .astimezone()), 0.8, places=2)
+        starved = fake_row(kind="episodic", sim=0.8, conf=0.1, used_days=400,
+                           occurred_days=0)
+        self.assertAlmostEqual(
+            memory.score_row(starved, datetime.now().astimezone()),
+            0.8, places=2)
+        # An old evening is dimmed to the floor, never buried.
+        old = fake_row(kind="episodic", sim=0.8, occurred_days=3000)
+        self.assertAlmostEqual(
+            memory.score_row(old, datetime.now().astimezone()),
+            0.8 * memory.OCCURRED_FLOOR, places=2)
+
+    def test_dedup_is_narrow_two_evenings_are_two_records(self):
+        """Rule 51: the supersede threshold bites only inside one day. The
+        same near-identical text a week apart is two evenings, kept both."""
+        a = ("We played chess in the evening and I lost in twenty moves.",
+             "2026-08-01 20:00")
+        same_day = ("We played chess in the evening and I lost in thirty "
+                    "moves.", "2026-08-01 21:00")
+        later_week = ("We played chess in the evening and I lost in "
+                      "thirty-two moves.", "2026-08-08 20:00")
+        act0, first = self.store.add_deduped(a[0], kind="episodic",
+                                             occurred=a[1])
+        self.assertEqual(act0, "added")
+        act1, _ = self.store.add_deduped(same_day[0], kind="episodic",
+                                         occurred=same_day[1])
+        act2, _ = self.store.add_deduped(later_week[0], kind="episodic",
+                                         occurred=later_week[1])
+        self.assertEqual(act1, "superseded")
+        self.assertEqual(act2, "added")
+        active = self.store.db.execute(
+            "SELECT count(*) FROM memories WHERE kind='episodic'"
+            " AND status='active'").fetchone()[0]
+        self.assertEqual(active, 2)
+        # And an exact match is a duplicate wherever its day falls.
+        act3, dup = self.store.add_deduped(later_week[0], kind="episodic",
+                                           occurred="2026-08-15")
+        self.assertEqual(act3, "duplicate")
+
+    def test_ingest_accepts_a_moment_with_its_fields(self):
+        cands = [{"text": self.MOMENT, "kind": "episodic",
+                  "topics": "films, evening", "occurred": "2026-08-05 21:30",
+                  "participants": "the user",
+                  "opinion": "I laughed harder than I have in weeks."},
+                 {"text": "He fixed the fence latch.", "kind": "note",
+                  "participants": "nobody", "opinion": "smuggled"}]
+        cfile = os.path.join(self.dir, "cands.json")
+        with open(cfile, "w") as f:
+            json.dump(cands, f)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "ingest", "--from-json", cfile],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("2 added", proc.stdout)
+        rows = self.store.db.execute(
+            "SELECT kind, occurred, participants, opinion FROM memories"
+            " ORDER BY id").fetchall()
+        self.assertEqual(rows[0], ("episodic", "2026-08-05 21:30",
+                                   "the user",
+                                   "I laughed harder than I have in weeks."))
+        # The episodic fields belong to the episodic kind only: a decorated
+        # note does not smuggle an opinion into the schema.
+        self.assertEqual(rows[1], ("note", None, "", ""))
+
+    def test_the_prompt_harvests_moments_wide(self):
+        # Rule 50 travels in the distiller's own instructions, in words.
+        self.assertIn('"episodic"', memory.INGEST_PROMPT)
+        self.assertIn('"participants"', memory.INGEST_PROMPT)
+        self.assertIn('"opinion"', memory.INGEST_PROMPT)
+        self.assertIn("WIDE", memory.INGEST_PROMPT)
+        # The curation discipline stays scoped to lessons, and moments are
+        # harvested even from material that also yields one.
+        self.assertIn("does NOT apply", memory.INGEST_PROMPT)
+        self.assertIn("HARVEST MOMENTS EVEN", memory.INGEST_PROMPT)
+
+
+class TestArchiveBackfill(StoreCase):
+    """The resumable episodic backfill (memory-recall.md rule 52): the voice
+    archive read oldest first in bounded rounds, every record stamped with
+    the day the thing actually happened, moments only."""
+
+    def setUp(self):
+        super().setUp()
+        self.arch = os.path.join(self.dir, "archive")
+        os.makedirs(self.arch)
+        self._real_extract = memory.extract_candidates
+        self.distilled = []
+
+    def tearDown(self):
+        memory.extract_candidates = self._real_extract
+        super().tearDown()
+
+    def put(self, name, body="User: hello\nAssistant: an evening\n"):
+        with open(os.path.join(self.arch, name), "w") as f:
+            f.write(body)
+
+    def stub(self, per_material):
+        def fake(material, model, prompt=None):
+            self.assertEqual(prompt, memory.ARCHIVE_PROMPT)
+            self.distilled.append(material)
+            return per_material(material)
+        memory.extract_candidates = fake
+
+    def args(self, **kw):
+        base = dict(archive_dir=self.arch, days=5, model="stub",
+                    max_chars=100000, dry_run=False)
+        base.update(kw)
+        return Namespace(**base)
+
+    def run_backfill(self, **kw):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = memory.cmd_backfill_episodic(self.store, self.args(**kw))
+        return rc, out.getvalue()
+
+    def cursor(self):
+        path = os.path.join(self.dir, "archive-cursor.json")
+        if not os.path.isfile(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+
+    def test_filename_when_is_knowledge_not_a_guess(self):
+        self.assertEqual(memory.archive_file_when("20260317-192214.txt"),
+                         "2026-03-17 19:22:14")
+        self.assertIsNone(memory.archive_file_when("notes.md"))
+        self.assertIsNone(memory.archive_file_when("20261399-000000.txt"))
+
+    def test_bounded_rounds_oldest_first_and_resume(self):
+        for name in ("20260317-192214.txt", "20260318-091000.txt",
+                     "20260319-210000.txt"):
+            self.put(name)
+        self.put("stray.md")  # outside the shape: never read
+        calls = []
+        self.stub(lambda m: calls.append(m) or [
+            {"text": f"An evening, chunk {len(calls)}.", "kind": "episodic",
+             "participants": "the user", "opinion": "I liked it."}])
+        rc, out = self.run_backfill(days=2)
+        self.assertEqual(rc, 0)
+        self.assertIn("3 archive days pending, taking 2", out)
+        self.assertIn("1 archive days remain", out)
+        # Oldest first, and the cursor holds exactly the finished days.
+        self.assertEqual(sorted(self.cursor()["files"]),
+                         ["20260317-192214.txt", "20260318-091000.txt"])
+        occurred = [o for (o,) in self.store.db.execute(
+            "SELECT occurred FROM memories ORDER BY id")]
+        self.assertEqual(occurred, ["2026-03-17", "2026-03-18"])
+        # The next round takes up where this one stopped.
+        rc, out = self.run_backfill(days=2)
+        self.assertIn("1 archive days pending, taking 1", out)
+        self.assertIn("fully ingested", out)
+        self.assertEqual(len(self.cursor()["files"]), 3)
+        # And a covered archive is a no-op that says so.
+        rc, out = self.run_backfill(days=2)
+        self.assertIn("nothing new", out)
+
+    def test_the_distiller_date_wins_and_the_filename_backstops(self):
+        self.put("20260317-192214.txt")
+        self.stub(lambda m: [
+            {"text": "A dated moment.", "kind": "episodic",
+             "occurred": "2026-03-17 19:45", "participants": "the user",
+             "opinion": "Good."},
+            {"text": "An undated moment.", "kind": "episodic",
+             "participants": "the user", "opinion": "Also good."},
+            {"text": "A broken date.", "kind": "episodic",
+             "occurred": "not-a-date", "participants": "x", "opinion": "y"}])
+        self.run_backfill()
+        rows = dict(self.store.db.execute(
+            "SELECT text, occurred FROM memories").fetchall())
+        self.assertEqual(rows["A dated moment."], "2026-03-17 19:45")
+        self.assertEqual(rows["An undated moment."], "2026-03-17")
+        self.assertEqual(rows["A broken date."], "2026-03-17")
+
+    def test_moments_only_a_stale_lesson_is_rejected(self):
+        self.put("20260317-192214.txt")
+        self.stub(lambda m: [
+            {"text": "Wake him at seven.", "kind": "directive"},
+            {"text": "An evening.", "kind": "episodic",
+             "participants": "the user", "opinion": "Fine."}])
+        rc, out = self.run_backfill()
+        self.assertIn("1 rejected", out)
+        kinds = [k for (k,) in self.store.db.execute(
+            "SELECT kind FROM memories")]
+        self.assertEqual(kinds, ["episodic"])
+
+    def test_dry_run_distils_reports_and_writes_nothing(self):
+        self.put("20260317-192214.txt")
+        self.stub(lambda m: [
+            {"text": "An evening.", "kind": "episodic",
+             "participants": "the user", "opinion": "Fine."}])
+        rc, out = self.run_backfill(dry_run=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("would add (2026-03-17) An evening.", out)
+        self.assertIn("nothing written, cursor not advanced", out)
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 0)
+        self.assertIsNone(self.cursor())
+
+    def test_the_archive_prompt_asks_for_moments_only(self):
+        self.assertIn('"episodic"', memory.ARCHIVE_PROMPT)
+        self.assertIn("Do NOT extract directives", memory.ARCHIVE_PROMPT)
+        self.assertIn('"participants"', memory.ARCHIVE_PROMPT)
+        self.assertIn('"opinion"', memory.ARCHIVE_PROMPT)
+        self.assertIn("WIDE", memory.ARCHIVE_PROMPT)
+
+
 class TestKindCheckMigration(StoreCase):
     """A store born before the observation/miss kinds carries the two-kind
     CHECK, which sqlite cannot widen in place: reopening rebuilds the table
@@ -927,6 +1260,16 @@ class TestKindCheckMigration(StoreCase):
             obs = store.insert("one night's shape", kind="observation",
                                vec=[0.5] * memory.EMBED_DIM)
             self.assertEqual(obs, 4)
+            # The five-kind CHECK: an episodic moment inserts with its own
+            # fields (rules 46), a bogus kind still refuses.
+            epi = store.insert("An evening worth keeping.", kind="episodic",
+                               vec=[0.6] * memory.EMBED_DIM,
+                               occurred="2026-08-05 21:30",
+                               participants="the user", opinion="I loved it.")
+            self.assertEqual(store.db.execute(
+                "SELECT occurred, participants, opinion FROM memories"
+                " WHERE id=?", (epi,)).fetchone(),
+                ("2026-08-05 21:30", "the user", "I loved it."))
             with self.assertRaises(Exception):
                 store.db.execute(
                     "INSERT INTO memories (text, kind, created, last_seen)"
@@ -947,7 +1290,7 @@ class TestKindCheckMigration(StoreCase):
                 got = store.vec_of(i)
                 self.assertAlmostEqual(got[0], v[0], places=5)
             self.assertEqual(store.db.execute(
-                "SELECT count(*) FROM memories_vec").fetchone()[0], 4)
+                "SELECT count(*) FROM memories_vec").fetchone()[0], 5)
         finally:
             store.db.close()
 
@@ -960,7 +1303,7 @@ class TestKindCheckMigration(StoreCase):
             again = memory.Store(d)
             try:
                 self.assertEqual(again.db.execute(
-                    "SELECT count(*) FROM memories").fetchone()[0], 4)
+                    "SELECT count(*) FROM memories").fetchone()[0], 5)
             finally:
                 again.db.close()
         finally:

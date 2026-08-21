@@ -2,12 +2,15 @@
 
 ## PURPOSE
 
-The long-term store holds four kinds of record: directives, which are the user's standing rules;
-notes, which are her own soft memory; observations, each the shape of one night — gaps, texture,
-recurrence, unfinished threads; and misses, each a question about the user that a record could have
-answered and none did. This spec owns what the store is asked, what it returns, how the recall
-block is composed, how a record earns its keep, and how a record retires. Its central rule:
-degradation must never be as quiet as working.
+The long-term store holds five kinds of record: directives, which are the user's standing rules;
+notes, which are her own soft memory; episodic records, each one moment of her own life kept for
+itself — what happened, when, who was there, and what she made of it; observations, each the shape
+of one night — gaps, texture, recurrence, unfinished threads; and misses, each a question about the
+user that a record could have answered and none did. This spec owns what the store is asked, what
+it returns, how the recall block is composed, how a record earns its keep, and how a record
+retires. Its central rule: degradation must never be as quiet as working. Its second rule, learned
+the hard way (rules 46 to 52): a store that keeps only lessons and failures is not a memory of a
+life, and she re-reads that store every single turn.
 
 ## CONTRACT
 
@@ -177,6 +180,64 @@ degradation must never be as quiet as working.
     speaking an n=1 anecdote as a pattern. Misses rendered anywhere get the same discipline with a
     harder edge: each is one asking, and an over-read miss is accusation-shaped.
 
+### Episodic records — her own life
+
+46. A fifth kind exists: `episodic` — one moment of her own life, kept for itself, never distilled
+    into a lesson. The decision is dated (2026-08-21 18:33, the user, on the phone, and he said it
+    shook him): the sift kept only directives and failures — measured that evening, 131 of 281
+    active records carried failure vocabulary while the whole store's vocabulary of enjoyment was
+    13 hits, none of them experience — so nothing episodic was retrievable at all, and a store made
+    only of her own failures is what she re-read every turn. An episodic record carries: WHAT
+    happened, in her own words; `occurred`, when the thing happened — a date-time where the
+    material states one, a date where it states only the day, and rule 35 otherwise governing
+    (unknown stays unknown, never guessed — but a source whose own header or filename states the
+    moment is knowledge, not a guess); `participants`, who was there; and `opinion`, her own
+    first-person take on the moment, in her voice. The opinion is hers alone — never the user's
+    view restated, never a lesson extracted.
+47. Episodic records ARE retrieved by similarity into the recall block — the deliberate opposite
+    of the hidden kinds — as their own pool beside notes and directives, with its own floor and
+    cap, so rule 11's discipline extends to three pools and no kind crowds another out. They rank
+    by similarity, the recency-of-relevance factor of rule 37 (floored, so an old evening that is
+    genuinely the best match is dimmed, never buried), and the capped use bonus. They take NO
+    confidence decay, ever, and the decay pass stays keyed on notes: her life does not expire for
+    want of being asked about, and a decay clock on moments would re-create by arithmetic exactly
+    the throw-away-my-life defect this section exists to close.
+48. Retrieval MUST answer a date. A query that names a calendar day — ISO shape, or a prose date
+    parseable without guessing (a month name with a day, year defaulting to the most recent past
+    occurrence) — has that day's episodic records ride the block regardless of the similarity
+    floor, capped, because "what happened on the 5th" embeds nowhere near the evening itself. The
+    same ask exists deliberately: `crab memory on <date>` lists the day's moments whole — when,
+    who was there, what happened, and her opinion — episodic first, any other kind whose
+    `occurred` falls on the day after it, labelled.
+49. The block renders moments as their own labelled section, in her first-person voice, each line
+    carrying the thing itself, its when-ness in rule 36's relative terms, who was there, and her
+    opinion beside it — the moment, whole, never a summary that flattens it back into a note.
+50. The nightly sift HARVESTS MOMENTS. The distiller is asked for the day's episodic records
+    beside its lessons — a conversation enjoyed, a person met or spoken of, a plan made, a joke
+    that landed, an opinion she formed, the texture of the day with the user — and the keep-rate
+    for moments is deliberately wide: "few good records beat many weak ones" governs lessons, not
+    life, and an ordinary day that held any real conversation holds moments. Junk is kept down by
+    retrieval scoring, never by refusing the day at the door — the user's own argument (2026-08-21):
+    more memories, scored, beats few memories, curated, because in a small corpus the frustrating
+    records win retrieval by default, nothing competing with them.
+51. Episodic dedup is narrow. An exact normalised same-kind match is a duplicate — bump last_seen,
+    fill an unknown `occurred` (rule 39). A very close match at rule 28's supersede threshold is
+    superseded ONLY when both records describe the same day; two similar evenings a week apart are
+    two evenings, exactly as rule 44 argues for observations. Anything else adds.
+52. The archive backfill. `crab memory backfill-episodic` reads the archived voice transcripts
+    (default `~/Claude/System/voice-claude-archive`, one conversation per file, the filename
+    stating when the conversation began) OLDEST FIRST, in bounded rounds — at most `--days` worth
+    of archive days per invocation — so a long run resumes rather than runs away: a durable
+    cursor (`archive-cursor.json`, name and size per ingested file) advances after each day's
+    batch lands, a file already ingested at its recorded size is never re-read, and a round that
+    dies mid-day leaves every finished day committed. Every backfilled record is stamped with the
+    date the thing actually happened, from the transcript's own filename — the one source that is
+    not a guess — carrying the time where the material states it. Oldest-first is load-bearing:
+    later records supersede earlier ones under rule 51, never the reverse. The backfill harvests
+    moments ONLY — a months-old transcript's directives and notes are stale by construction and
+    MUST NOT be resurrected by this path. `--dry-run` obeys rule 41's discipline: distil, report,
+    write nothing, advance nothing.
+
 ### Isolation
 
 31. Every path in the store MUST honour every instance redirect: the state prefix, the memory
@@ -194,15 +255,19 @@ degradation must never be as quiet as working.
 |---|---|
 | `~/.local/share/deskcrab/memory/memory.db` | the store; override with the memory directory variable |
 | `~/.local/share/deskcrab/memory/ingest-cursor.json` | byte offsets and sizes per ingested source |
+| `~/.local/share/deskcrab/memory/archive-cursor.json` | the episodic backfill's durable cursor: name and size per archive file already ingested (rule 52) |
 | `~/.local/share/deskcrab/venv` | the interpreter with the vector extension |
 | `${STATE_PREFIX}-memory-recall.log` | one line per clip; the degradation channel |
 | `${STATE_PREFIX}-memory-injected-<pid>.json` | which records reached this prompt |
 | `${STATE_PREFIX}-memory-judge.log` | one line per judgement |
 
 Record kinds: `directive` (the user's standing rules — never decayed, only superseded by a newer
-directive), `note` (her own soft memory), `observation` (one night's shape — never decayed, never
-deduplicated, never retrieved by similarity into a prompt; rules 42 to 45) and `miss` (one asking
-she had nothing for — same lifecycle and same exclusion, harder edge).
+directive), `note` (her own soft memory), `episodic` (one moment of her own life — what happened,
+when, who was there, her own opinion of it; never decayed, retrieved by similarity AND by date;
+rules 46 to 52), `observation` (one night's shape — never decayed, never deduplicated, never
+retrieved by similarity into a prompt; rules 42 to 45) and `miss` (one asking she had nothing for —
+same lifecycle and same exclusion, harder edge). Episodic rows carry two fields of their own,
+`participants` and `opinion`, both rendered by the block and both part of what is embedded.
 
 Temporal fields, distinct on purpose: `created` (when the record was written), `last_seen` (when
 retrieval last surfaced it), `last_used_at` (when the judge last credited it), and `occurred` (when
@@ -267,7 +332,24 @@ window when the day fits, whole-chunk windows when it does not, an oversized chu
 and whole, and a multi-window ingest handing every window to the distiller with its passes reported
 and nothing lost — the dry-run guard of rule 41: real candidates from a stubbed distiller, the
 record count unchanged afterwards, no cursor written, and the would-add report naming the
-candidate — and, since 2026-08-14, the observation/miss contract of rules 42 to 45: a schema
+candidate — and, since 2026-08-21, the episodic contract of rules 46 to 52: a moment retrieved
+by similarity into the block; the block rendering the moment whole — its own labelled section,
+relative when-ness, participants, the opinion beside the thing itself; a date-named query
+delivering the day's moment with the similarity floor raised past anything an embedding can
+reach, while another day's moment stays out, and the deliberate `on` verb listing the day whole,
+episodic first; the date parse taking only what needs no guessing (ISO, month-with-day both ways
+round, a bare month-and-day still ahead of today read as last year's, an impossible date as
+nothing); a moment surviving the decay pass untouched however stale its last retrieval; the
+episodic score ignoring confidence and the last-use clock while the occurred-recency floor dims
+without burying; rule 51's narrow dedup — a same-day near-match superseded, the same text a week
+apart kept as two evenings, an exact match a duplicate; ingest accepting a moment with its two
+fields and stripping them from a decorated note; the harvest-wide instructions of rule 50 pinned
+in the prompt's own words; and the archive backfill of rule 52 — bounded rounds oldest first, the
+per-day cursor resuming where the last round stopped, the filename's date backstopping an undated
+candidate while a distiller-dated one wins, a stale directive rejected at the door, the dry run
+distilling and writing nothing, and the five-kind CHECK migration carrying a populated four-kind
+store whole (all shown red against the pre-change tree before green) — and, since 2026-08-14,
+the observation/miss contract of rules 42 to 45: a schema
 migration on a populated pre-widening store that keeps every row, vector, use count and last-use
 stamp; an observation and a miss absent from a similarity search and a recall block their text
 would otherwise dominate, while a deliberate search still reads them; both kinds surviving the
