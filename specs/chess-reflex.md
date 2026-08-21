@@ -111,7 +111,11 @@ like, what was played, and how those games ended". It informs; it never plays.
     distance over the whole table on the normalised vectors, reported as similarity
     `1 / (1 + distance)`, neighbours aggregated by `(fen_key, move)` with the mover's W-D-L
     across their games, nearest first. An exact-key row, when one exists, is simply the nearest
-    neighbour (similarity 1.0), flagged `exact`.
+    neighbour (similarity 1.0), flagged `exact`. A row carrying no finished result — anything
+    but `1-0`, `0-1` or `1/2-1/2` — is dropped at retrieval, before ranking or aggregation:
+    rule 10 means no such row should exist (book lines never enter the vectors), but a stray
+    one carries no information and must never reach a caller, least of all counted as a draw,
+    which is what the ingest arithmetic would have called it.
 14. The wiring (chessweb.md rule 16): the retrieval lives inside the mover's own prompt build
     (`lib/chess_mover.py`), never in a job builder — every driver of the mover (the bridge,
     self-play, whatever comes next) gets position memory structurally, so no caller can forget
@@ -119,15 +123,18 @@ like, what was played, and how those games ended". It informs; it never plays.
     her in practice: the live metrics for browser-018 and browser-022/023/024 show every
     middlegame `similar-context` stamp `empty` — the note's 0.75 floor silenced memory at the
     very plies those games collapsed at, and no similar-position help ever reached a middlegame
-    move prompt. Two sections, both rendered above the legal-move lists, both reached only
+    move prompt. One section, rendered above the legal-move lists, reached only
     after the exact layer's auto-play gate has declined (rules 7 and 8 short-circuit first —
     the mover only ever sees positions memory would not answer alone):
-    a. **The exact section.** `chess_reflex.lookup` on the position; candidates legal on the
-       board are rendered at the top of the prompt with each move's result record — times
-       played, won/drew/lost for the side she now plays, book membership — so a known-but-thin
-       position speaks its record instead of hiding it.
-    b. **The similar section.** `chess_similar.similar(fen)`, non-exact neighbours only (the
-       exact ones are section a's), at most `$DESKCRAB_CHESS_PROMPT_SIM_K` (default 3) lines,
+    a. **There is no exact section.** An exact hit is the reflex's business, answered before
+       any prompt is built; the move prompt never carries a block about this very position.
+       Rows flagged `exact` are excluded from the rendered neighbours, and no header claims
+       the position has been stood in before — the store holds moves by whichever colour,
+       keyed on the position, so "she has stood here" was wrong about what is known. (Decided
+       2026-08-21; the exact section briefly existed and printed alongside the similar one.)
+    b. **The similar section.** `chess_similar.similar(fen)`, non-exact neighbours only,
+       each with a finished result behind it (rule 13's retrieval filter),
+       at most `$DESKCRAB_CHESS_PROMPT_SIM_K` (default 3) lines,
        each carrying the similarity, the move in SAN, the colour that played it, how those
        games ended and for whom, and the provenance (game id, ply). A precedent with more
        losses than wins is rendered as a named warning, never a suggestion. The k nearest are
@@ -138,14 +145,15 @@ like, what was played, and how those games ended". It informs; it never plays.
        above), retrieval is cheap enough to run at every ply with no opening gate (19–40 ms
        over the 3,238-row live store, measured 2026-08-21), and distance is priced by printing
        the similarity on the line rather than by silence.
-    c. **A remembered win is not buried by the exchange count.** A memory-endorsed move — an
-       exact candidate with more wins than losses, or a similar hit with more wins than losses
-       that is legal on this board — which `material_loss` flags is NOT dropped into the "play
+    c. **A remembered win is not buried by the exchange count.** A memory-endorsed move — a
+       similar hit with more wins than losses whose move is legal on this board — which
+       `material_loss` flags is NOT dropped into the "play
        one only with a concrete reason" pile: it is listed on its own line carrying both facts,
        the exchange count against it and the record for it, because the record *is* a concrete
        reason and the model must weigh it rather than never see it.
     d. `DESKCRAB_CHESS_SIMILAR=0` switches the similar section off;
-       `DESKCRAB_CHESS_MEMORY_PROMPT=0` sends the prompt bare of both sections. Any retrieval
+       `DESKCRAB_CHESS_MEMORY_PROMPT=0` likewise sends the prompt bare of memory (with one
+       section the two switches now coincide; both stay, each honouring its name). Any retrieval
        failure is a bare prompt, never a lost move. The `similar-context` stamp (chessweb.md
        rule 17) is written by the mover as it builds the prompt, in its established shape, so
        its absence still proves a reflex hit short-circuited. `reason_note` — with its floor

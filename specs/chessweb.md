@@ -246,11 +246,12 @@ cannot be changed.
        disables the auto-play; recording of finished games is unconditional.
     b. Otherwise **one minimal model call**. The prompt is purpose-built and tiny: the FEN, the
        side to move, the legal moves, the movetext so far, and the position memory's own
-       sections, built by the mover itself as it writes the prompt (chess-reflex.md rule 14 —
-       the exact layer's record of this very position when it has one, then the nearest stored
-       neighbours with their outcomes, warnings and endorsements included; a memory failure
+       section, built by the mover itself as it writes the prompt (chess-reflex.md rule 14 —
+       the nearest stored non-exact
+       neighbours with their outcomes, warnings and endorsements included; never a block about
+       this very position, which is the reflex's business; a memory failure
        means a bare prompt, `DESKCRAB_CHESS_SIMILAR=0` switches the neighbour section off,
-       `DESKCRAB_CHESS_MEMORY_PROMPT=0` both). Nothing of deskcrab's prompt assembly
+       `DESKCRAB_CHESS_MEMORY_PROMPT=0` likewise). Nothing of deskcrab's prompt assembly
        rides along: no state block, no memory retrieval, no conduct sheet, no persona. The
        invocation is the measured minimal shape (tools/context-probe-results.md): `--tools ""`
        with `--strict-mcp-config --mcp-config lib/empty-mcp.json`, `--disable-slash-commands`,

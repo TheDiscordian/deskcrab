@@ -329,9 +329,15 @@ def similar(fen: str, k: int = 6) -> list[dict]:
     query_key = chess_reflex.fen_key(board.fen())
     with chess_reflex.connect() as conn:
         ensure(conn)
+        # Only rows with a finished result behind them (rule 13): no such
+        # stray should exist — book lines never enter the vectors — but a
+        # row without a result carries no information, and the outcome
+        # arithmetic at ingest would have called it a draw. Filtered HERE,
+        # at retrieval, so no caller can ever see one.
         rows = conn.execute(
             "SELECT fen, fen_key, vec, move, colour, outcome, ply, game_id"
-            " FROM vectors").fetchall()
+            " FROM vectors WHERE result IN ('1-0', '0-1', '1/2-1/2')"
+        ).fetchall()
 
     out, seen = [], {}
     for sim, (r_fen, r_key, _vec, move, colour, outcome, ply, gid) in \

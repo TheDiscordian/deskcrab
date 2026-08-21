@@ -125,46 +125,15 @@ def memory_sections(board):
     prompt. `lines` go above the legal-move lists; `endorsed` is the set of
     UCI moves whose remembered record is net-winning (rule 14c: the exchange
     count may not bury one); `stamp` is the `similar-context` metric detail,
-    or None when no stamp is owed. Only ever reached after the exact layer's
-    auto-play gate declined, so the exact section is precisely the
-    known-but-thin memory speaking to the reasoning call. Never raises: any
-    failure is a bare prompt, never a lost move."""
+    or None when no stamp is owed. There is NO exact-position block here
+    (rule 14a): an exact hit is the reflex's business, answered before any
+    prompt is built, so the memory a prompt carries is the similar section
+    only — nearest non-exact neighbours, each with a finished result behind
+    it. Never raises: any failure is a bare prompt, never a lost move."""
     if os.environ.get("DESKCRAB_CHESS_MEMORY_PROMPT", "1") == "0":
         return [], set(), None
     lines, endorsed = [], set()
     fen = board.fen()
-    # -- the exact section (rule 14a) --------------------------------------
-    try:
-        import chess_reflex
-        cands = chess_reflex.lookup(fen)
-    except Exception:
-        cands = []
-    exact_lines = []
-    for c in cands:
-        try:
-            mv = chess.Move.from_uci(c["move"])
-        except (chess.InvalidMoveError, ValueError):
-            continue
-        if mv not in board.legal_moves:
-            continue
-        if c["n"]:
-            line = (f"- {board.san(mv)} ({c['move']}): played {c['n']}, "
-                    + _record_words(c["wins"], c["draws"], c["losses"]))
-            if c["book"]:
-                line += f"; in {c['book']} book line(s)"
-            if c["wins"] > c["losses"]:
-                endorsed.add(c["move"])
-        else:
-            line = (f"- {board.san(mv)} ({c['move']}): in {c['book']} book "
-                    "line(s), never played to a finish")
-        exact_lines.append(line)
-    if exact_lines:
-        lines.append("She has stood in this exact position before. What was "
-                     "played from it, and how those games ended for the side "
-                     "she now plays:")
-        lines.extend(exact_lines[:8])
-        lines.append("A move that lost from here needs a better idea this "
-                     "time; a move that won is worth checking first.")
     # -- the similar section (rule 14b) ------------------------------------
     if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
         return lines, endorsed, None
