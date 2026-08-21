@@ -97,6 +97,126 @@ def material_loss(board, move):
     finally:
         board.pop()
 
+
+# --- position memory in the prompt (specs/chess-reflex.md rule 14) ----------
+# The retrieval lives HERE, in the mover's own prompt build, never in a job
+# builder: the note design (reason_note handed in on the job) left every
+# middlegame stamp `empty` — its 0.75 floor silenced memory at the very plies
+# browser-022/023/024 collapsed at — and a caller that forgets to pass a note
+# costs her the context without anyone noticing. Retrieval is brute force and
+# cheap (19-40 ms over the 3,238-row live store, measured 2026-08-21), so it
+# runs at every ply with no opening gate and no similarity floor: distance is
+# priced by printing the similarity on the line, not by silence.
+
+def _prompt_sim_k():
+    try:
+        return int(os.environ.get("DESKCRAB_CHESS_PROMPT_SIM_K", "3"))
+    except ValueError:
+        return 3
+
+
+def _record_words(wins, draws, losses):
+    return ", ".join(f"{word} {n}" for word, n in
+                     (("won", wins), ("drew", draws), ("lost", losses)) if n)
+
+
+def memory_sections(board):
+    """(lines, endorsed, stamp): the position memory rendered for the move
+    prompt. `lines` go above the legal-move lists; `endorsed` is the set of
+    UCI moves whose remembered record is net-winning (rule 14c: the exchange
+    count may not bury one); `stamp` is the `similar-context` metric detail,
+    or None when no stamp is owed. Only ever reached after the exact layer's
+    auto-play gate declined, so the exact section is precisely the
+    known-but-thin memory speaking to the reasoning call. Never raises: any
+    failure is a bare prompt, never a lost move."""
+    if os.environ.get("DESKCRAB_CHESS_MEMORY_PROMPT", "1") == "0":
+        return [], set(), None
+    lines, endorsed = [], set()
+    fen = board.fen()
+    # -- the exact section (rule 14a) --------------------------------------
+    try:
+        import chess_reflex
+        cands = chess_reflex.lookup(fen)
+    except Exception:
+        cands = []
+    exact_lines = []
+    for c in cands:
+        try:
+            mv = chess.Move.from_uci(c["move"])
+        except (chess.InvalidMoveError, ValueError):
+            continue
+        if mv not in board.legal_moves:
+            continue
+        if c["n"]:
+            line = (f"- {board.san(mv)} ({c['move']}): played {c['n']}, "
+                    + _record_words(c["wins"], c["draws"], c["losses"]))
+            if c["book"]:
+                line += f"; in {c['book']} book line(s)"
+            if c["wins"] > c["losses"]:
+                endorsed.add(c["move"])
+        else:
+            line = (f"- {board.san(mv)} ({c['move']}): in {c['book']} book "
+                    "line(s), never played to a finish")
+        exact_lines.append(line)
+    if exact_lines:
+        lines.append("She has stood in this exact position before. What was "
+                     "played from it, and how those games ended for the side "
+                     "she now plays:")
+        lines.extend(exact_lines[:8])
+        lines.append("A move that lost from here needs a better idea this "
+                     "time; a move that won is worth checking first.")
+    # -- the similar section (rule 14b) ------------------------------------
+    if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
+        return lines, endorsed, None
+    try:
+        import chess_reflex
+        import chess_similar
+        k = _prompt_sim_k()
+        hits = chess_similar.similar(fen, k + 4)
+        stamp_top = (f"top {hits[0]['san']} {hits[0]['similarity']:.2f}"
+                     if hits else "top none")
+        picked = [h for h in hits if not h["exact"]][:k]
+        # The k nearest are selected by the retrieval's own ranking, then
+        # ordered for rendering by OUTCOME-weighted similarity: a winning
+        # precedent outranks a nearer loss, because nearness alone is never
+        # advice.
+        picked.sort(key=lambda h: (
+            -h["similarity"] * chess_reflex.score(h["wins"], h["draws"],
+                                                  h["n"]),
+            -h["similarity"]))
+        sim_lines = []
+        for h in picked:
+            if h["n"] == 1:
+                word = ("won" if h["wins"] else
+                        "drew" if h["draws"] else "lost")
+                ended = f"{h['colour']} {word} that game"
+            else:
+                ended = (f"{h['colour']} "
+                         + _record_words(h["wins"], h["draws"], h["losses"])
+                         + f" of those {h['n']} games")
+            if h["losses"] > h["wins"]:
+                ended += " — a warning, not a suggestion"
+            elif h["wins"] > h["losses"]:
+                try:
+                    mv = chess.Move.from_uci(h["move"])
+                    if mv in board.legal_moves:
+                        endorsed.add(h["move"])
+                except (chess.InvalidMoveError, ValueError):
+                    pass
+            sim_lines.append(f"- similarity {h['similarity']:.2f}: "
+                             f"{h['san']} as {h['colour']} ({h['game_id']} "
+                             f"ply {h['ply']}) — {ended}")
+        if sim_lines:
+            lines.append("Positions like this one from her finished games — "
+                         "similar is not same; weigh each against this "
+                         "board, and weigh how the game ended harder than "
+                         "how near it looks:")
+            lines.extend(sim_lines)
+        stamp = ("attached " if sim_lines else "empty ") + stamp_top
+    except Exception:
+        stamp = "error"
+    return lines, endorsed, stamp
+
 # How long a posted (or stale-discarded) position stays claimed. Only an undo
 # can bring the same position back inside this window, and the poll's resync
 # path resets the mover outright on one, so this is a dedup horizon rather
@@ -682,20 +802,35 @@ class Mover:
             pass
 
     # -- the words ---------------------------------------------------------
-    @staticmethod
-    def _prompt(job, board):
-        safe, hangs = [], []
+    def _prompt(self, job, board):
+        mem_lines, endorsed, stamp = memory_sections(board)
+        if stamp is not None:
+            self.metric("similar-context",
+                        f"{job['gid']} ply {job['ply']} {stamp}")
+        safe, hangs, backed = [], [], []
         for m in board.legal_moves:
             loss = material_loss(board, m)
             label = f"{board.san(m)} ({m.uci()})"
-            (safe if loss <= 0 else hangs).append(
-                label if loss <= 0 else f"{label} loses {loss}")
+            if loss <= 0:
+                safe.append(label)
+            elif m.uci() in endorsed:
+                # Rule 14c: a remembered win is never buried in the
+                # concrete-reason pile — both facts ride its own line.
+                backed.append(f"{label} loses {loss} by the count")
+            else:
+                hangs.append(f"{label} loses {loss}")
         lines = [f"You are playing {job['side']} against {job['opponent']} "
                  f"(game {job['gid']}, ply {job['ply']}).",
                  f"Position (FEN): {job['fen']}",
-                 f"Moves so far: {job['history']}",
-                 f"Legal moves that do not lose material on their own "
-                 f"square: {', '.join(safe) or 'none'}"]
+                 f"Moves so far: {job['history']}"]
+        lines += mem_lines
+        lines.append(f"Legal moves that do not lose material on their own "
+                     f"square: {', '.join(safe) or 'none'}")
+        if backed:
+            lines.append("The exchange count reads against these, but the "
+                         "memory above holds a winning record with them — "
+                         "the record is a concrete reason; verify it on "
+                         f"this board: {', '.join(backed)}")
         if hangs:
             lines.append("Legal but the exchange on the destination square "
                          "loses material (centipawns) — play one only with a "

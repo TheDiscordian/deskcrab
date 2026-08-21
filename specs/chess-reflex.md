@@ -112,16 +112,47 @@ like, what was played, and how those games ended". It informs; it never plays.
     `1 / (1 + distance)`, neighbours aggregated by `(fen_key, move)` with the mover's W-D-L
     across their games, nearest first. An exact-key row, when one exists, is simply the nearest
     neighbour (similarity 1.0), flagged `exact`.
-14. The wiring (chessweb.md rule 16): only after the exact layer has missed — never before, and
-    never instead — the bridge asks `chess_similar.reason_note(board)` and appends what comes
-    back to the model call's prompt, at most `$DESKCRAB_CHESS_SIMILAR_K` (default 3) neighbours
-    at or above `$DESKCRAB_CHESS_SIMILAR_MIN` similarity (default 0.75), each with its move, the
-    mover's record, and where it came from. The note names itself as context: similar is not
-    same, and nothing in this layer is ever auto-played. An empty store, thin neighbours, or any
-    failure is a model call without the note, exactly as before. `DESKCRAB_CHESS_SIMILAR=0`
-    switches the note off. `betty-chess similar [<fen>|<game>] [-k N]` exposes the same retrieval by
-    hand, accepting a game id on the same terms as rule 5, and refuses loudly when the table is
-    empty.
+14. The wiring (chessweb.md rule 16): the retrieval lives inside the mover's own prompt build
+    (`lib/chess_mover.py`), never in a job builder — every driver of the mover (the bridge,
+    self-play, whatever comes next) gets position memory structurally, so no caller can forget
+    to pass it. It replaced the note design (`reason_note` handed in on the job), which starved
+    her in practice: the live metrics for browser-018 and browser-022/023/024 show every
+    middlegame `similar-context` stamp `empty` — the note's 0.75 floor silenced memory at the
+    very plies those games collapsed at, and no similar-position help ever reached a middlegame
+    move prompt. Two sections, both rendered above the legal-move lists, both reached only
+    after the exact layer's auto-play gate has declined (rules 7 and 8 short-circuit first —
+    the mover only ever sees positions memory would not answer alone):
+    a. **The exact section.** `chess_reflex.lookup` on the position; candidates legal on the
+       board are rendered at the top of the prompt with each move's result record — times
+       played, won/drew/lost for the side she now plays, book membership — so a known-but-thin
+       position speaks its record instead of hiding it.
+    b. **The similar section.** `chess_similar.similar(fen)`, non-exact neighbours only (the
+       exact ones are section a's), at most `$DESKCRAB_CHESS_PROMPT_SIM_K` (default 3) lines,
+       each carrying the similarity, the move in SAN, the colour that played it, how those
+       games ended and for whom, and the provenance (game id, ply). A precedent with more
+       losses than wins is rendered as a named warning, never a suggestion. The k nearest are
+       selected by rule 13's ranking, then ordered for rendering by outcome-weighted
+       similarity — similarity × rule 6's score arithmetic — so a winning precedent outranks a
+       nearer loss; nearness alone is never advice. There is **no similarity floor** in the
+       prompt section: the floor is what kept memory silent through every collapse (measured
+       above), retrieval is cheap enough to run at every ply with no opening gate (19–40 ms
+       over the 3,238-row live store, measured 2026-08-21), and distance is priced by printing
+       the similarity on the line rather than by silence.
+    c. **A remembered win is not buried by the exchange count.** A memory-endorsed move — an
+       exact candidate with more wins than losses, or a similar hit with more wins than losses
+       that is legal on this board — which `material_loss` flags is NOT dropped into the "play
+       one only with a concrete reason" pile: it is listed on its own line carrying both facts,
+       the exchange count against it and the record for it, because the record *is* a concrete
+       reason and the model must weigh it rather than never see it.
+    d. `DESKCRAB_CHESS_SIMILAR=0` switches the similar section off;
+       `DESKCRAB_CHESS_MEMORY_PROMPT=0` sends the prompt bare of both sections. Any retrieval
+       failure is a bare prompt, never a lost move. The `similar-context` stamp (chessweb.md
+       rule 17) is written by the mover as it builds the prompt, in its established shape, so
+       its absence still proves a reflex hit short-circuited. `reason_note` — with its floor
+       `$DESKCRAB_CHESS_SIMILAR_MIN` and its `$DESKCRAB_CHESS_SIMILAR_K` — remains what
+       `betty-chess similar [<fen>|<game>] [-k N]` prints by hand, accepting a game id on the
+       same terms as rule 5 and refusing loudly when the table is empty; the move path no
+       longer uses it. Nothing in this layer is ever auto-played.
 
 15. **The legal moves are printed, never counted by eye.** Every board the CLI prints for an
     active game carries a `legal (N): ...` line — the side to play's complete move list in SAN,
@@ -142,7 +173,8 @@ like, what was played, and how those games ended". It informs; it never plays.
   design: an opening that keeps ending in losses *should* stop being played on reflex, even if
   ply 40 was where it actually went wrong.
 - The similarity layer is only as wide as the store. With a handful of games every neighbour is
-  thin and the note will often be empty or near-duplicate — that is expected, not broken, until a
-  few hundred games are in. The features are hand-built heuristics, not evaluation: two positions
+  thin — the prompt section still renders the nearest of them, with their honest similarity
+  figures on the line, and those figures stay low until a few hundred games are in. That is
+  expected, not broken. The features are hand-built heuristics, not evaluation: two positions
   can sit close in this space and demand different moves, which is why the layer may only ever
   inform the reasoning turn.

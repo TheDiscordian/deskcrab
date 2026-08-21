@@ -5,8 +5,11 @@
 # What must hold: the feature extractor is deterministic and its values are
 # the ones a human can count on a board; vector rows ride the exact layer's
 # ingestion, retraction, and backfill; retrieval hands back neighbours that a
-# chess player would call neighbours; and the bridge only ever does similarity
-# work after the exact layer has missed — a reflex hit plays before any of it.
+# chess player would call neighbours; the mover renders position memory into
+# its own prompt (rule 14: the exact record at the top, the neighbours with
+# their outcomes above the legal moves, a remembered win never buried by the
+# exchange count); and similarity work only ever happens after the exact
+# layer's gate has declined — a reflex hit plays before any of it.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 
 REPO="$(dirname "$(dirname "$(readlink -f "$0")")")"
@@ -144,12 +147,12 @@ out="$(DESKCRAB_CHESS_DIR="$EMPTY" chess similar "$START")"; rc=$?
   && ok "an empty store says so and exits non-zero" \
   || fail "empty store: rc=$rc $out"
 
-# --- the bridge: exact first, similarity only on a miss -------------------
+# --- the mover's prompt: exact first, memory in the prompt itself ---------
 # Hub.answer_position is driven directly; the model call is a stub that logs
 # its prompt and answers from a reply map, so what the model was TOLD is the
-# evidence. The metric stamps are the rest of it (chessweb.md rule 17): a
-# similar-context stamp is written whenever the note is computed, empty or
-# not, so its absence on the hit path proves the short-circuit.
+# evidence. The metric stamps are the rest of it (chessweb.md rule 17): the
+# similar-context stamp is written by the mover as it builds the prompt, so
+# its absence on the hit path proves the short-circuit.
 HUBDIR="$SANDBOX/chess-hub"
 mkdir -p "$HUBDIR/games"
 WAKE_LOG="$SANDBOX/wake.log"
@@ -173,7 +176,7 @@ done < "$MOVER_REPLIES"
 exit 0
 SH
 chmod +x "$MOVER_STUB"
-printf 'game miss-001\tg1f3\ngame miss-002\tg1f3\ngame miss-003\tg1f3\n' \
+printf 'game miss-001\tg1f3\ngame miss-003\tg1f3\ngame bare-001\tg1f3\ngame sac-live\td1h5\ngame warn-001\te2e4\n' \
     > "$MOVER_REPLIES"
 MET="$DESKCRAB_METRICS_DIR/$(date +%F).log"
 
@@ -190,9 +193,24 @@ JSON
 seed_hub_game won-001 '["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"]'
 seed_hub_game won-002 '["e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"]'
 seed_hub_game miss-001 '["e2e4", "e7e5", "f1c4", "d7d6"]'
-seed_hub_game miss-002 '["e2e4", "e7e5", "f1c4", "d7d6"]'
 seed_hub_game miss-003 '["e2e4", "e7e5", "f1c4", "d7d6"]'
+seed_hub_game bare-001 '["e2e4", "e7e5", "f1c4", "d7d6"]'
 seed_hub_game hit-001 '[]'
+# A finished WIN whose winning move hangs by the exchange count: the bishop
+# sacrifice on f7, then resignation. Rule 14c's protection is judged on it.
+cat > "$HUBDIR/games/sac-001.json" <<'JSON'
+{"id": "sac-001", "opponent": "hub", "my_side": "white",
+ "moves": ["e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7", "d1f3"],
+ "resigned_by": "black", "draw_agreed": false, "engine_level": null,
+ "created": "2026-01-01T00:00:00+00:00", "updated": "2026-01-01T00:00:00+00:00"}
+JSON
+# A finished LOSS (fool's mate as white): its neighbourhood must render as a
+# warning, never a suggestion.
+seed_hub_game lost-001 '["f2f3", "e7e5", "g2g4", "d8h4"]'
+# The live positions the drives answer: sac-live stands where sac-001's
+# exact record speaks; warn-001 stands near lost-001 but never exactly on it.
+seed_hub_game sac-live '["e2e4", "e7e5", "f1c4", "b8c6"]'
+seed_hub_game warn-001 '["f2f3", "d7d6"]'
 DESKCRAB_CHESS_DIR="$HUBDIR" chess reflex --backfill >/dev/null
 
 drive() { # <game id> — answer_position for that game's live board
@@ -214,17 +232,26 @@ drive miss-001 >/dev/null
 grep -q "game miss-001" "$MOVER_LOG" \
   && ok "an unknown position still goes to the model" \
   || fail "no model call for the miss game: $(cat "$MOVER_LOG")"
-grep -q "Exact memory has nothing here" "$MOVER_LOG" \
-  && ok "and the model prompt carries the similar-positions note" \
-  || fail "prompt has no similarity note: $(cat "$MOVER_LOG")"
-grep -q "never a move to copy" "$MOVER_LOG" \
+grep -q "Positions like this one" "$MOVER_LOG" \
+  && ok "and the model prompt carries the similar-positions section" \
+  || fail "prompt has no similar section: $(cat "$MOVER_LOG")"
+grep -Eq "similarity 0\.[0-9]{2}.*(white|black) (won|lost|drew) that game" \
+    "$MOVER_LOG" \
+  && ok "each rendered neighbour shows similarity, move, and who won" \
+  || fail "no outcome-annotated neighbour line: $(cat "$MOVER_LOG")"
+grep -q "similar is not same" "$MOVER_LOG" \
   && ok "which names itself context, not a command" \
-  || fail "the note does not disclaim itself: $(cat "$MOVER_LOG")"
+  || fail "the section does not disclaim itself: $(cat "$MOVER_LOG")"
+sim_at="$(grep -n "Positions like this one" "$MOVER_LOG" | head -1 | cut -d: -f1)"
+legal_at="$(grep -n "do not lose material" "$MOVER_LOG" | head -1 | cut -d: -f1)"
+[ -n "$sim_at" ] && [ -n "$legal_at" ] && [ "$sim_at" -lt "$legal_at" ] \
+  && ok "the neighbours sit above the legal-move dump" \
+  || fail "section order: similar at $sim_at, legal at $legal_at"
 awk -F'\t' '$3=="chess" && $4=="reflex-miss" && $5 ~ /^miss-001 /' "$MET" \
     | grep -q . \
   && awk -F'\t' '$3=="chess" && $4=="similar-context" && $5 ~ /^miss-001 ply 4 attached/' "$MET" \
     | grep -q . \
-  && ok "the stamps say what happened: reflex-miss, then the note attached" \
+  && ok "the stamps say what happened: reflex-miss, then the section attached" \
   || fail "metric stamps for the miss path are wrong: $(grep miss-001 "$MET")"
 awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-001 ply 4 attached top [^ ]+ [01]\.[0-9][0-9]$/' \
     "$MET" | grep -q . \
@@ -236,17 +263,36 @@ raise SystemExit(0 if g['moves'][-1] == 'g1f3' else 1)" \
   && ok "and the stub's answer was validated and played into the store" \
   || fail "miss game's moves: $(cat "$HUBDIR/games/miss-001.json")"
 
-# The floor silences the note, never the stamp: a neighbour too far to be
-# quoted into the prompt is the one case the floor has to be judged on.
+# The exact section (rule 14a) and the exchange-count protection (rule 14c):
+# with auto-play off, a position the store knows exactly goes to the model
+# WITH its record, and the sacrifice that won is not buried in the hangs pile.
 : > "$MOVER_LOG"
-DESKCRAB_CHESS_SIMILAR_MIN=0.99 drive miss-002 >/dev/null
-grep -q "Exact memory has nothing here" "$MOVER_LOG" \
-  && fail "the floor let a distant neighbour into the prompt: $(cat "$MOVER_LOG")" \
-  || ok "a neighbour under the floor is kept out of the model prompt"
-awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-002 ply 4 empty top [^ ]+ [01]\.[0-9][0-9]$/' \
-    "$MET" | grep -q . \
-  && ok "but the stamp still records what memory would have said" \
-  || fail "below-floor stamp lost its top field: $(grep similar-context "$MET")"
+DESKCRAB_CHESS_REFLEX=0 drive sac-live >/dev/null
+grep -q "this exact position" "$MOVER_LOG" \
+  && ok "an exactly-known position presents its memory at the top" \
+  || fail "no exact section: $(cat "$MOVER_LOG")"
+grep -q "Bxf7+ (c4f7): played 1, won 1" "$MOVER_LOG" \
+  && ok "each exact candidate carries its result record" \
+  || fail "no record line for the sacrifice: $(cat "$MOVER_LOG")"
+exact_at="$(grep -n "this exact position" "$MOVER_LOG" | head -1 | cut -d: -f1)"
+legal_at="$(grep -n "do not lose material" "$MOVER_LOG" | head -1 | cut -d: -f1)"
+[ -n "$exact_at" ] && [ -n "$legal_at" ] && [ "$exact_at" -lt "$legal_at" ] \
+  && ok "and the exact section sits above the legal-move dump" \
+  || fail "section order: exact at $exact_at, legal at $legal_at"
+grep "play one only with a concrete reason" "$MOVER_LOG" | grep -q "c4f7" \
+  && fail "the winning sacrifice was demoted to the concrete-reason pile" \
+  || ok "a remembered win is not demoted by the exchange count"
+grep "verify it on this board" "$MOVER_LOG" | grep -q "c4f7" \
+  && ok "it is listed with both facts instead: the count and the record" \
+  || fail "no endorsed line for the sacrifice: $(cat "$MOVER_LOG")"
+
+# A losing neighbourhood renders as a warning, never a suggestion.
+: > "$MOVER_LOG"
+drive warn-001 >/dev/null
+grep -q "a warning, not a suggestion" "$MOVER_LOG" \
+  && grep -q "lost-001 ply" "$MOVER_LOG" \
+  && ok "a neighbour from a lost game is a named warning with provenance" \
+  || fail "no warning on the losing neighbour: $(cat "$MOVER_LOG")"
 
 : > "$MOVER_LOG"
 : > "$WAKE_LOG"
@@ -265,10 +311,21 @@ awk -F'\t' '$3=="chess" && $4=="similar-context" && $5 ~ /^hit-001 /' "$MET" \
   && fail "similarity work ran on the exact-hit path" \
   || ok "and no similar-context stamp exists: the hit short-circuited first"
 
-# The switch: DESKCRAB_CHESS_SIMILAR=0 sends the prompt bare.
+# The switches: DESKCRAB_CHESS_SIMILAR=0 drops the neighbour section (and its
+# stamp); DESKCRAB_CHESS_MEMORY_PROMPT=0 sends the prompt bare of memory.
 : > "$MOVER_LOG"
 DESKCRAB_CHESS_SIMILAR=0 drive miss-003 >/dev/null
 grep -q "game miss-003" "$MOVER_LOG" \
-  && ! grep -q "Exact memory has nothing here" "$MOVER_LOG" \
-  && ok "DESKCRAB_CHESS_SIMILAR=0 leaves the model prompt bare" \
-  || fail "the off switch: $(cat "$MOVER_LOG")"
+  && ! grep -q "Positions like this one" "$MOVER_LOG" \
+  && ok "DESKCRAB_CHESS_SIMILAR=0 leaves the prompt without neighbours" \
+  || fail "the similar off switch: $(cat "$MOVER_LOG")"
+awk -F'\t' '$4=="similar-context" && $5 ~ /^miss-003 /' "$MET" | grep -q . \
+  && fail "a stamp was written with the similar section switched off" \
+  || ok "and no stamp claims otherwise"
+: > "$MOVER_LOG"
+DESKCRAB_CHESS_MEMORY_PROMPT=0 drive bare-001 >/dev/null
+grep -q "game bare-001" "$MOVER_LOG" \
+  && ! grep -q "Positions like this one" "$MOVER_LOG" \
+  && ! grep -q "this exact position" "$MOVER_LOG" \
+  && ok "DESKCRAB_CHESS_MEMORY_PROMPT=0 sends the model prompt bare" \
+  || fail "the memory off switch: $(cat "$MOVER_LOG")"

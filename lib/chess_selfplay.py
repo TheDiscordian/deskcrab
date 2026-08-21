@@ -193,19 +193,6 @@ def move_effort(g, board):
         return ""
 
 
-def similar_note(g, board):
-    ply = len(board.move_stack)
-    try:
-        import chess_similar
-        note = chess_similar.reason_note(board)
-        chess_cli.metric("similar-context", f"{g['id']} ply {ply} "
-                         + ("attached" if note else "empty"))
-        return note
-    except Exception as e:
-        log(f"similar note failed, prompt goes without: {e!r}")
-        return ""
-
-
 def try_reflex(g, board, t0):
     ply = len(board.move_stack)
     try:
@@ -271,10 +258,11 @@ def play_one_move(g, movers):
     side = "white" if board.turn == chess.WHITE else "black"
     mover = movers[side]
     key = f"{g['id']}:{chess_reflex.fen_key(board.fen())}"
+    # Position memory rides the mover's own prompt build (chess-reflex.md
+    # rule 14); no note is computed here.
     job = {"key": key, "gid": g["id"], "ply": ply, "fen": board.fen(),
            "side": side, "opponent": g["opponent"],
            "history": chess_cli.history(g["moves"]),
-           "note": similar_note(g, board),
            "effort": move_effort(g, board), "t0": t0}
     deadline = time.time() + MOVE_TIMEOUT
     while time.time() < deadline:

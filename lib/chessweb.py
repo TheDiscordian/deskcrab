@@ -580,29 +580,6 @@ class Hub:
             self.spoken_move_wake(g, san, desc)
         return True
 
-    def similar_note(self, g, board):
-        """The similarity layer's context for a position the exact layer
-        could not answer (specs/chess-reflex.md rule 14): the nearest stored
-        positions, what was played, how it went. Only ever reached after
-        try_reflex has missed; any failure is a model prompt without the
-        note."""
-        if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
-            return ""
-        ply = len(board.move_stack)
-        try:
-            import chess_similar
-            note = chess_similar.reason_note(board)
-            chess_cli.metric("similar-context",
-                             f"{g['id']} ply {ply} "
-                             + ("attached" if note else "empty")
-                             + " " + chess_similar.top_stamp(board))
-            return note
-        except Exception as e:
-            log(f"similar-position note failed, the prompt goes without: "
-                f"{e!r}")
-            chess_cli.metric("similar-context", f"{g['id']} ply {ply} error")
-            return ""
-
     def move_effort(self, g, board):
         """How hard the model call should think (specs/chessweb.md rule 16b):
         the chess_effort pre-check, consulted only after try_reflex has
@@ -664,11 +641,13 @@ class Hub:
         if self.try_reflex(g, board, t0):
             self.mover.resolve(key, "posted")
             return
+        # Position memory rides the mover's own prompt build now
+        # (chess-reflex.md rule 14): no note is computed here, so no job
+        # builder can forget it.
         self.mover.submit({
             "key": key, "gid": gid, "ply": ply, "fen": board.fen(),
             "side": self.store.her_side, "opponent": g["opponent"],
             "history": chess_cli.history(g["moves"]),
-            "note": self.similar_note(g, board),
             "effort": self.move_effort(g, board), "t0": t0})
         # A retry of the SAME position is the same think (rule 12): the
         # started stamp is set once, when the position first goes to the

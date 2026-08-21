@@ -245,10 +245,12 @@ cannot be changed.
        GameComplete (rule 9) and books the end-of-game wake instead. `DESKCRAB_CHESS_REFLEX=0`
        disables the auto-play; recording of finished games is unconditional.
     b. Otherwise **one minimal model call**. The prompt is purpose-built and tiny: the FEN, the
-       side to move, the legal moves, the movetext so far, and the similarity layer's note when
-       there is one (`chess_similar.reason_note`, chess-reflex.md rule 14 — computed only after
-       the exact layer has missed; an empty note or a similarity failure means a bare prompt,
-       and `DESKCRAB_CHESS_SIMILAR=0` switches it off). Nothing of deskcrab's prompt assembly
+       side to move, the legal moves, the movetext so far, and the position memory's own
+       sections, built by the mover itself as it writes the prompt (chess-reflex.md rule 14 —
+       the exact layer's record of this very position when it has one, then the nearest stored
+       neighbours with their outcomes, warnings and endorsements included; a memory failure
+       means a bare prompt, `DESKCRAB_CHESS_SIMILAR=0` switches the neighbour section off,
+       `DESKCRAB_CHESS_MEMORY_PROMPT=0` both). Nothing of deskcrab's prompt assembly
        rides along: no state block, no memory retrieval, no conduct sheet, no persona. The
        invocation is the measured minimal shape (tools/context-probe-results.md): `--tools ""`
        with `--strict-mcp-config --mcp-config lib/empty-mcp.json`, `--disable-slash-commands`,
@@ -336,11 +338,11 @@ cannot be changed.
     serve start or a poll tick with her to move — detection); then `reflex-hit` or
     `reflex-miss` when rule 16a's lookup returns (the book verdict); on a miss,
     `similar-context` (detail carrying `attached` or `empty`, and then `top <san> <similarity>`
-    for the single nearest stored position — `top none` on an empty store, `top error` on a
-    broken one) when the note has been computed for the model prompt — written whichever way
-    that came out, so its absence proves the reflex hit short-circuited before any similarity
-    work; the `top` half is recorded whether or not that neighbour cleared the note's floor,
-    because a neighbour too far to be quoted is exactly the case the floor has to be judged on.
+    for the single nearest stored position — `top none` on an empty store, `error` alone on a
+    broken one) written by the mover as it builds the model prompt (chess-reflex.md rule 14) —
+    whichever way that came out, so its absence proves the reflex hit short-circuited before
+    any similarity work; the `top` half keeps its old meaning, the single nearest neighbour by
+    raw similarity, so the tuning record reads across the note-floor era and after it.
     Then `effort` with the level rule 16b chose and every reason that fired (`quiet` when none
     did, `always-low` under the pin, `default error` when the pre-check failed) — the record
     the thresholds are tuned from, absent exactly when a reflex hit short-circuited or
