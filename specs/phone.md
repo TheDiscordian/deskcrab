@@ -152,9 +152,18 @@ with the page closed.
     record already carries the exchange. A reload mid-turn used to orphan the turn: it kept running,
     it kept the lock, the re-spoken question queued behind it showing nothing, and the reply landed
     nowhere — that is how a reply failed to transmit on 2026-08-08, and how three reloads piled up
-    in four minutes the same evening. Voice clips replayed by the re-attach MUST NOT re-sound the
-    already-buffered backlog; clips arriving live after the re-attach play as ever, and rule 6's
-    completion audio covers a turn that voiced nothing.
+    in four minutes the same evening. Voice clips replayed by the re-attach MUST NOT re-sound what
+    already sounded — and MUST NOT lose what never did. The server annotates every replayed voice
+    event with its own playback truth (`played`, from rule 44's reports: a clip reported `started`
+    or `completed` has played), the client skips exactly the played ones, and a clip the record
+    never heard start is queued as if it had just arrived. Dropping the whole replayed backlog by
+    wall clock was how the 00:40 turn of 2026-08-22 lost its last two clips for good: the page
+    died mid-queue, the tail was synthesised, delivered as events, and could never sound anywhere
+    again. A replayed event carrying no `played` field (an older server) falls back to the old
+    wall-clock drop, and the client counts every voice event against the turn's clip index whether
+    it plays or skips it, so playback reports keep naming the right clip across a resume. Clips
+    arriving live after the re-attach play as ever, and rule 6's completion audio covers a turn
+    that voiced nothing.
 40. Every request the turn path makes MUST be bounded by an abort timeout — the slice uploads, the
     finish, and the batch-transcription fallback included, not only the streaming fetch of rule 4.
     An unbounded transcription fetch held the button's busy state until the watchdog — under the
@@ -259,6 +268,13 @@ says so.
     nothing. A client that has never reported playback at all is a page from before this rule:
     its turns are recorded in the metrics as silent but MUST NOT be notified — an old client
     degrading into a nightly page of the house is exactly the noise rule 26 exists to prevent.
+46a. The mid-queue death leaves a witness too. A turn some of whose clips started while a later
+    clip never reported `started` inside the same bounded wait MUST raise exactly one notification
+    naming the turn and the first clip that never sounded — the 00:40 shape of 2026-08-22: the
+    text delivered whole, clip 0 heard to completion, the page dead before the third clip, and
+    until this rule not one server-side trace that anything was lost. A turn stopped by hand
+    stays silent (the silence was chosen), and the one-notification discipline is shared with
+    rule 46: one turn, at most one page of the house, whichever rule catches it first.
 
 ### Brakes and reach — the user can always get a word in
 
@@ -480,6 +496,11 @@ spoken, a re-emitted message and a duplicated completed event add nothing, and t
 never reaches the synthesiser; with the flag off, the same stream produces exactly the one-clip-
 per-block output of today, and the config plumbing (`PHONE_SENTENCE_STREAM` through `crab serve`
 into the server's environment) is asserted in the same file.
+`tests/test_reply_supersede.sh` drives the amended rule 39 and rule 46a through the real server:
+a two-clip turn reports clip 0 heard and clip 1 requested-but-never-started, the `?from=0` replay
+marks clip 0 `played` and clip 1 unplayed, and the died-mid-queue turn raises exactly one
+notification naming the tail that never sounded.
+
 `tests/test_phone_playback.sh` drives rules 44-46 through two real servers: playback reports land
 in the per-day metrics log with the turn id and clip index; a turn whose clip reported playing
 raises nothing; a silent turn raises exactly one notification through a stub `crab notify`; an

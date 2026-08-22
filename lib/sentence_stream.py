@@ -24,6 +24,37 @@ DELIM_PREFIXES = [DELIM[:i] for i in range(len(DELIM), 0, -1)]
 # sentence that may never end.
 MAX_HOLD = int(os.environ.get("DESKCRAB_TTS_MAX_HOLD", "320"))
 
+# Near-duplicate supersede (specs/speech-output.md rules 5b and 12a). The
+# threshold is the memory store's near-duplicate convention (lib/memory.py
+# NEAR_DUP_SIM), reused rather than a number invented here. The measure is the
+# greater of word-level and character-level sequence similarity over
+# normalised text — the blend is the measured choice: on the 2026-08-22 live
+# corpus (the 00:33 phone pair and the 00:36 wake pair against every
+# genuinely distinct consecutive pair of the same evening) the duplicate
+# pairs score >= 0.9256 under the blend and the distinct pairs <= 0.34,
+# while either measure alone puts one real duplicate under the threshold
+# (word-level scores the 00:36 pair 0.8889; character-level scores the
+# 00:33 pair 0.9038).
+NEAR_DUP_SIM = 0.92
+
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def similarity(a, b):
+    """Blended lexical similarity in [0, 1] between two texts."""
+    from difflib import SequenceMatcher
+    wa, wb = _WORD_RE.findall(a.lower()), _WORD_RE.findall(b.lower())
+    if not wa or not wb:
+        return 0.0
+    word = SequenceMatcher(None, wa, wb).ratio()
+    char = SequenceMatcher(None, " ".join(wa), " ".join(wb)).ratio()
+    return max(word, char)
+
+
+def near_duplicate(a, b):
+    """Do these two texts carry the same substance, possibly reworded?"""
+    return similarity(a, b) >= NEAR_DUP_SIM
+
 # Each chunk becomes one utterance, so a boundary here is a full
 # sentence-final fall in the voice. Only real sentence enders qualify — a colon
 # or a semicolon mid-thought would land as a full stop and sound wrong. A
@@ -172,6 +203,13 @@ class BlockRegistry:
                                    # spoken this turn — catches the re-emit that
                                    # arrives under a NEW message id, which the
                                    # id-keyed set cannot
+        self.voiced_texts = []     # the raw text of every block that actually
+                                   # reached the voice this turn, for the
+                                   # near-duplicate supersede (rule 12a): a
+                                   # REWORDED re-emit matches none of the exact
+                                   # fingerprints above, and on 2026-08-22 a
+                                   # stop-hook-rejected draft's rewrite was
+                                   # voiced whole right behind the draft
 
     def replay_all(self):
         """A truncation sent the tail back down the file: identical bytes are
@@ -235,4 +273,18 @@ class BlockRegistry:
                     and (b is None or len(cand.raw) > len(b.raw))):
                 b = cand
         b = b or Block(self.say)
+        # The near-duplicate supersede (specs/speech-output.md rule 12a): a
+        # block that never started sounding, and says what an already-voiced
+        # block of this turn said — possibly reworded — is held whole. A block
+        # that already put words on the speakers is never cut here: its own
+        # remainder still flushes below, because a suppressor that truncates
+        # mid-thought is the tail-loss defect wearing the dedup's clothes.
+        if (b.consumed == 0 and text.strip()
+                and any(near_duplicate(text, prior)
+                        for prior in self.voiced_texts)):
+            b.done = True
+            b.consumed = len(text)
+            return
+        if text.strip():
+            self.voiced_texts.append(text)
         b.close(text)

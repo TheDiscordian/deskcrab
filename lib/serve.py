@@ -352,33 +352,65 @@ def playback_state(tid):
         if st is None:
             st = PLAYBACK[tid] = {"created": now, "started": False,
                                   "stopped": False, "last_error": "",
-                                  "alarmed": False}
+                                  "alarmed": False,
+                                  # per-clip playback truth (phone.md rules 39
+                                  # and 46a): clip index -> the furthest state
+                                  # reported for it, and when the last report
+                                  # of any kind landed
+                                  "clips": {}, "last_report": 0.0}
         return st
 
 
 def _silence_alarm(tid, clips_offered):
-    """One notification for one silent turn, and never a second."""
+    """One notification for one turn nobody fully heard, and never a second.
+
+    Two shapes share the one alarm and the one-notification discipline: the
+    wholly silent turn (rule 46 — text delivered, nothing ever started), and
+    the mid-queue death (rule 46a — earlier clips started, a later clip was
+    queued and never reported started, and until 2026-08-22 that loss left no
+    server-side trace at all: the 00:40 turn's last two clips were synthesised,
+    delivered as events, and died with the page).
+    """
     st = playback_state(tid)
     with PLAYBACK_LOCK:
-        if st["started"] or st["stopped"] or st["alarmed"]:
+        if st["stopped"] or st["alarmed"]:
             return
+        dead_tail = ""
+        if st["started"]:
+            # Some of the turn was heard. A clip still only "requested" at
+            # alarm time never started; a client still legitimately working
+            # through a long backlog is reporting as it goes, so a recent
+            # report of any kind stands the alarm down.
+            if time.time() - st["last_report"] < PLAY_ALARM / 2.0:
+                return
+            stuck = sorted(k for k, v in st["clips"].items()
+                           if v == "requested")
+            if not stuck:
+                return
+            dead_tail = ("the voice died mid-reply: clip %s of %d never "
+                         "played" % (stuck[0], len(st["clips"])))
         st["alarmed"] = True
         reason = st["last_error"]
         capable = PLAY_CAPABLE[0]
-    if not reason:
+    if dead_tail:
+        reason = dead_tail
+    elif not reason:
         reason = ("no clip was ever synthesised" if not clips_offered
                   else "%d clip(s) offered, none reported playing"
                   % clips_offered)
-    turn_metric("silent-turn", "turn %s — %s" % (tid[:8], reason))
-    print("playback: turn %s delivered its text but no audio ever played — %s"
+    turn_metric("dead-tail" if dead_tail else "silent-turn",
+                "turn %s — %s" % (tid[:8], reason))
+    print("playback: turn %s delivered its text but was not fully heard — %s"
           % (tid[:8], reason), file=sys.stderr, flush=True)
     if not capable:
         return
+    body = ("A phone reply lost its tail: %s (turn %s)." % (reason, tid[:8])
+            if dead_tail else
+            "A phone reply went silent: the text arrived but no audio ever "
+            "played (turn %s — %s)." % (tid[:8], reason))
     try:
         subprocess.run(
-            [CRAB_BIN, "notify",
-             "A phone reply went silent: the text arrived but no audio ever "
-             "played (turn %s — %s)." % (tid[:8], reason)],
+            [CRAB_BIN, "notify", body],
             capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
         print("playback: crab notify failed for turn %s: %s" % (tid[:8], exc),
@@ -388,7 +420,10 @@ def _silence_alarm(tid, clips_offered):
 def arm_silence_alarm(tid, clips_offered):
     st = playback_state(tid)
     with PLAYBACK_LOCK:
-        if st["started"] or st["stopped"]:
+        # A turn that already started sounding still gets the timer: the
+        # mid-queue death (rule 46a) is exactly a turn whose FIRST clips
+        # played — only a chosen stop stands the whole alarm down here.
+        if st["stopped"]:
             return
     t = threading.Timer(PLAY_ALARM, _silence_alarm, args=(tid, clips_offered))
     t.daemon = True
@@ -1633,6 +1668,14 @@ class Handler(BaseHTTPRequestHandler):
             st = playback_state(tid)
             with PLAYBACK_LOCK:
                 PLAY_CAPABLE[0] = True
+                st["last_report"] = time.time()
+                # Per-clip truth (rules 39 and 46a): keep the FURTHEST state
+                # each clip reached, so a late or repeated "requested" never
+                # walks a heard clip back to unheard.
+                rank = {"requested": 1, "started": 2, "completed": 3,
+                        "error": 3}
+                if rank.get(event, 0) > rank.get(st["clips"].get(clip), 0):
+                    st["clips"][clip] = event
                 if event == "started":
                     st["started"] = True
                 elif event == "error":
@@ -1756,6 +1799,17 @@ class Handler(BaseHTTPRequestHandler):
                 return False
 
         i = max(0, start)
+        # The replay boundary and the voice ordinal (phone.md rule 39): every
+        # voice event already buffered when this tail attached is a REPLAY,
+        # and each replayed voice event carries the server's own playback
+        # truth for that clip — reported started or completed means it played,
+        # anything else means a re-attaching client still owes it a voice.
+        # Clip indexes are the order voice events entered the buffer, which is
+        # exactly how the client counts them.
+        with turn.cond:
+            attach_len = len(turn.events)
+            voice_seen = sum(1 for ev in turn.events[:i]
+                             if ev.get("kind") == "voice")
         while True:
             # Every bound on a legitimate run is far inside this: the
             # subprocess dies at TURN_TIMEOUT, the synthesiser join is shorter.
@@ -1780,7 +1834,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not write(b": ping\n\n"):
                     return
                 continue
-            for ev in events:
+            played = None
+            for k, ev in enumerate(events):
+                if ev.get("kind") == "voice":
+                    if i + k < attach_len:
+                        # A replayed clip: annotate with whether it was ever
+                        # reported playing, so the client can give the tail
+                        # that never sounded its voice instead of dropping
+                        # the whole backlog by wall clock (the 00:40 loss).
+                        if played is None:
+                            st = playback_state(turn.tid)
+                            with PLAYBACK_LOCK:
+                                played = {k2 for k2, v in st["clips"].items()
+                                          if v in ("started", "completed")}
+                        ev = dict(ev, played=str(voice_seen) in played)
+                    voice_seen += 1
                 frame = f"data: {json.dumps(ev)}\n\n".encode("utf-8")
                 if not write(frame):
                     return

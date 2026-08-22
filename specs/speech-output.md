@@ -38,6 +38,26 @@ text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as
 5. Every assistant text block MUST be kept, in order. She narrates while she works, the streamer
    speaks every block, and keeping only the last one meant everything said mid-turn was spoken and
    then thrown away.
+5a. A draft the CLI's own Stop hook rejected is not the reply. The rejection arrives in the stream
+    as a user event whose text opens `Stop hook feedback:`, and the model's next message is the
+    rewrite that answers it. The text blocks of the message standing immediately before the
+    rejection MUST be dropped whenever any real text block follows the rejection — keeping both is
+    how the 00:33 phone reply and the 00:36 wake of 2026-08-22 each went out doubled, the second
+    copy a rewrite missing exactly the word the hook had flagged. Blocks from earlier messages —
+    narration before a tool call — are not the rejected draft and MUST survive. A rejection that
+    nothing real follows keeps the draft: never-silent outranks the hook.
+5b. Consecutive near-duplicates supersede at composition. When two consecutive spoken blocks — or
+    two consecutive paragraphs of the joined spoken reply — carry the same substance, possibly
+    reworded, the earlier MUST be dropped and the later kept: a person doesn't say the half-formed
+    thought and then the better one, the better one takes its place before the mouth opens. "The
+    same substance" is the blended lexical similarity in `lib/sentence_stream.py` at or above
+    `NEAR_DUP_SIM` = 0.92 — the memory store's near-duplicate convention (`lib/memory.py`), reused
+    rather than a number invented here. The blend (the greater of word-level and character-level
+    sequence similarity over normalised text) is the measured choice: on the 2026-08-22 corpus
+    both live duplicate pairs score at or above 0.9256 and every genuinely distinct consecutive
+    pair at or below 0.34, so the threshold sits inside a wide gap and MUST NOT fire across
+    genuinely distinct paragraphs. This is the belt under rule 5a: it judges the delivered text
+    alone, whatever the cause upstream turns out to be.
 6. Each block may carry its own display section. The spoken halves are joined into the reply and the
    display halves are concatenated after a single delimiter, so the turn has exactly one display
    channel.
@@ -64,6 +84,13 @@ text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as
 11. Speech MUST start when she starts talking, not when she stops. The stream carries partial
     message events for exactly this reason.
 12. The streamer MUST speak sentence by sentence as sentences complete.
+12a. A block that never started sounding, whose text is a near-duplicate (rule 5b's test) of a
+    block this turn already voiced, MUST NOT be voiced: the shared registry both live voices are
+    built on holds it whole. A block that already put words on the speakers is never cut by this —
+    its own remainder still flushes at close, because a suppressor that truncates mid-thought is
+    the tail-loss defect wearing the dedup's clothes. A rewrite whose deltas streamed live will
+    therefore still sound; cutting a voice already mid-sentence is the mid-speech supersede, a
+    separate piece of work this rule deliberately does not claim.
 13. The streamer MUST NEVER count bytes it did not read. The read counter is advanced by the length
     of lines actually read, never by a size taken from the file's metadata. Assigning the stat size
     to the read counter counts bytes appended between the read and the stat, and then counts them
@@ -428,6 +455,14 @@ auth failure, a synthetic assistant block plus an error result, the 2026-08-20 s
 extracts as itself without the flag and as nothing with it, a genuine reply extracts identically
 either way, and through the whole-draft pass the draft comes back byte-identical while the flag
 row reads `original-mirror-failed` with no `after`.
+
+Rules 5a, 5b and 12a are held by `tests/test_reply_supersede.sh`, on the live corpus of
+2026-08-22: the stop-hook-rejected draft is dropped while narration and a rejection nothing
+follows both survive; the 00:33 and 00:36 reworded duplicate pairs collapse to their later copy
+at block and at paragraph level while every genuinely distinct consecutive pair is untouched and
+the display half rides the collapse whole; the shared registry holds a never-voiced near-duplicate
+block off the speakers while a distinct block and a partly-streamed block's own tail keep their
+voice, and an unterminated final sentence still flushes at close.
 
 **To be written:**
 

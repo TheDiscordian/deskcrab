@@ -587,8 +587,18 @@ async function streamTurn(text, turn, tid, resuming, seq) {
           hiddenSeen = hiddenTotal; resumeSeen = resumeCount;
           if (ev.kind === "done") return ev;
           if (ev.kind === "voice") {
-            if (Date.now() >= voiceGateUntil)
-              enqueueVoice(ev.audio, { tid, clip: String(clipIdx++) });
+            // Every voice event consumes a clip index, played or skipped, so
+            // playback reports keep naming the right clip across a resume.
+            // A replayed clip carries the server's own playback truth (spec
+            // rule 39): played means someone heard it start, skip it; unplayed
+            // means the tail died with the last page and is still owed its
+            // voice — the 00:40 loss was dropping these by wall clock. The
+            // wall-clock gate survives only as the fallback for a server too
+            // old to annotate.
+            const idx = String(clipIdx++);
+            const skip = ev.played === true ||
+                         (ev.played === undefined && Date.now() < voiceGateUntil);
+            if (!skip) enqueueVoice(ev.audio, { tid, clip: idx });
             continue;
           }
           showThought(turn, ev);
