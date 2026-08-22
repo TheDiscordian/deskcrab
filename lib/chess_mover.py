@@ -98,6 +98,31 @@ def material_loss(board, move):
         board.pop()
 
 
+def standing_losses(board, side=None):
+    """The position-level sweep (chess-mover-amendment.md): pieces of
+    `side`'s (default: the side to move) that the OPPONENT can win where
+    they stand — `_swap_off` run on each of her own occupied squares with
+    the opponent capturing first. [(square, piece, loss), ...], biggest
+    loss first; the king is left out, check being the rules' business and
+    not an exchange. This exists because `material_loss` reads only the
+    candidate move's destination square: thirteen of the twenty-seven
+    decisive drops in the four thrown games were pieces standing loose
+    somewhere ELSE while she moved elsewhere, each such move printed to
+    her as safe (engineering record
+    i-throw-won-games-at-the-end-and-nobody-has-look, 2026-08-22)."""
+    if side is None:
+        side = board.turn
+    out = []
+    for sq in chess.SquareSet(board.occupied_co[side]):
+        if board.piece_type_at(sq) == chess.KING:
+            continue
+        loss = _swap_off(board, sq, not side)
+        if loss > 0:
+            out.append((sq, board.piece_at(sq), loss))
+    out.sort(key=lambda t: -t[2])
+    return out
+
+
 # --- position memory in the prompt (specs/chess-reflex.md rule 14) ----------
 # The retrieval lives HERE, in the mover's own prompt build, never in a job
 # builder: the note design (reason_note handed in on the job) left every
@@ -793,6 +818,26 @@ class Mover:
                  f"Position (FEN): {job['fen']}",
                  f"Moves so far: {job['history']}"]
         lines += mem_lines
+        # The standing sweep (chess-mover-amendment.md): position-level,
+        # once per position, ABOVE the legal-move dump — and always
+        # printed, "none" included, so an absent line can only mean the
+        # sweep failed. The wording never says "material": the
+        # destination-square line below owns that word, and it was
+        # demonstrably read as covering the whole board.
+        try:
+            standing = standing_losses(board)
+            named = ", ".join(
+                f"{p.symbol().upper()}{chess.square_name(sq)} (loses {loss})"
+                for sq, p, loss in standing)
+            if standing:
+                lines.append("Pieces of yours the opponent can win where "
+                             f"they stand: {named}. A move that does not "
+                             "address these leaves them there.")
+            else:
+                lines.append("Pieces of yours the opponent can win where "
+                             "they stand: none")
+        except Exception:
+            pass  # a failed sweep is a prompt without the line, never a lost move
         lines.append(f"Legal moves that do not lose material on their own "
                      f"square: {', '.join(safe) or 'none'}")
         if backed:

@@ -34,3 +34,31 @@ destination square before the prompt is written (`material_loss` in
 loses material are listed separately with the loss in centipawns, and the
 system prompt forbids playing one without a concrete reason. This is a
 required part of the mover — a rebuild of the move path must keep it.
+
+That per-move test reads the destination square of the candidate move ONLY,
+and its blind spot has been measured (engineering record
+i-throw-won-games-at-the-end-and-nobody-has-look, notes of 2026-08-22):
+thirteen of the twenty-seven decisive material drops across the four
+genuinely thrown games were pieces of hers standing loose somewhere ELSE on
+the board while she moved elsewhere — a move that loses nothing on its own
+destination square was printed to her as safe on the very ply a rook hung.
+So the prompt also carries a standing, position-level line, computed once per
+position and never per candidate move: `standing_losses` runs the same
+`_swap_off` primitive over every one of her own occupied squares (the king
+excepted — check is the rules' business, not an exchange) with the opponent
+capturing first, and every square where the exchange is net-losing for her is
+named with its loss in centipawns, biggest loss first. The line renders on
+its own, ABOVE the legal-move dump:
+
+    Pieces of yours the opponent can win where they stand: Ra3 (loses 500),
+    Nb3 (loses 300). A move that does not address these leaves them there.
+
+The line always prints — "…where they stand: none" when the board is clean —
+because an absent line is indistinguishable from the sweep having failed, and
+the affirmative all-clear is itself information. Its wording never uses the
+word "material": the destination-square line already owns that word and was
+demonstrably read as covering the whole board, which is the confusion this
+line exists to end. The sweep must stay under 20 ms per position (the
+equivalent pass over all 26 archived games ran in under a second on
+2026-08-22). A standing-sweep failure is a prompt without the line, never a
+lost move.
