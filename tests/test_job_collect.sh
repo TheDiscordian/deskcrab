@@ -66,6 +66,65 @@ n="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])).get("commits",[
 check_eq "two runs, one list" "$n" "$first"
 
 echo
+echo "the tally is the END STATE, never the deliberate red (rule 38a):"
+# A well-behaved builder proves its tests red against the pre-change tree
+# before writing the fix, and twice the collector quoted exactly that proof
+# as the outcome — 20260820-011358 as "51 passed, 6 failed" over a suite
+# that finished 57 and 0, 20260823-233936 as "16 passed, 9 failed" on a job
+# that ended all green. These fixtures are those logs' shapes.
+tally_of() { # <id> <log text> — collect a finished job over the given report
+    mkjob "$1" finished 0
+    printf '%b' "$2" > "$J/$1.log"
+    "$JC" run "$J" "$1" >/dev/null 2>&1
+    "$JS" get "$J/$1.json" tests
+}
+check_eq "a red before the commit line loses to the bare-number green after it" \
+    "$(tally_of t38a1 'Proved the tests red against the tree: 3 passed, 4 failed.\nWrote the fix. Committed as abc1234 on the branch.\nAfter the fix: test_widget 7, all green. Done.\n')" \
+    "7 passed, 0 failed"
+check_eq "a pre-change-labelled red restated AFTER the commit is still never quoted" \
+    "$(tally_of t38a2 'Committed as abc1234. Suite now: 9 passed, 0 failed. For the record, the pre-change red was 2 passed, 5 failed.\n')" \
+    "9 passed, 0 failed"
+check_eq "the 20260820 shape: the labelled red is the only 'passed' in the log, the green wins" \
+    "$(tally_of t38a3 'Shown red against the pre-change tree first: 51 passed, 6 failed, and the red run reproduced the live bug. After the fix: test_claudism_scan 57, and the rest of the family green - mirror 43, table 51. Committed as bb2555c on the branch. Done.\n')" \
+    "57 passed, 0 failed"
+check_eq "the 20260823 shape: the with-the-fix number list is the tally, all of it" \
+    "$(tally_of t38a4 'Committed as 99a9d1d on the branch. The suites against the pre-change tree from HEAD: test_night_work 55 passed 5 failed, test_night_work_utf8 16 passed 9 failed. With the fix: 60, 40 and 25, zero failures. Done.\n')" \
+    "60+40+25 passed, 0 failed"
+check_eq "a VERDICT line outranks every prose tally (rule 38b)" \
+    "$(tally_of t38b1 'Mid-run the suite said 12 passed, 3 failed; the end was better.\nCommitted as feed1234. Done.\nVERDICT: tests=31/0 commit=feed1234\n')" \
+    "31 passed, 0 failed"
+check_eq "a VERDICT line is read even when no prose shape matches at all" \
+    "$(tally_of t38b2 'Fixed and committed as abc1234; everything went well. Done.\nVERDICT: tests=44/0 commit=abc1234\n')" \
+    "44 passed, 0 failed"
+check_eq "the collector's own appended line is never material on a re-collect" \
+    "$(tally_of t38a5 'Ran the suite: 8 passed, 0 failed. Done.\njob-collect: collected: 1 commit on some-branch; tests: 51 passed, 6 failed\n')" \
+    "8 passed, 0 failed"
+check_eq "a single tally and no commit line collect exactly as before" \
+    "$(tally_of t38a6 'Ran the suite: 5 passed, 1 failed. Done.\n')" \
+    "5 passed, 1 failed"
+check_eq "no tally at all invents no count" \
+    "$(tally_of t38a7 'Read the docs and wrote the summary. Done.\n')" ""
+check_eq "a log whose ONLY tally is the labelled pre-change proof yields none" \
+    "$(tally_of t38a8 'Shown red against the pre-change tree: 4 passed, 2 failed. The fix landed and everything went green. Done.\n')" ""
+
+echo
+echo "…and the VERDICT line is transparent to rule 39, both ways (rule 38b):"
+mkjob vw1 finished 0
+printf 'All edits are in.\nStanding by for the monitor to report the other jobs done.\nVERDICT: tests=5/0 commit=abc1234\n' > "$J/vw1.log"
+state="$("$JC" run "$J" vw1 2>/dev/null)"
+check_eq "a trailing verdict line does not hide a report that ends on a wait" \
+    "$state" "failed"
+check "and the verdict still quotes the waiting" \
+    contains "$("$JS" get "$J/vw1.json" collection)" "Standing by for the monitor"
+mkjob vw2 finished 0
+printf 'Fixed, tested, committed as abc1234. Done.\nVERDICT: tests=6/0 commit=abc1234\n' > "$J/vw2.log"
+state="$("$JC" run "$J" vw2 2>/dev/null)"
+check_eq "and a verdict line closing a conclusive report is never read as a wait" \
+    "$state" "collected"
+check_eq "with its tally on the record" \
+    "$("$JS" get "$J/vw2.json" tests)" "6 passed, 0 failed"
+
+echo
 echo "a clean exit that ends on an intention is FAILED (rule 39):"
 mkjob w1 finished 0
 printf 'Surveyed the tree. Another session holds the files.\nStanding by for the monitor to report the other jobs done.\n' > "$J/w1.log"

@@ -259,6 +259,32 @@ re-derived it by hand.
     never a gate: a collector that cannot run costs the collection line, never the job's own
     outcome, and a job MUST NOT fail for having produced no commits — reading and reporting is real
     work.
+38a. The tally collection quotes is the builder's END STATE, never its deliberate red. A
+    well-behaved builder proves its new tests red against the pre-change tree before writing the
+    fix, and twice the collector quoted exactly that proof as the outcome: job 20260820-011358
+    was collected as "51 passed, 6 failed" when its suite finished 57 and 0, and job
+    20260823-233936 as "16 passed, 9 failed" — the exact inverse of the truth on a job that
+    succeeded, because the greens were narrated as bare numbers ("test_night_work 60", "green at
+    25") while only the red carried the words "passed" and "failed". So the tally is chosen in
+    this order: a `VERDICT:` line (rule 38b), last one in the log, outranks all prose. Absent
+    one, the prose heuristic: lines the collector itself appended (`job-collect:`) are never
+    material; a tally whose sentence labels it as run against the pre-change tree — "pre-change",
+    "before the fix", "shown red", "red run", "old code" — is never eligible; a green-shaped
+    count ("after the fix: <suite> N", "with the fix: 60, 40 and 25, zero failures", "green at
+    N") is a tally of N passed and 0 failed, eligible only when its sentence carries a green
+    signal, and never disqualified by red words beside it, because "shown red … before green at
+    19" ends green; when the log carries a commit line — a commit word with a hex sha beside it
+    on the same line — only tallies after the FINAL such line are eligible, falling back to the
+    whole log when none sit there; and of the eligible, the LAST wins. A log whose only tally is
+    a labelled pre-change proof yields NO tally: an absent count is honest, a quoted red run is
+    libel. Historical logs are never rewritten; this ordering is how they stay readable.
+38b. Builders end their report with one machine-readable line, the last line of the final
+    message: `VERDICT: tests=<passed>/<failed> commit=<sha>` — the end-state totals across the
+    suites the builder ran, and the commit they were measured on (`commit=none` when nothing was
+    committed). The runner's system prompt MUST say so. Collection reads the last such line as
+    the job's test result before any prose; the line is machine record, not prose, so rule 39
+    judges the report's closing words with trailing `VERDICT:` lines stripped — a verdict line
+    neither hides a report that ends on a wait, nor is itself ever read as one.
 39. A job that dies waiting reports FAILURE, not success. A run that exited clean whose report ends
     on an intention — standing by, waiting on another job, watching a monitor, holding the commit
     until later — made a promise that outlives the process that made it, and exit 0 means the
@@ -394,10 +420,16 @@ writer's lock and re-judges the state inside it, so a drop that loses the race t
 refuses on the winner's state; and a dispatch whose record vanished mid-flight aborts without
 starting a unit);
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
-unpushed and dirty counts, and the report's test tally; a clean exit whose report ends on an
-intention to wait lands `failed` with the verdict quoting it — with and without work in the tree —
-while a conclusive report that merely narrates a wait mid-tail collects, and the same wait words
-CLOSING a report fail it; a failed job keeps its state but gains the facts; a non-git
+unpushed and dirty counts, and the report's test tally; the tally is the end state, never the
+deliberate red — a red before the commit line loses to the green after it, a `VERDICT:` line
+outranks all prose, a pre-change-labelled tally is never quoted even when it is the only
+"N passed, M failed" in the log, the bare-number green shapes of the two dated incidents are
+read, the collector's own appended lines are not material, a single unlabelled tally still
+collects as before, and a log with no tally invents no count (rules 38a–38b); a trailing
+`VERDICT:` line neither hides a closing wait nor reads as one; a clean exit whose report ends on
+an intention to wait lands `failed` with the verdict quoting it — with and without work in the
+tree — while a conclusive report that merely narrates a wait mid-tail collects, and the same wait
+words CLOSING a report fail it; a failed job keeps its state but gains the facts; a non-git
 workdir and a missing log cost the collection line, never the outcome; and the runner moves a
 finished builder to `collected` end to end);
 `tests/test_night_work_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the night's work

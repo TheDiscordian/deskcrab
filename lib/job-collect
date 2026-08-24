@@ -82,6 +82,96 @@ WAIT_CLOSERS = " \t\r\n.!?…\"')]}*_`"
 
 TESTS_RE = re.compile(r"(\d+)\s+passed\b(?:\W+(\d+)\s+failed)?", re.IGNORECASE)
 
+# The tally is the builder's END STATE, never its deliberate red (rule 38a).
+# A well-behaved builder proves its tests red against the pre-change tree
+# before writing the fix, and twice this collector quoted exactly that proof
+# as the outcome — 20260820-011358 collected as "51 passed, 6 failed" over a
+# suite that finished 57 and 0, 20260823-233936 as "16 passed, 9 failed" on
+# a job whose end state was all green — because the greens were narrated as
+# bare numbers ("test_night_work 60", "green at 25") and only the red spoke
+# the words TESTS_RE knows. The order of authority: the last VERDICT line;
+# then prose, with the collector's own appended lines masked, pre-change-
+# labelled tallies never eligible, green-shaped counts read as N passed and
+# 0 failed, only post-final-commit tallies when the log carries a commit
+# line (whole log when none sit there), and the LAST eligible tally winning.
+VERDICT_RE = re.compile(
+    r"^\s*VERDICT:\s*tests=(\d+)/(\d+)(?:\s+commit=(\S+))?\s*$", re.M)
+SELF_LINE_RE = re.compile(r"^job-collect:.*$", re.M)
+NUM_LIST = r"\d+(?:,\s*\d+)*(?:,?\s+and\s+\d+)?"
+GREEN_FIX_RE = re.compile(
+    r"\b(?:after|with)\s+the\s+(?:fix|change)\b[:,]?\s*"
+    r"(?:[`'\"]?[A-Za-z_][\w./-]*[`'\"]?\s+)?(" + NUM_LIST + r")\b",
+    re.IGNORECASE)
+GREEN_AT_RE = re.compile(
+    r"\bgreen(?:\s+again)?\s+at\s+(" + NUM_LIST + r")\b", re.IGNORECASE)
+GREEN_SIGNAL_RE = re.compile(
+    r"\bgreen\b|\b(?:zero|no|0)\s+failures\b|\ball\s+pass(?:ing|ed)?\b",
+    re.IGNORECASE)
+PRECHANGE_RE = re.compile(
+    r"\bpre-?change\b|\bpre-?fix\b|\bbefore\s+the\s+(?:fix|change)\b|"
+    r"\bshown\s+red\b|\bred\s+run\b|\bred\s+confirmed\b|\bold\s+code\b|"
+    r"\bagainst\s+(?:the\s+)?(?:old|unpatched)\b|\bred[- ]before[- ]green\b",
+    re.IGNORECASE)
+# A commit word with a hex sha (at least one digit, so a word spelled in
+# a-f alone never qualifies) beside it on the same line.
+COMMIT_LINE_RE = re.compile(
+    r"\bcommit(?:ted|ting|s)?\b[^\n]*?\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b",
+    re.IGNORECASE)
+
+
+def sentence_of(text, pos):
+    """The sentence holding pos: between the nearest sentence-final stops."""
+    start = 0
+    for m in re.finditer(r"[.!?]\s|\n", text[:pos]):
+        start = m.end()
+    m = re.search(r"[.!?](?:\s|$)|\n", text[pos:])
+    end = pos + (m.end() if m else len(text) - pos)
+    return text[start:end]
+
+
+def fmt_counts(nums, failed):
+    return "%s passed, %s failed" % ("+".join(nums), failed)
+
+
+def scrape_tally(report):
+    """The end-state test tally the log supports, or None (rule 38a)."""
+    verdict = None
+    for m in VERDICT_RE.finditer(report):
+        verdict = m
+    if verdict:
+        return "%s passed, %s failed" % (verdict.group(1), verdict.group(2))
+    # This collector's own appended lines are never material — a re-collect
+    # must not quote the previous collection's quote.
+    text = SELF_LINE_RE.sub(lambda m: " " * len(m.group(0)), report)
+    cands = []  # (position, tally string, red-excludable)
+    for m in TESTS_RE.finditer(text):
+        tally = ("%s passed, %s failed" % (m.group(1), m.group(2))
+                 if m.group(2) is not None else "%s passed" % m.group(1))
+        cands.append((m.start(), tally, True))
+    for m in GREEN_FIX_RE.finditer(text):
+        if not GREEN_SIGNAL_RE.search(sentence_of(text, m.start())):
+            continue  # "after the fix" alone does not promise green
+        nums = re.findall(r"\d+", m.group(1))
+        cands.append((m.start(), fmt_counts(nums, 0), False))
+    for m in GREEN_AT_RE.finditer(text):
+        nums = re.findall(r"\d+", m.group(1))
+        cands.append((m.start(), fmt_counts(nums, 0), False))
+    # The red-before-green proof is never the result. Green shapes carry
+    # their colour in the match itself, so red words beside them ("shown
+    # red … before green at 19") never disqualify them.
+    eligible = [c for c in cands
+                if not (c[2] and PRECHANGE_RE.search(sentence_of(text, c[0])))]
+    if not eligible:
+        return None
+    commit_end = None
+    for m in COMMIT_LINE_RE.finditer(text):
+        commit_end = m.end()
+    if commit_end is not None:
+        post = [c for c in eligible if c[0] > commit_end]
+        if post:
+            eligible = post
+    return max(eligible, key=lambda c: c[0])[1]
+
 
 def git(workdir, *args):
     """One git question, or None when git or the repo cannot answer it."""
@@ -115,7 +205,18 @@ def waiting_tail(report):
     belongs to a report that went on to say something after it, which is
     exactly what a died-waiting report cannot do.
     """
-    tail = report[-WAIT_TAIL_BYTES:]
+    # The VERDICT line is machine record, not prose (rule 38b): rule 39
+    # judges the report's human close, so trailing verdict lines are
+    # transparent — one neither hides a report that ends on a wait, nor is
+    # itself ever read as one.
+    text = report.rstrip()
+    while True:
+        head, _, last = text.rpartition("\n")
+        if re.match(r"\s*VERDICT:\s*tests=", last):
+            text = head.rstrip()
+        else:
+            break
+    tail = text[-WAIT_TAIL_BYTES:]
     for pat in WAIT_PATTERNS:
         for m in re.finditer(pat, tail, re.IGNORECASE):
             # The whole clause, for the verdict: from the match to the end
@@ -194,10 +295,7 @@ def cmd_run(argv):
             report = f.read()
     except OSError:
         pass
-    tally = None
-    for m in TESTS_RE.finditer(report):
-        tally = ("%s passed, %s failed" % (m.group(1), m.group(2))
-                 if m.group(2) is not None else "%s passed" % m.group(1))
+    tally = scrape_tally(report)
     if tally:
         pairs.append("tests=%s" % tally)
         facts.append("tests: %s" % tally)

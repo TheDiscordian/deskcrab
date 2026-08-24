@@ -110,7 +110,14 @@ Hard rules:
   another hand may have files open in the same repo).
 - Read the repo's CLAUDE.md before changing anything in it.
 - If the task turns out to be wrong or impossible, stop and report why. Do not
-  invent adjacent work to have something to show."
+  invent adjacent work to have something to show.
+- End your report with one machine-readable line, the LAST line of your final
+  message: \`VERDICT: tests=<passed>/<failed> commit=<sha>\` — your END-STATE
+  test totals across the suites you ran and the commit they were measured on
+  (commit=none if you committed nothing; tests=0/0 if you ran none). This line
+  is what collection quotes as your result. Without it, a scrape of your prose
+  decides — and a deliberate red run proven before your fix can be quoted as
+  your outcome."
 
 # A build against an engineering record owes that record its outcome
 # (jobs.md rule 29). Said in the prompt, because the gate below is real: a
