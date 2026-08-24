@@ -304,6 +304,15 @@ re-derived it by hand.
     the account attempts, the history, and the collection. `crab jobs --state <s>` filters the
     listing to one state, so "everything still queued" and "everything that died" are each one
     command.
+41. The ledger is read by the self-change watcher. From dispatch until collection, a job's sidecar
+    claims the subtree under its `workdir`: a creation or modification there whose mtime falls
+    inside the job's window is the job's own hand — committed or mid-edit, per job-window rather
+    than per save, each of several live jobs independently — and is never reported as an outside
+    one ([nightly.md](nightly.md) rule 25c). The sidecar's `workdir`, `state`, `started_epoch`,
+    and `collected_at_epoch` are the whole interface; the watcher parses the format this spec
+    already fixes and the ledger owes it nothing new. A claimed path that surfaces anyway MUST be
+    reported with the job id beside it, so the claim is traceable. The moment the sidecar records
+    collection, the claim is over.
 
 ## DATA
 
@@ -435,7 +444,11 @@ finished builder to `collected` end to end);
 `tests/test_night_work_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the night's work
 dispatches the queued backlog oldest first through the door before selecting, under the cap, with
 `DESKCRAB_JOB_NIGHT` set; the 06:00 default cutoff is re-checked before every dispatch; a refused
-queued brief is skipped for the night, a blocked door ends it, and the dry run starts nothing).
+queued brief is skipped for the night, a blocked door ends it, and the dry run starts nothing);
+`tests/test_notice_jobclaim.sh` (rule 41 from the watcher's side, against fabricated sidecars in
+the ledger's own shape — history array and all — and a scratch tree: the running job's saves,
+commits, and concurrent siblings stay quiet with the job id logged, a deletion under a live claim
+fires with the job named, and collection reopens reporting at once).
 
 **To be written:**
 

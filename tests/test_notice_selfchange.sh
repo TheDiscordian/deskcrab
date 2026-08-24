@@ -289,8 +289,12 @@ printf '%s\t%s\t%s\t%s\t%s\n' \
     "$(date -d "@$(( NOW - 7000 ))" '+%H:%M:%S')" "?" \
     "autonomous wake" "(killed — no summary)" \
     >> "$DESKCRAB_STATE_PREFIX-sessions.log"
-echo "written under a reaped session" > "$T/data/deskcrab/journal/reaped-era.md"
-touch -d "@$(( NOW - 7100 ))" "$T/data/deskcrab/journal/reaped-era.md"
+# (This write went to journal/ until rule 25d made that drawer plumbing —
+# quiet regardless of windows, which would have left this assertion proving
+# nothing. engineering/ carries no lingering record by this point, so the
+# reaped window alone must do the excusing.)
+echo "written under a reaped session" > "$T/data/deskcrab/engineering/reaped-era.md"
+touch -d "@$(( NOW - 7100 ))" "$T/data/deskcrab/engineering/reaped-era.md"
 run
 check "write inside a reaped session's window stays quiet" [ "$(wakes)" = 14 ]
 

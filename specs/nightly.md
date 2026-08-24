@@ -120,7 +120,9 @@ which fails silently is worse than one that does not exist.
 24. The watcher MUST settle a burst of changes into one wake.
 25. Her own writes MUST NEVER wake her. A change is dropped when a write declaration covers it, or a
     live session's claim names it, or its mtime falls inside one of her own run windows (rule 25b),
-    or it is the memory database and one of her sessions ran recently.
+    or it lands under a detached job's workdir inside that job's window (rule 25c), or it is a
+    plumbing path only her own machinery writes (rule 25d), or it is the memory database and one of
+    her sessions ran recently.
 
 25a. The watched drawers exclude `.git` internals. Several of them are git repositories of their
     own — conduct is, and any personal directory in the extra watch set may be — and there the
@@ -141,8 +143,32 @@ which fails silently is worse than one that does not exist.
     cheaper than the class this closes, a session writing its own drawers right up to its final
     second and being reported to herself as an intruder (four times on 2026-08-14 alone, wants and
     Library both). A deletion is NEVER excused by a run window — rule 28's discipline holds.
-    Detached builder jobs are not sessions and get no window from this rule; a job's writes are
-    excused only by the declarations the job runner makes.
+    Detached builder jobs are not sessions and get no window from this rule; their claim is
+    rule 25c's.
+25c. The job window. A detached builder job she dispatched is her own hand at one remove. The
+    watcher reads the jobs ledger it already sits beside — each sidecar's workdir, dispatch time,
+    state, and collection time — and a creation or modification whose path lies under a job's
+    workdir and whose mtime falls inside that job's window, dispatch until collection, is that
+    job's write and MUST stay quiet. The claim is per job-window, not per event: every save the
+    job makes, for the job's whole life, is the one claim, so repeated saves to one file never
+    re-fire per mtime (two alarms four minutes apart from one builder, five in one night,
+    2026-08-22 through 2026-08-24). A change the job has already committed is claimed exactly as
+    a mid-edit one — a clean commit naming the file is not evidence of an outside hand (919b167
+    was flagged so). Several live jobs each claim their own workdir independently and
+    simultaneously. The moment a job collects, its claim ends — no grace — and its workdir
+    reports as before; a byte from before dispatch or after collection belongs to nobody and
+    fires. A deletion is NEVER excused by a job window — rule 28's discipline holds — and a
+    claimed path that surfaces anyway, in the log or in a report, MUST name the claiming job id,
+    so the claim over a tree is traceable rather than invisible. The accepted cost mirrors
+    rule 25b's: an outside edit inside a job's workdir while that job runs is silenced, judged
+    cheaper than the class this closes — eleven-plus false alarms in three nights, every one an
+    authorised builder's own brief-named work.
+25d. The plumbing list. The day journal drawer and the wakes ledger are written by exactly one
+    hand each — the journaller and the wake machinery — so a creation or modification there
+    never reports, by path, unconditionally: no declaration, session window, or job is involved
+    (`journal/2026-08-23.jsonl` was reported at 03:26 although the journaller is the only writer
+    on the machine). A deletion there still surfaces — a vanished day of the journal is exactly
+    the kind of news rule 28 exists for.
 26. Write declarations come in two tiers. A **strong** declaration means the path was in a provable
     write position and excuses anything, including a subtree. A **weak** declaration means the path
     merely appeared in a command she ran, and excuses exact paths only, never a deletion.
@@ -572,7 +598,13 @@ suite, and the model for every other test; among them, `.git` internals under a 
 under an extra watch directory fire nothing (rule 25a), and the run window both ways (rule 25b): a
 write whose mtime sits inside her own window — a live registration, a finished session's log line,
 a reaped `?`-duration line, or the grace just past the end — stays quiet, while the same write with
-no session running still fires exactly one wake, and a deletion inside a live window still surfaces. `tests/test_claudism_scan.sh` — the review reads the
+no session running still fires exactly one wake, and a deletion inside a live window still surfaces.
+`tests/test_notice_jobclaim.sh` — rules 25c and 25d both ways, against a fabricated jobs ledger and
+a scratch tree: a running job's save, three successive saves, a committed change, and two concurrent
+jobs' writes all stay quiet with the job id on the quiet line; a deletion under a live claim still
+fires with the job named in the report; collection reopens reporting at once; an unclaimed path and
+a pre-dispatch mtime still fire; journal writes stay quiet with and without a job while a journal
+deletion fires. `tests/test_claudism_scan.sh` — the review reads the
 spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
 skip; the wake is booked through the door in the review's own name; a dead model still writes the
 report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep
