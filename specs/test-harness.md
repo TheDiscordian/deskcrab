@@ -120,7 +120,19 @@ during the very investigation that produced these specs.
     green run is a statement about the test.
 18. A test for a bug MUST be red before the fix and green after. A test written after the fix, which
     was never run against the broken code, proves nothing.
-19. Every test file MUST be executable and MUST carry the runner line it is invoked with.
+19. Every test file MUST be executable and MUST carry the runner line it is invoked with. The bit
+    is COMMITTED, never merely local: a tracked `tests/test_*.sh` whose index mode is 100644 is the
+    fault, whatever the working tree says. Nothing in the run needs the bit — the runner invokes
+    every test as `bash "$f"` — which is exactly how forty-three of them accumulated without it,
+    with new ones arriving the same night old ones were swept: the only thing that cared was
+    `run.sh --list`'s executability check, and a check that exits 1 for weeks on the unfiltered
+    roll call is not a signal. Resolved 2026-08-24, on the record that measured it: the bit and
+    the check stand together. Every tracked test carries the bit, `run.sh --list` exits non-zero
+    when any file it lists is missing it on disk, and `tests/test_exec_bits.sh` fails the ordinary
+    full run when any tracked `tests/test_*.sh` is committed 100644 — so the fault is caught in
+    the offending builder's own suite run, at creation, not read off a roll call nobody consults.
+    A mass mode fix is one mode-only commit, staged by explicit path, zero insertions and zero
+    deletions.
 20. A test framework invocation MUST NOT fail silently. An interpreter re-execution inside a test
     framework's own process swallows the traceback and produces a bare non-zero exit with no output.
 
@@ -213,6 +225,11 @@ The harness tests itself:
   derives its own stable prefix, never the live one, and creates nothing under the live prefix; a
   canonical-install-shaped layout still resolves the live prefix; an explicit
   `DESKCRAB_STATE_PREFIX` beats both; the choice, and the reason it was made, are recorded.
+- `tests/test_exec_bits.sh` — rule 19's committed half: the tracked roll call from the index is
+  non-empty and includes this file itself, no tracked `tests/test_*.sh` is committed mode 100644,
+  and every one carries the bit on disk. Scope is deliberately the TRACKED list, so an untracked
+  draft in `tests/` fails nobody's run but its author's `--list`. Each offender is named with the
+  one-chmod fix.
 - `tests/run.sh --list` — every test file is executable, is listed, and either sources the sandbox
   helper or is one of the named exceptions. The roll call also runs before the suite does, so a file
   that skips the helper stops the run rather than passing quietly inside it. Four files predate the
