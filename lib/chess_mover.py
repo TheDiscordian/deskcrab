@@ -68,6 +68,13 @@ SYSTEM_PROMPT = (_persona() +
 PIECE_VALUE = {chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
                chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 20000}
 
+PIECE_NAME = {chess.PAWN: "pawn", chess.KNIGHT: "knight",
+              chess.BISHOP: "bishop", chess.ROOK: "rook",
+              chess.QUEEN: "queen", chess.KING: "king"}
+
+# A reply that is checkmate outranks every material number.
+MATE_LOSS = 100000
+
 
 def _swap_off(board, square, side):
     """Material won by `side` capturing on `square`, least valuable attacker
@@ -121,6 +128,222 @@ def standing_losses(board, side=None):
             out.append((sq, board.piece_at(sq), loss))
     out.sort(key=lambda t: -t[2])
     return out
+
+
+def _new_capture_tag(board, move, reply):
+    """' — a capture your move first allows' when `reply`'s capturing attack
+    did not exist before `move` — an opened line or a vacated square, the
+    browser-030 self-block (Bg6 walking the f5 bishop off the fifth rank and
+    handing Qh5 the c5 queen) being the measured case. `board` arrives with
+    `move` already pushed and is handed back the same way."""
+    board.pop()
+    try:
+        existed = (board.piece_at(reply.to_square) is not None
+                   and reply.to_square != move.from_square
+                   and reply.from_square in board.attackers(
+                       not board.turn, reply.to_square))
+    finally:
+        board.push(move)
+    return "" if existed else " — a capture your move first allows"
+
+
+def worst_reply(board, move):
+    """The sharpest one-ply answer to `move` the machine can see:
+    (loss, reply_san, why), or (0, None, None) when every reply is quiet.
+    This is the per-candidate question the destination-square test and the
+    standing sweep both leave unasked — what does the opponent's NEXT move
+    do about the board this candidate leaves behind (spec: chess-mover-
+    amendment.md, "The reply scan"). Three detectors, dearest answer wins:
+
+    - captures, priced by the same `_swap_off` as the standing sweep, run
+      over every mover piece in the post-move position — a defence
+      abandoned, a line opened, and a square vacated all land here;
+    - a reply that is checkmate, at MATE_LOSS above every material number;
+    - forks by a knight, queen, or pawn that land where the mover cannot
+      profitably remove them and hit two targets worth a minor or more —
+      or the king and one such target — each target priced by the exchange
+      on its square, never face value: a "fork" of a defended piece whose
+      capture loses the forker is not a fork.
+    """
+    mover_side = board.turn
+    best = (0, None, None)
+    board.push(move)
+    try:
+        opp = board.turn
+        # -- captures: the standing sweep on the board the candidate leaves
+        for sq, piece, loss in standing_losses(board, mover_side):
+            if loss <= best[0]:
+                continue
+            attackers = board.attackers(opp, sq)
+            if not attackers:
+                continue
+            reply = chess.Move(
+                min(attackers,
+                    key=lambda s: PIECE_VALUE[board.piece_type_at(s)]), sq)
+            if reply not in board.legal_moves:
+                # the cheapest attacker is pinned; any legal capture will do
+                legal = [r for r in board.legal_moves
+                         if r.to_square == sq and board.is_capture(r)]
+                if not legal:
+                    continue
+                reply = min(legal, key=lambda r: PIECE_VALUE[
+                    board.piece_type_at(r.from_square)])
+            best = (loss, board.san(reply),
+                    "takes the %s on %s%s" % (
+                        PIECE_NAME[piece.piece_type], chess.square_name(sq),
+                        _new_capture_tag(board, move, reply)))
+        # -- mate, and forks: one push per opponent reply
+        for reply in board.legal_moves:
+            pt = board.piece_type_at(reply.from_square)
+            victim = board.piece_type_at(reply.to_square)
+            board.push(reply)
+            try:
+                if board.is_check() and board.is_checkmate():
+                    board.pop()
+                    san = board.san(reply)
+                    board.push(reply)
+                    best = (MATE_LOSS, san, "checkmate")
+                    break
+                if pt not in (chess.KNIGHT, chess.QUEEN, chess.PAWN):
+                    continue
+                forker = reply.to_square
+                targets = [s for s in (board.attacks(forker)
+                                       & chess.SquareSet(
+                                           board.occupied_co[mover_side]))
+                           if board.piece_type_at(s) != chess.KING
+                           and PIECE_VALUE[board.piece_type_at(s)] >= 300]
+                check = board.is_check()
+                if not targets and not check:
+                    continue
+                gains = sorted(((_swap_off(board, s, opp), s)
+                                for s in targets), reverse=True)
+                gains = [(g, s) for g, s in gains if g > 0]
+                if check and gains:
+                    est = gains[0][0]
+                    what = "your king and your " + PIECE_NAME[
+                        board.piece_type_at(gains[0][1])]
+                elif len(gains) >= 2:
+                    # two targets, one move to save them: the lesser falls
+                    est = gains[1][0]
+                    what = "your %s and your %s" % (
+                        PIECE_NAME[board.piece_type_at(gains[0][1])],
+                        PIECE_NAME[board.piece_type_at(gains[1][1])])
+                else:
+                    continue
+                if _swap_off(board, forker, mover_side) > 0:
+                    continue  # the forker itself falls at a profit
+                total = est + (PIECE_VALUE[victim] if victim else 0)
+                if total <= best[0]:
+                    continue
+                board.pop()
+                san = board.san(reply)
+                head = ""
+                if victim:
+                    head = "takes the %s on %s%s, then " % (
+                        PIECE_NAME[victim], chess.square_name(reply.to_square),
+                        _new_capture_tag(board, move, reply))
+                board.push(reply)
+                best = (total, san, head + "forks " + what)
+            finally:
+                board.pop()
+    finally:
+        board.pop()
+    return best
+
+
+def material_balance(board, side=None):
+    """Centipawns `side` (default: the side to move) is ahead, kings out."""
+    if side is None:
+        side = board.turn
+    return sum(PIECE_VALUE[pt] * (len(board.pieces(pt, side))
+                                  - len(board.pieces(pt, not side)))
+               for pt in (chess.PAWN, chess.KNIGHT, chess.BISHOP,
+                          chess.ROOK, chess.QUEEN))
+
+
+def trade_guard_line(board):
+    """The named-trades line (chess-mover-amendment.md, "Trades while ahead
+    are counted, not reflexed"), or None when it is not owed. Ahead by three
+    pawns or more with a piece — never a pawn — takeable, every such trade
+    is named with the balance it leaves, so simplification is a counted
+    decision rather than the reflex that threw the recorded endgames."""
+    bal = material_balance(board)
+    if bal < 300:
+        return None
+    entries = []
+    for m in board.legal_moves:
+        victim = board.piece_type_at(m.to_square)
+        if victim in (None, chess.PAWN):
+            continue
+        after = bal + PIECE_VALUE[victim] - material_loss(board, m)
+        entries.append("%s (%s) takes their %s and leaves you %+.1f" % (
+            board.san(m), m.uci(), PIECE_NAME[victim], after / 100))
+    if not entries:
+        return None
+    return ("You are ahead %.1f pawns. A piece trade while ahead banks the "
+            "win only when the count after it still reads for you — count "
+            "each, never reflex: " % (bal / 100) + "; ".join(entries))
+
+
+def passed_pawns(board):
+    """Every passed pawn on the board: [(colour, square, steps-to-promote,
+    notes)], notes being (path square, enemy piece type, blocks?) for each
+    path square an enemy piece sits on (blocks) or attacks (guards)."""
+    out = []
+    for colour in (chess.WHITE, chess.BLACK):
+        step = 1 if colour == chess.WHITE else -1
+        enemy_pawn = chess.Piece(chess.PAWN, not colour)
+        for sq in board.pieces(chess.PAWN, colour):
+            f, r = chess.square_file(sq), chess.square_rank(sq)
+            ranks = range(r + step, 8 if colour == chess.WHITE else -1, step)
+            if any(board.piece_at(chess.square(ff, rr)) == enemy_pawn
+                   for rr in ranks for ff in (f - 1, f, f + 1)
+                   if 0 <= ff <= 7):
+                continue
+            notes = []
+            path = [chess.square(f, rr) for rr in ranks]
+            for p in path:
+                occ = board.piece_at(p)
+                if occ is not None and occ.color != colour:
+                    notes.append((p, occ.piece_type, True))
+                    continue
+                guards = board.attackers(not colour, p)
+                if guards:
+                    guard = min(guards, key=lambda s: PIECE_VALUE[
+                        board.piece_type_at(s)])
+                    notes.append((p, board.piece_type_at(guard), False))
+            out.append((colour, sq, len(path), notes))
+    return out
+
+
+def passed_pawn_line(board, side=None):
+    """One line, both sides, always rendered — "none" included, an absent
+    line being indistinguishable from the scan having failed (chess-mover-
+    amendment.md, "Passed pawns are named"). Each passed pawn carries its
+    square, its steps from promoting, and what stands in the way — a clear
+    path said to be clear, because "nothing stops it" is the fact that
+    demands a move: browser-032's f-pawn walked five clear squares to f8
+    with the prompt saying nothing."""
+    if side is None:
+        side = board.turn
+    rendered = {True: [], False: []}
+    for colour, sq, steps, notes in passed_pawns(board):
+        mine = colour == side
+        defender = "their" if mine else "your"
+        if notes:
+            det = ", ".join(
+                "%s %s %s %s" % (defender, PIECE_NAME[pt],
+                                 "blocks" if occupied else "guards",
+                                 chess.square_name(p))
+                for p, pt, occupied in notes[:3])
+        else:
+            det = ("path clear — nothing of %s blocks or guards it"
+                   % ("theirs" if mine else "yours"))
+        rendered[mine].append("%s, %d from promoting (%s)" % (
+            chess.square_name(sq), steps, det))
+    return ("Passed pawns — yours: %s; theirs: %s" % (
+        "; ".join(rendered[True]) or "none",
+        "; ".join(rendered[False]) or "none"))
 
 
 # --- position memory in the prompt (specs/chess-reflex.md rule 14) ----------
@@ -801,18 +1024,53 @@ class Mover:
         if stamp is not None:
             self.metric("similar-context",
                         f"{job['gid']} ply {job['ply']} {stamp}")
-        safe, hangs, backed = [], [], []
+        # The reply scan (chess-mover-amendment.md): a candidate that
+        # survives the destination-square test is pushed and the opponent's
+        # replies scanned one ply deep — the two browser-031 drops and the
+        # browser-030 self-block were all printed "safe" by the destination
+        # square alone. A scan failure is a prompt with the old two-bucket
+        # shape, never a lost move.
+        scan = os.environ.get("DESKCRAB_CHESS_REPLY_SCAN", "1") != "0"
+        safe, hangs, backed, punished = [], [], [], []
         for m in board.legal_moves:
             loss = material_loss(board, m)
             label = f"{board.san(m)} ({m.uci()})"
-            if loss <= 0:
+            if loss > 0:
+                if m.uci() in endorsed:
+                    # Rule 14c: a remembered win is never buried in the
+                    # concrete-reason pile — both facts ride its own line.
+                    backed.append(f"{label} loses {loss} by the count")
+                else:
+                    hangs.append(f"{label} loses {loss}")
+                continue
+            worst = (0, None, None)
+            if scan:
+                try:
+                    worst = worst_reply(board, m)
+                except Exception:
+                    worst = (0, None, None)
+            # What the candidate itself banks is compensation: a capture
+            # (or a promotion) that gives back less than a pawn of it
+            # still reads safe.
+            victim = board.piece_type_at(m.to_square)
+            comp = PIECE_VALUE[victim] if victim else 0
+            if m.promotion:
+                comp += PIECE_VALUE[m.promotion] - PIECE_VALUE[chess.PAWN]
+            net = worst[0] - comp
+            if worst[1] is None or net < 100:
                 safe.append(label)
+            elif worst[0] >= MATE_LOSS:
+                if m.uci() in endorsed:
+                    backed.append(f"{label} walks into {worst[1]}, checkmate")
+                else:
+                    punished.append((worst[0],
+                                     f"{label} — {worst[1]} is checkmate"))
             elif m.uci() in endorsed:
-                # Rule 14c: a remembered win is never buried in the
-                # concrete-reason pile — both facts ride its own line.
-                backed.append(f"{label} loses {loss} by the count")
+                backed.append(f"{label} loses {net} to {worst[1]} "
+                              "by the count")
             else:
-                hangs.append(f"{label} loses {loss}")
+                punished.append(
+                    (net, f"{label} — {worst[1]} {worst[2]}, loses {net}"))
         lines = [f"You are playing {job['side']} against {job['opponent']} "
                  f"(game {job['gid']}, ply {job['ply']}).",
                  f"Position (FEN): {job['fen']}",
@@ -838,8 +1096,19 @@ class Mover:
                              "they stand: none")
         except Exception:
             pass  # a failed sweep is a prompt without the line, never a lost move
+        try:
+            lines.append(passed_pawn_line(board))
+        except Exception:
+            pass  # a failed scan is a prompt without the line, never a lost move
+        try:
+            guard = trade_guard_line(board)
+            if guard:
+                lines.append(guard)
+        except Exception:
+            pass
         lines.append(f"Legal moves that do not lose material on their own "
-                     f"square: {', '.join(safe) or 'none'}")
+                     f"square, with no punishing reply found: "
+                     f"{', '.join(safe) or 'none'}")
         if backed:
             lines.append("The exchange count reads against these, but the "
                          "memory above holds a winning record with them — "
@@ -849,6 +1118,12 @@ class Mover:
             lines.append("Legal but the exchange on the destination square "
                          "loses material (centipawns) — play one only with a "
                          f"concrete reason: {', '.join(hangs)}")
+        if punished:
+            punished.sort(key=lambda t: t[0])
+            lines.append("Safe where they land, but the opponent's reply "
+                         "punishes them, least bad first — ruled out unless "
+                         "you can answer the reply named: "
+                         + "; ".join(t for _, t in punished))
         note = (job.get("note") or "").strip()
         if note:
             lines.append(note)
