@@ -257,6 +257,39 @@ says so.
     autoplay refusal (`NotAllowedError`); the ▶ recovery button is the refusal's remedy alone,
     offered only on a source a tap can actually play — wired to a source that cannot load it is a
     control that does nothing (`C16`).
+44a. A failed source is failed for good — a terminal per-clip dead state, keyed by the clip's
+    source, set by the element's error event and by any load failure, surviving whichever of the
+    dead source's two signals lands first. The current-clip guard alone does not cover the
+    measured ordering (2026-08-11, turn db935524 clips 3 and 4, turn e913a586 clip 2): play()'s
+    rejection can land BEFORE the element's error event, while the guard still matches and the
+    rejection reads `NotAllowedError`, so the client reported "autoplay refused" and offered the
+    ▶ button on the very source that could not load — `C16` back in its original clothes. So a
+    refusal verdict MUST wait a beat for a racing error event to claim the clip before anything
+    is reported or offered, and the ▶ button MUST be refused — silently, with a log line as the
+    witness — for any source in the dead state, whoever asks and however late. One failure, one
+    report: the client MUST emit at most one `error` report per clip per turn, and the server's
+    metrics path MUST NOT write a second `play-error` line for a clip already recorded failed —
+    8 of one day's 38 play-errors were the second half of exactly this double signal, and the
+    error picture read worse than it was. The duplicate still updates the playback state (a stop
+    said twice must still stand the alarm down); only the metrics line is dropped.
+44b. `started` and `completed` are the element's own truth, never the queue's belief: a clip the
+    client gives up on without playing MUST be reported as its own distinct failure — never as
+    played, and never silently. The measured shape (2026-08-23 23:39, turn 58d64fe9): seven
+    clips offered, seven `requested` reports posted, zero `/audio` fetches ever issued, and no
+    terminal report of any kind — the queue sat in its playing state behind a load that never
+    progressed, and the server's silent-turn line had nothing per-clip to say. So a clip whose
+    element shows no progress and no failure within a bounded wait after the load began MUST be
+    given up on: reported `error` (never started), marked dead under rule 44a, its element
+    unloaded, and the queue advanced, so every remaining clip gets its own chance to sound or to
+    fail on the record — and a queue found believing itself playing with nothing sounding and no
+    such wait armed adopts the stuck clip under the same clock rather than parking every arrival
+    behind it for good. The wait MUST NOT cut a clip that already started sounding, loading
+    progress re-arms it rather than expiring it, and a clip deliberately paused (the open
+    microphone's duck, rule 5) is not stuck. An `ended` nothing ever sounded is a failure
+    wearing a completion's clothes and MUST NOT be reported `completed`; the gesture unlock
+    MUST NOT clobber a loaded clip's source with its silence clip for exactly that reason — the
+    silence's `ended` arrives wearing the loaded clip's index — and with a clip already loaded
+    the unlock plays that clip inside the gesture instead.
 45. The server MUST record every playback report to the per-day metrics log it already writes its
     latency stamps to, so the stamp that says a clip was synthesised has a neighbour that says
     whether it was ever heard.
@@ -445,7 +478,7 @@ block itself. The turn it spawns does that.
 | `C12` | The hold-to-talk button sat grey past any patience: the transcription fetches had no bound at all (a hang held the refusal until a seventeen-minute watchdog), a reload mid-turn orphaned the running turn behind the lock so the next attempt showed nothing either, and the give-up ladder was tuned in tens of minutes. Three reloads in four minutes on 2026-08-08, reported twice that evening. **Resolved:** rules 39-41 — bounded transcription, re-attach across reload, a foreground kick, and the ladder brought down to single minutes; held by the abnormal-end cases in `tests/phone_client_test.js`. |
 | `C14` | The rule 42 release cut the turn's stream as soon as any clip had sounded, on the belief that a voiced turn had no sound left to deliver. Sentence streaming (rule 17) made that belief false: the conversation append runs one to two seconds ahead of the synthesiser's tail, so on 2026-08-09 16:54–16:55 three replies in a row lost every sentence past the second — synthesised, emitted, never fetched, the clips left on disk with no listener. The user heard each reply stop mid-thought. **Resolved:** the release never aborts the stream; it always becomes a voice tail that plays the clips still arriving and ends at the turn's own completion event. Held by the released-tail case in `tests/phone_client_test.js` and the voice-before-done ordering pin in `tests/test_phone_stream.sh`. |
 | `C15` | No brakes. The server had no stop route at all — `/say`, `/turn`, `/img`, `/audio`, `/media`, and nothing that could end a turn — and the client refused new messages while one was in flight, the typed path silently discarding the text after clearing the input. A long or destructive task, once started, could not be stopped from the phone, and a new message parked behind the lock's ten-minute wait. Reported by the user 2026-08-10. **Resolved:** rules 47-50 — a `/stop` route that kills the turn's process groups and releases the lock with them, a stopped-marked completion event, a client stop control, and queued-not-dropped sends; held by `tests/test_phone_stop.sh` and the queue/stop cases in `tests/phone_client_test.js`. |
-| `C16` | A clip whose source failed to load was reported as an autoplay refusal, against the wrong clip: the element's error event advances the queue, then the dead clip's own play() rejection lands and was blamed on whichever clip is current by then — clearing that clip's playing flag underneath it — and the ▶ recovery button was offered wired to the very source that cannot load, so tapping it did nothing. Measured live 2026-08-11 00:22: a harness sweep deleted three just-synthesised clips out of the live /tmp (the server side of the incident is test-harness.md rule 9's), the fetches answered 404, the reply cut out mid-sentence, and the page offered a dead play button beside three misattributed `autoplay refused` reports. **Resolved:** the rejection handler acts only for its own clip and only on a genuine `NotAllowedError`; a source that failed to load is owned by the element's error event, reported as the media error it is against its own index, and never offers the button. Held by the dead-source and refusal cases in `tests/phone_client_test.js`. |
+| `C16` | A clip whose source failed to load was reported as an autoplay refusal, against the wrong clip: the element's error event advances the queue, then the dead clip's own play() rejection lands and was blamed on whichever clip is current by then — clearing that clip's playing flag underneath it — and the ▶ recovery button was offered wired to the very source that cannot load, so tapping it did nothing. Measured live 2026-08-11 00:22: a harness sweep deleted three just-synthesised clips out of the live /tmp (the server side of the incident is test-harness.md rule 9's), the fetches answered 404, the reply cut out mid-sentence, and the page offered a dead play button beside three misattributed `autoplay refused` reports. **Resolved:** the rejection handler acts only for its own clip and only on a genuine `NotAllowedError`; a source that failed to load is owned by the element's error event, reported as the media error it is against its own index, and never offers the button. Held by the dead-source and refusal cases in `tests/phone_client_test.js`. **Re-opened 2026-08-23:** the guard did not cover the rejection-first ordering — the rejection can land BEFORE the error event, while the guard still matches — closed again by rule 44a's terminal dead state and refusal grace, held by `tests/phone_client_deadclip_test.js` through `tests/test_phone_dead_clip.sh`. |
 | `C17` | A message sent mid-turn was queued but unheard until the turn ended: the runner parked it behind the remote lock and nothing surfaced it to the run in flight, so a course correction sent during a long tool chain arrived after the course had been run — and the hold-to-talk control refused to record at all while busy, so a spoken message could not even be queued. Reported by the user 2026-08-11 in exactly those terms. **Resolved:** rules 5 and 49 (the control stays usable; a mid-turn recording transcribes into the same queue, with the page's own playback paused while the microphone is open) and rules 51-52 (the mid-turn spool, read by the running turn at its next tool-call boundary through the per-run PostToolUse hook, delivered exactly once and never echoed to its own turn); held by `tests/test_phone_midturn.sh` and `tests/phone_client_midturn_test.js`. |
 | `C18` | The give-up clock counted the time the phone was asleep: `streamTurn`'s deadline and the watchdog's reference were wall clock, and a screen locked longer than the six-minute window guaranteed "gave up: no progress in 6 minutes" on the first check after unlock — without one reconnect attempt — while the finished turn sat buffered on the laptop under its id, one `/turn/<id>?from=<n>` fetch away. Hit by the user 2026-08-11 09:17: the page used to hand back the reply after a lock, and handed back the error instead. **Resolved:** rule 41's hidden-time clause — hidden spans are tracked through visibility changes and added back to both clocks on resume, so the six minutes mean six minutes awake and getting nothing, and a resume is granted one reconnect before any give-up can return; the awake-and-silent give-up and the 404 path are untouched. Held by the hidden-turn cases in `tests/phone_client_test.js`. |
 | `C13` | A phone turn whose answer reached the conversation file before its stream's completion event left the button grey with the answer already on screen, drawn as a turn from the laptop. Structural, twice over: the mirror pass rewrites the draft after the raw text has streamed, so the stored block no longer matches the own-turn filter; and compaction — a whole model run — sits between the conversation append and the process exit that emits the completion event, so the stream carries nothing but keepalives while the record already holds the reply. Measured live on 2026-08-08: the mirror rewrite logged at 23:42:30, the reply delivered by the watcher by 23:42:55, the page reloaded by hand at 23:43:29, and the completion event not possible before ~23:43:35. **Resolved:** rule 42 — a watcher-delivered reply ends the turn well inside the watchdog window; held by the watcher-release cases in `tests/phone_client_test.js`. |
@@ -506,6 +539,16 @@ in the per-day metrics log with the turn id and clip index; a turn whose clip re
 raises nothing; a silent turn raises exactly one notification through a stub `crab notify`; an
 unanswered autoplay refusal is named in it; a stop by hand counts as heard; and a server that has
 never seen a report records its silent turns but never notifies.
+`tests/test_phone_dead_clip.sh` drives rules 44a-44b against the recorded evidence — the client
+half through `tests/phone_client_deadclip_test.js`, the reporting half through a real server: the
+rejection-first and the error-first orderings of one dead source each yield exactly one error
+report and no ▶ button, with the dead state refusing the button whichever signal landed first
+and the refusal grace never inventing a refusal; a genuine refusal still earns the button and is
+never later given up on; a clip whose element never progresses is reported as its own failure
+with no `started` or `completed` ever posted and the queue freed behind it; the seven-clip
+58d64fe9 wedge replays to seven per-clip failure reports, which the real server records beside
+its silent-turn line; and a doubled error report for one clip lands in the metrics log once,
+with a stop said twice still standing the alarm down.
 `tests/test_phone_queue_wait.sh` drives rule 43 through the real server: a turn parked before its
 first output carries wait notes in its stream naming which wait it is (behind this conversation's
 previous message, or behind something else), the notes stop once real output flows and never

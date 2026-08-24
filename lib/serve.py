@@ -1674,6 +1674,14 @@ class Handler(BaseHTTPRequestHandler):
                 # walks a heard clip back to unheard.
                 rank = {"requested": 1, "started": 2, "completed": 3,
                         "error": 3}
+                # One failure, one line (rule 44a): a dead source signals
+                # twice — the media error and the rejection behind it — and
+                # 8 of one day's 38 play-errors were the second report of a
+                # failure already counted. The duplicate still updates the
+                # state below (a stop said twice must still stand the alarm
+                # down); only its metrics line is dropped.
+                dup_error = (event == "error"
+                             and st["clips"].get(clip) == "error")
                 if rank.get(event, 0) > rank.get(st["clips"].get(clip), 0):
                     st["clips"][clip] = event
                 if event == "started":
@@ -1682,9 +1690,10 @@ class Handler(BaseHTTPRequestHandler):
                     if detail.startswith("stopped"):
                         st["stopped"] = True
                     st["last_error"] = (detail or "error") + " at clip " + clip
-            turn_metric("play-" + event,
-                        "turn %s clip %s%s"
-                        % (tid[:8], clip, " — " + detail if detail else ""))
+            if not dup_error:
+                turn_metric("play-" + event,
+                            "turn %s clip %s%s"
+                            % (tid[:8], clip, " — " + detail if detail else ""))
             return self._json(200, {"ok": True})
 
         if url.path == "/stop":
