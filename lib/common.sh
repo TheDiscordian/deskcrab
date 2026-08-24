@@ -4438,7 +4438,7 @@ claudism_mirror_direct() {  # <kind> <response>
         RESPONSE="$SWAPPED"
         speech_log "claudism table ($KIND): her table repaired the draft"
     fi
-    local FLAGS N I REC SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTLOG
+    local FLAGS N I REC SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTLOG USE
     FLAGS="$(spoken_part "$RESPONSE" \
         | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" \
         || { printf '%s' "$RESPONSE"; return 0; }
@@ -4459,6 +4459,23 @@ claudism_mirror_direct() {  # <kind> <response>
         NOTE="$(_claudism_field "$REC" note)"
         FN="$(_claudism_field "$REC" function)"
         FIX="$(_claudism_field "$REC" fix)"
+        USE="$(_claudism_field "$REC" use)"
+        # Rule 50, amended 2026-08-24: the scan asked the one mention test
+        # (classify_use in lib/claudism-mirror — the capture's, the corpus
+        # reader's and the nightly scan's). A mention — the words quoted or
+        # talked about, never said — skips the mirror call: no rewrite
+        # demand, and the flag row still lands, use=mention, so the night
+        # can count it (rule 45). It still spends one of the bounded fire
+        # slots, exactly the slot it spent before the amendment. An empty
+        # field means the test was unavailable, and the fire runs as it
+        # always did.
+        if [ "$USE" = "mention" ]; then
+            printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
+                "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" "mention" 2>/dev/null
+            speech_log "claudism mirror ($KIND): '$PAT' -> mention (quoted, not said)"
+            I=$((I + 1))
+            continue
+        fi
         SPLICED=""
         REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
         if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
@@ -4556,9 +4573,22 @@ claudism_mirror_desk() {  # <response>
         _claudism_swaps_splice "$FIRES" "$RESPONSE"
         return 0
     fi
+    # Only fires the streamer will actually hold count as predicted: rule 50
+    # (amended) has it skip a mention outright — day row, no fire record —
+    # so counting mentions here would leave this loop sitting out the voice
+    # for holds that can never come. A record without the field counts as a
+    # use, the unavailable-test fallback firing as it always did.
     P="$(printf '%s' "$PREDICTED" | python3 -c \
-        'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)" || P=1
+        'import json,sys; print(sum(1 for f in json.load(sys.stdin) if f.get("use") != "mention"))' 2>/dev/null)" || P=1
     case "$P" in ''|*[!0-9]*) P=1 ;; esac
+    if [ "$P" -eq 0 ]; then
+        # Every predicted flag is a mention: the streamer logs those itself
+        # and holds nothing. Same exit as a clean scan — done goes down
+        # first, then whatever the table swapped is folded in.
+        printf 'done\n' > "$FIRES.done" 2>/dev/null
+        _claudism_swaps_splice "$FIRES" "$RESPONSE"
+        return 0
+    fi
     local DEADLINE=$(( $(date +%s) + ${CLAUDISM_DESK_WAIT:-600} )) LAST=0
     local INFO SWAPPED REC SEQ SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTCOME OUTLOG VERDICT W
     while :; do

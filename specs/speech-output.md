@@ -228,9 +228,13 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     the same one-chance and fail-open rules; the spliced reply is what is spoken, shown, and
     committed. The pass on these paths is bounded in fires per turn; what the bound skips is
     left for the turn-close capture to log.
-45. Every fire the mirror answers is logged to the day's flag log with its outcome. The
-    turn-close capture stays unconditional, so a failed-open fire may be met twice by the
-    nightly reading — once from each — and is deduped there by sentence and pattern, never here.
+45. Every fire the mirror answers is logged to the day's flag log with its outcome, and every
+    row the live path writes carries the mention test's answer: `use=use` on a fire that held,
+    routed or swapped, `use=mention` on one rule 50 skipped (outcome `mention`). A row written
+    with the field absent means the test was unavailable at fire time and the fire ran exactly
+    as it always had. The turn-close capture stays unconditional, so a failed-open fire may be
+    met twice by the nightly reading — once from each — and is deduped there by sentence and
+    pattern, never here.
 46. The hold has a listener's budget, not a model's. A fire at the desk stops the speakers
     mid-reply, so the mirror call on that path MUST be given the shorter of the two deadlines
     (default 25s) and the streamer's hold MUST sit just above it (default 35s), so the deadline
@@ -261,13 +265,27 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     in the nightly reading, where she is the one who revokes an entry that read badly. A swap that
     cannot be logged MUST NOT be applied: the sentence holds instead, or, if that too fails,
     speaks untouched under rule 42.
-50. Out loud there is no mention exemption; the wide net stays off the speech path. Quotation
-    marks are inaudible: a banned word spoken inside quotes reaches the ear as the word itself,
-    indistinguishable from using it, and the user reported hearing exactly that while the mirror
-    reported a clean gate. The mirror MUST therefore fire on every match of a live entry,
-    quoted, code-spanned, or talked about alike. The mention test of
-    ([nightly.md](nightly.md) rule 47) belongs to the capture and the nightly review, where the
-    page shows the quotes and nothing is spoken. A word she must quote goes in the display half.
+50. The mention test runs at fire time too; the wide net still stays off the speech path
+    (amended 2026-08-24). The rule here used to be the opposite — quotation marks are
+    inaudible, so every match of a live entry fired, quoted or not — and the measured cost of
+    that reading was the guard interrupting the audit of the guard: of one family's flagged
+    sentences, nineteen distinct ones were quoting the entry's own trigger words while talking
+    ABOUT the entry — auditing it, denying the word had been said, reporting what an earlier
+    rewrite reached for — and seventeen of those held a defensible sentence mid-draft and sent
+    it back to be reworded. So before holding or calling, the live path MUST ask the SAME
+    mention test the capture and the night run — `classify_use` in `lib/claudism-mirror`, one
+    parser, one mention test ([nightly.md](nightly.md) rule 47) — judged per entry, a use
+    anywhere in the sentence outranking any number of mentions, so a sentence holds on an
+    entry it USES and never on one it merely quotes or names. A mention is never held and never
+    mirror-called; its flag row still lands, `use=mention`
+    with outcome `mention` (rule 45), so the night still counts it and a wrong call stays
+    visible rather than lost. Every fire the test does not skip behaves exactly as it always
+    did, its row saying `use=use`. The trade is made with open eyes: a quoted word still
+    reaches the ear, and a word the listener must not hear still belongs in the display half —
+    what the amendment removes is the hold and the rewrite demand, whose measured cost outran
+    the quote's. Fail towards firing, never towards a lost flag: a mention test that cannot
+    answer fires as before, and a mention row that cannot be written holds as before. Her
+    replace table (rules 47–49) is unchanged either way.
     An entry marked `- live: no` arms only the
     turn-close capture and the nightly review, never the mirror — the broad, urge-shaped
     patterns that make the night's scoring honest would make the speech path stutter, so the
@@ -449,6 +467,15 @@ Rules 51–52 are held by `tests/test_claudism_scan.sh` (the rewrite row's befor
 family block reaching the mirror call's prompt, and the fail-open shape of both), with the desk
 fire record's `function` field asserted in `tests/test_claudism_mirror.sh` where the streamer
 already runs.
+
+The amended rule 50, and rule 45's `use` field, are held by `tests/test_claudism_mention_gate.sh`:
+a sentence quoting a flagged entry speaks unheld on the desk with no fire record and a
+`use=mention` flag row, and passes the whole-draft mirror byte-identical with no model call and
+the same row; the same words said plainly still hold, still route to the mirror, and log
+`use=use`; a mention row that cannot be written holds and fails open exactly as before; the desk
+caller counts only the fires the streamer will actually hold, so an all-mention draft waits for
+nothing; and a use standing beside a mention in one sentence still fires, on the entry used
+rather than the one quoted.
 
 Rules 7a and 42a are held by `tests/test_claudism_scan.sh`: an error-only stream — the CLI's own
 auth failure, a synthetic assistant block plus an error result, the 2026-08-20 shape verbatim —

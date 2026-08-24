@@ -10,7 +10,8 @@ nothing may raise past main.
 Modes:
   scan <phrase-file>
       Spoken text on stdin. Prints a JSON list of flags — [{"sentence",
-      "pattern", "note"}] — one per flagged sentence, in draft order.
+      "pattern", "note", "use"}] — one per flagged sentence, in draft order,
+      "use" the mention test's answer (use/mention, rule 50 as amended).
       An unreadable or empty list prints [] and exits 0.
   splice
       {"response": ..., "sentence": ..., "rewrite": ...} on stdin. Replaces
@@ -229,24 +230,45 @@ def classify_use(sentence, start, end, note=""):
 
 
 def first_flag(text, patterns):
-    """The first live entry that MATCHES this text, or None. Out loud there
-    is no mention exemption: quotation marks are inaudible, so a banned word
-    said in quotes reaches his ear as the word itself (specs/speech-output.md
-    rule 50). The classifier below still runs at night, where the page shows
-    the quotes; here every match fires. A `live: no` entry never fires here —
-    the capture still records both. The streamer hands one sentence at a
-    time, so 'anywhere' is one sentence. The rx and replaces keys carry the
-    entry itself for the table of rule 47; scan() rebuilds its records from
-    the plain fields, so nothing uncompilable ever reaches a JSON
-    boundary."""
+    """The first live entry this text USES — or, when every matching live
+    entry is merely mentioned, the first of those, its record saying so.
+    specs/speech-output.md rule 50, amended 2026-08-24: quotation marks are
+    still inaudible, but holding her mid-sentence to reword a sentence ABOUT
+    a word cost more than the quote did, so the caller skips the hold and
+    the mirror call on use=mention and still logs the flag. The classifier
+    is classify_use above — the capture's, the corpus reader's and the
+    nightly scan's, one mention test everywhere — aggregated their way: a
+    use anywhere in the sentence outranks any number of mentions, judged
+    per entry, so a sentence fires on an entry it uses and never on one it
+    merely quotes or names. If classifying fails the entry fires as a use,
+    which is the old behaviour exactly (fail towards firing, never towards
+    a lost flag). A `live: no` entry never fires here — the capture still
+    records both. The streamer hands one sentence at a time, so 'anywhere'
+    is one sentence. The rx and replaces keys carry the entry itself for
+    the table of rule 47; scan() rebuilds its records from the plain
+    fields, so nothing uncompilable ever reaches a JSON boundary."""
+    mention = None
     for e in patterns:
         if not e["live"]:
             continue
-        if e["rx"].search(text):
-            return {"pattern": e["pat"], "note": e["note"], "rx": e["rx"],
-                    "replaces": e["replaces"], "function": e["function"],
-                    "fix": e["fix"]}
-    return None
+        if not e["rx"].search(text):
+            continue
+        try:
+            cls = "mention"
+            for m in e["rx"].finditer(text):
+                if classify_use(text, m.start(), m.end(), e["note"]) == "use":
+                    cls = "use"
+                    break
+        except Exception:
+            cls = "use"
+        flag = {"pattern": e["pat"], "note": e["note"], "rx": e["rx"],
+                "replaces": e["replaces"], "function": e["function"],
+                "fix": e["fix"], "use": cls}
+        if cls == "use":
+            return flag
+        if mention is None:
+            mention = flag
+    return mention
 
 
 def table_swap(sentence, rx, replaces):
@@ -361,6 +383,11 @@ def scan(text, patterns):
                 rec["function"] = f["function"]
             if f.get("fix"):
                 rec["fix"] = f["fix"]
+            if f.get("use"):
+                # Rule 50 (amended): the caller reads mention as "skip the
+                # mirror call, keep the record". Absent means unavailable,
+                # and the caller fires as it always did.
+                rec["use"] = f["use"]
             flags.append(rec)
     return flags
 
@@ -456,7 +483,8 @@ def main(argv):
             # routes to her as it always did.
             row = flag_row(kind, pid, {"sentence": sent,
                                        "pattern": f["pattern"],
-                                       "note": f["note"]}, "table-swap")
+                                       "note": f["note"],
+                                       "use": f.get("use", "")}, "table-swap")
             row["before"], row["after"] = sent, repaired
             try:
                 append_flag(flags_dir, row)

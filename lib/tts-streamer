@@ -377,8 +377,35 @@ class Voice(threading.Thread):
             # And the declared cure off the same record
             # (specs/speech-output.md rule 55).
             rec["fix"] = flag["fix"]
+        if flag.get("use"):
+            # The mention test's answer (rule 50 as amended), onto every
+            # record this path writes (rule 45).
+            rec["use"] = flag["use"]
         if swap is not None and swap_say:
             rec["before"], rec["after"] = raw, swap
+        elif flag.get("use") == "mention":
+            # Rule 50, amended 2026-08-24: every live entry this sentence
+            # matches is quoted or named, not said. No hold and no mirror
+            # call — the day's flag row still lands, use=mention, BEFORE
+            # the sentence speaks (rule 49's discipline), so the night
+            # still counts it. Nothing goes to the fires file on purpose: a
+            # fire record there is a question the caller must answer, and
+            # this one has none. A row that cannot be written falls back to
+            # the hold below, exactly as before the amendment — today's
+            # behaviour, never a lost flag.
+            if CLAUDISM_FLAGS:
+                try:
+                    _CLAUDISM_MOD.append_flag(
+                        CLAUDISM_FLAGS,
+                        _CLAUDISM_MOD.flag_row("desktop", os.getpid(), rec,
+                                               "mention"))
+                    speech_log("claudism mention #%d (%s): quoted, not said "
+                               "— speaking unheld" % (seq, flag["pattern"]))
+                    return spoken
+                except Exception as exc:
+                    speech_log("claudism mention #%d could not reach the "
+                               "flag log (%s) — holding as usual"
+                               % (seq, exc))
         # The record goes down BEFORE the hold begins (rule 40) and before a
         # swap is applied (rule 49): a hold nobody can read is a stall, not
         # a mirror, and an unlogged swap never happened.

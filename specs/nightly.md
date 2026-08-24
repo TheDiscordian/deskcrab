@@ -222,7 +222,12 @@ which fails silently is worse than one that does not exist.
     rewrite call, counted and quoted separately under its own per-thousand-words rate. Talking
     about the drift instead of not drifting is its own failure mode and MUST stay visible;
     dropping mentions silently would hide it, and scoring them would inflate every count the
-    moment she discusses her own review.
+    moment she discusses her own review. The test is ONE implementation — `classify_use` in
+    `lib/claudism-mirror`, the library half the capture keeps line-identical, the corpus
+    reader imports, and this review loads — and since 2026-08-24 the live mirror asks it at
+    fire time as well ([speech-output.md](speech-output.md) rules 45 and 50): a live mention
+    is skipped, never held, and still lands in the flag log as `use=mention`, so nothing this
+    review counts is lost to the skip.
 48. The substitution watch. The report MUST place a function's members side by side across the
     recent nights and say plainly when the family's total holds while its members churn — a
     member gone quiet beside a sibling that rose is the habit changing words, not dying. A
