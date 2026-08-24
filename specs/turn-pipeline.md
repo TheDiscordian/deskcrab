@@ -188,7 +188,11 @@ slot is the loudest statement this machine can make that it was not listening.
 26. Compaction MUST NOT hold the lock across the summarising model call.
 27. Compaction MUST NEVER commit a summary that is a refusal. The limit signature MUST be applied to
     the committed text, not only to the retry decision. A refusal that lands in the summary destroys
-    the folded blocks permanently.
+    the folded blocks permanently. The same holds for the CLI's own error text in any wording the
+    signature does not know: the summariser's extraction runs with `DESKCRAB_DROP_SYNTHETIC=1`
+    ([speech-output.md](speech-output.md) rule 7a), so an error-only stream folds nothing rather
+    than committing the CLI's words — on 2026-08-20 an OAuth auth failure the signature did not
+    then know was committed as the summary the phone renders.
 28. The summariser MUST capture stderr. A refusal that arrives only on stderr must not break the
     walk.
 29. Rotation MUST archive on inactivity, and the archived pair (transcript and summary) MUST move

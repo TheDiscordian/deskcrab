@@ -31,10 +31,11 @@ CLAUDE_EFFORT="${CLAUDE_EFFORT:-low}"
 # colons, in the order they follow account 1 ($HOME/.claude). The variable
 # NAME is historical and kept for back-compat; the semantics are one flat
 # numbered list, no member special. When the account in hand refuses over a
-# session/usage limit, the run moves to the next available account. Limit
-# refusals ONLY: an auth or network failure would fail on the next account
-# too, and must surface as itself. Unset = one account, which fails exactly
-# as a lone login always did.
+# session/usage limit — or dies a PER-ACCOUNT auth death: not logged in, an
+# OAuth session that expired and could not be refreshed — the run moves to
+# the next available account. A network failure would fail on the next
+# account too, and still surfaces as itself. Unset = one account, which
+# fails exactly as a lone login always did.
 CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # What a limit refusal looks like (case-insensitive ERE). A run that never
 # began outputs one line of the CLI's own refusal and nothing else; these are
@@ -52,8 +53,19 @@ CLAUDE_FALLBACK_CONFIG_DIR="${CLAUDE_FALLBACK_CONFIG_DIR:-}"
 # failures with no work attempted, and the default had to be advanced by hand.
 # "reached your .* limit" covers that family whatever model name sits inside
 # it, and "run /usage-credits" is the CLI's own remedy line; neither phrase
-# appears in auth or network failures, which must still surface as themselves.
-CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage|reached your .* limit|run /usage-credits|not logged in|please run /login}"
+# appears in network failures, which must still surface as themselves.
+# "Failed to authenticate: OAuth session expired and could not be refreshed"
+# earned its place on 2026-08-24, for the night of 2026-08-20: one account's
+# token refresh died, every walk read it as an outage that would follow to
+# the next login and broke without rotating, and the extractor's error-only
+# fallback then delivered that line as her written reply on the phone — and
+# the summariser's walk, blind the same way, committed it as the
+# conversation summary — while the other accounts were answering fine (the
+# voice path, which skips synthetic blocks, never spoke a word of it). Auth
+# is per-account, exactly as the login line above; the structural judgement
+# (claude_stream_refusal: CLI-owned text only, no genuine model output) is
+# what keeps her own replies ABOUT auth failures from ever matching.
+CLAUDE_LIMIT_RE="${CLAUDE_LIMIT_RE:-out of usage credits|usage limit reached|session limit reached|5-hour limit|weekly limit|hit your usage limit|hit your session limit|credit balance is too low|insufficient credit|out of extra usage|reached your .* limit|run /usage-credits|not logged in|please run /login|failed to authenticate|oauth session expired}"
 # The model-family roster, in ONE spelling (specs/account-fallback.md rule
 # 29). claude_model_family reads a model string or a refusal wording against
 # these, and the cooldown scope machinery (rule 8a) rides the answer.
@@ -2182,7 +2194,17 @@ $(cat "$OLDFILE")"
         # Not a refusal. Anything else that went wrong goes wrong on the next
         # account too, so it ends the walk rather than spending the list.
         [ "$SUMRC" -eq 0 ] || break
-        NEWSUM="$(DESKCRAB_DEBUGLOG="$SUMLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+        # The committed text must never be the CLI's own error in ANY wording
+        # (specs/turn-pipeline.md rule 27): DESKCRAB_DROP_SYNTHETIC=1 makes an
+        # error-only stream extract to nothing, so a failure the signature
+        # does not know folds nothing instead of standing the CLI's words in
+        # as the summary the phone renders. A stream with any genuine block
+        # extracts exactly as before. On 2026-08-20 an OAuth auth failure
+        # walked past the refusal check above — the signature did not then
+        # know it — and was committed as the summary: the "summary view"
+        # sighting on the auth-leak engineering record.
+        NEWSUM="$(DESKCRAB_DROP_SYNTHETIC=1 DESKCRAB_DEBUGLOG="$SUMLOG" \
+            "$LIB_DIR/extract-response" 2>/dev/null)"
         if [ -z "$NEWSUM" ] && ! grep -q '"type":' "$SUMLOG" 2>/dev/null; then
             NEWSUM="$(cat "$SUMLOG" 2>/dev/null)"
         fi

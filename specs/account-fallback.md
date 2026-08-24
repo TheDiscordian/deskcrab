@@ -134,8 +134,16 @@ it is ten minutes of silence with nothing on screen explaining it.
 ### Detecting a refusal
 
 12. A refusal MUST be recognised only by the CLI's own synthetic marker plus a limit signature, and
-    only for a stream with **no genuine model output**. An authentication or network failure would
-    fail every other login too and MUST surface as itself.
+    only for a stream with **no genuine model output**. A network failure would fail every other
+    login too and MUST surface as itself. A PER-ACCOUNT authentication death is not that: a login
+    is per-account by definition — "Not logged in" has carried this argument since 2026-08-07, and
+    "Failed to authenticate: OAuth session expired and could not be refreshed" joined the signature
+    on 2026-08-24. On 2026-08-20 the walk read that OAuth line as an outage that would follow it to
+    every login, broke without rotating, and the extractor's error-only fallback delivered the
+    CLI's words as her written reply on the phone and committed them as the conversation summary,
+    while the other logins answered fine the whole time. An auth-dead account rotates exactly like
+    a limit refusal: it cools, the current moves, and a walk that exhausts every login is a failed
+    run (rule 12c) — never a reply.
 12a. A limit refusal that arrives MID-RUN is a **cut**: the attempt's slice holds genuine model
     output, and then the CLI's own limit-signature text — a synthetic assistant message, an error
     result, or its own stderr — with no genuine text block after it. A cut MUST be treated exactly
@@ -249,8 +257,9 @@ refusal to audio.
 - **The whole walk is always offered, rotated to the current account.** A run rides refusals to
   whichever account answers and fails only when everything offered refused. In the steady state
   the current is an account that answered and the first boot succeeds.
-- **A refusal is detected only for a stream with no genuine model output.** Authentication and
-  network failures must surface as themselves.
+- **A refusal is detected only for a stream with no genuine model output.** Network failures must
+  surface as themselves; a per-account authentication death (a login that needs a human, an OAuth
+  session that could not be refreshed) rotates like any refusal (rule 12).
 - **One signature, shared with the blocked-job judgement.** The two judgements cannot drift.
 - **Each retry appends to the same stream log and never truncates it**, because the speech streamer
   is mid-tail on that file.
