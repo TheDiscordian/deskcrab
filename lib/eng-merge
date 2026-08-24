@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# eng-merge — the twin-merge pass over the live open engineering records.
+#
+# Part of sleep, run after the promise sweep and BEFORE the night's work
+# (specs/nightly.md rules 53b-53e), because the drain's own "dedupe" (rules
+# 56a and 59) is only the state machine refusing to dispatch one record
+# twice: nothing ever read two records and noticed they are the same
+# complaint written on different nights. The memory store has had that
+# discipline from the start (specs/memory-recall.md rules 28, 39, 51); this
+# is the records drawer's equivalent, conservative on purpose.
+#
+#   eng-merge score          phase 1 only: every open pair's cosine, sorted
+#   eng-merge run            propose merges — DRY-RUN, nothing written
+#   eng-merge run --apply    fold the judged merges, through `crab eng` only
+#
+# Phase 1 normalises each open record (title and body, entry headings
+# stripped) and embeds it through the memory store's own embedder, then
+# scores every open pair. Pairs at or above the candidate threshold go to a
+# phase-2 judgement; the fold happens only under --apply, which the nightly
+# path never passes.
+#
+# THE THRESHOLD IS A CANDIDATE GATE, NOT A MERGE LINE — measured, 2026-08-24,
+# over the live drawer's 56 open records (1540 pairs, nomic-embed-text):
+#
+#   distribution    p50 0.6895   p90 0.7578   p95 0.7761   p98 0.7998
+#   true twins observed at 0.8548 (the stale-board pair) and 0.8630 (the
+#     leak-detector-blames-tests pair)
+#   known-DISTINCT same-area pairs at 0.8657 (two different chess
+#     complaints), 0.8784 (a wake that never fires beside wakes that fire
+#     too much) — and at 0.8091 a record whose own title declares itself
+#     distinct from its neighbour.
+#
+# The distinct-pair ceiling (0.8784) sits ABOVE the twin floor (0.8548), so
+# NO embedding threshold can decide a merge in this corpus — the judge rules
+# on every candidate, and the threshold's only job is to keep the judged set
+# small and honest. 0.80 is that distribution's p98, ~0.05 under the lowest
+# observed twin.
+#
+# The judgement is deciding what is a duplicate — taste — so it runs where
+# the phase-2 model rule puts taste (design-memory-store.md, 2026-08-06
+# 22:49: "what is a duplicate ... Opus, always"): ENG_MERGE_MODEL, default
+# opus, under the account chain, with NO model fallback. Every non-answer is
+# conservative: a refusal, an unparseable verdict and DISTINCT all leave
+# both records standing.
+#
+# Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
+#   DESKCRAB_ENG_DIR             the records drawer (lib/eng's own knob)
+#   ENG_MERGE_THRESHOLD=0.80     the candidate gate, measured above
+#   ENG_MERGE_MAX_JUDGED=8       judgement calls per run, highest first;
+#                                   a bound that bites is announced with the
+#                                   count it dropped (rule 58a's discipline)
+#   ENG_MERGE_MODEL=opus         the judge; phase-2 rule, no fallback
+#   ENG_MERGE_TIMEOUT=300        seconds per judgement call
+#   MEMORY_EMBED_URL / MEMORY_EMBED_MODEL   the store's embedder (memory.py)
+#
+# Every nightly failure path exits 0 with a trace line on stdout (the
+# night's log): a broken pass costs only itself, never the night.
+set -uo pipefail
+
+# readlink -f before dirname, or the deployed symlink's logical `..` walks
+# into ~/.local/lib and sources a lib/common.sh that does not exist
+# (specs/nightly.md rule 6a).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+export DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/engineering/records}"
+ENGDIR="$DESKCRAB_ENG_DIR"
+THRESH="${ENG_MERGE_THRESHOLD:-0.80}"
+MAX_JUDGED="${ENG_MERGE_MAX_JUDGED:-8}"
+ENG_MERGE_MODEL="${ENG_MERGE_MODEL:-opus}"
+EMBED_URL="${MEMORY_EMBED_URL:-http://localhost:11434/api/embed}"
+EMBED_MODEL="${MEMORY_EMBED_MODEL:-nomic-embed-text}"
+
+# The account log names the path that recorded each refusal
+# (specs/account-fallback.md rule 11). Not exported: nothing dispatched from
+# here should inherit it.
+SESSION_KIND=eng-merge
+
+say() { printf 'eng-merge: %s\n' "$1"; }
+
+# Phase 1: parse, normalise, embed, score. lib/eng is the ONE parser of
+# record front matter (the night-work rule holds here too) — imported as a
+# module, never re-implemented. Prints "RECORDS <n>" then one
+# "PAIR<TAB>score<TAB>id<TAB>id" per open pair, best first. Exit 3 means the
+# embedder is unusable; the detail is on stderr.
+phase1() {
+    python3 - "$SCRIPT_DIR/lib/eng" <<'PY'
+import importlib.machinery, importlib.util, json, math, os, re, sys
+import urllib.error, urllib.request
+
+spec = importlib.util.spec_from_loader(
+    "eng", importlib.machinery.SourceFileLoader("eng", sys.argv[1]))
+eng = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(eng)
+
+d = eng.eng_dir()
+recs = []
+for name in sorted(os.listdir(d)):
+    if not name.endswith(".md"):
+        continue
+    got = eng.parse(os.path.join(d, name))
+    if got is None:
+        continue
+    meta, body = got
+    if meta.get("state") != "open":
+        continue  # rule 53b: open records only — settled is out of sight
+    text = meta.get("title", "") + " " + re.sub(r"(?m)^## .*$", " ", body)
+    recs.append((meta["id"], " ".join(text.split())[:6000]))
+
+print("RECORDS %d" % len(recs))
+if len(recs) < 2:
+    sys.exit(0)
+
+url = os.environ.get("MEMORY_EMBED_URL") or "http://localhost:11434/api/embed"
+model = os.environ.get("MEMORY_EMBED_MODEL") or "nomic-embed-text"
+vecs = []
+try:
+    for i in range(0, len(recs), 16):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"model": model,
+                             "input": ["search_document: " + t
+                                       for _, t in recs[i:i + 16]]}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            vecs.extend(json.load(resp)["embeddings"])
+except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+    print("embedder: %s" % e, file=sys.stderr)
+    sys.exit(3)
+if len(vecs) != len(recs):
+    print("embedder: answered %d vectors for %d records" % (len(vecs), len(recs)),
+          file=sys.stderr)
+    sys.exit(3)
+
+def cos(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+pairs = []
+for i in range(len(recs)):
+    for j in range(i + 1, len(recs)):
+        pairs.append((cos(vecs[i], vecs[j]), recs[i][0], recs[j][0]))
+pairs.sort(reverse=True)
+for s, a, b in pairs:
+    print("PAIR\t%.4f\t%s\t%s" % (s, a, b))
+PY
+}
+
+# One judgement question under the ACCOUNT SELECTION — night-work's walk,
+# with two deliberate differences (rule 53c): the model is the phase-2
+# model with NO fallback, and an account that answers gibberish is not
+# walked past — the pair simply stands. Reads the prompt on stdin; prints
+# the answering model's output. Returns 1 when nothing usable came back.
+judge_walk() {
+    local PROMPT ACCT CONFDIR OUT REFUSAL
+    PROMPT="$(cat)"
+    local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-eng-merge-stream-XXXXXX")"
+    for ACCT in $(claude_accounts "$ENG_MERGE_MODEL"); do
+        CONFDIR="$(claude_account_dir "$ACCT")"
+        : > "$CLOG"
+        printf '%s' "$PROMPT" | (
+            export CLAUDE_CONFIG_DIR="$CONFDIR"
+            CLAUDE_CLASSIFY_TIMEOUT="${ENG_MERGE_TIMEOUT:-300}" \
+            CLAUDE_CLASSIFY_STREAM=1 \
+                claude_classify "$ENG_MERGE_MODEL" \
+                    "Answer in exactly the form asked for, nothing else."
+        ) >"$CLOG" 2>&1
+        # Recorded per attempt, before the next truncation wipes this one's
+        # stream (specs/metrics.md rules 13-14).
+        token_ledger_record "$CLOG" eng-merge "$ENG_MERGE_MODEL" "" "$ACCT"
+        if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
+            say "account $ACCT refused — trying the next account"
+            claude_limit_record "$ACCT" "$REFUSAL" "$ENG_MERGE_MODEL"
+            continue
+        fi
+        OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
+        if [ -z "$OUT" ] && ! grep -q '"type":' "$CLOG" 2>/dev/null; then
+            OUT="$(cat "$CLOG" 2>/dev/null)"
+        fi
+        if printf '%s\n' "$OUT" | tr -d '\r' | grep -qE '^(MERGE|DISTINCT)\b'; then
+            rm -f "$CLOG"
+            printf '%s\n' "$OUT" | tr -d '\r'
+            return 0
+        fi
+        break
+    done
+    rm -f "$CLOG"
+    return 1
+}
+
+engf() { "$SCRIPT_DIR/lib/eng" field "$1" "$2" 2>/dev/null; }
+
+record_body() {  # <id> — the body below the frontmatter, whole, by the one parser
+    python3 - "$SCRIPT_DIR/lib/eng" "$ENGDIR/$1.md" <<'PY'
+import importlib.machinery, importlib.util, sys
+spec = importlib.util.spec_from_loader(
+    "eng", importlib.machinery.SourceFileLoader("eng", sys.argv[1]))
+eng = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(eng)
+got = eng.parse(sys.argv[2])
+sys.stdout.write(got[1] if got else "")
+PY
+}
+
+cmd_run() {  # [--apply]
+    local APPLY=""
+    [ "${1:-}" = "--apply" ] && APPLY=1
+
+    if [ ! -d "$ENGDIR" ]; then
+        say "no records drawer at $ENGDIR — nothing to merge"; return 0
+    fi
+
+    local P1 RC ERR
+    ERR="$(mktemp "${TMPDIR:-/tmp}/deskcrab-eng-merge-err-XXXXXX")"
+    P1="$(phase1 2>"$ERR")"; RC=$?
+    if [ "$RC" -eq 3 ]; then
+        say "the embedder at $EMBED_URL is not answering — nothing scored, nothing merged ($(head -1 "$ERR"))"
+        rm -f "$ERR"; return 0
+    elif [ "$RC" -ne 0 ]; then
+        say "the scorer failed (rc $RC): $(head -1 "$ERR") — nothing merged"
+        rm -f "$ERR"; return 0
+    fi
+    rm -f "$ERR"
+
+    local N PAIRS TOTAL CANDS K
+    N="$(printf '%s\n' "$P1" | sed -n 's/^RECORDS //p')"
+    if [ "${N:-0}" -lt 2 ] 2>/dev/null; then
+        say "${N:-0} open records — fewer than two, nothing to compare"; return 0
+    fi
+    PAIRS="$(printf '%s\n' "$P1" | awk -F'\t' '$1 == "PAIR"')"
+    TOTAL="$(printf '%s\n' "$PAIRS" | grep -c . || true)"
+    CANDS="$(printf '%s\n' "$PAIRS" | awk -F'\t' -v t="$THRESH" '$2 + 0 >= t + 0')"
+    K="$(printf '%s\n' "$CANDS" | grep -c . || true)"
+    say "$N open records, $TOTAL pairs scored; $K candidate pair(s) at or above threshold $THRESH"
+    if [ "$K" -eq 0 ]; then
+        say "no merges proposed tonight — nothing folded, every pair sits under the gate (top: $(printf '%s\n' "$PAIRS" | head -1 | cut -f2-4 | tr '\t' ' '))"
+        return 0
+    fi
+    if [ "$K" -gt "$MAX_JUDGED" ] 2>/dev/null; then
+        # Never a silent cap (rule 58a's discipline at this pass's scale).
+        say "the judged bound (ENG_MERGE_MAX_JUDGED=$MAX_JUDGED) drops $(( K - MAX_JUDGED )) candidate pair(s) this run — they stand unjudged tonight"
+        CANDS="$(printf '%s\n' "$CANDS" | head -n "$MAX_JUDGED")"
+    fi
+
+    local PROPOSED=0 FOLDED=0 S A B FA FB RB OUT LINE REASON W L OA OB LO SA SB NOTE
+    while IFS=$'\t' read -r _ S A B; do
+        [ -n "${A:-}" ] && [ -n "${B:-}" ] || continue
+        FA="$ENGDIR/$A.md"; FB="$ENGDIR/$B.md"
+        say "judging '$A' / '$B' (score $S)"
+        for RB in "$FA" "$FB"; do
+            local SZ; SZ="$(wc -c < "$RB" 2>/dev/null || echo 0)"
+            [ "$SZ" -gt 6000 ] 2>/dev/null \
+                && say "record '$(basename "$RB" .md)' outgrew its 6000-byte prompt budget — $SZ bytes, cut to the budget on a character boundary"
+        done
+        if ! OUT="$(judge_walk <<PROMPT
+Two open engineering records from the same drawer are below. Their embedding
+similarity ($S) makes them candidate near-twins. Decide whether they are the
+SAME COMPLAINT written twice — one underlying defect or collapse, recorded on
+different nights — or two DISTINCT complaints that merely share an area.
+
+The rule is conservative on purpose:
+same-COMPLAINT merges only, never same-AREA.
+Two records about chess are not a merge; two records about the same
+collapse are. A shared subsystem,
+shared vocabulary, or a shared symptom class is NOT enough: if the two
+records would be fixed by two different pieces of work, they are distinct.
+When in doubt, answer DISTINCT.
+
+Answer with exactly one line and nothing else:
+MERGE — <one line: the one complaint both records state>
+or
+DISTINCT — <one line: what separates them>
+
+=== RECORD 1: $A ===
+$(utf8_head 6000 "$FA" 2>/dev/null)
+
+=== RECORD 2: $B ===
+$(utf8_head 6000 "$FB" 2>/dev/null)
+PROMPT
+        )"; then
+            say "no verdict from $ENG_MERGE_MODEL for '$A' / '$B' — the pair stands (a merge is never guessed)"
+            continue
+        fi
+        LINE="$(printf '%s\n' "$OUT" | grep -E '^(MERGE|DISTINCT)\b' | head -1)"
+        case "$LINE" in
+            DISTINCT*)
+                say "verdict DISTINCT for '$A' / '$B' — $(printf '%s' "$LINE" | sed 's/^DISTINCT[^A-Za-z0-9]*//')"
+                continue ;;
+            *DISTINCT*)
+                # The judge changed its mind mid-line — the first live run
+                # (2026-08-24) answered "MERGE — no, wait: DISTINCT — …"
+                # twice, and a leading-token parse proposed the two folds
+                # that sentence retracts. A MERGE is accepted only when its
+                # line never says DISTINCT (rule 53c); ambiguity is a
+                # non-answer, and every non-answer leaves the pair standing.
+                say "ambiguous verdict for '$A' / '$B' — the line carries both tokens, the pair stands: $LINE"
+                continue ;;
+        esac
+        REASON="$(printf '%s' "$LINE" | sed 's/^MERGE[^A-Za-z0-9]*//')"
+        # The winner is the record with the earlier `opened`, which it keeps
+        # by construction — the tool never rewrites `opened` (rule 53d). An
+        # undated `opened` loses to a dated one; two undated fall back to id
+        # order, deterministic.
+        OA="$(engf "$A" opened)"; OB="$(engf "$B" opened)"
+        W="$A"; L="$B"
+        if [ -n "$OB" ] && { [ -z "$OA" ] || [[ "$OB" < "$OA" ]]; }; then
+            W="$B"; L="$A"
+        elif [ -z "$OA" ] && [ -z "$OB" ] && [[ "$B" < "$A" ]]; then
+            W="$B"; L="$A"
+        fi
+        say "propose fold '$L' -> '$W' (score $S) — $REASON"
+        PROPOSED=$(( PROPOSED + 1 ))
+        [ -n "$APPLY" ] || continue
+
+        # The fold, through `crab eng` and only through it (engineering-
+        # records.md rule 4): touch appends the loser's whole body to the
+        # winner as one dated entry — nothing truncated, nothing rewritten —
+        # and kill closes the loser pointing at the winner. Both records may
+        # have moved since scoring; a pair no longer both open is skipped.
+        SA="$(engf "$W" state)"; SB="$(engf "$L" state)"
+        if [ "$SA" != open ] || [ "$SB" != open ]; then
+            say "skip '$W' / '$L' — no longer both open (states: ${SA:-?}/${SB:-?})"
+            continue
+        fi
+        LO="$(engf "$L" opened)"
+        NOTE="Folded twin record '$L' into this thread (eng-merge --apply, score $S): the judge read both and called them one complaint written twice — $REASON
+The folded record is dead and points here; its whole body follows.
+
+--- from '$L' (opened ${LO:-undated}) ---
+
+$(record_body "$L")"
+        if ! "$SCRIPT_DIR/lib/eng" touch "$W" "$NOTE" >/dev/null; then
+            say "the fold could not touch '$W' — the pair stands"
+            continue
+        fi
+        if ! "$SCRIPT_DIR/lib/eng" kill "$L" "merged into '$W' by eng-merge — the same complaint written twice; its body is appended there" >/dev/null; then
+            say "'$L' could not be killed after its body was appended to '$W' — close it by hand: crab eng kill $L"
+            continue
+        fi
+        say "folded '$L' -> '$W' — body appended, loser killed pointing at the winner"
+        FOLDED=$(( FOLDED + 1 ))
+    done <<< "$CANDS"
+
+    if [ -n "$APPLY" ]; then
+        say "done — $PROPOSED proposal(s), $FOLDED folded"
+    else
+        say "done — $PROPOSED proposal(s), dry-run, nothing folded; 'eng-merge run --apply' folds them by hand"
+    fi
+    return 0
+}
+
+cmd_score() {
+    if [ ! -d "$ENGDIR" ]; then
+        say "no records drawer at $ENGDIR — nothing to score"; return 0
+    fi
+    local P1 RC ERR N TOTAL
+    ERR="$(mktemp "${TMPDIR:-/tmp}/deskcrab-eng-merge-err-XXXXXX")"
+    P1="$(phase1 2>"$ERR")"; RC=$?
+    if [ "$RC" -ne 0 ]; then
+        say "the embedder at $EMBED_URL is not answering — nothing scored ($(head -1 "$ERR"))"
+        rm -f "$ERR"; return 1
+    fi
+    rm -f "$ERR"
+    N="$(printf '%s\n' "$P1" | sed -n 's/^RECORDS //p')"
+    TOTAL="$(printf '%s\n' "$P1" | grep -c '^PAIR' || true)"
+    say "${N:-0} open records, $TOTAL pairs scored (embedder $EMBED_MODEL, threshold $THRESH is the candidate gate)"
+    printf '%s\n' "$P1" | awk -F'\t' '$1 == "PAIR" { print $2 "\t" $3 "\t" $4 }'
+}
+
+case "${1:-}" in
+    run)   shift; cmd_run "$@" ;;
+    score) cmd_score ;;
+    *)     echo "Usage: eng-merge {score|run [--apply]}" >&2; exit 2 ;;
+esac

@@ -149,6 +149,15 @@ cmd_run() {
     # verdict.
     run_phase promise-check "promise sweep" "$LIB_DIR/promise-check" sweep
 
+    # The twin-merge pass, after the sweep and BEFORE the night's work
+    # (specs/nightly.md rules 53b-53e): the open records are scored for
+    # near-twins and the candidates judged, so the drain is not asked to
+    # spend builders on the same complaint written twice. DRY-RUN is the
+    # pass's default and its only nightly behaviour — proposals land on
+    # this log, nothing is folded; folding is `eng-merge run --apply`, by
+    # hand only. Same bargain as the review: never the night's verdict.
+    run_phase eng-merge "twin-merge pass" "$LIB_DIR/eng-merge" run
+
     # The night's work, the night's last phase: the stretch between the
     # stamp and the morning is machine time nobody is using, so the open
     # owed work — engineering threads, the sweep's misses, builder-shaped

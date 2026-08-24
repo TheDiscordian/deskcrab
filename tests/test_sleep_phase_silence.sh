@@ -36,7 +36,7 @@ stub() {  # <dir> <name>  (body on stdin)
 }
 chatty_except() {  # <dir> <name to leave out>
     local n
-    for n in claudism-scan night-work promise-check; do
+    for n in claudism-scan eng-merge night-work promise-check; do
         [ "$n" = "$2" ] && continue
         printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" | stub "$1" "$n"
     done

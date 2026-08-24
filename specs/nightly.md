@@ -56,9 +56,9 @@ which fails silently is worse than one that does not exist.
     (rule 9) — the stamp MUST NOT be stricter than the night it records.
 
 14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-stamp
-    phase — the claudism review, the promise sweep, the night's work — owes the night log at
-    least one line opening with its own name (`claudism-scan:`, `promise-check:`,
-    `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
+    phase — the claudism review, the promise sweep, the twin-merge pass, the night's work — owes
+    the night log at least one line opening with its own name (`claudism-scan:`, `promise-check:`,
+    `eng-merge:`, `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
     leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
     its exit status — in the night log itself as well as on stderr. A phase's non-zero exit is
     likewise named in the log, not on stderr alone, where only the journal would carry it. The
@@ -293,6 +293,61 @@ night is where the day's promises are settled honestly, from the whole record at
     ran from one that never started. The guards ahead of the mode dispatch (no CLI, no python)
     still exit silently on purpose: a sweep that cannot start is exactly what rule 14b flags.
 
+### The twin-merge pass — part of sleep, before the night's work
+
+The drawer accumulates the same complaint written on different nights. The memory store has had a
+merge-identical-ideas discipline from the start ([memory-recall.md](memory-recall.md) rules 28, 39,
+51); the engineering records had none, and the night's-work "dedupe" (rules 56a and 59) is only the
+state machine refusing to dispatch one record twice — nothing ever read two records and noticed
+they are the same complaint. After a fortnight of the drain running blind over 60+ open threads,
+near-twins are a certainty, not a risk (the record
+`merge-twin-threads-before-the-drain-picks-work-r`, 2026-08-23).
+
+53b. After the promise sweep and BEFORE the night's work, sleep runs the twin-merge pass
+    (`lib/eng-merge run`) over the LIVE open records — the same drawer rule 58c hands the
+    selector, and only its `state: open` records: a settled or dead record is already out of the
+    drain's sight and is never scored. The pass normalises each record (title and body, the entry
+    headings stripped) and embeds it through the memory store's own embedder
+    (`MEMORY_EMBED_URL` / `MEMORY_EMBED_MODEL`), scores every open pair by cosine, and hands
+    pairs at or above the candidate threshold (`ENG_MERGE_THRESHOLD`, default 0.80) to a
+    judgement call, highest first, bounded by `ENG_MERGE_MAX_JUDGED` (default 8) — and a bound
+    that bites is announced with the count it dropped, never silent (rule 58a's discipline). The
+    threshold is a CANDIDATE GATE, measured, and deliberately NOT a merge line: measured
+    2026-08-24 over the live drawer (56 open records, 1540 pairs), known-distinct same-area pairs
+    score up to 0.8784 — one of them a record whose own title declares it distinct from its
+    neighbour — while true twins were observed at 0.8548 and 0.8630. The distinct-pair ceiling
+    sits ABOVE the twin floor, so no embedding threshold can decide a merge; every candidate goes
+    to judgement. 0.80 is that distribution's p98, ~0.05 under the lowest observed twin. An
+    embedder that does not answer scores nothing, says so, and ends the pass — never a guessed
+    score.
+53c. The judgement is deciding what is a duplicate, which is taste, so it runs where the
+    phase-2 model rule already puts taste (design-memory-store.md, 2026-08-06 22:49: phase 2, the
+    sift — "what is a duplicate … Opus, always"): `ENG_MERGE_MODEL`, default `opus`, under the
+    account chain (rule 13), with NO model fallback — a pair the model never answers is skipped,
+    never guessed at by a cheaper model. The rule the judge enforces, encoded in its prompt:
+    same-COMPLAINT merges only, never same-AREA — two records about chess are not a merge; two
+    records about the same collapse are. Every non-answer is conservative: a refusal, an
+    unparseable verdict, and DISTINCT all mean both records stand — and so does a verdict line
+    that carries BOTH tokens: on the first live run (2026-08-24) the judge twice changed its mind
+    mid-line ("MERGE — no, wait: DISTINCT — …"), and a leading-token parse proposed the two folds
+    the judge's own sentence retracts. A MERGE is accepted only when its line never says
+    DISTINCT.
+53d. Dry-run is the DEFAULT and the only nightly behaviour: proposals — winner, loser, score, the
+    judge's reason — land on the night log and nothing is written anywhere. Folding sits behind
+    the explicit `--apply`, run by hand only; the nightly path never passes it. An applied fold
+    goes through `crab eng` and only through it ([engineering-records.md](engineering-records.md)
+    rule 4): the WINNER is the record with the earlier `opened` — which it keeps by construction,
+    since the tool never rewrites `opened` — the loser's whole body is appended to the winner as
+    one dated entry (`eng touch`), and the loser is killed with `settled_by` pointing at the
+    winner's id (`eng kill`). No body is ever lost: a fold appends, never truncates or rewrites
+    the winner's entries, and the dead loser keeps its own body whole. A pair whose records are
+    no longer both open by the time the fold reaches them is skipped, with a line.
+53e. This pass and the dispatch dedupe MUST NOT be confused for each other: rule 56a's state
+    machine and rule 59's ledger stop the same RECORD being bought twice; this pass is the one
+    thing that reads two records and notices they are the same complaint written twice. Its
+    failure never unstamps or fails the night (rules 8 and 10, the same bargain as every phase),
+    and it owes the night log a line in its own name (rule 14b, `eng-merge:`).
+
 ### The night's work — part of sleep, and the night's owed-work sweep
 
 The engineering threads accumulate faster than waking hours spend them, and the stretch between
@@ -343,8 +398,10 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     named in the night log — never retried in a loop — and the block marker ends dispatch for
     the night exactly as rule 60 says, because the wall in front of one builder stands in front
     of them all. The dry run of rule 61 names each queued brief it would have dispatched and
-    starts none. The state machine is the dedupe: a dispatched record leaves `queued`, so the
-    ledger of rule 59 tracks only the selector's picks.
+    starts none. The state machine is the dedupe — of DISPATCH: a
+    dispatched record leaves `queued`, so the ledger of rule 59 tracks only the selector's picks.
+    Two records that ARE the same complaint are a different problem, and the twin-merge pass
+    (rule 53e) is what notices those.
 57. Concurrent jobs are capped (`NIGHT_WORK_CAP`, default 2), counting EVERY job standing
     `dispatched` or `running` and not only the night's own: a builder between the dispatch call
     and its worker's first write already holds a slot and an account, so a count blind to
@@ -563,6 +620,19 @@ that dies leaving only noise in another voice draws both complaints, did-not-fin
 the log file too; a phase that fails after speaking draws only did-not-finish — and every such
 night still stamps and still exits with the ingest's zero.
 
+`tests/test_record_merge_pass.sh` — rules 53b-53e, against the real local embedder (a mocked one
+cannot prove semantic scoring): a true twin pair scores above every same-area-but-distinct pair
+and above the candidate threshold, while a settled record — however similar its text — is never
+scored, never judged; the judge is the deciding gate, not the score (a same-area pair handed to
+it and answered DISTINCT is never proposed); the judgement prompt carries the same-complaint-
+never-same-area rule and runs on the phase-2 model with no fallback; the judged bound announces
+what it dropped; dry-run is the default and leaves the records directory byte-identical; an
+unanswerable judge and an unreachable embedder both end the pass conservatively, folding nothing,
+exiting zero; `--apply` on fixtures folds through `crab eng` alone — the earlier-opened winner
+keeps its `opened`, carries both bodies whole, the loser dies pointing at the winner's id and
+keeps its own body — and a second `--apply` finds nothing left to propose; and the wiring: sleep
+runs the pass after the promise sweep, before the night's work, never with `--apply`, and the
+pass speaks through the deployed symlink (rule 6a) even with no records drawer at all.
 `tests/test_shelf_check.sh` — rules 21a/21b: a synthetic over-long shelf line is flagged with its
 measured size, the budget, and the `wants/<slug>.md` document its line points at; a line naming
 no document is flagged as exactly that; a genuinely one-line shelf is silent — one line, exit
