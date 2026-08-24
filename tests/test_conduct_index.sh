@@ -8,7 +8,10 @@
 # a comment above it explaining why a shelf in the prompt becomes a dumping
 # ground. It gets the shelf's treatment now — and because conduct is OWED
 # rather than chosen, the binding test line has to survive verbatim and no rule
-# may fall off the end of the layer when the shelf and the rules compete.
+# may fall off the end of the layer however full the shelf is. The shelf yields
+# nothing either: rule 4 forbids every cut, silent or announced, so every want
+# rides whole at any size and growth is answered by rule 36's warning — never
+# a notice of what was held back.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 
 refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
@@ -112,8 +115,32 @@ for rule in "Sound like myself" "Exactly TWO things I ask about" \
             "No long numbers aloud" "Silence during his meetings"; do
     check "the prompt still carries: $rule" contains "$TURN" "$rule"
 done
-check "and it is the shelf that gave way, saying how much is held back" \
-    grep -qE '\(\+[0-9]+ of [0-9]+ more on the shelf' <<<"$TURN"
+# This check used to demand the opposite — a "(+N of M more on the shelf"
+# notice proving wants had been held back to make room for the rules. Rule 4
+# forbids that cut, silent or announced (the trim mandate was ordered out of
+# specs/prompt-assembly.md on 2026-08-11): the shelf rides whole beside the
+# rules, and growth is answered by rule 36's over-budget warning, never a knife.
+check_eq "and so does every want: the shelf rides whole beside them" \
+    "$(grep -c 'Want number' <<<"$TURN")" "25"
+refute "no notice says any of the shelf was held back" \
+    grep -qi 'more on the shelf' <<<"$TURN"
+
+echo
+echo "a shelf past the layer's own budget still rides whole (a budget is a measuring stick, not a knife):"
+{
+    printf '# Wants\n\n'
+    for i in $(seq 1 200); do
+        printf -- '- 🎼 **Want number %s, written at the length a real shelf line runs to**\n' "$i"
+    done
+} > "$D/wants.md"
+BIG="$(run 'build_system_prompt --profile turn')"
+check_eq "all 200 wants reach the prompt" \
+    "$(grep -c 'Want number' <<<"$BIG")" "200"
+refute "and no truncation notice of any kind appears" \
+    grep -qE 'more on the shelf|TRUNCATED' <<<"$BIG"
+check "the manifest owns the fact instead: L4 reads over" \
+    grep -qE $'^L4\t[0-9]+\t[0-9]+\tover$' \
+        <<<"$(run 'build_system_prompt --profile turn --layers')"
 
 echo
 echo "every title resolves to a file through the index:"
