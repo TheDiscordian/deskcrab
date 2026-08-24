@@ -293,7 +293,8 @@ night is where the day's promises are settled honestly, from the whole record at
 The engineering threads accumulate faster than waking hours spend them, and the stretch between
 sleep's stamp and the morning is machine time nobody is using. The night's work turns that idle stretch
 into builders: the night's owed work — the queued backlog the daytime dispatch policy shelved
-([jobs.md](jobs.md) rules 30-34), open threads, the promises the sweep found genuinely missed,
+([jobs.md](jobs.md) rules 30-34), the LIVE open engineering records (rule 58c — the records
+drawer `crab eng` keeps, never the frozen pre-records archive), the promises the sweep found genuinely missed,
 the work already sitting on the wake queue's books — becomes dispatched jobs, round after
 round, for hours, until a wall-clock cutoff — and then the night finishes normally, so the
 assistant ends it idle and available. Sleeping is an ACTIVE activity, the user's own design
@@ -356,7 +357,8 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     never a decision that is the user's to make, and never a thread that names a hand already on
     it. When nothing qualifies and nothing the night's work dispatched tonight is still running, the
     night's work ends; it MUST NOT poll an empty backlog to the cutoff.
-58a. The material the selector reads — the thread log, the open list, the index, the job list — is
+58a. The material the selector reads — each open record, the overflow list of records whose
+    bodies did not fit, the job list — is
     bounded by bytes, and every one of those cuts MUST fall on a character boundary, through
     `utf8_head`, the document-shaped counterpart of the one shared trim
     ([wake-queue.md](wake-queue.md) DATA): a bare `head -c` on prose people wrote splits whatever
@@ -364,7 +366,7 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     selector's prompt and the night's stream log as invalid UTF-8 — the same defect that made grep
     read the entire wake ledger as binary. The partial character is dropped whole, characters
     clear of the boundary are content and survive, and the prompt handed to the selector MUST be
-    valid UTF-8 whatever lands on any of the four budgets. And a cut that actually happens is
+    valid UTF-8 whatever lands on any of its budgets. And a cut that actually happens is
     announced: a section that outgrew its budget MUST be named on the night log at the moment it
     is bounded — which section, its true size in bytes, and the budget it was cut to — because
     the bound itself is design, but a trim nobody can see is silent truncation, the thing the
@@ -387,6 +389,25 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     work. A section that cannot be read is presented as unreadable and named in the night log,
     never silently omitted — the selector must know it is judging from less than the whole
     shelf.
+58c. The thread material is the LIVE open engineering records and nothing else: the records
+    drawer `crab eng` keeps (`~/.local/share/deskcrab/engineering/records/`, override
+    `NIGHT_WORK_RECORDS_DIR`, default `$NIGHT_WORK_THREADS_DIR/records`), filtered to
+    `state: open` and ordered newest-touched first — the order `crab eng list --state open`
+    already produces. Each open record rides whole — front matter and body, so the selector
+    reads the state field with its own eyes — under a per-record budget and a total budget
+    (rule 58a applies to both, cuts announced); a record past the total is never silently
+    dropped: it rides its `eng list` one-liner in a labelled overflow section, still live,
+    still selectable. The frozen pre-records archive (`engineering.md`, `OPEN.md`, `INDEX.md`
+    — read-only history, frozen at the records migration) MUST NOT reach the selector at all:
+    everything in it is closed by construction, nothing can ever mark it done, and shopping
+    from it bought already-finished work on four separate nights (2026-08-15 to 08-17, the
+    record `the-nightly-drain-shops-from-the-frozen-archive`) before this rule. Closed means
+    closed — not "demoted to background", which still trusts the model to obey a negative
+    instruction; the archive's text simply never enters the prompt. An archive item a hand
+    judges still owed is migrated to a live record (`crab eng new` or `crab eng migrate`),
+    never re-fed to the drain. A records directory that does not exist switches selection off
+    (the queue still runs, rule 56a); a directory that exists but cannot be read, or holds no
+    open record, is presented to the selector as exactly that, in rule 58b's own words.
 59. Every dispatch lands on a durable ledger — night, thread key, job id, title — and the ledger is
     read back into every later round and every later night, so the night's work never re-dispatches a
     thread on its own initiative. The ledger is the night's one write and MUST be declared
@@ -419,7 +440,8 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/wants.md`, `wants/` | tidy | the shelf and its bodies |
 | `${STATE_PREFIX}-shelf-overruns.txt` | the shelf-line check | rules 21a/21b: written when entries stand over the budget, removed by a clean check, rendered by the state block |
 | `~/.local/share/deskcrab/conduct/` | tidy | conduct and its per-rule files |
-| `~/.local/share/deskcrab/engineering/` | tidy | open threads and their index |
+| `~/.local/share/deskcrab/engineering/` | tidy | the pre-records archive and its index — closed to the night's selector (rule 58c) |
+| `~/.local/share/deskcrab/engineering/records/` | `crab eng` ([engineering-records.md](engineering-records.md)) | the live thread records; the night's work reads the `state: open` ones back as its thread material (rule 58c) |
 | `~/.local/state/deskcrab/notice-self.snapshot` | the watcher | the tree as last judged |
 | `~/.local/state/deskcrab/notice-self.suppress` | write declarations | strong and weak records |
 | `~/.local/state/deskcrab/notice-self.declared.log` | the watcher | one line per harvest |
@@ -495,7 +517,10 @@ report with the rewrites marked missing. `tests/test_promise_check.sh` — rules
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day.
 `tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every
-dispatched-or-running job; validation skips null-shaped briefs, thin briefs, and threads already on
+dispatched-or-running job; the live shelf (rule 58c) — a record standing `state: open` under the
+records drawer reaches the selector's prompt whole, front matter and body, newest-touched first,
+while a settled record and the frozen pre-records archive never enter the prompt at all;
+validation skips null-shaped briefs, thin briefs, and threads already on
 the ledger; a
 NOTHING verdict with nothing of tonight's running ends the night's work early; a blocked job door ends it
 for the night; the cutoff stops dispatch; the owed-work material (rule 58b) — the sweep's ledger
@@ -510,12 +535,14 @@ engineering threads at all still takes up the queue, spends no selection call, a
 queue is dry; the cutoff re-checked before each dispatch so nothing new starts past it; a
 refused queued brief skipped for the night while a blocked door ends it; and the dry run naming
 its would-dispatches without starting anything.
-`tests/test_night_work_utf8.sh` — rule 58a: with an em-dash straddling every one of the four
-byte budgets at once, the prompt the selector receives is valid UTF-8, plain grep — no `-a` —
-still reads it, each split character is dropped whole at its boundary, an em-dash clear of the
-boundary survives intact, and the budgets themselves still hold; each outgrown section is named
-on the night log with its true size and its budget, and a night whose material fits its budgets
-announces nothing.
+`tests/test_night_work_utf8.sh` — rule 58a over rule 58c's material: with an em-dash straddling
+the per-record budget and the job-list budget at once, the prompt the selector receives is valid
+UTF-8, plain grep — no `-a` — still reads it, each split character is dropped whole at its
+boundary, an em-dash clear of the boundary survives intact, and the budgets themselves still
+hold; each outgrown section is named on the night log with its true size and its budget; the
+total record budget clips oldest-touched first, announced, with the clipped record riding the
+overflow list rather than vanishing; and a night whose material fits its budgets announces
+nothing.
 `tests/test_sleep_stamp_coverage.sh` — rule 14a: the header parsed to chunks, chars and passes;
 the pass-count fallback where the header predates stating it; a field the log never states is
 omitted; a log with no header still stamps and still counts as slept; and the status command

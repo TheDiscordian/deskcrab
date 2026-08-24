@@ -1,6 +1,8 @@
 #!/bin/bash
 # The night's work — specs/nightly.md rules 54-61. The night's idle stretch
-# dispatches builders at the open engineering threads, through the job door,
+# dispatches builders at the LIVE open engineering records (rule 58c — the
+# records drawer, state: open, never the frozen pre-records archive that
+# bought finished work four nights over), through the job door,
 # capped, until a wall-clock cutoff. The assertions here are about what the
 # night's work itself owns: the daylight window guard, the cap counted from every
 # running job, the validation that stands between the model's answer and a
@@ -14,24 +16,65 @@ set -u
 
 REPO="$SANDBOX_REPO"
 T="$SANDBOX"
-mkdir -p "$T/eng" "$T/jobs"
+mkdir -p "$T/eng/records" "$T/jobs"
 
-# The threads: one genuinely actionable, one note with no work left, one
-# covered by a running job. The MODEL is stubbed, so what these prove is that
-# the material reaches the prompt — the night-side skips are proven against
-# the stub's own answers below.
-cat > "$T/engineering.md" <<'EOF'
-## a latch that sticks (OPEN)
+# The live shelf (rule 58c): stateful records under the records drawer. One
+# genuinely actionable and newest-touched, one older and covered by a running
+# job, and one SETTLED — the settled one must never enter the prompt at all.
+# The MODEL is stubbed, so what these prove is that the right material
+# reaches the prompt — the night-side skips are proven against the stub's
+# own answers below.
+cat > "$T/eng/records/a-latch-that-sticks.md" <<'EOF'
+---
+id: a-latch-that-sticks
+title: a latch that sticks
+opened: 2026-08-20 01:00:00
+last_touched: 2026-08-22 12:00:00
+state: open
+summary: the greenhouse latch sticks
+---
+
+## 2026-08-22 12:00:00
+
 The greenhouse latch sticks. Repo /tmp/greenhouse. Fix wants a builder.
+EOF
+cat > "$T/eng/records/resurface-the-path.md" <<'EOF'
+---
+id: resurface-the-path
+title: resurface the path
+opened: 2026-08-18 09:00:00
+last_touched: 2026-08-19 09:00:00
+state: open
+summary: already running as job live-1
+---
 
-## a note about weather (note, no work)
-It rained. Nothing to do.
+## 2026-08-19 09:00:00
 
-## resurface the path (already running as job live-1)
 A job is on it.
 EOF
-printf '# Threads\n' > "$T/eng/INDEX.md"
-printf '# Open\n- the latch\n' > "$T/eng/OPEN.md"
+cat > "$T/eng/records/the-weather-decision.md" <<'EOF'
+---
+id: the-weather-decision
+title: the weather decision
+opened: 2026-08-17 08:00:00
+last_touched: 2026-08-18 08:00:00
+state: settled
+settled_at: 2026-08-18 08:00:00
+settled_by: it rained and that was that
+summary: nothing left to do
+---
+
+## 2026-08-18 08:00:00
+
+SETTLED-RECORD-MARK a settled record's text must never reach the selector.
+EOF
+
+# The frozen pre-records archive (rule 58c): CLOSED to the selector. Every
+# marker planted here must be absent from the prompt — the drain bought
+# finished work four nights over from exactly these files.
+printf '## an old prose entry\nFROZEN-ARCHIVE-MARK the thread log is history.\n' > "$T/engineering.md"
+printf '# Threads\nFROZEN-INDEX-MARK\n' > "$T/eng/INDEX.md"
+printf '# Open\n- FROZEN-OPEN-MARK the archive open list\n' > "$T/eng/OPEN.md"
 
 # The rest of the owed-work shelf (rule 58b): a promise ledger holding one
 # sweep miss (owed) and one raw live catch (never material — the live
@@ -79,7 +122,6 @@ night_work() {  # [env overrides...] — runs the night's work with the harness'
            # the overrides come LAST, so a test may repoint any pinned path
     env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
         PROMISE_LEDGER="$PLEDGER" WAKES_DIR="$DWAKES" \
-        NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
         NIGHT_WORK_THREADS_DIR="$T/eng" \
         NIGHT_WORK_LEDGER="$LEDGER" \
         NIGHT_WORK_POLL=1 \
@@ -120,8 +162,23 @@ printf '2026-01-01\talready-ledgered\told-1\tDispatched last night\n' > "$LEDGER
 out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check_eq "the selector ran once" "$(claude_n)" "1"
-check "the prompt carried the thread log" \
+check "the prompt carried the open record, title and all (rule 58c)" \
     grep -q "a latch that sticks" "$T/model-stdin"
+check "with its body" \
+    grep -q "The greenhouse latch sticks" "$T/model-stdin"
+check "and its state readable in its own front matter" \
+    grep -q "state: open" "$T/model-stdin"
+LATCH_AT="$(grep -n -- '--- a-latch-that-sticks ---' "$T/model-stdin" | head -1 | cut -d: -f1)"
+PATH_AT="$(grep -n -- '--- resurface-the-path ---' "$T/model-stdin" | head -1 | cut -d: -f1)"
+if [ -n "$LATCH_AT" ] && [ -n "$PATH_AT" ] && [ "$LATCH_AT" -lt "$PATH_AT" ]; then
+    ok "open records ride newest-touched first"
+else
+    fail "open records must ride newest-touched first" "latch=$LATCH_AT path=$PATH_AT"
+fi
+check_eq "the settled record never enters the prompt (rule 58c)" \
+    "$(sandbox_count_in 'SETTLED-RECORD-MARK\|the weather decision' "$T/model-stdin")" "0"
+check_eq "the frozen archive never enters the prompt (rule 58c)" \
+    "$(sandbox_count_in 'FROZEN-ARCHIVE-MARK\|FROZEN-OPEN-MARK\|FROZEN-INDEX-MARK' "$T/model-stdin")" "0"
 check "the prompt carried the job list as duplicate evidence" \
     grep -q "resurface the path" "$T/model-stdin"
 check "the prompt carried the ledger of already-dispatched threads" \
@@ -242,7 +299,6 @@ chmod +x "$T/crab-sleep"
 mkdir -p "$T/data-sleep"
 out="$(env CRAB_BIN="$T/crab-sleep" XDG_DATA_HOME="$T/data-sleep-home" \
     JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" \
-    NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
     NIGHT_WORK_THREADS_DIR="$T/eng" \
     NIGHT_WORK_CUTOFF="not-a-time" \
     "$REPO/lib/sleep-nightly" run 2>&1)"; rc=$?

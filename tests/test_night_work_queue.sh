@@ -17,14 +17,25 @@ set -u
 REPO="$SANDBOX_REPO"
 T="$SANDBOX"
 JS="$REPO/lib/job-status"
-mkdir -p "$T/eng" "$T/jobs"
+mkdir -p "$T/eng/records" "$T/jobs"
 
 # Enough thread material that the night's work has something to select from when a
-# case lets it get that far; the model stub answers NOTHING so the queued
-# phase stays the only dispatcher.
-printf '## a note\nNothing to do.\n' > "$T/engineering.md"
-printf '# Threads\n' > "$T/eng/INDEX.md"
-printf '# Open\n' > "$T/eng/OPEN.md"
+# case lets it get that far — one live open record (rule 58c); the model stub
+# answers NOTHING so the queued phase stays the only dispatcher.
+cat > "$T/eng/records/a-live-thread.md" <<'EOF'
+---
+id: a-live-thread
+title: a live thread
+opened: 2026-08-20 01:00:00
+last_touched: 2026-08-22 12:00:00
+state: open
+summary: something for the selector to read
+---
+
+## 2026-08-22 12:00:00
+
+Still owed, still small.
+EOF
 
 # The door, stubbed: every call recorded WITH the night flag's value, so the
 # assertions can see both what was asked and under which window. `job
@@ -72,7 +83,6 @@ NOW="$(date +%s)"
 night_work() {
     env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
         PROMISE_LEDGER="$T/promise-ledger.jsonl" WAKES_DIR="$T/dwakes" \
-        NIGHT_WORK_THREADS_FILE="$T/engineering.md" \
         NIGHT_WORK_THREADS_DIR="$T/eng" \
         NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
         NIGHT_WORK_POLL=1 \
@@ -153,8 +163,7 @@ echo
 echo "no engineering threads: the night still takes up the queue (rule 56a):"
 reset
 mkqueued q-lone 900
-out="$(night_work NIGHT_WORK_THREADS_FILE="$T/no-threads.md" \
-             NIGHT_WORK_THREADS_DIR="$T/no-eng-dir" \
+out="$(night_work NIGHT_WORK_THREADS_DIR="$T/no-eng-dir" \
              NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "says selection is off, not that there is nothing to take up" \

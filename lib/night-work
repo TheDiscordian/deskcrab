@@ -8,8 +8,11 @@
 # that stretch into builders: each round, the QUEUED briefs the daytime
 # dispatch policy shelved (specs/jobs.md rules 30-34) go out first, oldest
 # first, through `crab job dispatch` — already-written work, no model call —
-# and then one model call reads the open
-# engineering threads, the promise sweep's genuine end-of-day misses, and
+# and then one model call reads the LIVE open
+# engineering records (rule 58c: the records drawer `crab eng` keeps, state
+# open, newest-touched first — never the frozen pre-records archive, which
+# is closed by construction and bought already-finished work four nights
+# over), the promise sweep's genuine end-of-day misses, and
 # the wake queue's pending reasons — the whole owed-work shelf (rule 58b) —
 # beside the job list and the night's own ledger, picks what is GENUINELY
 # actionable without the user's voice in the room — never a note, never
@@ -47,7 +50,9 @@
 #   NIGHT_WORK_MODEL=opus        the selector; picking work is judgement
 #   NIGHT_WORK_FALLBACK_MODEL=sonnet
 #   NIGHT_WORK_TIMEOUT=600       seconds per selection call
-#   NIGHT_WORK_THREADS_FILE / _THREADS_DIR / _LEDGER   the material paths
+#   NIGHT_WORK_THREADS_DIR / _RECORDS_DIR / _LEDGER   the material paths
+#                                   (_RECORDS_DIR: the live records drawer,
+#                                   default $NIGHT_WORK_THREADS_DIR/records)
 #   DESKCRAB_NO_DISPATCH=1          dry-run: real selection, nothing started,
 #                                   no ledger written (rule 61)
 set -uo pipefail
@@ -60,8 +65,15 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
-THREADS_FILE="${NIGHT_WORK_THREADS_FILE:-$DATA_DIR/engineering.md}"
+# The live shelf (rule 58c). The old THREADS_FILE (engineering.md) and the
+# drawer's OPEN.md/INDEX.md are the frozen pre-records archive — read-only
+# history in which everything is closed by construction — and they are
+# CLOSED to the selector: shopping from them bought already-finished work
+# on four separate nights (2026-08-15 to 08-17, the record
+# the-nightly-drain-shops-from-the-frozen-archive). An archive item a hand
+# judges still owed is migrated to a live record, never re-fed to the drain.
 THREADS_DIR="${NIGHT_WORK_THREADS_DIR:-$DATA_DIR/engineering}"
+RECORDS_DIR="${NIGHT_WORK_RECORDS_DIR:-$THREADS_DIR/records}"
 LEDGER="${NIGHT_WORK_LEDGER:-$DATA_DIR/night-work/dispatched.tsv}"
 CUTOFF_SPEC="${NIGHT_WORK_CUTOFF:-06:00}"
 CAP="${NIGHT_WORK_CAP:-2}"
@@ -92,10 +104,6 @@ say() { printf 'night-work: %s\n' "$1"; }
 section_overrun() {  # <section name> <true bytes> <budget bytes>
     [ "$2" -gt "$3" ] 2>/dev/null || return 0
     say "round ${ROUNDS:-0}: the $1 outgrew its budget — $2 bytes against $3, cut to the budget on a character boundary (rule 58a)"
-}
-file_overrun() {  # <section name> <file> <budget bytes>
-    [ -f "$2" ] || return 0
-    section_overrun "$1" "$(wc -c < "$2" 2>/dev/null || echo 0)" "$3"
 }
 
 # One selection question under the ACCOUNT SELECTION — promise-check's walk,
@@ -206,7 +214,7 @@ cmd_run() {
     # for a night that never worked them. Selection is switched off; the
     # night still takes up the queue.
     local NO_THREADS=""
-    if [ ! -s "$THREADS_FILE" ] && [ ! -d "$THREADS_DIR" ]; then
+    if [ ! -d "$RECORDS_DIR" ]; then
         NO_THREADS=1
         say "no engineering threads — selection is off; the night still takes up the queued backlog"
     fi
@@ -356,20 +364,65 @@ cmd_run() {
             continue
         fi
 
-        # utf8_head, never a bare `head -c`, for every one of these — a byte
-        # cut through a multibyte character would hand the selector and the
-        # night's stream log invalid UTF-8 (rule 58a; the wake ledger's
-        # incident, in prompt form). And a section that actually outgrew its
-        # budget says so on the night log first: the bound is design, a cut
-        # nobody can see is not (rule 58a's second half).
-        local THREADS OPENF INDEXF LISTING LEDGER_TAIL
-        file_overrun "thread log" "$THREADS_FILE" 24000
-        THREADS="$(utf8_head 24000 "$THREADS_FILE" 2>/dev/null)"
-        file_overrun "open list" "$THREADS_DIR/OPEN.md" 12000
-        OPENF="$(utf8_head 12000 "$THREADS_DIR/OPEN.md" 2>/dev/null)"
-        file_overrun "index" "$THREADS_DIR/INDEX.md" 2000
-        INDEXF="$(utf8_head 2000 "$THREADS_DIR/INDEX.md" 2>/dev/null)"
-        LISTING="$(ls -1 "$THREADS_DIR" 2>/dev/null | head -80)"
+        # The live shelf (rule 58c): the open records, whole — front matter
+        # and body, so the selector reads each record's state with its own
+        # eyes — newest-touched first, the order `eng list --state open`
+        # already produces. lib/eng is the one parser of record front
+        # matter; nothing here re-implements it. utf8_head, never a bare
+        # `head -c`, for every cut — a byte cut through a multibyte
+        # character would hand the selector and the night's stream log
+        # invalid UTF-8 (rule 58a; the wake ledger's incident, in prompt
+        # form). And a cut that actually happens says so on the night log
+        # first: the bound is design, a cut nobody can see is not (rule
+        # 58a's second half). A record past the total budget is never
+        # silently dropped: it rides its one-line list entry in the
+        # overflow section, still live, still selectable.
+        local RECORDS_TEXT OVERFLOW LIST_RAW LEDGER_TAIL
+        local RID RF RB TAKE BUDGET_LEFT=24000 INCLUDED=0 CLIPPED=0
+        RECORDS_TEXT="" OVERFLOW=""
+        if ! LIST_RAW="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" \
+                "$SCRIPT_DIR/lib/eng" list --state open 2>/dev/null)"; then
+            # Rule 58b's discipline: an unreadable section is presented AS
+            # unreadable, never silently omitted.
+            say "round $ROUNDS: the open records could not be read — the selector is told so"
+            RECORDS_TEXT="(the open records could not be read tonight — judging from less than the whole shelf)"
+            OVERFLOW="(unknown tonight)"
+            LIST_RAW=""
+        fi
+        for RID in $(printf '%s\n' "$LIST_RAW" \
+                | sed -n 's/.* \[\([a-z0-9-]\{1,\}\)\] — opened .*/\1/p'); do
+            RF="$RECORDS_DIR/$RID.md"
+            [ -f "$RF" ] || continue
+            TAKE=6000
+            [ "$TAKE" -gt "$BUDGET_LEFT" ] && TAKE="$BUDGET_LEFT"
+            if [ "$TAKE" -le 0 ]; then
+                CLIPPED=$(( CLIPPED + 1 ))
+                OVERFLOW="$OVERFLOW$(printf '%s\n' "$LIST_RAW" | grep -F -- "[$RID]" | head -1)
+"
+                continue
+            fi
+            RB="$(wc -c < "$RF" 2>/dev/null || echo 0)"
+            section_overrun "open record '$RID'" "$RB" "$TAKE"
+            RECORDS_TEXT="$RECORDS_TEXT--- $RID ---
+$(utf8_head "$TAKE" "$RF" 2>/dev/null)
+
+"
+            INCLUDED=$(( INCLUDED + 1 ))
+            [ "$RB" -lt "$TAKE" ] 2>/dev/null && TAKE="$RB"
+            BUDGET_LEFT=$(( BUDGET_LEFT - TAKE ))
+        done
+        if [ "$CLIPPED" -gt 0 ]; then
+            say "round $ROUNDS: the open records outgrew the 24000-byte total — the $INCLUDED newest-touched are in, $CLIPPED more on their list lines only (rule 58a)"
+        fi
+        [ -n "$RECORDS_TEXT" ] || RECORDS_TEXT="(no open records — the live shelf is empty tonight)"
+        # 24000, not less: the live drawer holds sixty open records tonight
+        # and a real one-liner measured ~285 bytes, so anything smaller cuts
+        # open records out of the selector's sight — invisible open work,
+        # the very defect rule 58c exists to close. The cut past it is
+        # announced, as ever.
+        section_overrun "overflow list" "$(printf '%s' "$OVERFLOW" | wc -c)" 24000
+        OVERFLOW="$(printf '%s' "$OVERFLOW" | utf8_head 24000)"
+        [ -n "$OVERFLOW" ] || OVERFLOW="(none — every open record is above in full)"
         LEDGER_TAIL="$(tail -n 40 "$LEDGER" 2>/dev/null)"
         [ -n "$LEDGER_TAIL" ] || LEDGER_TAIL="(none yet)"
 
@@ -439,11 +492,15 @@ PY
 
         local PROMPT="You do the night's work of a desktop assistant: while she
 sleeps, her open owed work becomes detached builder jobs. Below is the whole
-shelf: her engineering threads (a newest-first prose log, the open list, the
-index and the thread directory listing), the promises the night sweep found
-genuinely missed at end of day, and the wakes already on the books (owed
-work often parks there — and a live waked session cannot commit to her own
-repository, so builder-shaped work on a wake otherwise waits forever). Then
+shelf, and every part of it is LIVE: her open engineering records — one
+stateful record per thread, front matter and all, newest-touched first,
+with an overflow list naming any open record whose body did not fit
+tonight — then the promises the night sweep found genuinely missed at end
+of day, and the wakes already on the books (owed work often parks there —
+and a live waked session cannot commit to her own repository, so
+builder-shaped work on a wake otherwise waits forever). Nothing outside
+these sections is on the shelf: her frozen pre-records archive is closed to
+this selection because everything in it is history. Then
 the current job list, and the ledger of picks the night's work has ALREADY
 dispatched on earlier rounds and nights.
 
@@ -473,8 +530,9 @@ came from, the concrete work, the constraints the material names, and how
 the builder
 must verify its work before reporting done. Never write a brief that only
 waits on, watches, or coordinates other work: a builder must carry its own
-work. For a pick from the promises or the wakes, invent a short stable
-key slug from its subject, exactly as a thread's. Answer in exactly this
+work. For a pick from the open records, the key slug IS the record's id,
+verbatim. For a pick from the promises or the wakes, invent a short stable
+key slug from its subject, exactly as a record's. Answer in exactly this
 form and nothing else:
 
 TASK: <key-slug> | <absolute workdir, or -> | <one-line title>
@@ -486,17 +544,10 @@ END
 or, when nothing qualifies, exactly:
 NOTHING: <one line saying why>
 
-=== THE THREAD LOG (newest first) ===
-$THREADS
-
-=== THE OPEN LIST ===
-$OPENF
-
-=== THE INDEX ===
-$INDEXF
-
-=== THE THREAD DIRECTORY ===
-$LISTING
+=== THE OPEN ENGINEERING RECORDS (LIVE — state: open, newest-touched first) ===
+$RECORDS_TEXT
+=== OPEN RECORDS WHOSE BODIES DID NOT FIT TONIGHT (still live, still selectable) ===
+$OVERFLOW
 
 === PROMISES THE NIGHT SWEEP FOUND MISSED (recent nights) ===
 $OWED
