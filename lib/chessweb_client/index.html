@@ -67,6 +67,21 @@
 			<button id="connect" type="button">Connect</button>
 			<button id="join" type="button" disabled>Join</button>
 			<button id="watch" type="button" disabled>Watch</button>
+			<!-- The clock for the NEXT game (specs/chessweb.md rule 22h):
+			     exactly the standard set plus untimed, nothing invented.
+			     New Game posts the pick to /new; the server is the only
+			     judge of what it means. -->
+			<label class="tc">Clock
+				<select id="timecontrol">
+					<option value="untimed" selected>untimed</option>
+					<option value="1+0">bullet 1+0</option>
+					<option value="2+1">bullet 2+1</option>
+					<option value="3+2">blitz 3+2</option>
+					<option value="5+0">blitz 5+0</option>
+					<option value="10+0">rapid 10+0</option>
+					<option value="15+10">rapid 15+10</option>
+				</select>
+			</label>
 			<button id="newgame" type="button" disabled>New Game</button>
 			<button id="resign" type="button" class="danger" disabled>Resign</button>
 			<span id="connstate" class="dot"></span>

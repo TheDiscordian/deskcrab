@@ -422,7 +422,12 @@ class Store:
                     return g
         return None
 
-    def create(self):
+    def create(self, time_control=None):
+        """One creation path for every door (rule 22h): the wire NewGame and
+        the CLI-shaped serve default when time_control is None, the browser
+        page's own explicit pick otherwise — the same make_time_control and
+        the same save_game either way, so the record and the ledger split by
+        variant off one implementation."""
         if self.random_side:
             # "random" alternates (rule 4): the user gets the colour they
             # did not have in the most recent game against this opponent,
@@ -444,7 +449,8 @@ class Store:
              "my_side": self.her_side, "moves": [], "resigned_by": None,
              "draw_agreed": False, "engine_level": None,
              "created": chess_cli.now()}
-        tc, ck = chess_cli.make_time_control(self.time_control)
+        tc, ck = chess_cli.make_time_control(
+            self.time_control if time_control is None else time_control)
         if tc:
             g["time_control"] = tc
             g["clock"] = ck
@@ -884,6 +890,50 @@ class Hub:
             return {"ok": True, "game": g["id"], "desc": desc,
                     "result": result}, 200
 
+    def new_game_http(self, control):
+        """POST /new (rule 22h): the opponent opens the next game from the
+        page they actually load and picks its clock there. Validation is
+        server-side ONLY — the control must be a NAME from the standard set,
+        judged by the same chess_cli.make_time_control as every other door;
+        a forged object or an out-of-set name refuses with nothing written,
+        and an omitted control is untimed, the CLI's own default, never the
+        serve flag. Creation goes through Store.create, the one creation
+        path, so the record and the ledger split by variant off one
+        implementation; a board still in flight refuses naming the way out,
+        exactly rule 4's answer to a NewGame click."""
+        if control is None or control == "":
+            control = "untimed"
+        if not isinstance(control, str):
+            return {"error": "the time control must be one of the standard "
+                             "names — the clock is never trusted from the "
+                             "client"}, 400
+        try:
+            chess_cli.make_time_control(control)
+        except chess_cli.CliError as e:
+            return {"error": str(e)}, 400
+        with self.lock:
+            g = self.store.load()
+            if g is not None and chess_cli.compute_state(
+                    g, chess_cli.build_board(g))[0] == "active":
+                return {"error": f"{g['id']} is still going — Resign ends "
+                                 f"it, then New Game deals the next."}, 409
+            g = self.store.create(time_control=control)
+            self.pending_promo = None
+            self.synced = list(g["moves"])
+            self.over_announced = False
+            for c in self.joined():
+                self.sync_conn(c, g)
+            board = chess_cli.build_board(g)
+            log(f"{g['id']}: opened from the browser page ({control}), "
+                f"synced to {len(self.conns)} connection(s)")
+            if board.turn != self.human_side():
+                self.answer_position(g, board)
+            tc = g.get("time_control")
+            return {"ok": True, "game": g["id"],
+                    "control": tc["name"] if tc else "untimed",
+                    "your_side": ("white" if self.human_side() == chess.WHITE
+                                  else "black")}, 200
+
     # -- protocol ----------------------------------------------------------
     def on_join(self, conn, player):
         if not player:
@@ -1186,6 +1236,9 @@ def make_handler(hub, client_dir):
             if path == "/resign":
                 self.resign()
                 return
+            if path == "/new":
+                self.new_game()
+                return
             if path != "/thinking":
                 self.send_error(404)
                 return
@@ -1212,6 +1265,26 @@ def make_handler(hub, client_dir):
                 except (ValueError, AttributeError):
                     want = None
             obj, status = hub.resign_human(want)
+            self.json_body(obj, status)
+
+        def new_game(self):
+            """POST /new (rule 22h): the opponent opens the next game and
+            picks its clock from the page. The body is an optional
+            {"control": "<name>"}; an unreadable body refuses — the clock
+            is never guessed from garbage — and the verdict comes from the
+            hub."""
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            control = None
+            if body:
+                try:
+                    control = json.loads(body).get("control")
+                except (ValueError, AttributeError):
+                    self.json_body(
+                        {"error": "unreadable request body — send "
+                                  '{"control": "<name>"} or nothing'}, 400)
+                    return
+            obj, status = hub.new_game_http(control)
             self.json_body(obj, status)
 
         def thinking_state(self):

@@ -491,6 +491,36 @@ cannot be changed.
        replayed — no per-move time history is kept, so the sides resume with the balances they
        had — a named roughness, accepted because undo is a correspondence courtesy, not a
        tournament move.
+    h. **The opponent deals too, from the page they actually load.** The clock landed first as
+       a per-serve and per-CLI knob only, green in tests on a path nobody clicks: the user sat
+       at the real browser page on 2026-08-25 and found no clock options on screen at all. So
+       the shipped client carries a visible clock selector beside New Game, offering exactly
+       the standard set of this rule plus `untimed` (the selector's default) and nothing
+       invented, and its New Game button posts the pick to **`POST /new`** instead of the wire
+       NewGame. The endpoint, under the hub lock: while the stored game is still active it
+       refuses (HTTP 409, `{"error": ...}` naming the way out — Resign ends it, then New Game
+       deals the next) and creates nothing, exactly rule 4's answer to a NewGame click;
+       otherwise it creates through the SAME creation path as every other door —
+       `Store.create`, which stamps the control through `chess_cli.make_time_control` and
+       `save_game` — so the game record, the reflex ledger's control column and
+       `betty-chess list` split the browser-dealt game by variant with no second
+       implementation, and colour is dealt exactly as rule 4 deals it (alternation against
+       this opponent, only the first game a coin flip; the page offers no colour choice).
+       Enforcement is server-side ONLY, rule 22b's posture: the submitted control must be a
+       NAME from the standard set — an out-of-set name, a non-string (a forged
+       `{name, base_ms}` object), or an unreadable body is an HTTP 400 refusal with nothing
+       written; no clock figure is ever trusted from the client, and the mover's job dict
+       keeps the clock visible but unconsulted (rule 22f) whatever created the game. An
+       omitted, empty or null control is `untimed` — the CLI's own default, never the serve
+       flag: `--time-control` remains the default for what a stock-wire NewGame or the CLI
+       creates (this rule's head), while the page's picker IS the opponent's choice. On
+       creation every joined connection gets rule 4's sync (Team + replay), and a position
+       that is hers to answer goes to the resident mover exactly as a wire NewGame's would.
+       The stock client keeps its wire NewGame untouched — that path still deals the serve's
+       configured control — and the shipped client falls back to the wire click against a
+       bridge without the endpoint. `/new` rides HTTP beside `/state` and `/resign` under the
+       same LAN-trust posture (KNOWN LIMITS). Records from before this rule parse unchanged:
+       a game with no control fields still IS an untimed game.
 
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 
@@ -512,6 +542,11 @@ the stock page. What it owes beyond the protocol:
   read from the applied broadcasts (a regular Move onto an occupied square, the pawn an
   en-passant wire names), a Promote re-values material from the board, and a Team resync rebuilds
   both panels from zero — so a rejoin's graveyards match the store's game, always.
+- **The next game, dealt from the page.** A clock selector beside New Game offering exactly rule
+  22's standard set plus `untimed` (the default), nothing invented; the New Game button posts the
+  pick to `/new` (rule 22h) and the board arrives back through the ordinary sync. Against a bridge
+  without the endpoint the click falls back to the stock wire NewGame, losing nothing but the
+  choice.
 - **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
   It never fires on one click: the first click arms it and says so on its own label, a second
   click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on

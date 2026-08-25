@@ -108,6 +108,30 @@ input#serveraddr:focus {
 	border-color: var(--accent);
 }
 
+/* The clock for the next game (specs/chessweb.md rule 22h). */
+.tc {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	color: var(--text-dim);
+	font-size: 0.9rem;
+}
+
+select#timecontrol {
+	background: var(--bg);
+	border: 1px solid var(--panel-edge);
+	border-radius: 7px;
+	color: var(--text);
+	font: inherit;
+	font-size: 0.92rem;
+	padding: 0.35rem 0.4rem;
+}
+
+select#timecontrol:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
 button {
 	background: var(--panel-edge);
 	border: 1px solid transparent;
