@@ -305,13 +305,25 @@ cannot be changed.
     pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
     arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
     the call's `--effort`. The classifier is consulted by default: a quiet position goes at
-    `low` and an alarming one at `medium`. Each level is its own knob —
-    `DESKCRAB_CHESS_EFFORT_QUIET` (default `low`) and `DESKCRAB_CHESS_EFFORT_SHARP` (default
-    `medium`) — because the pair has been adjudicated twice: quiet ran at `medium` from
+    the pair's quiet level and an alarming one at its sharp level — and the PAIR is resolved
+    per call, never at import. The pair has been adjudicated twice: quiet ran at `medium` from
     2026-08-10 (the per-move minutes were the queue in front of the call, not the thinking
     inside it), and on 2026-08-15 the user lowered both a notch as an experiment, over her
-    objection, to see whether she still wins at `low`/`medium`; the knobs make the next
-    adjudication a config line, not an edit. Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
+    objection, to see whether she still wins at `low`/`medium` — but that cut ran nine days as
+    one undifferentiated block (chess_effort read its knobs at import, and the bridge is a
+    resident daemon, so whichever pair was live at daemon start froze for every game until
+    restart) and proved unadjudicatable: 36% before, 38% after, with similar-game retrieval
+    and two prompt changes inside the same window, which measures the fortnight, not the
+    dial. So the cut's two arms now interleave by game-id parity: the trailing integer of the
+    game id (`browser-039` is game 39) picks the arm — odd games think at the pre-cut sharp
+    pair (`medium`/`high`), even games at the lowered pair (`low`/`medium`) — same nights,
+    same opponent, and rule 17's stamp names the arm so the ledger splits by it. A game id
+    with no parsable number keeps the lowered defaults and claims no arm. Each level is still
+    its own knob — `DESKCRAB_CHESS_EFFORT_QUIET` and `DESKCRAB_CHESS_EFFORT_SHARP`, read at
+    call time and winning outright over the parity when either is set (arm `env`): explicit
+    configuration is an operator's decision, the parity only chooses between the cut's own
+    arms, and a pinned game must not be miscounted into either. No verdict is to be claimed
+    under twenty games per arm. Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
     move to `low` instead, skipping the classifier — for when reply latency matters more than
     the move. The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
@@ -347,7 +359,10 @@ cannot be changed.
     Then `effort` with the level rule 16b chose and every reason that fired (`quiet` when none
     did, `always-low` under the pin, `default error` when the pre-check failed) — the record
     the thresholds are tuned from, absent exactly when a reflex hit short-circuited or
-    `DESKCRAB_CHESS_EFFORT=0`. Then the model call's own brackets: `model-start` (detail
+    `DESKCRAB_CHESS_EFFORT=0` — and, when rule 16b resolved an arm for the call, a trailing
+    `arm=<sharp|lowered|env>` field, so the adjudication splits the games by arm instead of by
+    date window; a row written before the field existed, or for a game whose id carries no
+    parsable number, has no `arm=` token and reads as unknown, never as either arm. Then the model call's own brackets: `model-start` (detail
     naming the effort and the login attempt) and `model-end` (the elapsed seconds and the
     outcome — `ok`, or why not). A move that lands stamps `move-played` with its source —
     `reflex` from memory, `model` from the mover's call, `cli` from `betty-chess move`

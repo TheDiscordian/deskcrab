@@ -308,13 +308,14 @@ echo
 echo "the bridge thinks about quiet positions cheap and alarmed ones dear:"
 : > "$MOVER_LOG"
 drive quiet-001 >/dev/null
-awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 low quiet"' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 medium quiet arm=sharp"' "$MET" \
     | grep -q . \
-  && ok "a quiet middlegame classifies LOW, stamped with 'quiet'" \
+  && ok "a quiet middlegame classifies at the pair's quiet level — game 1 is odd, the \
+sharp arm's medium — stamped with 'quiet' and the arm (rule 16b)" \
   || fail "quiet effort stamp" "$(grep quiet-001 "$MET")"
-awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-001 ply 2 effort low /' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-001 ply 2 effort medium /' "$MET" \
     | grep -q . \
-  && ok "and the model call went out at low — the level reached the invocation" \
+  && ok "and the model call went out at medium — the level reached the invocation" \
   || fail "quiet model-start" "$(grep model-start "$MET" | tail -3)"
 awk -F'\t' '$3=="chess" && $4=="move-played" && $5 == "quiet-001 ply 2 c4 model"' "$MET" \
     | grep -q . \
@@ -323,13 +324,14 @@ awk -F'\t' '$3=="chess" && $4=="move-played" && $5 == "quiet-001 ply 2 c4 model"
 
 : > "$MOVER_LOG"
 drive danger-001 >/dev/null
-awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^danger-001 ply 4 medium .*en-prise:h5/' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^danger-001 ply 4 high .*en-prise:h5/ && $5 ~ / arm=sharp$/' "$MET" \
     | grep -q . \
-  && ok "a hanging queen classifies HIGH, and the stamp names every alarm" \
+  && ok "a hanging queen classifies at the pair's sharp level — the sharp arm's high — \
+and the stamp names every alarm and the arm" \
   || fail "danger effort stamp" "$(grep danger-001 "$MET")"
-awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^danger-001 ply 4 effort medium /' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^danger-001 ply 4 effort high /' "$MET" \
     | grep -q . \
-  && ok "and its model call went out at medium" \
+  && ok "and its model call went out at high" \
   || fail "danger model-start" "$(grep model-start "$MET" | tail -3)"
 
 : > "$MOVER_LOG"

@@ -619,10 +619,19 @@ class Hub:
         try:
             import chess_effort
             level, reasons = chess_effort.classify(
-                board, novel=chess_effort.novelty(board.fen()))
+                board, novel=chess_effort.novelty(board.fen()),
+                game_id=g["id"])
+            arm = chess_effort.resolve(g["id"])[2]
             why = ",".join(reasons) if reasons else "quiet"
-            chess_cli.metric("effort", f"{g['id']} ply {ply} {level} {why}")
-            log(f"{g['id']}: her move will think at {level} ({why})")
+            detail = f"{g['id']} ply {ply} {level} {why}"
+            if arm:
+                # The arm the pair came from (rule 16b), a named trailing
+                # field so the ledger splits the games by arm rather than
+                # by date window; rows from before the field read unknown.
+                detail += f" arm={arm}"
+            chess_cli.metric("effort", detail)
+            log(f"{g['id']}: her move will think at {level} ({why}"
+                + (f", {arm} arm)" if arm else ")"))
             return level
         except Exception as e:
             log(f"effort pre-check failed, the call goes at the mover "
