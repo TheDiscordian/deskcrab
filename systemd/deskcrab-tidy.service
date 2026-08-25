@@ -3,6 +3,11 @@ Description=Beatrice nightly tidy — wants, conduct, engineering
 
 [Service]
 Type=oneshot
+# User units get a bare PATH, and crab shells out to claude in ~/.local/bin —
+# same reason deskcrab-sleep and deskcrab-serve set it. This line was carried
+# by the installed copy alone for nine days, which made every install a hand
+# merge instead of a copy; in the repo, a plain cp is a correct install again.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # The shelf-line check, specs/nightly.md rules 21a/21b: a machine measure of
 # every wants shelf entry against its byte budget, report only, never a
 # rewrite. The leading '-' keeps a flagged shelf (exit 1) from blocking the
