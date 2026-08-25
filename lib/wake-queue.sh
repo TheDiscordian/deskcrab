@@ -641,6 +641,19 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
 # time is a promise. A cluster needs its class named with --cap-prefix — an
 # unclassed fold would fold across every reason its booker ever wrote — and
 # that is refused here, at booking time, like a bad effort level.
+# Is this reason a workload rather than a moment — specs/wake-queue.md rule
+# 10c's pattern classes, deterministic and NARROW on purpose: over-refusal
+# seals her hands, so only the shapes with no benign timed reading match. A
+# leading build verb (at the reason's start, or opening a clause after its
+# intro), the record-sweep shapes, and the builder's-own-hands phrase. The
+# named counter-shapes — a restart guarded by nothing-in-flight, a timer's
+# first run to look in on, a sealed envelope to score, a thing to say at six —
+# are held non-matching by tests/test_wake_work_gate.sh.
+wake_work_shaped() {  # <reason> -> 0 when work-shaped
+    printf '%s' "${1:-}" | grep -qiE \
+        '(^|[-:—] )(build|implement|refactor|port|rewrite|fix|patch|write) |pull every|read every|scan every|run the [a-z ]{0,12}suite|run tests?\b|read its log|under my own hand'
+}
+
 wake_book() {
     local by="" cap="" capprefix="" effort="" cluster="" clusteritem="" clusterpin=""
     while [ $# -gt 0 ]; do
@@ -684,6 +697,21 @@ _wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <cluster> <cluster-ite
     [ -n "$when" ] || { echo "wake_book: no moment given."; return 1; }
     mkdir -p "$WAKES_DIR"
     _wake_norm "$kind" "$reason"; kind="$WK_N_KIND"; reason="$WK_N_REASON"
+
+    # The work gate (specs/wake-queue.md rule 10c): the queue carries moments,
+    # not workloads. A self-booked scheduled wake whose reason is work-shaped
+    # is refused with both roads named — the record spine the night's builders
+    # drain, and the builder that goes now — never silently converted. Only
+    # her own hand is gated: every sanctioned identity of rule 41, every event
+    # wake, and the held/outage/deferred-promise flows arrive under their own
+    # identities and pass untouched.
+    if [ "${WAKE_WORK_GATE:-1}" = "1" ] && [ "$by" = "herself" ] \
+            && [ "$kind" = "scheduled" ] && wake_work_shaped "$reason"; then
+        wake_ledger refused-work "" "$kind" "$reason" "$by"
+        echo "Not booked — that reason is a workload, and the wake queue carries moments (specs/wake-queue.md rule 10c)."
+        echo "Work has its own roads: open a record with  crab eng add '<title>'  and the night's builders will take it while you sleep, or send it now with  crab job '<self-contained brief>'."
+        return 1
+    fi
 
     local fire now
     fire="$(wake_when_to_epoch "$when")"

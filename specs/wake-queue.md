@@ -89,6 +89,29 @@ for reduction here — every rule below makes the queue **visible and bounded**,
       booking's fire moment to fall within the window of the new booking's own, or the fold does
       not happen and the booking proceeds alone. A promised moment is never traded for tidiness;
       when in doubt, book separately.
+10c. **The work gate: the queue carries moments, not workloads.** Written 2026-08-25, after the
+    user found the pending queue holding a nightly-audit sweep, a two-guard build, and a
+    builder-verification checklist — work she had booked herself as timed wakes, while the road
+    built for exactly that work sat beside it: an open engineering record is what the night's
+    builders drain while she sleeps ([nightly.md](nightly.md) rule 58c), and `crab job` is the
+    same road without the wait. A SELF-BOOKED scheduled wake whose reason is work-shaped MUST be
+    refused at the one door, with both roads named in the refusal — never silently converted,
+    because a booking she made is a decision she made, and the refusal is where she learns the
+    road. The gate binds only the booking whose `booked_by` resolves to `herself` and whose kind
+    is `scheduled`: every sanctioned booker identity of rule 41, every event wake, and the
+    held / outage-retry / deferred-promise flows (which arrive under their own identities) pass
+    untouched — the deferred-promise wake in particular is MANDATED by rule 43a, and a gate that
+    ate it would reopen the 2026-08-09 dropped-promise hole. Work-shaped is decided by
+    deterministic pattern classes, never a model call, and the classes stay NARROW because
+    over-refusal seals her hands (the 2026-08-10 lesson): a leading build verb (build, implement,
+    write, refactor, port, rewrite, fix, patch — at the reason's start or opening a clause after
+    its intro), the record-sweep shapes (`pull every`, `read every`, `scan every`, `run the
+    … suite`, `run test`, `read its log`), and the builder's-own-hands phrase (`under my own
+    hand`). A moment stays bookable: a service to restart when nothing is in flight, a timer's
+    first unattended run to look in on, a sealed envelope to score after its separation window, a
+    thing to say to the user at six — none of these match, by test. Every refusal lands on the
+    durable ledger under its own action (`refused-work`). `WAKE_WORK_GATE=0` stands the gate
+    down, for triage.
 11. Every wake unit MUST be booked with the collect option, so a failed unit does not leak into the
     user manager.
 12. Every wake unit MUST carry a runtime ceiling. The in-process stall watchdog cannot by
