@@ -74,6 +74,9 @@ else
 ## "the drain" — borrowed jargon for the night's thread work
 - pattern: `\bdrain\b`
 - why: plumbing noun doing duty as the name of the night's thread work, in her mouth, to the user. Banned in her speech only, which is all this list ever reads: in specs, job briefs and code "the nightly drain" is deskcrab's own vocabulary, correct and untouched. Say the work, not the pipe — the night's thread work, the overnight queue.
+- replace: `\b[Tt]onight's drain\b` -> `tonight's work`
+- replace: `\b[Tt]he drain\b` -> `my sleep`
+- replace: `\bdrains?\b` -> `sleep`
 - function: borrowed-jargon
 - fix: resay
 EOF
@@ -107,11 +110,15 @@ e = [p for p in pats if p["pat"] == f["pattern"]][0]
 if "speech" not in e["why"] or "specs, job briefs and code" not in e["why"]:
     print("NOSCOPE"); sys.exit(0)
 swap = m.table_swap("The drain finished before dawn.", f["rx"], f["replaces"])
-print("HOLDS" if swap is None else "TRIMMED")
+print("HOLDS" if swap is None else "TRIMMED:" + swap)
 PY
 )
-check_eq "the mirror fires it live — same family, resay, the scope in the why, held for her rather than machine-trimmed" \
-    "$out" "HOLDS"
+# This assertion expected HOLDS until 2026-08-25, and holding was wrong: a
+# hold hands the line to the mirror, which repairs the TEXT after the
+# streamer has already spoken the original aloud. The entry carries replace
+# lines now, so the table swaps the sentence before the voice reaches it.
+check_eq "the mirror fires it live — same family, resay, the scope in the why, and the table swaps it before the voice reaches it" \
+    "$out" "TRIMMED:My sleep finished before dawn."
 
 DOUT="$(CLAUDISM_FLAGS_DIR="$DFLAGS" CLAUDISM_LIST="$DLIST" \
     "$SANDBOX_REPO/lib/claudism-feedforward")"
