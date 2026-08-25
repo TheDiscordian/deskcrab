@@ -21,6 +21,25 @@ with the page closed.
    prevent. The bound is `REMOTE_LOCK_WAIT`, ten minutes by default (rule 43 measures the queue
    against it).
 3. A phone turn MUST build the same prompt shape as a desk turn, with the origin recorded as phone.
+3a. A message MAY carry the phone's own fix beside its text — latitude, longitude, accuracy, and
+    the fix's own timestamp — and the client asks `navigator.geolocation` for one per outgoing
+    message, facing the browser's permission prompt once and honouring its remembered answer ever
+    after: a denial is cached and never re-begged per message. When the post that CREATES a turn
+    (rule 1 — an attach never re-injects) carries a fresh, well-formed fix, exactly one line of
+    the form `he is near <place>` joins that turn's context, in the turn frame the phone origin
+    already owns ([prompt-assembly.md](prompt-assembly.md) L8), where `<place>` is the street and
+    town the reverse geocode answered with — and the plain coordinates when it answered nothing
+    usable. The line never guesses: no fix, a malformed one, or one older than the stale bound
+    injects nothing at all, and an unresolvable place falls back to coordinates or to silence,
+    never to a name nobody measured. Every failure on the way — permission denied, geolocation
+    unavailable, a fix that never comes, a geocoder error or timeout — degrades SILENTLY: the
+    client sends nothing extra, the server injects no line, the turn runs exactly as one sent
+    bare, and no error text reaches the reply, the page, or the speakers. The reverse geocode
+    MUST NOT be a network call the turn path can hang on: it is bounded, and the bounds are named
+    constants with defaults rather than numbers scattered through the code — the stale bound
+    (`GEO_STALE_S`, 600 s), the geocoder bound (`GEO_LOOKUP_TIMEOUT_S`, 2 s), the client's own
+    fix wait (`GEO_FIX_TIMEOUT_MS`). The geocoder endpoint (`GEOCODE_URL`) is configuration, and
+    every test stubs it — the suite never asks a live service where anybody is.
 4. A stalled turn MUST NOT wedge the client. The client MUST wrap the streaming fetch in an abort
    controller with an idle-byte timer, and MUST check its deadline outside the error handler. The
    deadline measures progress — time since the last event received, not since the turn began — and
@@ -574,6 +593,14 @@ ten-minute bound. A wrong turn id and a missing key are both refused. The client
 `tests/phone_client_test.js`: a typed send while busy is queued and posted to the server
 immediately rather than dropped, the queue pumps into a real turn when the current one ends, and
 the stop control stops the active turn and the queue behind it.
+`tests/test_phone_geolocation.sh` drives rule 3a through real servers and the real assembler: a
+fix on the creating post reaches the turn's runner as the resolved place and the assembled
+context carries exactly one `he is near <place>` line; a bare post, a malformed fix, and a stale
+one hand the turn through unchanged — no line, no error text anywhere in the completion; a
+geocoder that hangs is abandoned at its named bound and the line falls back to plain
+coordinates; the geocoder is a local stub in every case, never a live service; and the client's
+fix helper resolves to nothing — quietly, inside its own bound — on denial, absence, staleness,
+and a hung lookup, remembering a denial so the permission prompt is never re-begged.
 `tests/test_phone_midturn.sh` drives rules 51-52 through the real server with a stub crab holding
 the real remote lock: a message posted mid-turn lands in the mid-turn spool the moment it is
 accepted, named by its own turn identifier; a message posted with nothing running spools nothing;

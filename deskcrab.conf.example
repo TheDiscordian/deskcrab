@@ -307,6 +307,19 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # clip per sentence, so the phone starts hearing the reply while it is still
 # being written. Off by default while it beds in.
 # PHONE_SENTENCE_STREAM=1
+#
+# Optional: where the user is. Each phone message may carry the phone's own
+# geolocation fix (the browser asks its permission once); a fresh fix on the
+# post that creates a turn puts one line — "he is near <place>" — into that
+# turn's context, and anything short of a fresh, well-formed fix puts nothing,
+# silently. GEOCODE_URL is the reverse geocoder ({lat}/{lon} are filled in;
+# set it empty to skip the lookup and carry plain coordinates); GEO_STALE_S
+# is how old a fix may be and still count as "where he is"; the lookup is
+# abandoned after GEO_LOOKUP_TIMEOUT_S so a slow geocoder can never hold a
+# turn.
+# GEOCODE_URL="https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=17"
+# GEO_STALE_S=600
+# GEO_LOOKUP_TIMEOUT_S=2
 
 # Optional: Web Push (crab notify) — reach the phone even with the page closed.
 # Subscribe from the phone page's bell button; send with `crab notify <text>`.

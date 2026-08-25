@@ -483,7 +483,10 @@ What you did tonight is journaled from your tool activity without your help, so 
                DESKCRAB_NOTIFY_NAME="$NOTIFY_NAME" DESKCRAB_ASSISTANT_NAME="$ASSISTANT_NAME" \
                DESKCRAB_SERVE_TIMEOUT="$SERVE_TIMEOUT" DESKCRAB_CRAB_BIN="$SCRIPT_DIR/crab" \
                DESKCRAB_STATE_PREFIX="$STATE_PREFIX" DESKCRAB_WHISPER_FIXES="$WHISPER_FIXES" \
-               DESKCRAB_PHONE_SENTENCE_STREAM="$PHONE_SENTENCE_STREAM"
+               DESKCRAB_PHONE_SENTENCE_STREAM="$PHONE_SENTENCE_STREAM" \
+               DESKCRAB_GEOCODE_URL="$GEOCODE_URL" \
+               DESKCRAB_GEO_STALE_S="$GEO_STALE_S" \
+               DESKCRAB_GEO_LOOKUP_TIMEOUT_S="$GEO_LOOKUP_TIMEOUT_S"
         [ "${TURN_METRICS:-1}" = 1 ] && export DESKCRAB_METRICS_DIR="$METRICS_DIR"
         exec python3 "$SCRIPT_DIR/lib/serve.py"
         ;;

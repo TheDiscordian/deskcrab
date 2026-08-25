@@ -253,6 +253,18 @@ SERVE_TIMEOUT="${SERVE_TIMEOUT:-600}"
 # chunker, so the first clip lands seconds into the turn instead of at the
 # first block's end.
 PHONE_SENTENCE_STREAM="${PHONE_SENTENCE_STREAM:-0}"
+# Where he is (specs/phone.md rule 3a). A phone message may carry the phone's
+# own fix; a fresh, well-formed one on the post that creates a turn becomes
+# exactly one line of that turn's context — "he is near <place>" — and
+# anything short of that becomes nothing at all, silently. The bounds are
+# named here, never magic numbers in the code: a fix older than GEO_STALE_S
+# is not where he is now, and the reverse geocode is abandoned after
+# GEO_LOOKUP_TIMEOUT_S so the turn path can never hang on a lookup.
+# GEOCODE_URL set empty switches the reverse geocode off entirely — the line
+# then carries the plain coordinates.
+GEOCODE_URL="${GEOCODE_URL-https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=17}"
+GEO_STALE_S="${GEO_STALE_S:-600}"
+GEO_LOOKUP_TIMEOUT_S="${GEO_LOOKUP_TIMEOUT_S:-2}"
 # TLS for the phone client. Browsers refuse microphone access over plain http
 # from anything but localhost, so a phone needs https one way or another:
 #   off  - plain http (fine behind `tailscale serve`, which terminates TLS)
@@ -2715,6 +2727,15 @@ EOF
             printf '%s\n' "THIS TURN IS ABOUT THE MESSAGE BELOW. Everything above is background; the text that follows is the subject and it is what you answer. A topic that appears only above is not this turn's topic."
             if [ "$dev" = "phone" ]; then
                 printf '%s\n' "This turn came from the phone — anything to look at goes in the display channel, where he can see it."
+                # Where he is (specs/phone.md rule 3a): the phone server
+                # resolved this turn's own fix and hands the place down as
+                # DESKCRAB_TURN_PLACE; no fix, no line — the frame never
+                # guesses at a location. Exactly one line, flattened here as
+                # a belt against a geocoder answer carrying a newline.
+                local WHERE=""
+                WHERE="$(printf '%s' "${DESKCRAB_TURN_PLACE:-}" \
+                    | tr '\n\t' '  ' | sed -e 's/^ *//' -e 's/ *$//')"
+                [ -n "$WHERE" ] && printf '%s\n' "he is near $WHERE"
             else
                 printf '%s\n' "This turn came from the desk."
             fi

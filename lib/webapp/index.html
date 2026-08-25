@@ -593,7 +593,50 @@ async function deliver(res, replyEl, meta) {
 // many minutes. Same shape as the 45 s guard on the /watch poll.
 const STREAM_IDLE_MS = 45000;
 
-async function streamTurn(text, turn, tid, resuming, seq) {
+// Where he is (spec rule 3a). Each outgoing message asks for the phone's own
+// fix and carries it beside the text when one can be had quickly; the laptop
+// turns a fresh fix into one line of turn context. Denied, unavailable, slow,
+// or stale means the message simply goes without — the send never waits past
+// the bound and no error of any kind reaches the page. The browser remembers
+// the permission answer, so its prompt is faced once, not per message; a
+// denial is cached here too, so a denied page never re-begs the API.
+const GEO_FIX_TIMEOUT_MS = 3000;   // the most a send will wait for a fix
+const GEO_MAX_AGE_MS = 120000;     // a browser-cached fix this fresh is fine
+const GEO_STALE_MS = 600000;       // older than this is not where he is
+let geoDenied = false;
+if (navigator.permissions && navigator.permissions.query) {
+  navigator.permissions.query({ name: "geolocation" }).then(st => {
+    geoDenied = st.state === "denied";
+    st.onchange = () => { geoDenied = st.state === "denied"; };
+  }).catch(() => {});
+}
+
+function geoFix() {
+  return new Promise(resolve => {
+    if (geoDenied || !navigator || !navigator.geolocation) return resolve(null);
+    // The API's own timeout option has a history of not firing on some
+    // browsers; the belt keeps this promise — and the send behind it —
+    // bounded regardless. Resolving twice is a no-op.
+    const belt = setTimeout(() => resolve(null), GEO_FIX_TIMEOUT_MS + 500);
+    const done = v => { clearTimeout(belt); resolve(v); };
+    try {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const c = pos.coords || {};
+        if (typeof c.latitude !== "number" || typeof c.longitude !== "number"
+            || Date.now() - pos.timestamp > GEO_STALE_MS) return done(null);
+        done({ lat: c.latitude, lon: c.longitude,
+               acc: typeof c.accuracy === "number" ? c.accuracy : null,
+               ts: pos.timestamp });
+      }, err => {
+        if (err && err.code === 1) geoDenied = true;  // PERMISSION_DENIED
+        done(null);
+      }, { maximumAge: GEO_MAX_AGE_MS, timeout: GEO_FIX_TIMEOUT_MS,
+           enableHighAccuracy: false });
+    } catch (e) { done(null); }
+  });
+}
+
+async function streamTurn(text, turn, tid, resuming, seq, loc) {
   tid = tid || randomHex(32);
   let seen = 0, delay = 1000;
   // Clip index within this turn, for the playback reports: a chunked reply
@@ -668,7 +711,7 @@ async function streamTurn(text, turn, tid, resuming, seq) {
         ? await fetch("/say", {
             method: "POST", credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, turn: tid }),
+            body: JSON.stringify(loc ? { text, turn: tid, loc } : { text, turn: tid }),
             signal: ctl.signal,
           })
         : await fetch("/turn/" + tid + "?from=" + seen,
@@ -895,6 +938,13 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take) {
   lastTurnProgress = Date.now();
   const seq = ++turnSeq;
   const disarmWatchdog = armTurnWatchdog(seq);
+  // Where he is (spec rule 3a): the fix is asked for NOW so it resolves
+  // while the transcription runs, and awaited only at the send — bounded
+  // inside geoFix itself, null on any failure, never a word to the page. A
+  // resume skips it: the turn already exists on the laptop and an attach
+  // never re-injects. The typeof guard keeps the function liftable into the
+  // test harness, where the helper is not always supplied.
+  const locP = (resumeTid || typeof geoFix !== "function") ? null : geoFix();
   // Asking again means wanting the answer aloud again.
   voiceMuted = false;
   const turn = addTurn(typed || "🎤 …");
@@ -930,7 +980,8 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take) {
     const tid = resumeTid || randomHex(32);
     activeTid = tid;   // what ◼ Stop reaches (spec rule 47)
     rememberTurn(tid, text, resumeAt);
-    const res = await streamTurn(text, turn, tid, !!resumeTid, seq);
+    const res = await streamTurn(text, turn, tid, !!resumeTid, seq,
+                                 locP ? await locP : null);
     // Null means the watcher ended this turn first (rule 42): the bubble,
     // the button, and the status were all settled there.
     if (res && releasedSeq !== seq) {
@@ -1240,15 +1291,24 @@ function seedTurn(text, tid) {
   // the reply lands in the record. The stream is hung up as soon as the
   // server answers; the buffer holds the turn, and a failure here costs
   // nothing because the attach re-posts the same id anyway.
-  const ctl = new AbortController();
-  const guard = setTimeout(() => ctl.abort(), 8000);
-  fetch("/say", { method: "POST", credentials: "same-origin",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ text, turn: tid }),
-                  signal: ctl.signal })
-    .then(() => ctl.abort())
-    .catch(() => {})
-    .finally(() => clearTimeout(guard));
+  // This post is the one that CREATES the queued turn, so it is the one
+  // that carries the fix (spec rule 3a) — bounded inside geoFix, null on
+  // any failure, so the seed is delayed by at most that bound and never by
+  // an error. A promise chain rather than an async function on purpose:
+  // the harness lifts this by its plain-function name.
+  const locP = typeof geoFix === "function" ? geoFix() : Promise.resolve(null);
+  locP.then(loc => {
+    const ctl = new AbortController();
+    const guard = setTimeout(() => ctl.abort(), 8000);
+    fetch("/say", { method: "POST", credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(loc ? { text, turn: tid, loc }
+                                             : { text, turn: tid }),
+                    signal: ctl.signal })
+      .then(() => ctl.abort())
+      .catch(() => {})
+      .finally(() => clearTimeout(guard));
+  });
 }
 
 function queueTurn(text) {

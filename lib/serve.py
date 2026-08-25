@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import http.cookies
 import json
+import math
 import os
 import mimetypes
 import queue
@@ -38,6 +39,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -99,6 +101,114 @@ KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
 
 TURN_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_TIMEOUT", "600"))
 MAX_UPLOAD = 25 * 1024 * 1024
+
+# Where he is (specs/phone.md rule 3a). A message may carry the phone's own
+# fix; a fresh, well-formed one on the post that CREATES a turn becomes
+# exactly one line of that turn's context — "he is near <place>" — and
+# anything short of that becomes nothing at all, silently. The bounds are
+# named constants, never magic numbers scattered through the code: a fix
+# older than GEO_STALE_S is not where he is now, and the reverse geocode is
+# abandoned after GEO_LOOKUP_TIMEOUT_S so a slow lookup can never hold the
+# turn. GEOCODE_URL empty switches the lookup off; the line then carries the
+# plain coordinates. The turn path degrades on ANY failure here without a
+# word reaching the reply.
+GEO_STALE_S = float(os.environ.get("DESKCRAB_GEO_STALE_S", "600"))
+GEO_LOOKUP_TIMEOUT_S = float(
+    os.environ.get("DESKCRAB_GEO_LOOKUP_TIMEOUT_S", "2"))
+GEOCODE_URL = os.environ.get(
+    "DESKCRAB_GEOCODE_URL",
+    "https://nominatim.openstreetmap.org/reverse?format=jsonv2"
+    "&lat={lat}&lon={lon}&zoom=17")
+
+
+def _clean_loc(doc):
+    """The message's fix, or None. Anything short of a fresh, well-formed
+    pair of coordinates is None — the turn must run exactly as one sent bare
+    (spec rule 3a), so nothing here raises and nothing is guessed. The
+    timestamp is required: a fix that does not say when it was taken cannot
+    be known fresh, and 'near' is a claim about now."""
+    if not isinstance(doc, dict):
+        return None
+    try:
+        lat = float(doc.get("lat"))
+        lon = float(doc.get("lon"))
+        ts = float(doc.get("ts")) / 1000.0  # the client sends milliseconds
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon) and math.isfinite(ts)):
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    if abs(time.time() - ts) > GEO_STALE_S:
+        return None
+    try:
+        acc = float(doc.get("acc"))
+        if not math.isfinite(acc):
+            acc = None
+    except (TypeError, ValueError):
+        acc = None
+    return {"lat": lat, "lon": lon, "acc": acc, "ts": ts}
+
+
+# Successful lookups only, so repeated turns from one spot do not hammer the
+# geocoder — bounded (spec rule 21's lesson: an unbounded registry in a
+# long-lived process is a leak), and never a home for a failure: a lookup
+# that failed now must be free to succeed on the next turn.
+_GEO_CACHE = {}
+_GEO_CACHE_LOCK = threading.Lock()
+
+
+def _geo_place(lat, lon):
+    """A short 'street, town' for the fix from the configured reverse
+    geocoder, or '' — silently — when there is no geocoder, it errors, times
+    out, or answers nothing usable. Never a guess: an empty answer here
+    falls back to plain coordinates at the caller, not to a name."""
+    if not GEOCODE_URL:
+        return ""
+    key = (round(lat, 3), round(lon, 3))
+    with _GEO_CACHE_LOCK:
+        if key in _GEO_CACHE:
+            return _GEO_CACHE[key]
+    try:
+        req = urllib.request.Request(
+            GEOCODE_URL.format(lat="%.6f" % lat, lon="%.6f" % lon),
+            headers={"User-Agent": "deskcrab"})
+        with urllib.request.urlopen(req, timeout=GEO_LOOKUP_TIMEOUT_S) as r:
+            doc = json.loads(r.read(65536).decode("utf-8", "replace"))
+        addr = doc.get("address") or {}
+        road = (addr.get("road") or addr.get("pedestrian")
+                or addr.get("footway") or "")
+        town = (addr.get("village") or addr.get("town") or addr.get("city")
+                or addr.get("municipality") or "")
+        place = ", ".join(p for p in (str(road), str(town)) if p)
+        if not place:
+            name = str(doc.get("display_name") or "")
+            place = ", ".join(p.strip() for p in name.split(",")[:2]
+                              if p.strip())
+    except Exception as exc:  # noqa: BLE001 — every failure degrades silently
+        # The server log is the only witness; the reply never hears of it.
+        print("geo: reverse geocode failed, carrying coordinates instead: %s"
+              % str(exc)[:200], file=sys.stderr, flush=True)
+        return ""
+    place = " ".join(place.split())[:120]
+    if place:
+        with _GEO_CACHE_LOCK:
+            if len(_GEO_CACHE) >= 64:
+                _GEO_CACHE.clear()
+            _GEO_CACHE[key] = place
+    return place
+
+
+def _turn_place(loc):
+    """The place text for the context line, or ''. The geocoded street and
+    town when the bounded lookup answers, the plain coordinates when it does
+    not, nothing when there is no fix (spec rule 3a)."""
+    if not loc:
+        return ""
+    place = _geo_place(loc["lat"], loc["lon"])
+    if not place:
+        place = "latitude %.4f, longitude %.4f" % (loc["lat"], loc["lon"])
+    return place
 
 # specs/phone.md rule 24: the secret MUST NEVER be written to a log. It rides
 # in the query string of the installed start URL, so every PWA launch puts it
@@ -229,6 +339,11 @@ class Turn:
         # pid here is a pgid and a killpg reaches the whole tree under it.
         self.stopped = False
         self.procs = set()
+        # Where he is (spec rule 3a): the creating post's validated fix, and
+        # the place resolved from it by run_turn. Only the post that created
+        # the turn may set `loc` — an attach never re-injects.
+        self.loc = None
+        self.place = ""
 
     def emit(self, kind, payload):
         with self.cond:
@@ -482,6 +597,17 @@ def run_turn(turn, text):
         spool_midturn(turn.tid, text)
     try:
         with turn_in_flight():
+            # Where he is (spec rule 3a): resolved HERE, on the turn's own
+            # thread, so the bounded lookup delays only this turn and never
+            # the accept path. No fix resolves to no place, and run/ask
+            # then hand nothing down.
+            turn.place = _turn_place(turn.loc)
+            if turn.place:
+                turn_metric("turn-place",
+                            "turn %s %s" % (turn.tid[:8],
+                                            "coordinates"
+                                            if turn.place.startswith("latitude ")
+                                            else "resolved"))
             stop = threading.Event()
             threading.Thread(target=_queue_watch, args=(turn, stop),
                              daemon=True).start()
@@ -1343,6 +1469,11 @@ def ask(text, on_event=None, speaker=None, turn=None):
         env = dict(os.environ)
         if turn is not None:
             env["DESKCRAB_TURN_ID"] = turn.tid
+            # Where he is (spec rule 3a): the resolved place rides down to
+            # the runner, whose prompt frame turns it into the one context
+            # line. No place, no variable, no line.
+            if getattr(turn, "place", ""):
+                env["DESKCRAB_TURN_PLACE"] = turn.place
         r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
     else:
         # Under STATE_PREFIX, never a bare /tmp name: crab-debug follows
@@ -1358,6 +1489,8 @@ def ask(text, on_event=None, speaker=None, turn=None):
         env = dict(os.environ, DESKCRAB_REMOTE_LOG=logpath)
         if turn is not None:
             env["DESKCRAB_TURN_ID"] = turn.tid
+            if getattr(turn, "place", ""):
+                env["DESKCRAB_TURN_PLACE"] = turn.place
         try:
             r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
         finally:
@@ -1754,6 +1887,7 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._json(200, {"error": "no speech detected"})
             tid = _clean_tid((parse_qs(url.query).get("turn") or [""])[0])
+            loc = None
         elif url.path == "/say":
             try:
                 doc = json.loads(body.decode("utf-8"))
@@ -1763,6 +1897,9 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._json(200, {"error": "empty message"})
             tid = _clean_tid(doc.get("turn"))
+            # Where he is (spec rule 3a): validated to a fix or to None, and
+            # None changes nothing anywhere downstream.
+            loc = _clean_loc(doc.get("loc"))
         else:
             return self._send(404, "not found")
 
@@ -1783,6 +1920,10 @@ class Handler(BaseHTTPRequestHandler):
         if turn is None:
             return self._json(503, {"error": "restarting — retry shortly"})
         if created:
+            # Only the creating post's fix counts (spec rules 1 and 3a): a
+            # re-posted id is an attach, and whatever fix it carries is not
+            # this turn's to inject.
+            turn.loc = loc
             turn.emit("transcript", {"text": text})
             threading.Thread(target=run_turn, args=(turn, text),
                              daemon=True).start()
