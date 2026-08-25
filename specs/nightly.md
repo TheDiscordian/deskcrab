@@ -112,6 +112,57 @@ which fails silently is worse than one that does not exist.
     history into the want's document is exactly the judgement work tidy's own brief names, and
     a shelf that needs tidying is the last reason to skip the tidy.
 
+21c. The undestinated-claims check. Beside the shelf-line check, the tidy unit runs the machine
+    check `lib/tidy-claims run` over the day just ended — the journal day before the night the
+    tidy runs in, her voice only: rows whose kind is not `job` (a builder's entry is a log, not
+    her speech — rule 41's own line), the display half stripped the anchored way of
+    [speech-output.md](speech-output.md) rules 3 and 4. The check looks for the sentences that
+    vouch their own durability and cannot point at anything. A sentence is a candidate when all
+    three hold at once: it reports a thing as put into writing (written down, wrote down,
+    written up, jotted down, noted down, set down, filed, on the record); it vouches the thing
+    is therefore SAFE ("where it will hold", "so it survives the night", "so it can't crawl
+    back out", "so it binds", "pinned"); and it names no destination — none of want, Library,
+    conduct, record, thread, moments, shelf, commit, memory, spec, or list anywhere in the
+    sentence. For each candidate the check then looks for the artefact that could be the thing
+    claimed: a file under its roots — the state dir and this repository's tree by default;
+    `TIDY_CLAIMS_ROOTS` replaces the set, and the personal drawers live data adds are never
+    named in this repository — touched inside the claim's own window (the claiming turn,
+    widened by `TIDY_CLAIMS_LEAD` before and `TIDY_CLAIMS_SLACK` after, defaults 600 and 120
+    seconds), whose text shares a PHRASE — a consecutive word pair, never a lone word — with
+    the claim's own paragraph. The pair test and the paragraph scope are both measured, not
+    taste: single shared words cleared the known-false claim of rule 21d with a neighbouring
+    record's machinery vocabulary, and whole-turn scope cleared it again with the vocabulary
+    of the OTHER subject the same turn discussed. Machine plumbing — the journal, the jobs and
+    wakes ledgers, databases, logs, metrics, caches — is never an artefact: the claim is that
+    SHE wrote a thing down, and only something a reader reads can hold that. A claim with an
+    artefact behind it is cleared, the artefact named; only the claims with nothing behind
+    them are findings.
+21d. Why the vouch, why the night, and what this check may never become. The measured fortnight
+    (2026-08-25, the 42nd mark of the why-i-believe-myself audit): 259 durability claims in
+    the spoken halves, of which NINE vouch the thing is therefore safe, and only FOUR of those
+    name no drawer — and one of the four was provably false at the moment of speaking
+    (2026-08-15 01:55, "Taken, and written down where it will hold", while that night's tidy
+    grepped conduct/ for the rule and found nothing newer than four days old, then made the
+    missing file itself). The fault is a LATENCY, not an absence: the artefact exists by
+    morning exactly because the night went and made it, so no audit reading a later day's disk
+    can ever see the gap — only a check run on the night, over the day just ending, against
+    that day's own mtimes. Hence this check lives in the nightly tidy and nowhere else, and a
+    replay over old days OVERCOUNTS by design (notes since consumed, mtimes since moved) —
+    replay is calibration, never a verdict on a past day. And the check MUST NOT become a
+    claudism-style pattern: a bare regex on "written down" fires on 259 sentences to catch 9 —
+    the seventh-net mistake the want has refused six times — so the narrowing is the vouch,
+    the destination-absent test and the same-day artefact lookup, never a wider phrase list,
+    and the expected steady-state load is about four sentences a FORTNIGHT. A night that
+    reports dozens is a broken check, not a broken journal. Findings are never silent and
+    never a gate (rule 21b's bargain): they print in the check's own name (`tidy-claims:`),
+    land in the day's report under the data dir, and are filed — as the 03:25 tidy of
+    2026-08-15 filed by hand — as ONE open engineering record for the day, through `crab eng`
+    and only through it ([engineering-records.md](engineering-records.md) rule 4), created
+    once: a re-run of the same day names the standing record and never files twice, and a
+    clean day files nothing at all. The check's own writes are the report and that record,
+    both declared where declaration is owed (rule 6; `lib/eng` declares its own), and its
+    exit status MUST NOT block the tidy job behind it.
+
 ### The self-change watcher
 
 22. The watcher is driven by a path unit using the kernel's own change notification. No polling
@@ -566,6 +617,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/sleep/<date>.log` | sleep | the night's ingest output |
 | `~/.local/share/deskcrab/wants.md`, `wants/` | tidy | the shelf and its bodies |
 | `${STATE_PREFIX}-shelf-overruns.txt` | the shelf-line check | rules 21a/21b: written when entries stand over the budget, removed by a clean check, rendered by the state block |
+| `~/.local/share/deskcrab/tidy-claims/<date>.md` | the undestinated-claims check | rules 21c/21d: the day's vouched, undestinated, unbacked claims — one report per checked day with findings, none for a clean day; the day's engineering record is filed beside it through `crab eng` |
 | `~/.local/share/deskcrab/conduct/` | tidy | conduct and its per-rule files |
 | `~/.local/share/deskcrab/engineering/` | tidy | the pre-records archive and its index — closed to the night's selector (rule 58c) |
 | `~/.local/share/deskcrab/engineering/records/` | `crab eng` ([engineering-records.md](engineering-records.md)) | the live thread records; the night's work reads the `state: open` ones back as its thread material (rule 58c) |
@@ -583,8 +635,9 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
-service, the tidy timer and service (the shelf-line check runs as the service's `ExecStartPre`,
-never gating the job — rules 21a/21b), the self-change path and service, the transcription path
+service, the tidy timer and service (the shelf-line check and the undestinated-claims check run as
+the service's `ExecStartPre`, never gating the job — rules 21a/21b and 21c/21d), the self-change
+path and service, the transcription path
 and service, the canary timer and service, the phone server service. The tidy prompt still lives
 as the unit's embedded command string (`MAJ-23`); `tests/test_tidy.sh` is still owed.
 
@@ -713,6 +766,16 @@ stay proposals under the default gate, the records byte-identical, and
 nothing left to propose; and the wiring: sleep runs the pass after the promise sweep, before the
 night's work, WITH `--apply` (rule 53d), and the pass speaks through the deployed symlink (rule
 6a) even with no records drawer at all.
+`tests/test_tidy_undestinated_claims.sh` — rules 21c/21d, against a fixture day and a fixture
+drawer: the one sentence that vouches durability, names no drawer, and has nothing on disk behind
+it is the day's ONE finding — quoted in the check's own name, written to the day's report, filed
+as one open engineering record through `crab eng` with its time and channel, and never filed
+twice by a re-run; while everything the narrowing exists for stays quiet — a claim that names its
+drawer, the same claim with its artefact touched inside the turn's window and sharing the
+paragraph's phrases (the clearing artefact named), a builder's `kind: job` entry carrying the
+same words, a firing sentence below the display delimiter, and a plain unvouched "wrote it down";
+a clean day is one line, exit zero, nothing filed; a day with no journal is a quiet nothing; and
+`scan` replays days without writing a byte.
 `tests/test_shelf_check.sh` — rules 21a/21b: a synthetic over-long shelf line is flagged with its
 measured size, the budget, and the `wants/<slug>.md` document its line points at; a line naming
 no document is flagged as exactly that; a genuinely one-line shelf is silent — one line, exit
