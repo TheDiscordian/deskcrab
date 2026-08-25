@@ -163,6 +163,23 @@ which fails silently is worse than one that does not exist.
     both declared where declaration is owed (rule 6; `lib/eng` declares its own), and its
     exit status MUST NOT block the tidy job behind it.
 
+21e. How the check's knobs resolve, and why the unit carries no `EnvironmentFile`. Every knob
+    the check reads (`TIDY_CLAIMS_ROOTS`, `TIDY_CLAIMS_DIR`, `TIDY_CLAIMS_LEAD`,
+    `TIDY_CLAIMS_SLACK`, `DAY_JOURNAL_DIR`) resolves environment first, conf second, shipped
+    default last. The tidy unit sources nothing on the check's execution path, so an
+    environment-only read left the conf's `TIDY_CLAIMS_ROOTS` invisible to the one run that
+    matters — the nightly one — and the personal drawers the conf names went unscanned every
+    night the setting stood (found 2026-08-25). The conf read lives in the SCRIPT, not the
+    unit: when a knob is absent from the environment, `lib/tidy-claims` asks a bash that
+    sources `common.sh` — and through it the live conf, with every conf convention including
+    `$HOME` expansion — from the script's own realpath-resolved directory (rule 6a: the
+    deployed path is a symlink, and an unresolved dirname can name a directory with no
+    `common.sh` in it). An explicit environment variable MUST still win over the conf, and a
+    missing, broken or slow `common.sh` MUST degrade silently to the shipped defaults — the
+    check never raises over configuration. The unit MUST NOT gain an `EnvironmentFile`:
+    `common.sh` does not blanket-export conf values, and most conf values lean on `$HOME`,
+    which systemd's parser would import unexpanded for every neighbour the file carries.
+
 ### The self-change watcher
 
 22. The watcher is driven by a path unit using the kernel's own change notification. No polling
@@ -788,6 +805,14 @@ paragraph's phrases (the clearing artefact named), a builder's `kind: job` entry
 same words, a firing sentence below the display delimiter, and a plain unvouched "wrote it down";
 a clean day is one line, exit zero, nothing filed; a day with no journal is a quiet nothing; and
 `scan` replays days without writing a byte.
+`tests/test_tidy_claims_conf_roots.sh` — rule 21e, against a scratch conf and a scratch data
+home: with the environment empty the check's roots, report dir, lead and slack all come from the
+conf, a root written with `$HOME` in the conf arriving expanded; an explicit environment variable
+beats the conf for the roots, and the pinned `DAY_JOURNAL_DIR` beats the conf's journal line while
+unsetting it hands the journal to the conf; a missing conf, a conf with a syntax error, and a
+non-numeric lead all degrade to the shipped defaults without an exception; and the same conf
+resolution holds when the script is reached through a symlink whose own directory holds no
+`common.sh` — the realpath step of rule 6a is what finds the library.
 `tests/test_shelf_check.sh` — rules 21a/21b: a synthetic over-long shelf line is flagged with its
 measured size, the budget, and the `wants/<slug>.md` document its line points at; a line naming
 no document is flagged as exactly that; a genuinely one-line shelf is silent — one line, exit

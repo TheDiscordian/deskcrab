@@ -30,14 +30,18 @@ A night that reports dozens is a broken check, not a broken journal.
                                  calibration, never a verdict on a past day
                                  (rule 21d: replay overcounts by design)
 
-Knobs, all by environment, all defaulted: DAY_JOURNAL_DIR, TIDY_CLAIMS_ROOTS
-(colon-separated artefact roots; default the state dir and this repository's
-tree — personal drawers are added by live data, never named here),
-TIDY_CLAIMS_LEAD / TIDY_CLAIMS_SLACK (the claim window around the turn,
-seconds before start / after end; defaults 600 / 120), TIDY_CLAIMS_DIR (the
-reports; default <state>/tidy-claims), DESKCRAB_ENG_DIR (where lib/eng files
-the record). Exit 1 when findings stand, 0 otherwise; the tidy unit runs
-this as `ExecStartPre=-`, so the report never gates the tidy job behind it.
+Knobs, environment first, conf second, defaulted last (rule 21e):
+DAY_JOURNAL_DIR, TIDY_CLAIMS_ROOTS (colon-separated artefact roots; default
+the state dir and this repository's tree — personal drawers are added by
+live data, never named here), TIDY_CLAIMS_LEAD / TIDY_CLAIMS_SLACK (the
+claim window around the turn, seconds before start / after end; defaults
+600 / 120), TIDY_CLAIMS_DIR (the reports; default <state>/tidy-claims),
+DESKCRAB_ENG_DIR (where lib/eng files the record). A knob absent from the
+environment is asked of the conf, through a bash that sources common.sh —
+the tidy unit sources nothing on this script's path, so an environment-only
+read left the conf's roots invisible to the one run that matters. Exit 1
+when findings stand, 0 otherwise; the tidy unit runs this as
+`ExecStartPre=-`, so the report never gates the tidy job behind it.
 """
 
 import json
@@ -56,12 +60,67 @@ ENG = os.path.join(LIB_DIR, "eng")
 
 DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 STATE_DIR = os.path.join(DATA_HOME, "deskcrab")
-JOURNAL_DIR = os.environ.get("DAY_JOURNAL_DIR") or os.path.join(STATE_DIR, "journal")
-OUT_DIR = os.environ.get("TIDY_CLAIMS_DIR") or os.path.join(STATE_DIR, "tidy-claims")
-ROOTS = [r for r in (os.environ.get("TIDY_CLAIMS_ROOTS") or
+
+# The knobs resolve environment first, conf second, defaults last — rule 21e.
+# The tidy unit sources nothing on this script's execution path and carries
+# no EnvironmentFile (deliberately: common.sh does not blanket-export conf
+# values, and most of them lean on $HOME, which systemd's parser would hand
+# through unexpanded), so an environment-only read left the conf's
+# TIDY_CLAIMS_ROOTS invisible to the nightly run and the personal drawers
+# unscanned. When a knob is absent from the environment, this script asks
+# the one interpreter that owns the conf's conventions: a bash that sources
+# common.sh — and through it the conf, $HOME expansion and all — from
+# LIB_DIR, the realpath-resolved directory above, because a run through the
+# deployed symlink (rule 6a) must find the real common.sh. bash rather than
+# sh: common.sh is a bash library (BASH_SOURCE on its first line), and a
+# POSIX sh that is not bash cannot source it. An explicit environment
+# variable always wins, and a missing, broken or slow common.sh degrades
+# silently to the defaults — this check never raises over configuration.
+_CONF_KNOBS = ("TIDY_CLAIMS_ROOTS", "TIDY_CLAIMS_DIR", "TIDY_CLAIMS_LEAD",
+               "TIDY_CLAIMS_SLACK", "DAY_JOURNAL_DIR")
+
+
+def _conf_fallback(names):
+    """name -> the conf's value, for every name the conf answers non-empty.
+    One subshell for all of them. Any failure — no bash, a source that dies,
+    a hang, output that does not parse — is {}: the defaults stand."""
+    if not names:
+        return {}
+    script = '. "%s/common.sh" >/dev/null 2>&1 || exit 1\n' % LIB_DIR
+    script += "".join('printf \'%%s\\036\' "${%s:-}"\n' % n for n in names)
+    try:
+        r = subprocess.run(["bash", "-c", script], capture_output=True,
+                           text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    vals = r.stdout.split("\x1e")
+    if len(vals) != len(names) + 1:
+        return {}
+    return {n: v for n, v in zip(names, vals) if v}
+
+
+_CONF = _conf_fallback([n for n in _CONF_KNOBS if not os.environ.get(n)])
+
+
+def _knob(name):
+    return os.environ.get(name) or _CONF.get(name) or ""
+
+
+def _int_knob(name, default):
+    try:
+        return int(_knob(name) or default)
+    except ValueError:
+        return default
+
+
+JOURNAL_DIR = _knob("DAY_JOURNAL_DIR") or os.path.join(STATE_DIR, "journal")
+OUT_DIR = _knob("TIDY_CLAIMS_DIR") or os.path.join(STATE_DIR, "tidy-claims")
+ROOTS = [r for r in (_knob("TIDY_CLAIMS_ROOTS") or
                      "%s:%s" % (STATE_DIR, REPO_DIR)).split(":") if r]
-LEAD = int(os.environ.get("TIDY_CLAIMS_LEAD") or 600)
-SLACK = int(os.environ.get("TIDY_CLAIMS_SLACK") or 120)
+LEAD = _int_knob("TIDY_CLAIMS_LEAD", 600)
+SLACK = _int_knob("TIDY_CLAIMS_SLACK", 120)
 
 # The delimiter, anchored to its own line and tolerant of surrounding
 # whitespace — specs/speech-output.md rules 3 and 4, the same split the
