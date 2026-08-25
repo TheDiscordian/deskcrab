@@ -153,9 +153,67 @@ ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
 RC=0
 ATTEMPT=0
 PREV_ACCT=""
+# The engine follows the model name (specs/model-backends.md rule 14): a
+# codex-model build runs the one codex login, and refused it is BLOCKED,
+# never downgraded — jobs.md rule 5a holds across engines. The builder keeps
+# full hands on either engine (cocoon.md rule 2): codex's own sandbox and
+# approvals are off exactly as --dangerously-skip-permissions is the Claude
+# builder's shape. The brief rides as a preface on the task rather than
+# replacing codex's base instructions — a builder is a coding agent, and
+# codex's own coding instructions are the ones it should keep.
+JOB_BACKEND="$(model_backend "$JOB_MODEL")"
+CODEX_PRE_BLOCKED=""
+if [ "$JOB_BACKEND" = "codex" ]; then
+    ATTEMPT=1
+    ACCT="codex"
+    CODEX_SLUG="$(codex_model_resolve "$JOB_MODEL")"
+    if codex_available; then
+        echo "job-runner: building on codex ($CODEX_SLUG)" >> "$LOG"
+        ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+        (
+            env -u OPENAI_API_KEY "$CODEX_BIN" exec \
+                --ignore-user-config --skip-git-repo-check \
+                --dangerously-bypass-approvals-and-sandbox --json --color never \
+                -C "$PWD" -m "$CODEX_SLUG" \
+                -c "model_reasoning_effort=$JOB_EFFORT" \
+                "$SYS
+
+--- the task ---
+
+$TASK" </dev/null 2>&1 \
+                | CODEX_STREAM_MODEL="$CODEX_SLUG" "$LIB_DIR/codex-stream" \
+                | tee -a "$STREAMLOG" \
+                | "$LIB_DIR/job-log-stream" >> "$LOG"
+            exit "${PIPESTATUS[0]}"
+        )
+        RC=$?
+        if [ "$RC" -eq 0 ]; then
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') codex: ran clean" 2>/dev/null
+        elif REFUSAL="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
+            codex_limit_record "$REFUSAL"
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') codex: refused — $REFUSAL" 2>/dev/null
+        else
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') codex: failed (exit $RC)" 2>/dev/null
+        fi
+    else
+        # Cooling or absent: the build never boots. Blocked, with the reason
+        # in hand — the post-run judgement cannot read a refusal out of a
+        # stream no CLI ever wrote to.
+        CODEX_PRE_BLOCKED="codex is $(codex_unavailable_why)"
+        echo "job-runner: $CODEX_PRE_BLOCKED — the build never began" >> "$LOG"
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') codex: $CODEX_PRE_BLOCKED" 2>/dev/null
+        RC=1
+    fi
+fi
 # The walk knows its model (specs/account-fallback.md rule 10): an account
-# whose cooldown is scoped to another family still takes a build.
-for ACCT in $(claude_accounts "$JOB_MODEL"); do
+# whose cooldown is scoped to another family still takes a build. A codex
+# build already ran above, so the list it walks is empty on that engine —
+# blocked is blocked, never a downgrade.
+for ACCT in $([ "$JOB_BACKEND" = "codex" ] || claude_accounts "$JOB_MODEL"); do
     CONFDIR="$(claude_account_dir "$ACCT")"
     ATTEMPT=$(( ATTEMPT + 1 ))
     if [ "$ATTEMPT" = 1 ]; then
@@ -279,8 +337,18 @@ if [ "$RC" -ne 0 ]; then
     # The same event-level judgement as the retry decision above, on the same
     # slice: blocked means the CLI's own words refused and no model output
     # exists. A build that ran and failed has model output, so it can never
-    # land here (specs/jobs.md rule 15).
-    BLOCKED="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" || BLOCKED=""
+    # land here (specs/jobs.md rule 15). Each engine is judged by its own
+    # detector (specs/model-backends.md rule 14), and a codex build that
+    # never booted carries its reason in hand — no stream holds it.
+    if [ "$JOB_BACKEND" = "codex" ]; then
+        if [ -n "$CODEX_PRE_BLOCKED" ]; then
+            BLOCKED="$CODEX_PRE_BLOCKED"
+        else
+            BLOCKED="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")" || BLOCKED=""
+        fi
+    else
+        BLOCKED="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" || BLOCKED=""
+    fi
     if [ -n "$BLOCKED" ]; then
         STATE=blocked
         job_block_record "$BLOCKED"

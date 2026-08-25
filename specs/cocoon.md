@@ -51,7 +51,9 @@ moved from a regex that reads commands to a mount namespace that does not.
    and `~/.claude.json`, plus the account dir in play when `CLAUDE_CONFIG_DIR` is set — a turn
    breaks without its history, sessions and session-env, and the other accounts symlink their
    shared surfaces into account 1's `~/.claude`, so that dir is bound whichever account has the
-   turn), and the user cache. Every constituent path of rule 1 falls
+   turn — and `CODEX_HOME` under the same clause when the codex engine has the turn
+   ([model-backends.md](model-backends.md) rule 9): auth refresh and session state are the codex
+   CLI's own state exactly as `~/.claude` is the Claude CLI's), and the user cache. Every constituent path of rule 1 falls
    under the read-only root, so a write there fails in the kernel with EROFS whatever spelling
    produced it — a redirection behind a newline, an interpreter one-liner, `sed --in-place`,
    `dd`, a pathless `git commit` run in a constituent cwd, a `$HOME` expansion, a relative path
@@ -195,8 +197,10 @@ moved from a regex that reads commands to a mount namespace that does not.
 
 ## INTERACTIONS
 
-**The wrap is applied by:** `_generate_claude_run` and `_wake_claude_run`, and nothing else — the
-job runner and every classifier launch outside it, on purpose.
+**The wrap is applied by:** the turn and wake run functions of both engines —
+`_generate_claude_run`, `_wake_claude_run`, and `_codex_stream_run`
+([model-backends.md](model-backends.md) rule 9) — and nothing else: the job runner and every
+classifier launch outside it, on purpose.
 **The signpost may be called by:** the CLI's hook runner, inside turn and wake sessions only.
 **The detector may be called by:** `claude_generate`, once per turn, before prompt assembly, and
 `_turn_order_is_pushback` for the supersede decision.

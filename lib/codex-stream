@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""The codex stream translator — specs/model-backends.md rule 11.
+
+Reads `codex exec --json` events on stdin and writes the event vocabulary
+every existing reader of a session stream already consumes — the TTS
+streamer, extract-response, the token ledger, stream_written_files, the
+refusal detectors, crab-debug — appended by the caller to the same DEBUGLOG
+a Claude run would have written. One translator, seven readers untaught.
+
+The shapes, and who they are for:
+  * system/init once at start        — the ledger's attempt marker
+  * assistant text per agent_message — the streamer speaks it as it lands
+                                       (codex exec has no partial deltas, so
+                                       speech is per message — the wake
+                                       path's long-standing behaviour)
+  * assistant tool_use per command_execution (Bash) and per file_change
+    path (Write)                     — stream_written_files and the work
+                                       trace read these to know her own hand
+  * result at turn end               — extract-response's terminator and the
+                                       ledger's usage record; cached input
+                                       maps to cache_read, cache writes to
+                                       cache_creation, input net of cache to
+                                       input_tokens
+  * a deskcrab_note heartbeat while the run is quiet — the stall watchdog
+    judges life by log mtime and process CPU, and codex emits NOTHING
+    between items while it thinks, so a long thought would be reaped as a
+    hang (TURN_STALL_TIMEOUT is 120 s; the heartbeat default is well under)
+  * every line it does not recognise passes through VERBATIM — codex's own
+    error events keep codex's own words, which is what codex_stream_refusal
+    reads, and a translator that drops lines is a translator that eats
+    evidence. It never drops a line.
+
+Env: CODEX_STREAM_MODEL names the model on the shaped events;
+CODEX_STREAM_HEARTBEAT is the quiet-heartbeat interval in seconds (0 turns
+it off — the tests do; the default stays under every stall timeout).
+"""
+import json
+import os
+import sys
+import threading
+import time
+
+MODEL = os.environ.get("CODEX_STREAM_MODEL", "codex")
+try:
+    HEARTBEAT = float(os.environ.get("CODEX_STREAM_HEARTBEAT", "45") or 0)
+except ValueError:
+    HEARTBEAT = 45.0
+
+_lock = threading.Lock()
+_last_write = time.monotonic()
+_done = threading.Event()
+
+
+def emit(obj):
+    global _last_write
+    line = json.dumps(obj, ensure_ascii=False)
+    with _lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+        _last_write = time.monotonic()
+
+
+def passthrough(raw):
+    global _last_write
+    with _lock:
+        sys.stdout.write(raw.rstrip("\n") + "\n")
+        sys.stdout.flush()
+        _last_write = time.monotonic()
+
+
+def _heartbeat():
+    while not _done.wait(min(HEARTBEAT, 5.0)):
+        if time.monotonic() - _last_write >= HEARTBEAT:
+            emit({"type": "deskcrab_note", "note": "codex-heartbeat",
+                  "detail": "the run is thinking",
+                  "at": time.strftime("%H:%M:%S")})
+
+
+def assistant(item_id, block):
+    return {"type": "assistant",
+            "message": {"id": item_id or "codex", "model": MODEL,
+                        "content": [block]}}
+
+
+def on_item(item):
+    kind = item.get("type") or item.get("item_type") or ""
+    item_id = item.get("id") or ""
+    if kind == "agent_message":
+        text = item.get("text") or ""
+        if text:
+            emit(assistant(item_id, {"type": "text", "text": text}))
+        return text
+    if kind == "command_execution":
+        cmd = item.get("command") or ""
+        if cmd:
+            emit(assistant(item_id, {"type": "tool_use", "name": "Bash",
+                                     "input": {"command": cmd}}))
+        return None
+    if kind == "file_change":
+        changes = item.get("changes")
+        paths = []
+        if isinstance(changes, list):
+            paths = [c.get("path") for c in changes
+                     if isinstance(c, dict) and c.get("path")]
+        elif isinstance(changes, dict):
+            paths = list(changes)
+        for p in paths:
+            emit(assistant(item_id, {"type": "tool_use", "name": "Write",
+                                     "input": {"file_path": p}}))
+        return None
+    # reasoning, web_search, todo_list, mcp_tool_call: nothing downstream
+    # reads them, and an error item passes through with its own line below.
+    return None
+
+
+def usage_map(u):
+    u = u if isinstance(u, dict) else {}
+    def n(k):
+        try:
+            return int(u.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0
+    cached = n("cached_input_tokens")
+    return {"input_tokens": max(n("input_tokens") - cached, 0),
+            "cache_read_input_tokens": cached,
+            "cache_creation_input_tokens": n("cache_write_input_tokens"),
+            "output_tokens": n("output_tokens")}
+
+
+def main():
+    emit({"type": "system", "subtype": "init", "engine": "codex",
+          "model": MODEL})
+    if HEARTBEAT > 0:
+        threading.Thread(target=_heartbeat, daemon=True).start()
+    last_text = ""
+    for raw in sys.stdin:
+        if not raw.strip():
+            continue
+        try:
+            d = json.loads(raw)
+        except json.JSONDecodeError:
+            passthrough(raw)
+            continue
+        if not isinstance(d, dict):
+            passthrough(raw)
+            continue
+        t = d.get("type") or ""
+        if t in ("item.completed", "item.updated", "item.started"):
+            item = d.get("item") or {}
+            if item.get("type") == "error":
+                # codex's own words stay on the record for the refusal
+                # detector; the shaped result below is for the extractor.
+                passthrough(raw)
+                continue
+            if t == "item.completed":
+                text = on_item(item)
+                if text:
+                    last_text = text
+            continue
+        if t == "turn.completed":
+            emit({"type": "result", "result": last_text or "",
+                  "engine": "codex", "model": MODEL,
+                  "usage": usage_map(d.get("usage"))})
+            continue
+        if t in ("turn.failed", "error"):
+            passthrough(raw)
+            msg = ""
+            if t == "turn.failed":
+                err = d.get("error")
+                msg = (err or {}).get("message", "") if isinstance(err, dict) \
+                    else str(err or "")
+            else:
+                msg = d.get("message") or ""
+            emit({"type": "result", "is_error": True, "engine": "codex",
+                  "model": MODEL, "result": msg or "codex run failed"})
+            continue
+        if t in ("thread.started", "turn.started", "session.created"):
+            emit({"type": "deskcrab_note", "note": "codex-" + t.split(".")[0],
+                  "detail": str(d.get("thread_id") or ""),
+                  "at": time.strftime("%H:%M:%S")})
+            continue
+        passthrough(raw)
+    _done.set()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass

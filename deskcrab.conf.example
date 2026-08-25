@@ -15,9 +15,30 @@ PIPER_VOICE="$HOME/.local/share/piper/en_US-lessac-medium.onnx"
 # Required: path to whisper.cpp model
 WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 
-# Optional: Claude model and effort level
+# Optional: model and effort level. The engine follows the model name
+# (specs/model-backends.md): a Claude name runs the Claude CLI account walk
+# below; an OpenAI name — "sol" (an alias for CODEX_MODEL_SOL), any "gpt-*"
+# slug, or a "codex:<slug>" spelling — runs the Codex CLI on the machine's
+# logged-in ChatGPT subscription. Efforts are the same words on both engines
+# (low|medium|high|xhigh|max), plus "ultra" on codex only. Every model knob in
+# this file routes the same way: WAKE_MODEL, JOB_MODEL, DISPUTE_MODEL, the
+# chess movers, the classifiers.
 # CLAUDE_MODEL="opus"
 # CLAUDE_EFFORT="low"
+
+# Optional: the Codex engine. Auth comes from CODEX_HOME (default ~/.codex) —
+# log in once with `codex login` (ChatGPT plan; an OPENAI_API_KEY in the
+# environment is deliberately ignored). Codex has one login, so a limit never
+# walks accounts: it benches the engine for CODEX_LIMIT_COOLDOWN seconds and
+# the turn or wake falls back to the Claude walk at CODEX_FALLBACK_MODEL; a
+# builder job is blocked and retried, never downgraded.
+# CODEX_BIN="$HOME/.local/bin/codex"
+# CODEX_MODEL_SOL="gpt-5.6-sol"    # what the "sol" alias resolves to
+# CODEX_FALLBACK_MODEL="opus"      # default: CLAUDE_MODEL
+# CODEX_LIMIT_COOLDOWN=1800
+# CODEX_PROMPT_MODE="instructions" # "preface" keeps codex's own base
+                                   # instructions and rides the prompt on the
+                                   # user text instead
 
 # Optional: further Claude Code config directories (separate `claude` logins /
 # subscriptions) to fall back to when the account in hand refuses to run at all

@@ -1,0 +1,152 @@
+# Spec: model backends — one assistant, two engines
+
+## PURPOSE
+
+Every model knob in the system used to name a Claude model, and every launch site assumed the
+Claude CLI. This spec makes the engine follow the model name: a Claude-family name runs the Claude
+CLI walk exactly as it always has, and an OpenAI-family name (GPT-5.6-Sol at the time of writing)
+runs the Codex CLI on the user's logged-in ChatGPT subscription. The assistant is the same being
+on either engine — the assembled prompt is what carries her, so the prompt reaches either engine
+whole, as that engine's base instructions. The user chooses the engine the same way he has always
+chosen anything here: by writing a model name into a knob. No knob is engine-specific; every path
+that has a model and an effort knob (turn, wake, dispute, job, chess, the classifiers) accepts
+either family.
+
+Codex differs from the Claude CLI in three ways the design has to absorb. Its JSON output is a
+different event vocabulary, so a translator rewrites it line by line into the event shapes every
+existing reader already consumes — the streamer, the extractor, the token ledger, the self-change
+declaration, the refusal detectors — rather than teaching seven readers a second language. It has
+one login rather than a numbered account list, so a limit does not walk: it records a cooldown and
+falls back to the Claude walk. And it emits nothing between items while it thinks, where the stall
+watchdog expects a trickle, so the translator carries a heartbeat.
+
+## CONTRACT
+
+### Routing
+
+1. `model_backend <model>` decides the engine from the model string alone: `codex:*`, `gpt-*`,
+   `o` followed by a digit, and `sol` (alone or hyphenated) answer `codex`; everything else
+   answers `claude`. An unknown name is a Claude name — the pre-existing behaviour is the default.
+2. `codex_model_resolve <model>` maps the knob's spelling to the slug Codex is given: a `codex:`
+   prefix is stripped, and `sol` resolves to `CODEX_MODEL_SOL` (default `gpt-5.6-sol`). Every
+   codex launch goes through it.
+3. Every launch site consults the router; none hardcodes an engine. The sites: the interactive
+   turn (`claude_generate`), the wake chain (`wake_claude_run_chain`), the dispute escalation
+   (through the turn), the detached builder (`lib/job-runner`), the chess mover and self-play
+   (`lib/chess_mover.py`), and the classifier (`claude_classify`). A Claude name on any of them
+   MUST take exactly the path it took before this spec existed.
+4. Effort passes through unchanged: `low|medium|high|xhigh|max` mean the same word on both
+   engines, and Codex additionally accepts `ultra`. On the codex side the value is handed to
+   `model_reasoning_effort`. When a codex run falls back to the Claude walk (rule 12),
+   `claude_effort_clamp` maps `ultra` to `max` — the Claude CLI would refuse the word.
+
+### The subscription
+
+5. The codex engine MUST run on the logged-in ChatGPT subscription: auth comes from `CODEX_HOME`
+   (default `~/.codex`), and `OPENAI_API_KEY` is stripped from the child environment so a stray
+   key in the user's session can never silently move her onto metered API billing.
+6. Her sessions load none of the user's own Codex configuration: `--ignore-user-config` keeps his
+   `config.toml` (MCP servers, plugins, hooks, trust grants) out of every run — the codex
+   counterpart of the empty MCP config — while auth still reads `CODEX_HOME`. Everything a run
+   needs is on its own argv.
+
+### The prompt
+
+7. The assembled prompt (`build_system_prompt`) reaches a codex turn or wake WHOLE, as the
+   session's base instructions: written to `${STATE_PREFIX}-codex-instructions-<pid>.md` and named
+   with `model_instructions_file`. Nothing on the way may truncate or reorder it. This replaces
+   Codex's own identity text deliberately — the persona is not to be fought, which is the same
+   decision the patched Claude harness made.
+8. `CODEX_PROMPT_MODE=preface` is the escape hatch: if instructions replacement misbehaves on some
+   future Codex version, the assembled prompt is instead prepended to the user text under a one-
+   line frame. The default is `instructions`.
+
+### The run
+
+9. Codex turns and wakes run inside the same cocoon wall as Claude ones (specs/cocoon.md rules 1,
+   4, 4b), fail closed identically, and sit under the same stall watchdog and wall clock.
+   `CODEX_HOME` joins the wrap's writable set — the CLI's own state (auth refresh, sessions),
+   the same clause that binds `~/.claude`. Codex's own sandbox and approvals are OFF
+   (`--dangerously-bypass-approvals-and-sandbox`): the cocoon is the wall on live sessions, and a
+   builder keeps full hands by design (cocoon.md rule 2).
+10. A codex run reads stdin from `/dev/null` (an open stdin is an invitation Codex accepts), runs
+    with `-C` at the same cwd its Claude counterpart uses, and `--skip-git-repo-check` (the
+    project directory is not a repository).
+11. The stream translator (`lib/codex-stream`) turns Codex's `--json` events into the established
+    vocabulary, appended to the same `DEBUGLOG`:
+    * one `system`/`init` line when the run begins — the ledger's attempt marker;
+    * each `agent_message` becomes a completed `assistant` text event (spoken by the streamer as
+      it lands — codex exec has no partial deltas, so speech is per message, the wake path's
+      long-standing behaviour);
+    * each `command_execution` becomes an `assistant` `tool_use` Bash event carrying the command,
+      and each `file_change` a `tool_use` Write event per path — the shapes `stream_written_files`
+      and the work trace already read;
+    * `turn.completed` becomes a `result` event whose usage maps cached input to `cache_read`,
+      cache writes to `cache_creation`, and input net of cache to `input_tokens`;
+    * a failure becomes a `result` with `is_error` AND the raw codex line passes through, so the
+      refusal detector reads codex's own words;
+    * a `deskcrab_note` heartbeat lands at least every 60 seconds while the run is quiet, so the
+      watchdog's mtime test never reaps a model that is merely thinking;
+    * any line the translator does not recognise passes through verbatim. It never drops a line.
+
+### Limits and fallback
+
+12. Codex has one login, so a limit never walks accounts — it falls back to the Claude engine.
+    `codex_stream_refusal` judges an attempt's slice the same structural way the Claude detector
+    does: codex-owned error text matching `CODEX_LIMIT_RE` AND no genuine output in the slice. On
+    a refusal the turn and wake paths record the cooldown, announce the swap in the stream, and
+    run the ordinary Claude walk at `CODEX_FALLBACK_MODEL` (default: the loop's own
+    `CLAUDE_MODEL`) with the path's own effort clamped per rule 4. A codex run that produced
+    genuine output NEVER falls back — a run that happened is a run that happened.
+13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir) for
+    `CODEX_LIMIT_COOLDOWN` seconds (default 1800). While it stands, `codex_available` answers no
+    and every path goes straight to its fallback rather than paying a doomed boot. The cooldown
+    MUST be visible in `crab status` beside the account line.
+14. A builder job on a codex model that is refused is BLOCKED, never downgraded (specs/jobs.md
+    rule 5a holds across engines): the runner records the refusal and the block machinery holds
+    and re-dispatches exactly as it does when every Claude account refuses. A genuine failure
+    (non-limit) stays a failure, on either engine.
+15. The chess mover on a codex model tries codex first and, refused or cooling, falls through to
+    its own Claude account walk unchanged — a game in flight must not stall on a dry engine.
+16. The classifier path routes by the same rule: a codex-named classifier model runs one
+    `codex exec` in the sterile cwd (no cocoon — classifiers never had one) and prints the
+    answer text; refused or failed, it returns non-zero exactly as a failed Claude classify does.
+
+### The ledger
+
+17. Every codex attempt lands in the token ledger as its own record, model named, usage taken from
+    the translated `result` event. The engines share one ledger; `crab metrics` needs no second
+    door.
+
+## DATA
+
+| Source | Used by | Notes |
+|---|---|---|
+| `CODEX_BIN` | every codex launch | default `codex` on PATH, else `~/.local/bin/codex` |
+| `CODEX_HOME` | auth, the wrap's writable set | default `~/.codex`; never copied, never symlinked |
+| `CODEX_MODEL_SOL` | `codex_model_resolve` | default `gpt-5.6-sol` |
+| `CODEX_LIMIT_RE` | `codex_stream_refusal` | liberal on purpose: only codex-owned error text is ever tested |
+| `CODEX_LIMIT_COOLDOWN` | `codex_limit_record` | seconds, default 1800 |
+| `CODEX_FALLBACK_MODEL` | turn/wake fallback (rule 12) | default `$CLAUDE_MODEL` |
+| `CODEX_PROMPT_MODE` | the run functions | `instructions` (default) or `preface` (rule 8) |
+| `codex-state` (data dir) | `codex_available`, `crab status` | the cooldown record |
+| `${STATE_PREFIX}-codex-instructions-<pid>.md` | rule 7 | the assembled prompt, per run |
+
+## INTERACTIONS
+
+**The router is consulted by:** `claude_generate`, `wake_claude_run_chain`, `lib/job-runner`,
+`lib/chess_mover.py`, `claude_classify` — and nothing else decides engines.
+**The translator is run by:** the codex run functions only, outside the wrap, reading the wrapped
+CLI's stdout.
+**The account-fallback machinery** (specs/account-fallback.md) is untouched: codex is not an
+account on the list, and `claude_limit_record` never hears about a codex refusal.
+
+## TESTS
+
+`tests/test_model_backends.sh` — the router's answer for both families and the aliases; the
+translator fed canned codex event streams (answer, commands, file changes, a failure, a limit)
+asserting the exact claude-shaped lines out and that unknown lines pass through; the refusal
+detector on a limit slice, a genuine-output slice, and a plain failure; the turn and wake
+fallback walking to the stub Claude CLI after a stub codex refusal, with the cooldown recorded
+and visible; the builder blocked, never downgraded; effort clamp on fallback; the wrap argv
+carrying `CODEX_HOME` writable; the instructions file written whole.

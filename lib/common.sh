@@ -1602,6 +1602,13 @@ account_state_line() {
             && printf ' (%s only for one model)' "$scoped"
     fi
     printf '\n'
+    # The codex engine's one login, visible beside the accounts whenever it
+    # is benched (specs/model-backends.md rule 13) — silent otherwise.
+    local codex_until
+    if codex_until="$(codex_limit_until)"; then
+        printf 'Codex: over its limit — cooling until %s; codex-model turns fall back to the Claude walk\n' \
+            "$(date -d "@$codex_until" '+%H:%M' 2>/dev/null || echo soon)"
+    fi
 }
 
 self_state_report() {
@@ -5082,6 +5089,7 @@ cocoon_wrap_build() {  # fills COCOON_WRAP_ARGV, or COCOON_WRAP_ERR and rc 1
         "$HOME/.claude" \
         "$HOME/.claude.json" \
         "${CLAUDE_CONFIG_DIR:-}" \
+        "${CODEX_HOME:-}" \
         "${XDG_CACHE_HOME:-$HOME/.cache}" \
     ; do
         [ -n "$d" ] && [ -e "$d" ] && rw+=(--bind "$d" "$d")
@@ -5132,6 +5140,11 @@ claude_sterile_cwd() {
 # turn path's own, so this combination is the one running live all day.
 claude_classify() {  # <model> <system prompt>  [question on stdin]
     local model="$1" sys="$2"
+    # The engine follows the model name (specs/model-backends.md rules 3, 16).
+    if [ "$(model_backend "$model")" = "codex" ]; then
+        codex_classify "$model" "$sys"
+        return $?
+    fi
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     claude_profile_flags classify
     local -a bound=() shape=()
@@ -5690,6 +5703,239 @@ claude_limit_rebook_delay() {  # [model] -> seconds
     printf '%s\n' $(( delay + 10 + RANDOM % jitter ))
 }
 
+# --- Model backends: the engine follows the model name ----------------------
+# specs/model-backends.md. A Claude-family name runs the Claude CLI walk it
+# always ran; an OpenAI-family name runs the Codex CLI on the user's
+# logged-in ChatGPT subscription — auth from CODEX_HOME, never an API key.
+# One router, consulted by every launch site; nothing else decides engines.
+# Codex has one login, so a limit never walks accounts: it records a cooldown
+# here and the path falls back to the Claude walk (rules 12-13).
+CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || echo "$HOME/.local/bin/codex")}"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+CODEX_MODEL_SOL="${CODEX_MODEL_SOL:-gpt-5.6-sol}"
+CODEX_LIMIT_COOLDOWN="${CODEX_LIMIT_COOLDOWN:-1800}"
+CODEX_PROMPT_MODE="${CODEX_PROMPT_MODE:-instructions}"
+# Liberal on purpose: only codex-owned error text is ever tested against it —
+# error events, a failed turn's message, the CLI's own stderr — never a
+# stream's raw bytes, and never while genuine output stands in the slice.
+CODEX_LIMIT_RE="${CODEX_LIMIT_RE:-usage.?limit|rate.?limit|limit.?reached|spend.?control|credits? (depleted|exhausted)|quota|plan limit|hit your .* limit|try again (at|in|later)|upgrade to|not logged in|login required|token expired|401 Unauthorized}"
+
+model_backend() {  # <model> -> codex | claude
+    case "${1:-}" in
+        codex:*|gpt-*|gpt[0-9]*|o[0-9]*|sol|sol-*|*-sol) printf 'codex' ;;
+        *) printf 'claude' ;;
+    esac
+}
+
+codex_model_resolve() {  # <model knob spelling> -> the slug codex is given
+    local m="${1#codex:}"
+    [ "$m" = "sol" ] && m="$CODEX_MODEL_SOL"
+    printf '%s' "$m"
+}
+
+claude_effort_clamp() {  # <effort> -> one the Claude CLI accepts (rule 4)
+    case "${1:-}" in ultra) printf 'max' ;; *) printf '%s' "${1:-}" ;; esac
+}
+
+# The fallback the codex paths re-aim at (rule 12) — guarded against a conf
+# that points it back at codex, which would chase its own tail.
+codex_fallback_model() {
+    local m="${CODEX_FALLBACK_MODEL:-$CLAUDE_MODEL}"
+    [ "$(model_backend "$m")" = "codex" ] && m="opus"
+    printf '%s' "$m"
+}
+
+_codex_state_file() {
+    printf '%s' "${DESKCRAB_CODEX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/codex-state}"
+}
+
+codex_limit_record() {  # <refusal text>
+    local f; f="$(_codex_state_file)"
+    mkdir -p "$(dirname "$f")" 2>/dev/null
+    printf 'blocked-until\t%s\t%s\n' "$(( $(date +%s) + CODEX_LIMIT_COOLDOWN ))" \
+        "$(printf '%s' "${1:-limit}" | tr '\n\t' '  ' | head -c 200)" \
+        > "$f" 2>/dev/null
+}
+
+codex_limit_until() {  # -> epoch on stdout only while a cooldown stands
+    local f until; f="$(_codex_state_file)"
+    [ -r "$f" ] || return 1
+    until="$(awk -F'\t' '$1 == "blocked-until" {print $2; exit}' "$f" 2>/dev/null)"
+    case "$until" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$until" -gt "$(date +%s)" ] || return 1
+    printf '%s' "$until"
+}
+
+# Worth booting at all: the binary exists and no cooldown stands. Every path
+# asks before paying a doomed boot (rule 13).
+codex_available() {
+    [ -x "$CODEX_BIN" ] || command -v "$CODEX_BIN" >/dev/null 2>&1 || return 1
+    ! codex_limit_until >/dev/null
+}
+
+codex_unavailable_why() {
+    local until
+    if until="$(codex_limit_until)"; then
+        printf 'cooling until %s' "$(date -d "@$until" '+%H:%M' 2>/dev/null || echo soon)"
+    else
+        printf 'not installed'
+    fi
+}
+
+# The codex counterpart of claude_stream_refusal, and the same structural
+# judgement (rule 12): codex-owned error text matching the limit signature,
+# AND no genuine output anywhere in this attempt's slice. A run that produced
+# real output HAPPENED, whatever words went through it. Codex-owned means an
+# error event, a failed turn's message, an error item, the translator's
+# is_error result, or a line that is not JSON at all — on this stream, the
+# CLI's own stderr. Prints the matching message and returns 0; else 1.
+codex_stream_refusal() {  # <stream file> [byte offset]
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "${2:-0}" "$CODEX_LIMIT_RE" <<'PY'
+import json, re, sys
+path, off, pattern = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3]
+rx = re.compile(pattern, re.I)
+own, real = [], False
+try:
+    f = open(path, "rb")
+except OSError:
+    sys.exit(1)
+f.seek(off)
+for bline in f:
+    line = bline.decode("utf-8", "replace").strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        own.append(line)
+        continue
+    if not isinstance(d, dict):
+        continue
+    t = d.get("type") or ""
+    if t == "assistant":
+        msg = d.get("message") or {}
+        if msg.get("model") != "<synthetic>" \
+                and not d.get("is_api_error_message"):
+            for b in msg.get("content") or []:
+                if isinstance(b, dict) and b.get("type") in ("text", "tool_use"):
+                    real = True
+    elif t == "error":
+        own.append(str(d.get("message") or ""))
+    elif t == "turn.failed":
+        e = d.get("error")
+        own.append(str(e.get("message", "") if isinstance(e, dict) else e or ""))
+    elif t == "item.completed":
+        it = d.get("item") or {}
+        if it.get("type") == "error":
+            own.append(str(it.get("message") or ""))
+    elif t == "result" and d.get("is_error") and d.get("engine") == "codex":
+        own.append(str(d.get("result") or ""))
+if real:
+    sys.exit(1)
+for m in own:
+    if m and rx.search(m):
+        print(m)
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# One codex CLI run for a turn or a wake, appending TRANSLATED events to
+# $DEBUGLOG through lib/codex-stream (rule 11), inside the same cocoon wall
+# and under the same watchdog as its Claude counterpart (rule 9). The
+# assembled prompt becomes the session's base instructions whole (rule 7);
+# CODEX_PROMPT_MODE=preface is the escape hatch (rule 8). Reads
+# SYSTEM_PROMPT and (for a turn) TURN_DEADLINE from the caller's scope, like
+# the Claude run functions. Leaves the run's exit status in CODEX_RUN_STATUS.
+_codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
+    local PROFILE="$1" RMODEL="$2" REFFORT="$3" RTEXT="$4"
+    local SLUG INSTR
+    SLUG="$(codex_model_resolve "$RMODEL")"
+    INSTR="${STATE_PREFIX}-codex-instructions-$$.md"
+    (
+        cd "$PROJECT_DIR" || exit 1
+        if ! cocoon_wrap_build; then
+            claude_stream_note "cocoon-refused" "$COCOON_WRAP_ERR"
+            [ "$PROFILE" = "turn" ] && notify-send -t 8000 \
+                -h string:x-dunst-stack-tag:deskcrab "${NOTIFY_NAME:-deskcrab}" \
+                "this turn was refused: $COCOON_WRAP_ERR" 2>/dev/null
+            exit 79
+        fi
+        ARGS=(exec --ignore-user-config --skip-git-repo-check \
+            --dangerously-bypass-approvals-and-sandbox --json --color never \
+            -C "$PROJECT_DIR" -m "$SLUG" -c "model_reasoning_effort=$REFFORT")
+        PROMPT="$RTEXT"
+        if [ "$CODEX_PROMPT_MODE" = "preface" ]; then
+            PROMPT="$(printf '%s\n\n--- the message to answer ---\n\n%s' \
+                "$SYSTEM_PROMPT" "$RTEXT")"
+        else
+            printf '%s' "$SYSTEM_PROMPT" > "$INSTR" || {
+                claude_stream_note "codex-refused" "could not write the instructions file $INSTR"
+                exit 79
+            }
+            ARGS+=(-c "model_instructions_file=$INSTR")
+        fi
+        # The subscription, never a stray key (rule 5); stdin closed because
+        # an open stdin is an invitation codex accepts (rule 10). Codex's own
+        # stderr appends raw — the refusal detector reads it as codex-owned.
+        env -u OPENAI_API_KEY "${COCOON_WRAP_ARGV[@]}" \
+            "$CODEX_BIN" "${ARGS[@]}" "$PROMPT" </dev/null 2>> "$DEBUGLOG" \
+            | CODEX_STREAM_MODEL="$SLUG" "$LIB_DIR/codex-stream" >> "$DEBUGLOG"
+        exit "${PIPESTATUS[0]}"
+    ) &
+    if [ "$PROFILE" = "turn" ]; then
+        _claude_watch $! "$TURN_STALL_TIMEOUT" "${TURN_DEADLINE:-0}"
+    else
+        _claude_watch $! "$WAKE_STALL_TIMEOUT" 0
+    fi
+    CODEX_RUN_STATUS=$CLAUDE_WATCH_STATUS
+    rm -f "$INSTR" 2>/dev/null
+}
+
+# One question, one text answer, on the codex engine (rule 16). No cocoon —
+# classifiers never had one — and no fallback: refused or failed it returns
+# non-zero exactly as a failed Claude classify does, and every caller already
+# survives that. Honours CLAUDE_CLASSIFY_STREAM by emitting the translated
+# event stream instead of the bare answer, and CLAUDE_CLASSIFY_TIMEOUT as the
+# same ceiling the Claude path takes.
+codex_classify() {  # <model> <system prompt>  [question on stdin]
+    local model="$1" sys="$2" slug d instr rc
+    slug="$(codex_model_resolve "$model")"
+    codex_available || return 1
+    d="$(claude_sterile_cwd)"
+    instr="$(mktemp "${TMPDIR:-/tmp}/deskcrab-codex-classify.XXXXXX")" || return 1
+    printf '%s' "$sys" > "$instr"
+    local -a bound=()
+    [ "${CLAUDE_CLASSIFY_TIMEOUT:-0}" -gt 0 ] 2>/dev/null \
+        && command -v timeout >/dev/null 2>&1 \
+        && bound=(timeout "$CLAUDE_CLASSIFY_TIMEOUT")
+    ( cd "$d" 2>/dev/null || cd /
+      env -u OPENAI_API_KEY ${bound[@]+"${bound[@]}"} "$CODEX_BIN" exec \
+          --ignore-user-config --skip-git-repo-check \
+          --dangerously-bypass-approvals-and-sandbox --json --color never \
+          -C "$d" -m "$slug" -c "model_instructions_file=$instr" - 2>/dev/null )  \
+    | if [ "${CLAUDE_CLASSIFY_STREAM:-0}" = "1" ]; then
+          CODEX_STREAM_MODEL="$slug" CODEX_STREAM_HEARTBEAT=0 "$LIB_DIR/codex-stream"
+      else
+          python3 -c '
+import json, sys
+text = ""
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get("type") == "item.completed" \
+            and (d.get("item") or {}).get("type") == "agent_message":
+        text = d["item"].get("text") or text
+print(text)'
+      fi
+    rc=${PIPESTATUS[0]}
+    rm -f "$instr" 2>/dev/null
+    return "$rc"
+}
+
 # What did the wake actually DO? A silent reply is the model's SPEECH
 # decision, not its work record — two wakes on 2026-08-06 each dispatched a
 # builder job and edited three files, chose silence as the prompt allows,
@@ -5927,6 +6173,36 @@ wake_claude_run_chain() {
     # decides a stream with no swap markers — exactly the walk whose last
     # account is its only one.
     WAKE_CHAIN_ACCT=""
+    # The engine follows the model name (specs/model-backends.md rule 12):
+    # a codex wake tries the one codex login first, and refused-or-cooling
+    # the ordinary account walk below takes the same agenda at the fallback
+    # model — locals, so the re-aim is this walk's own and the conf's knob
+    # is untouched. A codex refusal counts as a limited attempt, so a night
+    # where codex AND every account refuse still reads wholly-refused and
+    # takes the long re-book it is owed (specs/wake-queue.md rule 23a).
+    if [ "$(model_backend "$WAKE_MODEL")" = "codex" ]; then
+        local WAKE_MODEL="$WAKE_MODEL" WAKE_EFFORT="$WAKE_EFFORT"
+        if codex_available; then
+            ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+            case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
+            WAKE_CHAIN_ATTEMPTS=1
+            _codex_stream_run wake "$WAKE_MODEL" "$WAKE_EFFORT" "$PROMPT_TEXT"
+            WAKE_CLAUDE_STATUS=$CODEX_RUN_STATUS
+            if REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$ATT")"; then
+                codex_limit_record "$REFUSAL"
+                claude_stream_note "codex-limit" \
+                    "codex refused — the Claude walk takes the wake"
+                LIMITED=1
+            else
+                return 0
+            fi
+        else
+            claude_stream_note "codex-cooling" \
+                "codex is $(codex_unavailable_why) — the Claude walk takes the wake"
+        fi
+        WAKE_MODEL="$(codex_fallback_model)"
+        WAKE_EFFORT="$(claude_effort_clamp "$WAKE_EFFORT")"
+    fi
     # The walk knows its model (specs/account-fallback.md rule 10): an
     # account cooling only for another family still answers a wake.
     for ACCT in $(claude_accounts "$WAKE_MODEL"); do
@@ -7003,7 +7279,40 @@ claude_generate() {
     local GEN_T0
     GEN_T0="$(date +%s)"
     turn_metric gen-start
-    _generate_claude_walk
+    # The engine follows the model name (specs/model-backends.md). Codex has
+    # one login, so a limit never walks accounts: refused, it records the
+    # cooldown and the ordinary Claude walk takes the turn at the fallback
+    # model (rule 12); already cooling, the walk takes it straight away
+    # (rule 13). A codex run that produced genuine output NEVER falls back.
+    GENERATE_WALK_ACCT=""; GENERATE_WALK_REFUSED=""; GENERATE_WALK_ABANDONED=""
+    local RUN_CLAUDE_WALK=1
+    if [ "$(model_backend "$MODEL")" = "codex" ]; then
+        local CODEX_OFF CODEX_REFUSAL
+        CODEX_OFF="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+        case "$CODEX_OFF" in ''|*[!0-9]*) CODEX_OFF=0 ;; esac
+        if ! codex_available; then
+            claude_stream_note "codex-cooling" \
+                "codex is $(codex_unavailable_why) — the Claude walk takes the turn"
+            MODEL="$(codex_fallback_model)"
+            EFFORT="$(claude_effort_clamp "$EFFORT")"
+        else
+            _codex_stream_run turn "$MODEL" "$EFFORT" "$TEXT"
+            GENERATE_CLAUDE_STATUS=$CODEX_RUN_STATUS
+            if CODEX_REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$CODEX_OFF")"; then
+                codex_limit_record "$CODEX_REFUSAL"
+                claude_stream_note "codex-limit" \
+                    "codex refused — the Claude walk takes the turn"
+                [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \
+                    -h string:x-dunst-stack-tag:deskcrab-account "$NOTIFY_NAME" \
+                    "codex is over its limit — answering on Claude" 2>/dev/null
+                MODEL="$(codex_fallback_model)"
+                EFFORT="$(claude_effort_clamp "$EFFORT")"
+            else
+                RUN_CLAUDE_WALK=""
+            fi
+        fi
+    fi
+    [ -n "$RUN_CLAUDE_WALK" ] && _generate_claude_walk
     # A conversation turn must never die because the premium model is dry
     # while the ordinary one works (specs/account-fallback.md rule 10a).
     # Exactly when the dispute machinery raised the model above CLAUDE_MODEL

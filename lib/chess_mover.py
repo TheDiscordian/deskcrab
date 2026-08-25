@@ -556,6 +556,85 @@ _CAUSE_MARKERS = ("session limit", "usage limit", "rate limit", "not logged",
                   "api error", "billing")
 
 
+# --- The codex engine (specs/model-backends.md rule 15) ---------------------
+# The engine follows the model name, here as everywhere: a codex-family
+# mover model tries the one codex login first and falls through to the
+# Claude accounts, because a game in flight must not stall on a dry engine.
+# These four mirror lib/common.sh's router — one spelling each side, held
+# together by tests/test_model_backends.sh.
+
+def _codex_backend(model):
+    m = (model or "").lower()
+    return (m.startswith("codex:") or m.startswith("gpt-")
+            or bool(re.match(r"gpt\d", m)) or bool(re.match(r"o\d", m))
+            or m == "sol" or m.startswith("sol-") or m.endswith("-sol"))
+
+
+def _codex_resolve(model):
+    m = model[len("codex:"):] if model.startswith("codex:") else model
+    if m == "sol":
+        m = os.environ.get("CODEX_MODEL_SOL") or "gpt-5.6-sol"
+    return m
+
+
+def _codex_cooling():
+    f = os.environ.get("DESKCRAB_CODEX_STATE") or os.path.join(
+        os.environ.get("XDG_DATA_HOME")
+        or os.path.expanduser("~/.local/share"), "deskcrab", "codex-state")
+    try:
+        with open(f) as fh:
+            for line in fh:
+                p = line.rstrip("\n").split("\t")
+                if (p and p[0] == "blocked-until" and len(p) > 1
+                        and p[1].isdigit() and int(p[1]) > time.time()):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _codex_jsonl_answer(out):
+    """(text, usage) when the stdout is a codex `--json` event stream —
+    text may be "" for a run that answered nothing — else (None, None).
+    Decoding before the move parse is as load-bearing as it is for the
+    Claude result object: raw JSON is full of hex ids whose substrings
+    read as legal UCI squares."""
+    saw, text, usage = False, "", None
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        t = d.get("type") or ""
+        if t in ("thread.started", "turn.started", "turn.completed",
+                 "turn.failed", "item.completed"):
+            saw = True
+        if t == "item.completed":
+            item = d.get("item") or {}
+            if item.get("type") == "agent_message":
+                text = item.get("text") or text
+        elif t == "turn.completed":
+            u = d.get("usage") or {}
+
+            def n(k):
+                try:
+                    return int(u.get(k) or 0)
+                except (TypeError, ValueError):
+                    return 0
+            cached = n("cached_input_tokens")
+            usage = {"input_tokens": max(n("input_tokens") - cached, 0),
+                     "cache_read_input_tokens": cached,
+                     "cache_creation_input_tokens":
+                         n("cache_write_input_tokens"),
+                     "output_tokens": n("output_tokens")}
+    return (text, usage) if saw else (None, None)
+
+
 class Mover:
     """One background thread, one slot. submit() places the newest position
     in the slot and kills any in-flight call it supersedes; the thread drains
@@ -775,8 +854,25 @@ class Mover:
         if override:
             yield "stub", shlex.split(override), self._env(None)
             return
-        for number, conf in self._accounts(self._model(selfplay)):
-            yield (f"account {number}", self._claude_cmd(effort, selfplay),
+        model = self._model(selfplay)
+        if _codex_backend(model):
+            # specs/model-backends.md rule 15: the one codex login first —
+            # unless it is already cooling — then the Claude accounts at the
+            # fallback model, so a game in flight never stalls on a dry
+            # engine. `ultra` is codex's own top effort; the Claude CLI
+            # refuses the word, so the fallback attempts clamp it.
+            if not _codex_cooling():
+                env = self._env(None)
+                env.pop("OPENAI_API_KEY", None)
+                yield "codex", self._codex_cmd(effort, selfplay), env
+            model = os.environ.get("CODEX_FALLBACK_MODEL") or "sonnet"
+            if _codex_backend(model):
+                model = "sonnet"
+            if effort == "ultra":
+                effort = "max"
+        for number, conf in self._accounts(model):
+            yield (f"account {number}",
+                   self._claude_cmd(effort, selfplay, model=model),
                    self._env(conf))
 
     @staticmethod
@@ -880,7 +976,7 @@ class Mover:
         return [(n, dirs[n - 1]) for n in free]
 
     @classmethod
-    def _claude_cmd(cls, effort, selfplay=False):
+    def _claude_cmd(cls, effort, selfplay=False, model=None):
         # A conf-set CLAUDE_BIN can arrive with $HOME still in it: systemd's
         # EnvironmentFile hands values through unexpanded, where every shell
         # path expanded them on the way in.
@@ -890,7 +986,7 @@ class Mover:
         if not claude or not os.path.exists(claude):
             claude = (shutil.which("claude")
                       or os.path.expanduser("~/.local/bin/claude"))
-        model = cls._model(selfplay)
+        model = model or cls._model(selfplay)
         # --output-format json: the run's own result object carries the exact
         # usage the token ledger keeps (specs/metrics.md rule 15). The answer
         # is read from its `result` field in _call; a stdout that is not that
@@ -907,6 +1003,34 @@ class Mover:
             # (the 116k-token trap, tools/context-probe-results.md).
             cmd += ["--strict-mcp-config", "--mcp-config", str(empty_mcp),
                     "--tools", ""]
+        return cmd
+
+    @classmethod
+    def _codex_cmd(cls, effort, selfplay=False):
+        """The codex spelling of the same call (specs/model-backends.md
+        rules 5-7, 15): the one login's auth from CODEX_HOME, the user's own
+        config held out, the mover's system prompt as the session's base
+        instructions, the question on stdin."""
+        codex = os.environ.get("CODEX_BIN", "")
+        if codex:
+            codex = os.path.expanduser(os.path.expandvars(codex))
+        if not codex or not os.path.exists(codex):
+            codex = (shutil.which("codex")
+                     or os.path.expanduser("~/.local/bin/codex"))
+        instr = os.path.join(cls._sterile_cwd(), "codex-instructions.md")
+        try:
+            with open(instr, "w") as fh:
+                fh.write(SYSTEM_PROMPT)
+        except OSError:
+            instr = ""
+        cmd = [codex, "exec", "--ignore-user-config", "--skip-git-repo-check",
+               "--dangerously-bypass-approvals-and-sandbox",
+               "--json", "--color", "never",
+               "-m", _codex_resolve(cls._model(selfplay)),
+               "-c", "model_reasoning_effort=%s" % effort]
+        if instr:
+            cmd += ["-c", "model_instructions_file=%s" % instr]
+        cmd.append("-")
         return cmd
 
     @staticmethod
@@ -993,6 +1117,15 @@ class Mover:
         try:
             doc = json.loads((out or "").strip())
         except (json.JSONDecodeError, ValueError):
+            # Not one object — a codex `--json` event stream is JSONL, and
+            # its answer must be lifted out for exactly the same reason.
+            text, usage = _codex_jsonl_answer(out)
+            if text is not None:
+                doc = {"result": text}
+                if usage:
+                    doc["usage"] = usage
+                self._ledger(cmd, env, doc, "")
+                return text, None
             return out or "", None
         if isinstance(doc, dict) and "result" in doc:
             self._ledger(cmd, env, doc, "")
@@ -1008,6 +1141,8 @@ class Mover:
             model = ""
             if "--model" in cmd:
                 model = cmd[cmd.index("--model") + 1]
+            elif "-m" in cmd:
+                model = cmd[cmd.index("-m") + 1]
             status = "ok"
             if doc is None:
                 status = "refused" if token_ledger.limit_re().search(

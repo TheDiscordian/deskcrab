@@ -1,0 +1,369 @@
+#!/bin/bash
+# The model backends — specs/model-backends.md. The engine follows the model
+# name: Claude names take the walk they always took, codex names run the one
+# ChatGPT login through the stream translator, and a codex limit falls back
+# instead of walking accounts codex does not have.
+# Run: bash tests/test_model_backends.sh
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
+set -o pipefail
+
+REPO="$SANDBOX_REPO"
+PASSTHRU="$REPO/tests/lib/cocoon-passthru"
+CODEX_LOG="$SANDBOX/witness-codex.log"
+CODEX_STATE="$SANDBOX/codex-state"
+mkdir -p "$SANDBOX/codexhome"
+
+# The spend gate, both engines: the Claude CLI is the sandbox's stub already,
+# and codex gets one of its own before anything below may run.
+[ -x "$SANDBOX_BIN/claude" ] || die "the stub claude is missing — nothing below may run"
+sandbox_stub codex <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "$CODEX_LOG"
+cat > /dev/null
+if [ -n "\${CODEX_STUB_LIMIT:-}" ]; then
+    printf '%s\n' '{"type":"error","message":"You have hit your usage limit. Try again later."}'
+    exit 1
+fi
+printf '%s\n' '{"type":"thread.started","thread_id":"t-1"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"codex stub reply."}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"cache_write_input_tokens":5,"output_tokens":7}}'
+exit 0
+STUB
+
+cat > "$DESKCRAB_CONF" <<EOF
+PROJECT_DIR="$SANDBOX/home"
+PIPER_VOICE="$SANDBOX/voice.onnx"
+WHISPER_MODEL="$SANDBOX/whisper.bin"
+MEMORY_STORE=0
+MEMORY_JUDGE=0
+PROMISE_AUDIT=0
+CLAUDE_BIN="$SANDBOX_BIN/claude"
+CODEX_BIN="$SANDBOX_BIN/codex"
+CLAUDE_MODEL="opus"
+CLAUDE_EFFORT="low"
+EOF
+
+# Every sourced instance below needs the same pins: the pass-through wrap
+# (test-harness rule 3a — nested bwrap dies before it can exec) and a scratch
+# codex cooldown file, because a stub's refusal must never bench the LIVE
+# codex login for every real session (the same trap test_job_block.sh names
+# for the jobs blocked-marker).
+sb() {
+    COCOON_BWRAP="$PASSTHRU" DESKCRAB_CODEX_STATE="$CODEX_STATE" \
+        sandbox_bash "$@"
+}
+
+echo "the router — the engine follows the model name (rules 1-2, 4):"
+check_eq "opus is claude" "$(sb 'model_backend opus')" "claude"
+check_eq "fable is claude" "$(sb 'model_backend fable')" "claude"
+check_eq "claude-fable-5 is claude" "$(sb 'model_backend claude-fable-5')" "claude"
+check_eq "an unknown name is claude — the pre-existing default" \
+    "$(sb 'model_backend some-future-name')" "claude"
+check_eq "gpt-5.6-sol is codex" "$(sb 'model_backend gpt-5.6-sol')" "codex"
+check_eq "sol alone is codex" "$(sb 'model_backend sol')" "codex"
+check_eq "o3 is codex" "$(sb 'model_backend o3')" "codex"
+check_eq "the codex: prefix is codex" "$(sb 'model_backend codex:anything')" "codex"
+check_eq "sol resolves to the default slug" \
+    "$(sb 'codex_model_resolve sol')" "gpt-5.6-sol"
+check_eq "CODEX_MODEL_SOL re-aims the alias" \
+    "$(sb 'CODEX_MODEL_SOL=gpt-9-sol codex_model_resolve sol')" "gpt-9-sol"
+check_eq "the codex: prefix is stripped" \
+    "$(sb 'codex_model_resolve codex:gpt-x')" "gpt-x"
+check_eq "ultra clamps to max for the Claude CLI" \
+    "$(sb 'claude_effort_clamp ultra')" "max"
+check_eq "every other effort passes through" \
+    "$(sb 'claude_effort_clamp xhigh')" "xhigh"
+check_eq "the fallback model defaults to the loop's own" \
+    "$(sb 'codex_fallback_model')" "opus"
+check_eq "a conf fallback is honoured" \
+    "$(sb 'CODEX_FALLBACK_MODEL=sonnet codex_fallback_model')" "sonnet"
+check_eq "a fallback pointing back at codex is refused — no tail-chasing" \
+    "$(sb 'CODEX_FALLBACK_MODEL=sol codex_fallback_model')" "opus"
+
+echo
+echo "the translator — codex events in the established vocabulary (rule 11):"
+TR="$SANDBOX/translated.out"
+CODEX_STREAM_HEARTBEAT=0 CODEX_STREAM_MODEL="gpt-test" \
+    "$REPO/lib/codex-stream" > "$TR" <<'EOF'
+{"type":"thread.started","thread_id":"t-9"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":""}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"echo hi","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"echo hi","exit_code":0}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/tmp/a.txt","kind":"add"}]}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"the answer."}}
+not json at all
+{"type":"some.future.event","x":1}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"cache_write_input_tokens":5,"output_tokens":7}}
+EOF
+check "the first line is the ledger's init marker" \
+    contains "$(head -n1 "$TR")" '"type": "system"'
+check "…with the codex engine named" contains "$(head -n1 "$TR")" '"engine": "codex"'
+check "an agent message becomes an assistant text event" \
+    contains "$(cat "$TR")" '"text": "the answer."'
+check_eq "an EMPTY agent message is never emitted" \
+    "$(grep -c '"item_0"' "$TR")" "0"
+check "a command becomes a Bash tool_use" contains "$(cat "$TR")" '"name": "Bash"'
+check "…carrying the command itself" contains "$(cat "$TR")" '"command": "echo hi"'
+check "a file change becomes a Write tool_use" \
+    contains "$(cat "$TR")" '"file_path": "/tmp/a.txt"'
+check_eq "one Bash tool_use, not one per item state" \
+    "$(grep -c '"name": "Bash"' "$TR")" "1"
+check "a non-JSON line passes through verbatim" \
+    contains "$(cat "$TR")" 'not json at all'
+check "an unknown event passes through verbatim" \
+    contains "$(cat "$TR")" '"some.future.event"'
+RESULT_LINE="$(grep '"type": "result"' "$TR" | tail -n1)"
+check "the turn end is a result event" contains "$RESULT_LINE" '"result": "the answer."'
+check "cached input maps to cache_read" \
+    contains "$RESULT_LINE" '"cache_read_input_tokens": 60'
+check "cache writes map to cache_creation" \
+    contains "$RESULT_LINE" '"cache_creation_input_tokens": 5'
+check "input is net of cache" contains "$RESULT_LINE" '"input_tokens": 40'
+check "output rides through" contains "$RESULT_LINE" '"output_tokens": 7'
+
+# A failed turn: the raw codex line survives AND a shaped error result lands.
+TRF="$SANDBOX/translated-fail.out"
+CODEX_STREAM_HEARTBEAT=0 "$REPO/lib/codex-stream" > "$TRF" <<'EOF'
+{"type":"error","message":"You have hit your usage limit. Try again later."}
+EOF
+check "codex's own error line passes through" \
+    contains "$(cat "$TRF")" '"type":"error"'
+check "…and a shaped is_error result follows for the extractor" \
+    contains "$(cat "$TRF")" '"is_error": true'
+
+echo
+echo "the refusal detector — codex-owned words, no genuine output (rule 12):"
+R1="$SANDBOX/slice-limit.log"
+printf '%s\n' '{"type":"error","message":"You have hit your usage limit."}' > "$R1"
+OUT="$(sb "codex_stream_refusal '$R1'")" \
+    && ok "a limit error with no output is a refusal" \
+    || fail "the limit slice must read as a refusal" "$(cat "$R1")"
+check "…and the printed line is codex's own" contains "$OUT" "usage limit"
+R2="$SANDBOX/slice-real.log"
+{ printf '%s\n' '{"type":"assistant","message":{"id":"a","model":"gpt-test","content":[{"type":"text","text":"real work"}]}}'
+  printf '%s\n' '{"type":"error","message":"You have hit your usage limit."}'; } > "$R2"
+sb "codex_stream_refusal '$R2'" >/dev/null \
+    && fail "genuine output must veto the refusal reading" "$(cat "$R2")" \
+    || ok "a run that produced output HAPPENED — no refusal"
+R3="$SANDBOX/slice-plain.log"
+printf '%s\n' '{"type":"error","message":"connection reset by peer"}' > "$R3"
+sb "codex_stream_refusal '$R3'" >/dev/null \
+    && fail "an ordinary failure is not a limit" "$(cat "$R3")" \
+    || ok "a network death never reads as a refusal"
+R4="$SANDBOX/slice-offset.log"
+printf '%s\n' '{"type":"error","message":"You have hit your usage limit."}' > "$R4"
+OFF="$(wc -c < "$R4")"
+printf '%s\n' '{"type":"assistant","message":{"id":"b","model":"gpt-test","content":[{"type":"text","text":"fine now"}]}}' >> "$R4"
+sb "codex_stream_refusal '$R4' '$OFF'" >/dev/null \
+    && fail "an earlier attempt's refusal leaked past the offset" "$OFF" \
+    || ok "the offset confines the judgement to this attempt's slice"
+
+echo
+echo "the cooldown — recorded, visible, honoured (rule 13):"
+rm -f "$CODEX_STATE"
+check "with no cooldown codex is available" \
+    sb "CODEX_BIN='$SANDBOX_BIN/codex' codex_available"
+sb "codex_limit_record 'You have hit your usage limit.'"
+[ -s "$CODEX_STATE" ] && ok "the refusal wrote the cooldown record" \
+    || fail "codex_limit_record must write the state file" "$CODEX_STATE"
+sb "CODEX_BIN='$SANDBOX_BIN/codex' codex_available" \
+    && fail "a standing cooldown must bench codex" "$(cat "$CODEX_STATE")" \
+    || ok "while the cooldown stands codex is unavailable"
+check "the account line names the benched engine" \
+    contains "$(sb 'account_state_line')" "Codex: over its limit"
+rm -f "$CODEX_STATE"
+check "lifting the cooldown restores the engine" \
+    sb "CODEX_BIN='$SANDBOX_BIN/codex' codex_available"
+check_eq "with no cooldown the account line stays as it was" \
+    "$(sb 'account_state_line' | grep -c 'Codex:')" "0"
+
+echo
+echo "the wake chain — codex first, the Claude walk on a refusal (rule 12):"
+wake_chain() { # <extra env assignments...>
+    sb "DEBUGLOG='$SANDBOX/wake-debug.log'
+        SYSTEM_PROMPT='sys' PROMPT_TEXT='the agenda'
+        WAKE_MODEL='gpt-5.6-sol' WAKE_EFFORT='${WAKE_EFFORT_CASE:-low}'
+        $* wake_claude_run_chain; echo \"attempts=\$WAKE_CHAIN_ATTEMPTS\""
+}
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
+: > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 'CODEX_STUB_LIMIT=1' 2>/dev/null)"
+check_eq "the codex stub was tried exactly once" \
+    "$(sandbox_count_in 'model_reasoning_effort' "$CODEX_LOG")" "1"
+check "…as an exec run with the model slug" contains "$(cat "$CODEX_LOG")" "gpt-5.6-sol"
+check "the refusal is announced in the stream" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex-limit"
+check_eq "the Claude walk then took the wake at the fallback model" \
+    "$(sandbox_count_in '--model opus' "$SANDBOX_CLAUDE_LOG")" "1"
+[ -s "$CODEX_STATE" ] && ok "the refusal recorded the codex cooldown" \
+    || fail "a wake refusal must cool the engine" "no state file"
+rm -f "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 2>/dev/null)"
+check_eq "while cooling, the doomed codex boot is never paid" \
+    "$(sandbox_count_in 'model_reasoning_effort' "$CODEX_LOG")" "0"
+check "…and the stream says why" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex-cooling"
+check_eq "the Claude walk still answers the wake" \
+    "$(sandbox_count_in '--model opus' "$SANDBOX_CLAUDE_LOG")" "1"
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 2>/dev/null)"
+check_eq "an answering codex ends the chain — one attempt" "${OUT##*attempts=}" "1"
+check_eq "…and no Claude account is walked" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+check "the translated answer is in the stream" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex stub reply."
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
+OUT="$(WAKE_EFFORT_CASE=ultra wake_chain 'CODEX_STUB_LIMIT=1' 2>/dev/null)"
+check "codex was asked for ultra" contains "$(cat "$CODEX_LOG")" "model_reasoning_effort=ultra"
+check_eq "the fallback walk clamps ultra to max — the Claude CLI refuses the word" \
+    "$(sandbox_count_in '--effort max' "$SANDBOX_CLAUDE_LOG")" "1"
+
+echo
+echo "the interactive turn — same seam, extract_response still answers (rule 12):"
+turn() { # <extra env...>
+    sb "DEBUGLOG='$SANDBOX/turn-debug.log' TURN_INTERRUPT=0
+        $* claude_generate 'hello there' low"
+}
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
+OUT="$(turn "CLAUDE_MODEL=sol" 2>/dev/null)"
+check "a codex turn's reply comes back through extract_response" \
+    contains "$OUT" "codex stub reply."
+check_eq "…with no Claude account walked" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
+OUT="$(turn "CLAUDE_MODEL=sol CODEX_STUB_LIMIT=1" 2>/dev/null)"
+check "a codex limit turn still answers — on the Claude walk" \
+    contains "$OUT" "stub reply."
+check_eq "…which ran at the fallback model" \
+    "$(sandbox_count_in '--model opus' "$SANDBOX_CLAUDE_LOG")" "1"
+check "the swap is on the record" \
+    contains "$(cat "$SANDBOX/turn-debug.log")" "codex-limit"
+
+echo
+echo "the instructions file — the assembled prompt reaches codex WHOLE (rule 7):"
+rm -f "$CODEX_STATE" "$CODEX_LOG"
+sb "DEBUGLOG='$SANDBOX/instr-debug.log' SYSTEM_PROMPT=\"\$(printf 'line one\nline two of the prompt')\" \
+    _codex_stream_run wake sol low 'the text'" 2>/dev/null
+check "the run names an instructions file" \
+    contains "$(cat "$CODEX_LOG")" "model_instructions_file="
+# The run function removes the per-run file afterwards; the stub logged its
+# path, so the writing is proven by the argv and the cleanup by its absence.
+INSTR_PATH="$(grep -o 'model_instructions_file=[^ ]*' "$CODEX_LOG" | head -n1 | cut -d= -f2)"
+[ -n "$INSTR_PATH" ] && [ ! -e "$INSTR_PATH" ] \
+    && ok "the per-run instructions file is cleaned up" \
+    || fail "the instructions file should be gone after the run" "$INSTR_PATH"
+check "preface mode carries the prompt in the text instead" \
+    contains "$(sb "DEBUGLOG='$SANDBOX/instr2.log' CODEX_PROMPT_MODE=preface SYSTEM_PROMPT='the standing prompt' \
+        _codex_stream_run wake sol low 'the text' 2>/dev/null; grep -o 'the standing prompt' '$CODEX_LOG' | head -n1")" \
+    "the standing prompt"
+
+echo
+echo "the cocoon wall carries the codex state dir (rule 9):"
+WRAP="$(sb "CODEX_HOME='$SANDBOX/codexhome' cocoon_wrap_build && printf '%s\n' \"\${COCOON_WRAP_ARGV[@]}\"")"
+check "CODEX_HOME is re-bound writable in the wrap" \
+    contains "$WRAP" "$SANDBOX/codexhome"
+
+echo
+echo "the classifier routes by the same rule (rule 16):"
+rm -f "$CODEX_STATE"
+OUT="$(printf 'the question' | sb "CODEX_BIN='$SANDBOX_BIN/codex' claude_classify sol 'sys'" 2>/dev/null)"
+check_eq "a codex classify answers with the bare text" "$OUT" "codex stub reply."
+
+echo
+echo "a builder on codex is BLOCKED when refused, never downgraded (rule 14):"
+T="$SANDBOX/jobtest"
+mkdir -p "$T/repo/lib" "$T/jobs" "$T/wd"
+cp "$REPO/lib/job-runner" "$T/repo/lib/job-runner"
+ln -sf "$REPO/lib/common.sh" "$T/repo/lib/common.sh"
+ln -sf "$REPO/lib/job-status" "$T/repo/lib/job-status"
+ln -sf "$REPO/lib/job-log-stream" "$T/repo/lib/job-log-stream"
+ln -sf "$REPO/lib/job-collect" "$T/repo/lib/job-collect"
+ln -sf "$REPO/lib/codex-stream" "$T/repo/lib/codex-stream"
+ln -sf "$REPO/lib/eng" "$T/repo/lib/eng"
+printf '#!/bin/bash\nexit 0\n' > "$T/repo/crab"; chmod +x "$T/repo/crab"
+chmod +x "$T/repo/lib/job-runner"
+"$REPO/lib/job-status" new "$T/jobs" cjob "try a codex build" "" "$T/wd" >/dev/null 2>&1 || \
+    python3 - "$T/jobs/cjob.json" <<'PY'
+import json, sys, time
+json.dump({"id": "cjob", "description": "try a codex build",
+           "started_epoch": int(time.time()), "state": "running", "unit": "",
+           "workdir": ""}, open(sys.argv[1], "w"))
+PY
+rm -f "$CODEX_STATE"; : > "$SANDBOX_CLAUDE_LOG"; rm -f "$CODEX_LOG"
+JOBS_DIR="$T/jobs" JOB_MODEL="gpt-5.6-sol" JOB_EFFORT="high" \
+    CODEX_BIN="$SANDBOX_BIN/codex" CODEX_STUB_LIMIT=1 \
+    CLAUDE_BIN="$SANDBOX_BIN/claude" \
+    DESKCRAB_CODEX_STATE="$CODEX_STATE" \
+    JOBS_BLOCKED_FILE="$T/blocked-marker" WANTS_FILE="$T/wants.md" \
+    "$T/repo/lib/job-runner" cjob "$T/wd" >/dev/null 2>&1
+STATE_NOW="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$T/jobs/cjob.json" 2>/dev/null)"
+check_eq "the refused codex build is blocked" "$STATE_NOW" "blocked"
+check_eq "no Claude account was walked — never a downgrade" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+check_eq "the codex login was tried exactly once" \
+    "$(sandbox_count_in 'model_reasoning_effort' "$CODEX_LOG")" "1"
+[ -s "$CODEX_STATE" ] && ok "the builder's refusal cooled the engine too" \
+    || fail "a job refusal must record the codex cooldown" "no state file"
+
+echo
+echo "the chess mover — the python side of the same router (rule 15):"
+rm -f "$CODEX_STATE"
+VENV="${DESKCRAB_CHESS_VENV:-$SANDBOX_LIVE_DATA/chess/venv}"
+PY="$VENV/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "  skip: no chess venv at $VENV — the mover cases need python-chess"
+else
+    OUT="$(cd "$REPO/lib" && DESKCRAB_CODEX_STATE="$CODEX_STATE" \
+        CODEX_BIN="$SANDBOX_BIN/codex" XDG_RUNTIME_DIR="$SANDBOX/run" "$PY" - <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, ".")
+import chess_mover as cm
+
+print("backend-sol", cm._codex_backend("sol"))
+print("backend-gpt", cm._codex_backend("gpt-5.6-sol"))
+print("backend-opus", cm._codex_backend("opus"))
+print("resolve", cm._codex_resolve("sol"))
+text, usage = cm._codex_jsonl_answer(
+    '{"type":"turn.started"}\n'
+    '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"e2e4"}}\n'
+    '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,'
+    '"cache_write_input_tokens":1,"output_tokens":2}}')
+print("answer", text, usage["input_tokens"], usage["cache_read_input_tokens"])
+print("raw-passthrough", cm._codex_jsonl_answer("a plain answer")[0])
+os.environ["DESKCRAB_CHESS_MOVER_MODEL"] = "sol"
+cmd = cm.Mover._codex_cmd("low")
+print("cmd-model", cmd[cmd.index("-m") + 1])
+print("cmd-effort", "model_reasoning_effort=low" in cmd)
+instr = [a.split("=", 1)[1] for a in cmd if a.startswith("model_instructions_file=")]
+print("cmd-instr", bool(instr) and os.path.getsize(instr[0]) > 0)
+os.environ["DESKCRAB_CHESS_MOVER_MODEL"] = "sol"
+m = cm.Mover.__new__(cm.Mover)
+labels = []
+for label, c, env in m._attempts("low"):
+    labels.append(label)
+    if label == "codex":
+        print("codex-first", c[0].endswith("codex"), "OPENAI_API_KEY" not in env)
+    else:
+        print("fallback-model", c[c.index("--model") + 1])
+        break
+print("order", labels[:1])
+PYEOF
+)"
+    check "sol and gpt names route codex, opus does not" \
+        contains "$OUT" "backend-sol True"
+    check "" contains "$OUT" "backend-gpt True"
+    check "" contains "$OUT" "backend-opus False"
+    check "the python resolve matches the shell's" contains "$OUT" "resolve gpt-5.6-sol"
+    check "the JSONL answer is lifted with mapped usage" contains "$OUT" "answer e2e4 6 4"
+    check "a non-codex stdout is not claimed by the extractor" contains "$OUT" "raw-passthrough None"
+    check "the codex cmd names the slug" contains "$OUT" "cmd-model gpt-5.6-sol"
+    check "…and the effort" contains "$OUT" "cmd-effort True"
+    check "…and a written instructions file" contains "$OUT" "cmd-instr True"
+    check "codex is tried first, without a stray API key" \
+        contains "$OUT" "codex-first True True"
+    check "the fallback accounts run a Claude model" contains "$OUT" "fallback-model sonnet"
+    check "the first attempt is the codex one" contains "$OUT" "order ['codex']"
+fi
+
