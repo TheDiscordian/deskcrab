@@ -97,7 +97,10 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     a refusal the turn and wake paths record the cooldown, announce the swap in the stream, and
     run the ordinary Claude walk at `CODEX_FALLBACK_MODEL` (default: the loop's own
     `CLAUDE_MODEL`) with the path's own effort clamped per rule 4. A codex run that produced
-    genuine output NEVER falls back — a run that happened is a run that happened.
+    genuine output NEVER falls back — a run that happened is a run that happened. The dispute
+    machinery's ordinary-model re-run (account-fallback.md rule 10a) is under the same rule: when
+    the loop's own model is itself a codex name, that re-run lands on the Claude walk at the
+    fallback model, never back on the engine that refused.
 13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir) for
     `CODEX_LIMIT_COOLDOWN` seconds (default 1800). While it stands, `codex_available` answers no
     and every path goes straight to its fallback rather than paying a doomed boot. The cooldown

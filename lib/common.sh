@@ -7345,6 +7345,14 @@ claude_generate() {
                 "dispute at the ordinary model — the premium one is dry everywhere" 2>/dev/null
             MODEL="$CLAUDE_MODEL"
             EFFORT="$CLAUDE_EFFORT"
+            # The loop's own model can itself be a codex name now
+            # (specs/model-backends.md rule 12) — and this branch exists
+            # precisely because the raised model is dry, so the re-run must
+            # land on the Claude walk, never back on the engine that refused.
+            if [ "$(model_backend "$MODEL")" = "codex" ]; then
+                MODEL="$(codex_fallback_model)"
+                EFFORT="$(claude_effort_clamp "$EFFORT")"
+            fi
             turn_metric dispute-fallback "premium model dry everywhere — model $MODEL, effort $EFFORT"
             _generate_claude_walk
         fi
