@@ -19,10 +19,13 @@ sandbox_need_ollama
 # The stub claude: a turn call carries --output-format stream-json and gets a
 # stream holding one assistant reply; the judge's plain `-p` call gets the
 # verdict — record 1 (Xena) was used, record 2 was not.
+# Told apart by stream-json, never by --output-format alone: the judge's own
+# call carries `--output-format json` too (the ledger's result object,
+# metrics.md rule 15), and keying on the flag fed the judge the turn's stream.
 sandbox_stub claude <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-    *--output-format*)
+    *stream-json*)
         cat > /dev/null
         printf '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"Your character is Xena, the Paladin."}]}}\n'
         printf '{"type":"result"}\n'

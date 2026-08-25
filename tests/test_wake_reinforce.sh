@@ -21,12 +21,16 @@ WORK="$SANDBOX"
 sandbox_need_ollama
 # The stub claude: the wake call gets a stream holding ONE tool_use block and
 # no assistant text — the shape of a wake that worked and said nothing. The
-# judge's plain `-p` call gets the verdict, and records its prompt so the test
-# can assert the work trace was actually shown to it.
+# judge's call gets the verdict, and records its prompt so the test can assert
+# the work trace was actually shown to it. The two are told apart by
+# stream-json, NEVER by --output-format alone: the judge's own call carries
+# `--output-format json` too (the ledger's result object, metrics.md rule 15),
+# and a stub that keyed on the flag fed the judge the wake's stream — the
+# verdict came back unparseable and this file sat red while the code was fine.
 sandbox_stub claude <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-    *--output-format*)
+    *stream-json*)
         cat > /dev/null
         printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"tool_use","name":"Write","input":{"file_path":"$WORK/proof-of-work.md"}}]}}'
         printf '%s\n' '{"type":"result"}'
