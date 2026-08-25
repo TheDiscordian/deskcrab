@@ -88,6 +88,22 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     * a `deskcrab_note` heartbeat lands at least every 60 seconds while the run is quiet, so the
       watchdog's mtime test never reaps a model that is merely thinking;
     * any line the translator does not recognise passes through verbatim. It never drops a line.
+11a. Turns and wakes take the STREAMING road first (`lib/codex-app-stream`): the same binary's
+    app-server protocol emits per-token `item/agentMessage/delta` notifications, and the driver
+    emits them as the partial-message vocabulary the Claude path already speaks —
+    `message_start`, `content_block_start`, `content_block_delta` text deltas, then the completed
+    `assistant` event whose close-out voices only what the deltas did not — so speech begins
+    while the reply is still being written, on either engine. The assembled prompt rides as
+    `thread/start`'s `baseInstructions` (rule 7's file is still written and named, for the
+    driver to read); approvals are `never` and any server request is answered with an error at
+    once, because the cocoon is the wall and a driver that sits on a request is a turn that
+    hangs; the user's own MCP and plugin tables are overridden empty on the spawn argv, since
+    app-server has no `--ignore-user-config`. Exit 75 — the protocol refused BEFORE any turn
+    began — is the only shape that falls through to the exec pipeline of rule 11, and only when
+    `CODEX_STREAM_MODE` is `auto` (the default; `app` and `exec` pin one road for tests and
+    triage). A turn that started and died is a failed run, never a fallback: falling back after
+    real output would spend the subscription twice for one question. Jobs and classifiers stay
+    on the exec pipeline — nobody is waiting on their voice.
 
 ### Limits and fallback
 
@@ -132,6 +148,8 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 | `CODEX_LIMIT_COOLDOWN` | `codex_limit_record` | seconds, default 1800 |
 | `CODEX_FALLBACK_MODEL` | turn/wake fallback (rule 12) | default `$CLAUDE_MODEL` |
 | `CODEX_PROMPT_MODE` | the run functions | `instructions` (default) or `preface` (rule 8) |
+| `CODEX_STREAM_MODE` | `_codex_stream_run` | `auto` (default) / `app` / `exec` — which road a turn or wake takes (rule 11a) |
+| `CODEX_APP_HANDSHAKE_TIMEOUT` | `lib/codex-app-stream` | seconds before an unanswered handshake reads as protocol-unavailable, default 30 |
 | `codex-state` (data dir) | `codex_available`, `crab status` | the cooldown record |
 | `${STATE_PREFIX}-codex-instructions-<pid>.md` | rule 7 | the assembled prompt, per run |
 
@@ -152,4 +170,8 @@ asserting the exact claude-shaped lines out and that unknown lines pass through;
 detector on a limit slice, a genuine-output slice, and a plain failure; the turn and wake
 fallback walking to the stub Claude CLI after a stub codex refusal, with the cooldown recorded
 and visible; the builder blocked, never downgraded; effort clamp on fallback; the wrap argv
-carrying `CODEX_HOME` writable; the instructions file written whole.
+carrying `CODEX_HOME` writable; the instructions file written whole; the streaming road (rule
+11a) against a stub app-server — the partial-message vocabulary in the stream with the deltas'
+text extracted whole, the completed assistant behind them, usage on the result; a broken
+app-server falling through to the exec pipeline with the note on the record, in auto mode only;
+`CODEX_STREAM_MODE=exec` pinning the old road.

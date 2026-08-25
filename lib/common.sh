@@ -5862,20 +5862,47 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
                 "this turn was refused: $COCOON_WRAP_ERR" 2>/dev/null
             exit 79
         fi
-        ARGS=(exec --ignore-user-config --skip-git-repo-check \
-            --dangerously-bypass-approvals-and-sandbox --json --color never \
-            -C "$PROJECT_DIR" -m "$SLUG" -c "model_reasoning_effort=$REFFORT")
         PROMPT="$RTEXT"
         if [ "$CODEX_PROMPT_MODE" = "preface" ]; then
             PROMPT="$(printf '%s\n\n--- the message to answer ---\n\n%s' \
                 "$SYSTEM_PROMPT" "$RTEXT")"
+            INSTR=""
         else
             printf '%s' "$SYSTEM_PROMPT" > "$INSTR" || {
                 claude_stream_note "codex-refused" "could not write the instructions file $INSTR"
                 exit 79
             }
-            ARGS+=(-c "model_instructions_file=$INSTR")
         fi
+        # The streaming road first (rule 11a): the app-server protocol emits
+        # per-token deltas, so she starts speaking while the reply is still
+        # being written — exec --json only ever hands a message back whole.
+        # Exit 75 is the driver's one no-turn-ran signal (spawn, handshake,
+        # or thread/start failed before anything was spent); only that falls
+        # through to the exec pipeline, and only in auto mode. The user's
+        # own codex configuration stays out of her sessions here as
+        # --ignore-user-config keeps it out of exec runs: app-server has no
+        # such flag, so the MCP and plugin tables are overridden empty on
+        # the argv.
+        if [ "${CODEX_STREAM_MODE:-auto}" != "exec" ]; then
+            printf '%s' "$PROMPT" | env -u OPENAI_API_KEY \
+                CODEX_APP_MODEL="$SLUG" CODEX_APP_EFFORT="$REFFORT" \
+                CODEX_APP_CWD="$PROJECT_DIR" \
+                CODEX_APP_INSTRUCTIONS="$INSTR" \
+                CODEX_STREAM_MODEL="$SLUG" \
+                "$LIB_DIR/codex-app-stream" -- \
+                "${COCOON_WRAP_ARGV[@]}" "$CODEX_BIN" app-server \
+                -c 'mcp_servers={}' -c 'plugins={}' \
+                >> "$DEBUGLOG" 2>> "$DEBUGLOG"
+            APP_RC=$?
+            [ "$APP_RC" -ne 75 ] && exit "$APP_RC"
+            [ "${CODEX_STREAM_MODE:-auto}" = "app" ] && exit "$APP_RC"
+            claude_stream_note "codex-app-unavailable" \
+                "the app-server road refused before any turn began — the exec pipeline takes the run"
+        fi
+        ARGS=(exec --ignore-user-config --skip-git-repo-check \
+            --dangerously-bypass-approvals-and-sandbox --json --color never \
+            -C "$PROJECT_DIR" -m "$SLUG" -c "model_reasoning_effort=$REFFORT")
+        [ -n "$INSTR" ] && ARGS+=(-c "model_instructions_file=$INSTR")
         # The subscription, never a stray key (rule 5); stdin closed because
         # an open stdin is an invitation codex accepts (rule 10). Codex's own
         # stderr appends raw — the refusal detector reads it as codex-owned.

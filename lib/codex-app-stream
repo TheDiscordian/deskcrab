@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""The codex streaming driver — specs/model-backends.md rule 11a.
+
+`codex exec --json` emits an agent message only when it COMPLETES, so a
+codex reply could not begin speaking until it had finished being written —
+the whole time-to-first-speech regression the Claude path solved with
+--include-partial-messages. The same binary's app-server interface streams
+`item/agentMessage/delta` notifications, so this driver speaks that protocol
+and emits the SAME partial-message vocabulary the Claude CLI emits — the
+message_start / content_block_start / content_block_delta shapes
+lib/sentence_stream.py already consumes — followed by the completed
+assistant event, whose close-out voices only what the deltas did not.
+
+One JSON-RPC session per run, stdio transport, four calls deep:
+initialize -> initialized -> thread/start (the assembled prompt as
+baseInstructions, ephemeral, approvals never, sandbox open — the cocoon the
+caller wrapped us in is the wall) -> turn/start (prompt on stdin as the one
+input). Notifications translate as they arrive; thread/tokenUsage/updated
+carries what the result event's usage maps from; turn/completed decides the
+exit. Any server REQUEST (an approval this configuration should never ask
+for) is answered with an error immediately — a driver that sits on a
+request is a turn that hangs.
+
+The contract with the caller (_codex_stream_run):
+  * argv after `--` is the exact command to spawn — the cocoon wrap argv,
+    the codex binary, `app-server`, and its config flags — built by the
+    caller exactly as the exec pipeline's argv is;
+  * the prompt arrives whole on stdin; CODEX_APP_MODEL / CODEX_APP_EFFORT /
+    CODEX_APP_CWD / CODEX_APP_INSTRUCTIONS carry the rest;
+  * translated events leave on stdout, diagnostics on stderr;
+  * exit 0 on a completed turn, 1 on a failed one — and 75 ONLY when the
+    protocol itself was unavailable before any turn began (spawn failed,
+    handshake refused, thread/start rejected), which is the caller's signal
+    to fall back to the exec pipeline. A turn that started and died is a
+    failed run, never a fallback — falling back after real output would
+    spend the subscription twice for one question.
+
+Every unrecognised notification passes through VERBATIM, codex's own error
+notifications included — the refusal detector reads codex's own words, and
+a translator that drops lines eats evidence. The quiet heartbeat is the
+exec translator's, for the same stall watchdog."""
+import json
+import os
+import sys
+import subprocess
+import threading
+import time
+
+MODEL = os.environ.get("CODEX_STREAM_MODEL") \
+    or os.environ.get("CODEX_APP_MODEL", "codex")
+try:
+    HEARTBEAT = float(os.environ.get("CODEX_STREAM_HEARTBEAT", "45") or 0)
+except ValueError:
+    HEARTBEAT = 45.0
+HANDSHAKE_TIMEOUT = float(os.environ.get("CODEX_APP_HANDSHAKE_TIMEOUT", "30"))
+PROTOCOL_UNAVAILABLE = 75
+
+_lock = threading.Lock()
+_last_write = time.monotonic()
+_done = threading.Event()
+
+
+def emit(obj):
+    global _last_write
+    with _lock:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        _last_write = time.monotonic()
+
+
+def passthrough(raw):
+    global _last_write
+    with _lock:
+        sys.stdout.write(raw.rstrip("\n") + "\n")
+        sys.stdout.flush()
+        _last_write = time.monotonic()
+
+
+def note(name, detail):
+    emit({"type": "deskcrab_note", "note": name, "detail": detail,
+          "at": time.strftime("%H:%M:%S")})
+
+
+def _heartbeat():
+    while not _done.wait(min(HEARTBEAT, 5.0)):
+        if time.monotonic() - _last_write >= HEARTBEAT:
+            note("codex-heartbeat", "the run is thinking")
+
+
+def usage_map(u):
+    u = u if isinstance(u, dict) else {}
+    def n(k):
+        try:
+            return int(u.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0
+    cached = n("cachedInputTokens")
+    return {"input_tokens": max(n("inputTokens") - cached, 0),
+            "cache_read_input_tokens": cached,
+            "cache_creation_input_tokens": n("cacheWriteInputTokens"),
+            "output_tokens": n("outputTokens")}
+
+
+class Driver:
+    def __init__(self, child):
+        self.child = child
+        self.next_id = 0
+        self.pending = {}          # request id -> response holder
+        self.open_msg = None       # itemId of the agent message mid-delta
+        self.texts = {}            # itemId -> accumulated delta text
+        self.last_text = ""
+        self.usage = None
+        self.turn_started = False
+        self.turn_error = ""
+        self.turn_status = None
+
+    def send(self, obj):
+        line = json.dumps(obj, ensure_ascii=False) + "\n"
+        self.child.stdin.write(line.encode())
+        self.child.stdin.flush()
+
+    def request(self, method, params, timeout):
+        """One call, synchronously: pump the stream until this id answers.
+        Notifications that arrive in between are handled in place, so a
+        server that talks early loses nothing."""
+        self.next_id += 1
+        rid = self.next_id
+        self.send({"jsonrpc": "2.0", "id": rid, "method": method,
+                   "params": params})
+        deadline = time.monotonic() + timeout if timeout else None
+        while True:
+            if deadline and time.monotonic() > deadline:
+                return None, "timeout waiting for %s" % method
+            raw = self.child.stdout.readline()
+            if not raw:
+                return None, "codex app-server closed the stream during %s" % method
+            msg = self._decode(raw)
+            if msg is None:
+                continue
+            if msg.get("id") == rid and ("result" in msg or "error" in msg):
+                if "error" in msg:
+                    return None, json.dumps(msg["error"])
+                return msg.get("result") or {}, None
+            self.dispatch(msg, raw)
+
+    def _decode(self, raw):
+        try:
+            line = raw.decode("utf-8", "replace").strip()
+        except AttributeError:
+            line = str(raw).strip()
+        if not line:
+            return None
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            passthrough(line)
+            return None
+        if not isinstance(msg, dict):
+            passthrough(line)
+            return None
+        return msg
+
+    def dispatch(self, msg, raw):
+        """One decoded message that is not the answer we are waiting on."""
+        method = msg.get("method") or ""
+        params = msg.get("params") or {}
+        if "id" in msg and method:
+            # A server REQUEST. Approvals are configured never, so nothing
+            # legitimate arrives here — answer at once rather than hang.
+            note("codex-request-refused", method)
+            self.send({"jsonrpc": "2.0", "id": msg["id"],
+                       "error": {"code": -32000,
+                                 "message": "deskcrab: interactive approvals"
+                                            " are not available on this path"}})
+            return
+        if method == "item/agentMessage/delta":
+            item_id = params.get("itemId") or "codex"
+            delta = params.get("delta") or ""
+            if item_id != self.open_msg:
+                self.open_msg = item_id
+                emit({"type": "stream_event",
+                      "event": {"type": "message_start",
+                                "message": {"id": item_id}}})
+                emit({"type": "stream_event",
+                      "event": {"type": "content_block_start", "index": 0,
+                                "content_block": {"type": "text"}}})
+            if delta:
+                self.texts[item_id] = self.texts.get(item_id, "") + delta
+                emit({"type": "stream_event",
+                      "event": {"type": "content_block_delta", "index": 0,
+                                "delta": {"type": "text_delta",
+                                          "text": delta}}})
+            return
+        if method == "item/completed":
+            self.on_item(params.get("item") or {})
+            return
+        if method == "thread/tokenUsage/updated":
+            tu = params.get("tokenUsage") or {}
+            self.usage = tu.get("last") or tu.get("total") or self.usage
+            return
+        if method == "turn/started":
+            self.turn_started = True
+            return
+        if method == "turn/completed":
+            turn = params.get("turn") or {}
+            self.turn_status = turn.get("status") or "completed"
+            err = turn.get("error")
+            if isinstance(err, dict):
+                self.turn_error = err.get("message") or ""
+            return
+        if method == "error":
+            # codex's own words stay on the record for the refusal detector.
+            passthrough(raw if isinstance(raw, str)
+                        else raw.decode("utf-8", "replace"))
+            err = params.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                self.turn_error = err["message"]
+            return
+        if method in ("thread/started", "item/started",
+                      "thread/status/changed", "turn/diff/updated",
+                      "item/reasoning/summaryTextDelta",
+                      "item/reasoning/textDelta",
+                      "item/reasoning/summaryPartAdded",
+                      "rawResponseItem/completed", "rawResponse/completed",
+                      "item/commandExecution/outputDelta",
+                      "account/rateLimits/updated",
+                      "account/updated"):
+            return
+        passthrough(raw if isinstance(raw, str)
+                    else raw.decode("utf-8", "replace"))
+
+    def on_item(self, item):
+        kind = item.get("type") or ""
+        item_id = item.get("id") or "codex"
+        if kind == "agentMessage":
+            text = item.get("text") or ""
+            if text:
+                self.last_text = text
+                emit({"type": "assistant",
+                      "message": {"id": item_id, "model": MODEL,
+                                  "content": [{"type": "text",
+                                               "text": text}]}})
+            if self.open_msg == item_id:
+                self.open_msg = None
+        elif kind == "commandExecution":
+            cmd = item.get("command") or ""
+            if cmd:
+                emit({"type": "assistant",
+                      "message": {"id": item_id, "model": MODEL,
+                                  "content": [{"type": "tool_use",
+                                               "name": "Bash",
+                                               "input": {"command": cmd}}]}})
+        elif kind == "fileChange":
+            for c in item.get("changes") or []:
+                p = c.get("path") if isinstance(c, dict) else None
+                if p:
+                    emit({"type": "assistant",
+                          "message": {"id": item_id, "model": MODEL,
+                                      "content": [{"type": "tool_use",
+                                                   "name": "Write",
+                                                   "input": {"file_path": p}}]}})
+
+    def pump_until_turn_end(self):
+        while self.turn_status is None:
+            raw = self.child.stdout.readline()
+            if not raw:
+                return False
+            msg = self._decode(raw)
+            if msg is None:
+                continue
+            self.dispatch(msg, raw)
+        return True
+
+
+def main():
+    try:
+        split = sys.argv.index("--")
+    except ValueError:
+        sys.stderr.write("codex-app-stream: no command after --\n")
+        return PROTOCOL_UNAVAILABLE
+    argv = sys.argv[split + 1:]
+    prompt = sys.stdin.read()
+    instructions = ""
+    ipath = os.environ.get("CODEX_APP_INSTRUCTIONS") or ""
+    if ipath:
+        try:
+            instructions = open(ipath).read()
+        except OSError as e:
+            sys.stderr.write("codex-app-stream: cannot read instructions"
+                             " %s: %s\n" % (ipath, e))
+            return PROTOCOL_UNAVAILABLE
+
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=sys.stderr)
+    except OSError as e:
+        sys.stderr.write("codex-app-stream: spawn failed: %s\n" % e)
+        return PROTOCOL_UNAVAILABLE
+
+    d = Driver(child)
+    try:
+        _res, err = d.request("initialize",
+                              {"clientInfo": {"name": "deskcrab",
+                                              "title": "DeskCrab",
+                                              "version": "1"},
+                               "capabilities": None}, HANDSHAKE_TIMEOUT)
+        if err:
+            sys.stderr.write("codex-app-stream: initialize failed: %s\n" % err)
+            return PROTOCOL_UNAVAILABLE
+        d.send({"jsonrpc": "2.0", "method": "initialized"})
+
+        params = {"model": os.environ.get("CODEX_APP_MODEL") or None,
+                  "cwd": os.environ.get("CODEX_APP_CWD") or os.getcwd(),
+                  "approvalPolicy": "never",
+                  "sandbox": "danger-full-access",
+                  "ephemeral": True}
+        if instructions:
+            params["baseInstructions"] = instructions
+        res, err = d.request("thread/start", params, HANDSHAKE_TIMEOUT)
+        if err:
+            sys.stderr.write("codex-app-stream: thread/start failed: %s\n" % err)
+            return PROTOCOL_UNAVAILABLE
+        thread_id = ((res or {}).get("thread") or {}).get("id") \
+            or (res or {}).get("threadId") or ""
+        if not thread_id:
+            sys.stderr.write("codex-app-stream: thread/start returned no"
+                             " thread id: %s\n" % json.dumps(res)[:300])
+            return PROTOCOL_UNAVAILABLE
+
+        emit({"type": "system", "subtype": "init", "engine": "codex",
+              "transport": "app-server", "model": MODEL})
+        if HEARTBEAT > 0:
+            threading.Thread(target=_heartbeat, daemon=True).start()
+
+        turn_params = {"threadId": thread_id,
+                       "input": [{"type": "text", "text": prompt}]}
+        effort = os.environ.get("CODEX_APP_EFFORT") or ""
+        if effort:
+            turn_params["effort"] = effort
+        # No timeout on the turn itself: the caller's stall watchdog owns
+        # the wall clock, exactly as it does for the exec pipeline.
+        _res, err = d.request("turn/start", turn_params, 0)
+        if err:
+            note("codex-turn-rejected", err[:200])
+            emit({"type": "result", "is_error": True, "engine": "codex",
+                  "model": MODEL, "result": "turn/start failed: %s" % err})
+            return 1
+        alive = d.pump_until_turn_end()
+        _done.set()
+        failed = (d.turn_status in ("failed", "interrupted")) \
+            or (d.turn_status is None)
+        if not alive and d.turn_status is None:
+            d.turn_error = d.turn_error or \
+                "codex app-server closed the stream mid-turn"
+        result = {"type": "result", "engine": "codex", "model": MODEL,
+                  "result": d.turn_error if failed else d.last_text,
+                  "usage": usage_map(d.usage)}
+        if failed:
+            result["is_error"] = True
+        emit(result)
+        return 1 if failed else 0
+    finally:
+        _done.set()
+        try:
+            child.stdin.close()
+        except OSError:
+            pass
+        try:
+            child.terminate()
+            child.wait(timeout=5)
+        except Exception:
+            try:
+                child.kill()
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(1)

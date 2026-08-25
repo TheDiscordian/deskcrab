@@ -16,9 +16,68 @@ mkdir -p "$SANDBOX/codexhome"
 # The spend gate, both engines: the Claude CLI is the sandbox's stub already,
 # and codex gets one of its own before anything below may run.
 [ -x "$SANDBOX_BIN/claude" ] || die "the stub claude is missing — nothing below may run"
+cat > "$SANDBOX/codex-app-responder.py" <<'PYR'
+import json, os, sys
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+def notify(method, params):
+    send({"jsonrpc": "2.0", "method": method, "params": params})
+for line in sys.stdin:
+    try:
+        m = json.loads(line)
+    except ValueError:
+        continue
+    meth = m.get("method")
+    if meth == "initialize":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+    elif meth == "thread/start":
+        send({"jsonrpc": "2.0", "id": m["id"],
+              "result": {"thread": {"id": "th-1"}}})
+    elif meth == "turn/start":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+        notify("turn/started", {"threadId": "th-1", "turnId": "tu-1"})
+        if os.environ.get("CODEX_STUB_LIMIT"):
+            notify("error", {"error": {"message":
+                "You have hit your usage limit. Try again later."},
+                "willRetry": False, "threadId": "th-1", "turnId": "tu-1"})
+            notify("turn/completed", {"threadId": "th-1",
+                "turn": {"id": "tu-1", "status": "failed",
+                         "error": {"message":
+                "You have hit your usage limit. Try again later."}}})
+            sys.exit(0)
+        for d in ("codex ", "stub ", "reply."):
+            notify("item/agentMessage/delta",
+                   {"threadId": "th-1", "turnId": "tu-1",
+                    "itemId": "item_0", "delta": d})
+        notify("item/completed", {"threadId": "th-1", "turnId": "tu-1",
+            "completedAtMs": 0,
+            "item": {"type": "agentMessage", "id": "item_0",
+                     "text": "codex stub reply."}})
+        notify("thread/tokenUsage/updated", {"threadId": "th-1",
+            "turnId": "tu-1", "tokenUsage": {"last": {
+                "totalTokens": 107, "inputTokens": 100,
+                "cachedInputTokens": 60, "cacheWriteInputTokens": 5,
+                "outputTokens": 7, "reasoningOutputTokens": 0}}})
+        notify("turn/completed", {"threadId": "th-1",
+            "turn": {"id": "tu-1", "status": "completed", "error": None}})
+        sys.exit(0)
+PYR
+
 sandbox_stub codex <<STUB
 #!/bin/bash
+# Two roads, like the real binary (specs/model-backends.md rules 11, 11a):
+# \`app-server\` speaks just enough JSON-RPC for the driver; \`exec\` answers
+# in the event shapes the exec translator parses. The INVOKED witness line
+# is road-neutral — model and effort ride the argv on one road and the
+# environment on the other, so assertions count and grep this line.
+printf 'INVOKED %s model=%s effort=%s instr=%s\n' "\$1" \
+    "\${CODEX_APP_MODEL:-argv}" "\${CODEX_APP_EFFORT:-argv}" \
+    "\${CODEX_APP_INSTRUCTIONS:-}" >> "$CODEX_LOG"
 printf '%s\n' "\$*" >> "$CODEX_LOG"
+if [ "\$1" = "app-server" ]; then
+    [ -n "\${CODEX_STUB_APP_FAIL:-}" ] && exit 2
+    exec python3 "$SANDBOX/codex-app-responder.py"
+fi
 cat > /dev/null
 if [ -n "\${CODEX_STUB_LIMIT:-}" ]; then
     printf '%s\n' '{"type":"error","message":"You have hit your usage limit. Try again later."}'
@@ -191,8 +250,8 @@ rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
 : > "$SANDBOX/wake-debug.log"
 OUT="$(wake_chain 'CODEX_STUB_LIMIT=1' 2>/dev/null)"
 check_eq "the codex stub was tried exactly once" \
-    "$(sandbox_count_in 'model_reasoning_effort' "$CODEX_LOG")" "1"
-check "…as an exec run with the model slug" contains "$(cat "$CODEX_LOG")" "gpt-5.6-sol"
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "1"
+check "…with the model slug" contains "$(cat "$CODEX_LOG")" "gpt-5.6-sol"
 check "the refusal is announced in the stream" \
     contains "$(cat "$SANDBOX/wake-debug.log")" "codex-limit"
 check_eq "the Claude walk then took the wake at the fallback model" \
@@ -202,7 +261,7 @@ check_eq "the Claude walk then took the wake at the fallback model" \
 rm -f "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
 OUT="$(wake_chain 2>/dev/null)"
 check_eq "while cooling, the doomed codex boot is never paid" \
-    "$(sandbox_count_in 'model_reasoning_effort' "$CODEX_LOG")" "0"
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "0"
 check "…and the stream says why" \
     contains "$(cat "$SANDBOX/wake-debug.log")" "codex-cooling"
 check_eq "the Claude walk still answers the wake" \
@@ -216,7 +275,7 @@ check "the translated answer is in the stream" \
     contains "$(cat "$SANDBOX/wake-debug.log")" "codex stub reply."
 rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
 OUT="$(WAKE_EFFORT_CASE=ultra wake_chain 'CODEX_STUB_LIMIT=1' 2>/dev/null)"
-check "codex was asked for ultra" contains "$(cat "$CODEX_LOG")" "model_reasoning_effort=ultra"
+check "codex was asked for ultra" contains "$(cat "$CODEX_LOG")" "effort=ultra"
 check_eq "the fallback walk clamps ultra to max — the Claude CLI refuses the word" \
     "$(sandbox_count_in '--effort max' "$SANDBOX_CLAUDE_LOG")" "1"
 
@@ -244,7 +303,7 @@ check "the swap is on the record" \
 echo
 echo "the instructions file — the assembled prompt reaches codex WHOLE (rule 7):"
 rm -f "$CODEX_STATE" "$CODEX_LOG"
-sb "DEBUGLOG='$SANDBOX/instr-debug.log' SYSTEM_PROMPT=\"\$(printf 'line one\nline two of the prompt')\" \
+sb "DEBUGLOG='$SANDBOX/instr-debug.log' CODEX_STREAM_MODE=exec SYSTEM_PROMPT=\"\$(printf 'line one\nline two of the prompt')\" \
     _codex_stream_run wake sol low 'the text'" 2>/dev/null
 check "the run names an instructions file" \
     contains "$(cat "$CODEX_LOG")" "model_instructions_file="
@@ -255,9 +314,44 @@ INSTR_PATH="$(grep -o 'model_instructions_file=[^ ]*' "$CODEX_LOG" | head -n1 | 
     && ok "the per-run instructions file is cleaned up" \
     || fail "the instructions file should be gone after the run" "$INSTR_PATH"
 check "preface mode carries the prompt in the text instead" \
-    contains "$(sb "DEBUGLOG='$SANDBOX/instr2.log' CODEX_PROMPT_MODE=preface SYSTEM_PROMPT='the standing prompt' \
+    contains "$(sb "DEBUGLOG='$SANDBOX/instr2.log' CODEX_STREAM_MODE=exec CODEX_PROMPT_MODE=preface SYSTEM_PROMPT='the standing prompt' \
         _codex_stream_run wake sol low 'the text' 2>/dev/null; grep -o 'the standing prompt' '$CODEX_LOG' | head -n1")" \
     "the standing prompt"
+
+echo
+echo "the streaming road — deltas first, exec only as the fallback (rule 11a):"
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
+: > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 2>/dev/null)"
+check "the partial-message vocabulary is in the stream" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" '"content_block_delta"'
+check "…opened by a message_start" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" '"message_start"'
+check_eq "three deltas — one per stub chunk" \
+    "$(sandbox_count_in 'text_delta' "$SANDBOX/wake-debug.log")" "3"
+check "the completed assistant event stands behind them" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" '"codex stub reply."'
+check "the result carries the mapped usage" \
+    contains "$(grep '"type": "result"' "$SANDBOX/wake-debug.log" | tail -n1)" '"cache_read_input_tokens": 60'
+check "…and names the transport" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" '"transport": "app-server"'
+check "the driver passed the instructions file through" \
+    contains "$(cat "$CODEX_LOG")" "instr=/"
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
+: > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 'CODEX_STUB_APP_FAIL=1' 2>/dev/null)"
+check "a dead app-server falls through with the note on the record" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex-app-unavailable"
+check "…and the exec pipeline still answers" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex stub reply."
+check_eq "…with no Claude account walked" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 'CODEX_STREAM_MODE=exec' 2>/dev/null)"
+check_eq "CODEX_STREAM_MODE=exec pins the old road — no app-server boot" \
+    "$(sandbox_count_in 'INVOKED app-server' "$CODEX_LOG")" "0"
+check "…which still answers" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex stub reply."
 
 echo
 echo "the cocoon wall carries the codex state dir (rule 9):"
@@ -303,7 +397,7 @@ check_eq "the refused codex build is blocked" "$STATE_NOW" "blocked"
 check_eq "no Claude account was walked — never a downgrade" \
     "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
 check_eq "the codex login was tried exactly once" \
-    "$(sandbox_count_in 'model_reasoning_effort' "$CODEX_LOG")" "1"
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "1"
 [ -s "$CODEX_STATE" ] && ok "the builder's refusal cooled the engine too" \
     || fail "a job refusal must record the codex cooldown" "no state file"
 
