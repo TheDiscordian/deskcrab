@@ -147,20 +147,40 @@ which fails silently is worse than one that does not exist.
     rule 25c's.
 25c. The job window. A detached builder job she dispatched is her own hand at one remove. The
     watcher reads the jobs ledger it already sits beside — each sidecar's workdir, dispatch time,
-    state, and collection time — and a creation or modification whose path lies under a job's
-    workdir and whose mtime falls inside that job's window, dispatch until collection, is that
-    job's write and MUST stay quiet. The claim is per job-window, not per event: every save the
+    state, finish time, and collection time — and a creation or modification whose path lies
+    under a job's workdir and whose mtime falls inside that job's window is that job's write and
+    MUST stay quiet. The window follows the state, because only the state says whether the hand
+    could still be moving. `dispatched` and `running` claim from dispatch to now, capped at a
+    ceiling past dispatch (24 hours by default, `NOTICE_SELF_JOBWIN_CEILING`): the longest run
+    the ledger has ever recorded is 3.2 hours, so a day cuts no real builder short, while a
+    sidecar orphaned in `running` by a crashed runner stops claiming a tree after a day instead
+    of for ever — a byte from inside the ceiling is still the orphan's own, a byte after it
+    reports. `finished` claims from dispatch until its recorded finish plus a short collection
+    grace (600 seconds by default, `NOTICE_SELF_JOBWIN_GRACE`): collection runs in the runner's
+    own process moments after the finish is written, so ten minutes covers a loaded machine and
+    the collector's own hand in the tree, and nothing more. It is NOT true of this ledger that
+    collection closes every claim — 45 sidecars measured 2026-08-24 predate the collector, sit
+    in `finished` with no collection time at all, and will never collect, because the
+    collector's terminal state is `collected`, not `finished`; while `finished` ran open-ended,
+    each claimed its workdir for ever, every write in the deskcrab tree was attributed to the
+    oldest of them, thirteen days dead, and the report called it "running" (05:49, 2026-08-24).
+    A collected job's claim still ends at collection, no grace; `failed`, `stopped` and `died`
+    still close at their recorded finish. When several windows cover one byte — two jobs
+    sharing a workdir — the MOST RECENTLY STARTED job wins the attribution, never the first
+    found in ledger order, so a live job always outranks a stale one over the same tree. The
+    wording follows the state wherever a claim is named: a job MUST NOT be described as running
+    unless its state is `dispatched` or `running` — the quiet line and the report quote the
+    state they matched. The claim is per job-window, not per event: every save the
     job makes, for the job's whole life, is the one claim, so repeated saves to one file never
     re-fire per mtime (two alarms four minutes apart from one builder, five in one night,
     2026-08-22 through 2026-08-24). A change the job has already committed is claimed exactly as
     a mid-edit one — a clean commit naming the file is not evidence of an outside hand (919b167
-    was flagged so). Several live jobs each claim their own workdir independently and
-    simultaneously. The moment a job collects, its claim ends — no grace — and its workdir
-    reports as before; a byte from before dispatch or after collection belongs to nobody and
+    was flagged so). Several jobs each claim their own workdir independently and
+    simultaneously; a byte from before dispatch or after a window's close belongs to nobody and
     fires. A deletion is NEVER excused by a job window — rule 28's discipline holds — and a
     claimed path that surfaces anyway, in the log or in a report, MUST name the claiming job id,
     so the claim over a tree is traceable rather than invisible. The accepted cost mirrors
-    rule 25b's: an outside edit inside a job's workdir while that job runs is silenced, judged
+    rule 25b's: an outside edit inside a job's window is silenced, judged
     cheaper than the class this closes — eleven-plus false alarms in three nights, every one an
     authorised builder's own brief-named work.
 25d. The plumbing list. The day journal drawer and the wakes ledger are written by exactly one
@@ -623,7 +643,11 @@ a scratch tree: a running job's save, three successive saves, a committed change
 jobs' writes all stay quiet with the job id on the quiet line; a deletion under a live claim still
 fires with the job named in the report; collection reopens reporting at once; an unclaimed path and
 a pre-dispatch mtime still fire; journal writes stay quiet with and without a job while a journal
-deletion fires. `tests/test_claudism_scan.sh` — the review reads the
+deletion fires; and the bounded windows: a finished-uncollected job sharing a workdir with a live
+one loses the attribution to the more recently started, a finished-uncollected job past its grace
+suppresses nothing while one inside the grace still claims its last bytes without ever being called
+running, a `running` sidecar older than the ceiling claims no new byte but keeps the ones from
+inside it, and no report calls the orphan running. `tests/test_claudism_scan.sh` — the review reads the
 spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
 skip; the wake is booked through the door in the review's own name; a dead model still writes the
 report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep

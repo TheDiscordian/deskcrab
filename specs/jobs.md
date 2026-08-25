@@ -304,15 +304,22 @@ re-derived it by hand.
     the account attempts, the history, and the collection. `crab jobs --state <s>` filters the
     listing to one state, so "everything still queued" and "everything that died" are each one
     command.
-41. The ledger is read by the self-change watcher. From dispatch until collection, a job's sidecar
-    claims the subtree under its `workdir`: a creation or modification there whose mtime falls
-    inside the job's window is the job's own hand — committed or mid-edit, per job-window rather
-    than per save, each of several live jobs independently — and is never reported as an outside
-    one ([nightly.md](nightly.md) rule 25c). The sidecar's `workdir`, `state`, `started_epoch`,
-    and `collected_at_epoch` are the whole interface; the watcher parses the format this spec
-    already fixes and the ledger owes it nothing new. A claimed path that surfaces anyway MUST be
-    reported with the job id beside it, so the claim is traceable. The moment the sidecar records
-    collection, the claim is over.
+41. The ledger is read by the self-change watcher. A job's sidecar claims the subtree under its
+    `workdir` for as long as its state says a hand could still be moving: `dispatched` and
+    `running` claim from dispatch to now, bounded by an age ceiling; `finished` claims until
+    `finished_epoch` plus a short collection grace, because the ledger's own history holds
+    finished sidecars that never collect — they predate the collector, whose terminal state is
+    `collected`, not `finished` — and an unbounded finished claim attributed every write in a
+    tree to a job thirteen days dead (2026-08-24); `collected` ends the claim at collection, no
+    grace. A creation or modification there whose mtime falls inside the job's window is the
+    job's own hand — committed or mid-edit, per job-window rather than per save, each of several
+    jobs independently, the most recently started job winning any shared workdir — and is never
+    reported as an outside one ([nightly.md](nightly.md) rule 25c, where the bounds and their
+    constants are defended). The sidecar's `workdir`, `state`, `started_epoch`,
+    `finished_epoch`, and `collected_at_epoch` are the whole interface; the watcher parses the
+    format this spec already fixes and the ledger owes it nothing new. A claimed path that
+    surfaces anyway MUST be reported with the job id beside it, described as running only when
+    its state is `dispatched` or `running`, so the claim is traceable and never misnamed.
 
 ## DATA
 
@@ -448,7 +455,9 @@ queued brief is skipped for the night, a blocked door ends it, and the dry run s
 `tests/test_notice_jobclaim.sh` (rule 41 from the watcher's side, against fabricated sidecars in
 the ledger's own shape — history array and all — and a scratch tree: the running job's saves,
 commits, and concurrent siblings stay quiet with the job id logged, a deletion under a live claim
-fires with the job named, and collection reopens reporting at once).
+fires with the job named, collection reopens reporting at once, a finished-uncollected sidecar
+claims only through its grace and loses a shared workdir to the more recently started live job,
+an over-ceiling `running` orphan claims no new byte, and nothing calls a non-running job running).
 
 **To be written:**
 

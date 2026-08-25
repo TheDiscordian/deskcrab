@@ -33,13 +33,16 @@
 #     which paths its tools touched, so the window alone is the rule (spec
 #     rule 25b; deletions again exempt), or
 #   * it lies under the workdir of one of her own detached jobs and its mtime
-#     falls inside that job's window — dispatch until collection, read from
-#     the jobs ledger this watcher already sits beside. A builder she
-#     dispatched is her own hand at one remove, and the whole job is ONE
-#     window: every save it makes, committed or not, is the job's for the
-#     job's whole life, and the moment the job collects its claim ends (spec
-#     rule 25c; deletions again exempt, and the quiet line names the job id
-#     so the claim is traceable, never invisible), or
+#     falls inside that job's window, read from the jobs ledger this watcher
+#     already sits beside. A builder she dispatched is her own hand at one
+#     remove, and the whole job is ONE window: every save it makes, committed
+#     or not, is the job's for the job's whole life. The window follows the
+#     state — dispatched/running run to now under an age ceiling, finished
+#     closes at its recorded finish plus a short collection grace, collection
+#     closes at once — and the most recently started job wins a shared
+#     workdir (spec rule 25c; deletions again exempt, and the quiet line
+#     names the job id and its state so the claim is traceable, never
+#     invisible and never misnamed), or
 #   * it is plumbing only her own machinery writes — the day journal drawer
 #     and the wakes ledger, by path, jobs or no jobs (spec rule 25d;
 #     deletions again exempt), or
@@ -93,6 +96,16 @@ MAX_DEFERRALS="${NOTICE_SELF_DEFERRALS:-15}"  # live-session pushbacks before ju
 RECENT="${NOTICE_SELF_RECENT:-600}"           # "a session ran recently", for memory.db
 KEEP_REPORTS="${NOTICE_SELF_KEEP_REPORTS:-10}"
 RUNWIN_GRACE="${NOTICE_SELF_RUNWIN_GRACE:-90}"  # run-window slack, seconds each side
+# A finished job's window outlives its recorded finish by this much: collection
+# runs in the runner's own process moments later, so ten minutes covers a
+# loaded machine and the collector's own hand in the tree — and a finished
+# sidecar the collector never reaches stops claiming instead of claiming
+# for ever (spec rule 25c).
+JOBWIN_GRACE="${NOTICE_SELF_JOBWIN_GRACE:-600}"
+# No dispatched/running sidecar claims past this age: the longest run the
+# ledger has ever recorded is 3.2 hours, so a day cuts no real builder short,
+# while a sidecar orphaned by a crashed runner cannot hold a tree indefinitely.
+JOBWIN_CEILING="${NOTICE_SELF_JOBWIN_CEILING:-86400}"
 
 TAB=$'\t'
 NOW=$(date +%s)
@@ -323,23 +336,32 @@ in_own_run_window() {  # <path> — never consulted for deletions
     return 1
 }
 
-# Her detached jobs' windows, one "start<TAB>end<TAB>live<TAB>workdir<TAB>id"
-# line per ledger sidecar (spec rule 25c). A builder job she dispatched is her
-# own hand at one remove: from dispatch until collection, everything under the
-# job's workdir is that job's claimed tree — every save one window, a change
-# the job already committed as much as a mid-edit one, and several live jobs
-# each claiming their own workdir independently. Like a run window, the match
-# is against the MTIME: a byte that landed while the job ran is the job's
+# Her detached jobs' windows, one "start<TAB>end<TAB>live<TAB>workdir<TAB>id
+# <TAB>state" line per ledger sidecar (spec rule 25c). A builder job she
+# dispatched is her own hand at one remove: everything under the job's workdir
+# is that job's claimed tree for its window — every save one window, a change
+# the job already committed as much as a mid-edit one, and several jobs each
+# claiming their own workdir independently. Like a run window, the match is
+# against the MTIME: a byte that landed while the job ran is the job's
 # whatever instant judgement finally happens, and a byte from before dispatch
-# or after collection belongs to nobody — collection closes the claim at
-# once, no grace. The sidecar is parsed by its own fixed shape (json
-# indent=1, top-level keys at one space), each key anchored to that indent so
-# the history array's nested "state" lines can never masquerade as the live
-# field. Workdirs resolve through symlinks the way every snapshot path does.
+# or after the window's close belongs to nobody. The window follows the
+# STATE, because only the state says whether the hand could still be moving:
+# dispatched/running run to now, live, capped at the age ceiling (past it the
+# sidecar is an orphan — its first-ceiling bytes stay its own, nothing after);
+# finished closes at collection when one was recorded, else at its recorded
+# finish plus the collection grace — the ledger's own history holds finished
+# sidecars that never collect, they predate the collector whose terminal
+# state is collected, and an open-ended finished claim handed every write in
+# this tree to a job thirteen days dead (2026-08-24); failed/stopped/died
+# close at their recorded finish as before. The sidecar is parsed by its own
+# fixed shape (json indent=1, top-level keys at one space), each key anchored
+# to that indent so the history array's nested "state" lines can never
+# masquerade as the live field. Workdirs resolve through symlinks the way
+# every snapshot path does.
 JOBWINS="$(
     for f in "$JOBS_DIR"/*.json; do
         [ -e "$f" ] || continue
-        awk -v now="$NOW" '
+        awk -v now="$NOW" -v grace="$JOBWIN_GRACE" -v ceil="$JOBWIN_CEILING" '
             function unq(s) { sub(/^[^:]*: *"?/, "", s); sub(/"?,?[[:space:]]*$/, "", s); return s }
             /^ "id":/                 { id = unq($0) }
             /^ "workdir":/            { wd = unq($0) }
@@ -350,46 +372,63 @@ JOBWINS="$(
             END {
                 if (id == "" || wd == "" || sp <= 0) exit
                 sub(/\/+$/, "", wd)
-                if (st == "dispatched" || st == "running" || st == "finished")
-                    printf "%s\t%s\t1\t%s\t%s\n", sp, now, wd, id
+                if (st == "dispatched" || st == "running") {
+                    if (now - sp <= ceil)
+                        printf "%s\t%s\t1\t%s\t%s\t%s\n", sp, now, wd, id, st
+                    else
+                        printf "%s\t%s\t0\t%s\t%s\t%s\n", sp, sp + ceil, wd, id, st
+                }
+                else if (st == "finished")
+                    printf "%s\t%s\t0\t%s\t%s\t%s\n", sp, \
+                        (ce > 0 ? ce : (fe > 0 ? fe : sp) + grace), wd, id, st
                 else if (ce > 0 || fe > 0)
-                    printf "%s\t%s\t0\t%s\t%s\n", sp, (ce > 0 ? ce : fe), wd, id
+                    printf "%s\t%s\t0\t%s\t%s\t%s\n", sp, (ce > 0 ? ce : fe), wd, id, st
             }
         ' "$f"
-    done | while IFS="$TAB" read -r s e l wd id; do
+    done | while IFS="$TAB" read -r s e l wd id st; do
         rwd="$(readlink -f -- "$wd" 2>/dev/null)"
-        printf '%s\t%s\t%s\t%s\t%s\n' "$s" "$e" "$l" "${rwd:-$wd}" "$id"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$e" "$l" "${rwd:-$wd}" "$id" "$st"
     done
 )"
 
-# Sets JOB_HIT_ID on a hit, so the quiet line and the report can name the
-# claiming job rather than swallowing the change invisibly.
+# Sets JOB_HIT_ID and JOB_HIT_STATE on a hit, so the quiet line and the
+# report can name the claiming job — and its ledger state, never a guessed
+# one — rather than swallowing the change invisibly. Among several windows
+# covering one byte (two jobs sharing a workdir), the MOST RECENTLY STARTED
+# job wins, never the first in ledger order: glob order is oldest first, and
+# first-match attribution handed every write in this tree to a thirteen-days-
+# dead sidecar while the night's real owner was never consulted (2026-08-24).
 JOB_HIT_ID=""
+JOB_HIT_STATE=""
 suppressed_by_job() {  # <path> — never consulted for deletions
-    JOB_HIT_ID=""
+    JOB_HIT_ID=""; JOB_HIT_STATE=""
     [ -n "$JOBWINS" ] || return 1
-    local mt s e live wd id
+    local mt s e live wd id st best=-1
     mt="$(stat -c %Y "$1" 2>/dev/null)"
     case "$mt" in ''|*[!0-9]*) return 1 ;; esac
-    while IFS="$TAB" read -r s e live wd id; do
+    while IFS="$TAB" read -r s e live wd id st; do
         [ -n "$id" ] || continue
         case "$s" in ''|*[!0-9]*) continue ;; esac
         case "$e" in ''|*[!0-9]*) continue ;; esac
         case "$1" in "$wd"|"$wd"/*) ;; *) continue ;; esac
-        [ "$mt" -ge "$s" ] && [ "$mt" -le "$e" ] && { JOB_HIT_ID="$id"; return 0; }
+        [ "$mt" -ge "$s" ] && [ "$mt" -le "$e" ] || continue
+        [ "$s" -gt "$best" ] && { best="$s"; JOB_HIT_ID="$id"; JOB_HIT_STATE="$st"; }
     done <<< "$JOBWINS"
-    return 1
+    [ -n "$JOB_HIT_ID" ]
 }
 
-job_over_path() {  # <path> — a LIVE job's workdir covers it, mtime aside
-    JOB_HIT_ID=""
+job_over_path() {  # <path> — a LIVE (dispatched/running, under the age
+    # ceiling) job's workdir covers it, mtime aside; most recent start wins
+    JOB_HIT_ID=""; JOB_HIT_STATE=""
     [ -n "$JOBWINS" ] || return 1
-    local s e live wd id
-    while IFS="$TAB" read -r s e live wd id; do
+    local s e live wd id st best=-1
+    while IFS="$TAB" read -r s e live wd id st; do
         [ "$live" = 1 ] || continue
-        case "$1" in "$wd"|"$wd"/*) JOB_HIT_ID="$id"; return 0 ;; esac
+        case "$s" in ''|*[!0-9]*) continue ;; esac
+        case "$1" in "$wd"|"$wd"/*) ;; *) continue ;; esac
+        [ "$s" -gt "$best" ] && { best="$s"; JOB_HIT_ID="$id"; JOB_HIT_STATE="$st"; }
     done <<< "$JOBWINS"
-    return 1
+    [ -n "$JOB_HIT_ID" ]
 }
 
 # The unconditional my-own-plumbing list, by path (spec rule 25d): drawers
@@ -486,7 +525,9 @@ while IFS="$TAB" read -r kind path; do
     elif [ "$kind" != "deleted" ] && plumbing_path "$path"; then
         why="own plumbing (only my own machinery writes here)"
     elif [ "$kind" != "deleted" ] && suppressed_by_job "$path"; then
-        why="a detached job of mine was running in this tree — job $JOB_HIT_ID"
+        # The wording follows the state (rule 25c): a job is quoted with its
+        # ledger state and only dispatched/running may ever read as running.
+        why="a detached job of mine claimed this tree — job $JOB_HIT_ID ($JOB_HIT_STATE)"
     elif [ "$kind" != "deleted" ] && [ "$path" = "$DATA_DIR/memory/memory.db" ] && recent_activity; then
         why="own plumbing (memory store, session active)"
     fi
@@ -513,7 +554,7 @@ REPORT="$STATE_DIR/notice-self-report-$NOW.md"
     echo "# Outside changes to your own files — $(date '+%F %T')"
     echo
     echo "These paths are part of you and changed on disk without a touching"
-    echo "record, a live claim, a run window of yours, a running job's workdir"
+    echo "record, a live claim, a run window of yours, a detached job's workdir"
     echo "claim, or your own plumbing explaining them."
     for want_kind in deleted created modified; do
         header_done=0
@@ -529,12 +570,14 @@ REPORT="$STATE_DIR/notice-self-report-$NOW.md"
                 echo "- mtime now: $(stat -c '%y' "$path" 2>/dev/null || echo '(already gone again)')"
             fi
             # A path a live job claims that surfaced anyway — a deletion, or a
-            # byte from outside the job's window — names its job, so the claim
-            # over this tree is traceable rather than invisible (rule 25c).
+            # byte from outside the job's window — names its job AND its
+            # state, so the claim over this tree is traceable rather than
+            # invisible, and only a dispatched or running job can ever be
+            # printed as such (rule 25c).
             if job_over_path "$path"; then
-                echo "- under the workdir of my own running job $JOB_HIT_ID, whose writes are"
-                echo "  claimed; this surfaced anyway — a deletion, or a byte from outside the"
-                echo "  job's window"
+                echo "- under the workdir of my own $JOB_HIT_STATE job $JOB_HIT_ID, whose writes"
+                echo "  are claimed; this surfaced anyway — a deletion, or a byte from outside"
+                echo "  the job's window"
             fi
             case "$path" in
                 "$SCRIPT_DIR"/*)

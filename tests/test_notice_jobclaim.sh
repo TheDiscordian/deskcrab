@@ -46,10 +46,12 @@ JOBS="$T/data/deskcrab/jobs"
 # A sidecar in the ledger's own shape — json indent=1, top-level keys at one
 # space — including a history array whose nested "state" lines and a brief
 # whose prose bait an unanchored parse into misreading the live field.
-sidecar() {  # <id> <state> <workdir> <started_epoch> [collected_at_epoch]
+sidecar() {  # <id> <state> <workdir> <started_epoch> [collected_at_epoch] [finished_epoch]
     local extra=""
     [ -n "${5:-}" ] && extra="
  \"collected_at_epoch\": $5,"
+    [ -n "${6:-}" ] && extra="$extra
+ \"finished_epoch\": $6,"
     cat > "$JOBS/$1.json" <<EOF
 {
  "id": "$1",
@@ -173,3 +175,64 @@ rm "$T/data/deskcrab/journal/2026-08-24.jsonl"
 run
 check "a journal deletion fires — plumbing never excuses a deletion" [ "$(wakes)" = 5 ]
 check "the deletion is named" contains "$(last_wake)" "deleted: 2026-08-24.jsonl"
+
+# The bounded-window cases, from the 2026-08-24 05:53 entry of the record:
+# 45 real sidecars sit in state finished with no collected_at_epoch — they
+# predate the collector, whose terminal state is collected — so "collection
+# closes the claim" is false of the ledger, and an open-ended finished window
+# handed every write in the tree to a job thirteen days dead, first in glob
+# order, reported as "running".
+
+lacks() { case "$1" in *"$2"*) return 1 ;; *) return 0 ;; esac; }
+
+echo "== (h) a finished-uncollected job and a live job share a workdir: the live one wins =="
+NOW2=$(date +%s)
+# j-hold sorts BEFORE j-live in the ledger glob, exactly as the real stale
+# sidecar (oldest id) sorted before the night's real owner.
+sidecar j-hold finished "$T/repo" "$(( NOW2 - 400 ))" "" "$(( NOW2 - 100 ))"
+sidecar j-live running "$T/repo" "$(( NOW2 - 50 ))"
+echo "the live builder's save" >> "$T/repo/tracked.txt"
+run
+check "no wake — a builder of mine wrote it" [ "$(wakes)" = 5 ]
+HLINE="$(grep "quiet: modified.*tracked.txt" "$STATE/notice-self.log" | tail -1)"
+check "attributed to the most recently started job" contains "$HLINE" "job j-live"
+check "never to the stale finished one found first" lacks "$HLINE" "j-hold"
+
+echo "== (i) a finished-uncollected job alone, past its grace, does not suppress =="
+NOW3=$(date +%s)
+sidecar j-live collected "$T/repo" "$(( NOW3 - 200 ))" "$(( NOW3 - 150 ))"
+sidecar j-hold finished "$T/repo" "$(( NOW3 - 5000 ))" "" "$(( NOW3 - 4000 ))"
+echo "a hand long after the uncollected finish" >> "$T/repo/tracked.txt"
+run
+check "a finished job past the collection grace claims nothing" [ "$(wakes)" = 6 ]
+check "the write is reported" contains "$(last_wake)" "modified: tracked.txt"
+
+echo "== (j) a freshly finished job still claims its last bytes, and is never called running =="
+NOW4=$(date +%s)
+sidecar j-hold finished "$T/repo" "$(( NOW4 - 300 ))" "" "$(( NOW4 - 30 ))"
+echo "the last flush before collection" >> "$T/repo/tracked.txt"
+run
+check "a finished job inside the grace still claims its tree" [ "$(wakes)" = 6 ]
+JLINE="$(grep "quiet: modified.*tracked.txt" "$STATE/notice-self.log" | tail -1)"
+check "the claim names the job" contains "$JLINE" "job j-hold"
+check "the wording follows the state — never running of a finished job" \
+    lacks "$JLINE" "running"
+
+echo "== (k) an orphaned running sidecar older than the ceiling does not suppress =="
+NOW5=$(date +%s)
+sidecar j-ghost running "$T/library" "$(( NOW5 - 100000 ))"
+echo "a hand under a ghost's tree" > "$T/library/ghost-claim.md"
+run
+check "a running sidecar past the age ceiling claims nothing new" [ "$(wakes)" = 7 ]
+check "the write is reported" contains "$(last_wake)" "ghost-claim.md"
+GREPORT="$(ls -1t "$STATE"/notice-self-report-*.md 2>/dev/null | head -1)"
+check "the report never calls the ghost running" \
+    lacks "$(cat "$GREPORT")" "running job j-ghost"
+
+echo "== a byte from while the ghost plausibly ran is still its own =="
+echo "written inside the ceiling" > "$T/library/ghost-early.md"
+touch -d "@$(( NOW5 - 95000 ))" "$T/library/ghost-early.md"
+run
+check "a pre-ceiling mtime under the orphan stays quiet" [ "$(wakes)" = 7 ]
+check "and is attributed to the orphan by id" \
+    grep -q "quiet: created.*ghost-early.md.*job j-ghost" "$STATE/notice-self.log"
