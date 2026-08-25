@@ -334,6 +334,30 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     the cure shaping the patient. The prompt names the failure, not just the prohibition, so the
     model knows which move it is being asked not to make.
 
+    The nightly watch on this rule — the review's "cure shaping the voice" section — MUST carry a
+    denominator. A phrasing's share of the repaired lines convicts nothing by itself: repairs are
+    sentences she wrote, so any phrase she habitually uses appears "added and never removed" the
+    moment repairs are counted against only themselves. The watch fired eight lines in its first
+    nine nights and every one was false or worthless — twice on a signature phrase the user had
+    named as genuinely hers, once on a phrase whose whole-day rate a hand measurement showed flat
+    for nine nights, five times on one auth-leak artefact wearing five overlapping grams. So: a
+    repair-added phrasing is reported only when its rate across ALL of that day's spoken words —
+    spoken halves only, jobs excluded, the same population as every other rate in the report,
+    normalised per 1000 spoken words — is climbing night over night against the preceding nights
+    from the same population: at least two prior nights on record, the last three nightly rates
+    strictly rising, and tonight's rate at least one and a half times the median of the prior
+    nights'. (Chosen against the measured flat series 1.08, 1.14, 1.20, 0.81, 0.94, 1.29, 1.14
+    per 1000 words: its loudest night rose three-in-a-row to 1.29 but sat under 1.5 x its prior
+    median of 1.08, so it never fires.) Phrases on the persona-signature list — personal state
+    beside the phrase list, `CLAUDISM_SIGNATURES`, one place, never inlined in the generator —
+    are suppressed unconditionally, whatever their share or rate: a repair restoring her own
+    signature is the cure working, not the cure shaping her. The closing clause is computed,
+    never asserted: "on no list here" MAY be printed only when the gram matches no loaded list
+    pattern, and a gram a pattern does cover names that entry instead. And one tic is one line —
+    a flagged gram wholly contained in an equally-counted flagged gram is the same addition
+    counted twice, not a second finding.
+
+
 55. A `fix: delete` entry MUST reach the mirror as a deletion. The fired entry's `fix:` field
     rides the fire record and the mirror call's prompt, and where it reads `delete` the prompt
     MUST ask for the line with the offending words *removed* — a shorter line, not a
@@ -467,6 +491,13 @@ Rules 51–52 are held by `tests/test_claudism_scan.sh` (the rewrite row's befor
 family block reaching the mirror call's prompt, and the fail-open shape of both), with the desk
 fire record's `function` field asserted in `tests/test_claudism_mirror.sh` where the streamer
 already runs.
+
+Rule 54's nightly-watch paragraph is held by `tests/test_claudism_ratchet.sh`: a phrase flat at
+~1.1 per 1000 spoken words draws no ratchet line at six of six repaired lines; a rate genuinely
+climbing night over night draws one, and its firing proves jobs and display halves stayed out of
+the denominator; the named persona signatures never fire whatever their share; a gram a loaded
+pattern covers names that entry instead of "on no list here"; an equally-counted sub-gram is not
+its own line; and with no prior nights to stand on, nothing is a ratchet.
 
 The amended rule 50, and rule 45's `use` field, are held by `tests/test_claudism_mention_gate.sh`:
 a sentence quoting a flagged entry speaks unheld on the desk with no fire record and a

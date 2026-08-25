@@ -47,6 +47,7 @@ ingest's), CLAUDISM_REWRITES=0 to skip the model call, CLAUDISM_MAX_REWRITES
 rewrite call — also personal, also never in this repository).
 """
 
+import datetime
 import json
 import os
 import re
@@ -74,6 +75,10 @@ JOURNAL_DIR = os.environ.get("DAY_JOURNAL_DIR") or os.path.join(STATE_DIR, "jour
 LIST_PATH = os.environ.get("CLAUDISM_LIST") or os.path.join(STATE_DIR, "claudisms.md")
 OUT_DIR = os.environ.get("CLAUDISM_DIR") or os.path.join(STATE_DIR, "claudisms")
 FLAGS_DIR = os.environ.get("CLAUDISM_FLAGS_DIR") or os.path.join(STATE_DIR, "claudism-flags")
+# The persona-signature list — speech-output.md rule 54's suppression, ONE
+# named place, personal state beside the phrase list, never inlined here.
+SIGNATURES_PATH = os.environ.get("CLAUDISM_SIGNATURES") or os.path.join(
+    STATE_DIR, "persona-signatures.md")
 CRAB = os.environ.get("CRAB_BIN") or os.path.expanduser("~/.local/bin/crab")
 WAKE_AT = os.environ.get("CLAUDISM_WAKE_AT") or "09:30"
 
@@ -546,14 +551,107 @@ def substitution_watch(day, phrases, history):
     return notes
 
 
-def tic_drift(day):
-    """Rule 54's watch: phrasings the mirror's rewrites ADD and never remove.
-    A rewrite model handed one isolated sentence reaches for a signature
-    flourish, and because that flourish is on no pattern list nothing else
-    in this file can see it. So compare each rewrite's before against its
-    after, count the word-trigrams that appear only in the after, and report
-    any that were added repeatedly and never once taken away. Reads the flag
-    log and never writes it."""
+def load_signatures():
+    """The persona-signature suppression list (speech-output.md rule 54): the
+    phrases that are genuinely hers, named by the user, kept in ONE place —
+    `CLAUDISM_SIGNATURES`, personal state beside the phrase list, never
+    inlined here. Markdown bullets, the phrase in backticks, anything after
+    it hers to write. A phrase on it is never reported as a ratchet whatever
+    the numbers say: a repair restoring her own signature is the cure
+    working, not the cure shaping her. Returns (set, warning) — an
+    unreadable list is a warning in the report, because losing the
+    suppression silently is exactly the false positive this list closed."""
+    sigs = set()
+    try:
+        with open(SIGNATURES_PATH, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^-\s*`([^`]+)`", line.strip())
+                if m:
+                    norm = " ".join(re.findall(r"[a-z']+", m.group(1).lower()))
+                    if norm:
+                        sigs.add(norm)
+    except OSError as e:
+        return sigs, ("the persona-signature list at %s could not be read "
+                      "(%s) — nothing was suppressed tonight"
+                      % (SIGNATURES_PATH, getattr(e, "strerror", None) or e))
+    return sigs, ""
+
+
+def _spoken_token_lists(turns):
+    """One token list per reply's spoken half, fences stripped — the same
+    `[a-z']+` cut the candidate grams are made of, kept per-reply so no gram
+    is counted across a reply boundary."""
+    out = []
+    for e in turns:
+        spoken = re.sub(r"```.*?```", " ", spoken_half(e["reply"]), flags=re.S)
+        out.append(re.findall(r"[a-z']+", spoken.lower()))
+    return out
+
+
+def _gram_rate(tok_lists, gram_words):
+    """Occurrences of the gram per 1000 spoken words across the night, or
+    None where the night has no spoken words to be a denominator."""
+    words = sum(len(t) for t in tok_lists)
+    if not words:
+        return None
+    n = len(gram_words)
+    count = 0
+    for toks in tok_lists:
+        for i in range(len(toks) - n + 1):
+            if toks[i:i + n] == gram_words:
+                count += 1
+    return count * 1000.0 / words
+
+
+def _prior_nights(day, want=6, span=14):
+    """The preceding journal nights the rates compare against: the most
+    recent `want` days with a journal file, looking back at most `span`
+    calendar days, oldest first."""
+    try:
+        d0 = datetime.date.fromisoformat(day)
+    except ValueError:
+        return []
+    out = []
+    for back in range(1, span + 1):
+        d = (d0 - datetime.timedelta(days=back)).isoformat()
+        if os.path.exists(os.path.join(JOURNAL_DIR, d + ".jsonl")):
+            out.append(d)
+            if len(out) >= want:
+                break
+    out.reverse()
+    return out
+
+
+def _median(xs):
+    s = sorted(xs)
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def tic_drift(day, phrases, turns):
+    """Rule 54's watch, WITH a denominator (speech-output.md rule 54, amended
+    for the record rule-54-s-ratchet-has-no-denominator-so-it-has-b). The
+    flag log still nominates the candidates: word-grams the mirror's
+    rewrites added to several repaired lines and never once removed. But a
+    share of the repaired lines convicts nothing by itself — repairs are
+    sentences she wrote, so any phrase she habitually uses appears "added
+    and never removed" when the repairs are counted against only themselves;
+    every line this section fired in its first nine nights was false or
+    worthless for exactly that. A candidate is reported only when its rate
+    across ALL of the day's spoken words — the same population as every
+    other rate in the report: spoken halves, jobs excluded, per 1000 spoken
+    words — is climbing night over night: at least two prior nights on
+    record, the last three nightly rates strictly rising, and tonight at
+    least 1.5x the median of the prior nights'. The thresholds are chosen
+    against the hand-measured "which is" series of 2026-08-08..16 (1.08,
+    1.14, 1.20, 0.81, 0.94, 1.29, 1.14 per 1000 words): its loudest night
+    rose three-in-a-row to 1.29 but sat under 1.5 x its prior median of
+    1.08, so a flat habit never fires. Persona signatures are suppressed
+    unconditionally (load_signatures), the "on no list here" clause is
+    computed against the loaded patterns rather than asserted, and a flagged
+    gram wholly contained in an equally-counted flagged gram is dropped —
+    one tic, one line, not 2026-08-20's five. Reads the flag log and the
+    journal, writes neither."""
     path = os.path.join(FLAGS_DIR, day + ".jsonl")
     added, removed = {}, {}
     pairs = 0
@@ -590,15 +688,73 @@ def tic_drift(day):
                     removed[g] = removed.get(g, 0) + 1
     if pairs < 5:
         return []
-    ratchets = [(n, g) for g, n in added.items()
-                if n >= 3 and not removed.get(g)]
-    if not ratchets:
+    cands = [(n, g) for g, n in added.items()
+             if n >= 3 and not removed.get(g)]
+    if not cands:
         return []
-    ratchets.sort(reverse=True)
-    return ["the rewrites added “%s” to %d of %d repaired lines and "
-            "never once removed it — a one-way ratchet, and it is on no "
-            "list here." % (g, n, pairs)
-            for n, g in ratchets[:5]]
+
+    # The unconditional suppression: a gram that is, or contains, or sits
+    # inside a named persona signature is hers, not the mirror's.
+    sigs, sig_warn = load_signatures()
+
+    def is_signature(g):
+        padded = " %s " % g
+        return any((" %s " % s) in padded or padded in (" %s " % s)
+                   for s in sigs)
+
+    cands = [c for c in cands if not is_signature(c[1])]
+    if not cands:
+        return []
+
+    # The denominator: tonight's spoken words and the preceding nights',
+    # read once, held per reply. A prior night whose journal holds no
+    # spoken words at all cannot be a point on anyone's curve.
+    tonight_toks = _spoken_token_lists(turns)
+    prior_toks = []
+    for d in _prior_nights(day):
+        prior_turns, _bad = read_day(d)
+        prior_toks.append(_spoken_token_lists(prior_turns or []))
+
+    flagged = []
+    for n, g in sorted(cands, reverse=True):
+        gram_words = g.split(" ")
+        tonight_rate = _gram_rate(tonight_toks, gram_words)
+        if tonight_rate is None or tonight_rate <= 0:
+            continue
+        series = [r for r in (_gram_rate(t, gram_words) for t in prior_toks)
+                  if r is not None]
+        if len(series) < 2:
+            continue
+        rates = series + [tonight_rate]
+        if not (rates[-3] < rates[-2] < rates[-1]):
+            continue
+        if tonight_rate < 1.5 * _median(series):
+            continue
+        flagged.append((n, g, rates))
+
+    # One tic, one line: "to authenticate" beside "to authenticate oauth"
+    # at the same count is the same addition counted twice.
+    kept = [(n, g, rates) for n, g, rates in flagged
+            if not any(g != g2 and (" %s " % g) in (" %s " % g2) and n2 >= n
+                       for n2, g2, _r in flagged)]
+    out = []
+    for n, g, rates in kept[:5]:
+        home = ""
+        for p in phrases:
+            if p["pattern"].search(g):
+                home = p["title"]
+                break
+        trail = ", ".join("%.2f" % r for r in rates)
+        clause = ("and it is already on the list here — “%s”." % home
+                  if home else "and it is on no list here.")
+        out.append("the rewrites added “%s” to %d of %d repaired lines and "
+                   "never once removed it, and its rate across the day's "
+                   "spoken words is climbing night over night (%s per 1000, "
+                   "oldest first) — a one-way ratchet, %s"
+                   % (g, n, pairs, trail, clause))
+    if out and sig_warn:
+        out.append("(%s.)" % sig_warn)
+    return out
 
 
 def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
@@ -659,7 +815,7 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
     if watch:
         lines += ["", "## The substitution watch", ""]
         lines += ["- %s" % w for w in watch]
-    drift = tic_drift(day)
+    drift = tic_drift(day, phrases, turns)
     if drift:
         lines += ["", "## The cure shaping the voice (rule 54)", "",
                   "Phrasings the repairs put IN and never took out:", ""]
