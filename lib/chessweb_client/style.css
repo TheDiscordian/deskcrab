@@ -337,6 +337,26 @@ button.armed:hover:not(:disabled) {
 	padding: 0.05rem 0.55rem;
 }
 
+/* The chess clock (specs/chessweb.md rule 22f): one per side, painted from
+   /state and counted down locally; the server alone judges a flag. */
+.gy-clock {
+	font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+	font-size: 1.35rem;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-align: center;
+	padding: 0.2rem 0.6rem;
+	margin: 0.15rem 0 0.35rem;
+	border-radius: 0.5rem;
+	background: #241f2e;
+	color: #8f87a1;
+}
+
+.gy-clock.running { background: #2c3a28; color: #d9f0c8; }
+.gy-clock.low { color: #ffb3a7; }
+.gy-clock.running.low { background: #46251f; color: #ffd2c9; }
+.gy-clock.flagged { background: #46251f; color: #ff8f7d; }
+
 .gy-pieces {
 	display: flex;
 	flex-wrap: wrap;

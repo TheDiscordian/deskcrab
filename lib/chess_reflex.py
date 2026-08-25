@@ -18,6 +18,7 @@ move's worth is how its games ended, and an unfinished game has not ended.
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS games (
     my_outcome TEXT NOT NULL,     -- 'win', 'loss', 'draw' for the my_side player
     plies      INTEGER NOT NULL,
     ingested   TEXT NOT NULL,
-    source     TEXT NOT NULL DEFAULT 'played'  -- 'played' or 'book' (theory)
+    source     TEXT NOT NULL DEFAULT 'played',  -- 'played' or 'book' (theory)
+    control    TEXT NOT NULL DEFAULT 'untimed'  -- time control (chessweb.md 22e)
 );
 CREATE TABLE IF NOT EXISTS moves (
     fen     TEXT NOT NULL,        -- the full FEN the move was made from
@@ -72,11 +74,16 @@ def connect() -> sqlite3.Connection:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Stores written before the book existed have no `source`; everything in
-    them was played, which is exactly what the column defaults to."""
+    them was played, which is exactly what the column defaults to. Likewise
+    `control`: every game ingested before the clock existed was untimed."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(games)")}
     if "source" not in cols:
         conn.execute("ALTER TABLE games ADD COLUMN source TEXT NOT NULL"
                      " DEFAULT 'played'")
+        conn.commit()
+    if "control" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN control TEXT NOT NULL"
+                     " DEFAULT 'untimed'")
         conn.commit()
 
 
@@ -88,6 +95,23 @@ def fen_key(fen: str) -> str:
 
 # ---------------------------------------------------------------- ingestion
 
+def _flagged(g: dict, board: chess.Board) -> str | None:
+    """The side that lost on time: the recorded flag_fell, else judged live
+    off the stored clock — chess_cli.flag_fallen's standalone twin, because
+    this module imports no CLI (specs/chessweb.md rule 22d; the agreement is
+    held by a test, since twin parsers drift)."""
+    if g.get("flag_fell"):
+        return g["flag_fell"]
+    tc, ck = g.get("time_control"), g.get("clock")
+    if (not tc or not ck or ck.get("turn_started") is None
+            or len(g["moves"]) < 2 or board.is_game_over()
+            or g.get("resigned_by") or g.get("draw_agreed")):
+        return None
+    side = "white" if board.turn == chess.WHITE else "black"
+    spent = (time.time() - ck["turn_started"]) * 1000
+    return side if ck.get(f"{side}_ms", 0) - spent <= 0 else None
+
+
 def game_result(g: dict, board: chess.Board) -> str:
     """The result column of chess_cli.compute_state, computed standalone so
     this module needs no import of the CLI it feeds. '*' means still active."""
@@ -95,6 +119,12 @@ def game_result(g: dict, board: chess.Board) -> str:
         return "0-1" if g["resigned_by"] == "white" else "1-0"
     if g.get("draw_agreed"):
         return "1/2-1/2"
+    flagged = _flagged(g, board)
+    if flagged:
+        winner = chess.BLACK if flagged == "white" else chess.WHITE
+        if board.has_insufficient_material(winner):
+            return "1/2-1/2"
+        return "0-1" if flagged == "white" else "1-0"
     if board.is_checkmate():
         return "0-1" if board.turn == chess.WHITE else "1-0"
     if (board.is_stalemate() or board.is_insufficient_material()
@@ -120,12 +150,15 @@ def _ingest(conn: sqlite3.Connection, g: dict, board_final: chess.Board,
     my_side = g.get("my_side")
     won = {"1-0": "white", "0-1": "black"}.get(result)
     outcome = "draw" if won is None else ("win" if won == my_side else "loss")
+    tc = g.get("time_control") or {}
     conn.execute(
         "INSERT INTO games (game_id, opponent, my_side, result, my_outcome,"
-        " plies, ingested, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'played')",
+        " plies, ingested, source, control)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, 'played', ?)",
         (g["id"], g.get("opponent"), my_side, result, outcome,
          len(g["moves"]),
-         datetime.now(timezone.utc).isoformat(timespec="seconds")))
+         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+         tc.get("name") or "untimed"))
     board = chess.Board()
     for ply, uci in enumerate(g["moves"]):
         colour = "white" if board.turn == chess.WHITE else "black"

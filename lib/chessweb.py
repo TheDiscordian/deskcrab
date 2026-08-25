@@ -385,13 +385,14 @@ class Store:
     """The bridge's one view of the betty-chess game files. Every read is from
     disk; every write goes through chess_cli.save_game. No cached truth."""
 
-    def __init__(self, opponent, her_side, game_id=None):
+    def __init__(self, opponent, her_side, game_id=None, time_control=None):
         self.opponent = opponent
         # "random" means: flip a fresh coin for every NEW game, not once at
         # startup — otherwise one service run hands out the same colour forever.
         self.random_side = her_side == "random"
         self.her_side = "white" if self.random_side else her_side
         self.game_id = game_id
+        self.time_control = time_control  # a TIME_CONTROLS name, or None
 
     def load(self):
         # Newest first, and the choice is pinned: the poll must keep watching
@@ -403,14 +404,22 @@ class Store:
                     return g
                 continue
             if (chess_cli.slugify(g["opponent"])
-                    == chess_cli.slugify(self.opponent)
-                    and chess_cli.compute_state(
-                        g, chess_cli.build_board(g))[0] == "active"):
-                # The stored game's sides are the truth; --human-side only
-                # shapes a game that does not exist yet.
-                self.game_id = g["id"]
-                self.her_side = g["my_side"]
-                return g
+                    == chess_cli.slugify(self.opponent)):
+                board = chess_cli.build_board(g)
+                # Discovery settles a fallen flag it walks past (rule 22c):
+                # recorded silently — nobody is watching this game, or it
+                # would be pinned — so an abandoned timed game cannot sit
+                # active-looking in the store forever. The watched game's
+                # falls are the poll's, which also speaks (poll_once).
+                if chess_cli.settle_flag(g, board):
+                    log(f"{g['id']}: {chess_cli.compute_state(g, board)[1]} "
+                        f"— recorded at discovery")
+                if chess_cli.compute_state(g, board)[0] == "active":
+                    # The stored game's sides are the truth; --human-side
+                    # only shapes a game that does not exist yet.
+                    self.game_id = g["id"]
+                    self.her_side = g["my_side"]
+                    return g
         return None
 
     def create(self):
@@ -435,6 +444,11 @@ class Store:
              "my_side": self.her_side, "moves": [], "resigned_by": None,
              "draw_agreed": False, "engine_level": None,
              "created": chess_cli.now()}
+        tc, ck = chess_cli.make_time_control(self.time_control)
+        if tc:
+            g["time_control"] = tc
+            g["clock"] = ck
+            g["flag_fell"] = None
         chess_cli.save_game(g)
         self.game_id = g["id"]
         log(f"created {g['id']}: the user is "
@@ -512,6 +526,7 @@ class Hub:
         san = board.san(move)
         board.push(move)
         g["moves"].append(move.uci())
+        chess_cli.clock_move(g)
         chess_cli.save_game(g)
         self.synced = list(g["moves"])
         for m in msgs:
@@ -559,6 +574,7 @@ class Hub:
         san = board.san(move)
         board.push(move)
         g["moves"].append(move.uci())
+        chess_cli.clock_move(g)
         chess_cli.save_game(g)
         chess_cli.metric("move-played", f"{g['id']} ply {ply} {san} reflex")
         chess_cli.metric("move-latency",
@@ -648,6 +664,10 @@ class Hub:
             "key": key, "gid": gid, "ply": ply, "fen": board.fen(),
             "side": self.store.her_side, "opponent": g["opponent"],
             "history": chess_cli.history(g["moves"]),
+            # The live clock rides along VISIBLE to the mover (rule 22f);
+            # reading it into the effort budget is separate, unadjudicated
+            # work, so nothing in the mover consults it yet.
+            "clock": chess_cli.clock_remaining(g, board),
             "effort": self.move_effort(g, board), "t0": t0})
         # A retry of the SAME position is the same think (rule 12): the
         # started stamp is set once, when the position first goes to the
@@ -689,6 +709,7 @@ class Hub:
             msgs = wire_msgs_for_move(board, move)
             board.push(move)
             g["moves"].append(move.uci())
+            chess_cli.clock_move(g)
             chess_cli.save_game(g)
             took = time.time() - job["t0"]
             chess_cli.metric("move-played",
@@ -977,6 +998,7 @@ class Hub:
         san = board.san(move)
         board.push(move)
         g["moves"].append(move.uci())
+        chess_cli.clock_move(g)
         chess_cli.save_game(g)
         self.synced = list(g["moves"])
         self.broadcast(msg_promote(tx, ty, rune))
@@ -1042,11 +1064,29 @@ class Hub:
                     log(f"store poll: {e}")
 
     def poll_once(self):
-        if self.synced is None:
-            return  # nothing shown to anyone yet; NewGame does the first sync
         g = self.store.load() if self.store.game_id else None
         if g is None:
             return
+        # The watched game's flag falls here, before the synced gate: the
+        # clock is enforced server-side (rule 22c) whether or not a browser
+        # has ever joined this serve. Recording it is one write; the
+        # GameComplete broadcast rides the ordinary key != "active" path
+        # below, and the end-of-game wake is booked exactly once, here.
+        if chess_cli.settle_flag(g, chess_cli.build_board(g)):
+            _key, desc, result = chess_cli.compute_state(
+                g, chess_cli.build_board(g))
+            loud(f"{g['id']}: {desc} [{result}]")
+            self.activity.update(poked_at=None, started_at=None,
+                                 played_at=None, san=None)
+            self.book_wake(
+                f"chessweb: the game against {g['opponent']} ({g['id']}) "
+                f"just ended — {desc} [{result}]: a flag fell on the "
+                f"{(g.get('time_control') or {}).get('name')} clock. "
+                f"History: {chess_cli.history(g['moves'])}. "
+                f"Board: betty-chess show {g['id']}",
+                f"the end of {g['id']} on time")
+        if self.synced is None:
+            return  # nothing shown to anyone yet; NewGame does the first sync
         moves = g["moves"]
         if moves == self.synced:
             pass
@@ -1226,6 +1266,12 @@ def make_handler(hub, client_dir):
                                     else "black"),
                      "state": key, "desc": desc, "result": result,
                      "legal": legal,
+                     # Rule 22f: the control and the live clock, the running
+                     # side's figure with the current think already deducted.
+                     # Both null for an untimed game; the page draws, never
+                     # judges — enforcement stays in this process.
+                     "time_control": g.get("time_control"),
+                     "clock": chess_cli.clock_remaining(g, board),
                      "last": g["moves"][-1] if g["moves"] else None})
 
         def json_body(self, obj, status=200):
@@ -1327,6 +1373,13 @@ def main(argv=None):
                     default="random", help="the user's colour in a NEW game")
     sp.add_argument("--game", default=None,
                     help="pin a betty-chess game id instead of newest-active")
+    sp.add_argument("--time-control",
+                    default=os.environ.get("DESKCRAB_CHESSWEB_TIME_CONTROL",
+                                           "untimed"),
+                    metavar="NAME",
+                    help="the clock for NEW games (chessweb.md rule 22): "
+                         f"one of {', '.join(chess_cli.TIME_CONTROLS)}, or "
+                         "untimed (the default)")
     sp.add_argument("--client", default=None,
                     help="the SpeedyChess client directory")
     sp.add_argument("--poll", type=float, default=1.0,
@@ -1336,7 +1389,14 @@ def main(argv=None):
     client_dir = find_client_dir(args.client)
     her_side = ("random" if args.human_side == "random"
                 else "black" if args.human_side == "white" else "white")
-    store = Store(args.opponent, her_side, args.game)
+    try:
+        # Validated at serve start, not at the first New Game click hours
+        # later: a typo in the knob must refuse the serve, out loud.
+        chess_cli.make_time_control(args.time_control)
+    except chess_cli.CliError as e:
+        sys.exit(f"chessweb: {e}")
+    store = Store(args.opponent, her_side, args.game,
+                  time_control=args.time_control)
     hub = Hub(store, default_wake_cmd(), args.poll)
 
     httpd = Server(("", args.port), make_handler(hub, client_dir))

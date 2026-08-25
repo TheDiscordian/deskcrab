@@ -415,6 +415,67 @@ cannot be changed.
     an all-caps order over every wake is a cried wolf — the wakes with no board to touch
     would learn to read past it, and the one wake it was written for would read past it
     with them.
+22. **The clock.** A game MAY carry a time control, chosen when the game is created and never
+    changed after: `--time-control` on `betty-chess new` and on `betty-chessweb serve`
+    (`$DESKCRAB_CHESSWEB_TIME_CONTROL` is the serve flag's default), naming one of the standard
+    set — bullet `1+0` and `2+1`, blitz `3+2` and `5+0`, rapid `10+0` and `15+10`, base minutes
+    plus Fischer increment seconds per move — or `untimed`, the default, which is exactly the
+    old behaviour: no clock fields at all. A record without the fields IS an untimed game, so
+    every game recorded before this rule keeps its meaning unread. Three fields on the game
+    record carry the whole truth, because the store is the one record and a restart must lose
+    nothing (rule 10): `time_control` (`{name, speed, base_ms, inc_ms}`), `clock`
+    (`{white_ms, black_ms, turn_started}` — per-side remaining milliseconds and the wall-clock
+    second the side to move's turn began), and `flag_fell` (the side whose flag was called,
+    recorded like `resigned_by`). A bridge that dies mid-think in a timed game comes back to a
+    clock that kept running, because the clock IS the stored stamps read against the wall
+    clock — that is the honest reading of a chess clock, not a defect.
+    a. The clock is charged where the move is recorded, by ONE implementation for every path
+       (`chess_cli.clock_move`, called by `betty-chess move`, the engine command, and all four
+       of the bridge's record paths — user move, promotion, reflex, model): the mover's elapsed
+       think since `turn_started` comes off their remaining milliseconds (floored at zero), the
+       increment goes back on, and `turn_started` restarts for the other side. Each side's
+       FIRST move is neither charged nor credited — a clock nobody has pressed was never
+       running, and the opponent's median first think measured 2026-08-24 makes an armed-at-deal
+       bullet clock a forfeit for whoever is slow to the board — so charging begins at each
+       side's second move (ply 2 and ply 3).
+    b. A flag has fallen when it is a side's move, their clock is running (rule 22a's arming),
+       the board is not already decided, and their remaining time is spent. The fall is derived
+       LIVE by `compute_state` from the stored clock and the wall clock, never from a poll
+       having noticed: no reader — `status`, `list`, `move`, the bridge, game inference — can
+       show a flagged game as live, and a move offered after the fall is refused exactly like a
+       move on any finished board. Enforcement is server-side ONLY: the client draws the
+       clocks, it never judges them, and she is never asked to notice her own flag.
+    c. Recording the fall is the bridge's job. The store poll checks the watched game every
+       tick and, on a fall, writes `flag_fell` through `chess_cli.save_game`, broadcasts one
+       GameComplete (rule 9), and books the end-of-game wake (rule 7) naming the loss on time.
+       Store discovery settles too: a matching game found with its flag down and unrecorded is
+       recorded at load — silently, no wake, nobody was watching — so an abandoned timed game
+       cannot sit active-looking in the store forever. A flag that falls while NO bridge ever
+       looks again stays derived-only (rule 22b keeps every display truthful), reaching the
+       reflex ledger at the next save or backfill; that omission is accepted and named here.
+    d. The result of a fall: the flagged side loses, `1-0`/`0-1` accordingly — except when the
+       side that would win has insufficient mating material (python-chess's
+       `has_insufficient_material`, the cheap conservative test), which is a draw, desc naming
+       both facts. `chess_reflex.game_result`, compute_state's standalone twin, reads
+       `flag_fell` and the live clock the same way, so the ledger ingests a timed loss as a
+       loss; the twin-drift hazard is held by a test asserting the two agree on flagged games.
+    e. The record splits by variant, not only by colour: `betty-chess list` prints each game's
+       control name (`untimed` when none), and the reflex games table carries a `control`
+       column (migrated in place, default `untimed`) written at ingest — whatever counts the
+       win/loss record can read the variant off either.
+    f. The clocks are visible everywhere a board is: `GET /state` carries `time_control` and a
+       live `clock` object (`{white_ms, black_ms, running}`, the running side's figure with the
+       current think already deducted; a flagged side reads zero), the shipped client draws
+       both clocks counting down for the side to move and shows the flag result in words when
+       one falls, and `betty-chess status` prints the control and both remaining times. The
+       mover's job dict carries the same live clock — VISIBLE to it, not yet consulted: reading
+       remaining time into the per-move effort budget is a separate, unadjudicated piece of
+       work, and the effort dials (rule 16b) are unchanged by this rule.
+    g. `undo` on a flagged game clears `flag_fell` exactly as it clears a resignation, and any
+       undo in a timed game restarts `turn_started` at the undo itself. Remaining time is NOT
+       replayed — no per-move time history is kept, so the sides resume with the balances they
+       had — a named roughness, accepted because undo is a correspondence courtesy, not a
+       tournament move.
 
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 

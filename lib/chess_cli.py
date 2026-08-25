@@ -164,14 +164,145 @@ def build_board(g: dict) -> chess.Board:
     return board
 
 
-def compute_state(g: dict, board: chess.Board) -> tuple[str, str, str]:
-    """(key, human description, result) — key is 'active' or a game-over kind."""
+# ---------------------------------------------------------------- the clock
+# specs/chessweb.md rule 22. A game MAY carry a time control, chosen at
+# creation; a record without the fields IS an untimed game, which is how
+# every game recorded before the rule keeps its meaning unread. The clock is
+# three stored facts — per-side remaining ms, the wall-clock second the
+# current turn began, and the flag once one falls — read against time.time(),
+# so a bridge that dies mid-think comes back to a clock that kept running.
+
+TIME_CONTROLS = {  # name -> (speed, base ms, Fischer increment ms per move)
+    "1+0": ("bullet", 60_000, 0),
+    "2+1": ("bullet", 120_000, 1_000),
+    "3+2": ("blitz", 180_000, 2_000),
+    "5+0": ("blitz", 300_000, 0),
+    "10+0": ("rapid", 600_000, 0),
+    "15+10": ("rapid", 900_000, 10_000),
+}
+
+
+def make_time_control(name):
+    """(time_control, clock) fields for a NEW game, or (None, None) for
+    untimed. Raises CliError on a name outside the standard set."""
+    if not name or name == "untimed":
+        return None, None
+    if name not in TIME_CONTROLS:
+        raise CliError(f"unknown time control '{name}' — one of: "
+                       f"{', '.join(TIME_CONTROLS)}, untimed")
+    speed, base, inc = TIME_CONTROLS[name]
+    return ({"name": name, "speed": speed, "base_ms": base, "inc_ms": inc},
+            {"white_ms": base, "black_ms": base, "turn_started": None})
+
+
+def _clock_armed(g: dict) -> bool:
+    """Is the side to move's clock actually running? Each side's first move
+    is free (rule 22a): charging — and flagging — begin at ply 2."""
+    tc, ck = g.get("time_control"), g.get("clock")
+    return bool(tc and ck and ck.get("turn_started") is not None
+                and len(g["moves"]) >= 2)
+
+
+def flag_fallen(g: dict, board: chess.Board, now: float = None) -> str | None:
+    """The side that has lost on time: the recorded flag_fell, else judged
+    live off the stored clock and the wall clock (rule 22b). None while
+    nobody has flagged, the game is otherwise over, or there is no clock."""
+    if g.get("flag_fell"):
+        return g["flag_fell"]
+    if g.get("resigned_by") or g.get("draw_agreed") or board.is_game_over():
+        return None
+    if not _clock_armed(g):
+        return None
+    now = time.time() if now is None else now
+    side = "white" if board.turn == chess.WHITE else "black"
+    spent = (now - g["clock"]["turn_started"]) * 1000
+    return side if g["clock"].get(f"{side}_ms", 0) - spent <= 0 else None
+
+
+def _flag_state(g: dict, board: chess.Board, side: str):
+    """(key, desc, result) for a fallen flag: the flagged side loses, unless
+    the winner cannot mate — insufficient material is a draw (rule 22d)."""
+    winner = "black" if side == "white" else "white"
+    colour = chess.WHITE if winner == "white" else chess.BLACK
+    if board.has_insufficient_material(colour):
+        return ("draw", f"{side} lost on time, but {winner} has insufficient "
+                        f"material — draw", "1/2-1/2")
+    return ("flag", f"{side} lost on time — {winner} wins",
+            "1-0" if winner == "white" else "0-1")
+
+
+def clock_move(g: dict, now: float = None) -> None:
+    """Charge the clock for the move JUST APPENDED to g['moves'] (not yet
+    saved): the mover's elapsed think comes off their remaining milliseconds
+    (floored at zero) and the increment goes back on — from each side's
+    second move; both first moves are free (rule 22a) — and the turn clock
+    restarts for the other side. One implementation for every record path;
+    a game without a time control is untouched."""
+    tc, ck = g.get("time_control"), g.get("clock")
+    if not tc or not ck:
+        return
+    now = time.time() if now is None else now
+    ply = len(g["moves"]) - 1  # the move just appended
+    if ply >= 2 and ck.get("turn_started") is not None:
+        mover = "white" if ply % 2 == 0 else "black"
+        spent = max(0, int((now - ck["turn_started"]) * 1000))
+        ck[mover + "_ms"] = (max(0, ck.get(mover + "_ms", 0) - spent)
+                             + tc.get("inc_ms", 0))
+    ck["turn_started"] = now
+
+
+def clock_remaining(g: dict, board: chess.Board, now: float = None):
+    """{'white_ms', 'black_ms', 'running'} live at `now` — the running
+    side's figure with the current think already deducted, a flagged side
+    at zero — or None when the game has no clock (rule 22f)."""
+    tc, ck = g.get("time_control"), g.get("clock")
+    if not tc or not ck:
+        return None
+    now = time.time() if now is None else now
+    out = {"white_ms": ck.get("white_ms", 0), "black_ms": ck.get("black_ms", 0),
+           "running": None}
+    flagged = flag_fallen(g, board, now)
+    if flagged:
+        out[flagged + "_ms"] = 0
+        return out
+    if (_clock_armed(g) and not g.get("resigned_by")
+            and not g.get("draw_agreed") and not board.is_game_over()):
+        side = "white" if board.turn == chess.WHITE else "black"
+        spent = max(0, int((now - ck["turn_started"]) * 1000))
+        out[side + "_ms"] = max(0, out[side + "_ms"] - spent)
+        out["running"] = side
+    return out
+
+
+def clock_line(g: dict, board: chess.Board) -> str | None:
+    """The human clock line for status: control, both remaining, whose
+    clock runs. None for an untimed game."""
+    tc = g.get("time_control")
+    rem = clock_remaining(g, board)
+    if not tc or rem is None:
+        return None
+    def fmt(ms):
+        s = ms / 1000
+        return f"{int(s // 60)}:{s % 60:04.1f}"
+    tail = f" ({rem['running']}'s clock running)" if rem["running"] else ""
+    return (f"clock: {tc['name']} {tc['speed']} — "
+            f"white {fmt(rem['white_ms'])}, black {fmt(rem['black_ms'])}"
+            f"{tail}")
+
+
+def compute_state(g: dict, board: chess.Board,
+                  now: float = None) -> tuple[str, str, str]:
+    """(key, human description, result) — key is 'active' or a game-over kind.
+    Time-aware (rule 22b): a fallen flag, recorded or judged live off the
+    stored clock, is a finished game to every reader."""
     if g.get("resigned_by"):
         side = g["resigned_by"]
         return ("resigned", f"{side} resigned",
                 "0-1" if side == "white" else "1-0")
     if g.get("draw_agreed"):
         return ("draw", "draw agreed", "1/2-1/2")
+    if g.get("flag_fell"):
+        return _flag_state(g, board, g["flag_fell"])
     if board.is_checkmate():
         winner = "black" if board.turn == chess.WHITE else "white"
         return ("checkmate", f"checkmate — {winner} wins",
@@ -184,9 +315,25 @@ def compute_state(g: dict, board: chess.Board) -> tuple[str, str, str]:
         return ("draw", "draw — seventy-five-move rule", "1/2-1/2")
     if board.is_fivefold_repetition():
         return ("draw", "draw — fivefold repetition", "1/2-1/2")
+    live = flag_fallen(g, board, now)
+    if live:
+        return _flag_state(g, board, live)
     turn = "white" if board.turn == chess.WHITE else "black"
     desc = f"{turn} to move" + (", in check" if board.is_check() else "")
     return ("active", desc, "*")
+
+
+def settle_flag(g: dict, board: chess.Board) -> bool:
+    """Make a live-derived flag fall durable: record flag_fell and save
+    (which is also what hands the finished game to reflex ingest). True
+    when this call wrote it. Rule 22c: recording is the bridge's job, and
+    the bridge calls this."""
+    side = flag_fallen(g, board)
+    if side is None or g.get("flag_fell"):
+        return False
+    g["flag_fell"] = side
+    save_game(g)
+    return True
 
 
 def resolve_game(spec: str | None) -> dict:
@@ -524,6 +671,7 @@ def print_position(g: dict, board: chess.Board) -> None:
 # ---------------------------------------------------------------- commands
 
 def cmd_new(args):
+    tc, ck = make_time_control(args.time_control)
     slug = slugify(args.opponent)
     taken = {g["id"] for g in load_all()}
     n = 1
@@ -539,9 +687,16 @@ def cmd_new(args):
         "engine_level": args.engine_level,
         "created": now(),
     }
+    if tc:
+        g["time_control"] = tc
+        g["clock"] = ck
+        g["flag_fell"] = None
     save_game(g)
     opp_side = "black" if args.side == "white" else "white"
     print(f"{g['id']}: you are {args.side}, {args.opponent} is {opp_side}")
+    if tc:
+        print(f"time control: {tc['name']} {tc['speed']} — "
+              f"{tc['base_ms'] // 60000} min + {tc['inc_ms'] // 1000}s/move")
     print_position(g, build_board(g))
 
 
@@ -557,8 +712,10 @@ def cmd_list(args):
         white = side_name(g, "white")
         black = side_name(g, "black")
         tag = desc if result == "*" else f"{desc} [{result}]"
+        tc = g.get("time_control")
+        control = tc["name"] if tc else "untimed"
         print(f"{g['id']:<16} {white} v {black:<12} "
-              f"{len(g['moves']):>3} plies  {tag}")
+              f"{len(g['moves']):>3} plies  {control:<8} {tag}")
 
 
 def cmd_show(args):
@@ -621,6 +778,7 @@ def cmd_move(args):
     ply = len(g["moves"])
     board.push(move)
     g["moves"].append(move.uci())
+    clock_move(g)
     save_game(g)
     if mover == g.get("my_side"):
         metric("move-played", f"{g['id']} ply {ply} {san} cli")
@@ -630,18 +788,24 @@ def cmd_move(args):
 
 def cmd_undo(args):
     g = resolve_game(args.game)
-    if not g["moves"] and not g["resigned_by"] and not g["draw_agreed"]:
+    if (not g["moves"] and not g["resigned_by"] and not g["draw_agreed"]
+            and not g.get("flag_fell")):
         raise CliError(f"{g['id']}: nothing to undo")
-    if g["resigned_by"] or g["draw_agreed"]:
-        # First undo after a resignation or agreed draw reopens the game
-        # without touching the moves.
+    if g["resigned_by"] or g["draw_agreed"] or g.get("flag_fell"):
+        # First undo after a resignation, agreed draw or fallen flag reopens
+        # the game without touching the moves (rule 22g).
         g["resigned_by"] = None
         g["draw_agreed"] = False
+        g["flag_fell"] = None
         undone = "the game-ending agreement"
     else:
         n = min(args.plies, len(g["moves"]))
         del g["moves"][-n:]
         undone = f"{n} ply" if n == 1 else f"{n} plies"
+    if g.get("clock"):
+        # No per-move time history exists to replay, so the sides resume
+        # with the balances they had; only the turn clock restarts (22g).
+        g["clock"]["turn_started"] = time.time()
     save_game(g)
     print(f"{g['id']}: undid {undone}")
     print_position(g, build_board(g))
@@ -668,6 +832,10 @@ def cmd_status(args):
         print(legal_line(board))
     else:
         print(f"state: {desc}  [{result}]")
+    line = clock_line(g, board)
+    if line:
+        # The mover reads its remaining time off this line (rule 22f).
+        print(line)
     print(f"history: {history(g['moves'])}")
     print(f"fen: {board.fen()}")
     if g.get("engine_level") is not None:
@@ -724,6 +892,7 @@ def cmd_engine(args):
     san = board.san(played.move)
     board.push(played.move)
     g["moves"].append(played.move.uci())
+    clock_move(g)
     save_game(g)
     lvl = f" (skill {level})" if level is not None else ""
     print(f"{g['id']}: engine{lvl} plays {san}")
@@ -822,6 +991,11 @@ def main(argv=None):
                     default="white", help="which side you play (default white)")
     sp.add_argument("--engine-level", type=int, default=None,
                     help="stockfish skill 0-20, if you want engine replies")
+    sp.add_argument("--time-control", default="untimed",
+                    metavar="NAME",
+                    help="a chess clock for the game: one of "
+                         f"{', '.join(TIME_CONTROLS)} (base+increment), or "
+                         "untimed (the default, no clock at all)")
     sp.set_defaults(func=cmd_new)
 
     sp = sub.add_parser("list", help="all games, newest first")
