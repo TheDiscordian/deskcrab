@@ -446,7 +446,9 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     jobs ledger's dispatches and finishes from that same window, the files the reply itself
     names as they stand on disk (existence and mtime, statted mechanically — the artefact
     refutes the accusation whatever hand and whatever hour wrote it, which a session window
-    never can), and the wake queue's pending bookings (a future commitment whose work a pending
+    never can), the recent chess games' own records (id, her side, and the move list as it
+    stands — a claim describing the game owes truth, not work, and the game file is its
+    witness), and the wake queue's pending bookings (a future commitment whose work a pending
     wake's reason already names is kept by the schedule, whenever it was booked — the checker
     once accused a sentence that merely reported a wake booked four hours earlier) — and a
     commitment ANYTHING in
@@ -462,13 +464,27 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     rules on each commitment's polarity first and short-circuits the negative to KEPT
     without consulting the records. Each pasted record MUST be
     bounded (bounded per call and per file, with any clip marked — never a raw byte cut, per
-    the DATA section's one-trim rule). The two disk-truth sections (named files, pending
-    wakes) fail soft: an unreadable one is presented to the judge as unreadable and named on
-    the check log, without unwinding the rest of the widening. Two backed short-circuits spare the model entirely: a
+    the DATA section's one-trim rule). The three disk-truth sections (named files, game
+    records, pending wakes) fail soft: an unreadable one is presented to the judge as
+    unreadable and named on
+    the check log, without unwinding the rest of the widening. Four backed short-circuits spare the model entirely: a
     `crab job` dispatched during the turn or within `PROMISE_CHECK_JOB_BACKED_WINDOW` (default
-    15 minutes) before it backs every action-claim by definition, and a reply whose only
+    15 minutes) before it backs every action-claim by definition; a reply whose only
     commitment is announcing a chess move that the mover's own play record shows played around
-    the turn is the mover's work landing as designed. Evidence gathering that fails MUST fall
+    the turn is the mover's work landing as designed; a chess claim the game's own record
+    backs — its named moves present in the move list, its counted captures among her side's
+    captures, or plain board-state talk beside a game her side has moved in within
+    `PROMISE_CHECK_GAME_SLACK` (default 300s) of the claim, candidates drawn from games
+    updated within `PROMISE_CHECK_GAME_WINDOW` (default 21600s) — is a truth-claim its
+    artefact already witnesses, KEPT unjudged with the backing game named on the check log;
+    and a path-shaped token, a bare relative path in prose included, resolved against the
+    turn's own workdir, `$HOME`, and the data dir to an artefact whose mtime sits at or after
+    the claim's timestamp minus `PROMISE_CHECK_PATH_SLACK` (default 300s) is a completed-work
+    claim the disk itself keeps ([turn-pipeline.md](turn-pipeline.md) rule 32b). In each of
+    the last two the backed sentences are stripped and the remainder re-faces the pattern
+    gate, so a reply that also promises other work is still judged in full; an unreadable
+    games dir, game file, or path falls through to the judge with the failure named on the
+    check log — never a crash, and never a silent acquittal. Evidence gathering that fails MUST fall
     back to judging on the turn's own record alone — the pre-widening behaviour, an accusation
     rather than a silence — and MUST name the failure on the check log: the widening may make
     the checker fairer, never quietly absent. Its reason MUST open with the unkept-commitment prefix (a

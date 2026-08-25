@@ -287,8 +287,30 @@ ledger.
      commitment nothing anywhere
      performed is UNKEPT; a call that durably scheduled the work counts as performing it —
      a `crab wake-at` or `crab job` naming that work is a kept promise, not an excuse — and
-     two cheap backed short-circuits (a job dispatched in the turn's window; a chess-move
-     announcement the mover's record shows played) spare the model call entirely.
+     four cheap backed short-circuits (a job dispatched in the turn's window; a chess-move
+     announcement the mover's record shows played; a chess claim the game's own record backs;
+     a named path fresh on disk) spare the model call entirely. The last two are the artefact
+     standard reaching where it had not. A claim ABOUT a chess game — a move announced or
+     described, a capture counted, a statement of board state — is not a promise at all: it
+     owes truth, not work, and its witness is the game's own move list under the chess state
+     dir, never the announcing turn's tool stream, which is empty by construction when the
+     mover played the move (eight flags of this family between 2026-08-15 and 2026-08-25,
+     every one false). The checker MUST read the game files as an artefact source exactly as
+     it reads the jobs ledger: a sentence a recent game backs — its named moves present in
+     the move list, its counted captures among her side's captures, or plain board-state talk
+     beside a game her side has moved in within `PROMISE_CHECK_GAME_SLACK` (default 300s) of
+     the claim — is stripped and the remainder re-faces the pattern gate, and the recent
+     games' move lists stand beside the judged evidence as the sixth labelled record
+     (candidates within `PROMISE_CHECK_GAME_WINDOW`, default 21600s). And a PATH-SHAPED token
+     in the reply — a bare relative path in prose included (`Library/chess-notes.md`, flagged
+     2026-08-20 with the file on disk one minute old) — MUST be resolved against the obvious
+     roots (the turn's own workdir `PROJECT_DIR`, `$HOME`, and the data dir): a resolved
+     artefact whose mtime sits at or after the claim's own timestamp minus
+     `PROMISE_CHECK_PATH_SLACK` (default 300s) keeps its claim unjudged the same way. Neither
+     source loosens the checker: a claimed move absent from every recent game's move list and
+     a named path nowhere fresh on disk are judged exactly as before, and an unreadable games
+     dir, game file, or path degrades to today's judgement with the fall-through named on the
+     run trace — never a crash, and never a silent acquittal.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the
