@@ -26,6 +26,12 @@ so a worry written before a question was settled kept reading as present-tense
 fact — and twice on 2026-08-10 it was announced as a live code flaw that did
 not exist. A settled thing must read as settled at a glance. Stdlib only,
 like job-status: this must run on an offline machine with nothing installed.
+
+This file is also the SPINE of the wants drawer (specs/wants.md): the same
+parser, atomic writer, write declaration and search, parameterized by kind —
+`--kind want` ahead of the verb, which is what `crab want` passes. One
+substrate in code, two drawers on disk; kind `eng` is byte-for-byte the
+behaviour documented above.
 """
 
 import os
@@ -39,13 +45,53 @@ FIELDS = ["id", "title", "opened", "last_touched", "state",
 STATES = ("open", "settled", "dead")
 TIMEFMT = "%Y-%m-%d %H:%M:%S"
 
+# The kind table — the whole of what differs between the two drawers is data
+# (specs/wants.md, the substrate decision). KIND is set once in main() and the
+# vocabulary globals below are re-pointed with it; every function reads them.
+KIND = "eng"
+WANT_FIELDS = ["id", "title", "opened", "last_touched", "state",
+               "retired_at", "retired_by", "links", "summary"]
+WANT_STATES = ("live", "dormant", "grown-into-me", "retired")
+WANT_TERMINAL = ("grown-into-me", "retired")
+OPEN_STATE = "open"          # want: "live"
+CLOSED_AT = "settled_at"     # want: "retired_at"
+CLOSED_BY = "settled_by"     # want: "retired_by"
+CLOSED_STATES = ("settled", "dead")   # want: WANT_TERMINAL
 
-def eng_dir():
-    d = os.environ.get("DESKCRAB_ENG_DIR")
+WANT_USAGE = """Wants: the record spine of `eng` under kind `want` (specs/wants.md).
+
+    want new <title> [--summary <line>] [--body <text>] [--opened <datetime>]
+    want list [--state live|dormant|grown-into-me|retired|all]
+    want show <id>
+    want touch <id> <note...>           appends at the END: a want document
+                                        is a journal, newest last
+    want dormant <id> [why...]          resting on purpose, not gone
+    want revive <id> [note...]          back to live
+    want grown <id> <how...>            terminal: it became part of her
+    want retire <id> <reason...>        terminal: put down honestly; the
+                                        reason is required
+    want link <id> <job:<id>|eng:<id>>...
+    want search <words...>
+    want field <id> <key>
+    want touched-since <id> <epoch>
+    want migrate [<shelf file>]         frontmatter onto the drawer, once;
+                                        bodies byte-for-byte untouched
+"""
+
+
+def kind_dir(kind):
+    """The drawer for a kind, from the environment or the data home."""
+    env = {"eng": "DESKCRAB_ENG_DIR", "want": "DESKCRAB_WANTS_DIR"}[kind]
+    sub = {"eng": os.path.join("engineering", "records"), "want": "wants"}[kind]
+    d = os.environ.get(env)
     if not d:
         data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-        d = os.path.join(data, "deskcrab", "engineering", "records")
+        d = os.path.join(data, "deskcrab", sub)
     return d
+
+
+def eng_dir():
+    return kind_dir(KIND)
 
 
 def now():
@@ -185,7 +231,7 @@ def touched_epoch(meta):
 
 
 def settled_epoch(meta):
-    v = (meta.get("settled_at") or "").strip()
+    v = (meta.get(CLOSED_AT) or "").strip()
     for fmt in (TIMEFMT, "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             return int(time.mktime(time.strptime(v, fmt)))
@@ -205,8 +251,13 @@ def env_int(name, default):
 
 
 def add_entry(body, note, stamp=None):
-    """Newest first: the fresh entry goes above whatever is already there."""
+    """Records read newest FIRST: the fresh entry goes above whatever is
+    already there. A want document is a journal and reads newest LAST
+    (specs/wants.md rule 3), so kind want appends instead — the tool follows
+    the shape every existing document already has."""
     entry = "## %s\n\n%s\n" % (stamp or now(), note.strip())
+    if KIND == "want":
+        return (body.rstrip("\n") + "\n\n" + entry) if body.strip() else entry
     return entry + ("\n" + body if body.strip() else "")
 
 
@@ -235,24 +286,35 @@ def cmd_new(argv):
         rid = "%s-%d" % (slugify(title), n)
         n += 1
     stamp = opened or now()
-    meta = {"id": rid, "title": title, "opened": stamp, "last_touched": stamp,
-            "state": "open", "settled_at": "", "settled_by": "",
-            "summary": summary}
+    meta = {k: "" for k in FIELDS}
+    meta.update({"id": rid, "title": title, "opened": stamp,
+                 "last_touched": stamp, "state": OPEN_STATE,
+                 "summary": summary})
     write(rec_path(rid), meta, add_entry("", body or "Opened.", stamp))
+    if KIND == "want":
+        shelf_append(rid, title)
     print(rid)
 
 
 def one_line(meta):
-    state = meta.get("state", "open")
-    if state in ("settled", "dead"):
+    state = meta.get("state", OPEN_STATE)
+    if state in CLOSED_STATES:
         return "%s [%s] — %s %s: %s" % (
             meta.get("title", "?"), meta["id"], state,
-            meta.get("settled_at") or "(undated)",
-            meta.get("settled_by") or "(unrecorded)")
+            meta.get(CLOSED_AT) or "(undated)",
+            meta.get(CLOSED_BY) or "(unrecorded)")
     return "%s [%s] — opened %s, last touched %s" % (
         meta.get("title", "?"), meta["id"],
         meta.get("opened") or "(undated)",
         meta.get("last_touched") or "(undated)")
+
+
+def state_rank(meta):
+    """List order: the pursued before the resting before the closed."""
+    s = meta.get("state", "")
+    if KIND == "want":
+        return {"live": 0, "dormant": 1}.get(s, 2)
+    return 0 if s == "open" else 1
 
 
 def cmd_list(argv):
@@ -263,8 +325,7 @@ def cmd_list(argv):
     recs = [m for m, _ in all_records()]
     if want != "all":
         recs = [m for m in recs if m.get("state") == want]
-    recs.sort(key=lambda m: (0 if m.get("state") == "open" else 1,
-                             -touched_epoch(m)))
+    recs.sort(key=lambda m: (state_rank(m), -touched_epoch(m)))
     for m in recs:
         print("%-7s  %s" % (m.get("state", "?"), one_line(m)))
 
@@ -294,8 +355,8 @@ def _close(rid, state, by, verb):
     meta, body = load(rid)
     stamp = now()
     meta["state"] = state
-    meta["settled_at"] = stamp
-    meta["settled_by"] = by
+    meta[CLOSED_AT] = stamp
+    meta[CLOSED_BY] = by
     meta["last_touched"] = stamp
     write(rec_path(rid), meta, add_entry(body, "%s: %s" % (verb, by)))
     print("%s %s %s: %s" % (rid, state, stamp, by))
@@ -344,6 +405,351 @@ def cmd_touched_since(argv):
         die("not an epoch: %s" % argv[1])
     sys.exit(0 if touched_epoch(meta) > cut else 1)
 
+
+# --- the wants drawer (kind want, specs/wants.md) ---------------------------
+
+def wants_shelf():
+    return os.environ.get("DESKCRAB_WANTS_FILE") or ""
+
+
+def _shelf_replace(shelf, text):
+    """Atomic and declared, like every other write this tool makes."""
+    tmp = "%s.tmp.%d" % (shelf, os.getpid())
+    declare_write(shelf, tmp)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, shelf)
+
+
+def shelf_append(rid, title):
+    """Rule 7: the one-line pointer, appended whole, in the shape the one
+    shelf reader (wants_titles) already matches. A missing shelf is reported
+    and never created — the shelf is hers; the want exists either way."""
+    shelf = wants_shelf()
+    if not shelf:
+        print("no shelf is configured; the want has no shelf line yet")
+        return
+    if not os.path.isfile(shelf):
+        print("the shelf at %s does not exist; not created — the want has "
+              "no shelf line yet" % shelf)
+        return
+    try:
+        with open(shelf, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError as e:
+        print("could not read the shelf: %s" % e)
+        return
+    line = "- **%s** → %s.md" % (" ".join(title.split()), rid)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    _shelf_replace(shelf, text + line + "\n")
+    print("shelved: %s" % line)
+
+
+def shelf_remove(rid, title):
+    """Rule 11: take the want's own entry line off the shelf — matched by its
+    pointer or its bold title, at most ONE line, only an entry line — and hand
+    the removed line back so the caller can preserve it verbatim. Returns None
+    when there is no shelf or no matching line."""
+    shelf = wants_shelf()
+    if not shelf or not os.path.isfile(shelf):
+        return None
+    try:
+        with open(shelf, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines(True)
+    except OSError:
+        return None
+    doc = "→ %s.md" % rid
+    removed, kept = None, []
+    for ln in lines:
+        bare = ln.replace("`", "")
+        if removed is None and ln.startswith("- ") and (
+                bare.rstrip().endswith(doc) or (doc + " ") in bare
+                or (title and "**%s**" % title in ln)):
+            removed = ln.rstrip("\n")
+            continue
+        kept.append(ln)
+    if removed is None:
+        return None
+    _shelf_replace(shelf, "".join(kept))
+    return removed
+
+
+def refuse_terminal(meta, rid):
+    """Rule 4: a terminal state is final. Wanting it again is a new want."""
+    if meta.get("state") in WANT_TERMINAL:
+        die("%s is already %s (%s: %s) — a terminal state is final; wanting "
+            "it again is a new want, linked to this one"
+            % (rid, meta["state"], meta.get(CLOSED_AT) or "(undated)",
+               meta.get(CLOSED_BY) or "(unrecorded)"))
+
+
+def _shift_state(rid, state, note, verb):
+    meta, body = load(rid)
+    refuse_terminal(meta, rid)
+    stamp = now()
+    meta["state"] = state
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, "%s: %s" % (verb, note), stamp))
+    print("%s %s %s" % (rid, state, stamp))
+
+
+def cmd_dormant(argv):
+    if not argv:
+        die("usage: want dormant <id> [why]")
+    _shift_state(argv[0], "dormant", " ".join(argv[1:]) or "resting", "Dormant")
+
+
+def cmd_revive(argv):
+    if not argv:
+        die("usage: want revive <id> [note]")
+    _shift_state(argv[0], "live", " ".join(argv[1:]) or "picked back up",
+                 "Live again")
+
+
+def _close_want(rid, state, by, verb):
+    """The terminal transitions: stamp, entry, and the honest way off the
+    shelf — the removed line preserved verbatim so retirement loses no words
+    (rule 11). The shelf edit happens first so the entry can carry the line;
+    both writes are atomic and declared."""
+    meta, body = load(rid)
+    refuse_terminal(meta, rid)
+    stamp = now()
+    meta["state"] = state
+    meta[CLOSED_AT] = stamp
+    meta[CLOSED_BY] = by
+    meta["last_touched"] = stamp
+    note = "%s: %s" % (verb, by)
+    removed = shelf_remove(rid, meta.get("title", ""))
+    if removed is not None:
+        note += "\n\nShelf line at closing, preserved: %s" % removed
+    write(rec_path(rid), meta, add_entry(body, note, stamp))
+    print("%s %s %s: %s" % (rid, state, stamp, by))
+    if removed is not None:
+        print("shelf line removed; preserved verbatim in the document")
+    elif wants_shelf():
+        print("no shelf line found to remove for %s — the state change stands"
+              % rid)
+
+
+def cmd_grown(argv):
+    if len(argv) < 2:
+        die("usage: want grown <id> <how-it-grew-into-her>")
+    _close_want(argv[0], "grown-into-me", " ".join(argv[1:]), "Grown into me")
+
+
+def cmd_retire(argv):
+    if len(argv) < 2:
+        die("usage: want retire <id> <reason> (the reason is the honesty)")
+    _close_want(argv[0], "retired", " ".join(argv[1:]), "Retired")
+
+
+LINK_RE = re.compile(r"^(job|eng):([A-Za-z0-9][A-Za-z0-9._-]*)$")
+
+
+def jobs_dir():
+    d = os.environ.get("JOBS_DIR")
+    if not d:
+        data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        d = os.path.join(data, "deskcrab", "jobs")
+    return d
+
+
+def _link_target_missing(ref):
+    """Rule 12: the target must exist — a link that cannot be verified is
+    refused, never invented (the wants_match door policy). Returns the
+    refusal, or '' when the target is real."""
+    what, _, ident = ref.partition(":")
+    if what == "eng":
+        if parse(os.path.join(kind_dir("eng"), ident + ".md")) is None:
+            return "no engineering record '%s' in %s" % (ident, kind_dir("eng"))
+        return ""
+    d = jobs_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return "no jobs directory at %s" % d
+    if not any(n == ident or n.startswith(ident + ".") for n in names):
+        return "no job '%s' in %s" % (ident, d)
+    return ""
+
+
+def cmd_link(argv):
+    if len(argv) < 2:
+        die("usage: want link <id> <job:<job-id>|eng:<record-id>>...")
+    rid, refs = argv[0], argv[1:]
+    meta, body = load(rid)
+    for ref in refs:
+        if not LINK_RE.match(ref):
+            die("not a linkable ref: '%s' (job:<job-id> or eng:<record-id>)"
+                % ref)
+        missing = _link_target_missing(ref)
+        if missing:
+            die("%s — a link that cannot be verified is refused, never "
+                "invented" % missing)
+    have = [l for l in (meta.get("links") or "").split() if l]
+    fresh = [r for r in refs if r not in have]
+    if not fresh:
+        print("%s already carries %s" % (rid, " ".join(refs)))
+        return
+    meta["links"] = " ".join(have + fresh)
+    stamp = now()
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta,
+          add_entry(body, "Linked: %s" % " ".join(fresh), stamp))
+    print("%s links: %s" % (rid, meta["links"]))
+
+
+# --- wants migration (rules 17-19) ------------------------------------------
+
+SHELF_ENTRY_RE = re.compile(r"^- (?:\S+ )?\*\*(.+?)\*\*(.*)$")
+POINTER_RE = re.compile("→ *`?([^ `]+\\.md)`?")
+DOC_DATE_RE = re.compile(r"\b(2\d{3}-\d{2}-\d{2})\b")
+
+
+def _evidence_date(d):
+    """A date the document names is evidence only when it is real, not before
+    2000, and not in the future (rule 18)."""
+    try:
+        t = time.mktime(time.strptime(d, "%Y-%m-%d"))
+    except (ValueError, OverflowError):
+        return False
+    return t <= time.time() + 86400
+
+
+def _git_first_date(path):
+    """The file's earliest commit date, empty outside a repo or uncommitted."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.dirname(os.path.abspath(path)) or ".",
+             "log", "--follow", "--format=%ad",
+             "--date=format:%Y-%m-%d %H:%M:%S", "--", os.path.basename(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=15)
+        if r.returncode == 0:
+            dates = [l.strip() for l in r.stdout.decode("utf-8", "replace")
+                     .splitlines() if l.strip()]
+            if dates:
+                return dates[-1]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def _birth_time(path):
+    try:
+        r = subprocess.run(["stat", "-c", "%W", path],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=10)
+        w = int(r.stdout.decode().strip())
+        if w > 0:
+            return time.strftime(TIMEFMT, time.localtime(w))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def derive_opened(path, text):
+    """Rule 18: the earliest EVIDENCE, never today's clock — git history first
+    where there is any, else the earlier of the earliest date the document
+    itself names and the file's birth time, else the file's mtime."""
+    cands = []
+    g = _git_first_date(path)
+    if g:
+        cands.append(g)
+    named = sorted(d for d in set(DOC_DATE_RE.findall(text))
+                   if _evidence_date(d))
+    if named:
+        cands.append(named[0] + " 00:00:00")
+    b = _birth_time(path)
+    if b:
+        cands.append(b)
+    if cands:
+        return min(cands)
+    return time.strftime(TIMEFMT, time.localtime(os.path.getmtime(path)))
+
+
+def cmd_migrate_want(argv):
+    """Frontmatter onto the drawer the shelf names, once (rules 17-19): the
+    block is PREPENDED and the body below it is the original file
+    byte-for-byte — analysis decodes a copy, the write concatenates raw
+    bytes, so no word can be lost or reworded. Idempotent: a document
+    already carrying frontmatter is skipped. A document the shelf does not
+    name is NAMED and left untouched — whether it is a want is her call."""
+    shelf = argv[0] if argv else wants_shelf()
+    if not shelf:
+        die("usage: want migrate [<shelf file>] (or configure the shelf)")
+    try:
+        with open(shelf, encoding="utf-8", errors="replace") as f:
+            shelf_lines = f.read().splitlines()
+    except OSError as e:
+        die(str(e))
+    drawer = eng_dir()
+    migrated = kept = entries = 0
+    missing, named = [], set()
+    for line in shelf_lines:
+        m = SHELF_ENTRY_RE.match(line)
+        if not m:
+            continue
+        entries += 1
+        shelf_title, tail = m.group(1).strip(), m.group(2)
+        pm = POINTER_RE.search(line)
+        if not pm:
+            print("shelf line points at no document, left as it stands: %s"
+                  % line)
+            continue
+        doc = os.path.basename(pm.group(1))
+        named.add(doc)
+        path = os.path.join(drawer, doc)
+        if not os.path.isfile(path):
+            missing.append(doc)
+            continue
+        if parse(path) is not None:
+            kept += 1
+            continue
+        with open(path, "rb") as f:
+            raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        title = shelf_title
+        for tl in text.splitlines():
+            if tl.startswith("# "):
+                title = tl[2:].strip()
+                break
+        clause = tail.split("→")[0].strip()
+        clause = clause.lstrip("—–-").strip()
+        meta = {k: "" for k in FIELDS}
+        meta.update({
+            "id": re.sub(r"\.md$", "", doc),
+            "title": title,
+            "opened": derive_opened(path, text),
+            "last_touched": time.strftime(
+                TIMEFMT, time.localtime(os.path.getmtime(path))),
+            "state": OPEN_STATE,
+            "summary": clause,
+        })
+        head = "\n".join(["---"] + ["%s: %s" % (k, quote(meta.get(k, "")))
+                                    for k in FIELDS] + ["---"]) + "\n\n"
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        declare_write(path, tmp)
+        with open(tmp, "wb") as f:
+            f.write(head.encode("utf-8") + raw)
+        os.replace(tmp, path)
+        migrated += 1
+    print("migrated %s: %d wants given frontmatter, %d already carried it, "
+          "%d shelf entries read"
+          % (os.path.basename(shelf), migrated, kept, entries))
+    for doc in missing:
+        print("shelf points at a missing document, left as it stands: %s"
+              % doc)
+    try:
+        drawer_docs = sorted(n for n in os.listdir(drawer)
+                             if n.endswith(".md"))
+    except OSError:
+        drawer_docs = []
+    for n in drawer_docs:
+        if n not in named:
+            print("in the drawer but not on the shelf, left untouched: %s"
+                  % n)
 
 
 def cmd_prompt(argv):
@@ -526,14 +932,35 @@ def cmd_migrate(argv):
 
 
 def main():
-    cmds = {"new": cmd_new, "list": cmd_list, "show": cmd_show,
-            "touch": cmd_touch, "settle": cmd_settle, "kill": cmd_kill,
-            "search": cmd_search, "field": cmd_field,
-            "touched-since": cmd_touched_since, "prompt": cmd_prompt,
-            "migrate": cmd_migrate}
-    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
-        sys.exit(__doc__.strip())
-    cmds[sys.argv[1]](sys.argv[2:])
+    global KIND, FIELDS, OPEN_STATE, CLOSED_AT, CLOSED_BY, CLOSED_STATES
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--kind":
+        if len(argv) < 2 or argv[1] not in ("eng", "want"):
+            die("--kind takes 'eng' or 'want'")
+        KIND = argv[1]
+        argv = argv[2:]
+    if KIND == "want":
+        FIELDS = WANT_FIELDS
+        OPEN_STATE, CLOSED_AT, CLOSED_BY = "live", "retired_at", "retired_by"
+        CLOSED_STATES = WANT_TERMINAL
+    shared = {"new": cmd_new, "list": cmd_list, "show": cmd_show,
+              "touch": cmd_touch, "search": cmd_search, "field": cmd_field,
+              "touched-since": cmd_touched_since}
+    if KIND == "want":
+        cmds = dict(shared, dormant=cmd_dormant, revive=cmd_revive,
+                    grown=cmd_grown, retire=cmd_retire, link=cmd_link,
+                    migrate=cmd_migrate_want)
+        usage = WANT_USAGE
+    else:
+        cmds = dict(shared, settle=cmd_settle, kill=cmd_kill,
+                    prompt=cmd_prompt, migrate=cmd_migrate)
+        usage = __doc__
+    # A verb of the other kind is refused with THIS kind's usage (wants
+    # rule 14): the states differ, so a silent alias would write a state
+    # the drawer does not have.
+    if not argv or argv[0] not in cmds:
+        sys.exit(usage.strip())
+    cmds[argv[0]](argv[1:])
 
 
 if __name__ == "__main__":

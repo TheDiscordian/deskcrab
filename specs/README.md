@@ -57,6 +57,7 @@ The specs cite the defect dossier with these identifiers:
 | [account-fallback.md](account-fallback.md) | The flat numbered account list: selection and cooldowns, refusal detection, the watched runner, swap announcements |
 | [metrics.md](metrics.md) | The token ledger: one record per CLI attempt parsed from artifacts the system already produces, backfill, `crab metrics`, and the phone server's metrics page |
 | [nightly.md](nightly.md) | Sleep (memory ingest), tidy (shelf maintenance), the self-change watcher and its canary |
+| [wants.md](wants.md) | The wants drawer: want records with state over the record spine, the shelf, `crab want`, migration |
 | [test-harness.md](test-harness.md) | The sandbox every test runs in, the four isolation gates, and the coverage the suite owes |
 
 ### System data flow

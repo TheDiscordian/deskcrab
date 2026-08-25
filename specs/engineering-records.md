@@ -12,6 +12,11 @@ at a glance, so it can never be quoted back as a live worry. Design settled by t
 assistant together on 2026-08-11; the session is recorded in
 `~/.local/share/deskcrab/engineering/memory-as-records.md`.
 
+Since 2026-08-25 the record machinery in `lib/eng` is also the SPINE of the wants drawer
+([wants.md](wants.md)): one parser, one atomic writer, one write declaration, one search,
+parameterized by kind. Nothing in this contract changes for kind `eng` — it is the default, and
+`crab eng` passes no kind at all.
+
 ## CONTRACT
 
 ### The record

@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | status | tired | shutup | play <file> | job <desc> | jobs | memory <verb> | eng <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | remote <text> | <text>
+# Usage: crab start | stop | status | tired | shutup | play <file> | job <desc> | jobs | memory <verb> | eng <verb> | want <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -673,6 +673,21 @@ What you did tonight is journaled from your tool activity without your help, so 
             exec python3 "$SCRIPT_DIR/lib/eng" "$@"
         ;;
 
+    want)
+        # Wants with the same state discipline (specs/wants.md): the record
+        # spine of lib/eng under kind want, over the wants/ drawer beside the
+        # shelf. new / list / show / touch / dormant / revive / grown /
+        # retire / link / search / migrate. The engineering drawer and the
+        # jobs directory ride along so `want link` can verify a ref's target
+        # instead of inventing one.
+        shift
+        DESKCRAB_WANTS_DIR="${DESKCRAB_WANTS_DIR:-$(deskcrab_home)/wants}" \
+        DESKCRAB_WANTS_FILE="${DESKCRAB_WANTS_FILE:-${WANTS_FILE:-}}" \
+        DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-$(deskcrab_home)/engineering/records}" \
+        JOBS_DIR="${JOBS_DIR:-$(deskcrab_home)/jobs}" \
+            exec python3 "$SCRIPT_DIR/lib/eng" --kind want "$@"
+        ;;
+
     wake-at)
         # Schedule a one-shot autonomous wake. The timer itself is a transient
         # systemd user unit and dies with the user manager, so the booking is
@@ -724,7 +739,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"        exit 0
+        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"        exit 0
         ;;
 
     *)
@@ -735,7 +750,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"            exit 1
+            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"            exit 1
         fi
         stop_tts
         rotate_convo
