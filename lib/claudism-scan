@@ -979,12 +979,27 @@ def cmd_run(day):
     # Surface it, clean night included. The agenda is awareness, never an
     # instruction, and its text is stable so a re-run of the same night
     # coalesces with the booking already pending instead of stacking one.
+    # Rule 40a reaches this sentence too: the agenda takes the same branch as
+    # the report's headline, from the same `broken` the parse returned — the
+    # words read at half nine may not call a night clean while the report
+    # beside them counts an entry that never compiled.
+    agenda_broken = ("%d list entr%s would not compile and did not run: %s"
+                     % (len(broken), "y" if len(broken) == 1 else "ies",
+                        "; ".join(broken)))
     if uses:
         agenda = ("Your nightly claudism review of %s is written, a correction "
-                  "beside each catch and the scoring by function: %s. The "
+                  "beside each catch and the scoring by function: %s. %sThe "
                   "exercise is stepping back and saying it the right way — a "
                   "habit, not a censor. This is awareness, not a task: read it "
-                  "when you like, and watch the rates." % (day, report))
+                  "when you like, and watch the rates."
+                  % (day, report,
+                     "%s, so the counts cover only the entries that did run. "
+                     % agenda_broken if broken else ""))
+    elif broken:
+        agenda = ("Your nightly claudism review of %s caught nothing among the "
+                  "entries that ran — %s. The report and the running counts: "
+                  "%s. This is awareness, not a task."
+                  % (day, agenda_broken, report))
     else:
         agenda = ("Your nightly claudism review of %s caught nothing — a clean "
                   "night. The report and the running counts: %s. This is awareness, "

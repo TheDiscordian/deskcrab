@@ -310,7 +310,12 @@ which fails silently is worse than one that does not exist.
     counts the entries that did not compile, and on a night with hits or mentions the
     broken-entry count stands immediately before the headline — the reader is never handed a
     verdict and then corrected. The per-entry warning naming each broken entry and its error
-    remains, and a night with no broken entries reads exactly as before.
+    remains, and a night with no broken entries reads exactly as before. The morning wake's
+    agenda (rule 44) takes the same branch as the report's headline, from the same signal: with
+    any entry broken the agenda MUST NOT say a clean night — it says plainly that entries never
+    compiled and did not run, counting and naming them — and the clean wording is kept only for
+    the genuinely clean night, no catches and no broken entries. The sentence read at half nine
+    may never contradict the report sitting beside it.
 41. The review reads only the SPOKEN half of each reply — the text above the display delimiter,
     split the anchored, whitespace-tolerant way of [speech-output.md](speech-output.md) rules 3
     and 4 — and never the user's words, the display half, or a job's entry. A job's journal entry
@@ -743,7 +748,11 @@ report with the rewrites marked missing. `tests/test_claudism_report_broken.sh` 
 night with a broken list entry and no catches is never called clean — the headline counts the
 entries that would not compile, singular and plural; on a caught night the broken fact stands
 before the verdict, not as a correction after it; and an all-compiling list with no catches keeps
-its clean-night headline with no warning attached. `tests/test_promise_check.sh` — rules 51-53: the sweep
+its clean-night headline with no warning attached. `tests/test_claudism_agenda_clean.sh` — rule
+40a's morning half: with one uncompilable entry and no catches the wake's agenda never says a
+clean night and names the entry that never ran; a caught night's agenda carries the same fact;
+and an all-compiling no-catch night keeps its clean agenda word for word.
+`tests/test_promise_check.sh` — rules 51-53: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day.
 `tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every
