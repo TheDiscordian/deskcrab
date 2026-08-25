@@ -352,22 +352,41 @@ near-twins are a certainty, not a risk (the record
     account chain (rule 13), with NO model fallback — a pair the model never answers is skipped,
     never guessed at by a cheaper model. The rule the judge enforces, encoded in its prompt:
     same-COMPLAINT merges only, never same-AREA — two records about chess are not a merge; two
-    records about the same collapse are. Every non-answer is conservative: a refusal, an
+    records about the same collapse are. The verdict carries the judge's own confidence in its
+    leading tokens — `MERGE CERTAIN` (the two records state one complaint and no reading
+    separates them), `MERGE LIKELY` (probably one complaint, but a reading exists in which they
+    are distinct), or `DISTINCT` — and a person's ruling on the pair outranks the judge's: the
+    prompt tells it that a record stating it is distinct from the other, or that a previous fold
+    between them was wrong, is answered DISTINCT. Every non-answer is conservative: a refusal, an
     unparseable verdict, and DISTINCT all mean both records stand — and so does a verdict line
     that carries BOTH tokens: on the first live run (2026-08-24) the judge twice changed its mind
     mid-line ("MERGE — no, wait: DISTINCT — …"), and a leading-token parse proposed the two folds
     the judge's own sentence retracts. A MERGE is accepted only when its line never says
     DISTINCT.
-53d. Dry-run is the DEFAULT and the only nightly behaviour: proposals — winner, loser, score, the
-    judge's reason — land on the night log and nothing is written anywhere. Folding sits behind
-    the explicit `--apply`, run by hand only; the nightly path never passes it. An applied fold
-    goes through `crab eng` and only through it ([engineering-records.md](engineering-records.md)
-    rule 4): the WINNER is the record with the earlier `opened` — which it keeps by construction,
+53d. The nightly pass FOLDS what the judge is certain about and proposes the rest: sleep runs
+    `lib/eng-merge run --apply`, and under `--apply` only a verdict at or above the fold gate is
+    folded. The gate is `ENG_MERGE_FOLD_CONFIDENCE` (environment or `deskcrab.conf`; it lives in
+    `lib/eng-merge`'s knob block), default `certain` and deliberately conservative: only
+    `MERGE CERTAIN` folds. `MERGE LIKELY`, and a bare `MERGE` that states no confidence — a
+    judge that ignored the asked-for form — stay dry-run proposals on the night log exactly as
+    before: winner, loser, score, confidence and the judge's reason named, for a hand to fold or
+    discard. An unrecognised gate value reads as `certain`, never wider, and `run` without
+    `--apply` stays the pure dry run — proposals only, nothing written — for running the pass by
+    hand. An applied fold goes through `crab eng` and only through it
+    ([engineering-records.md](engineering-records.md) rule 4), never a hand edit of a record
+    file: the WINNER is the record with the earlier `opened` — which it keeps by construction,
     since the tool never rewrites `opened` — the loser's whole body is appended to the winner as
-    one dated entry (`eng touch`), and the loser is killed with `settled_by` pointing at the
-    winner's id (`eng kill`). No body is ever lost: a fold appends, never truncates or rewrites
-    the winner's entries, and the dead loser keeps its own body whole. A pair whose records are
-    no longer both open by the time the fold reaches them is skipped, with a line.
+    one dated entry (`eng touch`) whose note names the fold, the loser, the score and the judge's
+    confidence, and the loser is killed with `settled_by` pointing at the winner's id
+    (`eng kill`). No body is ever lost: a fold appends, never truncates or rewrites the winner's
+    entries, and the dead loser keeps its own body whole. A pair whose records are no longer both
+    open by the time the fold reaches them is skipped, with a line. A WRONGLY-FOLDED thread is
+    recovered through `crab eng` alone, because nothing was destroyed: `crab eng show <loser>`
+    reads the grave whole, `crab eng new <title> --body … --opened <its original opened>` reopens
+    the complaint as its own open record (the dead file keeps its name; the tool suffixes the new
+    id), and the reopened body MUST state that the fold was wrong and what separates the pair —
+    that written ruling is what rule 53c's judge reads on the next pass, so the same wrong fold
+    is not made again — with a `crab eng touch` on the winner recording the reversal.
 53e. This pass and the dispatch dedupe MUST NOT be confused for each other: rule 56a's state
     machine and rule 59's ledger stop the same RECORD being bought twice; this pass is the one
     thing that reads two records and notices they are the same complaint written twice. Its
@@ -657,14 +676,19 @@ cannot prove semantic scoring): a true twin pair scores above every same-area-bu
 and above the candidate threshold, while a settled record — however similar its text — is never
 scored, never judged; the judge is the deciding gate, not the score (a same-area pair handed to
 it and answered DISTINCT is never proposed); the judgement prompt carries the same-complaint-
-never-same-area rule and runs on the phase-2 model with no fallback; the judged bound announces
-what it dropped; dry-run is the default and leaves the records directory byte-identical; an
-unanswerable judge and an unreachable embedder both end the pass conservatively, folding nothing,
-exiting zero; `--apply` on fixtures folds through `crab eng` alone — the earlier-opened winner
-keeps its `opened`, carries both bodies whole, the loser dies pointing at the winner's id and
-keeps its own body — and a second `--apply` finds nothing left to propose; and the wiring: sleep
-runs the pass after the promise sweep, before the night's work, never with `--apply`, and the
-pass speaks through the deployed symlink (rule 6a) even with no records drawer at all.
+never-same-area rule, the confidence form, and the person's-ruling-outranks-yours line, and runs
+on the phase-2 model with no fallback; the judged bound announces what it dropped; `run` without
+`--apply` leaves the records directory byte-identical whatever the confidence; an unanswerable
+judge and an unreachable embedder both end the pass conservatively, folding nothing, exiting
+zero; `--apply` on fixtures folds a `MERGE CERTAIN` through `crab eng` alone — the earlier-opened
+winner keeps its `opened`, carries both bodies whole under a fold entry that names the loser, the
+score and the confidence and rides the tool's own dated heading, the loser dies pointing at the
+winner's id and keeps its own body — while `MERGE LIKELY` and a bare confidence-less `MERGE`
+stay proposals under the default gate, the records byte-identical, and
+`ENG_MERGE_FOLD_CONFIDENCE=likely` widens the gate to fold a LIKELY; a second `--apply` finds
+nothing left to propose; and the wiring: sleep runs the pass after the promise sweep, before the
+night's work, WITH `--apply` (rule 53d), and the pass speaks through the deployed symlink (rule
+6a) even with no records drawer at all.
 `tests/test_shelf_check.sh` — rules 21a/21b: a synthetic over-long shelf line is flagged with its
 measured size, the budget, and the `wants/<slug>.md` document its line points at; a line naming
 no document is flagged as exactly that; a genuinely one-line shelf is silent — one line, exit

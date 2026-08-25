@@ -7,8 +7,10 @@
 # complaint written on different nights — the night's-work "dedupe" (rules
 # 56a and 59) only stops one record being dispatched twice. lib/eng-merge is
 # the pass that notices: embed and score every open pair, judge candidates on
-# the phase-2 model, propose merges — dry-run by default, folding only behind
-# an explicit --apply that the nightly path never passes.
+# the phase-2 model, propose merges — dry-run without --apply, and under
+# --apply, which the nightly path passes, folding ONLY what the judge is
+# confident about at or above the ENG_MERGE_FOLD_CONFIDENCE gate (default
+# certain); a MERGE LIKELY and a confidence-less MERGE stay proposals.
 #
 # The embedder cases run against the REAL local ollama daemon on purpose —
 # a mocked embedder cannot prove semantic scoring (the sandbox's own rule).
@@ -132,9 +134,12 @@ EOF
 records_sha() { sha256sum "$1"/*.md | sha256sum | cut -d' ' -f1; }
 
 # The judge, stubbed: every call recorded — argv to the claude log, stdin to
-# its own numbered file — answering MERGE for the one true twin pair and
-# DISTINCT for everything else, in the exact one-line form rule 53c asks for.
-judge_stub() {
+# its own numbered file — answering for the one true twin pair with the
+# verdict line given (default MERGE CERTAIN, the confident form rule 53c
+# asks for) and DISTINCT for everything else. The verdict must carry no
+# single quote: it lands inside one below.
+judge_stub() {  # [twin verdict line]
+    local V_TWIN="${1:-MERGE CERTAIN — one complaint written twice: the phone shows the reply and plays nothing}"
     sandbox_stub claude <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
@@ -147,7 +152,7 @@ printf '%s\n' "\$IN" > "$T/judge-stdin-\$n"
 # involving the winner a twin.
 case "\$IN" in
     *"RECORD 1: phone-says-nothing-clip-on-disk"*"RECORD 2: handset-shows-words-voice-never-arrives"*|*"RECORD 1: handset-shows-words-voice-never-arrives"*"RECORD 2: phone-says-nothing-clip-on-disk"*)
-        V='MERGE — one complaint written twice: the phone shows the reply and plays nothing' ;;
+        V='$V_TWIN' ;;
     *)  V='DISTINCT — the same area, two different defects' ;;
 esac
 printf '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"%s"}]}}\n' "\$V"
@@ -201,12 +206,18 @@ check "the judgement prompt carries the conservative rule" \
     bash -c 'cat "$1"/judge-stdin-* 2>/dev/null | grep -q "same-COMPLAINT merges only, never same-AREA"' _ "$T"
 check "down to its chess example" \
     bash -c 'cat "$1"/judge-stdin-* 2>/dev/null | grep -q "Two records about chess are not a merge"' _ "$T"
+check "the prompt asks for the judge's confidence in the verdict's own tokens" \
+    bash -c 'cat "$1"/judge-stdin-* 2>/dev/null | grep -q "MERGE CERTAIN"' _ "$T"
+check "and carries the person's-ruling-outranks-yours line — the recovery path's teeth" \
+    bash -c 'cat "$1"/judge-stdin-* 2>/dev/null | grep -q "a previous fold between them was wrong"' _ "$T"
 check "and both records ride it whole — body prose included" \
     bash -c 'cat "$1"/judge-stdin-* 2>/dev/null | grep -q "no sound ever played"' _ "$T"
 check "the twin fold is proposed, the earlier-opened record the winner" \
     contains "$out" "propose fold 'handset-shows-words-voice-never-arrives' -> 'phone-says-nothing-clip-on-disk'"
 check "with its score on the proposal line" \
     bash -c 'printf "%s\n" "$1" | grep "propose fold" | grep -qE "score 0\.[0-9]+"' _ "$out"
+check "and the judge's confidence beside it" \
+    bash -c 'printf "%s\n" "$1" | grep "propose fold" | grep -q "judge certain"' _ "$out"
 check_eq "the same-area phone pair, judged and answered DISTINCT, is not proposed" \
     "$(printf '%s\n' "$out" | sandbox_count_in "propose fold.*clips-play-at-double-speed" /dev/stdin)" "0"
 check_eq "no chess pair was ever judged — both sat under the gate" \
@@ -304,8 +315,13 @@ check "the winner's own body is still there, whole" \
     grep -q "no sound ever played and no error line anywhere" "$W"
 check "and the loser's body now rides beside it — appended, nothing lost" \
     grep -q "synthesised and written out whole" "$W"
-check "the fold entry names the loser it came from" \
-    grep -q "handset-shows-words-voice-never-arrives" "$W"
+check "the fold left a note naming the merge — the loser, in the note's own words" \
+    grep -q "Folded twin record 'handset-shows-words-voice-never-arrives'" "$W"
+check "with the tool, the score and the judge's confidence on it" \
+    bash -c 'grep "Folded twin record" "$1" | grep -qE "eng-merge --apply, score 0\.[0-9]+, judge certain"' _ "$W"
+LT="$(eng2 field phone-says-nothing-clip-on-disk last_touched)"
+check "and the note rides the tool's own dated heading — eng touch's write, heading and last_touched one instant" \
+    grep -q "^## $LT" "$W"
 check_eq "the loser is dead" \
     "$(eng2 field handset-shows-words-voice-never-arrives state)" "dead"
 check "killed pointing at the winner's id" \
@@ -324,8 +340,66 @@ check_eq "and folds nothing twice" \
     "$(printf '%s\n' "$out" | sandbox_count_in "folded '" /dev/stdin)" "0"
 
 echo
+echo "--apply folds only at or above the fold gate — MERGE LIKELY stays a"
+echo "proposal on the log, exactly as the dry run leaves it:"
+reset; judge_stub 'MERGE LIKELY — probably the same silence, but a reading separates them'
+R3="$T/eng3/records"
+mkdir -p "$R3"; cp "$R"/*.md "$R3"/
+SHA_BEFORE="$(records_sha "$R3")"
+out="$(env DESKCRAB_ENG_DIR="$R3" ENG_MERGE_THRESHOLD=0.75 "$REPO/lib/eng-merge" run --apply 2>&1)"; rc=$?
+check_eq "exits 0" "$rc" "0"
+check "the pair is still proposed, its confidence named" \
+    bash -c 'printf "%s\n" "$1" | grep "propose fold .handset-shows-words-voice-never-arrives" | grep -q "judge likely"' _ "$out"
+check "and named as standing below the gate, a hand's to fold" \
+    contains "$out" "stays a proposal — the judge said likely, the fold gate wants certain"
+check_eq "nothing folded" \
+    "$(printf '%s\n' "$out" | sandbox_count_in "folded '" /dev/stdin)" "0"
+check_eq "and the records are byte-identical" "$(records_sha "$R3")" "$SHA_BEFORE"
+
+echo
+echo "an unrecognised gate value reads as certain, never wider:"
+out="$(env DESKCRAB_ENG_DIR="$R3" ENG_MERGE_THRESHOLD=0.75 ENG_MERGE_FOLD_CONFIDENCE=always "$REPO/lib/eng-merge" run --apply 2>&1)"; rc=$?
+check_eq "exits 0" "$rc" "0"
+check "and says what it read" \
+    contains "$out" "unrecognised ENG_MERGE_FOLD_CONFIDENCE 'always' — reading it as certain"
+check_eq "the likely pair still does not fold" \
+    "$(printf '%s\n' "$out" | sandbox_count_in "folded '" /dev/stdin)" "0"
+check_eq "records byte-identical still" "$(records_sha "$R3")" "$SHA_BEFORE"
+
+echo
+echo "a bare MERGE that states no confidence — the old form, a judge that"
+echo "ignored the asked-for tokens — never folds either:"
+reset; judge_stub 'MERGE — one complaint written twice: the phone shows the reply and plays nothing'
+R4="$T/eng4/records"
+mkdir -p "$R4"; cp "$R"/*.md "$R4"/
+SHA_BEFORE="$(records_sha "$R4")"
+out="$(env DESKCRAB_ENG_DIR="$R4" ENG_MERGE_THRESHOLD=0.75 "$REPO/lib/eng-merge" run --apply 2>&1)"; rc=$?
+check_eq "exits 0" "$rc" "0"
+check "the proposal names the unstated confidence" \
+    bash -c 'printf "%s\n" "$1" | grep "propose fold" | grep -q "judge unstated"' _ "$out"
+check "and stands below the gate" contains "$out" "stays a proposal"
+check_eq "nothing folded" \
+    "$(printf '%s\n' "$out" | sandbox_count_in "folded '" /dev/stdin)" "0"
+check_eq "records byte-identical" "$(records_sha "$R4")" "$SHA_BEFORE"
+
+echo
+echo "the gate is ENG_MERGE_FOLD_CONFIDENCE — widened to likely by hand, a"
+echo "MERGE LIKELY folds; that knob is where the threshold lives:"
+reset; judge_stub 'MERGE LIKELY — probably the same silence after all'
+R5="$T/eng5/records"
+mkdir -p "$R5"; cp "$R"/*.md "$R5"/
+out="$(env DESKCRAB_ENG_DIR="$R5" ENG_MERGE_THRESHOLD=0.75 ENG_MERGE_FOLD_CONFIDENCE=likely "$REPO/lib/eng-merge" run --apply 2>&1)"; rc=$?
+check_eq "exits 0" "$rc" "0"
+check "and folds the likely pair" \
+    contains "$out" "folded 'handset-shows-words-voice-never-arrives' -> 'phone-says-nothing-clip-on-disk'"
+check "its fold note carrying judge likely" \
+    bash -c 'grep "Folded twin record" "$1" | grep -q "judge likely"' _ "$R5/phone-says-nothing-clip-on-disk.md"
+check_eq "the loser is dead" \
+    "$(DESKCRAB_ENG_DIR="$R5" "$REPO/lib/eng" field handset-shows-words-voice-never-arrives state)" "dead"
+
+echo
 echo "the wiring: sleep runs the pass after the sweep, before the night's work,"
-echo "and never with --apply:"
+echo "and WITH --apply — the fold gate, not the flag, is what stays conservative:"
 SEQ="$T/phase-seq"
 mkdir -p "$T/stub-lib"
 for n in claudism-scan promise-check eng-merge night-work; do
@@ -359,8 +433,8 @@ else
     fail "the pass must run between the sweep and the night's work" \
         "sweep=$SWEEP_AT merge=$MERGE_AT work=$WORK_AT"
 fi
-check_eq "and the nightly path never passes --apply — dry-run is the only nightly behaviour" \
-    "$(grep '^eng-merge ' "$SEQ" | head -1)" "eng-merge run"
+check_eq "and the nightly path passes --apply — the confident folds land, the rest stay proposals" \
+    "$(grep '^eng-merge ' "$SEQ" | head -1)" "eng-merge run --apply"
 
 echo
 echo "through the deployed symlink (rule 6a), with no records drawer at all:"

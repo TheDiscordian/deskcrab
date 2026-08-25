@@ -11,13 +11,19 @@
 #
 #   eng-merge score          phase 1 only: every open pair's cosine, sorted
 #   eng-merge run            propose merges — DRY-RUN, nothing written
-#   eng-merge run --apply    fold the judged merges, through `crab eng` only
+#   eng-merge run --apply    fold what the judge is CERTAIN about, through
+#                            `crab eng` only; everything below the fold gate
+#                            stays a proposal
 #
 # Phase 1 normalises each open record (title and body, entry headings
 # stripped) and embeds it through the memory store's own embedder, then
 # scores every open pair. Pairs at or above the candidate threshold go to a
-# phase-2 judgement; the fold happens only under --apply, which the nightly
-# path never passes.
+# phase-2 judgement, which answers with its own confidence — MERGE CERTAIN,
+# MERGE LIKELY, or DISTINCT. The fold happens only under --apply, which the
+# nightly path PASSES (specs/nightly.md rule 53d): a verdict at or above
+# ENG_MERGE_FOLD_CONFIDENCE (default certain) folds through `crab eng`;
+# MERGE LIKELY, and a bare MERGE that states no confidence, stay dry-run
+# proposals on the night log for a hand.
 #
 # THE THRESHOLD IS A CANDIDATE GATE, NOT A MERGE LINE — measured, 2026-08-24,
 # over the live drawer's 56 open records (1540 pairs, nomic-embed-text):
@@ -41,7 +47,8 @@
 # 22:49: "what is a duplicate ... Opus, always"): ENG_MERGE_MODEL, default
 # opus, under the account chain, with NO model fallback. Every non-answer is
 # conservative: a refusal, an unparseable verdict and DISTINCT all leave
-# both records standing.
+# both records standing — and under --apply, so does any MERGE below the
+# fold gate.
 #
 # Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
 #   DESKCRAB_ENG_DIR             the records drawer (lib/eng's own knob)
@@ -51,6 +58,10 @@
 #                                   count it dropped (rule 58a's discipline)
 #   ENG_MERGE_MODEL=opus         the judge; phase-2 rule, no fallback
 #   ENG_MERGE_TIMEOUT=300        seconds per judgement call
+#   ENG_MERGE_FOLD_CONFIDENCE=certain   the fold gate under --apply:
+#                                   certain folds only MERGE CERTAIN; likely
+#                                   folds MERGE LIKELY too; anything else
+#                                   reads as certain, never wider
 #   MEMORY_EMBED_URL / MEMORY_EMBED_MODEL   the store's embedder (memory.py)
 #
 # Every nightly failure path exits 0 with a trace line on stdout (the
@@ -209,6 +220,17 @@ cmd_run() {  # [--apply]
     local APPLY=""
     [ "${1:-}" = "--apply" ] && APPLY=1
 
+    # The fold gate (specs/nightly.md rule 53d): under --apply, only a
+    # verdict at or above this confidence folds. Anything unrecognised
+    # reads as certain — the gate can be misconfigured narrower, never
+    # wider.
+    local FOLD_CONF="${ENG_MERGE_FOLD_CONFIDENCE:-certain}"
+    case "$FOLD_CONF" in
+        certain|likely) ;;
+        *)  say "unrecognised ENG_MERGE_FOLD_CONFIDENCE '$FOLD_CONF' — reading it as certain, never wider"
+            FOLD_CONF=certain ;;
+    esac
+
     if [ ! -d "$ENGDIR" ]; then
         say "no records drawer at $ENGDIR — nothing to merge"; return 0
     fi
@@ -245,7 +267,7 @@ cmd_run() {  # [--apply]
         CANDS="$(printf '%s\n' "$CANDS" | head -n "$MAX_JUDGED")"
     fi
 
-    local PROPOSED=0 FOLDED=0 S A B FA FB RB OUT LINE REASON W L OA OB LO SA SB NOTE
+    local PROPOSED=0 FOLDED=0 S A B FA FB RB OUT LINE CONF CR GR REASON W L OA OB LO SA SB NOTE
     while IFS=$'\t' read -r _ S A B; do
         [ -n "${A:-}" ] && [ -n "${B:-}" ] || continue
         FA="$ENGDIR/$A.md"; FB="$ENGDIR/$B.md"
@@ -267,10 +289,16 @@ Two records about chess are not a merge; two records about the same
 collapse are. A shared subsystem,
 shared vocabulary, or a shared symptom class is NOT enough: if the two
 records would be fixed by two different pieces of work, they are distinct.
-When in doubt, answer DISTINCT.
+When in doubt, answer DISTINCT. If either record states that it is distinct
+from the other, or that a previous fold between them was wrong, answer
+DISTINCT: a person's ruling on the pair outranks yours.
 
 Answer with exactly one line and nothing else:
-MERGE — <one line: the one complaint both records state>
+MERGE CERTAIN — <one line: the one complaint both records state>
+  (they state one complaint and no reading separates them; you would fold
+  them yourself)
+MERGE LIKELY — <one line: the one complaint both records state>
+  (probably one complaint, but a reading exists in which they are distinct)
 or
 DISTINCT — <one line: what separates them>
 
@@ -299,7 +327,17 @@ PROMPT
                 say "ambiguous verdict for '$A' / '$B' — the line carries both tokens, the pair stands: $LINE"
                 continue ;;
         esac
-        REASON="$(printf '%s' "$LINE" | sed 's/^MERGE[^A-Za-z0-9]*//')"
+        # The confidence is the verdict line's second word, read strictly:
+        # exactly CERTAIN or LIKELY, nothing looser. A judge that bent the
+        # form ("MERGE — certainly…", "MERGE CERTAINLY —") stated no
+        # confidence the gate can trust, and an unstated confidence never
+        # folds (rule 53d) — it proposes like any other MERGE.
+        CONF=""
+        case "$(printf '%s\n' "$LINE" | awk '{print $2}')" in
+            CERTAIN) CONF=certain ;;
+            LIKELY)  CONF=likely ;;
+        esac
+        REASON="$(printf '%s' "$LINE" | sed -E 's/^MERGE( CERTAIN| LIKELY)?[^A-Za-z0-9]*//')"
         # The winner is the record with the earlier `opened`, which it keeps
         # by construction — the tool never rewrites `opened` (rule 53d). An
         # undated `opened` loses to a dated one; two undated fall back to id
@@ -311,9 +349,19 @@ PROMPT
         elif [ -z "$OA" ] && [ -z "$OB" ] && [[ "$B" < "$A" ]]; then
             W="$B"; L="$A"
         fi
-        say "propose fold '$L' -> '$W' (score $S) — $REASON"
+        say "propose fold '$L' -> '$W' (score $S, judge ${CONF:-unstated}) — $REASON"
         PROPOSED=$(( PROPOSED + 1 ))
         [ -n "$APPLY" ] || continue
+
+        # The fold gate: certain is 2, likely is 1, unstated is 0, and only
+        # a confidence at or above ENG_MERGE_FOLD_CONFIDENCE folds. Below
+        # it the proposal stands on the log exactly as a dry run leaves it.
+        case "$CONF" in certain) CR=2 ;; likely) CR=1 ;; *) CR=0 ;; esac
+        case "$FOLD_CONF" in likely) GR=1 ;; *) GR=2 ;; esac
+        if [ "$CR" -lt "$GR" ]; then
+            say "'$L' -> '$W' stays a proposal — the judge said ${CONF:-MERGE with no stated confidence}, the fold gate wants $FOLD_CONF"
+            continue
+        fi
 
         # The fold, through `crab eng` and only through it (engineering-
         # records.md rule 4): touch appends the loser's whole body to the
@@ -326,7 +374,7 @@ PROMPT
             continue
         fi
         LO="$(engf "$L" opened)"
-        NOTE="Folded twin record '$L' into this thread (eng-merge --apply, score $S): the judge read both and called them one complaint written twice — $REASON
+        NOTE="Folded twin record '$L' into this thread (eng-merge --apply, score $S, judge $CONF): the judge read both and called them one complaint written twice — $REASON
 The folded record is dead and points here; its whole body follows.
 
 --- from '$L' (opened ${LO:-undated}) ---
@@ -345,9 +393,9 @@ $(record_body "$L")"
     done <<< "$CANDS"
 
     if [ -n "$APPLY" ]; then
-        say "done — $PROPOSED proposal(s), $FOLDED folded"
+        say "done — $PROPOSED proposal(s), $FOLDED folded (fold gate: judge $FOLD_CONF); what stayed a proposal is a hand's to fold or discard"
     else
-        say "done — $PROPOSED proposal(s), dry-run, nothing folded; 'eng-merge run --apply' folds them by hand"
+        say "done — $PROPOSED proposal(s), dry-run, nothing folded; 'eng-merge run --apply' folds the ones at or above the $FOLD_CONF gate"
     fi
     return 0
 }

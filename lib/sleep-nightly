@@ -151,12 +151,14 @@ cmd_run() {
 
     # The twin-merge pass, after the sweep and BEFORE the night's work
     # (specs/nightly.md rules 53b-53e): the open records are scored for
-    # near-twins and the candidates judged, so the drain is not asked to
-    # spend builders on the same complaint written twice. DRY-RUN is the
-    # pass's default and its only nightly behaviour — proposals land on
-    # this log, nothing is folded; folding is `eng-merge run --apply`, by
-    # hand only. Same bargain as the review: never the night's verdict.
-    run_phase eng-merge "twin-merge pass" "$LIB_DIR/eng-merge" run
+    # near-twins, the candidates judged, and the folds the judge is CERTAIN
+    # about are applied — through `crab eng` only, never a hand edit of a
+    # record file — so the drain is not asked to spend builders on the same
+    # complaint written twice. Anything the judge is less than certain
+    # about stays a dry-run proposal on this log for a hand; the fold gate
+    # is ENG_MERGE_FOLD_CONFIDENCE (default certain), in lib/eng-merge's
+    # knob block. Same bargain as the review: never the night's verdict.
+    run_phase eng-merge "twin-merge pass" "$LIB_DIR/eng-merge" run --apply
 
     # The night's work, the night's last phase: the stretch between the
     # stamp and the morning is machine time nobody is using, so the open
