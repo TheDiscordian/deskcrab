@@ -119,9 +119,14 @@ this spec does not modify; kind `want` is this one.
     `summary` is the shelf line's status clause — her words — where the line carries one;
     `state` is `live`; `last_touched` is the file's mtime.
 18. `opened` is the earliest EVIDENCE, never today's clock: the file's earliest git commit date
-    where the drawer is a git repository; else the earlier of the earliest date the document itself
-    names and the file's birth time; else the file's mtime. A date the document names that is
-    before 2000 or in the future is not evidence.
+    where the drawer is a git repository; else the earlier of the earliest date the document names
+    AS ITS OWN and the file's birth time; else the file's mtime. A document names a date as its
+    own only in its journal forms — a dated entry heading (`## `), a dated log bullet (`- ` whose
+    content begins with the date), or an explicit opened phrase (`Opened <date>`). A date in
+    running prose is a CITATION, not an origin: the real drawer's documents cite conversations,
+    stores, and filenames months older than any want, and taking the flat minimum dated three
+    wants into an era before the drawer existed. A date that is unreal, before 2000, or in the
+    future is never evidence in any form.
 19. The migration is idempotent: a document already carrying frontmatter is skipped, and a second
     run changes nothing. A document in the drawer the shelf does not name is NAMED and left
     untouched — deciding whether it is a want is her judgement, not a migration's. A shelf line

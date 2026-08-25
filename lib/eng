@@ -605,16 +605,36 @@ def cmd_link(argv):
 SHELF_ENTRY_RE = re.compile(r"^- (?:\S+ )?\*\*(.+?)\*\*(.*)$")
 POINTER_RE = re.compile("→ *`?([^ `]+\\.md)`?")
 DOC_DATE_RE = re.compile(r"\b(2\d{3}-\d{2}-\d{2})\b")
+# The journal forms in which a document names a date AS ITS OWN (rule 18):
+# a dated entry heading, a dated log bullet, an explicit opened phrase.
+EVIDENCE_LINE_RE = re.compile(
+    r"^## .*\b2\d{3}-\d{2}-\d{2}\b"
+    r"|^- (?:\*\*)?2\d{3}-\d{2}-\d{2}\b"
+    r"|\bopened\b\D{0,40}2\d{3}-\d{2}-\d{2}\b",
+    re.IGNORECASE)
 
 
 def _evidence_date(d):
-    """A date the document names is evidence only when it is real, not before
-    2000, and not in the future (rule 18)."""
+    """A named date is evidence only when it is real, not before 2000, and
+    not in the future (rule 18)."""
     try:
         t = time.mktime(time.strptime(d, "%Y-%m-%d"))
     except (ValueError, OverflowError):
         return False
     return t <= time.time() + 86400
+
+
+def _named_dates(text):
+    """The dates the document names as its own, earliest first. A date in
+    running prose is a CITATION, never an origin — the real drawer's
+    documents cite conversations, stores, and filenames months older than
+    any want, and the flat minimum dated three wants into an era before the
+    drawer existed (rule 18)."""
+    out = set()
+    for line in text.splitlines():
+        if EVIDENCE_LINE_RE.search(line):
+            out.update(DOC_DATE_RE.findall(line))
+    return sorted(d for d in out if _evidence_date(d))
 
 
 def _git_first_date(path):
@@ -652,13 +672,12 @@ def _birth_time(path):
 def derive_opened(path, text):
     """Rule 18: the earliest EVIDENCE, never today's clock — git history first
     where there is any, else the earlier of the earliest date the document
-    itself names and the file's birth time, else the file's mtime."""
+    names as its own and the file's birth time, else the file's mtime."""
     cands = []
     g = _git_first_date(path)
     if g:
         cands.append(g)
-    named = sorted(d for d in set(DOC_DATE_RE.findall(text))
-                   if _evidence_date(d))
+    named = _named_dates(text)
     if named:
         cands.append(named[0] + " 00:00:00")
     b = _birth_time(path)

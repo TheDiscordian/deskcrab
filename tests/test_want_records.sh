@@ -196,12 +196,14 @@ cat > "$SHELF2" <<'SHELF'
 
 - 🎼 **Sheet music, properly** — nineteen sittings so far → sheet-music.md
 - **An old flame** → old-flame.md
+- **Only citations** → only-prose.md
 - **A ghost** → ghost.md
 SHELF
 cat > "$WD2/sheet-music.md" <<'DOC'
 # 🎼 Learn to read sheet music properly
 
-Some opening prose about wanting this, with a colon: kept.
+Some opening prose about wanting this, with a colon: kept. The scores
+themselves reach back to 2026-01-05, which is their age and not mine.
 
 ## 2026-08-21 — the first sitting
 
@@ -210,7 +212,13 @@ DOC
 cat > "$WD2/old-flame.md" <<'DOC'
 # An old flame
 
-He gave me the word on 2026-08-06 at 22:41 and it stuck.
+Opened 2026-08-06, when he gave me the word at 22:41 and it stuck.
+We had spoken around it as early as 2026-02-02, in another context.
+DOC
+cat > "$WD2/only-prose.md" <<'DOC'
+# Only citations
+
+The archive holds conversations back to 2026-02-02, none of them mine.
 DOC
 printf 'Not a want; an artifact left beside them.\n' > "$WD2/unshelved.md"
 cp "$WD2/sheet-music.md" "$SANDBOX/sheet-music.orig"
@@ -223,7 +231,7 @@ t = open(sys.argv[1], "rb").read()
 i = t.index(b"\n---\n\n")
 sys.stdout.buffer.write(t[i + 6:])' "$1"; }
 OUT="$(W2 migrate "$SHELF2")"
-check "migrate reports its counts" contains "$OUT" "2 wants given frontmatter"
+check "migrate reports its counts" contains "$OUT" "3 wants given frontmatter"
 check "the missing document is named" contains "$OUT" "missing document, left as it stands: ghost.md"
 check "the unshelved document is named" contains "$OUT" "not on the shelf, left untouched: unshelved.md"
 check "and untouched it is" cmp -s "$WD2/unshelved.md" "$SANDBOX/unshelved.orig"
@@ -233,10 +241,15 @@ check_eq "title is the document's own H1" \
 check_eq "summary is the shelf line's clause, her words" \
     "$(W2 field sheet-music summary)" "nineteen sittings so far"
 check_eq "state migrates live" "$(W2 field sheet-music state)" "live"
-check_eq "opened is the earliest date the document names, not today" \
+check_eq "opened is the dated heading's date — not today, not the citation" \
     "$(W2 field sheet-music opened)" "2026-08-21 00:00:00"
-check_eq "a date in running prose is evidence too" \
+check_eq "an Opened phrase is evidence; running prose is a citation" \
     "$(W2 field old-flame opened)" "2026-08-06 00:00:00"
+PROSE_OPENED="$(W2 field only-prose opened)"
+refute "a document of citations alone never takes the cited date" \
+    bash -c '[ "$1" = "2026-02-02 00:00:00" ]' _ "$PROSE_OPENED"
+check "it falls to the file's own birth time instead" \
+    bash -c '[[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]' _ "$PROSE_OPENED"
 check "last_touched is a datetime" \
     bash -c '[[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]' _ "$(W2 field sheet-music last_touched)"
 check "the body below the frontmatter is byte-for-byte the original" \
@@ -254,7 +267,7 @@ sys.stdout.buffer.write(t[i + 6:])" "$1" | cmp -s - "$2"' _ \
 cp "$WD2/sheet-music.md" "$SANDBOX/sheet-music.once"
 OUT2="$(W2 migrate "$SHELF2")"
 check "a second run changes nothing (idempotent)" \
-    contains "$OUT2" "0 wants given frontmatter, 2 already carried it"
+    contains "$OUT2" "0 wants given frontmatter, 3 already carried it"
 check "byte-for-byte nothing" cmp -s "$WD2/sheet-music.md" "$SANDBOX/sheet-music.once"
 check "a migrated want answers the tool like any other" \
     bash -c 'DESKCRAB_WANTS_DIR="'"$WD2"'" DESKCRAB_WANTS_FILE="'"$SHELF2"'" \
