@@ -304,6 +304,13 @@ which fails silently is worse than one that does not exist.
 40. The phrase list is hers: personal state beside the shelves, never in this repository. Each
     entry carries the reason the phrase is borrowed, so the list reads as prose and not as a regex
     blob. No list means no review, silently, one log line — an empty habit is not an error.
+40a. An entry whose pattern will not compile is skipped, so that pattern never ran and the
+    night's silence is not evidence about it. The report MUST NOT call such a night clean: with
+    any entry broken, a no-catch headline says nothing was caught among the entries that ran and
+    counts the entries that did not compile, and on a night with hits or mentions the
+    broken-entry count stands immediately before the headline — the reader is never handed a
+    verdict and then corrected. The per-entry warning naming each broken entry and its error
+    remains, and a night with no broken entries reads exactly as before.
 41. The review reads only the SPOKEN half of each reply — the text above the display delimiter,
     split the anchored, whitespace-tolerant way of [speech-output.md](speech-output.md) rules 3
     and 4 — and never the user's words, the display half, or a job's entry. A job's journal entry
@@ -732,7 +739,11 @@ running, a `running` sidecar older than the ceiling claims no new byte but keeps
 inside it, and no report calls the orphan running. `tests/test_claudism_scan.sh` — the review reads the
 spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
 skip; the wake is booked through the door in the review's own name; a dead model still writes the
-report with the rewrites marked missing. `tests/test_promise_check.sh` — rules 51-53: the sweep
+report with the rewrites marked missing. `tests/test_claudism_report_broken.sh` — rule 40a: a
+night with a broken list entry and no catches is never called clean — the headline counts the
+entries that would not compile, singular and plural; on a caught night the broken fact stands
+before the verdict, not as a correction after it; and an all-compiling list with no catches keeps
+its clean-night headline with no warning attached. `tests/test_promise_check.sh` — rules 51-53: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day.
 `tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every

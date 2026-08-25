@@ -798,6 +798,15 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
         lines.append("(%d unparseable journal line%s skipped.)"
                      % (bad, "" if bad == 1 else "s"))
     caught = [k for k in sorted(tonight) if tonight[k]]
+    # Rule 40a: a pattern that would not compile never ran, so the reader
+    # learns that before any verdict — a warning after the headline corrects
+    # a sentence already taken in, and "a clean night" may only be said of a
+    # night every entry actually scanned.
+    broken_fact = ("%d list entr%s would not compile"
+                   % (len(broken), "y" if len(broken) == 1 else "ies"))
+    if broken and (uses or mentions):
+        lines.append("**%s and did not run — the counts below cover only the "
+                     "entries that did.**" % broken_fact)
     if uses:
         lines.append("%d use-hit%s across %d entr%s; %d mention%s set aside — "
                      "sentences about the list score apart (rule 47)."
@@ -811,6 +820,9 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
     elif mentions:
         lines.append("No uses — but %d mention%s of the list itself; see below."
                      % (len(mentions), "" if len(mentions) == 1 else "s"))
+    elif broken:
+        lines.append("Nothing caught among the entries that ran — %s."
+                     % broken_fact)
     else:
         lines.append("Nothing caught — a clean night.")
     for warn in broken:

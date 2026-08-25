@@ -120,8 +120,13 @@ cat > "$J/2026-01-16.jsonl" <<'DAY'
 DAY
 scan 2026-01-16 >/dev/null 2>&1
 case "$(cat "$OUT/2026-01-16.md")" in
-    *"clean night"*) ok "a clean night still writes its report" ;;
-    *) fail "a clean night is a point on the curve" "$(cat "$OUT/2026-01-16.md")" ;;
+    *"a clean night"*) fail "a broken entry forbids the clean-night verdict (rule 40a)" "$(cat "$OUT/2026-01-16.md")" ;;
+    *) ok "a no-catch night with a broken entry is never called clean (rule 40a)" ;;
+esac
+case "$(cat "$OUT/2026-01-16.md")" in
+    *"Nothing caught among the entries that ran — 1 list entry would not compile."*)
+        ok "and the headline still writes its report, counting what never ran" ;;
+    *) fail "the no-catch headline must count the entry that never ran" "$(cat "$OUT/2026-01-16.md")" ;;
 esac
 case "$(calls)" in
     *"wake-at --by claudism-review 09:30 event Your nightly claudism review of 2026-01-16 caught nothing"*)
