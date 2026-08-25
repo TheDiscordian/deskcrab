@@ -89,6 +89,11 @@ with the page closed.
     be established from what survived.
 18. Audio, image, and media routes MUST honour range requests. Some browsers issue them for audio
     elements and will not play without — and none will seek without.
+    The Content-Type of a served reply clip MUST name what the bytes actually are: `/audio/`
+    serves Ogg-encapsulated Opus as `audio/ogg`, and the synthesiser's read-back probe
+    ([speech-output.md](speech-output.md) rule 53) is what makes that claim true — a file that
+    does not probe as one Ogg Opus stream is withdrawn on the server side and never offered to
+    a client at all.
 19. A wake's audio goes to the phone only when the last turn came from the phone and the phone's
     beacon is fresh. Anything short of both conditions falls back to the desk.
 20. The audio cursor MUST be seeded when the page loads, so a freshly loaded page never replays old

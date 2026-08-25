@@ -62,13 +62,22 @@ cat > /dev/null
 for a in "$@"; do out="$a"; done
 head -c 4096 /dev/zero > "$out"
 EOF
-# ffprobe answers the only question the hand-off has: how long does this clip
-# play for. 12.4 seconds of audio, whatever the stub ffmpeg actually wrote.
+# ffprobe answers two questions here: synth_opus's read-back probe — is this
+# one opus stream in an Ogg container with a real duration (speech-output.md
+# rule 53)? — and the hand-off's only question, how long does this clip play
+# for. The stub says "healthy" to the first and "12.4 seconds" to the second,
+# whatever the stub ffmpeg actually wrote: the clip's decodability is
+# test_synth_witness/test_phone_audio_decode's subject, not this file's.
 sandbox_stub ffprobe <<'EOF'
 #!/bin/sh
 for a in "$@"; do f="$a"; done
 [ -s "$f" ] || exit 1
-printf '12.400000\n'
+case "$*" in
+  *codec_type*)
+    printf 'codec_name=opus\ncodec_type=audio\nformat_name=ogg\nduration=12.400000\n' ;;
+  *)
+    printf '12.400000\n' ;;
+esac
 EOF
 
 cat > "$DESKCRAB_CONF" <<EOF

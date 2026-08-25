@@ -321,9 +321,19 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     processes wrote to stderr — their stderr is muzzled everywhere else, so this line is the
     only witness a silent turn ever gets. On 2026-08-08 two phone turns lost their voices here
     with piper exiting 0 and the file never created at all, and the cause could not be
-    established afterwards because nothing recorded ffmpeg's side. A non-zero ffmpeg status
-    with a good clip is logged too and is NOT a failure: the size test alone decides what
-    counts as audio.
+    established afterwards because nothing recorded ffmpeg's side.
+
+    A non-zero ffmpeg status is a failure, whatever size sits on disk. This used to read the
+    other way — "the size test alone decides what counts as audio" — and what that served was
+    the husk an encoder leaves when it dies mid-write: plausible bytes, a broken stream, and a
+    phone that answered them with "audio could not be decoded" (reported 2026-08-15). The clip
+    MUST be withdrawn, never handed to any client, with the log line above as its witness.
+    And what both processes call a success MUST still probe as playable before it is handed
+    over: exactly one audio stream, the opus codec, the Ogg container the phone's `/audio/`
+    route names in its Content-Type ([phone.md](phone.md) rule 18), and a non-zero duration,
+    read back from the bytes on disk with ffprobe. A clip that fails the probe is withdrawn
+    the same way, with the probe's own reading in the line. The size test stays as the fast
+    first gate — the header-only husk of a dead synthesiser — but it no longer decides alone.
 
 54. A repair MUST NOT costume the line. The mirror call's prompt MUST forbid adding a verbal tic
     or catchphrase the draft did not already carry. A rewrite model handed one isolated sentence

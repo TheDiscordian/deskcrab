@@ -7244,10 +7244,43 @@ synth_opus() {
         rm -f "$ERR"
         return 1
     fi
-    # A clip that plays is a success whatever ffmpeg claimed, but the claim is
-    # worth a line: it is the shape a near-miss takes before it becomes silence.
+    # An encoder that failed did not finish its file. This used to stand on
+    # size alone — "a clip that plays is a success whatever ffmpeg claimed" —
+    # but a clip ffmpeg died writing is not a clip that plays: it is a
+    # plausible-sized husk with a broken tail, and the browser answers it
+    # with "audio could not be decoded" (the 2026-08-15 phone report). The
+    # clip is withdrawn, with both statuses and the stderr tail as witness
+    # (specs/speech-output.md rule 53).
     if [ "$FF_RC" != 0 ]; then
-        speech_log "synth_opus: ffmpeg rc=$FF_RC but the clip is $SIZE bytes, so it stands -> $OUT"
+        local WHY; WHY="$(tr '\n' ' ' < "$ERR" | tail -c 400)"
+        speech_log "synth_opus: ffmpeg rc=$FF_RC — the clip ($SIZE bytes) is withdrawn, not served (piper rc=$PIPER_RC) -> $OUT${WHY:+ — stderr: $WHY}"
+        rm -f "$ERR" "$OUT"
+        return 1
+    fi
+    # What both processes call a success must still probe as playable before
+    # anyone is handed it: exactly one audio stream, the opus codec, the Ogg
+    # container — the same bytes the phone's /audio/ route names audio/ogg
+    # (specs/phone.md rule 18) — and a real duration, read back from the file
+    # with ffprobe. A file that cannot be probed cannot be decoded, and a
+    # clip the browser would refuse must fail HERE, on the server, where the
+    # failure can say why.
+    local PROBE NSTREAMS NAUDIO PCODEC PFMT PDUR
+    PROBE="$(ffprobe -v error \
+        -show_entries stream=codec_name,codec_type:format=format_name,duration \
+        -of default=noprint_wrappers=1 "$OUT" 2>>"$ERR")" || PROBE=""
+    NSTREAMS=$(printf '%s\n' "$PROBE" | grep -c '^codec_type=')
+    NAUDIO=$(printf '%s\n' "$PROBE" | grep -c '^codec_type=audio$')
+    PCODEC=$(printf '%s\n' "$PROBE" | sed -n 's/^codec_name=//p' | head -n 1)
+    PFMT=$(printf '%s\n' "$PROBE" | sed -n 's/^format_name=//p' | head -n 1)
+    PDUR=$(printf '%s\n' "$PROBE" | sed -n 's/^duration=//p' | tail -n 1)
+    if [ "$NSTREAMS" != 1 ] || [ "$NAUDIO" != 1 ] || [ "$PCODEC" != "opus" ] \
+            || [ "$PFMT" != "ogg" ] \
+            || ! printf '%s' "$PDUR" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
+            || ! awk -v d="$PDUR" 'BEGIN { exit !(d > 0) }'; then
+        local WHY; WHY="$(tr '\n' ' ' < "$ERR" | tail -c 400)"
+        speech_log "synth_opus: the clip does not probe as playable audio (piper rc=$PIPER_RC, ffmpeg rc=$FF_RC, $SIZE bytes; probe: streams=$NSTREAMS audio=$NAUDIO codec=${PCODEC:-none} container=${PFMT:-none} duration=${PDUR:-none}) — withdrawn, not served -> $OUT${WHY:+ — stderr: $WHY}"
+        rm -f "$ERR" "$OUT"
+        return 1
     fi
     rm -f "$ERR"
 }
