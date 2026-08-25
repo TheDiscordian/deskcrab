@@ -516,8 +516,21 @@ def update_functions(day, phrases, hits, words):
 def substitution_watch(day, phrases, history):
     """The churn test of rule 48, from the per-member history: inside a
     function, a member that went quiet tonight beside a sibling that rose is
-    the move changing words. Needs at least one earlier night to compare
-    against — the corpus tool covers the deeper past."""
+    the move changing words. The verdict on the family total is COMPUTED,
+    never a fixed tail — this function once closed every note by asserting
+    the total held, and that was false in four of the first eleven notes
+    (2026-08-20..23, families down by half or more reported as holding).
+    Tonight's total is held against the prior nightly average and may be
+    called holding only when the two agree within one occurrence or a
+    quarter of the average, whichever is larger; outside the band the note
+    says which way the family moved and by how much, and claims nothing it
+    did not measure. Churn at a family total of one is arithmetic, not
+    evidence: no note below two. A member first counted tonight cannot be
+    the risen side — counts.tsv writes every current entry every night,
+    zeros included, so a key with no earlier row did not exist to be
+    measured, and its zero-filled past would read any first count as a
+    rise. Needs at least one earlier night to compare against — the corpus
+    tool covers the deeper past."""
     members = {}
     for p in phrases:
         members.setdefault(p["function"], []).append(p["key"])
@@ -535,19 +548,37 @@ def substitution_watch(day, phrases, history):
             return sum(history.get(k, {}).get(d, 0) for d in prev_days) \
                 / float(len(prev_days))
 
+        def measured_before(k):
+            return any(d < day for d in history.get(k, {}))
+
         quiet = [k for k in keys
                  if history.get(k, {}).get(day, 0) == 0 and prev_avg(k) > 0]
         risen = [k for k in keys
-                 if history.get(k, {}).get(day, 0) > prev_avg(k)]
-        if quiet and risen:
-            total = sum(history.get(k, {}).get(day, 0) for k in keys)
-            before = sum(prev_avg(k) for k in keys)
-            notes.append("inside **%s**: %s went quiet while %s rose "
-                         "(family total %d tonight, ~%.1f a night before) — "
-                         "when the total holds, the move changed words, it "
-                         "did not die."
-                         % (fn, ", ".join(quiet), ", ".join(risen),
-                            total, before))
+                 if measured_before(k)
+                 and history.get(k, {}).get(day, 0) > prev_avg(k)]
+        if not (quiet and risen):
+            continue
+        total = sum(history.get(k, {}).get(day, 0) for k in keys)
+        before = sum(prev_avg(k) for k in keys)
+        if total < 2:
+            continue
+        head = ("inside **%s**: %s went quiet while %s rose "
+                "(family total %d tonight, ~%.1f a night before) — "
+                % (fn, ", ".join(quiet), ", ".join(risen), total, before))
+        if abs(total - before) <= max(1.0, before / 4.0):
+            notes.append(head + "the total holds: the move changed words, "
+                         "it did not die.")
+        elif total < before:
+            notes.append(head + "the total did not hold: the family fell "
+                         "by %d%% tonight — quieter is the finding, and the "
+                         "weight that remains moved to %s, a weaker claim "
+                         "than substitution."
+                         % (int(round(100 * (1 - total / before))),
+                            ", ".join(risen)))
+        else:
+            notes.append(head + "the total did not hold: the family grew "
+                         "%.1fx tonight — the move got louder even as it "
+                         "changed words." % (total / before))
     return notes
 
 

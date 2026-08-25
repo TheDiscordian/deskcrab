@@ -327,7 +327,19 @@ which fails silently is worse than one that does not exist.
     review counts is lost to the skip.
 48. The substitution watch. The report MUST place a function's members side by side across the
     recent nights and say plainly when the family's total holds while its members churn — a
-    member gone quiet beside a sibling that rose is the habit changing words, not dying. A
+    member gone quiet beside a sibling that rose is the habit changing words, not dying. The
+    verdict on the total is COMPUTED, never a fixed tail: tonight's family total is measured
+    against the prior nightly average, and the note may say the total holds only when the two
+    agree within one occurrence or a quarter of the prior average, whichever is larger — an
+    integer total against a fractional average never lands exactly, and the notes of
+    2026-08-20..23 that printed "holds" over a family down by half or more are the fault this
+    band closes. Outside the band the note MUST state the direction and the size of the move
+    instead — a total materially down is the family going quieter while its residue changes
+    words, a weaker claim than substitution; a total up is the move growing even as it changes
+    words — and MUST NOT print a premise it did not measure. Churn at a family total of one is
+    arithmetic, not evidence: no note below a total of two tonight. A member first counted
+    tonight MUST NOT stand as the risen side — an entry has counts only from the night it was
+    created, so an empty history is absence of measurement, not absence of the habit. A
     proposed rewrite that still fires any pattern of the same function is a miss, not a pass:
     the report MUST mark it substituted and MUST NOT present it as the fix. The rewrite
     instruction is function-aware — for a `fix: delete` entry the proposal is the sentence with
