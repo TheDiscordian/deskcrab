@@ -7,6 +7,10 @@
 	<title>Chess</title>
 	<link rel="stylesheet" href="style.css">
 	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'%3E%3Ccircle cx='22.5' cy='14' r='6' fill='%23d8b36a'/%3E%3Cpath d='M19 18 C17 21 17.6 24 19.8 26.2 C16.8 28.6 15 32 15 35.5 L30 35.5 C30 32 28.2 28.6 25.2 26.2 C27.4 24 28 21 26 18 Z' fill='%23d8b36a'/%3E%3C/svg%3E">
+	<!-- The shared voice queue (phone.md rule 44c; chessweb.md rule 24g):
+	     the same file the phone server serves, from the bridge's own route.
+	     Both deferred, in order, so board.js finds it built. -->
+	<script src="browser_voice_queue.js" defer></script>
 	<script src="board.js" defer></script>
 </head>
 

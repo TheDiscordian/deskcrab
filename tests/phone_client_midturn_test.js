@@ -61,7 +61,9 @@ async function testRecordWhileBusy() {
   const ctx = {
     busy: true, recWanted: false, recorder: null, chunks: [], stream: null,
     sttSid: null, sttChain: Promise.resolve(), sttFailed: false,
-    voicePlaying: true, playerMeta: { tid: "t" }, player, music,
+    // A clip loaded and sounding: the current clip's handle is set (the
+    // shared-queue shape, spec rule 44c) and the element is not paused.
+    playerClip: {}, player, music,
     duckedVoice: false, duckedMusic: false,
     talk: Object.assign({ textContent: "" }, { classList: classListStub() }),
     navigator: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [] }) } },

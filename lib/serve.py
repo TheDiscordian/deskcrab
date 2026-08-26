@@ -1719,6 +1719,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/sw.js":
             return self._send(200, (WEBAPP_DIR / "sw.js").read_bytes(),
                               "application/javascript", extra)
+        if path == "/browser_voice_queue.js":
+            # The shared playback module (spec rule 44c): the page's queue
+            # mechanics, served as the file's exact bytes. The chess bridge
+            # serves the SAME file through its own route — one neutral asset,
+            # two servers, never one importing or proxying the other
+            # (chessweb.md rule 24g).
+            return self._send(200,
+                              (LIB_DIR / "browser_voice_queue.js").read_bytes(),
+                              "application/javascript", extra)
         if path == "/icon.svg":
             return self._send(200, (WEBAPP_DIR / "icon.svg").read_bytes(),
                               "image/svg+xml", extra)

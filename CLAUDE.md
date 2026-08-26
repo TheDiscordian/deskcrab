@@ -29,6 +29,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/nightly-judge` | the night judge's one walk: every sleep judgment call, both engines, no fallback |
 | `lib/tts-streamer` | speaks the stream sentence by sentence as it is written |
 | `lib/sentence_stream.py` | the sentence chunker and replay registry both voices share (desk streamer, phone server) |
+| `lib/browser_voice_queue.js` | the browser clip queue both pages load (phone voice, chess table clips): one playback discipline, policy stays on the page |
 | `lib/extract-response` | pulls the reply out of a finished stream log |
 | `lib/codex-stream` | translates `codex exec --json` events into the stream vocabulary every reader here consumes |
 | `lib/transcript-dedup` | collapses whisper-stream's overlapping-window repeats |

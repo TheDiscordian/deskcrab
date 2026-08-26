@@ -46,10 +46,16 @@ function liftOne(name) {
 
 // Everything the chat voice path might be made of, old shape or new; only
 // what exists is lifted, and the queue cases fail loudly when the queue
-// functions are missing rather than crashing the file.
+// functions are missing rather than crashing the file. The queue MECHANICS
+// live in the shared module now (phone.md rule 44c) — board.js keeps
+// buildClipQueue (the policy block) and the enqueueClip/dropClipQueue
+// surface, all run here over the real lib/browser_voice_queue.js.
+const BrowserVoiceQueue = require(
+	path.join(__dirname, '..', 'lib', 'browser_voice_queue.js'));
 const NAMES = ['chatSpeakOn', 'renderChatMsg', 'chatReset', 'pollChat',
                'updateChatChrome', 'fetchChatRecord', 'speakChat', 'clipKey',
-               'clipFailed', 'dropClipQueue', 'enqueueClip', 'playNextClip'];
+               'clipFailed', 'dropClipQueue', 'enqueueClip', 'playNextClip',
+               'buildClipQueue'];
 
 function makeCtx(opts) {
 	opts = opts || {};
@@ -116,7 +122,7 @@ function makeCtx(opts) {
 		ws: {readyState: 1}, chatBusy: false, chatGame: null, chatCount: 0,
 		chatHistory: true, chatPoll: null, playerLabel: null,
 		assistantName: 'Betty',
-		clipQueue: [], clipPlaying: false, clipDead: {},
+		BrowserVoiceQueue, clipQ: null,
 		CLIP_START_GRACE_MS: 150,
 		// stubs
 		$: el,
@@ -159,9 +165,15 @@ function build(ctx) {
 	const found = NAMES.map(liftOne).filter(Boolean);
 	const exported = NAMES.filter(n => liftOne(n) !== null);
 	// Non-strict on purpose: `with` is what lets the lifted code read and
-	// WRITE the page-level lets (chatCount, clipQueue, ...) as ctx's own.
-	return new Function('ctx', 'with (ctx) {\n' + found.join('\n') +
+	// WRITE the page-level lets (chatCount, clipQ, ...) as ctx's own.
+	const api = new Function('ctx', 'with (ctx) {\n' + found.join('\n') +
 		'\nreturn {' + exported.join(',') + '};\n}')(ctx);
+	// The page's own top-level wiring, replayed: the ONE clip queue, built
+	// from board.js's policy block over the real shared module. Missing on a
+	// pre-module board.js — a loud red, not a silent pass.
+	if (api.buildClipQueue) ctx.clipQ = api.buildClipQueue();
+	else bad('board.js does not build the shared voice queue', 'no buildClipQueue');
+	return api;
 }
 
 const audioFetches = ctx =>

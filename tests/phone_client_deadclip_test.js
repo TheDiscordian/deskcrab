@@ -4,8 +4,8 @@
 //
 // (a) THE REJECTION-FIRST ORDERING, measured 2026-08-11 on turn db935524
 //     clips 3 and 4 and turn e913a586 clip 2: a dead source's play()
-//     rejection lands BEFORE the element's error event, playerMeta still
-//     matches, err.name reads NotAllowedError — and the client reported
+//     rejection lands BEFORE the element's error event, the clip is still
+//     current, err.name reads NotAllowedError — and the client reported
 //     "autoplay refused", offered the ▶ button on the very source that
 //     cannot load, and then reported "media error 4" for the same clip. One
 //     failure must be one report, and no button.
@@ -23,17 +23,20 @@
 //      (c)'s reports through the real server; REPORT_DUMP names the file the
 //      wedge's POST bodies are written to for that half)
 //
-// Lifted from lib/webapp/index.html exactly as tests/phone_client_test.js
-// lifts: by name, failing loudly on a rename. The rule-44a/44b helpers are
-// lifted when present and stubbed inert when absent, so this file also runs
-// against the pre-change client and shows the old behaviour red rather than
-// crashing on a missing name.
+// The mechanics live in the SHARED module now (spec rule 44c), so what runs
+// here is the page's real policy glue — reportPlay with its dedup, offerPlay
+// with its dead-source refusal, buildVoiceQueue, wirePlayerEvents,
+// enqueueVoice — lifted from lib/webapp/index.html by name (failing loudly
+// on a rename), over the real lib/browser_voice_queue.js via require(). The
+// pair actually deployed is the pair proven.
 
 const fs = require("fs");
 const path = require("path");
 
 const HTML = path.join(__dirname, "..", "lib", "webapp", "index.html");
 const src = fs.readFileSync(HTML, "utf8");
+const BrowserVoiceQueue = require(
+  path.join(__dirname, "..", "lib", "browser_voice_queue.js"));
 
 let PASS = 0, FAIL = 0;
 const ok = m => { PASS++; console.log("  ok: " + m); };
@@ -47,35 +50,27 @@ function lift(name) {
   return src.slice(start, end + 3);
 }
 
-function liftBetween(a, b) {
-  const s = src.indexOf(a);
-  if (s < 0) throw new Error("not found in index.html: " + a);
-  const e = src.indexOf(b, s);
-  if (e < 0) throw new Error("no end marker after " + a + ": " + b);
-  return src.slice(s, e + b.length);
-}
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// The full playback surface: the REAL reportPlay (its dedup under test, post
-// stubbed), the REAL offerPlay (its refusal under test, DOM stubbed), both
-// queue functions, markStarted with its playing listener, and the page-level
-// ended/error listeners. Graces are shrunk through the ctx so the deferred
-// verdicts land inside a test's sleeps.
+// The full playback surface as deployed: the REAL reportPlay (its dedup under
+// test, post stubbed), the REAL offerPlay (its refusal under test, DOM
+// stubbed), the REAL buildVoiceQueue policy block over the REAL shared
+// module, the REAL wirePlayerEvents routing, and the REAL enqueueVoice.
+// Graces are shrunk through the ctx so the deferred verdicts land inside a
+// test's sleeps.
 function buildCtx() {
   const posts = [], buttons = [], warns = [], listeners = {};
   const ctx = {
-    voiceQueue: [], voicePlaying: false, voiceMuted: false,
-    playerMeta: null, playerStarted: false,
-    deadClips: new Set(), clipErrorsReported: new Set(),
-    clipStartTimer: null, duckedVoice: false,
+    BrowserVoiceQueue,
+    voiceQ: null, playerClip: null,
+    voiceMuted: false, duckedVoice: false,
+    clipErrorsReported: new Set(),
     REFUSAL_GRACE_MS: 40, CLIP_START_GRACE_MS: 120,
     plays: [],                        // one scripted play() result per clip
     updateTalkBtn: () => {},
     setStatus: () => {},
     console: { warn: m => warns.push(String(m)), log: m => warns.push(String(m)) },
     post: (url, body) => { posts.push(JSON.parse(body)); return Promise.resolve({}); },
-    $: () => ({ parentNode: { insertBefore: () => {} } }),
     document: {
       createElement: () => {
         const el = { hidden: true, id: "", textContent: "",
@@ -101,37 +96,21 @@ function buildCtx() {
     _fire: k => (listeners[k] || []).forEach(f => f()),
   };
   // $("playnow") must find no existing button, so offerPlay always creates
-  // one this harness can count; the stub above returns a node-alike for the
+  // one this harness can count; the stub returns a node-alike for the
   // insertBefore call either way.
   ctx.$ = id => (id === "playnow" ? null : { parentNode: { insertBefore: () => {} } });
 
-  let helpers = "";
-  for (const n of ["function markClipDead", "function clipDead",
-                   "function disarmClipWatchdog", "function armClipWatchdog"]) {
-    try { helpers += lift(n) + "\n"; } catch (e) { /* pre-change client */ }
-  }
-  if (!/function clipDead/.test(helpers)) {
-    // Pre-change client: no dead state, no give-up clock. Inert stand-ins
-    // keep the lift running so the assertions can show the old behaviour
-    // red instead of this harness dying on a missing name.
-    Object.assign(ctx, { markClipDead: () => {}, clipDead: () => false,
-                         disarmClipWatchdog: () => {}, armClipWatchdog: () => {} });
-  }
-
-  const body = helpers +
+  const body =
       lift("function reportPlay") + "\n" +
       lift("function offerPlay") + "\n" +
+      lift("function buildVoiceQueue") + "\n" +
+      lift("function wirePlayerEvents") + "\n" +
       lift("function enqueueVoice") + "\n" +
-      lift("function playNextVoice") + "\n" +
-      liftBetween("function markStarted",
-                  'player.addEventListener("playing", markStarted);') + "\n" +
-      liftBetween('player.addEventListener("ended"',
-                  'player.addEventListener("error"')
-        .replace(/player\.addEventListener\("error"$/, "") + "\n" +
-      liftBetween('player.addEventListener("error"',
-                  "playNextVoice(); updateTalkBtn();\n});");
+      // The page's own top-level wiring, replayed: the queue built once, the
+      // element's events routed to the current clip's handle.
+      "voiceQ = buildVoiceQueue();\nwirePlayerEvents();\n";
   ctx._api = new Function("ctx",
-      "with (ctx) {\n" + body + "\nreturn {enqueueVoice, playNextVoice, offerPlay, reportPlay};\n}"
+      "with (ctx) {\n" + body + "\nreturn {enqueueVoice, offerPlay, reportPlay};\n}"
   )(ctx);
   return ctx;
 }
@@ -165,8 +144,8 @@ async function testRejectionFirst() {
   if (offered(ctx).length === 0)
     ok("no ▶ button is offered on the source that cannot load");
   else bad("the ▶ button must never be wired to a dead source", offered(ctx).length);
-  if (!ctx.voicePlaying) ok("the queue ends idle, not wedged on the dead clip");
-  else bad("voicePlaying must clear once the dead clip is settled", ctx.voicePlaying);
+  if (!ctx.voiceQ.busy()) ok("the queue ends idle, not wedged on the dead clip");
+  else bad("the queue must clear once the dead clip is settled", ctx.voiceQ.busy());
 }
 
 // --- (b) error-first: same outcome, and the dead state is terminal ---------
@@ -247,10 +226,10 @@ async function testNeverStartedGivesUp() {
     ok("and never as played: no started, no completed, ever");
   else bad("a clip that never sounded must never be reported played",
            JSON.stringify(ctx._posts));
-  if (!ctx.voicePlaying && ctx.player.src === "")
+  if (!ctx.voiceQ.busy() && ctx.player.src === "")
     ok("the wedged element is unloaded and the queue freed");
   else bad("the queue must not stay wedged behind the dead load",
-           "voicePlaying=" + ctx.voicePlaying + " src=" + ctx.player.src);
+           "busy=" + ctx.voiceQ.busy() + " src=" + ctx.player.src);
   ctx._api.offerPlay("/audio/w0.opus");
   if (offered(ctx).length === 0)
     ok("and the given-up source is dead: no ▶ control for it either");
@@ -285,10 +264,10 @@ async function testWedgeSevenClips() {
   if (!ctx._posts.some(p => p.event === "started" || p.event === "completed"))
     ok("and not one claims to have played");
   else bad("no play claim may survive the wedge", JSON.stringify(ctx._posts));
-  if (!ctx.voicePlaying && ctx.voiceQueue.length === 0)
+  if (!ctx.voiceQ.busy() && ctx.voiceQ.queuedCount() === 0)
     ok("the queue drains instead of believing itself playing for good");
-  else bad("the queue must drain", "voicePlaying=" + ctx.voicePlaying +
-           " queued=" + ctx.voiceQueue.length);
+  else bad("the queue must drain", "busy=" + ctx.voiceQ.busy() +
+           " queued=" + ctx.voiceQ.queuedCount());
 
   // The reports, verbatim, for the shell half: the real server takes these
   // same bodies on /played and must record per-clip failures beside its

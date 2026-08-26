@@ -1512,6 +1512,9 @@ def make_handler(hub, client_dir):
             if path == "/record":
                 self.record_get()
                 return
+            if path == "/browser_voice_queue.js":
+                self.shared_voice_queue()
+                return
             self.static()
 
         def do_POST(self):
@@ -1606,6 +1609,24 @@ def make_handler(hub, client_dir):
                 return
             obj, status = hub.chat_post(text)
             self.json_body(obj, status)
+
+        def shared_voice_queue(self):
+            """GET /browser_voice_queue.js (chessweb.md rule 24g): the shared
+            playback module, the exact bytes of the neutral file beside this
+            one. The phone server serves the SAME file behind its own auth;
+            the two servers share the asset, never each other — nothing here
+            imports, proxies, or holds anything of the phone's. A fixed name,
+            never a path from the wire."""
+            f = Path(__file__).resolve().parent / "browser_voice_queue.js"
+            if not f.is_file():
+                self.send_error(404)
+                return
+            body = f.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def chat_audio(self):
             """GET /chat/audio?game=<id>&n=<index> (rule 24e): her recorded

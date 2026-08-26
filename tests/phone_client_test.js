@@ -1718,16 +1718,19 @@ function liftBetween(a, b) {
 }
 
 function voiceCtx() {
+  // The queue mechanics live in the shared module now (spec rule 44c): what
+  // is lifted is the page's POLICY — buildVoiceQueue, wirePlayerEvents, and
+  // enqueueVoice — run over the real lib/browser_voice_queue.js, with the
+  // reporting and the ▶ offer stubbed for counting. The refusal grace is
+  // shrunk so the deferred verdict lands inside these tests' sleeps; the
+  // give-up clock sits far past all of them.
+  const BrowserVoiceQueue = require(
+    require("path").join(__dirname, "..", "lib", "browser_voice_queue.js"));
   const reports = [], offered = [], listeners = {};
   const ctx = {
-    voiceQueue: [], voicePlaying: false, voiceMuted: false,
-    playerMeta: null, playerStarted: false,
-    // The dead-clip state and the two grace clocks of rules 44a-44b, supplied
-    // as this harness's own: a short refusal grace so the deferred verdict
-    // lands inside these tests' sleeps, and a give-up clock far past any of
-    // them, disarmed by every handler before it could ever fire.
-    deadClips: new Set(), clipErrorsReported: new Set(),
-    clipStartTimer: null, duckedVoice: false,
+    BrowserVoiceQueue,
+    voiceQ: null, playerClip: null,
+    voiceMuted: false, duckedVoice: false,
     REFUSAL_GRACE_MS: 5, CLIP_START_GRACE_MS: 5000,
     plays: [],                        // one scripted play() result per clip
     reportPlay: (meta, event, detail) =>
@@ -1735,7 +1738,7 @@ function voiceCtx() {
     updateTalkBtn: () => {},
     offerPlay: (u) => offered.push(u),
     player: {
-      src: "", error: null,
+      src: "", error: null, currentTime: 0,
       addEventListener: (k, fn) => {
         (listeners[k] = listeners[k] || []).push(fn);
       },
@@ -1749,28 +1752,13 @@ function voiceCtx() {
     _reports: reports, _offered: offered,
     _fire: (k) => (listeners[k] || []).forEach((f) => f()),
   };
-  // The real handlers: both queue functions, the dead-clip state helpers and
-  // the give-up clock of rules 44a-44b, and the page-level ended/error
-  // listeners that own completion and load failure. The listener block is
-  // lifted by its own markers — both listeners end with the same advance
-  // line, so the slice runs from the ended registration to the end of the
-  // error registration.
-  const lstart = src.indexOf('player.addEventListener("ended"');
-  if (lstart < 0) throw new Error("ended listener not found in index.html");
-  const lbody = liftBetween('player.addEventListener("error"',
-                            "playNextVoice(); updateTalkBtn();\n});");
-  const body = lift("function markClipDead") + "\n" +
-               lift("function clipDead") + "\n" +
-               lift("function disarmClipWatchdog") + "\n" +
-               lift("function armClipWatchdog") + "\n" +
+  const body = lift("function buildVoiceQueue") + "\n" +
+               lift("function wirePlayerEvents") + "\n" +
                lift("function enqueueVoice") + "\n" +
-               lift("function playNextVoice") + "\n" +
-               liftBetween('player.addEventListener("ended"',
-                           'player.addEventListener("error"')
-                 .replace(/player\.addEventListener\("error"$/, "") + "\n" +
-               lbody;
+               // The page's own top-level wiring, replayed.
+               "voiceQ = buildVoiceQueue();\nwirePlayerEvents();\n";
   ctx._api = new Function("ctx",
-      "with (ctx) {\n" + body + "\nreturn {enqueueVoice, playNextVoice};\n}"
+      "with (ctx) {\n" + body + "\nreturn {enqueueVoice};\n}"
   )(ctx);
   return ctx;
 }
@@ -1789,14 +1777,14 @@ async function testDeadSourceIsNotAutoplay() {
   ctx._api.enqueueVoice("/audio/c1.opus", { tid: "t1", clip: "1" });
   ctx._api.enqueueVoice("/audio/c2.opus", { tid: "t1", clip: "2" });
   await sleep(10);
-  ctx.playerStarted = true;              // clip 0's audio flowed (rule 44b)
+  ctx._fire("playing");                  // clip 0's audio flowed (rule 44b)
   ctx._fire("ended");                    // clip 0 finished; clip 1 loads dead
   await sleep(10);
   ctx.player.error = { code: 4 };
   ctx._fire("error");                    // the element reports the dead source
   deadReject({ name: "NotSupportedError" });   // …and play() rejects a beat later
   await sleep(20);
-  ctx.playerStarted = true;              // clip 2's audio flowed too
+  ctx._fire("playing");                  // clip 2's audio flowed too
   ctx._fire("ended");                    // clip 2 finished
   await sleep(10);
 
@@ -1820,8 +1808,8 @@ async function testDeadSourceIsNotAutoplay() {
     ok("no ▶ button is offered on a source that cannot play");
   else bad("the recovery button must not point at a dead source",
            JSON.stringify(ctx._offered));
-  if (!ctx.voicePlaying) ok("the queue ends idle");
-  else bad("voicePlaying must clear when the queue drains", ctx.voicePlaying);
+  if (!ctx.voiceQ.busy()) ok("the queue ends idle");
+  else bad("the queue must clear when it drains", ctx.voiceQ.busy());
 }
 
 async function testRealRefusalStillOffersButton() {

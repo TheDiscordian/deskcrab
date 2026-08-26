@@ -320,6 +320,27 @@ says so.
     MUST NOT clobber a loaded clip's source with its silence clip for exactly that reason — the
     silence's `ended` arrives wearing the loaded clip's index — and with a clip already loaded
     the unlock plays that clip inside the gesture instead.
+44c. The mechanics of rules 44-44b are ONE implementation, shared with the chess table:
+    `lib/browser_voice_queue.js`, a dependency-free UMD module (a browser global
+    `BrowserVoiceQueue`, CommonJS for the node harnesses) owning the queue itself — arrival
+    order, one clip sounding at a time, each clip exactly once; the terminal per-clip dead
+    state, consulted at enqueue so a dead key is never asked for twice; the refusal grace,
+    inside which a racing error event claims the clip before any refusal verdict is believed;
+    `started`/`completed` truth taken only from element events fed into the per-clip handle,
+    with an `ended` nothing ever sounded settled as the failure it is; the progress-rearmed
+    never-started bound, deferred while the page says the clip is deliberately ducked, and
+    adopted onto a phantom playing state at enqueue exactly as rule 44b's tail demands; and
+    queue advancement after every terminal outcome, with drop-queued never cutting the clip
+    already sounding and the chosen stop settling silently. The page keeps POLICY only, as
+    callbacks: loading the one `#player` element and routing its events to the current clip's
+    handle, `/played` reporting with its one-error-per-clip dedup, the ▶ gesture recovery for
+    a genuine refusal — which holds the queue parked behind the waiting clip rather than
+    advancing into more refusals, the tap resuming the queue through the element's own
+    `playing` event — the open-microphone duck, and the chosen stop. The module is a static
+    asset of this server, `GET /browser_voice_queue.js` behind the same auth as every other
+    route, answered as the file's exact bytes; the chess bridge serves the SAME file, byte for
+    byte, through its own explicit route ([chessweb.md](chessweb.md) rule 24g) — shared as a
+    neutral module both pages load, never one server importing or proxying the other.
 45. The server MUST record every playback report to the per-day metrics log it already writes its
     latency stamps to, so the stamp that says a clip was synthesised has a neighbour that says
     whether it was ever heard.
@@ -578,7 +599,17 @@ never later given up on; a clip whose element never progresses is reported as it
 with no `started` or `completed` ever posted and the queue freed behind it; the seven-clip
 58d64fe9 wedge replays to seven per-clip failure reports, which the real server records beside
 its silent-turn line; and a doubled error report for one clip lands in the metrics log once,
-with a stop said twice still standing the alarm down.
+with a stop said twice still standing the alarm down. The client half runs the page's real
+policy glue over the real shared module (rule 44c), so what is proven is the pair actually
+deployed, not either half alone.
+`tests/test_shared_voice_asset.sh` holds rule 44c's sharing itself: the module's mechanics bare
+(`tests/browser_voice_queue_test.js` — order, the dead state, both race orderings, the refusal
+hold and its resume, the give-up bound with its progress re-arm and duck deferral, the
+ended-without-start truth, drop-queued sparing the sounding clip, the silent stop); both pages
+loading the identical asset path; both servers answering the file's exact bytes — this one
+behind its auth, with no key refused 404, the bridge through its own route; and the walls of
+chessweb.md rule 24g standing in the same breath — no phone secret, import, or proxy anywhere
+in the bridge, and nothing phone-shaped in the module.
 `tests/test_phone_queue_wait.sh` drives rule 43 through the real server: a turn parked before its
 first output carries wait notes in its stream naming which wait it is (behind this conversation's
 previous message, or behind something else), the notes stop once real output flows and never

@@ -174,6 +174,10 @@
   </div>
 </footer>
 <audio id="player" playsinline></audio>
+<!-- The shared voice queue (spec rule 44c): the same file the chess bridge
+     serves its page. Not deferred — the script below builds the queue at
+     parse time. -->
+<script src="browser_voice_queue.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const statusEl = $("status"), logEl = $("log"), player = $("player");
@@ -212,7 +216,7 @@ function unlockAudio() {
   // inside the gesture rather than clobbering its src — the silence clip's
   // ended arrived wearing the loaded clip's meta and reported a completion
   // nothing heard (spec rule 44b).
-  if (playerMeta) {
+  if (playerClip) {
     const p = player.play();
     if (p) p.then(() => { unlocked = true; }).catch(() => {});
     return;
@@ -222,26 +226,17 @@ function unlockAudio() {
   if (p) p.then(() => { unlocked = true; }).catch(() => {});
 }
 
-// A failed source is failed for good (spec rule 44a): dead from the moment
-// EITHER of its two signals lands — the element's error event or the load
-// failure behind a play() rejection — whichever arrives first. offerPlay
-// consults it so a ▶ control is never wired to a source that just failed to
-// load, and reportPlay consults clipErrorsReported so one failure is one
-// report, whatever order the signals came in.
-const deadClips = new Set();
+// A failed source is failed for good (spec rule 44a): the dead state lives in
+// the shared queue module now (rule 44c), set from EITHER of a dead source's
+// two signals, whichever lands first. offerPlay consults it so a ▶ control is
+// never wired to a source that just failed to load, and reportPlay consults
+// clipErrorsReported so one failure is one report, whatever order the signals
+// came in.
 const clipErrorsReported = new Set();
-
-function markClipDead(src) {
-  if (src) deadClips.add(src);
-}
-
-function clipDead(src) {
-  return !!src && deadClips.has(src);
-}
 
 // If the browser still refuses, don't silently swallow it — give him a button.
 function offerPlay(src) {
-  if (clipDead(src)) {
+  if (voiceQ.isDead(src)) {
     // A control wired to a source that cannot load is a control that does
     // nothing (C16): refused silently, and this line is the witness.
     console.warn("play control withheld — source already failed: " + src);
@@ -253,8 +248,10 @@ function offerPlay(src) {
     b = document.createElement("button");
     b.id = "playnow"; b.textContent = "▶ Play reply";
     b.addEventListener("click", () => {
+      // The tap resumes the held clip; the element's own playing event tells
+      // the queue it started (rule 44c) — no belief, only the truth.
       const p = player.play();
-      if (p) p.then(() => { voicePlaying = true; updateTalkBtn(); }).catch(() => {});
+      if (p) p.catch(() => {});
       setStatus("ready");
     });
     $("talk").parentNode.insertBefore(b, $("talk"));
@@ -280,9 +277,11 @@ function attachDisplay(replyEl, html) {
 
 // Clips arrive while the turn is still running (one per text block, exactly as
 // the desktop speaks them), so they queue and play back to back — never on top
-// of each other.
-const voiceQueue = [];
-let voicePlaying = false;
+// of each other. The queue itself — order, the dead state, the started truth,
+// the give-up clock, the advance — is the shared module (spec rule 44c,
+// lib/browser_voice_queue.js, the same file the chess table's page loads);
+// this page supplies the POLICY: the one #player element, /played reporting,
+// the ▶ gesture recovery, the duck, and the chosen stop.
 
 // Playback truth (spec rules 44-46): this page is the only process that knows
 // whether a clip actually sounded, so it says so — queued, actually started
@@ -305,63 +304,86 @@ function reportPlay(meta, event, detail) {
        { "Content-Type": "application/json" }, 10000).catch(() => {});
 }
 
-// The clip now loaded in the player, and whether its start was already
-// reported — one started per clip, whatever order playing and timeupdate
-// arrive in.
-let playerMeta = null, playerStarted = false;
-
-function markStarted() {
-  if (playerStarted) return;
-  playerStarted = true;
-  disarmClipWatchdog();
-  reportPlay(playerMeta, "started");
-}
-player.addEventListener("playing", markStarted);
-player.addEventListener("timeupdate", () => {
-  if (player.currentTime > 0) markStarted();
-});
-
-// The give-up clock on a clip that neither sounds nor fails (spec rule 44b).
-// The 23:39 shape of 2026-08-23, turn 58d64fe9: seven clips queued behind a
-// load that never issued a fetch, never errored, and never started — seven
-// `requested` reports and then nothing, the queue believing itself playing
-// for good. Each clip loaded into the element gets this bounded wait; audio
-// starting disarms it (markStarted — a sounding clip is never touched),
-// loading progress re-arms it, and a clip paused for the open microphone is
-// not stuck. On giving up: the clip's own failure report, the dead mark, the
-// element unloaded, and the queue moves on so every remaining clip gets its
-// own chance to sound or to fail on the record.
+// The give-up bound on a clip that neither sounds nor fails (spec rule 44b —
+// the 23:39 shape of 2026-08-23, turn 58d64fe9), and how long a
+// NotAllowedError rejection waits for the dead source's own error event
+// before it may be believed as a refusal (rule 44a): on the measured
+// rejection-first ordering the two signals land a beat apart. Both clocks
+// run inside the shared module now.
 const CLIP_START_GRACE_MS = 10000;
-// How long a NotAllowedError rejection waits for the dead source's own error
-// event before it may be believed as a refusal (rule 44a): on the measured
-// rejection-first ordering the two signals land a beat apart.
 const REFUSAL_GRACE_MS = 250;
-let clipStartTimer = null;
 
-function disarmClipWatchdog() {
-  if (clipStartTimer) { clearTimeout(clipStartTimer); clipStartTimer = null; }
-}
+// The clip handle whose element events route to the queue — the module's
+// per-clip truth feed. Null between clips and after a stop.
+let playerClip = null;
 
-function armClipWatchdog(entry) {
-  disarmClipWatchdog();
-  clipStartTimer = setTimeout(() => {
-    clipStartTimer = null;
-    if (playerStarted || playerMeta !== entry.meta) return;
-    if (duckedVoice) { armClipWatchdog(entry); return; }
-    markClipDead(entry.url);
-    reportPlay(entry.meta, "error", "never started: gave up waiting");
-    playerMeta = null;
-    voicePlaying = false;
-    player.removeAttribute("src");
-    player.load();
-    playNextVoice(); updateTalkBtn();
-  }, CLIP_START_GRACE_MS);
+// Policy in, mechanics out (rule 44c). Everything the queue must NOT decide
+// for itself — what a failure is called on /played, what a refusal earns,
+// what a duck means — is handed in here; everything the two pages must agree
+// on lives in the module.
+function buildVoiceQueue() {
+  return BrowserVoiceQueue.createVoiceQueue({
+    startGraceMs: CLIP_START_GRACE_MS,
+    refusalGraceMs: REFUSAL_GRACE_MS,
+    isDucked: () => duckedVoice,
+    play: (item, clip) => {
+      playerClip = clip;
+      player.src = item.url;
+      player.load();
+      const p = player.play();
+      if (p) p.catch(err => clip.rejected(err));
+    },
+    unload: (item, outcome) => {
+      playerClip = null;
+      // A wedged or stopped element is unloaded (aborting its download); a
+      // clip that ended or errored needs nothing — the next src replaces it.
+      if (outcome === "gaveup" || outcome === "stopped") {
+        player.removeAttribute("src");
+        player.load();
+      }
+    },
+    onRequested: item => reportPlay(item.meta, "requested"),
+    onStarted: item => reportPlay(item.meta, "started"),
+    onCompleted: item => reportPlay(item.meta, "completed"),
+    onFailed: (item, why) => reportPlay(item.meta, "error", why),
+    onRefusal: item => {
+      // A genuine refusal (rules 44-44a): reported once, and the ▶ button is
+      // the remedy — the queue parks behind the waiting clip, because
+      // advancing without a gesture would only meet the same refusal.
+      reportPlay(item.meta, "error", "autoplay refused");
+      updateTalkBtn();
+      offerPlay(item.url);
+      return true;
+    },
+    onChange: () => updateTalkBtn(),
+  });
 }
-player.addEventListener("progress", () => {
-  // Bytes are arriving: a slow load is not a dead one. Re-arm, don't shoot.
-  if (clipStartTimer && playerMeta && !playerStarted)
-    armClipWatchdog({ url: player.src, meta: playerMeta });
-});
+const voiceQ = buildVoiceQueue();
+
+// The one #player element's events, routed to the CURRENT clip's handle: the
+// element's own truth is the only source of started/completed (rule 44b).
+// Unloading (stopSpeech, a give-up) clears playerClip first, so a stray
+// event from the unload lands nowhere; a settled clip's late signals are
+// dropped by the module.
+function wirePlayerEvents() {
+  player.addEventListener("playing", () => {
+    if (playerClip) playerClip.playing();
+  });
+  player.addEventListener("timeupdate", () => {
+    if (playerClip) playerClip.timeupdate(player.currentTime);
+  });
+  player.addEventListener("progress", () => {
+    if (playerClip) playerClip.progress();
+  });
+  player.addEventListener("ended", () => {
+    if (playerClip) playerClip.ended();
+  });
+  player.addEventListener("error", () => {
+    const code = player.error && player.error.code;
+    if (playerClip) playerClip.error("media error" + (code ? " " + code : ""));
+  });
+}
+wirePlayerEvents();
 
 // The phone's SUPER+SHIFT+A, folded into the talk button itself: while speech
 // is playing (or queued) a short TAP on it stops the voice; press-and-hold
@@ -378,100 +400,31 @@ const talk = $("talk");
 // mid-turn, which is exactly when the voice is talking.
 function updateTalkBtn() {
   if (talk.classList.contains("rec")) return;
-  const speaking = voicePlaying || voiceQueue.length > 0;
+  const speaking = voiceQ.busy();
   talk.classList.toggle("speaking", speaking);
   talk.textContent = speaking ? "◼ Tap to stop · hold to talk" : "Hold to talk";
 }
 
 function stopSpeech() {
   voiceMuted = true;
-  disarmClipWatchdog();
   // A chosen stop is not a lost voice: reported so the silence alarm never
-  // pages anyone over it. One report covers the turn.
-  const cur = playerMeta || (voiceQueue[0] && voiceQueue[0].meta);
-  reportPlay(cur, "error", "stopped by hand");
-  playerMeta = null;
-  voiceQueue.length = 0;
-  voicePlaying = false;
+  // pages anyone over it. One report covers the turn — the module's stop is
+  // silent by design, so this is the only witness.
+  const cur = voiceQ.currentItem() || voiceQ.firstQueued();
+  reportPlay(cur && cur.meta, "error", "stopped by hand");
+  voiceQ.stopAll();
   player.pause();
-  player.removeAttribute("src");
-  player.load();
   updateTalkBtn();
   setStatus("speech stopped");
 }
 
 function enqueueVoice(url, meta) {
   if (voiceMuted) { reportPlay(meta, "error", "stopped: dropped on arrival"); return; }
-  voiceQueue.push({ url, meta });
-  reportPlay(meta, "requested");
-  playNextVoice();
-  // The queue believes a clip is playing, nothing has ever sounded, and no
-  // give-up clock is riding the load: the phantom playing state (rule 44b —
-  // the 23:39 shape parked seven arrivals behind exactly this for good).
-  // Adopt the stuck clip under the watchdog so it fails on the record and
-  // frees the queue.
-  if (voicePlaying && !playerStarted && !clipStartTimer)
-    armClipWatchdog({ url: player.src, meta: playerMeta });
+  // Everything else — the requested report, the phantom-playing adoption of
+  // rule 44b's tail, the play itself — is the module's (rule 44c).
+  voiceQ.enqueue({ url, meta });
   updateTalkBtn();
 }
-
-function playNextVoice() {
-  if (voicePlaying || !voiceQueue.length) return;
-  const next = voiceQueue.shift();
-  voicePlaying = true;
-  playerMeta = next.meta;
-  playerStarted = false;
-  player.src = next.url;
-  player.load();
-  const p = player.play();
-  if (p) p.catch((err) => {
-    // Own clip, genuine refusal, or nothing (spec rules 44 and 44a, C16). A
-    // source that failed to load signals twice, in EITHER order: the
-    // element's error event — which owns the failure, reports the media
-    // error and advances the queue — and the dead clip's own play()
-    // rejection, whose err.name reads NotAllowedError on the measured
-    // rejection-first ordering. Acting on the rejection at once blamed a
-    // load failure on autoplay and offered the ▶ button wired to the very
-    // source that cannot load — a control that did nothing. So a refusal
-    // verdict waits a beat: if the error event claims the clip inside the
-    // grace it has already said everything, and only a clip no load failure
-    // owned is a refusal.
-    if (playerMeta !== next.meta) return;
-    if (!err || err.name !== "NotAllowedError") return;
-    setTimeout(() => {
-      if (clipDead(next.url)) return;          // the error event owned it
-      if (playerMeta !== next.meta) return;    // the queue moved on
-      disarmClipWatchdog();                    // waiting on a tap, not stuck
-      reportPlay(next.meta, "error", "autoplay refused");
-      voicePlaying = false; updateTalkBtn(); offerPlay(next.url);
-    }, REFUSAL_GRACE_MS);
-  });
-  armClipWatchdog(next);
-  updateTalkBtn();
-}
-
-player.addEventListener("ended", () => {
-  disarmClipWatchdog();
-  // Completed means heard (rule 44b): an ended nothing ever sounded — a
-  // zero-length or clobbered source — is a failure wearing a completion's
-  // clothes, never a played clip.
-  if (playerStarted) reportPlay(playerMeta, "completed");
-  else reportPlay(playerMeta, "error", "ended without ever sounding");
-  playerMeta = null;
-  voicePlaying = false; playNextVoice(); updateTalkBtn();
-});
-player.addEventListener("error", () => {
-  // Unloading (stopSpeech) fires no error with meta already cleared; a real
-  // clip that died mid-fetch or mid-decode lands here with its meta intact.
-  // The failed source is dead for good (rule 44a), marked BEFORE the report:
-  // the rejection still to land can then neither re-report nor re-offer it.
-  disarmClipWatchdog();
-  markClipDead(player.src);
-  const code = player.error && player.error.code;
-  reportPlay(playerMeta, "error", "media error" + (code ? " " + code : ""));
-  playerMeta = null;
-  voicePlaying = false; playNextVoice(); updateTalkBtn();
-});
 
 // The mute, for a phone that fires in a public pocket. Persistent across
 // reloads, and it silences EVERYTHING the page can sound — the voice clips
@@ -1158,15 +1111,15 @@ let recWanted = false;
 // voice queue neither advances nor drops, and the mute is untouched.
 let duckedVoice = false, duckedMusic = false;
 function duckPlayback() {
-  duckedVoice = voicePlaying && !player.paused;
+  duckedVoice = !!playerClip && !player.paused;
   if (duckedVoice) player.pause();
   duckedMusic = !music.paused && !music.ended;
   if (duckedMusic) music.pause();
 }
 function unduckPlayback() {
-  // A stop pressed while recording cleared the queue: playerMeta gone means
+  // A stop pressed while recording cleared the queue: playerClip gone means
   // there is nothing to resume, and resuming would replay a chosen silence.
-  if (duckedVoice && playerMeta) { const p = player.play(); if (p) p.catch(() => {}); }
+  if (duckedVoice && playerClip) { const p = player.play(); if (p) p.catch(() => {}); }
   if (duckedMusic && music.src) { const p = music.play(); if (p) p.catch(() => {}); }
   duckedVoice = duckedMusic = false;
 }
@@ -1262,7 +1215,7 @@ talk.addEventListener("pointermove", e => {
     if (pressTimer !== null) {
       clearTimeout(pressTimer);
       pressTimer = null;
-      if (ev === "pointerup" && !pressMoved && (voicePlaying || voiceQueue.length))
+      if (ev === "pointerup" && !pressMoved && voiceQ.busy())
         stopSpeech();
       return;
     }

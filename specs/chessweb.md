@@ -667,7 +667,8 @@ cannot be changed.
        `$DESKCRAB_CHESSWEB_SYNTH_CMD` replaces the synth invocation for tests (argv: the
        output path, then the text; the clip is the file it writes), so no test runs piper.
        And playback holds the phone's own queue discipline, scaled to the table
-       ([phone.md](phone.md) rules 44a–44b are the pedigree): the page holds ONE clip
+       ([phone.md](phone.md) rules 44a–44b are the pedigree, and rule 44c's shared module is
+       the implementation — rule 24g): the page holds ONE clip
        queue — every message of hers that arrives while the toggle is on is queued by its
        recorded index and voiced exactly once, in arrival order, never two clips sounding
        at once and never a later message dropped because an earlier one is still playing
@@ -734,16 +735,24 @@ cannot be changed.
          its secret, deliberately), and anything shared between the two servers or the two
          pages lives in a neutral module both sides load — `lib/sentence_stream.py` is the
          precedent — never one importing the other.
-       Convergence beyond this — the phone page's own queue implementation extracted into a
-       neutral shared client module both pages load, in place of the table's small
-       purpose-built queue — is welcome exactly up to these walls, and until it happens the
-       table's queue is held to the shared discipline by its own tests:
-       tests/test_chess_chat_playback.sh drives the queue itself (through
-       tests/chess_client_chat_test.js, lifting the functions out of board.js exactly as the
-       phone client tests lift theirs), and tests/test_chess_chat_flow.sh drives the server
-       half — a displayed reply and an own-voice clip after BOTH colours' landed moves,
-       asserted for the sitter's move while the store provably holds only their move, and a
-       typed burst coalescing to one reply composed from the thread as it stands now.
+       Convergence up to these walls is DONE: the queue mechanics live in ONE neutral shared
+       client module, `lib/browser_voice_queue.js` ([phone.md](phone.md) rule 44c), loaded by
+       both pages as the same static asset — the phone server behind its authenticated route,
+       the bridge through its own explicit `GET /browser_voice_queue.js` answering the file's
+       exact bytes, neither server importing or proxying the other and no phone secret
+       anywhere near the bridge (`tests/test_shared_voice_asset.sh` holds the byte identity
+       and the walls in one suite). board.js keeps POLICY only: fetching the clip off
+       `/chat/audio` into a fresh element, the console witness for a failed clip (text kept,
+       never a narrator), the speak-toggle gate consulted when a clip is dequeued, and the
+       toggle-off/game-switch/reset drop — which empties the queue without cutting a clip
+       already sounding. The table's queue is held to the shared discipline by its own tests:
+       tests/test_chess_chat_playback.sh drives the page's policy glue over the real module
+       (through tests/chess_client_chat_test.js, lifting the functions out of board.js exactly
+       as the phone client tests lift theirs), tests/browser_voice_queue_test.js drives the
+       module bare, and tests/test_chess_chat_flow.sh drives the server half — a displayed
+       reply and an own-voice clip after BOTH colours' landed moves, asserted for the sitter's
+       move while the store provably holds only their move, and a typed burst coalescing to
+       one reply composed from the thread as it stands now.
 
 A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
 the default client. It speaks the stock wire exactly — client framing out (one-byte lengths,
