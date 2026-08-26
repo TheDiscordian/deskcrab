@@ -151,7 +151,9 @@ which fails silently is worse than one that does not exist.
     missing shelf, or an unset `WANTS_FILE` prints one line, removes the record, and exits
     zero. The check's exit status MUST NOT block the tidy job behind it — moving the flagged
     history into the want's document is exactly the judgement work tidy's own brief names, and
-    a shelf that needs tidying is the last reason to skip the tidy.
+    a shelf that needs tidying is the last reason to skip the tidy. By hand the same check is
+    `crab shelf-check` — its own dispatch case, never the catch-all's speech
+    ([turn-pipeline.md](turn-pipeline.md) rule 6a).
 
 21c. The undestinated-claims check. Beside the shelf-line check, the tidy unit runs the machine
     check `lib/tidy-claims run` over the day just ended — the journal day before the night the

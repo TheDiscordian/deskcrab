@@ -116,6 +116,18 @@ case "${1:-}" in
         exec "$SCRIPT_DIR/lib/tiredness" "$@"
         ;;
 
+    shelf-check)
+        # The nightly shelf-line measure, by hand — the same lib/shelf-check
+        # the tidy unit runs (specs/nightly.md rules 21a/21b). NOT speech
+        # (specs/turn-pipeline.md rule 6a): on 2026-08-25 this name fell
+        # through the catch-all below, and an autonomous hand reaching for
+        # the check started a whole desktop turn that was told "shelf-check"
+        # with no context — the same trap `crab help` fell into sixteen
+        # times on 2026-08-07. A named maintenance command never falls
+        # through to the spoken path.
+        exec "$SCRIPT_DIR/lib/shelf-check"
+        ;;
+
     claim)
         # Announce what this session is holding so another hand can see it
         # before it starts. Advisory: it reports, it never blocks.
@@ -753,7 +765,8 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"        exit 0
+        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+        exit 0
         ;;
 
     *)
@@ -764,7 +777,8 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|<message>"            exit 1
+            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+            exit 1
         fi
         stop_tts
         rotate_convo

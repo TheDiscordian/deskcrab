@@ -24,6 +24,16 @@ which share every stage except capture and delivery.
 6. Any argument that is not a subcommand is a text query. A leading dash MUST be rejected as a
    mistyped flag and MUST NEVER reach the spoken channel. `help` and its variants MUST print usage
    and MUST NEVER become a turn.
+6a. A named maintenance command MUST have its own dispatch case and MUST NEVER fall through to
+    the catch-all: the catch-all is the spoken channel, so a command name reaching it becomes a
+    conversational turn — at 23:43 on 2026-08-25 an autonomous hand ran `crab shelf-check`
+    intending the nightly shelf-line check, and what ran instead was a three-second desktop turn
+    whose user text was "shelf-check". `crab shelf-check` MUST execute `lib/shelf-check`
+    ([nightly.md](nightly.md) rules 21a-21b) directly: no model call, no session, no conversation
+    write, no live-turn record, and no speech or notification path may start. The same
+    never-a-turn holds for the usage paths: `crab` with no arguments MUST print usage and exit
+    without a turn — an `exit` welded onto the usage `echo` as one more argument (2026-08-25)
+    printed the usage and then ran an EMPTY desktop turn behind it.
 7. The recorder pid file MUST be overridable per instance, so a scratch instance never reads the
    live desk's recording state.
 
