@@ -27,6 +27,7 @@ import struct
 import subprocess
 import sys
 import syslog
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1016,6 +1017,56 @@ class Hub:
                             f"{label} says: {msg['text']}", why="said")
             return {"ok": True, "count": len(g.get("chat") or [])}, 200
 
+    def chat_clip(self, want_gid, n):
+        """GET /chat/audio (rule 24e): message `n` of the loaded game's
+        chat, synthesized into an opus clip in HER OWN voice — the same
+        `crab synth` pipeline the phone hears, so the page never needs a
+        browser narrator. Only a message recorded with role `assistant`
+        is voiced: the sitter's unauthenticated keyboard (rule 24f) must
+        never borrow her voice. Returns (clip bytes, None) on success,
+        (None, (json obj, status)) otherwise. Synthesis runs after the
+        hub lock is dropped — no move ever waits on a clip."""
+        with self.lock:
+            g = self.store.load()
+            if g is None:
+                return None, ({"error": "No game loaded."}, 409)
+            if want_gid is not None and want_gid != g["id"]:
+                return None, ({"error": f"The loaded game is {g['id']}, "
+                                        f"not {want_gid}."}, 409)
+            chat = g.get("chat") or []
+            if not 0 <= n < len(chat):
+                return None, ({"error": "No such chat message."}, 404)
+            m = dict(chat[n])
+            gid = g["id"]
+        if m.get("who") != "assistant":
+            return None, ({"error": "Only her own messages are "
+                                    "voiced."}, 403)
+        # Scrubbed again on the way out (rule 24f's posture): a legacy or
+        # hand-edited record gets the same one-line fold a fresh one did.
+        text = chess_cli.clean_text(str(m.get("text") or ""))
+        if not text:
+            return None, ({"error": "That message has no words."}, 404)
+        fd, out = tempfile.mkstemp(prefix="chessweb-clip-", suffix=".opus")
+        os.close(fd)
+        try:
+            r = subprocess.run(synth_cmd() + [out, text],
+                               capture_output=True, timeout=60)
+            if r.returncode == 0 and os.path.getsize(out):
+                with open(out, "rb") as f:
+                    return f.read(), None
+            err = r.stderr.decode("utf-8", "replace").strip()[-200:]
+            log(f"chat clip {gid}#{n} failed (rc={r.returncode})"
+                + (f": {err}" if err else ""))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"chat clip {gid}#{n} failed: {e}")
+        finally:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+        return None, ({"error": "Her voice could not be synthesized."},
+                      503)
+
     def resign_human(self, want_gid=None):
         """POST /resign (rule 19): the user gives up their own side of the
         loaded game — never hers. Records resigned_by exactly as
@@ -1424,6 +1475,9 @@ def make_handler(hub, client_dir):
             if path == "/chat":
                 self.chat_get()
                 return
+            if path == "/chat/audio":
+                self.chat_audio()
+                return
             if path == "/record":
                 self.record_get()
                 return
@@ -1521,6 +1575,36 @@ def make_handler(hub, client_dir):
                 return
             obj, status = hub.chat_post(text)
             self.json_body(obj, status)
+
+        def chat_audio(self):
+            """GET /chat/audio?game=<id>&n=<index> (rule 24e): her recorded
+            message as an opus clip in her own voice, for the page's speak
+            toggle — the browser's own speech synthesis is never used."""
+            want_gid, n = None, None
+            q = self.path.split("?", 1)
+            if len(q) == 2:
+                for part in q[1].split("&"):
+                    if part.startswith("game="):
+                        want_gid = part[5:]
+                    elif part.startswith("n="):
+                        try:
+                            n = int(part[2:])
+                        except ValueError:
+                            n = None
+            if n is None:
+                self.json_body(
+                    {"error": "n=<message index> is required"}, 400)
+                return
+            clip, err = hub.chat_clip(want_gid, n)
+            if clip is None:
+                self.json_body(*err)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(clip)))
+            self.end_headers()
+            self.wfile.write(clip)
 
         def record_get(self):
             """GET /record (rule 23d): the counted per-player tally, the
@@ -1674,6 +1758,18 @@ def default_wake_cmd():
     crab = Path(__file__).resolve().parent.parent / "crab"
     return [str(crab) if crab.is_file() else "crab",
             "wake-at", "--by", "chessweb", "1s", "event"]
+
+
+def synth_cmd():
+    """The argv prefix that turns text into an opus clip (rule 24e):
+    $DESKCRAB_CHESSWEB_SYNTH_CMD for tests, else the checkout's own crab —
+    the same `crab synth` pipeline the phone's voice comes from — falling
+    back to PATH. The caller appends the output path and the text."""
+    override = os.environ.get("DESKCRAB_CHESSWEB_SYNTH_CMD")
+    if override:
+        return shlex.split(override)
+    crab = Path(__file__).resolve().parent.parent / "crab"
+    return [str(crab) if crab.is_file() else "crab", "synth"]
 
 
 def voice_cooldown():

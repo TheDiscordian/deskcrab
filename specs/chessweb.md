@@ -606,13 +606,27 @@ cannot be changed.
        off wholesale — player messages still record — and `$DESKCRAB_CHESS_CHAT_CMD` replaces
        the invocation for tests (prompt on stdin, reply on stdout), so no test chats with a
        real model.
-    e. Aloud, by choice: the shipped page's chat panel carries a speak toggle, default OFF and
-       remembered client-side. On, HER new messages are spoken by the browser's own speech
-       synthesis on the device showing the board — the window the sitter chose. Nothing
-       server-side speaks table chat: the desk and phone voices belong to the conversation
-       lanes ([speech-output.md](speech-output.md)), and this chat is not that conversation.
-       History is never spoken on a page load — only messages that arrive while the toggle is
-       on.
+    e. Aloud, by choice — and in HER OWN VOICE. The shipped page's chat panel carries a speak
+       toggle, default OFF and remembered client-side. On, HER new messages are spoken on the
+       device showing the board — the window the sitter chose — as clips of her own voice: the
+       page fetches `GET /chat/audio?game=<id>&n=<index>` and the bridge synthesizes the
+       RECORDED message through the same pipeline every other voice of hers comes from (`crab
+       synth`, the piper voice of [speech-output.md](speech-output.md)), answered as
+       `audio/ogg`. The browser's own speech synthesis is never used, not even as a fallback:
+       a page that cannot fetch or play the clip keeps the text, says so in its own console,
+       and stays silent — a generic narrator wearing her words is an impersonation, not a
+       degraded mode (the toggle first shipped speaking through `speechSynthesis`, and the
+       user rejected that voice the same night, 2026-08-25). The endpoint holds rule 24f's
+       boundary: it voices only a message whose recorded role is `assistant` — any other index
+       is refused 403, so the unauthenticated keyboard can never borrow her voice — refuses a
+       missing game or a mismatched game id 409 and an unknown index 404, synthesizes per
+       request after the hub lock is dropped (no move ever waits on a clip), and answers a
+       synthesis failure 503 with a log line, never an unexplained silence. The desk and
+       phone LIVE voices still belong to the conversation lanes alone: nothing here touches
+       this machine's speakers, and the clip exists only because the page asked. History is
+       never spoken on a page load — only messages that arrive while the toggle is on.
+       `$DESKCRAB_CHESSWEB_SYNTH_CMD` replaces the synth invocation for tests (argv: the
+       output path, then the text; the clip is the file it writes), so no test runs piper.
     f. **The table is not a console.** Everything typed at the board — the chat text and the
        sitter's name — is untrusted input from an unauthenticated keyboard: the seat is
        first-come (KNOWN LIMITS), so the words may claim any identity and no claim is believed.
@@ -675,8 +689,9 @@ the stock page. What it owes beyond the protocol:
 - **The table chat** (rule 24). A chat panel under the board: the thread off `GET /chat`, polled
   while connected; a send box posting to `POST /chat`; each message labeled with the player's
   name or the assistant's. And the speak toggle of rule 24e — default off, remembered, speaking
-  only her messages and only those that arrive while it is on, through the browser's own speech
-  synthesis.
+  only her messages and only those that arrive while it is on, each as a clip of her own voice
+  off `GET /chat/audio`. The browser's built-in narrator is never used and never a fallback: a
+  clip that cannot be fetched or played keeps the text and says so in the page console.
 - **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
   It never fires on one click: the first click arms it and says so on its own label, a second
   click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on
