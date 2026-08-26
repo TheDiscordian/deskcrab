@@ -18,6 +18,12 @@ which share every stage except capture and delivery.
    fixes, in that order, before anything else sees it.
 4. An empty capture MUST end the turn with a notification and no session, no conversation write,
    and no model call.
+4a. The desk capture notifications — the listening notice, its dismissal, and the empty-capture
+    notice — MUST name the desktop icon by its theme name (`-i beatrice`), never by a file path.
+    The mark itself is deployed state, not repo content: the exported face installs as `beatrice`
+    under the user hicolor theme (the PNG sizes and the scalable SVG, then the icon cache), which
+    is what makes the bare name resolvable for the notifier, GTK, and any `.desktop` `Icon=` line
+    alike — and a name, unlike a path burned into the call, survives the source tree moving.
 5. The overlap collapser MUST NOT remove a phrase the user genuinely repeated. When it cannot tell
    a repeat from an overlap, it MUST keep both copies. Answering a question that was not asked is
    worse than answering one twice.

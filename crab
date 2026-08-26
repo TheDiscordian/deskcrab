@@ -26,7 +26,7 @@ case "${1:-}" in
         WHISPER_OUT="${STATE_PREFIX}-whisper.txt"
         rm -f "$WHISPER_OUT"
 
-        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Listening..."
+        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab -i beatrice "$NOTIFY_NAME" "Listening..."
         whisper-stream -m "$WHISPER_MODEL" --step 3000 --length 10000 -f "$WHISPER_OUT" &
         echo $! > "$PIDFILE"
         ;;
@@ -38,7 +38,7 @@ case "${1:-}" in
         turn_metric capture-release
 
         # Dismiss listening notification immediately
-        notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" ""
+        notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab -i beatrice "$NOTIFY_NAME" ""
 
         WHISPER_OUT="${STATE_PREFIX}-whisper.txt"
 
@@ -69,7 +69,7 @@ case "${1:-}" in
         turn_metric capture-transcribed "${#TEXT} chars"
 
         if [ -z "$TEXT" ]; then
-            notify-send -t 3000 "$NOTIFY_NAME" "No speech detected"
+            notify-send -t 3000 -i beatrice "$NOTIFY_NAME" "No speech detected"
             exit 1
         fi
 
