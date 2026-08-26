@@ -1101,6 +1101,97 @@ def s_record_http(port, chess_dir):
     ok("/record splits the counted score by player, unlabeled pile visible")
 
 
+def http_bytes(port, path):
+    """(status, content-type, raw body) — for routes that answer audio."""
+    try:
+        r = urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",
+                                   timeout=15)
+        return r.status, r.headers.get("Content-Type", ""), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", ""), e.read()
+
+
+def s_chat_bothvoices(port, chess_dir, chat_log):
+    # A displayed reply AND her own-voice clip after BOTH colours' landed
+    # moves (chessweb.md rules 24c and 24e). The mover's stub is held on a
+    # deliberate delay, so a chat message observed while the store holds one
+    # move can only be the SITTER's move's own trigger — her table voice
+    # does not hang off her own replies (the silent-game shape of rule 7,
+    # here at the chat instead of the wake).
+    status, j = post_json(port, "/new", {"control": "untimed",
+                                         "player": "Visitor"})
+    assert status == 200, (status, j)
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.expect(TEAM)
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+
+    j = wait_for("her chat about the sitter's move", lambda: (
+        lambda d: d if any(m["who"] == "assistant" and "bold" in m["text"]
+                           for m in d["messages"]) else None)(
+        get_json(port, "/chat")))
+    moves = game_moves(chess_dir, "guest-001")
+    assert moves == ["e2e4"], moves
+    ok("she replied to THEIR move while the store held only their move")
+    idx = next(i for i, m in enumerate(j["messages"])
+               if m["who"] == "assistant")
+    st, ctype, body = http_bytes(port, f"/chat/audio?game=guest-001&n={idx}")
+    assert st == 200 and ctype == "audio/ogg" and b"bold" in body, \
+        (st, ctype, body[:60])
+    ok("and that message synthesizes as a clip of her own voice")
+
+    c.expect_move("e7", "e5", timeout=30)
+    j = wait_for("her chat about her own move", lambda: (
+        lambda d: d if any(m["who"] == "assistant"
+                           and "classical" in m["text"]
+                           for m in d["messages"]) else None)(
+        get_json(port, "/chat")))
+    idx2 = max(i for i, m in enumerate(j["messages"])
+               if m["who"] == "assistant" and "classical" in m["text"])
+    st, ctype, body = http_bytes(port, f"/chat/audio?game=guest-001&n={idx2}")
+    assert st == 200 and ctype == "audio/ogg" and b"classical" in body, \
+        (st, ctype, body[:60])
+    ok("after her own landed move: reply displayed and voiced the same way")
+
+
+def s_chat_burst(port, chess_dir, chat_log):
+    # Newest-wins coalescing against CURRENT live state (rule 24c): a burst
+    # of triggers yields at most one message, composed from the thread as it
+    # stands now — the superseded call's reply is discarded with its flight,
+    # never posted stale. The chat stub sleeps, so the first call is
+    # provably in flight when the second trigger lands.
+    status, j = post_json(port, "/new", {"control": "untimed",
+                                         "player": "Visitor"})
+    assert status == 200, (status, j)
+    status, j = post_json(port, "/chat", {"text": "first message here"})
+    assert status == 200, (status, j)
+    wait_for("the first chat call starting", lambda:
+             Path(chat_log).exists()
+             and "first message here" in Path(chat_log).read_text())
+    status, j = post_json(port, "/chat", {"text": "second message now"})
+    assert status == 200, (status, j)
+    wait_for("her one reply", lambda: [
+        m for m in get_json(port, "/chat")["messages"]
+        if m["who"] == "assistant"])
+    time.sleep(2.5)  # room for a straggler reply to (wrongly) land too
+    hers = [m for m in get_json(port, "/chat")["messages"]
+            if m["who"] == "assistant"]
+    assert len(hers) == 1, hers
+    assert "One at a time" in hers[0]["text"], hers
+    ok("one burst, one message — the superseded call posted nothing")
+    prompts = [p for p in Path(chat_log).read_text().split("----")
+               if p.strip()]
+    last = prompts[-1]
+    assert "first message here" in last and "second message now" in last, \
+        last
+    assert "Just now: Visitor says: second message now" in last, last
+    ok("the reply was composed from the thread as it stands NOW, "
+       "both messages in view")
+
+
 def main():
     what = sys.argv[1]
     if what == "seed":
@@ -1119,6 +1210,7 @@ def main():
      "chat": s_chat, "chat_pass": s_chat_pass,
      "chat_off": s_chat_off, "chat_nogame": s_chat_nogame,
      "chat_trust": s_chat_trust,
+     "chat_bothvoices": s_chat_bothvoices, "chat_burst": s_chat_burst,
      "record_http": s_record_http}[what](port, *rest)
 
 

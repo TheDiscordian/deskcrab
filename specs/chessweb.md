@@ -666,6 +666,21 @@ cannot be changed.
        never spoken on a page load — only messages that arrive while the toggle is on.
        `$DESKCRAB_CHESSWEB_SYNTH_CMD` replaces the synth invocation for tests (argv: the
        output path, then the text; the clip is the file it writes), so no test runs piper.
+       And playback holds the phone's own queue discipline, scaled to the table
+       ([phone.md](phone.md) rules 44a–44b are the pedigree): the page holds ONE clip
+       queue — every message of hers that arrives while the toggle is on is queued by its
+       recorded index and voiced exactly once, in arrival order, never two clips sounding
+       at once and never a later message dropped because an earlier one is still playing
+       (the first shipped shape spoke at most one clip per poll batch and lost the rest
+       with no witness). A clip that cannot be fetched, cannot be decoded, or has not
+       begun to sound within a bounded wait after play began is given up on — the failure
+       named in the page console, the clip dead for good, never refetched and never
+       retried — and the queue advances, so one dead clip never parks the thread's voice;
+       a clip already sounding is never cut by the bound. Switching the toggle off empties
+       the queue (silence chosen is silence now, not after the backlog), and a game switch
+       or a thread reset empties it too: the refetched backlog is history, rendered
+       silently. Only an index the page saw arrive with role `assistant` is ever queued —
+       the client's own belt under the endpoint's 403.
     f. **The table is not a console.** Everything typed at the board — the chat text and the
        sitter's name — is untrusted input from an unauthenticated keyboard: the seat is
        first-come (KNOWN LIMITS), so the words may claim any identity and no claim is believed.
@@ -694,8 +709,41 @@ cannot be changed.
        tests/test_chess_chat_trust.sh holds this door: forged roles, smuggled newlines and
        injection attempts must land inert, both call spellings must show the disarmed argv, and
        the chat must keep working for an ordinary sitter all the while.
-
-## THE SHIPPED CLIENT — lib/chessweb_client/
+    g. **One assistant, two rooms — shared primitives, deliberate walls.** The table chat and
+       the phone conversation are the same voice in two rooms, and everything the trust
+       boundary permits to be ONE implementation is one: the persona sheet (rule 24d — the
+       same file the prompt assembler reads, under the same byte bound), the model/account
+       walk (the mover's, which the chat call rides), the synthesis pipeline (rule 24e —
+       `crab synth`, the one piper voice), and the playback discipline (rule 24e, the phone's
+       rules 44a–44b scaled to the table). What is NOT shared is a wall, not drift, and each
+       wall is named here so no later unification "fixes" it (the 2026-08-26 engineering
+       record re-examined the whole split and this rule is its verdict):
+       - *The conversation store is the phone's alone.* Everything in that store seeds her
+         future prompts — desk, phone and wake alike — so a line typed at the unauthenticated
+         table entering it would be a prompt injection with a lifetime, and her table replies
+         landing in it would hand the sitter a read on the user's own conversation. The game
+         record stays the chat's entire memory (this rule's head), and no reader of the
+         conversation store ever shows a table line.
+       - *The turn machinery is the phone's alone.* An ordinary turn runs tool-armed inside
+         the cocoon at phone trust; the chat call runs disarmed (rule 24f) precisely because
+         its prompt carries an unauthenticated keyboard's text. There is no flag that makes
+         an ordinary turn safe for that text — the minimal call IS the design, not a stopgap.
+       - *Phone trust is never extended to the table.* The bridge holds no phone secret,
+         proxies nothing to the phone server, and no table-origin request may reach any
+         phone route: `lib/serve.py` is never imported here (it refuses to import without
+         its secret, deliberately), and anything shared between the two servers or the two
+         pages lives in a neutral module both sides load — `lib/sentence_stream.py` is the
+         precedent — never one importing the other.
+       Convergence beyond this — the phone page's own queue implementation extracted into a
+       neutral shared client module both pages load, in place of the table's small
+       purpose-built queue — is welcome exactly up to these walls, and until it happens the
+       table's queue is held to the shared discipline by its own tests:
+       tests/test_chess_chat_playback.sh drives the queue itself (through
+       tests/chess_client_chat_test.js, lifting the functions out of board.js exactly as the
+       phone client tests lift theirs), and tests/test_chess_chat_flow.sh drives the server
+       half — a displayed reply and an own-voice clip after BOTH colours' landed moves,
+       asserted for the sitter's move while the store provably holds only their move, and a
+       typed burst coalescing to one reply composed from the thread as it stands now.
 
 A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
 the default client. It speaks the stock wire exactly — client framing out (one-byte lengths,
@@ -729,8 +777,10 @@ the stock page. What it owes beyond the protocol:
   while connected; a send box posting to `POST /chat`; each message labeled with the player's
   name or the assistant's. And the speak toggle of rule 24e — default off, remembered, speaking
   only her messages and only those that arrive while it is on, each as a clip of her own voice
-  off `GET /chat/audio`. The browser's built-in narrator is never used and never a fallback: a
-  clip that cannot be fetched or played keeps the text and says so in the page console.
+  off `GET /chat/audio`, through the one clip queue rule 24e demands: in order, one at a time,
+  never a message dropped behind a busy or dead clip, never a backlog voiced after a reset. The
+  browser's built-in narrator is never used and never a fallback: a clip that cannot be fetched
+  or played keeps the text and says so in the page console.
 - **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
   It never fires on one click: the first click arms it and says so on its own label, a second
   click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on
