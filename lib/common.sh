@@ -575,7 +575,7 @@ utf8_trim() {  # <text> <max bytes>
 # where utf8_trim's flatten would destroy the very structure the reader
 # needs — and a bare `head -c` on it leaves the same stray lead byte, this
 # time inside the prompt and the stream log that records it (specs/nightly.md
-# rule 58a; the backlog drain's selection material is the callers). So the
+# rule 58a; the night-work selection material is the callers). So the
 # document-shaped counterpart: the byte cut, then the identical
 # explicit-charset iconv pass, newlines kept. Reads the named file, or stdin
 # without one; without iconv the byte cut is, as above, still better than
@@ -8309,8 +8309,8 @@ job_start() {
     # No want, and she is awake: the brief QUEUES for the night instead of
     # dispatching (rule 30). Three hands pass without a want (rule 31): -f is
     # a deliberate force, -O inherits the standing its origin earned when it
-    # was first dispatched, and DESKCRAB_JOB_NIGHT is the drain's window —
-    # set by the drain and by nothing else. The gate stands only where a
+    # was first dispatched, and DESKCRAB_JOB_NIGHT is the night's window —
+    # set by the night's work and by nothing else. The gate stands only where a
     # shelf exists: an instance with no WANTS_FILE has nobody whose wants
     # could gate it, and dispatches as it always did.
     if [ -n "${WANTS_FILE:-}" ] && [ -s "$WANTS_FILE" ] \
@@ -8321,7 +8321,7 @@ job_start() {
         "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "" "$workdir" queued || return 1
         [ -n "$record" ] && \
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" record="$record"
-        echo "Job $id QUEUED for the night — not dispatched. Awake, the door dispatches only want-linked work (jobs.md rule 30); the night drain works the queue after sleep."
+        echo "Job $id QUEUED for the night — not dispatched. Awake, the door dispatches only want-linked work (jobs.md rule 30); the night takes up the queue after sleep."
         echo "  now instead: crab job dispatch $id   (or --want <ref> to link a want, -f to force)"
         echo "  list: crab jobs    drop: crab job drop $id"
         return 0
@@ -8442,7 +8442,7 @@ job_dispatch_sidecar() {  # <id> <workdir>
 # dispatch stands here — the artifact guard on the recorded field (a queued
 # corpse from a broken substitution must never wake a builder), and the
 # block marker — and DESKCRAB_NO_DISPATCH dry-runs it with the record left
-# queued, so the drain's rule-61 dry run starts nothing.
+# queued, so the night's rule-61 dry run starts nothing.
 job_dispatch_queued() {
     local id="${1:-}"
     [ -n "$id" ] || { echo "Usage: crab job dispatch <id>   (queued ids: crab jobs --state queued)"; return 1; }
