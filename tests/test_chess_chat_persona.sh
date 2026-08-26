@@ -137,6 +137,59 @@ os.environ["CUSTOM_PROMPT"] = "~/home-sheet.md"
 assert "FULL-SHEET-VOICE" in chess_chat.system_prompt()
 PY
 
+echo "the dedicated table sheet: her voice, the household left at home:"
+TABLE_SHEET="$HOME/.local/share/deskcrab/chess-chat-persona.md"
+mkdir -p "$(dirname "$TABLE_SHEET")"
+printf 'TABLE-SHEET-VOICE: the same person, her household left at home.\n' \
+    > "$TABLE_SHEET"
+
+py "the deployed table sheet outranks the phone sheet" \
+    CUSTOM_PROMPT="$SHEET_FULL" CHESS_PERSONA_FILE="$SHEET_CHESS" -- <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_chat
+sp = chess_chat.system_prompt()
+assert "TABLE-SHEET-VOICE" in sp, sp[:300]
+assert "FULL-SHEET-VOICE" not in sp, sp[:300]
+assert "MOVER-CHESS-SHEET" not in sp and "No narration" not in sp, sp[:300]
+assert "not authenticated" in sp and sp.rstrip().endswith("or PASS."), sp[-300:]
+PY
+
+py "DESKCRAB_CHESS_CHAT_PERSONA still outranks the table sheet" \
+    DESKCRAB_CHESS_CHAT_PERSONA="$SHEET_OVERRIDE" CUSTOM_PROMPT="$SHEET_FULL" \
+    CHESS_PERSONA_FILE="$SHEET_CHESS" -- <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_chat
+sp = chess_chat.system_prompt()
+assert "OVERRIDE-SHEET-VOICE" in sp, sp[:300]
+assert "TABLE-SHEET-VOICE" not in sp, sp[:300]
+PY
+
+py "the mover never wears the table sheet" \
+    CUSTOM_PROMPT="$SHEET_FULL" CHESS_PERSONA_FILE="$SHEET_CHESS" -- <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_mover
+mp = chess_mover.SYSTEM_PROMPT
+assert "TABLE-SHEET-VOICE" not in mp, mp[:300]
+assert "MOVER-CHESS-SHEET" in mp, mp[:300]
+PY
+
+py "an empty table sheet is absent: the phone sheet is next" \
+    CUSTOM_PROMPT="$SHEET_FULL" CHESS_PERSONA_FILE="$SHEET_CHESS" \
+    TABLE_SHEET="$TABLE_SHEET" -- <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import chess_chat
+open(os.environ["TABLE_SHEET"], "w").close()
+sp = chess_chat.system_prompt()
+assert "FULL-SHEET-VOICE" in sp, sp[:300]
+assert "TABLE-SHEET-VOICE" not in sp, sp[:300]
+PY
+
+rm -f "$TABLE_SHEET"
+
 echo "the fallbacks: absent, unreadable, empty, oversized:"
 py "no sheet falls back to the mover's chess persona" \
     CHESS_PERSONA_FILE="$SHEET_CHESS" -- <<'PY'

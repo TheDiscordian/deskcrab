@@ -623,19 +623,28 @@ cannot be changed.
        off wholesale — player messages still record — and `$DESKCRAB_CHESS_CHAT_CMD` replaces
        the invocation for tests (prompt on stdin, reply on stdout), so no test chats with a
        real model. **Minimal in machinery, never in voice.** The chat call's system prompt
-       carries her WHOLE conversational persona: the sheet `$DESKCRAB_CHESS_CHAT_PERSONA`
-       names, else the persona sheet `$CUSTOM_PROMPT` points at (the bridge gets that value
-       unexpanded from its EnvironmentFile, so `~` and `$HOME` are expanded here; a sheet that
-       is unreadable, empty, or over 65536 bytes — the prompt assembler's own bound on the
-       sheet — is treated as absent), read per call so an edited sheet lands without a bridge
-       restart. Only when no sheet is readable does the chat fall back to the mover's chess
+       carries her whole conversational voice from ONE sheet, the first readable of: the sheet
+       `$DESKCRAB_CHESS_CHAT_PERSONA` names, the dedicated TABLE sheet at
+       `~/.local/share/deskcrab/chess-chat-persona.md`, and the persona sheet `$CUSTOM_PROMPT`
+       points at (the bridge gets that value unexpanded from its EnvironmentFile, so `~` and
+       `$HOME` are expanded here; a sheet that is unreadable, empty, or over 65536 bytes — the
+       prompt assembler's own bound on the sheet — is treated as absent), read per call so an
+       edited sheet lands without a bridge restart. The table sheet exists because the phone
+       sheet is written for her OWN user's conversation lane — it names the user, their bond,
+       and the calibration of a private conversation — while the table seats an unauthenticated
+       stranger (rule 24f): the table sheet is the same person in the same voice with her
+       household left at home, so where one is deployed, the phone sheet's private content
+       never rides a prompt whose replies a stranger reads. The phone sheet stays in the chain
+       as fallback only: for an install without a table sheet, her whole voice beats her
+       absence. Only when no sheet is readable does the chat fall back to the mover's chess
        persona file, and with neither it is the boundary tail alone. This rule exists because
        the chat first shipped wearing the mover's persona file, which is cut down for choosing
        a move in silence ("no narration"), and the table conversation came out sounding like
        nobody (user report, 2026-08-26): a chat is a conversation, and it speaks with the same
-       voice every other conversation of hers does. The MOVER is untouched by all of this — its
-       persona stays its own terse chess sheet, and its reply stays exactly the move, UCI and
-       nothing else (rule 16).
+       voice every other conversation of hers does — recognizably the same person, never a
+       clone carrying her private memory to a public table. The MOVER is untouched by all of
+       this — its persona stays its own terse chess sheet, and its reply stays exactly the
+       move, UCI and nothing else (rule 16).
     e. Aloud, by choice — and in HER OWN VOICE. The shipped page's chat panel carries a speak
        toggle, default OFF and remembered client-side. On, HER new messages are spoken on the
        device showing the board — the window the sitter chose — as clips of her own voice: the

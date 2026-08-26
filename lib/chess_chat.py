@@ -19,8 +19,10 @@ back to the Claude accounts, exactly as the mover does
 (specs/model-backends.md rule 15).
 
 Minimal in machinery, never in voice (rule 24d): the call's system prompt
-carries her WHOLE conversational persona sheet — see `chat_persona` — not
-the mover's chess persona, which is cut down for choosing a move in silence.
+carries her WHOLE conversational voice from one sheet — see `chat_persona`:
+the chat-only override, else the dedicated table sheet, else the phone
+persona sheet — not the mover's chess persona, which is cut down for
+choosing a move in silence.
 """
 
 import os
@@ -83,16 +85,29 @@ SYSTEM_PROMPT_TAIL = (
 # same limit).
 PERSONA_CAP = 65536
 
+# The dedicated TABLE sheet (rule 24d). The phone persona sheet is written
+# for her own user's conversation lane — it names the user, their bond, and
+# the calibration of a private conversation — while the table seats an
+# unauthenticated stranger (rule 24f). The table sheet is the same person in
+# the same voice with her household left at home; the phone sheet stays
+# below it in the chain as fallback only, because for an install without a
+# table sheet her whole voice beats her absence.
+CHAT_PERSONA_FILE = str(
+    Path.home() / ".local/share/deskcrab/chess-chat-persona.md")
+
 
 def chat_persona():
-    """Her conversational persona, one sheet: $DESKCRAB_CHESS_CHAT_PERSONA
-    first, else the $CUSTOM_PROMPT sheet the bridge's config hands it. The
-    systemd unit passes the conf value unexpanded, so `~` and `$HOME` are
-    expanded here. A sheet that is unreadable, empty, or over PERSONA_CAP
-    bytes is treated as absent; with no sheet at all, the mover's chess
-    persona is better than no voice, and its own fallback is empty."""
-    for var in ("DESKCRAB_CHESS_CHAT_PERSONA", "CUSTOM_PROMPT"):
-        raw = os.environ.get(var, "")
+    """Her conversational persona, one sheet — the first readable of: the
+    $DESKCRAB_CHESS_CHAT_PERSONA override, the dedicated table sheet at
+    CHAT_PERSONA_FILE, and the $CUSTOM_PROMPT sheet the bridge's config
+    hands it. The systemd unit passes the conf value unexpanded, so `~` and
+    `$HOME` are expanded here. A sheet that is unreadable, empty, or over
+    PERSONA_CAP bytes is treated as absent; with no sheet at all, the
+    mover's chess persona is better than no voice, and its own fallback is
+    empty."""
+    for raw in (os.environ.get("DESKCRAB_CHESS_CHAT_PERSONA", ""),
+                CHAT_PERSONA_FILE,
+                os.environ.get("CUSTOM_PROMPT", "")):
         if not raw:
             continue
         path = os.path.expanduser(os.path.expandvars(raw))
