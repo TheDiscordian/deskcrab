@@ -180,6 +180,26 @@ slot is the loudest statement this machine can make that it was not listening.
        that no receipt was left, which is an honest answer where "it was never spoken" would be a
        guess. A record that overclaims is the failure this rule was written against wearing better
        clothes.
+16b. **One emptiness test, above every sink.** There MUST be exactly one implementation of the
+     test that decides a finished reply has nothing to deliver — `reply_delivery_split` in
+     `lib/common.sh` — and every delivery path (desk, phone, wake) MUST branch on it exactly once,
+     above every sink that path owns: the speakers and the synthesised clip, the display window,
+     the conversation file the phone follows, and the notification. A sink added below the branch
+     inherits the gate; a sink testing emptiness for itself, its own way, is the hole this rule
+     closes — the wake path knew three shapes of empty while the desk and the phone knew one.
+     Empty means: no text at all, whitespace only, or the quiet marker — either spelling — with
+     nothing behind it and no display half. An empty interactive reply takes rule 16's no-text
+     branch, notified and journalled, never delivered anywhere; an empty wake completes invisibly
+     ([wake-queue.md](wake-queue.md) rule 24), its words kept by the journal alone.
+     The split is also where the quiet marker is decided, once for every path: a reply whose
+     spoken half OPENS with the marker delivers as the shown "(quiet) …" bubble — voiced nowhere,
+     its thought passed through the replace table ([speech-output.md](speech-output.md) rule 54),
+     the square-bracket spelling normalised — and such a reply's voiced half is empty by
+     definition, so the never-silent guarantee cannot fire on it and no path may synthesise the
+     thought ([speech-output.md](speech-output.md) rule 57 holds the live half). Before this rule
+     the wake path alone knew the marker: a desk reply opening "(quiet)" was streamed to the
+     speakers marker-first, a phone turn synthesised the held thought into a clip, and a
+     marker-only reply reached the chat as a bare "(quiet)" bubble.
 17. A turn whose every account refused over a usage limit MUST NOT speak the refusal, MUST NOT
     append it to the conversation, and MUST surface it through the notification, the session
     outcome, and the phone's `error` field.
@@ -431,7 +451,7 @@ flowchart TD
   I -.tails the same log.-> S["streamer speaks sentence by sentence"]
   M --> N{"outcome"}
   N -->|every account refused| N1["not spoken, not conversed<br/>notify, journal, error field"]
-  N -->|no text| N2["notify, journal — a question answered<br/>with nothing is a failure"]
+  N -->|nothing to deliver — empty, whitespace,<br/>or a bare quiet marker (rule 16b)| N2["notify, journal — a question answered<br/>with nothing is a failure"]
   N -->|reply| O["append the assistant block<br/>close the in-flight record<br/>compact, record the outcome"]
   O --> P["open the display window"]
   P --> Q["wait for the streamer, bounded<br/>then the never-silent guarantee"]
@@ -551,6 +571,13 @@ books nothing. Rule 32e by observation: a real desk turn and a real phone turn e
 outcome carrying the turn's own tool trace (or the explicit no-tools record), and the sweep is
 handed a desk claim's refuting trace and a desk claim's fulfilling trace alike — the traceless
 claim surfaces, the traced one is dropped.
+
+`tests/test_empty_delivery.sh` — rule 16b on the desk and phone paths, and
+[speech-output.md](speech-output.md) rule 57: a marker-only reply reaches no speaker, no window,
+no conversation block and no phone payload half, and is journalled as the no-text failure; a
+"(quiet) thought" desk reply is a bubble — marker normalised, never voiced, the guarantee silent;
+the same phone reply completes with the bubble as its spoken text, no clip and no error; a plain
+reply delivers exactly as before.
 
 **To be written:**
 

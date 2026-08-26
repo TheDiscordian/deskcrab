@@ -20,6 +20,22 @@ DELIM = "---DISPLAY---"
 # Hold back any trailing text that could still turn out to be the delimiter.
 DELIM_PREFIXES = [DELIM[:i] for i in range(len(DELIM), 0, -1)]
 
+# The quiet marker — the one authorized held-thought form. A reply whose first
+# spoken words open with it chose the bubble over the voice WHILE IT WAS BEING
+# WRITTEN, and no live voice may start on it (specs/speech-output.md rule 57).
+# This is not the standing rule's forbidden gate: the marker is the
+# writing-time choice of silence that rule protects, and the registry below
+# only honours it before the synthesiser starts instead of after. Both
+# spellings, because the square-bracket variant keeps reappearing and must
+# never be voiced either. Judged here, once, for every live voice — the desk
+# streamer and the phone server both build on this registry or import these
+# expressions, so there is exactly one definition of "this turn is quiet".
+QUIET_RE = re.compile(r"^\s*[\[(]quiet[\])]", re.IGNORECASE)
+# The marker plus the separators it is written with, for the one consumer that
+# shows the bubble form live (serve.py's text events): strip this, re-prefix
+# the normalised "(quiet) " spelling.
+QUIET_STRIP_RE = re.compile(r"^\s*[\[(]quiet[\])][\s:—-]*", re.IGNORECASE)
+
 # Flush an unpunctuated buffer once it gets this long rather than holding a
 # sentence that may never end.
 MAX_HOLD = int(os.environ.get("DESKCRAB_TTS_MAX_HOLD", "320"))
@@ -190,7 +206,18 @@ class BlockRegistry:
     so the whole finished reply was spoken a second time on the next re-read."""
 
     def __init__(self, say):
-        self.say = say
+        self._voice = say
+        self.say = self._gated_say
+        self.quiet = None        # None = not yet judged. Judged on the turn's
+                                 # first spoken chunk and sticky for the whole
+                                 # turn (specs/speech-output.md rule 57): a
+                                 # reply opening with the quiet marker voices
+                                 # NOTHING — the thought is a bubble, and the
+                                 # post-hoc split (turn-pipeline rule 16b)
+                                 # delivers it there. Chunks only ever break at
+                                 # sentence enders, which the marker does not
+                                 # contain, so the first worded chunk always
+                                 # carries the whole marker when there is one.
         self.blocks = {}         # stream index -> Block, for the message in flight
         self.messages = {}       # message id -> that message's blocks
         self.anon = 0            # message_start events with no id still get
@@ -210,6 +237,23 @@ class BlockRegistry:
                                    # fingerprints above, and on 2026-08-22 a
                                    # stop-hook-rejected draft's rewrite was
                                    # voiced whole right behind the draft
+
+    def _gated_say(self, chunk):
+        """The quiet hold (specs/speech-output.md rule 57), between every
+        block and the voice. The first WORDED chunk of the turn decides:
+        opening with the quiet marker means the whole turn's voice is held —
+        the bubble carries the thought, nothing here reaches the synthesiser.
+        A pure-whitespace chunk decides nothing and passes through (the
+        callbacks strip it anyway). Sticky either way: judged once, held or
+        free for the rest of the turn."""
+        if self.quiet is None:
+            if not (chunk or "").strip():
+                if chunk:
+                    self._voice(chunk)
+                return
+            self.quiet = bool(QUIET_RE.match(chunk))
+        if not self.quiet:
+            self._voice(chunk)
 
     def replay_all(self):
         """A truncation sent the tail back down the file: identical bytes are

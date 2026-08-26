@@ -59,6 +59,12 @@ with the page closed.
    reply clip when and only when no streaming voice clip was emitted for the turn, so a client that
    heard the clips is not made to hear the reply again and a client that heard nothing still hears
    the reply once.
+   A reply that OPENS with the quiet marker completes with the shown "(quiet) …" form as its
+   spoken text, an empty audio pointer and an empty error: the marker chose silence while the
+   reply was written ([turn-pipeline.md](turn-pipeline.md) rule 16b), so the missing clip is that
+   choice working, not a voice that failed, and the fallback MUST NOT synthesise one. A reply that
+   is EMPTY under the same rule — whitespace only, or the bare marker — is answered through the
+   error field exactly as a no-text turn is, and nothing of it enters the conversation.
    Every turn MUST end in exactly one such completion event, whatever became of
    the run: the turn's timeout MUST kill the whole process tree (killing only the direct child
    leaves a grandchild holding the pipe, and a wait on that pipe is a turn that never ends), and a

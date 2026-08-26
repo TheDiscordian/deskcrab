@@ -1337,6 +1337,13 @@ def _progress_events(logpath, stop, emit, speaker):
     consumer — we only summarise, the TTS streamer is not involved here.
     """
     seen_tools = 0
+    # The quiet marker, judged once per turn on the first worded text block
+    # (specs/speech-output.md rule 57): a reply that opens with it chose the
+    # bubble over the voice while it was written, so nothing of the turn is
+    # voiced and the text events carry the normalised "(quiet) …" form rather
+    # than the raw marker. The sentence-mode chunker holds its own voice the
+    # same way, inside the shared registry — one definition, both modes.
+    quiet_held = None
     # With sentence streaming on, the registry walks the text deltas through
     # the shared chunker and the say callback feeds the Speaker one sentence
     # at a time — the same whitespace collapse the block path applies, and
@@ -1414,8 +1421,17 @@ def _progress_events(logpath, stop, emit, speaker):
                                         os.path.basename(logpath))
                         emit("tool", _tool_label(block))
                     elif kind == "text":
-                        said = " ".join((block.get("text") or "").split())
+                        raw = block.get("text") or ""
+                        if quiet_held is None and raw.strip():
+                            quiet_held = bool(
+                                sentence_stream.QUIET_RE.match(raw))
+                        said = " ".join(raw.split())
                         said = said.split("---DISPLAY---")[0].strip()
+                        if quiet_held and sentence_stream.QUIET_RE.match(said):
+                            said = sentence_stream.QUIET_STRIP_RE.sub(
+                                "", said).strip()
+                            if said:
+                                said = "(quiet) " + said
                         if said:
                             # Not truncated: this block IS part of the reply on
                             # the phone, appended in order, not a status line.
@@ -1426,8 +1442,10 @@ def _progress_events(logpath, stop, emit, speaker):
                             emit("text", said)
                             # Speak it now, exactly as the desktop's TTS
                             # streamer does — every text block gets a voice, not
-                            # just the final one.
-                            if speaker and chunker is None:
+                            # just the final one. A quiet-held turn voices
+                            # nothing in either mode (rule 57): the marker
+                            # chose the bubble, and the bubble is text.
+                            if speaker and chunker is None and not quiet_held:
                                 speaker.say(said)
                         if chunker is not None:
                             # The sentences were voiced off the deltas as they

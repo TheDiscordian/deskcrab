@@ -367,7 +367,6 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     a flagged gram wholly contained in an equally-counted flagged gram is the same addition
     counted twice, not a second finding.
 
-
 55. A `fix: delete` entry MUST reach the mirror as a deletion. The fired entry's `fix:` field
     rides the fire record and the mirror call's prompt, and where it reads `delete` the prompt
     MUST ask for the line with the offending words *removed* — a shorter line, not a
@@ -401,6 +400,20 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     list did not thin them, because the list was never what failed — the instruction was.
     Both readings are the assistant's own reading of the assistant's own rewrites; no outside
     hand has scored that table, and anything drawn from it MUST be quoted as such.
+
+57. The quiet marker is honoured by the LIVE voices as well. A reply whose spoken half OPENS with
+    the marker chose the bubble over the voice while it was being written, and no voice may start
+    on it: the desk streamer and the phone's streaming voice — block and sentence mode alike —
+    speak nothing of such a turn, and the phone's live text events carry the normalised bubble
+    form rather than the raw marker. The test is ONE implementation, in the shared chunker
+    (`lib/sentence_stream.py`), judged on the turn's first spoken chunk and sticky for the whole
+    turn — the marker opens a reply or it is not the marker. This is not a gate on her speech: the
+    marker IS the writing-time choice of silence the standing rule protects, and honouring it only
+    after the fact — the marker itself and half the thought already out of the synthesiser, which
+    is what the desk did for as long as only the wake path knew the marker — is the leak, not the
+    hold. The never-silent guarantee treats a quiet reply's voiced half as empty by definition and
+    stays quiet ([turn-pipeline.md](turn-pipeline.md) rule 16b owns the post-hoc half: one split,
+    every path, above every sink).
 
 ## DATA
 
@@ -531,6 +544,10 @@ at block and at paragraph level while every genuinely distinct consecutive pair 
 the display half rides the collapse whole; the shared registry holds a never-voiced near-duplicate
 block off the speakers while a distinct block and a partly-streamed block's own tail keep their
 voice, and an unterminated final sentence still flushes at close.
+
+Rule 57 is held by `tests/test_empty_delivery.sh`: a quiet-opening desk reply reaches the stub
+synthesiser not at all — judged from the speaker side — while the same reply without the marker
+is spoken in full, and the never-silent guarantee stays quiet for the held one.
 
 **To be written:**
 

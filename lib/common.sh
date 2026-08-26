@@ -3249,6 +3249,26 @@ _turn_ticket_alive() {  # <ticket file>
     [ "$(_proc_starttime "$pid")" = "${startt:-0}" ]
 }
 
+# Is an interactive turn in flight RIGHT NOW — a desk or phone reply owed and
+# not yet delivered? Read from the delivery queue's own tickets: a turn takes
+# one before its prompt is built and releases it when its reply has been
+# delivered (or by its exit trap), judged alive by pid and process start time,
+# so a dead turn's leftover ticket never counts. Wakes take no ticket, so a
+# wake can never read itself as the conversation. The one consumer is the wake
+# delivery hold (specs/wake-queue.md rule 27c): a wake's words landing while a
+# ticket stands land in the answer's slot, whatever they say. With the
+# delivery queue off (TURN_ORDER_WAIT=0) no tickets exist and this is
+# permanently no; WAKE_FLIGHT_HOLD=0 switches the reading off alone.
+interactive_turn_in_flight() {
+    [ "${WAKE_FLIGHT_HOLD:-1}" = "1" ] || return 1
+    local f
+    for f in "$TURN_ORDER_DIR"/[0-9]*.ticket; do
+        [ -e "$f" ] || continue
+        _turn_ticket_alive "$f" && return 0
+    done
+    return 1
+}
+
 # Her last reply wherever it stands, rather than only when it is the final
 # block. _convo_last_assistant_block answers the stricter question — is her
 # reply the LAST thing in the transcript — which is the wrong guard for
@@ -6704,40 +6724,23 @@ run_claude_wake() {
     SESSION_REPLY="$RESPONSE"
 
     local SPOKEN DISPLAY_PART TRACE SILENT_NOTE="" QUIET_BUBBLE=""
-    SPOKEN=$(spoken_part "$RESPONSE")
-    DISPLAY_PART=$(display_part "$RESPONSE")
-
-    # The (quiet) marker — the ONE authorized silence format (his standing
-    # instruction, 2026-08-07): a wake with something worth leaving but not
-    # worth voicing writes "(quiet) <thoughts>". The thoughts are SHOWN to
-    # him as "(quiet) <thoughts>" — a bubble, never the speakers. A bare
-    # marker with no thoughts is plain silence. A stray square-bracket
-    # spelling (an old habit of Beatrice's, never authorized) is normalized
-    # here so it is never voiced and never reaches him in bracket form.
-    if printf '%s\n' "$RESPONSE" | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
-        local THOUGHTS
-        THOUGHTS="$(printf '%s\n' "$SPOKEN" \
-            | sed -E 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
-        # Rule 54: the bubble is the one thing she says with no gate on it —
-        # not spoken, so the streamer never sees it, and the whole-draft
-        # mirror above fails open. Her replace table runs on it here.
-        THOUGHTS="$(claudism_table_only quiet "$THOUGHTS")"
-        SILENT_NOTE="$(printf '%s\n' "$THOUGHTS" | tr '\n' ' ')"
-        SPOKEN=""
-        # ALWAYS visible — his instruction (2026-08-07): a quiet reply shows
-        # as a "(quiet) ..." bubble no matter what; hiding it is forbidden.
-        # QUIET_BUBBLE is what carries that promise past the nothing-to-deliver
-        # gate below, which otherwise sees an empty SPOKEN and returns before
-        # the bubble is appended. A bare marker with no thoughts stays plain
-        # silence and earns no bubble.
-        [ -n "$(printf '%s' "$THOUGHTS" | tr -d '[:space:]')" ] && QUIET_BUBBLE=1
-        RESPONSE="(quiet) $THOUGHTS"
-        if [ -n "$DISPLAY_PART" ]; then
-            RESPONSE="$RESPONSE
----DISPLAY---
-$DISPLAY_PART"
-        fi
-    fi
+    # The one delivery split every path shares (specs/turn-pipeline.md rule
+    # 16b): the voiced half, the display half, and the (quiet) marker — the
+    # ONE authorized silence format (his standing instruction, 2026-08-07). A
+    # wake with something worth leaving but not worth voicing writes
+    # "(quiet) <thoughts>"; the thoughts are SHOWN as a "(quiet) …" bubble,
+    # never the speakers, the square-bracket spelling normalised, the bare
+    # marker plain silence. All of that is the split's job now, one
+    # implementation for the desk, the phone and this path alike.
+    reply_delivery_split "$RESPONSE" || true
+    SPOKEN="$REPLY_SPOKEN"
+    DISPLAY_PART="$REPLY_DISPLAY"
+    # QUIET_BUBBLE carries the always-visible promise past the
+    # nothing-to-deliver gate below, which otherwise sees an empty SPOKEN and
+    # returns before the bubble is appended.
+    QUIET_BUBBLE="$REPLY_QUIET"
+    [ -n "$REPLY_QUIET" ] && SILENT_NOTE="$REPLY_QUIET_THOUGHT"
+    RESPONSE="$REPLY_TEXT"
 
     # The same backstop for the other way silence gets narrated: a whole reply
     # that is nothing but "Nothing to say." / "No message." / "Nothing to
@@ -6845,6 +6848,27 @@ $DISPLAY_PART"
     # hour the night held.
     if in_quiet_hours; then
         session_outcome "(quiet hours — held, nothing spoken and nothing shown) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
+        return 0
+    fi
+    # A turn of HIS is in flight right now — a desk or phone reply owed and
+    # not yet delivered, read from the delivery queue's own tickets
+    # (specs/wake-queue.md rule 27c). Words landing in that window land in
+    # the answer's slot whatever they say: the 2026-08-10 ordering incident
+    # is what a reply arriving in another message's slot does to a
+    # conversation, and a wake's aside does it from outside the queue. Held
+    # WHOLE — the spoken half included, unlike the hot hold below — because
+    # this gate reads tickets and pids, never the reply: it decides WHEN,
+    # not WHETHER (rule 29's boundary), and the words go back through the
+    # queue's one door with the held stamp, so the comeback meets rule 27b's
+    # staleness gate in a quiet minute and is spoken unless the record
+    # proves the exchange already covered it. The work is not suppressed —
+    # journal, audit and judges all ran above; only the delivery moves.
+    if interactive_turn_in_flight; then
+        if wake_hold_for_heat "${SPOKEN:-${SILENT_NOTE:-$DISPLAY_PART}}"; then
+            session_outcome "(held — a turn was in flight, nothing spoken and nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
+        else
+            session_outcome "(held — a turn was in flight; ${WAKE_HOLD_REFUSAL:-the comeback booking failed} — the note is in this journal only) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
+        fi
         return 0
     fi
     # The user is mid-something a wake must not interrupt: a recording, speech
@@ -7432,6 +7456,79 @@ display_part() {
     printf '%s\n' "$1" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}'
 }
 
+# ---- The delivery split: ONE place decides what a finished reply delivers ---
+# specs/turn-pipeline.md rule 16b. Every delivery path — desk, phone, wake —
+# calls this once, above every sink it owns, and branches on the answer. The
+# wake path used to be the only one that knew the quiet marker or the three
+# shapes of empty; the desk streamed a "(quiet)" reply to the speakers
+# marker-first, the phone synthesised the held thought into a clip, and a
+# marker-only reply reached the chat as a bare "(quiet)" bubble.
+#
+# Sets, for the caller:
+#   REPLY_EMPTY          1 when there is nothing to deliver anywhere — no
+#                        text, whitespace only, or the bare quiet marker.
+#                        The return status says the same: 0 deliver, 1 not.
+#   REPLY_SPOKEN         the voiced half. Empty for a quiet reply BY
+#                        DEFINITION — the never-silent guarantee reads this,
+#                        so it can never fire on a held thought.
+#   REPLY_DISPLAY        the display half, blanked when whitespace-only so a
+#                        window is never opened over nothing.
+#   REPLY_QUIET          1 when the quiet marker held the voice (the reply
+#                        OPENS with it and carries a thought).
+#   REPLY_QUIET_THOUGHT  that thought, flattened to one line for journals and
+#                        hold bookings.
+#   REPLY_TEXT           the conversation form: the normalised "(quiet) …"
+#                        bubble (either input spelling, the thought passed
+#                        through her replace table — speech-output rule 54)
+#                        for a quiet reply, the response unchanged otherwise.
+#   REPLY_SHOWN          what he actually receives in words: the voiced half,
+#                        or the bubble form for a quiet reply. For journals,
+#                        live-turn records and the phone's completion payload.
+#
+# Nothing here judges worth (speech-output's standing rule): the quiet marker
+# is her own writing-time choice of silence, and emptiness is the absence of
+# anything to deliver, not an opinion about it.
+reply_delivery_split() {  # <response>  -> 0 deliver, 1 nothing to deliver
+    local RESPONSE="$1" THOUGHTS
+    REPLY_EMPTY="" REPLY_QUIET="" REPLY_QUIET_THOUGHT=""
+    REPLY_SPOKEN="$(spoken_part "$RESPONSE")"
+    REPLY_DISPLAY="$(display_part "$RESPONSE")"
+    REPLY_TEXT="$RESPONSE"
+    [ -z "$(printf '%s' "$REPLY_SPOKEN" | tr -d '[:space:]')" ] && REPLY_SPOKEN=""
+    [ -z "$(printf '%s' "$REPLY_DISPLAY" | tr -d '[:space:]')" ] && REPLY_DISPLAY=""
+    # The quiet marker decides only when it OPENS the reply — the first
+    # non-blank line. spoken_part has already kept any line-leading marker
+    # off the voiced half wherever it appears.
+    if printf '%s\n' "$RESPONSE" | grep -m1 -vE '^[[:space:]]*$' \
+            | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
+        THOUGHTS="$(printf '%s\n' "$REPLY_SPOKEN" \
+            | sed -E 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
+        # Rule 54: the bubble is the one thing said with no gate on it — never
+        # spoken, so the streamer's mirror never sees it, and the whole-draft
+        # mirror fails open. Her replace table runs on it here.
+        THOUGHTS="$(claudism_table_only quiet "$THOUGHTS")"
+        REPLY_QUIET_THOUGHT="$(printf '%s' "$THOUGHTS" | tr '\n' ' ')"
+        REPLY_SPOKEN=""
+        if [ -n "$(printf '%s' "$THOUGHTS" | tr -d '[:space:]')" ]; then
+            # A thought behind the marker is ALWAYS visible as a bubble (his
+            # standing instruction, 2026-08-07); a bare marker stays plain
+            # silence and earns nothing.
+            REPLY_QUIET=1
+            REPLY_TEXT="(quiet) $THOUGHTS"
+            [ -n "$REPLY_DISPLAY" ] && REPLY_TEXT="$REPLY_TEXT
+---DISPLAY---
+$REPLY_DISPLAY"
+        fi
+    fi
+    REPLY_SHOWN="$REPLY_SPOKEN"
+    [ -n "$REPLY_QUIET" ] && REPLY_SHOWN="(quiet) $REPLY_QUIET_THOUGHT"
+    if [ -z "$REPLY_SPOKEN$REPLY_DISPLAY$REPLY_QUIET" ]; then
+        REPLY_EMPTY=1
+        return 1
+    fi
+    return 0
+}
+
 # Is this spoken reply nothing but an announcement that there is nothing to
 # say? Exit 0 = filler, and the wake output gate mutes it whole.
 #
@@ -7773,13 +7870,23 @@ _run_claude_remote_locked() {
             ERROR="every login is over its limit: $(printf '%.140s' "$RESPONSE")"
         fi
         RESPONSE=""
-    elif [ -n "$RESPONSE" ]; then
-        # The pre-speech mirror on the whole draft (specs/speech-output.md
-        # rule 44): the phone's audio is synthesised below from a complete
-        # reply, so the pass runs here, before anything is committed, shown,
-        # or voiced. Fails open to the draft as written.
-        RESPONSE="$(claudism_mirror_direct phone "$RESPONSE")"
-        SESSION_REPLY="$RESPONSE"
+    elif [ -n "$RESPONSE" ] && {
+            # The pre-speech mirror on the whole draft (specs/speech-output.md
+            # rule 44): the phone's audio is synthesised below from a complete
+            # reply, so the pass runs here, before anything is committed,
+            # shown, or voiced. Fails open to the draft as written.
+            RESPONSE="$(claudism_mirror_direct phone "$RESPONSE")"
+            SESSION_REPLY="$RESPONSE"
+            # THE delivery gate (specs/turn-pipeline.md rule 16b): one split,
+            # one branch, every sink below it. Whitespace and the bare quiet
+            # marker fall to the no-reply branch with the genuinely empty;
+            # a quiet reply with a thought delivers as the bubble, unvoiced.
+            reply_delivery_split "$RESPONSE"
+        }; then
+        # From here down RESPONSE is the DELIVERED form the split settled on —
+        # the normalised "(quiet) …" bubble for a quiet reply, the reply
+        # unchanged otherwise.
+        RESPONSE="$REPLY_TEXT"
         # Delivery order, exactly as the desk turn takes it (rules 15a-15e).
         local ORDERED=1 SUPERSEDER="" ORDER_NOTE=""
         turn_order_wait || ORDERED=0
@@ -7802,7 +7909,7 @@ _run_claude_remote_locked() {
             convo_append_assistant --held "$RESPONSE"
             live_turn_end phone "$TEXT" ""
             compact_convo
-            session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $(spoken_part "$RESPONSE"))"
+            session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $REPLY_SHOWN)"
             turn_metric turn-held "superseded"
             turn_order_release
             ERROR="held — you had already moved past what this answered; it is in the transcript, unspoken"
@@ -7813,7 +7920,7 @@ _run_claude_remote_locked() {
             convo_append_assistant "$RESPONSE"
             # Delivered: a job that ended badly has now been reported to somebody.
             jobs_news_delivered
-            live_turn_end phone "$TEXT" "$(spoken_part "$RESPONSE")"
+            live_turn_end phone "$TEXT" "$REPLY_SHOWN"
             compact_convo
             # The outcome carries the turn's own tool record (turn-pipeline
             # rule 32e): the nightly sweep judges completed-work claims from
@@ -7824,28 +7931,40 @@ _run_claude_remote_locked() {
             # reply field, so the cap may clip the reply's echo, never the
             # evidence.
             local TURN_TRACE; TURN_TRACE="$(wake_work_trace)"
-            session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $(spoken_part "$RESPONSE")"
+            session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $REPLY_SHOWN"
             # Delivered — see the desk turn: the place goes back now, not at
             # process exit, so nobody queues behind the synthesiser.
             turn_order_release
         fi
     else
-        # He asked and nothing came back. Reported as the failure it is: the
-        # phone used to receive {"spoken":"", ...} with no error at all, which
-        # the client had no way to read except as an empty bubble — the
-        # "(no reply)" placeholder he spent a day looking at. Silence is a
-        # thing I choose when nobody asked; it is never an answer to a
-        # question, and it is never left to the client to describe.
+        # He asked and nothing deliverable came back — no text at all,
+        # whitespace, or a bare quiet marker (rule 16b): every shape of empty
+        # ends here, in the one branch, above every sink. Reported as the
+        # failure it is: the phone used to receive {"spoken":"", ...} with no
+        # error at all, which the client had no way to read except as an
+        # empty bubble — the "(no reply)" placeholder he spent a day looking
+        # at. Silence is a thing I choose when nobody asked; it is never an
+        # answer to a question, and it is never left to the client to
+        # describe.
         live_turn_end phone "$TEXT" ""
-        session_outcome "(no reply — the model produced no text for: $(printf '%.80s' "$TEXT"))"
-        ERROR="no reply — that turn produced no text"
+        session_outcome "(no reply — the model produced nothing to deliver for: $(printf '%.80s' "$TEXT"))"
+        ERROR="no reply — that turn produced nothing to deliver"
+        RESPONSE=""
     fi
 
-    local SPOKEN DISPLAY_MD AUDIO=""
-    SPOKEN=$(spoken_part "$RESPONSE")
-    DISPLAY_MD=$(display_part "$RESPONSE")
+    # The halves the split settled on, blanked wherever the branch above
+    # emptied the reply (limited, superseded, nothing to deliver). SHOWN is
+    # the completion payload's spoken text: the voiced half, or the bubble
+    # form for a quiet reply — the same text the conversation block carries,
+    # so the client's own-turn match still recognises its exchange.
+    local SPOKEN="" DISPLAY_MD="" SHOWN="" AUDIO=""
+    if [ -n "$RESPONSE" ]; then
+        SPOKEN="$REPLY_SPOKEN"
+        DISPLAY_MD="$REPLY_DISPLAY"
+        SHOWN="$REPLY_SHOWN"
+    fi
 
-    if [ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ]; then
+    if [ -n "$SPOKEN" ]; then
         local CANDIDATE="${REMOTE_AUDIO_PREFIX}$(date +%s%N).opus"
         turn_metric synth-start "${#SPOKEN} chars"
         synth_opus "$SPOKEN" "$CANDIDATE" && AUDIO="$CANDIDATE"
@@ -7889,18 +8008,22 @@ _run_claude_remote_locked() {
     fire_memory_judge "$TEXT" "$RESPONSE" "$WORK_TRACE"
     fire_claudism_capture phone "$RESPONSE"
 
-    # Text came back but neither half of it is anything the phone can render —
-    # a reply that was nothing but a "---DISPLAY---" line, or nothing but the
-    # retired (quiet) marker. Same rule as an empty reply: say what happened.
-    # The client must never have to invent a word for a turn that arrived
-    # holding nothing.
+    # The belt under the gate: a delivered turn always has something the
+    # phone can render (the split guarantees it — rule 16b routed every empty
+    # shape through the error branch above), so a turn that still arrives
+    # here holding nothing is a defect speaking, and the client must never
+    # have to invent a word for it.
     if [ -z "$ERROR" ] && \
-       [ -z "$(printf '%s' "$SPOKEN$DISPLAY_MD" | tr -d '[:space:]')" ]; then
+       [ -z "$(printf '%s' "$SHOWN$DISPLAY_MD" | tr -d '[:space:]')" ]; then
         ERROR="no reply — that turn produced nothing sayable"
     fi
 
+    # The spoken field carries SHOWN: the voiced half, or the "(quiet) …"
+    # bubble form — the same text the conversation block holds, so the
+    # client's own-turn match recognises its exchange, with no clip and no
+    # error for a quiet reply (specs/phone.md rule 6).
     python3 -c 'import json,sys; print(json.dumps({"spoken":sys.argv[1],"display":sys.argv[2],"audio":sys.argv[3],"error":sys.argv[4]}))' \
-        "$SPOKEN" "$DISPLAY_MD" "$AUDIO" "$ERROR"
+        "$SHOWN" "$DISPLAY_MD" "$AUDIO" "$ERROR"
 }
 
 # The "Thinking..." toast, and its dismissal — paired, and idempotent so the
@@ -8026,13 +8149,24 @@ run_claude_and_respond() {
                 "every login is over its limit — nothing was said ($(printf '%.120s' "$RESPONSE"))" 2>/dev/null
         fi
         RESPONSE=""
-    elif [ -n "$RESPONSE" ]; then
-        # The pre-speech mirror (specs/speech-output.md rules 38-45): any
-        # fire the streamer is holding gets answered here — her rewrite goes
-        # to the held voice and into the committed reply, or the original
-        # stands. A clean draft returns immediately, untouched.
-        RESPONSE="$(claudism_mirror_desk "$RESPONSE")"
-        SESSION_REPLY="$RESPONSE"
+    elif [ -n "$RESPONSE" ] && {
+            # The pre-speech mirror (specs/speech-output.md rules 38-45): any
+            # fire the streamer is holding gets answered here — her rewrite
+            # goes to the held voice and into the committed reply, or the
+            # original stands. A clean draft returns immediately, untouched.
+            RESPONSE="$(claudism_mirror_desk "$RESPONSE")"
+            SESSION_REPLY="$RESPONSE"
+            # THE delivery gate (specs/turn-pipeline.md rule 16b): one split,
+            # one branch, every sink below it. A whitespace-only reply and a
+            # bare quiet marker fall through to the no-reply branch beside
+            # the genuinely empty ones; a quiet reply with a thought delivers
+            # as the bubble, voiced nowhere.
+            reply_delivery_split "$RESPONSE"
+        }; then
+        # From here down RESPONSE is the DELIVERED form the split settled on —
+        # the normalised "(quiet) …" bubble for a quiet reply, the reply
+        # unchanged otherwise.
+        RESPONSE="$REPLY_TEXT"
 
         # Delivery order (specs/turn-pipeline.md rules 15a-15e). Two questions
         # before a word of this goes out:
@@ -8067,11 +8201,11 @@ run_claude_and_respond() {
             live_turn_end desk "$TEXT" ""
             compact_convo
             if [ "${_TURN_HELD_SPOKEN_CHARS:-0}" -gt 0 ] 2>/dev/null; then
-                session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | reply partly spoken, $_TURN_HELD_SPOKEN_CHARS chars out: $(spoken_part "$RESPONSE"))"
+                session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | reply partly spoken, $_TURN_HELD_SPOKEN_CHARS chars out: $REPLY_SHOWN)"
                 notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
                     "held a reply to a question you had already closed — you heard part of it; the rest is in the transcript, not repeated" 2>/dev/null
             else
-                session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $(spoken_part "$RESPONSE"))"
+                session_outcome "(held — he had already moved past this: $(printf '%.80s' "$SUPERSEDER") | unspoken reply: $REPLY_SHOWN)"
                 notify-send -t 5000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
                     "held a reply that answered a question you had already closed — it is in the transcript, not spoken" 2>/dev/null
             fi
@@ -8092,7 +8226,7 @@ run_claude_and_respond() {
         convo_append_assistant "$RESPONSE"
         # Delivered: a job that ended badly has now been reported to somebody.
         jobs_news_delivered
-        live_turn_end desk "$TEXT" "$(spoken_part "$RESPONSE")"
+        live_turn_end desk "$TEXT" "$REPLY_SHOWN"
         compact_convo
         # The outcome carries the turn's own tool record (turn-pipeline rule
         # 32e): the nightly sweep judges completed-work claims from the
@@ -8102,7 +8236,7 @@ run_claude_and_respond() {
         # the full reply already rides the journal's own reply field, so the
         # cap may clip the reply's echo, never the evidence.
         local TURN_TRACE; TURN_TRACE="$(wake_work_trace)"
-        session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $(spoken_part "$RESPONSE")"
+        session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $REPLY_SHOWN"
         # Delivered — the place in the queue is given up HERE, not at process
         # exit. What comes after this line is the window, the streamer wait
         # and the out-of-band judges, and none of it is the reply: making the
@@ -8110,8 +8244,7 @@ run_claude_and_respond() {
         # would turn ordering into a stall.
         turn_order_release
 
-        local DISPLAY_PART
-        DISPLAY_PART=$(display_part "$RESPONSE")
+        local DISPLAY_PART="$REPLY_DISPLAY"
 
         if [ -n "$DISPLAY_PART" ]; then
             local DISPLAYFILE
@@ -8129,7 +8262,10 @@ run_claude_and_respond() {
         # something to say and nothing reached the speakers, say it now and
         # write down that the streaming path failed.
         wait_tts_streamer
-        tts_verify_spoken "$(spoken_part "$RESPONSE")"
+        # The quiet reply's voiced half is empty BY DEFINITION (rule 16b), so
+        # the guarantee stays silent for a held thought instead of reading the
+        # streamer's untouched receipt as a broken speech path.
+        tts_verify_spoken "$REPLY_SPOKEN"
         claudism_mirror_cleanup
 
         # Out of band, after the user has their answer: did I say I wanted
@@ -8142,20 +8278,23 @@ run_claude_and_respond() {
         # (turn-pipeline rules 32a-32d).
         fire_promise_check desktop "$RESPONSE"
     else
-        # He asked out loud and nothing came back. This branch used to do
-        # NOTHING AT ALL — no speech, no notification, no journal line — so a
-        # turn that produced no text was indistinguishable from a turn that
-        # was never taken, and a whole afternoon of them went unexplained and
-        # unrecorded. Silence is only ever legitimate when nobody asked;
-        # answering a question with nothing is a failure and is reported as
-        # one. Not spoken: an error read aloud in my own voice is the thing
-        # that put "You've hit your session limit" in his ears as if I had
-        # said it. The notification and the journal carry it instead.
+        # He asked out loud and nothing deliverable came back — no text at
+        # all, whitespace, or a bare quiet marker (rule 16b): every shape of
+        # empty ends here, in the one branch, and reaches no sink. This
+        # branch used to do NOTHING AT ALL — no speech, no notification, no
+        # journal line — so a turn that produced no text was
+        # indistinguishable from a turn that was never taken, and a whole
+        # afternoon of them went unexplained and unrecorded. Silence is only
+        # ever legitimate when nobody asked; answering a question with
+        # nothing is a failure and is reported as one. Not spoken: an error
+        # read aloud in my own voice is the thing that put "You've hit your
+        # session limit" in his ears as if I had said it. The notification
+        # and the journal carry it instead.
         claudism_mirror_abort
         live_turn_end desk "$TEXT" ""
-        session_outcome "(no reply — the model produced no text for: $(printf '%.80s' "$TEXT"))"
+        session_outcome "(no reply — the model produced nothing to deliver for: $(printf '%.80s' "$TEXT"))"
         notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" \
-            "no reply — that turn produced no text (nothing was said)" 2>/dev/null
+            "no reply — that turn produced nothing to deliver (nothing was said)" 2>/dev/null
     fi
 
     # Also out of band: which of the injected memories genuinely shaped this
