@@ -73,8 +73,10 @@ life, and she re-reads that store every single turn.
 20. Reinforcement MUST be written only when a record was genuinely used in a turn. Retrieval alone
     bumps only the last-seen field.
 21. **Retrieval alone MUST NOT reset the decay clock.** A note the retriever keeps surfacing and the
-    judge keeps refusing to credit must still decay. Today it is frozen at full confidence forever —
-    precisely the record the design wants gone.
+    judge keeps refusing to credit must still decay: the decay pass reads genuine use and creation
+    only, and `last_seen` — the one field retrieval bumps — holds nothing alive. (Until 2026-08-26
+    the pass read `last_seen`, so exactly that note was frozen at full confidence forever —
+    precisely the record the design wants gone. `MAJ-26`.)
 22. The turn-end judge MUST be shown the turn's **work**, not only its words. A wake's entire output
     is often tool calls, and reply-only judging credited nothing.
 23. Identifiers the judge names that were not injected MUST be discarded.
@@ -86,15 +88,20 @@ life, and she re-reads that store every single turn.
     day — narrating its way to `[3,17]` after every turn, wake and phone exchange on the machine.
     Three duties, one per layer: the prompt MUST state that the array is the whole answer and that
     anything else is discarded unread; the parser MUST stay lenient regardless (the array is fished
-    out of whatever came back — a verdict is never lost to the model disobeying the shape rule);
+    out of whatever came back — ids quoted as strings, `#`-prefixed, or oddly spaced still count:
+    on 2026-08-26 a live judge credited the chess-chat directive as `["#602"]` and another turn as
+    `["596", "15", "173"]`, and a digits-only parse threw both verdicts away as unparseable — a
+    verdict is never lost to the model disobeying the shape rule);
     and an answer whose byte length exceeds the ceiling (`MEMORY_JUDGE_ANSWER_CEILING`, default
     600 bytes) MUST stamp a warning line into the day's timing metrics (kind `memory-judge`, stage
     `oversize-answer`, the sizes in the detail) and log a TRUNCATED head of the answer in the judge
     log — so a verbosity regression surfaces in the metrics the same day, instead of on the bill a
     week later. The stamp is evidence, never control flow: the judgement itself proceeds
     unchanged, and a metrics directory that cannot be written costs only the stamp.
-26. The nightly pass MUST run confidence decay: an active note neither retrieved nor used within the
-    decay window loses confidence per pass and retires below the floor. Directives never decay.
+26. The nightly pass MUST run confidence decay: an active note not genuinely used within the decay
+    window loses confidence per pass and retires below the floor — however often retrieval has
+    surfaced it (rule 21). The clock is `last_used_at`, falling back to `created` for a note never
+    yet credited; `last_seen` is bookkeeping, never life. Directives never decay.
 
 ### Ingest
 
@@ -108,6 +115,20 @@ life, and she re-reads that store every single turn.
     engine routed by the model name) reads the day's summaries together and decides what earns a
     record — every retention judgment is the judge's, and a candidate a summariser emits on its
     own initiative never reaches the store. The position cursor stays durable as before.
+27a. **A commitment MUST survive the night as a retrievable record.** When the day's material shows
+    the assistant promising, assuring, or agreeing that work would be done, and the day's own
+    record does not show it fulfilled, the judge MUST be asked for it as a `note` — what was
+    promised, to whom, and that the day ended with it still owed — and the summariser MUST carry
+    every such assurance to the judge, quoted. An unfinished-thread line inside an `observation`
+    is not this: the hidden kinds never reach a prompt (rule 43), so a commitment kept only there
+    is invisible exactly when its subject returns. (2026-08-25/26, the dated miss: the user asked
+    for the chess-table chat rebuilt on the phone's conversation interface and she assured him the
+    work was scheduled; the night stored his want as a directive — formed, embedded, ranking first
+    when the subject returned — but her assurance formed nothing retrievable, and the morning
+    reply presented the previous night's stale work as new. His want and her assurance are two
+    records: the directive holds his rule, the note holds that SHE owed the work and the day
+    closed without it. A fulfilled or lapsed commitment note then fades on rule 26's own clock —
+    nothing keeps it alive but the judge crediting it.)
 28. Deduplication MUST be by measured thresholds: an exact normalised match of the same kind bumps
     last-seen; a very close match with different text supersedes, newer winning, with the old record
     left readable and excluded from retrieval; anything below simply adds.
@@ -118,7 +139,12 @@ life, and she re-reads that store every single turn.
     distiller runs once per window, in order, and the candidate lists are concatenated before
     deduplication, which already absorbs overlap between passes. The run MUST say what it did: the
     total character count always, and, when there is more than one window, how many passes and the
-    size of each — a long day is visibly slept through, never quietly cut.
+    size of each — a long day is visibly slept through, never quietly cut. The transcript reader
+    obeys the same discipline: a transcription file is read WHOLE and a long one split into
+    successive parts, each part its own labelled chunk for the windowing above — never head-read
+    to a fixed cap with the remainder silently dropped while the cursor marks the whole file
+    ingested (found at the 2026-08-26 audit: the reader took the first 20,000 characters of each
+    file, and a longer file's tail never existed).
 29a. Both stages window under rule 29's discipline. Stage 1 windows the raw day on whole chunk
     boundaries exactly as before; stage 2 windows the labelled summaries the same way when they
     outgrow the cap, each judgement pass reported in its own words (`judgement pass i/N`), so
@@ -330,9 +356,9 @@ judge), `crab memory`, and the nightly sleep.
 
 | Id | What implementation must fix |
 |---|---|
-| `MAJ-20` | The suppression declaration ignores every isolation knob and is written unconditionally when the store opens. Scratch store paths are in the live declaration file. |
+| `MAJ-20` | The suppression declaration ignored every isolation knob and was written unconditionally into the live file when the store opened. Closed before the 2026-08-26 audit, which found it already held: the declaration routes through `_notice_suppress_file` — the explicit knobs win, and a store that is not the live one declares beside itself — and `TestStoreIsolation` in `tests/test_memory.py` pins both halves. |
 | `MAJ-22` | The wake query boundary was exclusive where it should be inclusive, so an agenda clipped to exactly the budget was then thrown away whole — the query composed from the longest agendas lost precisely its subject (or went empty, with no want to fall back on). Closed 2026-08-15 by rule 9: the segment accounting charges the joining newline only where a join happens, so a budget-sized first segment is within the budget and is kept. Proven red-to-green, end to end, by `tests/test_recall_query_composition.sh`. |
-| `MAJ-26` | Retrieval alone resets the decay clock, so a note that is surfaced constantly and credited never is frozen at full confidence forever. |
+| `MAJ-26` | Retrieval alone reset the decay clock, so a note that was surfaced constantly and credited never was frozen at full confidence forever. Closed 2026-08-26 by rule 26's rewrite: the decay clock reads `last_used_at` falling back to `created` and never `last_seen`, so a surfaced-daily, never-credited note decays and retires while one the judge credited stays whole. Proven red-to-green by the decay cases of `tests/test_memory.py`. |
 | `MAJ-32` | Ingest tail-clamped a single prompt with the cap saturated against the live journal, so the day's earliest material was never ingested. Closed 2026-08-11 by rule 29's windowing: one distiller pass per whole-chunk window, candidates concatenated, every pass reported. |
 | `MAJ-33` | Ingest's `--dry-run` guarded the decay pass and the cursor write but not the add loop, so a dry run with real distiller candidates wrote records into the live store. Closed 2026-08-11 by rule 41: a dry run adds nothing, decays nothing, advances nothing, and prints what it would have added. |
 | `MIN-27` | Closed 2026-08-11 by rule 14's rewrite: block truncation no longer exists to pop anything. |
@@ -381,7 +407,18 @@ decay pass untouched; both kinds accepted from ingest candidates; a second simil
 its own row rather than a duplicate or a supersession; and the 'one night each' label on any block
 that renders them — and the answer-shape duties of rule 25a: the prompt naming the array as the
 whole answer, a verbose stubbed verdict still parsed but stamping `oversize-answer` into the day's
-timing metrics with a truncated head in the judge log, and a compact verdict stamping nothing),
+timing metrics with a truncated head in the judge log, and a compact verdict stamping nothing —
+and, since 2026-08-26, the audit's four closures: the lenient verdict parse of rule 25a's parser
+duty — ids quoted as strings and ids `#`-prefixed, the two live shapes thrown away on 2026-08-26,
+each reinforcing exactly as `[3,17]` does, with the injected-id filter still holding through the
+quotes; the decay clock of rules 21 and 26 — a note surfaced daily by retrieval and credited never
+decays and retires on schedule, while one the judge credited yesterday is untouched however stale
+its retrieval; the commitment contract of rule 27a — both stage prompts carrying the duty in their
+own words, and an unfulfilled-commitment note offered through the real ingest verb landing
+embedded, retrievable, and ranked first in the note pool when its subject returns, gaining not one
+use or point of confidence from being returned until the judge credits it; and rule 29's
+transcript half — a transcription file past the cap arriving as successive labelled parts with
+every byte present, never head-trimmed),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_recall_query_composition.sh` (since 2026-08-15, the same query proven with
 NOTHING replaced: `crab remote` and `crab wake` — the entry points the live turn and the live wake
@@ -407,8 +444,9 @@ reinforce, end to end, including a wordless wake).
   isolation knob. One test in this file currently writes into the live diagnostic log.
 - `tests/test_memory_isolation.sh` — open a scratch store and assert that nothing under the live
   state home was written.
-- `tests/test_memory_decay.py` — a record retrieved repeatedly and credited never must lose
-  confidence and retire.
+- ~~`tests/test_memory_decay.py`~~ — done 2026-08-26, held in `tests/test_memory.py`'s decay
+  cases rather than a separate file: a record retrieved repeatedly and credited never loses
+  confidence and retires.
 - `tests/test_memory_block.py` — a malformed embedder response degrades to the pinned tier and
   emits the warning. (The pinned-survives-truncation half died with truncation itself: rule 14, and
   the whole-block cases now in `tests/test_memory.py`.)

@@ -661,7 +661,10 @@ class TestReinforce(StoreCase):
 
 
 class TestDecayPass(StoreCase):
-    def age(self, rec_id, days, column="last_seen"):
+    def age(self, rec_id, days, column="created"):
+        # The decay clock reads created and last_used_at (rules 21 and 26);
+        # last_seen is retrieval's field and must hold nothing alive, so the
+        # staleness these tests set up is aged on `created` by default.
         self.store.db.execute(f"UPDATE memories SET {column}=? WHERE id=?",
                               (days_ago(days), rec_id))
         self.store.db.commit()
@@ -703,6 +706,35 @@ class TestDecayPass(StoreCase):
         self.assertEqual(self.store.db.execute(
             "SELECT confidence, status FROM memories WHERE id=?",
             (rec,)).fetchone(), (1.0, "active"))
+
+    def test_retrieval_alone_never_blocks_decay(self):
+        """MAJ-26, rules 21 and 26 (closed 2026-08-26): retrieval bumps
+        last_seen on every surfacing, so a clock that read it froze exactly
+        the surfaced-constantly, credited-never note the decay exists to
+        retire. The clock reads genuine use and creation only."""
+        rec = self.store.insert("surfaced daily, credited never",
+                                vec=[0.1] * memory.EMBED_DIM)
+        self.age(rec, 200)                    # created long ago
+        self.age(rec, 0, column="last_seen")  # retrieval keeps it "fresh"
+        self.assertEqual(self.store.decay_pass(), (1, 0))
+        conf = self.store.db.execute(
+            "SELECT confidence FROM memories WHERE id=?",
+            (rec,)).fetchone()[0]
+        self.assertAlmostEqual(conf, 1.0 - memory.DECAY_STEP)
+
+    def test_surfaced_never_credited_note_retires(self):
+        # The full arc rule 21 demands: pass after pass the confidence walks
+        # down and the note retires — however often the retriever surfaces
+        # it in between.
+        rec = self.store.insert("always returned, never used",
+                                vec=[0.1] * memory.EMBED_DIM)
+        self.age(rec, 200)
+        for _ in range(20):
+            self.age(rec, 0, column="last_seen")
+            self.store.decay_pass()
+        self.assertEqual(self.store.db.execute(
+            "SELECT status FROM memories WHERE id=?", (rec,)).fetchone()[0],
+            "retired")
 
 
 class TestHiddenKinds(StoreCase):
@@ -1751,6 +1783,30 @@ class TestIngest(StoreCase):
         self.assertIn("deadline is Friday", chunks[0])
         self.assertEqual(memory.transcript_delta(tdir, cursor), [])
 
+    def test_transcript_files_are_never_head_trimmed(self):
+        """Rule 29's transcript half (found at the 2026-08-26 audit): the
+        reader took the first `cap` characters of each file and marked the
+        whole file ingested, so a long transcription's tail never existed.
+        A file past the cap arrives as successive labelled parts, whole."""
+        tdir = os.path.join(self.dir, "transcripts")
+        os.makedirs(tdir)
+        body = "".join(f"sentence {i} of the long meeting. "
+                       for i in range(400))
+        with open(os.path.join(tdir, "long.txt"), "w") as f:
+            f.write(body)
+        cursor = {}
+        chunks = memory.transcript_delta(tdir, cursor, cap=1000)
+        self.assertGreater(len(chunks), 1,
+                           "one chunk from a file past the cap means the "
+                           "tail was trimmed off")
+        for i, chunk in enumerate(chunks, 1):
+            self.assertIn(f"[transcript long.txt part {i}/{len(chunks)}]",
+                          chunk)
+        rejoined = "".join(c.split("]\n", 1)[1] for c in chunks)
+        self.assertEqual(rejoined, body)  # every byte, in order
+        # And the cursor still marks the file done: nothing on re-read.
+        self.assertEqual(memory.transcript_delta(tdir, cursor, cap=1000), [])
+
     def test_ingest_from_json_cli(self):
         cands = [{"text": "He wants DevDocs work kept off weekends.",
                   "kind": "directive", "topics": "scheduling"},
@@ -1901,6 +1957,34 @@ class TestJudgeTurn(StoreCase):
         # outside the sidecar must not stamp an unrelated record.
         self.judge(f"[{self.used}, {self.ignored}, 999]",
                    ids=[(self.used, "note")])
+        self.assertEqual(self.usage(self.used)[0], 1)
+        self.assertEqual(self.usage(self.ignored), (0, None))
+
+    def test_quoted_string_ids_still_reinforce(self):
+        """Rule 25a's parser duty, the 2026-08-26 live loss: a judge
+        credited real records as ["596", "15", "173"] and the digits-only
+        parse called the verdict unparseable, so the credit never landed.
+        Ids quoted as strings are still the verdict."""
+        self.judge(f'["{self.used}"]')
+        self.assertEqual(self.usage(self.used)[0], 1)
+        self.assertEqual(self.usage(self.ignored), (0, None))
+        with open(self.log) as f:
+            log = f.read()
+        self.assertIn(f"used=[{self.used}]", log)
+        self.assertNotIn("unparseable", log)
+
+    def test_hash_prefixed_ids_still_reinforce(self):
+        # The other live shape of 2026-08-26 (10:32, the chess-chat record
+        # itself): ["#602"] — the ids exactly as the judge's own prompt
+        # labels the records it is shown.
+        self.judge(f'["#{self.used}"]')
+        self.assertEqual(self.usage(self.used)[0], 1)
+        self.assertEqual(self.usage(self.ignored), (0, None))
+
+    def test_lenient_parse_still_rejects_hallucinated_ids(self):
+        # Leniency about shape is not leniency about provenance: a quoted id
+        # from outside the sidecar still stamps nothing.
+        self.judge(f'["{self.used}", "999"]', ids=[(self.used, "note")])
         self.assertEqual(self.usage(self.used)[0], 1)
         self.assertEqual(self.usage(self.ignored), (0, None))
 
@@ -2175,6 +2259,97 @@ class TestJudgeAccountWalk(StoreCase):
         self.assertEqual(self.logins(), [self.A1])
         self.assertEqual(self.usage(self.used), (0, None))
         self.assertFalse(os.path.exists(ids_file))
+
+
+class TestCommitmentSurvivesTheNight(StoreCase):
+    """Rule 27a, the 2026-08-25/26 regression: the user asked for the
+    chess-table chat rebuilt on the phone's conversation interface, she
+    assured him the work was scheduled, and the night stored his want as a
+    directive while her assurance formed nothing retrievable — so the
+    morning reply presented the previous night's stale work as new. A
+    commitment must land as a note: embedded, retrievable, ranked first
+    when its subject returns — and earning nothing from being returned
+    until the judge credits it, the bedrock rule."""
+
+    COMMITMENT = ("I assured the user that the chess-table chat would be "
+                  "rebuilt on the phone's conversation interface; the day "
+                  "ended with the work still owed and nothing visible "
+                  "changed.")
+
+    def write_cands(self, cands):
+        path = os.path.join(self.dir, "cands.json")
+        with open(path, "w") as f:
+            json.dump(cands, f)
+        return path
+
+    def test_both_stage_prompts_carry_the_commitment_duty(self):
+        # The summariser carries every assurance to the judge, quoted; the
+        # judge is asked for the unfulfilled ones as notes — in the prompts'
+        # own words, the way rule 50's harvest-wide instruction is pinned.
+        self.assertIn("commitment or assurance", memory.SUMMARY_PROMPT)
+        self.assertIn("QUOTED", memory.SUMMARY_PROMPT)
+        self.assertIn("promised, assured, or agreed", memory.INGEST_PROMPT)
+        self.assertIn("still owed", memory.INGEST_PROMPT)
+        # The trap the live miss actually fell into is named: never only an
+        # observation's unfinished-threads line, because the hidden kinds
+        # are invisible to every prompt-facing retrieval (rule 43).
+        self.assertIn("Never fold it into an observation",
+                      memory.INGEST_PROMPT)
+
+    def test_commitment_embeds_ranks_and_earns_nothing_by_return(self):
+        # Through the real ingest verb (--from-json: the judge's answer with
+        # the model skipped), against the real embedder: the candidate lands
+        # as a note WITH a vector, is retrieved when the subject returns in
+        # the user's own morning words, outranks the unrelated notes beside
+        # it — and the return itself reinforces nothing.
+        cands = [
+            {"text": self.COMMITMENT, "kind": "note",
+             "topics": "chess,phone,commitment", "occurred": "2026-08-25"},
+            {"text": "The lux sensor lives on the i2c bus.", "kind": "note"},
+            {"text": "The greenhouse fan relay sticks when it rains.",
+             "kind": "note"},
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = memory.cmd_ingest(self.store, Namespace(
+                dry_run=False, from_json=self.write_cands(cands),
+                journal_dir="", transcripts_dir="", model="unused",
+                effort="high", summary_model="unused", max_chars=150000))
+        self.assertEqual(rc, 0)
+        self.assertIn("3 added", out.getvalue())
+        # The coverage half of the audit: every saved record has a vector —
+        # a record without one is unfindable forever.
+        no_vec = self.store.db.execute(
+            "SELECT count(*) FROM memories m LEFT JOIN memories_vec v"
+            " ON v.rowid = m.id WHERE v.rowid IS NULL").fetchone()[0]
+        self.assertEqual(no_vec, 0)
+        rec_id = self.store.db.execute(
+            "SELECT id FROM memories WHERE text=?",
+            (self.COMMITMENT,)).fetchone()[0]
+        query = ("the chess chat doesn't feel nearly as good as the mobile "
+                 "interface — I thought you said you were going to improve "
+                 "it, did that happen?")
+        picked, _, _ = self.store.search(query)
+        notes = [r for r in picked if r[2] == "note"]
+        self.assertTrue(notes and notes[0][0] == rec_id,
+                        "the commitment must be the top note when its "
+                        "subject returns")
+        # Returned is not used (the bedrock rule): no use stamp, no count,
+        # no confidence movement — retrieval bumps last_seen and nothing
+        # else.
+        used, count, conf = self.store.db.execute(
+            "SELECT last_used_at, use_count, confidence FROM memories"
+            " WHERE id=?", (rec_id,)).fetchone()
+        self.assertIsNone(used)
+        self.assertEqual(count, 0)
+        self.assertEqual(conf, 1.0)
+        # Only the judge's credit moves it.
+        self.store.reinforce([rec_id])
+        used, count = self.store.db.execute(
+            "SELECT last_used_at, use_count FROM memories WHERE id=?",
+            (rec_id,)).fetchone()
+        self.assertIsNotNone(used)
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

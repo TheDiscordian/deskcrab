@@ -797,15 +797,22 @@ class Store:
         return hit
 
     def decay_pass(self):
-        """§3 soft decay, run by the ingest pass (§5): an active note neither
-        retrieved nor used in DECAY_STALE_DAYS loses DECAY_STEP confidence;
-        below DECAY_RETIRE_FLOOR it flips to retired. Directives never decay."""
+        """§3 soft decay, run by the ingest pass (§5): an active note not
+        genuinely USED in DECAY_STALE_DAYS loses DECAY_STEP confidence;
+        below DECAY_RETIRE_FLOOR it flips to retired. Directives never decay.
+
+        The clock is last_used_at falling back to created — NEVER last_seen
+        (rules 21 and 26, MAJ-26 closed 2026-08-26): retrieval bumps
+        last_seen every time the retriever surfaces a note, so counting it
+        froze precisely the surfaced-constantly, credited-never note the
+        decay exists to retire. Retrieval alone must never keep a score
+        alive; only the turn-end judge's credit may."""
         now = datetime.now().astimezone()
         decayed, retired = 0, 0
-        for rec_id, conf, seen, used in self.db.execute(
-                "SELECT id, confidence, last_seen, last_used_at FROM memories"
+        for rec_id, conf, created, used in self.db.execute(
+                "SELECT id, confidence, created, last_used_at FROM memories"
                 " WHERE status='active' AND kind='note'").fetchall():
-            stamps = [t for t in (parse_iso(seen), parse_iso(used)) if t]
+            stamps = [t for t in (parse_iso(created), parse_iso(used)) if t]
             if not stamps:
                 continue
             if (now - max(stamps)).total_seconds() < DECAY_STALE_DAYS * 86400:
@@ -1267,6 +1274,9 @@ compactly, so the judge loses nothing you were shown. Keep, with the \
 timestamps and dates the chunk headers state:
 - every preference, rule, correction, or standing instruction the user \
 stated, QUOTED in his own words;
+- every commitment or assurance the ASSISTANT gave — work promised, plans \
+agreed, anything she said would be done or handled — QUOTED, and whether \
+the day's own record shows it done;
 - what the assistant finished, discovered, or was proven wrong about;
 - stable facts about the machine, people, or projects;
 - the moments of her own life — conversations enjoyed, people met or spoken \
@@ -1295,6 +1305,14 @@ extract what earns a record:
 "Stay silent when...")
 - the assistant finished, discovered, or was proven wrong about something \
 she would otherwise re-derive -> kind "note"
+- the assistant promised, assured, or agreed that something would be done, \
+and the day's record does NOT show it fulfilled -> kind "note", naming what \
+was promised, to whom, and that the day ended with it still owed. This is \
+HER commitment, a separate record from any directive the same exchange \
+earns: the directive holds his rule, this note holds that she owed the \
+work and the day closed without it. Never fold it into an observation's \
+unfinished-threads line — observations are invisible to recall, and a \
+commitment kept only there is forgotten exactly when its subject returns.
 - a stable fact about the machine, a person, or a project -> kind "note"
 - a MOMENT of the assistant's own life -> kind "episodic": a conversation \
 she enjoyed, a person met or spoken of, a plan made, a joke that landed, an \
@@ -1373,7 +1391,14 @@ def journal_delta(journal_dir, cursor):
 
 
 def transcript_delta(transcripts_dir, cursor, cap=20000):
-    """Transcription files not yet ingested (tracked by name+size)."""
+    """Transcription files not yet ingested (tracked by name+size).
+
+    Read WHOLE (memory-recall.md rule 29 — ingest windows, it never trims):
+    a file past `cap` becomes successive cap-sized parts, each its own
+    labelled chunk, so window_chunks can break between them and every byte
+    still reaches a summariser pass. The old reader took the first `cap`
+    characters and marked the whole file ingested — a longer file's tail
+    never existed (found at the 2026-08-26 audit)."""
     chunks = []
     seen = cursor.setdefault("transcripts", {})
     for name in sorted(os.listdir(transcripts_dir) if os.path.isdir(transcripts_dir) else []):
@@ -1384,8 +1409,14 @@ def transcript_delta(transcripts_dir, cursor, cap=20000):
         if seen.get(name) == size:
             continue
         with open(path, errors="replace") as f:
-            body = f.read(cap)
-        chunks.append(f"[transcript {name}]\n{body}")
+            body = f.read()
+        if len(body) <= cap:
+            chunks.append(f"[transcript {name}]\n{body}")
+        else:
+            parts = [body[i:i + cap] for i in range(0, len(body), cap)]
+            for i, part in enumerate(parts, 1):
+                chunks.append(f"[transcript {name} part {i}/{len(parts)}]\n"
+                              f"{part}")
         seen[name] = size
     return chunks
 
@@ -2273,14 +2304,21 @@ def cmd_judge_turn(store, args):
             detail = f"{answer_bytes}B answer against a {ceiling}B ceiling"
             _stamp_metric("oversize-answer", detail)
             jlog(f"WARNING oversize answer: {detail} — head: {body[:200]!r}")
-        m = re.search(r"\[[\d,\s]*\]", body)
+        # Rule 25a's parser duty: the array is fished out of whatever came
+        # back, so a verdict is never lost to the model disobeying the shape
+        # rule. On 2026-08-26 a live judge credited the chess-chat directive
+        # as ["#602"] and another turn as ["596", "15", "173"], and the old
+        # digits-only pattern threw both verdicts away — so the bracket run
+        # tolerates quotes and # prefixes, and the ids are the digits inside.
+        m = re.search(r"\[[\s\"'#\d,]*\]", body)
         if not m:
             jlog(f"unparseable verdict: {body[:120]!r}")
             return 0
         # Only ids that were actually injected can be reinforced — a judge
         # hallucinating an id must not stamp an unrelated record.
         allowed = {r["id"] for r in injected}
-        used = [i for i in json.loads(m.group(0)) if i in allowed]
+        used = [i for i in (int(n) for n in re.findall(r"\d+", m.group(0)))
+                if i in allowed]
         hit = store.reinforce(used) if used else []
         jlog(f"injected={sorted(allowed)} used={hit if hit else 'NONE'}")
         return 0
