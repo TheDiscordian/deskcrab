@@ -7,7 +7,8 @@
 # thought at the same config-default effort: quiet manoeuvring cost a full
 # deliberation, and the whole game's pace was set by its dullest move. Now a
 # pure python-chess pre-check (NO engine, here as everywhere in her chess)
-# books the wake at low unless a cheap alarm says the position deserves more —
+# books the wake at the quiet level (medium, one uniform pair for every game)
+# unless a cheap alarm says the position deserves the sharp level (high) —
 # so what must hold is: the alarms fire on the positions they were built for
 # and stay quiet on the quiet ones; the chosen level actually travels booking
 # -> record -> fired unit -> the claude invocation's own --effort flag; and an
@@ -45,43 +46,43 @@ EOF
 }
 
 echo "the alarms, on positions built for each of them:"
-check_eq "the start position is quiet manoeuvring: low, no reasons" \
-    "$(verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')" "low -"
+check_eq "the start position is quiet manoeuvring: medium, no reasons" \
+    "$(verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')" "medium -"
 check_eq "a closed queen's-pawn opening is quiet too" \
-    "$(verdict 'rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2')" "low -"
+    "$(verdict 'rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2')" "medium -"
 
 out="$(verdict 'rnb1kbnr/pppp1ppp/4p3/3Q4/8/8/PPPP1PPP/RNB1KBNR w KQkq - 0 1')"
 case "$out" in
-  medium*en-prise:d5*) ok "a queen hanging to a pawn is en prise: medium" ;;
+  high*en-prise:d5*) ok "a queen hanging to a pawn is en prise: high" ;;
   *) fail "hanging queen" "$out" ;;
 esac
 out="$(verdict 'rnb1kbnr/pppp1ppp/8/4p3/4PP1q/8/PPPP2PP/RNBQKBNR w KQkq - 1 3')"
 case "$out" in
-  medium*in-check*) ok "the side to move in check: medium" ;;
+  high*in-check*) ok "the side to move in check: high" ;;
   *) fail "in check" "$out" ;;
 esac
 out="$(verdict '8/P7/8/8/8/4k3/8/4K3 w - - 0 1')"
 case "$out" in
-  medium*pawn-on-7th*) ok "a pawn one square from queening: medium" ;;
+  high*pawn-on-7th*) ok "a pawn one square from queening: high" ;;
   *) fail "pawn on the 7th" "$out" ;;
 esac
 check_eq "two bare kings: escalated for the narrow tree ALONE — the king-danger \
 alarms hold their tongue with no heavy piece left to exploit anything" \
-    "$(verdict '7k/8/8/8/8/8/8/K7 w - - 0 1')" "medium forced:3"
+    "$(verdict '7k/8/8/8/8/8/8/K7 w - - 0 1')" "high forced:3"
 # A check merely EXISTING is not an alarm any more: in a middlegame some
 # spite check is nearly always in the air, and firing on it made every move
 # expensive (browser-003, 2026-08-10). Only a check that also wins material,
 # or one in a tree narrow enough to be forcing, rings the bell.
 check_eq "an Italian with a mere Bxf7+ spite check in the air stays quiet" \
-    "$(verdict 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4')" "low -"
+    "$(verdict 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4')" "medium -"
 out="$(verdict 'r1b1kbnr/pppp1qpp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1')"
 case "$out" in
-  medium*check-available*) ok "a check that also wins the queen: medium" ;;
+  high*check-available*) ok "a check that also wins the queen: high" ;;
   *) fail "material-winning check" "$out" ;;
 esac
 out="$(verdict 'rnb1kbnr/pppppppp/8/8/6q1/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 1')"
 case "$out" in
-  medium*capture-worth:9*) ok "a queen takeable by a pawn: a capture worth far more than a minor" ;;
+  high*capture-worth:9*) ok "a queen takeable by a pawn: a capture worth far more than a minor" ;;
   *) fail "capture worth a queen" "$out" ;;
 esac
 
@@ -98,24 +99,25 @@ EOF
 check_eq "a confident 'new ground' alone escalates a quiet position; \
 an unsure or negative store verdict leaves it quiet" \
     "$out" "novel
-low
-low"
+medium
+medium"
 
 # The forced threshold is an env knob, read where the spec says it is.
 out="$(DESKCRAB_CHESS_EFFORT_FORCED=30 verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')"
 check_eq "DESKCRAB_CHESS_EFFORT_FORCED is live: raised to 30, even the start \
-position's twenty moves read as forced" "$out" "medium forced:20"
+position's twenty moves read as forced" "$out" "high forced:20"
 
-# The levels themselves are env knobs (specs/chessweb.md rule 16b): the
-# 2026-08-15 lowering is undone with a config line, not an edit.
-out="$(DESKCRAB_CHESS_EFFORT_QUIET=medium DESKCRAB_CHESS_EFFORT_SHARP=high \
+# The levels themselves are env knobs (specs/chessweb.md rule 16b), the
+# pre-experiment pair predating and surviving every adjudication: a
+# re-adjudication is a config line, not an edit.
+out="$(DESKCRAB_CHESS_EFFORT_QUIET=low DESKCRAB_CHESS_EFFORT_SHARP=medium \
     verdict 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')"
-check_eq "DESKCRAB_CHESS_EFFORT_QUIET is live: the old medium restorable" \
-    "$out" "medium -"
-out="$(DESKCRAB_CHESS_EFFORT_QUIET=medium DESKCRAB_CHESS_EFFORT_SHARP=high \
+check_eq "DESKCRAB_CHESS_EFFORT_QUIET is live: the 2026-08-15 low restorable" \
+    "$out" "low -"
+out="$(DESKCRAB_CHESS_EFFORT_QUIET=low DESKCRAB_CHESS_EFFORT_SHARP=medium \
     verdict '7k/8/8/8/8/8/8/K7 w - - 0 1')"
-check_eq "DESKCRAB_CHESS_EFFORT_SHARP is live: the old high restorable" \
-    "$out" "high forced:3"
+check_eq "DESKCRAB_CHESS_EFFORT_SHARP is live: the lowered medium restorable" \
+    "$out" "medium forced:3"
 
 echo
 echo "novelty asks the similarity store, and refuses to guess from a thin one:"
@@ -308,10 +310,10 @@ echo
 echo "the bridge thinks about quiet positions cheap and alarmed ones dear:"
 : > "$MOVER_LOG"
 drive quiet-001 >/dev/null
-awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 medium quiet arm=sharp"' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-001 ply 2 medium quiet"' "$MET" \
     | grep -q . \
-  && ok "a quiet middlegame classifies at the pair's quiet level — game 1 is odd, the \
-sharp arm's medium — stamped with 'quiet' and the arm (rule 16b)" \
+  && ok "a quiet middlegame classifies at the quiet level (medium), stamped \
+with 'quiet' and nothing after it (rule 16b)" \
   || fail "quiet effort stamp" "$(grep quiet-001 "$MET")"
 awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^quiet-001 ply 2 effort medium /' "$MET" \
     | grep -q . \
@@ -324,10 +326,10 @@ awk -F'\t' '$3=="chess" && $4=="move-played" && $5 == "quiet-001 ply 2 c4 model"
 
 : > "$MOVER_LOG"
 drive danger-001 >/dev/null
-awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^danger-001 ply 4 high .*en-prise:h5/ && $5 ~ / arm=sharp$/' "$MET" \
+awk -F'\t' '$3=="chess" && $4=="effort" && $5 ~ /^danger-001 ply 4 high .*en-prise:h5/' "$MET" \
     | grep -q . \
-  && ok "a hanging queen classifies at the pair's sharp level — the sharp arm's high — \
-and the stamp names every alarm and the arm" \
+  && ok "a hanging queen classifies at the sharp level (high), and the stamp \
+names every alarm" \
   || fail "danger effort stamp" "$(grep danger-001 "$MET")"
 awk -F'\t' '$3=="chess" && $4=="model-start" && $5 ~ /^danger-001 ply 4 effort high /' "$MET" \
     | grep -q . \
@@ -362,6 +364,15 @@ awk -F'\t' '$3=="chess" && $4=="effort" && $5 == "quiet-003 ply 2 low always-low
   && ok "the always-low pin sends every call at low, stamped as the pin" \
   || fail "always-low" "$(grep quiet-003 "$MET")"
 
-grep -q "you played" "$WAKE_LOG" && ! grep -q "your move" "$WAKE_LOG" \
+grep -q " arm=" "$MET" \
+  && fail "an arm= token survived the parity A/B's removal" "$(grep ' arm=' "$MET")" \
+  || ok "no effort row carries an arm= token — the rejected parity A/B stamps nothing"
+
+# Every wake the drives booked is rule 7's fixed post-move sentence — the
+# queue never gated a move. The wording moved onto "a move landed in game"
+# when the doorbell started ringing on every landed move (rule 7); the old
+# "you played" pin here stood stale and red from that change until now.
+grep -q "a move landed in game" "$WAKE_LOG" \
+  && ! grep -v "a move landed in game" "$WAKE_LOG" | grep -q . \
   && ok "the only wakes are post-move consequences — the queue never gated a move" \
   || fail "wake log" "$(cat "$WAKE_LOG")"

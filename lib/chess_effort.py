@@ -20,26 +20,20 @@ before this module existed.
 """
 
 import os
-import re
 
 import chess
 
-# The two ARMS of the effort cut, each a (quiet, sharp) pair. Quiet ran at
-# medium and alarmed at high from 2026-08-10's adjudication — the per-move
-# minutes were the queue in front of the call, not the thinking inside it —
-# and on 2026-08-15 the user lowered both a notch as an experiment, over her
-# objection, to see whether she still wins at low/medium. That cut then ran
-# nine days as ONE undifferentiated block: this module read its knobs at
-# import, and chessweb is a resident daemon serving every game from one
-# process, so whichever pair was live at daemon start froze for every game
-# until restart — and the before/after windows measured the fortnight
-# (similar-game retrieval and two prompt changes landed inside them), not
-# the dial. So resolve() now picks the pair per call: the game id's parity
-# interleaves the arms — odd games at the pre-cut sharp pair, even at the
-# lowered pair — same nights, same opponent. The env knobs still win
-# outright, read at call time (specs/chessweb.md rule 16b).
-ARM_LOWERED = ("low", "medium")    # the 2026-08-15 experiment — even games
-ARM_SHARP = ("medium", "high")     # 2026-08-10's adjudicated pair — odd games
+# The two levels, each its own knob because the pair has been adjudicated
+# more than once. Quiet ran at medium and alarmed at high from 2026-08-10's
+# adjudication — the per-move minutes were the queue in front of the call,
+# not the thinking inside it. The 2026-08-15 lowering to low/medium ran nine
+# days as one undifferentiated block and proved unadjudicatable, and the
+# game-id-parity A/B that then interleaved the two pairs was rejected by the
+# user outright (docs/history.md, 2026-08-26): one uniform pair for every
+# game, no arms, no parity. The knobs make the next adjudication a config
+# line, not an edit (specs/chessweb.md rule 16b).
+QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "medium")
+SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "high")
 
 PIECE_VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
                chess.ROOK: 5, chess.QUEEN: 9}
@@ -150,45 +144,14 @@ def _king_danger(board, us):
     return reasons
 
 
-def game_number(game_id):
-    """The trailing integer of a game id (browser-039 is game 39; a suffix
-    after the digits is fine, the LAST run of digits decides), or None when
-    there is nothing to parse — the parity's input, never an exception."""
-    if game_id is None:
-        return None
-    digits = re.findall(r"\d+", str(game_id))
-    return int(digits[-1]) if digits else None
-
-
-def resolve(game_id=None):
-    """The (quiet, sharp, arm) THIS call runs at, decided now and never at
-    import — a resident daemon must not freeze one arm over every game it
-    will ever serve, which is how nine days became one block. An explicit
-    env knob wins outright (arm `env`: an operator's pin, counted into
-    neither arm of the cut); otherwise the game number's parity picks the
-    arm; and a game with no parsable number keeps the lowered defaults with
-    no arm at all — exactly the pre-parity behaviour."""
-    env_quiet = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET")
-    env_sharp = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP")
-    if env_quiet or env_sharp:
-        return (env_quiet or ARM_LOWERED[0],
-                env_sharp or ARM_LOWERED[1], "env")
-    n = game_number(game_id)
-    if n is None:
-        return ARM_LOWERED + ("",)
-    return ARM_SHARP + ("sharp",) if n % 2 else ARM_LOWERED + ("lowered",)
-
-
-def classify(board: chess.Board, novel=None, game_id=None) \
-        -> tuple[str, list[str]]:
-    """The effort a position deserves: (level, reasons-that-fired). The
-    pair's quiet level with no reasons is the default; any reason at all
-    means its sharp level — a cheap alarm that rings falsely now and then
-    costs one deliberate turn, where an alarm that stays quiet falsely can
-    cost the game. Which pair is resolve(game_id)'s call, made per
-    invocation. Pure arithmetic on the board; `novel` is the store's verdict
-    (novelty()), passed in so this function stays free of I/O and
-    deterministic under test."""
+def classify(board: chess.Board, novel=None) -> tuple[str, list[str]]:
+    """The effort a position deserves: (level, reasons-that-fired). QUIET
+    with no reasons is the quiet default; any reason at all means SHARP — a
+    cheap alarm that rings falsely now and then costs one deliberate turn,
+    where an alarm that stays quiet falsely can cost the game. Pure
+    arithmetic on the board; `novel` is the store's verdict (novelty()),
+    passed in so this function stays free of I/O and deterministic under
+    test."""
     us = board.turn
     reasons = []
 
@@ -236,8 +199,7 @@ def classify(board: chess.Board, novel=None, game_id=None) \
     if novel:
         reasons.append("novel")
 
-    quiet_level, sharp_level, _ = resolve(game_id)
-    return (sharp_level if reasons else quiet_level), reasons
+    return (SHARP if reasons else QUIET), reasons
 
 
 def novelty(fen: str, min_rows: int = None, min_sim: float = None):

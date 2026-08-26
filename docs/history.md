@@ -679,6 +679,24 @@ Contract: [`specs/phone.md`](../specs/phone.md).
 
 ## The chess bridge
 
+### 2026-08-26 — the effort dial's parity A/B, rejected
+
+The 2026-08-15 lowering of the effort pair to `low`/`medium` ran nine days as one undifferentiated
+block — `chess_effort` read its knobs at import, and the bridge is a resident daemon, so whichever
+pair was live at daemon start froze for every game until restart — and proved unadjudicatable: 36%
+before, 38% after, with similar-game retrieval and two prompt changes inside the same window, which
+measured the fortnight, not the dial. The fix that shipped (3a1e4f2) interleaved the two pairs by
+game-id parity — odd games at `medium`/`high`, even at `low`/`medium`, a trailing `arm=` token on
+the effort metrics row so the ledger could split the games by arm instead of by date window. The
+user rejected the experiment outright: no arms, no parity, one uniform pair for every game. The
+dial went back to the 2026-08-10 adjudication's values — quiet `medium`, alarmed `high` — with the
+pre-experiment `DESKCRAB_CHESS_EFFORT_QUIET`/`_SHARP` knobs kept, so a re-adjudication stays a
+config line, not an edit. Effort rows written while the A/B was live still carry the `arm=` token;
+it is historical residue and readers ignore it. If a per-game experiment ever comes back, it comes
+back as a design the user has agreed to, never as a default.
+
+Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 16b and 17.
+
 ### 2026-08-10, that evening — two hands on one board, and the doubles that were neither
 
 The evening the resident mover went live, three symptoms looked like one bug: two of her sessions
