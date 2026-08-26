@@ -68,7 +68,11 @@ watchdog expects a trickle, so the translator carries a heartbeat.
    `CODEX_HOME` joins the wrap's writable set — the CLI's own state (auth refresh, sessions),
    the same clause that binds `~/.claude`. Codex's own sandbox and approvals are OFF
    (`--dangerously-bypass-approvals-and-sandbox`): the cocoon is the wall on live sessions, and a
-   builder keeps full hands by design (cocoon.md rule 2).
+   builder keeps full hands by design (cocoon.md rule 2). That bypass is licensed by the cocoon
+   and ONLY by the cocoon: the chess-table calls (the mover and the table chat,
+   [chessweb.md](chessweb.md) rule 24f) run codex bare and carry an unauthenticated sitter's
+   text in their prompts, so they run `--sandbox read-only` instead — the bypass flag never
+   appears outside a cocoon-wrapped lane.
 10. A codex run reads stdin from `/dev/null` (an open stdin is an invitation Codex accepts), runs
     with `-C` at the same cwd its Claude counterpart uses, and `--skip-git-repo-check` (the
     project directory is not a repository).

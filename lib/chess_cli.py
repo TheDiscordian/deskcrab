@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -383,19 +384,45 @@ def side_name(g: dict, colour: str) -> str:
     return "you" if g["my_side"] == colour else player_label(g)
 
 
+def clean_text(s: str) -> str:
+    """One line, plain spaces (specs/chessweb.md rule 24f): every control,
+    format and line-break character folds to a space, runs collapse, ends
+    trim. Chat text and the player label are unauthenticated keyboard input
+    that gets rendered into prompts line by line; a newline (or a bidi
+    override, or a bare ESC) smuggled into either would let a sitter
+    fabricate lines that are not theirs."""
+    folded = "".join(
+        " " if ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf",
+                                                            "Zl", "Zp")
+        else ch
+        for ch in s)
+    return " ".join(folded.split())
+
+
+# The label travels further than the chat — into the mover's prompt and the
+# wake reasons — so it is held to name-shaped characters on top of the fold.
+PLAYER_NAME_RE = re.compile(r"[^\w .'\-]", re.UNICODE)
+
+
 def clean_player(name) -> str | None:
     """A player name fit to store, or None for 'unlabeled'. Raises CliError
     on a name that is not a short string — validation is server-side only
-    (rule 23), and absence is recorded as absence, never guessed."""
+    (rule 23), and absence is recorded as absence, never guessed. The name
+    is folded to one plain line and held to letters, digits, spaces and
+    `. ' - _` (rule 24f): it is typed at an unauthenticated keyboard and
+    rendered into prompts."""
     if name is None:
         return None
     if not isinstance(name, str):
         raise CliError("the player name must be text")
-    name = name.strip()
+    name = clean_text(name)
     if not name:
         return None
     if len(name) > 40:
         raise CliError("the player name must be 40 characters or fewer")
+    if PLAYER_NAME_RE.search(name):
+        raise CliError("a player name may use letters, digits, spaces "
+                       "and . ' - _ only")
     return name
 
 
@@ -998,10 +1025,13 @@ CHAT_TEXT_MAX = 500
 def append_chat(g: dict, who: str, text: str) -> dict:
     """Append one chat message to g (not yet saved) and return it. `who` is
     the role — 'player' or 'assistant' — never a name (rule 24a). Raises
-    CliError on empty or over-long text."""
+    CliError on empty or over-long text. The text is folded to one plain
+    line first (rule 24f): the sitter is unauthenticated, and a line break
+    in stored chat would let them fabricate other speakers' lines in every
+    prompt that renders the thread."""
     if who not in ("player", "assistant"):
         raise CliError(f"chat 'who' must be player or assistant, not {who!r}")
-    text = (text or "").strip()
+    text = clean_text(text or "")
     if not text:
         raise CliError("an empty chat message")
     if len(text) > CHAT_TEXT_MAX:

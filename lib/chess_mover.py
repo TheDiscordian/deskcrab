@@ -997,12 +997,19 @@ class Mover:
                "--disable-slash-commands",
                "--system-prompt", SYSTEM_PROMPT]
         empty_mcp = Path(__file__).resolve().parent / "empty-mcp.json"
-        if empty_mcp.is_file():
-            # --tools "" is only safe behind the empty MCP config: without
-            # it the CLI inlines every MCP schema instead of deferring them
-            # (the 116k-token trap, tools/context-probe-results.md).
-            cmd += ["--strict-mcp-config", "--mcp-config", str(empty_mcp),
-                    "--tools", ""]
+        if not empty_mcp.is_file():
+            # Fail CLOSED (specs/chessweb.md rule 24f): --tools "" is what
+            # disarms this call, and it is only safe behind the empty MCP
+            # config — without it the CLI inlines every MCP schema instead
+            # of deferring them (the 116k-token trap,
+            # tools/context-probe-results.md). The mover's prompt carries
+            # the sitter's typed name; it must never run tool-armed. A
+            # lost move beats an armed one.
+            raise RuntimeError(
+                "empty-mcp.json is missing beside chess_mover.py — "
+                "refusing to run the move call with tools armed")
+        cmd += ["--strict-mcp-config", "--mcp-config", str(empty_mcp),
+                "--tools", ""]
         return cmd
 
     @classmethod
@@ -1023,8 +1030,12 @@ class Mover:
                 fh.write(SYSTEM_PROMPT)
         except OSError:
             instr = ""
+        # Read-only sandbox, never the bypass flag (specs/chessweb.md rule
+        # 24f, model-backends.md rule 9): the mover is not a cocoon-wrapped
+        # turn, and its prompt carries the sitter's typed name. A chess
+        # move needs no hands at all.
         cmd = [codex, "exec", "--ignore-user-config", "--skip-git-repo-check",
-               "--dangerously-bypass-approvals-and-sandbox",
+               "--sandbox", "read-only",
                "--json", "--color", "never",
                "-m", _codex_resolve(cls._model(selfplay)),
                "-c", "model_reasoning_effort=%s" % effort]

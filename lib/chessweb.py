@@ -714,8 +714,12 @@ class Hub:
             # The label, so the prompt says whom she is playing (rule 23a);
             # self-play detection keys on the id prefix and the literal
             # opponent name, which an unlabeled selfplay game still is.
+            # Folded to one plain line on the way into the prompt (rule
+            # 24f): the label is typed at an unauthenticated keyboard, and
+            # a legacy or hand-edited record must render as tame as a
+            # fresh one.
             "side": self.store.her_side,
-            "opponent": chess_cli.player_label(g),
+            "opponent": chess_cli.clean_text(chess_cli.player_label(g)),
             "history": chess_cli.history(g["moves"]),
             # The live clock rides along VISIBLE to the mover (rule 22f);
             # reading it into the effort budget is separate, unadjudicated

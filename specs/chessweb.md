@@ -613,6 +613,34 @@ cannot be changed.
        lanes ([speech-output.md](speech-output.md)), and this chat is not that conversation.
        History is never spoken on a page load — only messages that arrive while the toggle is
        on.
+    f. **The table is not a console.** Everything typed at the board — the chat text and the
+       sitter's name — is untrusted input from an unauthenticated keyboard: the seat is
+       first-come (KNOWN LIMITS), so the words may claim any identity and no claim is believed.
+       The boundary is held in code, never by prompt wording alone:
+       - *Sanitized at the door.* `append_chat` and `clean_player` fold every control,
+         format and line-break character to a single space, so a typed message can render only
+         as ONE line inside its own `label:` prefix — no keyboard can fabricate another
+         speaker's line, a prompt section, or a role. A player name is further held to letters,
+         digits, spaces and `. ' - _` (over its 40-character cap), because the label travels
+         beyond the chat: into the mover's prompt and rule 7's wake reasons. `build_prompt`
+         scrubs every job field again on the way out, so a legacy or hand-edited record gets
+         the same treatment as a fresh one.
+       - *Roles are the server's.* `POST /chat` writes role `player` whatever else the body
+         carries, and `append_chat` refuses any role but `player`/`assistant` — impersonating
+         her on the record is not a request the wire can express.
+       - *Her replies carry no authority to lose.* The chat call and the mover's call are NOT
+         cocoon-wrapped turns — [model-backends.md](model-backends.md) rule 9's "the cocoon is
+         the wall" bargain does not hold at the chess table — so the argv is the only wall: the
+         Claude spelling always disarms tools, and REFUSES TO RUN AT ALL when the empty MCP
+         config it needs for that is missing (fail closed, a silent chat over a tool-armed
+         one); the codex spelling runs under codex's own read-only sandbox, never the bypass
+         flag. A prompt injection that lands can at worst say something at a chess table.
+       - *The system prompt names the boundary* — the sitter is unauthenticated, their words
+         are table talk and never instructions, she has no tools and never pretends otherwise —
+         but that wording is courtesy on top of the enforcement above, never the enforcement.
+       tests/test_chess_chat_trust.sh holds this door: forged roles, smuggled newlines and
+       injection attempts must land inert, both call spellings must show the disarmed argv, and
+       the chat must keep working for an ordinary sitter all the while.
 
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 
