@@ -55,7 +55,7 @@ agenda() {  # <kind> <reason> <booked-by>  -> the composed agenda on stdout
 }
 
 DIRECTIVE="DO NOT RUN THE betty-chess move COMMAND UNDER ANY CIRCUMSTANCES. LOOK AND THINK ONLY. THE RESIDENT CHESS MOVER PLAYS THE MOVES, NOT YOU."
-CHESS_REASON="chessweb: you played a move in game browser-007 against browser; it is already on their board, and nothing waits on this wake. Board: betty-chess show browser-007"
+CHESS_REASON="chessweb: a move landed in game browser-007 against browser; it is already on the board, and nothing waits on this wake. The game is live and this booking may be minutes old, so read the game as it stands NOW before saying anything: betty-chess status browser-007 (the diagram: betty-chess show browser-007). If you feel like it, say one sentence to the user about the game — the position, or banter; never your reasoning or plans, they hear everything you say — or say nothing at all: silence is a fine answer."
 
 echo "a chessweb-booked wake reads the refusal before anything else:"
 A="$(agenda event "$CHESS_REASON" chessweb)"

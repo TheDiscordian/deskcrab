@@ -325,16 +325,20 @@ def s_fresh(port, chess_dir, wake_log, mover_log):
 
     deadline = time.time() + 5
     wake = ""
-    while time.time() < deadline and "you played" not in wake:
+    while time.time() < deadline and "a move landed" not in wake:
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
     assert "your move" not in wake, f"a wake gated her move: {wake}"
-    assert "you played a move in game guest-001" in wake, wake
-    assert "you played e5" not in wake, \
+    assert "a move landed in game guest-001" in wake, wake
+    assert "e4" not in wake and "e5" not in wake, \
         f"the post-move reason must not carry the san — it is one fixed " \
         f"sentence per game so bookings coalesce (chessweb.md rule 7): {wake}"
+    assert "say nothing at all" in wake, \
+        f"the reason must leave silence open — speech is optional: {wake}"
+    assert f"betty-chess status guest-001" in wake, \
+        f"the reason must point at the live game, read at speak-time: {wake}"
     ok("no wake gated the move; the post-move wake names the game, never "
-       "the move")
+       "the move, and leaves silence open")
 
     obs = Client(port)
     obs.join(player=False)
@@ -537,7 +541,7 @@ def s_reflex(port, chess_dir, wake_log, mover_log):
         wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
         time.sleep(0.1)
     assert "your move" not in wake, f"a thinking wake was booked: {wake}"
-    assert "you played a move in game guest-001" in wake, wake
+    assert "a move landed in game guest-001" in wake, wake
     assert "ended" in wake and "checkmate" in wake, wake
     ok("no thinking wake was spent; her post-move voice and the "
        "end-of-game wake still fired")
@@ -814,6 +818,63 @@ def s_wakecap(port, chess_dir, gid, exchanges):
     ok(f"{len(plan)} exchange(s) recorded in {gid} at browser speed")
 
 
+def s_movewake(port, chess_dir, wake_log):
+    # Rule 7 since 2026-08-26: the SITTER'S move alone books the post-move
+    # wake — her opportunity to notice the game between turns exists before,
+    # and independent of, her own reply (the silent-game record of
+    # 2026-08-17: the sitter played, the board changed, and nothing anywhere
+    # gave her a turn to look). The mover's stub is held on a delay, so the
+    # store provably holds only the sitter's move when the booking lands;
+    # the wake command played nothing, and the reply that follows is the
+    # resident mover's alone.
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.send(NEWGAME)
+    f = c.expect(TEAM)
+    assert f.get(1, 0) == 0, "the user should be white"
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+    deadline = time.time() + 6
+    wake = ""
+    while time.time() < deadline and "a move landed" not in wake:
+        wake = Path(wake_log).read_text() if Path(wake_log).exists() else ""
+        time.sleep(0.05)
+    moves_at_booking = game_moves(chess_dir, "guest-001")
+    assert "a move landed in game guest-001 against guest" in wake, \
+        f"the sitter's move booked no wake: {wake!r}"
+    assert moves_at_booking == ["e2e4"], \
+        f"the booking waited on her reply: {moves_at_booking}"
+    ok("the sitter's move alone booked the post-move wake — before any "
+       "reply of hers existed")
+    assert "say nothing at all" in wake, \
+        f"the reason must leave silence open — speech is optional: {wake}"
+    assert "If you feel like it" in wake, wake
+    ok("speech is offered, never demanded: silence is a supported answer "
+       "in so many words")
+    assert "betty-chess status guest-001" in wake, \
+        f"the reason must point at the live game, read at speak-time: {wake}"
+    assert "e4" not in wake, \
+        f"the reason must carry no san — one fixed sentence per game: {wake}"
+    assert "your move" not in wake, \
+        f"the reason pointed her at playing a move: {wake}"
+    ok("the reason points at the live game, names no move, and never asks "
+       "her to play one")
+    c.expect_move("e7", "e5", timeout=25)
+    assert game_moves(chess_dir, "guest-001") == ["e2e4", "e7e5"]
+    ok("her reply arrived from the resident mover — the wake path played "
+       "nothing")
+    deadline = time.time() + 5
+    n = 0
+    while time.time() < deadline and n < 2:
+        text = Path(wake_log).read_text() if Path(wake_log).exists() else ""
+        n = text.count("a move landed")
+        time.sleep(0.05)
+    assert n >= 2, f"her own reply booked no wake (saw {n} booking(s))"
+    ok("every landed move raised the opportunity: her reply booked too")
+
+
 def get_json(port, path):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",
                                 timeout=10) as r:
@@ -904,7 +965,7 @@ def s_chat(port, chess_dir, wake_log, chat_log, mover_log):
     ok("she answered a message that was not a move")
 
     wake = Path(wake_log).read_text()
-    assert "you played a move in game guest-001 against Visitor" in wake, wake
+    assert "a move landed in game guest-001 against Visitor" in wake, wake
     ok("the post-move wake names the player, one fixed sentence per game")
 
     status, j = post_json(port, "/new", {"control": "untimed",
@@ -1054,7 +1115,8 @@ def main():
      "postkill": s_postkill, "reflex": s_reflex,
      "supersede": s_supersede, "shipped": s_shipped,
      "resign": s_resign, "newgame_active": s_newgame_active,
-     "wakecap": s_wakecap, "chat": s_chat, "chat_pass": s_chat_pass,
+     "wakecap": s_wakecap, "movewake": s_movewake,
+     "chat": s_chat, "chat_pass": s_chat_pass,
      "chat_off": s_chat_off, "chat_nogame": s_chat_nogame,
      "chat_trust": s_chat_trust,
      "record_http": s_record_http}[what](port, *rest)

@@ -91,13 +91,30 @@ cannot be changed.
    resident mover (rule 16), which answers it in-process. **No wake ever gates a move.** Two
    wakes are still booked, both consequences and never preconditions, through
    `crab wake-at --by chessweb 1s event <reason>`:
-   the **post-move wake**, after a move the bridge itself posted (reflex or model) has already
-   reached the store and the board — she wakes pointed at her own game, free to say one
-   sentence about it to the user (never her reasoning or plans; the opponent hears
-   everything she says) or to say nothing, because taking the queue out of the play path must
-   not take her voice out of her own game. The post-move wake's reason is **one fixed sentence
-   per game**: it names the game and where to look (`betty-chess show <id>`), never the move
-   played or whose turn it is. Byte-identical reasons are the queue's own coalescing key
+   the **post-move wake**, after ANY move the bridge itself recorded — the sitter's move
+   (rule 5's record path, rule 6's recorded promotion included) exactly as much as her own
+   (reflex or model) — has already reached
+   the store and the board. Until 2026-08-26 only her own moves booked it, so the whole of
+   her chance to notice the game hung off her own replies: the sitter played, the board
+   changed, and nothing anywhere gave her a turn to look at it or decide to speak — the
+   silent-game defect the engineering record named on 2026-08-17 and the user re-diagnosed
+   on 2026-08-20 ("there is NO wake on the opponent's move at all"). Both sides' moves are
+   triggers now; a mirrored move (rule 8, appended by another hand) stays a non-trigger,
+   exactly as it is for the chat (rule 24c). She wakes pointed at the game — an ordinary
+   wake through the queue, so the turn runs at her ordinary session defaults, nothing
+   chess-specific about its model — free to say one sentence about it to the user (never her
+   reasoning or plans; the opponent hears everything she says) or to say nothing at all: the
+   wake is the opportunity to speak, never an obligation to, and silence is a supported
+   answer, because taking the queue out of the play path must not take her voice out of her
+   own game. The post-move wake's reason is **one fixed sentence per game**, shared by both
+   triggers: it names the game, the player, and where to look (`betty-chess status <id>`,
+   the diagram at `betty-chess show <id>`), never the move played or whose turn it is — and
+   it says in so many words to read the live game BEFORE saying anything, because under the
+   cooldown below a wake may fire minutes after its trigger and the booking is a trigger
+   only, never the source of truth (the user's 2026-08-20 directive: speak about the board
+   as it stands at speak-time, not as it stood at booking). A sitter's move whose in-process
+   answer ended the game on the spot (a reflex mate) books no post-move voice — the
+   end-of-game wake already covers that board. Byte-identical reasons are the queue's own coalescing key
    ([wake-queue.md](wake-queue.md) rule 10), so while one post-move wake for a game is still
    pending — or bouncing off the run lock on the event backoff — the next move's booking and
    every deferral re-book fold into it instead of stacking behind it. The move-per-wake shape

@@ -570,6 +570,13 @@ class Hub:
                             why="their-move-over")
         else:
             self.answer_position(g, board, san)
+            # Their move is a wake trigger too (rule 7): the mover is handed
+            # the position FIRST — no booking subprocess ever sits ahead of
+            # her reply — and a reflex answer that just ended the game
+            # in-line books no post-move voice, because answer_position
+            # already booked the end-of-game wake for that board.
+            if chess_cli.compute_state(g, board)[0] == "active":
+                self.move_voice_wake(g, san)
             self.chat_about(g, board, f"{label} played {san}. Your move "
                                       f"will be made separately by your "
                                       f"chess reflexes; this chat never "
@@ -632,7 +639,7 @@ class Hub:
                                       f"the game is over: {desc} "
                                       f"[{result}].", why="her-move-over")
         else:
-            self.spoken_move_wake(g, san, desc)
+            self.move_voice_wake(g, san)
             self.chat_about(g, board, f"You played {san}.", why="her-move")
         return True
 
@@ -790,7 +797,7 @@ class Hub:
                                           f"is over: {desc} [{result}].",
                                 why="her-move-over")
             else:
-                self.spoken_move_wake(g, san, desc)
+                self.move_voice_wake(g, san)
                 self.chat_about(g, board, f"You played {san}.",
                                 why="her-move")
             return True
@@ -837,16 +844,27 @@ class Hub:
             log(f"wake failed: {e}")
             return False
 
-    def spoken_move_wake(self, g, san, desc):
-        """After she plays, she wakes — a consequence of the move, never a
-        gate on it or on the next one (rule 7). The queue left the play
-        path; her voice about the game did not leave with it.
+    def move_voice_wake(self, g, san):
+        """After ANY move the bridge records, she wakes — the sitter's move
+        exactly as much as her own — a consequence of the move, never a
+        gate on it or on the next one (rule 7). Until 2026-08-26 only her
+        own replies booked this, so the whole of her chance to notice the
+        game hung off her own moves: the sitter played, the board changed,
+        and nothing anywhere gave her a turn to look at it or decide to
+        speak (the silent-game record of 2026-08-17, re-diagnosed by the
+        user on 2026-08-20). The wake rides the ordinary queue, so the turn
+        runs at her ordinary session defaults; speaking is the opportunity
+        it carries, never an obligation — the reason says so, and says to
+        read the live game before saying anything, because the booking is
+        a trigger only, never the source of truth.
 
         The reason is ONE FIXED SENTENCE PER GAME — no san, no whose-turn —
         because byte-identical reasons are the queue's own coalescing key
         (wake-queue.md rule 10): while a post-move wake for this game is
         pending, or bouncing off the run lock on the event backoff, the next
-        move's booking and every deferral re-book fold into it. The evening
+        move's booking and every deferral re-book fold into it — both
+        triggers share the sentence, so they also share the cap and the
+        cooldown clock below. The evening
         of 2026-08-10 booked a wake per move into a lane that runs minutes
         per session: several wakes stood for one game at once, two kept
         cycling for eight minutes after the game had ended, and every san
@@ -879,19 +897,26 @@ class Hub:
         booking the queue took, so a refusal cannot push her voice ever
         further out."""
         gid = g["id"]
+        # The label rides into the reason folded to one plain line (rule
+        # 24f): it is typed at an unauthenticated keyboard, and a legacy or
+        # hand-edited record must render as tame as a fresh one.
+        label = chess_cli.clean_text(chess_cli.player_label(g))
         cooldown = voice_cooldown()
         now = time.time()
         fire_at = max(now + 1, self.voice_next.get(gid, 0.0))
         fuse = f"{max(1, int(fire_at - now + 0.5))}s"
         booked = self.book_wake(
-            f"chessweb: you played a move in game {gid} against "
-            f"{chess_cli.player_label(g)}; it is already on their board, and nothing "
-            f"waits on this wake. If you feel like it, say one sentence to "
+            f"chessweb: a move landed in game {gid} against {label}; it is "
+            f"already on the board, and nothing waits on this wake. The "
+            f"game is live and this booking may be minutes old, so read "
+            f"the game as it stands NOW before saying anything: "
+            f"betty-chess status {gid} (the diagram: betty-chess show "
+            f"{gid}). If you feel like it, say one sentence to "
             f"the user about the game — the position, or banter; never your "
             f"reasoning or plans, they hear everything you say — or say "
-            f"nothing at all. Board: betty-chess show {gid}",
+            f"nothing at all: silence is a fine answer.",
             f"her voice after {san} in {gid}",
-            cap_prefix=f"chessweb: you played a move in game {gid}",
+            cap_prefix=f"chessweb: a move landed in game {gid}",
             when=fuse)
         if booked:
             self.voice_next[gid] = fire_at + cooldown
@@ -1300,6 +1325,12 @@ class Hub:
                             why="their-move-over")
         else:
             self.answer_position(g, board, san)
+            # The recorded promotion is the sitter's move landing, so it is
+            # a wake trigger exactly as record_move's (rule 7) — mover
+            # first, and no post-move voice on a board a reflex answer
+            # just closed.
+            if chess_cli.compute_state(g, board)[0] == "active":
+                self.move_voice_wake(g, san)
             self.chat_about(g, board, f"{label} played {san}.",
                             why="their-move")
 

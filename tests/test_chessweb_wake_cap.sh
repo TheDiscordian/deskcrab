@@ -102,7 +102,7 @@ scn() { # <name> [args...] — one scenario, its own prints as the detail
 wait_wakes() { # <log> <count> — the booking trails the echo by a beat
     local log="$1" want="$2" n
     for _ in $(seq 1 50); do
-        n="$(grep -c 'you played a move' "$log" 2>/dev/null)" || n=0
+        n="$(grep -c 'a move landed' "$log" 2>/dev/null)" || n=0
         [ "${n:-0}" -ge "$want" ] && return 0
         sleep 0.1
     done
@@ -115,19 +115,22 @@ wait_wakes() { # <log> <count> — the booking trails the echo by a beat
 CAPPED_CMD="$WAKE_STUB wake-at --by chessweb 1s event"
 
 echo "three fast exchanges in one game — every post-move booking is capped:"
+# Since rule 7's 2026-08-26 change BOTH sides' moves book the post-move wake,
+# so three exchanges are six bookings: the sitter's move and her reply each.
 CH="$SANDBOX/chess-guest"
 WAKELOG="$SANDBOX/wake-guest.log"
 if start_bridge "$CH" "$WAKELOG" "$CAPPED_CMD" --opponent guest; then
     scn wakecap "$PORT" "$CH" guest-001 3
-    check "three post-move wakes were booked" wait_wakes "$WAKELOG" 3
-    if awk -F'\t' -v p="chessweb: you played a move in game guest-001" '
-        index($0, "you played a move") == 0 { next }
+    check "six post-move wakes were booked — one per landed move, either side's" \
+        wait_wakes "$WAKELOG" 6
+    if awk -F'\t' -v p="chessweb: a move landed in game guest-001" '
+        index($0, "a move landed") == 0 { next }
         $1=="wake-at" && $2=="--cap" && $3=="1" && $4=="--cap-prefix" \
             && $5==p && $6=="--by" && $7=="chessweb" && $8=="1s" \
             && $9=="event" && index($10, p)==1 { good++; next }
         { bad++ }
-        END { exit (good==3 && !bad) ? 0 : 1 }' "$WAKELOG"; then
-        ok "--cap 1 --cap-prefix <per-game head> sit right after wake-at, ahead of the positionals, on all three"
+        END { exit (good==6 && !bad) ? 0 : 1 }' "$WAKELOG"; then
+        ok "--cap 1 --cap-prefix <per-game head> sit right after wake-at, ahead of the positionals, on all six"
     else
         sed 's/^/    wake: /' "$WAKELOG"
         fail "the cap flags are missing or misplaced on a post-move booking"
@@ -140,13 +143,13 @@ CH2="$SANDBOX/chess-rival"
 WAKELOG2="$SANDBOX/wake-rival.log"
 if start_bridge "$CH2" "$WAKELOG2" "$CAPPED_CMD" --opponent rival; then
     scn wakecap "$PORT" "$CH2" rival-001 1
-    check "the rival game's post-move wake was booked" wait_wakes "$WAKELOG2" 1
-    if awk -F'\t' -v p="chessweb: you played a move in game rival-001" '
-        index($0, "you played a move") == 0 { next }
+    check "the rival game's post-move wakes were booked" wait_wakes "$WAKELOG2" 2
+    if awk -F'\t' -v p="chessweb: a move landed in game rival-001" '
+        index($0, "a move landed") == 0 { next }
         $2=="--cap" && $4=="--cap-prefix" && $5==p \
             && index($10, p)==1 { good++; next }
         { bad++ }
-        END { exit (good==1 && !bad) ? 0 : 1 }' "$WAKELOG2"; then
+        END { exit (good==2 && !bad) ? 0 : 1 }' "$WAKELOG2"; then
         ok "the cap prefix names rival-001 — the per-game head of its own reason"
     else
         sed 's/^/    wake: /' "$WAKELOG2"
@@ -167,13 +170,13 @@ CH3="$SANDBOX/chess-plain"
 WAKELOG3="$SANDBOX/wake-plain.log"
 if start_bridge "$CH3" "$WAKELOG3" "$WAKE_STUB" --opponent guest; then
     scn wakecap "$PORT" "$CH3" guest-001 1
-    check "the post-move wake was still booked" wait_wakes "$WAKELOG3" 1
+    check "the post-move wakes were still booked" wait_wakes "$WAKELOG3" 2
     if awk -F'\t' '
-        index($0, "you played a move") == 0 { next }
-        index($1, "chessweb: you played a move in game guest-001 against guest;") == 1 \
+        index($0, "a move landed") == 0 { next }
+        index($1, "chessweb: a move landed in game guest-001 against guest;") == 1 \
             && NF==2 && $0 !~ /--cap/ { good++; next }
         { bad++ }
-        END { exit (good==1 && !bad) ? 0 : 1 }' "$WAKELOG3"; then
+        END { exit (good==2 && !bad) ? 0 : 1 }' "$WAKELOG3"; then
         ok "no flags were inserted: the reason arrived as the one argument"
     else
         sed 's/^/    wake: /' "$WAKELOG3"

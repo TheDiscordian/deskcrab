@@ -55,7 +55,7 @@ REFUSE_STUB="$SANDBOX/wake-refuse-stub"
 cat > "$REFUSE_STUB" <<'SH'
 #!/bin/bash
 { printf '%s\t' "$@"; printf '\n'; } >> "$CHESSWEB_WAKE_LOG"
-n="$(grep -c 'you played a move' "$CHESSWEB_WAKE_LOG" 2>/dev/null)" || n=0
+n="$(grep -c 'a move landed' "$CHESSWEB_WAKE_LOG" 2>/dev/null)" || n=0
 [ "${n:-0}" -gt 1 ] \
     && echo "Not booked — chessweb already holds 1 pending wakes (cap 1)."
 exit 0
@@ -122,7 +122,7 @@ scn() { # <name> [args...] — one scenario, its own prints as the detail
 wait_wakes() { # <log> <count> — the booking trails the echo by a beat
     local log="$1" want="$2" n
     for _ in $(seq 1 50); do
-        n="$(grep -c 'you played a move' "$log" 2>/dev/null)" || n=0
+        n="$(grep -c 'a move landed' "$log" 2>/dev/null)" || n=0
         [ "${n:-0}" -ge "$want" ] && return 0
         sleep 0.1
     done
@@ -133,7 +133,7 @@ wait_wakes() { # <log> <count> — the booking trails the echo by a beat
 # `--by chessweb`: wake-at --cap 1 --cap-prefix <p> --by chessweb <when> event.
 fuse_of() { # <log> <n>
     awk -F'\t' -v n="$2" '
-        index($0, "you played a move") == 0 { next }
+        index($0, "a move landed") == 0 { next }
         ++i == n { sub(/s$/, "", $8); print $8; exit }' "$1"
 }
 
@@ -153,10 +153,13 @@ if start_bridge "$CH" "$WAKELOG" "$CAPPED_CMD" "$COOLDOWN" --opponent guest; the
     ok "the first booking's fuse is the literal 1s"
     # The exchange runs in seconds, so the stretched fuse is the cooldown
     # minus that handful — anywhere past 200s proves the stretch without
-    # racing the clock, and past the cooldown+1 would mean drift. (Only two
-    # exchanges here: this stub answers every booking as taken, so a third
-    # would legitimately aim one whole cooldown further out — the refusal
-    # scenario below is where the third booking's truth lives.)
+    # racing the clock, and past the cooldown+1 would mean drift. Since rule
+    # 7's 2026-08-26 change both sides' moves book, so booking 1 is the
+    # sitter's move and booking 2 her reply seconds later — one shared
+    # pacing clock across both triggers. (Only the first two bookings are
+    # judged: this stub answers every booking as taken, so later ones
+    # legitimately aim whole cooldowns further out — the refusal scenario
+    # below is where their truth lives.)
     case "$F2" in ''|*[!0-9]*) fail "booking 2 carries no numeric fuse: '$F2'" ;; esac
     [ "$F2" -gt 200 ] && [ "$F2" -le $((COOLDOWN + 1)) ] \
         || { sed 's/^/    wake: /' "$WAKELOG"; \
