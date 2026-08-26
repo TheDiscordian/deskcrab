@@ -586,7 +586,7 @@ cannot be changed.
        (reflex or model alike), a player chat message, and the end of the game however it
        arrives. A move mirrored from another hand by the store poll is not a trigger.
     d. Each trigger is at most ONE minimal model call in the mover's measured shape (no tools,
-       the empty MCP config, sterile cwd, auto-memory off, the same persona file), model
+       the empty MCP config, sterile cwd, auto-memory off), model
        `$DESKCRAB_CHESS_CHAT_MODEL` (default `sol` — a codex-family name, so the call walks
        [model-backends.md](model-backends.md) rule 15: the codex login first unless cooling,
        then the Claude accounts at the fallback model), effort `$DESKCRAB_CHESS_CHAT_EFFORT`
@@ -605,7 +605,20 @@ cannot be changed.
        `chat-pass`), evidence never control flow. `DESKCRAB_CHESS_CHAT=0` switches her replies
        off wholesale — player messages still record — and `$DESKCRAB_CHESS_CHAT_CMD` replaces
        the invocation for tests (prompt on stdin, reply on stdout), so no test chats with a
-       real model.
+       real model. **Minimal in machinery, never in voice.** The chat call's system prompt
+       carries her WHOLE conversational persona: the sheet `$DESKCRAB_CHESS_CHAT_PERSONA`
+       names, else the persona sheet `$CUSTOM_PROMPT` points at (the bridge gets that value
+       unexpanded from its EnvironmentFile, so `~` and `$HOME` are expanded here; a sheet that
+       is unreadable, empty, or over 65536 bytes — the prompt assembler's own bound on the
+       sheet — is treated as absent), read per call so an edited sheet lands without a bridge
+       restart. Only when no sheet is readable does the chat fall back to the mover's chess
+       persona file, and with neither it is the boundary tail alone. This rule exists because
+       the chat first shipped wearing the mover's persona file, which is cut down for choosing
+       a move in silence ("no narration"), and the table conversation came out sounding like
+       nobody (user report, 2026-08-26): a chat is a conversation, and it speaks with the same
+       voice every other conversation of hers does. The MOVER is untouched by all of this — its
+       persona stays its own terse chess sheet, and its reply stays exactly the move, UCI and
+       nothing else (rule 16).
     e. Aloud, by choice — and in HER OWN VOICE. The shipped page's chat panel carries a speak
        toggle, default OFF and remembered client-side. On, HER new messages are spoken on the
        device showing the board — the window the sitter chose — as clips of her own voice: the

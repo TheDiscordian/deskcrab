@@ -17,6 +17,10 @@ and the game record is the chat's entire memory. The default model is `sol`
 at `low` effort; a codex-family name walks the codex login first and falls
 back to the Claude accounts, exactly as the mover does
 (specs/model-backends.md rule 15).
+
+Minimal in machinery, never in voice (rule 24d): the call's system prompt
+carries her WHOLE conversational persona sheet — see `chat_persona` — not
+the mover's chess persona, which is cut down for choosing a move in silence.
 """
 
 import os
@@ -69,8 +73,42 @@ SYSTEM_PROMPT_TAIL = (
     "decline in a word or two, or PASS.")
 
 
+# The chat is a conversation, so it speaks with her whole voice. The mover's
+# persona file is cut down for choosing a move in silence ("no narration"),
+# and a chat wearing it came out sounding like nobody (user report,
+# 2026-08-26; specs/chessweb.md rule 24d). The sheet is read per call — chat
+# is downstream and best-effort, nobody waits on a file read — so an edited
+# sheet lands without a bridge restart. The bound is the prompt assembler's
+# own cap on the persona sheet (lib/common.sh reads the same file under the
+# same limit).
+PERSONA_CAP = 65536
+
+
+def chat_persona():
+    """Her conversational persona, one sheet: $DESKCRAB_CHESS_CHAT_PERSONA
+    first, else the $CUSTOM_PROMPT sheet the bridge's config hands it. The
+    systemd unit passes the conf value unexpanded, so `~` and `$HOME` are
+    expanded here. A sheet that is unreadable, empty, or over PERSONA_CAP
+    bytes is treated as absent; with no sheet at all, the mover's chess
+    persona is better than no voice, and its own fallback is empty."""
+    for var in ("DESKCRAB_CHESS_CHAT_PERSONA", "CUSTOM_PROMPT"):
+        raw = os.environ.get(var, "")
+        if not raw:
+            continue
+        path = os.path.expanduser(os.path.expandvars(raw))
+        try:
+            if os.path.getsize(path) > PERSONA_CAP:
+                continue
+            text = Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text:
+            return text + "\n\n"
+    return chess_mover._persona()
+
+
 def system_prompt():
-    return chess_mover._persona() + SYSTEM_PROMPT_TAIL
+    return chat_persona() + SYSTEM_PROMPT_TAIL
 
 
 def build_prompt(job):
