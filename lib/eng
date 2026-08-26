@@ -9,9 +9,15 @@ State moves ONLY through this tool, and every write that adds an entry bumps
 last_touched in the same motion — that pairing is what the job hook trusts.
 
     eng new <title> [--summary <line>] [--body <text>] [--opened <datetime>]
-    eng list [--state open|settled|dead|all]
+    eng list [--state open|review|settled|dead|all]
     eng show <id>
     eng touch <id> <note...>
+    eng review <id> <claim...>          submit completed work: open -> review;
+                                        the record is NOT settled by this
+    eng accept <id> <verified...>       the review's yes: review -> settled
+    eng reject <id> <missing...>        the review's no: review -> open, the
+                                        missing requirements preserved and
+                                        redispatched through the job door
     eng settle <id> <what-settled-it...>
     eng kill <id> [reason...]
     eng search <words...>
@@ -20,6 +26,10 @@ last_touched in the same motion — that pairing is what the job hook trusts.
     eng prompt                          the shelves-layer block, or nothing
     eng migrate <prose file>            one record per ## entry or index
                                         bullet of the old prose, once
+
+Inside a builder session (lib/job-runner exports DESKCRAB_ENG_ROLE=builder)
+settle, kill, accept and reject are refused — a builder submits with `review`
+and the completion review judges the claim (rules 16-16d).
 
 Why this exists: an engineering note used to be undated prose with no state,
 so a worry written before a question was settled kept reading as present-tense
@@ -42,7 +52,7 @@ import time
 
 FIELDS = ["id", "title", "opened", "last_touched", "state",
           "settled_at", "settled_by", "summary"]
-STATES = ("open", "settled", "dead")
+STATES = ("open", "review", "settled", "dead")
 TIMEFMT = "%Y-%m-%d %H:%M:%S"
 
 # The kind table — the whole of what differs between the two drawers is data
@@ -387,6 +397,144 @@ def ending_gate(rid, note):
             "and the dispatch did not land: %s)" % (ending, first)), ""
 
 
+# --- the completion review (specs/engineering-records.md rules 16-16d) ------
+# A builder never settles the ask it was dispatched against. The origin
+# (2026-08-26, record the-chess-table-maintains-a-second-conversation): the
+# ask was the chess table as a thin client of the phone's VISIBLE conversation
+# interface; the builder delivered shared audio plumbing — a clip-queue module
+# both pages load — and settled the record on it as "shared-primitive parity".
+# Narrowed work that settles its own ask reads as the ask delivered, and
+# nobody is ever brought back to the gap. So completed work is SUBMITTED
+# (state `review`), the completion wake is the review, and the verdict verbs
+# — accept, reject — belong to the review alone.
+
+def builder_role():
+    """Rule 16d: the gate is the ROLE marker, exported by lib/job-runner and
+    by nothing else. Without it every hand keeps every verb."""
+    return os.environ.get("DESKCRAB_ENG_ROLE", "") == "builder"
+
+
+def refuse_builder(verb, rid):
+    if KIND == "eng" and builder_role():
+        die("a builder does not %s the ask it was dispatched against "
+            "(specs/engineering-records.md rule 16). Submit the work for "
+            "review instead: crab eng review %s '<what you delivered and "
+            "how you verified it>' — the review that wakes on your "
+            "completion accepts or rejects it. An honest inability is also "
+            "a submission." % (verb, rid))
+
+
+def reject_dispatch(rid, missing):
+    """Rule 16b: the missing requirements ride the new brief VERBATIM,
+    through the job door with the reviewer's own deliberate force (jobs.md
+    rule 31) — work already chosen once does not queue behind the night a
+    second time. -> (job id or '', the door's own line)."""
+    crab = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        os.pardir, "crab")
+    if not os.access(crab, os.X_OK):
+        return "", "no job door (crab is not executable here)"
+    task = ("Engineering record '%s' went through its completion review and "
+            "was REJECTED: the submitted work did not deliver the full ask. "
+            "Missing, per the review: %s. Read the record first (crab eng "
+            "show %s) — its opening entry is the original ask and the "
+            "acceptance criteria. Deliver what is missing, verify it with "
+            "real tests or greps, and submit again: crab eng review %s "
+            "'<what you delivered and how you verified it>'."
+            % (rid, " ".join(missing.split()), rid, rid))
+    try:
+        r = subprocess.run([crab, "job", "-f", "--record", rid, task],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=90)
+        out = r.stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError) as e:
+        return "", "the door raised: %s" % e
+    m = re.search(r"^Job (\S+) (QUEUED|dispatched)", out, re.M)
+    if m:
+        return m.group(1), ("queued for the night" if m.group(2) == "QUEUED"
+                            else "dispatched")
+    first = (out.strip().splitlines()[0] if out.strip()
+             else "the door produced nothing")
+    return "", first
+
+
+def cmd_review(argv):
+    """Submit completed work (rule 16): open -> review, the claim on the
+    entry, last_touched bumped in the same write. The record is NOT settled
+    by this — it reads, at a glance, as work claimed and not yet judged."""
+    if len(argv) < 2:
+        die("usage: eng review <id> <claim — what was delivered, how it was "
+            "verified>")
+    rid, claim = argv[0], " ".join(argv[1:])
+    meta, body = load(rid)
+    if meta.get("state") in CLOSED_STATES:
+        die("%s is already %s — a terminal state refuses a new submission; "
+            "a new ask is a new record" % (rid, meta["state"]))
+    stamp = now()
+    meta["state"] = "review"
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta,
+          add_entry(body, "Submitted for review: %s" % claim, stamp))
+    print("%s in review %s — the record is NOT settled; the completion "
+          "review accepts or rejects the claim" % (rid, stamp))
+
+
+def cmd_accept(argv):
+    """The review's yes (rule 16a): only a submitted record, never a
+    builder's own hand. settled_by carries the verdict."""
+    if len(argv) < 2:
+        die("usage: eng accept <id> <what the review verified>")
+    refuse_builder("accept", argv[0])
+    meta, _ = load(argv[0])
+    if meta.get("state") != "review":
+        die("%s is %s, not in review — accept judges a submission "
+            "(crab eng review first; settle is the door for everything else)"
+            % (argv[0], meta.get("state") or "?"))
+    _close(argv[0], "settled", "review accepted: %s" % " ".join(argv[1:]),
+           "Settled")
+
+
+def cmd_reject(argv):
+    """The review's no (rules 16a-16b): back to open, the missing
+    requirements preserved verbatim on the entry AND redispatched at once.
+    A dispatch the door refuses is named on the same entry and the reopen
+    survives — the rejection is never lost to its own dispatch."""
+    if len(argv) < 2:
+        die("usage: eng reject <id> <the missing requirements>")
+    refuse_builder("reject", argv[0])
+    rid, missing = argv[0], " ".join(argv[1:])
+    meta, body = load(rid)
+    if meta.get("state") != "review":
+        die("%s is %s, not in review — reject judges a submission"
+            % (rid, meta.get("state") or "?"))
+    jid, doorline = reject_dispatch(rid, missing)
+    note = ("Review rejected — the full ask was not delivered. Missing: %s"
+            % missing)
+    if jid:
+        note += ("\n\n(review: job %s now carries the missing requirements "
+                 "— %s)" % (jid, doorline))
+    else:
+        note += ("\n\n(review: the redispatch did not land — %s. The "
+                 "rejection stands, the record is OPEN again, and the next "
+                 "hand owes the dispatch.)" % doorline)
+    stamp = now()
+    meta["state"] = "open"
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, note, stamp))
+    print("%s rejected, open again %s" % (rid, stamp))
+    print("missing, preserved on the record: %s" % missing)
+    if jid:
+        print("redispatched as job %s (%s)" % (jid, doorline))
+        # Rule 16b beside 15b: this very write postdates the dispatch —
+        # stamp its epoch so the runner's floor can discount it.
+        try:
+            epoch = int(time.mktime(time.strptime(stamp, TIMEFMT)))
+        except (ValueError, OverflowError):
+            epoch = int(time.time())
+        _stamp_attach_epoch(jid, epoch)
+    else:
+        print("redispatch did not land: %s" % doorline)
+
+
 # --- the commands ----------------------------------------------------------
 
 def cmd_new(argv):
@@ -429,10 +577,17 @@ def one_line(meta):
             meta.get("title", "?"), meta["id"], state,
             meta.get(CLOSED_AT) or "(undated)",
             meta.get(CLOSED_BY) or "(unrecorded)")
-    return "%s [%s] — opened %s, last touched %s" % (
+    line = "%s [%s] — opened %s, last touched %s" % (
         meta.get("title", "?"), meta["id"],
         meta.get("opened") or "(undated)",
         meta.get("last_touched") or "(undated)")
+    if state == "review":
+        # Rule 16c: a completion claim awaiting judgement is live, and must
+        # never read as settled. The review verbs are named right here.
+        line += (" (in review — completion claimed, NOT settled: inspect "
+                 "the artefact against the original ask, then crab eng "
+                 "accept or reject)")
+    return line
 
 
 def state_rank(meta):
@@ -440,7 +595,7 @@ def state_rank(meta):
     s = meta.get("state", "")
     if KIND == "want":
         return {"live": 0, "dormant": 1}.get(s, 2)
-    return 0 if s == "open" else 1
+    return 0 if s in ("open", "review") else 1
 
 
 def cmd_list(argv):
@@ -506,12 +661,14 @@ def _close(rid, state, by, verb):
 def cmd_settle(argv):
     if len(argv) < 2:
         die("usage: eng settle <id> <what-settled-it>")
+    refuse_builder("settle", argv[0])
     _close(argv[0], "settled", " ".join(argv[1:]), "Settled")
 
 
 def cmd_kill(argv):
     if not argv:
         die("usage: eng kill <id> [reason]")
+    refuse_builder("kill", argv[0])
     _close(argv[0], "dead", " ".join(argv[1:]) or "abandoned", "Killed")
 
 
@@ -935,7 +1092,10 @@ def cmd_prompt(argv):
     recs = [m for m, _ in all_records()]
     if not recs:
         return
-    opens = sorted((m for m in recs if m.get("state") == "open"),
+    # A record in `review` is live — a completion claim awaiting judgement,
+    # never a resolution (rule 16c) — so it renders among the open threads,
+    # carrying its own marker from one_line.
+    opens = sorted((m for m in recs if m.get("state") in ("open", "review")),
                    key=touched_epoch, reverse=True)
     closed = sorted((m for m in recs if m.get("state") in ("settled", "dead")),
                     key=lambda m: m.get("settled_at") or "", reverse=True)
@@ -1113,6 +1273,7 @@ def main():
         usage = WANT_USAGE
     else:
         cmds = dict(shared, settle=cmd_settle, kill=cmd_kill,
+                    review=cmd_review, accept=cmd_accept, reject=cmd_reject,
                     prompt=cmd_prompt, migrate=cmd_migrate)
         usage = __doc__
     # A verb of the other kind is refused with THIS kind's usage (wants

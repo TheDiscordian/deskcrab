@@ -691,9 +691,12 @@ What you did tonight is journaled from your tool activity without your help, so 
 
     eng)
         # Engineering records (lib/eng, specs/engineering-records.md): threads
-        # with STATE — new / list / show / touch / settle / kill / search.
-        # State moves only through here, so last_touched can never drift, and
-        # a settled worry can never be read back as a present-tense fact.
+        # with STATE — new / list / show / touch / review / accept / reject /
+        # settle / kill / search. State moves only through here, so
+        # last_touched can never drift, and a settled worry can never be read
+        # back as a present-tense fact. A builder session submits with
+        # `review` and is refused settle (rules 16-16d): the completion
+        # review judges the claim against the original ask.
         shift
         DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-$(deskcrab_home)/engineering/records}" \
             exec python3 "$SCRIPT_DIR/lib/eng" "$@"
@@ -765,7 +768,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
         exit 0
         ;;
 
@@ -777,7 +780,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
             exit 1
         fi
         stop_tts

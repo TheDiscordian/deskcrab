@@ -57,28 +57,60 @@ check "the builder was told about its record in the prompt" \
     grep -q "dispatched against engineering record '$RID'" "$SANDBOX_CLAUDE_LOG"
 
 echo
-echo "a builder that touches its record finishes:"
-# The stub builder does what a real one is told to: writes its outcome into
-# the record before its final message. One second of sleep keeps the touch
-# strictly newer than the dispatch second.
+echo "a builder that only touches its record ends failed — the submission is owed (rule 29a):"
+# The old contract ended here: touch alone finished the job. Since the
+# completion review, a clean record build must SUBMIT its claim
+# (crab eng review) — a 2026-08-26 builder's narrowed substitute read as
+# delivery precisely because nothing ever judged the claim.
 sandbox_stub claude <<STUB
 #!/bin/bash
 cat > /dev/null
 sleep 1
-DESKCRAB_ENG_DIR="$ENG" python3 "$REPO_DIR/lib/eng" touch "$RID" "measured the wobble at 3mm; shimmed and re-ran the load test clean" >/dev/null
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO_DIR/lib/eng" touch "$RID" "measured the wobble at 3mm; shimmed and re-ran the load test clean" >/dev/null 2>&1
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"shimmed the widget; load test clean."}]}}'
 printf '%s\n' '{"type":"result","result":"done"}'
 exit 0
 STUB
-"$REPO_DIR/lib/job-status" new "$JOBS" rec2 "a build that writes back" ""
+"$REPO_DIR/lib/job-status" new "$JOBS" rec2 "a build that writes back and never submits" ""
 "$REPO_DIR/lib/job-status" set "$JOBS/rec2.json" record="$RID"
 WANTS_FILE="$XDG_DATA_HOME/deskcrab/wants.md" "$REPO_DIR/lib/job-runner" rec2 "$T/work" >/dev/null 2>&1
+check_eq "the sidecar says failed" \
+    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec2.json" state)" "failed"
+check "the log names the missing submission" \
+    grep -q "never SUBMITTED it for review" "$JOBS/rec2.log"
+check "the record carries the builder's entry all the same" \
+    grep -q "shimmed and re-ran the load test" "$ENG/$RID.md"
+
+echo
+echo "a builder that touches AND submits finishes, and the wake is the review (rules 29a-29b):"
+sandbox_stub claude <<STUB
+#!/bin/bash
+cat > /dev/null
+sleep 1
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO_DIR/lib/eng" touch "$RID" "re-shimmed after the failed run; load test clean again" >/dev/null 2>&1
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO_DIR/lib/eng" review "$RID" "shimmed the widget and re-ran the load test clean; submitting for review" >/dev/null 2>&1
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"shimmed; submitted."}]}}'
+printf '%s\n' '{"type":"result","result":"done"}'
+exit 0
+STUB
+"$REPO_DIR/lib/job-status" new "$JOBS" rec2b "a build that writes back and submits" ""
+"$REPO_DIR/lib/job-status" set "$JOBS/rec2b.json" record="$RID"
+WANTS_FILE="$XDG_DATA_HOME/deskcrab/wants.md" "$REPO_DIR/lib/job-runner" rec2b "$T/work" >/dev/null 2>&1
 # collected, not bare finished: a clean run's work is located by collection
 # and the sidecar lands in the terminal state (specs/jobs.md rules 38-39).
 check_eq "the sidecar says collected" \
-    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec2.json" state)" "collected"
-check "the record carries the builder's entry" \
-    grep -q "shimmed and re-ran the load test" "$ENG/$RID.md"
+    "$("$REPO_DIR/lib/job-status" get "$JOBS/rec2b.json" state)" "collected"
+check_eq "the record is in review — submitted, not settled" \
+    "$(DESKCRAB_ENG_DIR="$ENG" python3 "$REPO_DIR/lib/eng" field "$RID" state)" "review"
+REVWAKE="$(grep -rl "THIS WAKE IS THE REVIEW" "$WAKES_DIR" 2>/dev/null | head -1)"
+check "the completion wake carries the review brief" test -n "$REVWAKE"
+if [ -n "$REVWAKE" ]; then
+    check_eq "booked at the JOB_REVIEW_EFFORT override" \
+        "$(awk -F'\t' '{print $6; exit}' "$REVWAKE")" "medium"
+fi
+# Put the record back to open so the cases below meet the drawer they expect.
+DESKCRAB_ENG_ROLE= DESKCRAB_NO_DISPATCH=1 DESKCRAB_ENG_DIR="$ENG" \
+    python3 "$REPO_DIR/lib/eng" reject "$RID" "reset for the next case" >/dev/null 2>&1
 
 echo
 echo "a job with no record is untouched by the hook:"

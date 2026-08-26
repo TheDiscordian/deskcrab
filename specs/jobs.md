@@ -199,6 +199,33 @@ policy, collection of a finished builder's work, and the single channel a job ha
     that touching it is a condition of success. This pairs with the standing rule that a builder
     verifies with a real grep or test before claiming done: the record entry is where the
     verification is written down, dated, on the thread the work came from.
+29a. A clean record build ends SUBMITTED, never self-settled. The builder's completion claim —
+    or its honest inability, which is also a claim for the review to judge — goes through
+    `crab eng review <id> <claim>` ([engineering-records.md](engineering-records.md) rule 16),
+    and `crab eng settle` is refused inside the build (the runner exports
+    `DESKCRAB_ENG_ROLE=builder`), because deciding that the ask was delivered belongs to the
+    review that wakes on completion, never to the hand under review. The runner MUST NOT mark a
+    `--record` job finished while the record's state is still `open` at check time: a run that
+    exited clean with the record touched but never submitted ends `failed` exactly as rule 28
+    fails an untouched one, naming the record and the submission owed, and the builder MUST be
+    told all of this in its system prompt. A record in `review` passes; so does one a hand with
+    authority closed while the build ran, because the ask is answered either way. The origin
+    (2026-08-26): a builder dispatched against the chess-table conversation record delivered
+    shared audio plumbing where the ask named the visible reuse of the phone conversation
+    interface, settled the record on it, and the narrowing read as delivery until a hand went
+    looking.
+29b. The completion wake of a submitted job IS the review. Its reason instructs the waking
+    session to recover the ORIGINAL ask and its acceptance criteria from the record's own
+    opening entry, inspect the actual artefact or the visible behaviour directly — never the
+    builder's report or claim alone — decide whether the FULL ask and the full design were
+    delivered, and then either `crab eng accept <id> <what-was-verified>` or
+    `crab eng reject <id> <missing…>`, whose rejection preserves the missing requirements and
+    redispatches them at once (engineering-records.md rules 16a–16b). The booking carries an
+    effort override ([wake-queue.md](wake-queue.md) rule 13a) of `JOB_REVIEW_EFFORT`, default
+    `medium`, so the review runs with real hands whatever the wake path's default effort; a
+    level the booking side would refuse falls back to `medium` rather than costing the job its
+    only channel back (rule 7). Every other completion wake — blocked, failed, unreviewed, died
+    waiting — keeps its own reason: a review is owed only to work that claims to be done.
 
 ### The queue and the dispatch policy
 
@@ -437,9 +464,16 @@ answers of `crab job log`);
 job and never for a failed, scratch, or already-retried one; the fire side re-dispatches once from
 the sidecar, naming its origin, and refuses a spent, stale, failed, scratch, artifact-brief, or
 workdir-less record);
-`tests/test_job_record.sh` (rules 7b and 27–29: dispatch refuses an unknown record and records a
-known one; a clean build with an untouched record ends failed naming it; a builder that touches
-its record finishes; a job with no record is untouched by the hook; requeue carries the record);
+`tests/test_job_record.sh` (rules 7b and 27–29b: dispatch refuses an unknown record and records a
+known one; a clean build with an untouched record ends failed naming it; a clean build that
+touched its record but never submitted it for review ends failed naming the submission owed,
+with the wake reason saying so; a builder that touches its record and submits it with
+`crab eng review` finishes, with the record left in `review` and the completion wake carrying
+the review brief booked at the `JOB_REVIEW_EFFORT` override; a job with no record is untouched
+by the hook; requeue carries the record);
+`tests/test_eng_review.sh` (rules 29a–29b from the record side, with the 2026-08-26 regression —
+narrowed substituted work cannot settle its own ask — described in
+[engineering-records.md](engineering-records.md));
 `tests/test_job_track.sh` (rules 8, 9, 11, 36: the stop path writes the `state` field — the MAJ-11
 regression — and racing writers serialise on the job's lock inside the writer; every transition
 lands on `history`; a queued record is neither reaped nor pruned while a dead `dispatched` one is

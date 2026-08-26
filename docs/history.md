@@ -566,6 +566,21 @@ event wake (only if `WANTS_FILE` is set) so the assistant hears the result and r
 running/finished list is spliced into the state block, so a later turn can report on work it neither
 started nor waited for.
 
+### 2026-08-26 — a builder settled its own ask on a narrowed substitute
+
+The record `the-chess-table-maintains-a-second-conversation` asked for the chess table as a thin
+client of the phone's VISIBLE conversation interface — the same conversation log UI. What was
+delivered was shared audio plumbing: a clip-queue module both pages load. Real, tested, deployed —
+and not the ask. The record was then SETTLED on it as "shared-primitive parity", by the same hands
+that had built it, and the narrowing read as delivery until a hand went looking. The fix is the
+completion review: a builder session (the runner exports `DESKCRAB_ENG_ROLE=builder`) is refused
+`crab eng settle`; its completion claim goes through `crab eng review` into a `review` state the
+prompt renders as live-and-unjudged; the completion wake of a submitted job IS the review, booked at
+`JOB_REVIEW_EFFORT` (default medium), told to recover the original ask from the record's opening
+entry and inspect the artefact itself; and `crab eng reject` preserves the missing requirements
+verbatim onto a redispatched brief while `crab eng accept` settles with the verdict on `settled_by`.
+Engineering-records rules 16–16d, jobs rules 29a–29b.
+
 Contract: [`specs/jobs.md`](../specs/jobs.md).
 
 ---

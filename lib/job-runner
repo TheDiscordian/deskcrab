@@ -31,6 +31,14 @@ source "$SCRIPT_DIR/lib/common.sh"
 # the interactive ones. Not exported: the builder's own CLI session has no
 # business inheriting it.
 SESSION_KIND=job
+# The builder role (specs/engineering-records.md rules 16 and 16d): exported,
+# deliberately, so every `crab eng` the builder's own hands run inherits it —
+# a builder never settles the ask it was dispatched against. Under this
+# marker `settle` and `kill` are refused (so are the review verdicts, accept
+# and reject); the builder's one door for a completion claim is
+# `crab eng review`, and the review that wakes on completion judges it
+# against the original ask. Exported here and nowhere else.
+export DESKCRAB_ENG_ROLE=builder
 
 mkdir -p "$JOBS_DIR"
 LOG="$JOBS_DIR/$ID.log"
@@ -126,11 +134,18 @@ if [ -n "$RECORD" ]; then
     SYS="$SYS
 
 This job was dispatched against engineering record '$RECORD'. Before your
-final message, write your outcome into that record:
-  crab eng touch $RECORD '<what you did, what you ran, what it showed>'
-This is a hard condition of success: the runner refuses to mark this job
-finished unless the record has been touched since dispatch. Read it first
-with 'crab eng show $RECORD' so your entry lands on the thread it answers."
+final message, write your outcome into that record and SUBMIT it for review:
+  crab eng touch $RECORD '<progress and evidence, as you go>'
+  crab eng review $RECORD '<what you delivered and how you verified it>'
+Both are hard conditions of success: the runner refuses to mark this job
+finished unless the record has been touched since dispatch AND has entered
+review. You CANNOT settle the record — 'crab eng settle' is refused to a
+builder, because deciding that the ask was delivered belongs to the review
+that wakes on your completion and compares the artefact against the original
+ask. If the task proved wrong or impossible, submit THAT in plain words: an
+honest inability is also a submission for the review to judge. Read the
+record first with 'crab eng show $RECORD' so your entry lands on the thread
+it answers."
 fi
 
 cd "$WORKDIR" 2>/dev/null || cd "$HOME"
@@ -337,6 +352,24 @@ if [ "$STATE" = finished ] && [ -n "$RECORD" ]; then
         echo "job-runner: the build ran clean, but engineering record '$RECORD' was never updated — its last_touched is not newer than this job's dispatch. A job dispatched against a record succeeds only by writing its outcome back to it (crab eng touch $RECORD '...'). Marked failed; the work above may still be real, so read the log and the record before repeating it." >> "$LOG"
     fi
 fi
+# The completion-review gate (jobs.md rule 29a, engineering-records.md rule
+# 16): a clean record build ends SUBMITTED, never self-settled — and never
+# merely narrated. A record still `open` at check time means the builder
+# touched the thread without claiming anything for the review to judge, and
+# "finished" over an unsubmitted record is exactly the shape that let a
+# 2026-08-26 builder's narrowed substitute read as the ask delivered. State
+# `review` passes; so does a record a hand with authority closed while the
+# build ran, because the ask is answered either way.
+RECORD_UNREVIEWED=""
+if [ "$STATE" = finished ] && [ -n "$RECORD" ]; then
+    REC_STATE="$(DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" field "$RECORD" state 2>/dev/null)"
+    if [ "$REC_STATE" = open ]; then
+        STATE=failed
+        RC=1
+        RECORD_UNREVIEWED=1
+        echo "job-runner: the build ran clean and touched engineering record '$RECORD', but never SUBMITTED it for review — the record is still open. A builder's completion claim (or its honest inability) goes through crab eng review $RECORD '<claim>', never through settle, and the runner refuses to call unsubmitted work finished (jobs.md rule 29a). Marked failed; the work above may still be real, so read the log and the record before repeating it." >> "$LOG"
+    fi
+fi
 SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
 # A build that never began is its own outcome. Reported as "failed" it reads as
 # a builder that tried and got it wrong, which sends the next wake to read a log
@@ -391,6 +424,7 @@ day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" \
 
 # Tell her it landed — via an event wake, not a voice: whether anything gets
 # said out loud is the wake's own decision, made by the usual busy/quiet rules.
+REVIEW_WAKE=""
 if [ "$STATE" = blocked ]; then
     # Nothing ran, so there is nothing to read and nothing to verify. Say that
     # plainly instead of sending the next wake to audit an empty log.
@@ -401,6 +435,11 @@ elif [ -n "$RECORD_UNTOUCHED" ]; then
     # in the one channel that reaches her, so the next reader knows what is
     # owed before deciding whether the work itself needs repeating.
     WAKE_REASON="Detached job $ID FAILED because engineering record '$RECORD' was never updated: the build ran, but its last_touched is older than the dispatch. Read $LOG, and if the work is real, write the outcome yourself with crab eng touch $RECORD — the thread must carry what happened to it. Task was: $(printf '%.200s' "$TASK")"
+elif [ -n "$RECORD_UNREVIEWED" ]; then
+    # Rule 29a's channel: the build ran clean, wrote to its record, and never
+    # submitted a claim — so nothing exists for the review to judge, and a
+    # "finished" here is how a narrowed substitute once read as delivery.
+    WAKE_REASON="Detached job $ID FAILED because its work was never SUBMITTED for review: engineering record '$RECORD' is still open — the builder touched the thread but no completion claim entered review, and a builder cannot settle its own ask. Read $LOG and crab eng show $RECORD; if the work is real, submit it yourself with crab eng review $RECORD '<claim>' and then judge it against the original ask. Task was: $(printf '%.200s' "$TASK")"
 elif [ "$STATE" = failed ] && case "$COLLECTION" in "died waiting"*) true ;; *) false ;; esac; then
     # Rule 39's one channel to her: the run exited clean and is still a
     # failure, because its report ends on an intention. Say exactly that, or
@@ -408,8 +447,27 @@ elif [ "$STATE" = failed ] && case "$COLLECTION" in "died waiting"*) true ;; *) 
     # does not exist.
     WAKE_REASON="Detached job $ID FAILED by dying on a wait: its report ends on an intention, not an outcome, and a promise made by a process that stops existing is a task that did not happen. $COLLECTION Task was: $(printf '%.200s' "$TASK") — read $LOG and crab job show $ID before repeating any of it."
 else
-    WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
+    # The completion review (jobs.md rule 29b): a record job that ran clean
+    # ended with its record SUBMITTED, and this wake — the job's one channel
+    # back — is the review. The reason is the review brief: recover the
+    # original ask, inspect the artefact itself, then accept or reject.
+    # Booked with the JOB_REVIEW_EFFORT override below, so the review runs
+    # with real hands whatever the wake path's default effort.
+    REVIEW_WAKE=""
+    if [ -n "$RECORD" ] && { [ "$STATE" = collected ] || [ "$STATE" = finished ]; } \
+        && [ "$(DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" field "$RECORD" state 2>/dev/null)" = review ]; then
+        REVIEW_WAKE=1
+        WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}) and SUBMITTED engineering record '$RECORD' for review — the record is NOT settled, a builder cannot settle it, and THIS WAKE IS THE REVIEW. Recover the ORIGINAL ask and its acceptance criteria from the record's own opening entry (crab eng show $RECORD), then inspect the actual artefact or the visible behaviour yourself — run the thing, open the page, read the diff; never take the builder's report or its claim as the inspection — and decide whether the FULL ask and the full design were delivered. Delivered whole: crab eng accept $RECORD '<what you verified>'. Anything missing, narrowed, or substituted (adjacent work standing in for the ask is the named failure): crab eng reject $RECORD '<the missing requirements>' — reject preserves them on the record and redispatches the remaining work itself. Task was: $(printf '%.200s' "$TASK") — builder's report in $LOG."
+    else
+        WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
+    fi
 fi
+# The review effort override (jobs.md rule 29b): a level the booking side
+# would refuse must fall back rather than cost the job its only channel back.
+case "${JOB_REVIEW_EFFORT:-medium}" in
+    low|medium|high) ;;
+    *) JOB_REVIEW_EFFORT=medium ;;
+esac
 # ...but not when this runner is a test. A scratch run gets its own JOBS_DIR so
 # it cannot dirty the live jobs directory — and on 2026-08-07 one still woke me
 # for real, about a job called "testid" whose task was "do a thing", leaving no
@@ -467,7 +525,11 @@ fi
 if [ -n "$SCRATCH_RUN" ]; then
     echo "job-runner: scratch run ($JOBS_DIR) — event wake suppressed: $WAKE_REASON" >> "$LOG"
 elif [ -n "$WANTS_FILE" ]; then
-    "$SCRIPT_DIR/crab" wake-at --by job-runner 5s event "$WAKE_REASON" >/dev/null 2>&1
+    # A review wake carries the effort override (wake-queue.md rule 13a,
+    # jobs.md rule 29b); every other completion wake books as it always has.
+    "$SCRIPT_DIR/crab" wake-at --by job-runner \
+        ${REVIEW_WAKE:+--effort "${JOB_REVIEW_EFFORT:-medium}"} \
+        5s event "$WAKE_REASON" >/dev/null 2>&1
 fi
 
 exit "$RC"

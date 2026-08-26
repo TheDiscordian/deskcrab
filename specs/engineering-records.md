@@ -26,8 +26,10 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
    instance's own data home, so a scratch instance's records stay in the scratch instance.
 2. The file opens with YAML frontmatter carrying exactly these fields: `id` (the slug), `title`,
    `opened` (ISO local datetime), `last_touched` (ISO local datetime), `state`
-   (`open` | `settled` | `dead`), `settled_at`, `settled_by` (who or what settled it), and
-   `summary` (one line). `settled_at` and `settled_by` are empty while the record is open.
+   (`open` | `review` | `settled` | `dead`), `settled_at`, `settled_by` (who or what settled it),
+   and `summary` (one line). `settled_at` and `settled_by` are empty while the record is open.
+   `review` (kind `eng` only — the wants drawer keeps its own states) is an open thread whose
+   latest work has been SUBMITTED for the completion review of rules 16–16d: live, not resolved.
 3. The body below the frontmatter is free prose, newest entries first, each entry headed with its
    own ISO datetime. An undated migrated entry is headed `(undated)` rather than given an invented
    date.
@@ -72,7 +74,9 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 
 11. The engineering drawer reaches the speaking prompts (turn and wake) through `lib/eng prompt`,
     rendered into the shelves layer. OPEN records render as live threads: title, id, `opened` and
-    `last_touched` dates — always, whole. SETTLED and DEAD records render as the title plus ONE
+    `last_touched` dates — always, whole; a record in `review` renders among them, marked as
+    awaiting the completion review, because an unreviewed claim of completion is not a
+    resolution and must not read as one. SETTLED and DEAD records render as the title plus ONE
     line — `settled <when>: <what settled it>` (or `dead <when>: <reason>`) — and never their body
     prose, so a resolved worry cannot be quoted back as present-tense fact. The settled tail is
     the shelf pattern, not the archive: the full rendering shows only recent closures (rule 11a's
@@ -91,8 +95,8 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     the block at all — it stays on disk, reachable exactly as before through
     `crab eng list --state all`, `crab eng show <id>` and `crab eng search` — and whenever
     anything is withheld the section's preamble says how many and names those doors, so the block
-    never reads as though the history is gone. OPEN records are never aged out, however old their
-    `last_touched`: an open thread is live by definition.
+    never reads as though the history is gone. OPEN records (and `review` ones) are never aged
+    out, however old their `last_touched`: an open thread is live by definition.
     This is not a cut in the sense [prompt-assembly.md](prompt-assembly.md) rule 4 forbids. Rule 4
     binds the ASSEMBLER, which must carry every layer it is handed whole; this is the drawer
     deciding what it hands over — the same judgement that already renders a settled record as one
@@ -161,6 +165,50 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     replaces, not a fallback: the fallback is the named refusal on the record, which the next hand
     (or the night) owes a dispatch.
 
+### The completion review
+
+16. A builder never settles the ask it was dispatched against. Completed work is SUBMITTED, not
+    declared done: `crab eng review <id> <claim>` (kind `eng` only) moves an open record to state
+    `review`, appends the claim as a dated entry, and bumps `last_touched` in the same write, so
+    the record reads at a glance as "work claimed, not yet judged". Inside a builder session —
+    the job runner exports `DESKCRAB_ENG_ROLE=builder` into the build, and every `crab eng` the
+    builder runs inherits it — `settle` and `kill` are REFUSED, naming `crab eng review` as the
+    one door for a completion claim (or an honest inability, which is also a claim for the review
+    to judge); so are `accept` and `reject`, because the verdict belongs to the review, never to
+    the hand under review. The origin (2026-08-26, record
+    `the-chess-table-maintains-a-second-conversation`): the ask was the chess table as a thin
+    client of the phone's VISIBLE conversation interface; the builder delivered shared audio
+    plumbing — a clip-queue module both pages load — and the record was settled on it as
+    "shared-primitive parity". Narrowed work that settles its own ask reads as the ask delivered,
+    and nobody is ever brought back to the gap.
+16a. The review itself is the completion wake of the job that submitted ([jobs.md](jobs.md) rules
+    29a–29b): the waking session recovers the ORIGINAL ask and its acceptance criteria from the
+    record's own opening entry, inspects the actual artefact or the visible behaviour directly —
+    never the builder's report or claim alone — and decides whether the FULL ask and the full
+    design were delivered. Two verdicts exist, both refused to a builder and both requiring state
+    `review`: `crab eng accept <id> <what-was-verified>` settles the record with `settled_by`
+    reading `review accepted: …`, and `crab eng reject <id> <missing…>` returns it to `open`.
+16b. A rejection PRESERVES the missing requirements and redispatches them at once. The reject
+    entry carries the reviewer's missing-requirements text verbatim, and in the same act the
+    remaining work is redispatched through the job door (`crab job -f --record <id>`) with a
+    brief that quotes those requirements and points at the record for the original ask. The
+    force is the reviewer's own deliberate hand ([jobs.md](jobs.md) rule 31): work already
+    chosen once does not queue behind the night a second time. The job id lands on the very
+    entry and the attach epoch is stamped on the new sidecar exactly as the ending gate stamps
+    it (rule 15b), so the redispatched builder still owes the record its own entry — and its
+    own submission. A dispatch the door refuses is named on the entry, in the same write, and
+    the record still returns to `open`: the rejection is never lost to its own dispatch
+    (rule 15c's discipline).
+16c. `review` is a live state, not a closed one. It renders among the OPEN threads of the prompt
+    block, marked as awaiting the review; it never ages out; and `settle` from it — the user's
+    or the reviewer's own hand, outside a builder session — works exactly as rule 8 says. A
+    record in a terminal state refuses a new submission; a record already in `review` accepts
+    another, updating the claim while the state stands.
+16d. The gate is the ROLE marker, not the tool: without `DESKCRAB_ENG_ROLE=builder` in the
+    environment, `settle` and `kill` behave exactly as rule 8 wrote them, so the user's own
+    hand — and the review's — is never refused anything. The marker is exported by
+    `lib/job-runner` and by nothing else.
+
 ## DATA
 
 | Path | Format |
@@ -168,7 +216,7 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 | `~/.local/share/deskcrab/engineering/records/<slug>.md` | frontmatter per rule 2, body per rule 3 |
 | `~/.local/share/deskcrab/engineering.md`, `engineering/INDEX.md`, `engineering/*.md` | the pre-records archive: read-only history, still indexed in WHERE THINGS ARE |
 | job sidecar field `record` | the engineering record a job was dispatched against ([jobs.md](jobs.md)) |
-| job sidecar field `record_attached_epoch` | when rule 15b's attach write touched the record, so the runner's rule-27 floor can discount it ([jobs.md](jobs.md)) |
+| job sidecar field `record_attached_epoch` | when rule 15b's attach write — or rule 16b's reject attach — touched the record, so the runner's rule-27 floor can discount it ([jobs.md](jobs.md)) |
 
 ## INTERACTIONS
 
@@ -177,10 +225,11 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 (`touched-since`).
 
 **The tool must never:** speak, notify, book a wake, dispatch a job, or write outside its records
-directory — with two exceptions: the write declaration of rule 10a, which goes to the self-change
-watcher's suppression file through `crab touching`, and the ending gate of rule 15, which
-dispatches through `crab job --record` (the door's own policy intact) and stamps
-`record_attached_epoch` on the sidecar it just created. Both are the tool's own writes about its
+directory — with three exceptions: the write declaration of rule 10a, which goes to the
+self-change watcher's suppression file through `crab touching`; the ending gate of rule 15; and
+the review rejection of rule 16b — the latter two each dispatch through `crab job --record` (the
+door's own policy intact for the gate, the reviewer's deliberate force for the reject) and stamp
+`record_attached_epoch` on the sidecar they just created. All are the tool's own writes about its
 own act, never a second writer of anything.
 
 ## TESTS
@@ -202,4 +251,16 @@ the entry with `record_attached_epoch` on the sidecar; a second inability touch 
 lives names the existing id and starts nothing; a note already carrying a job id, a conclusive
 note, and inability mid-note all pass untouched; a refused dispatch is named on the entry and the
 write survives; and the runner floor of rule 15b — an attach write newer than dispatch does not
-stand in for the builder's own touch).
+stand in for the builder's own touch);
+`tests/test_eng_review.sh` (rules 16–16d beside [jobs.md](jobs.md) rules 29a–29b: a submission
+moves the record to `review`, bumps `last_touched`, and the prompt renders it live and marked,
+never as settled; under the builder role, settle, kill, accept and reject are all refused with
+the state standing, while the same hands work without the marker; accept settles only from
+`review`, with the verdict on `settled_by`; reject returns the record to `open`, preserves the
+missing requirements verbatim on the entry AND on the redispatched brief — sidecar `record` set,
+`record_attached_epoch` stamped — and a dispatch the door refuses is named on the entry with the
+reopen surviving; and the 2026-08-26 regression end to end: a builder that substituted shared
+audio plumbing for the asked-for visible reuse of the phone conversation interface cannot settle
+the record — its settle is refused, its submission leaves the record unsettled, the completion
+wake is the review brief at the review effort, the reject carries the missing interface
+requirement onto the next brief, and only an accepted submission settles the record).

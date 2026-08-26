@@ -308,7 +308,10 @@ check "the log names the untouched record" \
     grep -q "engineering record '$RID' was never updated" "$JOBS/recf1.log"
 
 echo
-echo "and a builder that really writes back still finishes past the floor:"
+echo "and a builder that really writes back and submits still finishes past the floor:"
+# Touch alone no longer finishes a record job: the completion review
+# (engineering-records.md rule 16, jobs.md rule 29a) wants the claim
+# SUBMITTED, so the well-behaved stub ends with `crab eng review`.
 NOW="$(date +%s)"
 "$REPO/lib/job-status" new "$JOBS" recf2 "carry the ending, properly" ""
 "$REPO/lib/job-status" set "$JOBS/recf2.json" record="$RID" \
@@ -317,13 +320,14 @@ sandbox_stub claude <<STUB
 #!/bin/bash
 cat > /dev/null
 sleep 3
-DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" touch "$RID" "rearmed the timer and watched it fire; suite green" >/dev/null
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" touch "$RID" "rearmed the timer and watched it fire; suite green" >/dev/null 2>&1
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" review "$RID" "rearmed the timer, watched it fire, suite green — submitting" >/dev/null 2>&1
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"rearmed and verified."}]}}'
 printf '%s\n' '{"type":"result","result":"done"}'
 exit 0
 STUB
 WANTS_FILE="$XDG_DATA_HOME/deskcrab/wants.md" "$REPO/lib/job-runner" recf2 "$T/work" >/dev/null 2>&1
-check_eq "the builder's own entry satisfies the hook" \
+check_eq "the builder's own entry and submission satisfy the hook" \
     "$("$REPO/lib/job-status" get "$JOBS/recf2.json" state)" "collected"
 
 echo

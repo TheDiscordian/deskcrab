@@ -447,6 +447,13 @@ SPEECHLOCK="${STATE_PREFIX}-speech.lock"
 JOBS_DIR="${JOBS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs}"
 JOB_MODEL="${JOB_MODEL:-fable}"
 JOB_EFFORT="${JOB_EFFORT:-high}"
+# The completion review's effort override (jobs.md rule 29b): a record job
+# that ran clean ends SUBMITTED, and its completion wake — the review — books
+# with this override so the review runs with real hands whatever the wake
+# path's default effort is. One of the booking side's own levels
+# (low|medium|high); job-runner clamps anything else back to medium rather
+# than losing the job's only channel back to a refused booking.
+JOB_REVIEW_EFFORT="${JOB_REVIEW_EFFORT:-medium}"
 # How many finished jobs the report lists, and how long finished job records
 # (status + log) are kept before pruning.
 JOBS_SHOW_FINISHED="${JOBS_SHOW_FINISHED:-6}"
