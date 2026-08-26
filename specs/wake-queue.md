@@ -341,6 +341,49 @@ for reduction here — every rule below makes the queue **visible and bounded**,
      - The gate is off when the delivery queue is off (`TURN_ORDER_WAIT=0` books no tickets and
        leaves nothing to read), and `WAKE_FLIGHT_HOLD=0` switches it off alone. A ticket whose
        process is gone is not a turn — the same recycled-pid discipline the queue itself keeps.
+     - A detached job's completion return does not take this exit: rule 27d holds it nearer and
+       re-books it under its own name.
+27d. A detached job's completion return is DELAYED by the busy gate and the flight gate, never
+     consumed by either ([jobs.md](jobs.md) rule 7c). The completion wake is a job's only channel
+     back to him, so the mute of rule 27 and the flat five-minute comeback of rule 27c are both
+     wrong for it. Both were measured on 2026-08-25: the 02:06 clock build's spoken result was
+     diverted to the five-minute hot-hold by a turn in flight and he asked before it fired, and
+     the 09:57 install build's was muted for a busy moment and returned with no re-booking at all
+     — the result existed in the journal alone, and he learned it only by asking. Recognition is
+     the booking's provenance, never the reply's text: `lib/job-runner` books every return
+     `--by job-runner`, and the re-book below carries the same identity, so the discipline follows
+     the news through any number of delays.
+     - **First the wait.** The delivery waits IN PROCESS for the moment to pass — both gates
+       re-read together every `WAKE_JOB_NEWS_POLL` seconds until both answer clear — and delivers
+       the reply already in hand the moment they do: promptly, once, with no second generation.
+       The wait is one budget for the whole delivery (`WAKE_JOB_NEWS_WAIT`), not one per gate, so
+       a ping-pong between the microphone and the ticket queue cannot hold the wake process — and
+       the wake lock it carries — open indefinitely. Quiet hours arriving mid-wait end the wait as
+       if it ran dry: the night gate had its say when delivery began, and the wait must not talk
+       past it. The wait announces itself on the speech log — entered, cleared, or run dry — so a
+       delivery held here explains itself the way every other silence does
+       ([speech-output.md](speech-output.md) rule 53).
+     - **Then the queue.** A wait that runs dry re-books the ORIGINAL reason under the ORIGINAL
+       booker and kind through the queue's one door, `WAKE_JOB_NEWS_RETRY` out — never the written
+       words under the hot-hold identity, because the comeback must be recognised as job news by
+       this same rule when it too lands on a busy moment, and because the original reason carries
+       what a clipped quotation of the reply cannot: the job id, the log path, and the standing
+       instruction to verify before repeating. The reason is stamped once (`held at` — rule 27b's
+       stamp, the holding session's start; an already-stamped reason is never re-stamped, or the
+       staleness window would silently shrink), so a comeback whose news reached him some other
+       way while it waited — asking is how both incidents ended — is judged by rule 27b and
+       retired loudly rather than delivered twice. Duplicate delivery is barred structurally: a
+       delivery that happened books nothing, a booking that stands delivered nothing, and the
+       identical-reason coalesce at the door folds a second re-book into the pending one.
+     - **Read the booking's answer first**, exactly as rule 27a demands: the journal line may
+       promise a comeback only when one stands, and a refused or failed booking is journalled as
+       the news surviving in that line only — the last resort, never the design.
+     - The journal line for a wait that ran dry says the news met a moment that outlasted the
+       wait and was re-booked whole; a wait that cleared journals nothing extra, because the
+       delivery itself is the record.
+     - `WAKE_JOB_NEWS_HOLD=0` switches the discipline off and a job's return takes the ordinary
+       exits like any other wake. The busy and flight gates themselves are untouched for every
+       other wake: this rule changes who exits through them, never what they read.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence. Rule 27c is
     not that queueing: the choice it forbids is the WRITER'S — a reply that answers "later" instead
@@ -602,6 +645,8 @@ flowchart TD
   G1 -->|no| G2{"anything to deliver?"}
   G2 -->|no| G2a["journal the work trace<br/>silence, not a crash"]
   G2 -->|yes| G3{"quiet hours, a turn in flight,<br/>or user busy?"}
+  G3 -->|"yes, a job's return (rule 27d)"| G3c["wait, bounded, for the moment to pass<br/>dry: re-book whole — original booker,<br/>original reason, stamped once"]
+  G3c -->|cleared| G4
   G3 -->|yes, a turn in flight| G3b["hold whole: journal, re-book the words<br/>through the queue (rule 27c)"]
   G3 -->|yes, otherwise| G3a["suppress speech<br/>journal what was swallowed"]
   G3 -->|no| G4["append to the conversation<br/>then speak, then show"]
@@ -707,6 +752,16 @@ that a turn was in flight, and books its words back through the queue under the 
 with the held stamp on the reason; the same wake with the ticket's process dead — or the ticket
 released — delivers in full, which is what makes the hold mean something; `WAKE_FLIGHT_HOLD=0`
 restores the old behaviour exactly),
+`tests/test_job_news_delivery.sh` (rule 27d: a spoken job return beside a live delivery-queue
+ticket, and one beside a recording in progress, each wait the gate out and reach the phone — the
+audio pointer, the conversation and the synthesiser all carrying the words, exactly once, only
+after the gate cleared, with no comeback booked; a moment that outlasts the wait delivers nothing,
+journals that the news was re-booked whole, and books ONE comeback under the job-runner identity
+and event kind whose reason is the ORIGINAL — never the hot-hold prefix — with the rule-27b stamp
+on it, delivered in full when the comeback fires in a quiet moment and booking nothing further; a
+second re-book of the same news folds into the pending one and an already-stamped reason is not
+re-stamped; a non-job wake keeps the ordinary mute and hold exactly; `WAKE_JOB_NEWS_HOLD=0`
+restores the old exits),
 `tests/test_wake_stale_note.sh` (rule 27b: the hold stamps the comeback's reason with a parseable
 held-at moment; a stamped note whose substance the intervening exchange already covered is
 DROPPED — nothing spoken, shown, notified or appended, the drop on the journal, the wake ledger

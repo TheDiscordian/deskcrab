@@ -241,6 +241,18 @@ WAKE_HOT_HOLD_CAP="${WAKE_HOT_HOLD_CAP:-3}"
 WAKE_STALE_GATE="${WAKE_STALE_GATE:-1}"
 WAKE_STALE_MODEL="${WAKE_STALE_MODEL:-claude-fable-5}"
 WAKE_STALE_TIMEOUT="${WAKE_STALE_TIMEOUT:-45}"
+# A detached job's completion return (specs/wake-queue.md rule 27d, jobs.md
+# rule 7c): the one notification a job ever sends may be DELAYED by the busy
+# and in-flight gates, never consumed by them. The delivery waits in-process
+# up to WAKE_JOB_NEWS_WAIT seconds, re-reading both gates together every
+# WAKE_JOB_NEWS_POLL seconds, and delivers the moment they clear; a wait that
+# runs dry re-books the ORIGINAL reason under the job-runner identity
+# WAKE_JOB_NEWS_RETRY seconds out, stamped once for the staleness gate. 0 on
+# the HOLD knob restores the ordinary gate exits for a job's return.
+WAKE_JOB_NEWS_HOLD="${WAKE_JOB_NEWS_HOLD:-1}"
+WAKE_JOB_NEWS_WAIT="${WAKE_JOB_NEWS_WAIT:-120}"
+WAKE_JOB_NEWS_POLL="${WAKE_JOB_NEWS_POLL:-2}"
+WAKE_JOB_NEWS_RETRY="${WAKE_JOB_NEWS_RETRY:-300}"
 
 # Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
 SERVE_PORT="${SERVE_PORT:-8723}"
@@ -6383,6 +6395,90 @@ wake_hold_for_heat() {  # <the held words>
     esac
 }
 
+# --- Job news through the delivery gates (specs/wake-queue.md rule 27d) -----
+# A detached job's completion wake is the job's ONLY channel back to him
+# (jobs.md rules 7 and 7c), and both busy-moment exits were measured losing it
+# on 2026-08-25: the 02:06 clock build's spoken result went to the five-minute
+# hot-hold because a turn was in flight, and he asked before it fired; the
+# 09:57 install build's was muted for a busy moment and returned with no
+# re-booking at all, so the verified result existed in the journal alone. A
+# busy moment may DELAY job news and never consume it. Recognition is the
+# booking's provenance, never the reply's text: lib/job-runner books every
+# return --by job-runner, and the re-book below carries the same identity, so
+# the discipline follows the news through any number of delays.
+wake_carries_job_news() {
+    [ "${WAKE_JOB_NEWS_HOLD:-1}" = "1" ] || return 1
+    [ "${WAKE_BOOKED_BY:-}" = "job-runner" ]
+}
+
+# Wait, in this process, for the busy moment to pass: both gates re-read
+# together every WAKE_JOB_NEWS_POLL seconds until both answer clear — the
+# reply is already in hand, so the delivery lands seconds after the current
+# utterance, recording or in-flight reply ends, with no second generation.
+# One deadline for the whole delivery, not one per gate, so a ping-pong
+# between the microphone and the ticket queue cannot hold this process (and
+# the wake lock it carries) open past WAKE_JOB_NEWS_WAIT. Quiet hours
+# arriving mid-wait end the wait as if it ran dry: the night gate had its say
+# when delivery began, and this wait must not talk past it.
+wake_job_news_moment() {
+    local NOW
+    NOW="$(date +%s)"
+    WAKE_JOB_NEWS_DEADLINE="${WAKE_JOB_NEWS_DEADLINE:-$(( NOW + WAKE_JOB_NEWS_WAIT ))}"
+    # The wait announces itself — entered, cleared, or run dry — because a
+    # delivery held here is a silence, and every silence explains itself
+    # somewhere (specs/speech-output.md rule 53).
+    speech_log "job news: delivery is waiting for the moment to pass (a turn in flight, or the user mid-something)"
+    while interactive_turn_in_flight || user_busy; do
+        in_quiet_hours && {
+            speech_log "job news: quiet hours arrived mid-wait — re-booking the news whole"
+            return 1
+        }
+        [ "$(date +%s)" -lt "$WAKE_JOB_NEWS_DEADLINE" ] || {
+            speech_log "job news: the moment outlasted the ${WAKE_JOB_NEWS_WAIT}s wait — re-booking the news whole"
+            return 1
+        }
+        sleep "$WAKE_JOB_NEWS_POLL"
+    done
+    speech_log "job news: the moment passed — delivering now"
+    return 0
+}
+
+# The news goes back through the queue's one door whole: the ORIGINAL reason
+# under the ORIGINAL booker and kind — never the written words under the
+# hot-hold identity, because the comeback must be recognised as job news by
+# wake_carries_job_news when it too lands on a busy moment, and because the
+# original reason carries what a clipped quotation of the reply cannot: the
+# job id, the log path, and the instruction to verify before repeating. The
+# reason is stamped once (rule 27b's stamp, the holding session's start — an
+# already-stamped reason is never re-stamped, or the staleness window would
+# silently shrink), so a comeback whose news reached him some other way while
+# it waited is judged at fire time and retired loudly rather than said twice.
+# Returns 0 only when a comeback actually STANDS — booked now, or folded into
+# an equivalent pending one — with WAKE_JOB_NEWS_REFUSAL naming the refusal
+# otherwise: the caller's journal line must never promise a comeback the
+# queue never accepted.
+wake_job_news_rebook() {
+    WAKE_JOB_NEWS_REFUSAL=""
+    local REASON="${WAKE_REASON:-}" OUT STAMP
+    [ -n "$(printf '%s' "$REASON" | tr -d '[:space:]')" ] || {
+        WAKE_JOB_NEWS_REFUSAL="the wake carried no reason to re-book"; return 1; }
+    if ! printf '%s' "$REASON" | grep -qE "$WAKE_HELD_STAMP_RE"; then
+        STAMP="$(date -d "@${SESSION_START:-$(date +%s)}" '+%Y-%m-%d %H:%M' \
+            2>/dev/null || date '+%Y-%m-%d %H:%M')"
+        REASON="$REASON — held at $STAMP"
+    fi
+    OUT="$("$SCRIPT_DIR/crab" wake-at --by "${WAKE_BOOKED_BY:-job-runner}" \
+        "${WAKE_JOB_NEWS_RETRY}s" "${WAKE_KIND:-event}" "$REASON" 2>&1)"
+    case "$OUT" in
+        *"Wake scheduled"*|*"already pending"*)
+            return 0 ;;
+        *"Not booked"*)
+            WAKE_JOB_NEWS_REFUSAL="the booking door refused it"; return 1 ;;
+        *)
+            WAKE_JOB_NEWS_REFUSAL="the comeback booking failed"; return 1 ;;
+    esac
+}
+
 # --- The staleness gate (specs/wake-queue.md rule 27b) ----------------------
 # A held note was judged only for HEAT — is the conversation busy — and never
 # for RELEVANCE against what was said while it waited. 2026-08-15: the user
@@ -6850,6 +6946,31 @@ run_claude_wake() {
         session_outcome "(quiet hours — held, nothing spoken and nothing shown) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         return 0
     fi
+    # A detached job's return takes NEITHER of the next two exits
+    # (specs/wake-queue.md rule 27d, jobs.md rule 7c). The completion wake is
+    # the job's ONLY channel back to him, and both exits were measured losing
+    # it on 2026-08-25: the 02:06 clock build's spoken result was sent to the
+    # five-minute hot-hold by a turn in flight and he asked before it fired,
+    # and the 09:57 install build's was muted for a busy moment and returned
+    # with no re-booking at all — the news existed in the journal alone. So a
+    # busy moment DELAYS job news and never consumes it: wait here, bounded,
+    # for the utterance, recording or in-flight reply to clear and deliver
+    # the words already in hand the moment it does; when the wait runs dry,
+    # the ORIGINAL reason goes back through the queue's one door under the
+    # ORIGINAL booker, stamped once for rule 27b, so the comeback is the same
+    # news wearing the same provenance — delayed again if it must be, dropped
+    # never. Recognised by the booking's provenance (--by job-runner), never
+    # by reading the reply — rule 29's boundary holds.
+    if wake_carries_job_news && { interactive_turn_in_flight || user_busy; }; then
+        if wake_job_news_moment; then
+            : # the moment passed — the news is delivered below, promptly, once
+        elif wake_job_news_rebook; then
+            session_outcome "(held — job news met a moment that outlasted the wait; re-booked whole under the job-runner identity, coming back in $(( WAKE_JOB_NEWS_RETRY / 60 ))min) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
+            return 0
+        else
+            session_outcome "(held — job news met a busy moment; ${WAKE_JOB_NEWS_REFUSAL:-the comeback booking failed} — the news is in this journal only) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
+            return 0
+        fi
     # A turn of HIS is in flight right now — a desk or phone reply owed and
     # not yet delivered, read from the delivery queue's own tickets
     # (specs/wake-queue.md rule 27c). Words landing in that window land in
@@ -6863,14 +6984,13 @@ run_claude_wake() {
     # staleness gate in a quiet minute and is spoken unless the record
     # proves the exchange already covered it. The work is not suppressed —
     # journal, audit and judges all ran above; only the delivery moves.
-    if interactive_turn_in_flight; then
+    elif interactive_turn_in_flight; then
         if wake_hold_for_heat "${SPOKEN:-${SILENT_NOTE:-$DISPLAY_PART}}"; then
             session_outcome "(held — a turn was in flight, nothing spoken and nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         else
             session_outcome "(held — a turn was in flight; ${WAKE_HOLD_REFUSAL:-the comeback booking failed} — the note is in this journal only) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         fi
         return 0
-    fi
     # The user is mid-something a wake must not interrupt: a recording, speech
     # in flight, or a meeting holding the mic. Same treatment, same reason — a
     # window over the meeting he is in is an interruption too. Checked here, at
@@ -6879,7 +6999,7 @@ run_claude_wake() {
     # for the same reason the night's line is: a display-only wake held here did
     # not have nothing to say, and its journal line is the only place that can
     # say so.
-    if user_busy; then
+    elif user_busy; then
         session_outcome "(muted — user was mid-interaction) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
         return 0
     fi

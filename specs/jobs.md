@@ -52,6 +52,17 @@ policy, collection of a finished builder's work, and the single channel a job ha
    no recorded workdir (one written before the field existed) MUST be an error, never a dispatch.
    Requeue goes through the same preflight as any other dispatch: the block marker still holds it,
    and the redispatch is a new job with its own id.
+7c. The completion wake's delivery may be DELAYED by a busy user or an in-flight interactive turn,
+   never consumed by either. Rule 7 makes the wake the job's only channel back, so a delivery gate
+   that mutes it without re-booking erases the only notification the job will ever send — on
+   2026-08-25 the 09:57 install build's verified result was muted for a busy moment and lived in
+   the session journal alone until the user asked, and the 02:06 clock build's sat in a flat
+   five-minute hold past the moment he asked. [wake-queue.md](wake-queue.md) rule 27d carries the
+   discipline: a bounded in-process wait for the recording, utterance or in-flight reply to clear,
+   prompt delivery the moment it does, and a re-book of the ORIGINAL reason under the runner's own
+   booking identity when it does not — stamped for the staleness gate, so news he learned some
+   other way while it waited is retired loudly rather than said twice. The journal record stands
+   either way, and is never the delivery.
 7b. `crab job --record <id>` dispatches a builder AGAINST an engineering record
    ([engineering-records.md](engineering-records.md)). An id the records drawer does not know MUST
    be refused before any sidecar or unit exists; a known one is recorded in the sidecar as
@@ -457,7 +468,12 @@ the ledger's own shape — history array and all — and a scratch tree: the run
 commits, and concurrent siblings stay quiet with the job id logged, a deletion under a live claim
 fires with the job named, collection reopens reporting at once, a finished-uncollected sidecar
 claims only through its grace and loses a shared workdir to the more recently started live job,
-an over-ceiling `running` orphan claims no new byte, and nothing calls a non-running job running).
+an over-ceiling `running` orphan claims no new byte, and nothing calls a non-running job running);
+`tests/test_job_news_delivery.sh` (rule 7c from the delivery side — the completion wake's news
+through the busy and in-flight gates: delayed, delivered exactly once after the gate clears, and
+re-booked whole under the runner's own identity when the moment outlasts the wait; the cases live
+with the other delivery gates in [wake-queue.md](wake-queue.md) rule 27d).
+
 
 **To be written:**
 
