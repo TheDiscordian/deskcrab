@@ -81,11 +81,15 @@ STUB
 
 NOW="$(date +%s)"
 night_work() {
+    # NIGHT_WORK_MODEL pinned Claude-shaped so the stub claude serves the
+    # selector; the effective default routing to the night judge is
+    # tests/test_sleep_sol_judgment.sh's subject.
     env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
         PROMISE_LEDGER="$T/promise-ledger.jsonl" WAKES_DIR="$T/dwakes" \
         NIGHT_WORK_THREADS_DIR="$T/eng" \
         NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
         NIGHT_WORK_POLL=1 \
+        NIGHT_WORK_MODEL=stub-claude \
         "$@" \
         "$REPO/lib/night-work" run 2>&1
 }

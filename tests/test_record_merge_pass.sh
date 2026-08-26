@@ -7,7 +7,8 @@
 # complaint written on different nights — the night's-work "dedupe" (rules
 # 56a and 59) only stops one record being dispatched twice. lib/eng-merge is
 # the pass that notices: embed and score every open pair, judge candidates on
-# the phase-2 model, propose merges — dry-run without --apply, and under
+# the night judge (rules 14c-14e, 53c — gpt-5.6-sol at high by default,
+# stubbed here as the codex engine), propose merges — dry-run without --apply, and under
 # --apply, which the nightly path passes, folding ONLY what the judge is
 # confident about at or above the ENG_MERGE_FOLD_CONFIDENCE gate (default
 # certain); a MERGE LIKELY and a confidence-less MERGE stay proposals.
@@ -133,16 +134,20 @@ EOF
 
 records_sha() { sha256sum "$1"/*.md | sha256sum | cut -d' ' -f1; }
 
-# The judge, stubbed: every call recorded — argv to the claude log, stdin to
-# its own numbered file — answering for the one true twin pair with the
-# verdict line given (default MERGE CERTAIN, the confident form rule 53c
-# asks for) and DISTINCT for everything else. The verdict must carry no
-# single quote: it lands inside one below.
+# The judge, stubbed AS THE CODEX ENGINE: the night judge defaults to a
+# codex name (nightly.md rules 14c-14e, 53c), so the stub stands where the
+# real judge runs — `codex exec`, the prompt on stdin, the answer in the
+# exec road's event shapes the stream translator reads. Every call is
+# recorded — argv to the codex log, stdin to its own numbered file —
+# answering for the one true twin pair with the verdict line given (default
+# MERGE CERTAIN, the confident form rule 53c asks for) and DISTINCT for
+# everything else. The verdict must carry no single quote: it lands inside
+# one below.
 judge_stub() {  # [twin verdict line]
     local V_TWIN="${1:-MERGE CERTAIN — one complaint written twice: the phone shows the reply and plays nothing}"
-    sandbox_stub claude <<STUB
+    sandbox_stub codex <<STUB
 #!/bin/bash
-printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+printf '%s\n' "\$*" >> "${SANDBOX_CODEX_LOG}"
 IN="\$(cat)"
 n=\$(( \$(cat "$T/judge-n" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$T/judge-n"
 printf '%s\n' "\$IN" > "$T/judge-stdin-\$n"
@@ -155,12 +160,12 @@ case "\$IN" in
         V='$V_TWIN' ;;
     *)  V='DISTINCT — the same area, two different defects' ;;
 esac
-printf '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"%s"}]}}\n' "\$V"
-printf '%s\n' '{"type":"result","result":"ok"}'
+printf '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"%s"}}\n' "\$V"
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2}}'
 STUB
 }
-claude_n() { sandbox_count_in . "$SANDBOX_CLAUDE_LOG"; }
-reset()    { rm -f "$SANDBOX_CLAUDE_LOG" "$T/judge-n" "$T"/judge-stdin-*; }
+judge_n() { sandbox_count_in '^exec' "$SANDBOX_CODEX_LOG"; }
+reset()    { rm -f "$SANDBOX_CODEX_LOG" "$SANDBOX_CLAUDE_LOG" "$T/judge-n" "$T"/judge-stdin-*; }
 judged_stdin() { cat "$T"/judge-stdin-* 2>/dev/null; }
 
 run_merge() {  # [env overrides...] <mode args...>
@@ -199,9 +204,13 @@ out="$(run_merge ENG_MERGE_THRESHOLD=0.75 run)"; rc=$?
 check_eq "exits 0" "$rc" "0"
 check "the threshold bounds the candidates — three pairs reach the judge" \
     contains "$out" "3 candidate pair"
-check_eq "one judgement call per candidate, no more" "$(claude_n)" "3"
-check "the judge runs on the phase-2 model — opus, in the argv" \
-    grep -q -- "--model opus" "$SANDBOX_CLAUDE_LOG"
+check_eq "one judgement call per candidate, no more" "$(judge_n)" "3"
+check "the judge runs on the night judge — gpt-5.6-sol, on the codex argv (rule 53c)" \
+    grep -q -- "-m gpt-5.6-sol" "$SANDBOX_CODEX_LOG"
+check "at high reasoning effort" \
+    grep -q -- "model_reasoning_effort=high" "$SANDBOX_CODEX_LOG"
+check_eq "and no claude call stood in for it" \
+    "$(sandbox_count_in . "$SANDBOX_CLAUDE_LOG")" "0"
 check "the judgement prompt carries the conservative rule" \
     bash -c 'cat "$1"/judge-stdin-* 2>/dev/null | grep -q "same-COMPLAINT merges only, never same-AREA"' _ "$T"
 check "down to its chess example" \
@@ -242,19 +251,19 @@ out="$(run_merge ENG_MERGE_THRESHOLD=0.75 ENG_MERGE_MAX_JUDGED=1 run)"; rc=$?
 check_eq "exits 0" "$rc" "0"
 check "the dropped candidates are counted out loud" \
     contains "$out" "drops 2 candidate pair"
-check_eq "and exactly one call went to the judge" "$(claude_n)" "1"
+check_eq "and exactly one call went to the judge" "$(judge_n)" "1"
 check "the top-scoring pair was the one judged, and still proposes" \
     contains "$out" "propose fold 'handset-shows-words-voice-never-arrives'"
 
 echo
 echo "a judge that answers nothing parseable merges nothing — conservative:"
 reset
-sandbox_stub claude <<STUB
+sandbox_stub codex <<STUB
 #!/bin/bash
-printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+printf '%s\n' "\$*" >> "${SANDBOX_CODEX_LOG}"
 cat > /dev/null
-printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"perhaps they are related, hard to say"}]}}'
-printf '%s\n' '{"type":"result","result":"ok"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"perhaps they are related, hard to say"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2}}'
 STUB
 SHA_BEFORE="$(records_sha "$R")"
 out="$(run_merge ENG_MERGE_THRESHOLD=0.75 run)"; rc=$?
@@ -269,12 +278,12 @@ echo "a judge that changes its mind mid-line merges nothing — the live shape"
 echo "of 2026-08-24, 'MERGE — no, wait: DISTINCT — …', proposed two folds its"
 echo "own sentence retracts:"
 reset
-sandbox_stub claude <<STUB
+sandbox_stub codex <<STUB
 #!/bin/bash
-printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+printf '%s\n' "\$*" >> "${SANDBOX_CODEX_LOG}"
 cat > /dev/null
-printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"MERGE — no, wait: DISTINCT — two different defects after all"}]}}'
-printf '%s\n' '{"type":"result","result":"ok"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"MERGE — no, wait: DISTINCT — two different defects after all"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2}}'
 STUB
 SHA_BEFORE="$(records_sha "$R")"
 out="$(run_merge ENG_MERGE_THRESHOLD=0.75 run)"; rc=$?
@@ -292,7 +301,7 @@ SHA_BEFORE="$(records_sha "$R")"
 out="$(run_merge MEMORY_EMBED_URL=http://127.0.0.1:9/api/embed run)"; rc=$?
 check_eq "exits 0 — a dead embedder never costs the night" "$rc" "0"
 check "and says so in its own name" contains "$out" "is not answering"
-check_eq "no judgement was attempted" "$(claude_n)" "0"
+check_eq "no judgement was attempted" "$(judge_n)" "0"
 check_eq "and nothing moved" "$(records_sha "$R")" "$SHA_BEFORE"
 
 echo

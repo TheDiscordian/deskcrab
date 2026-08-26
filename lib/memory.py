@@ -29,6 +29,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1251,8 +1252,43 @@ def cmd_recall_block(store, args):
 
 # --- ingest: the day's words -> records -------------------------------------
 
-INGEST_PROMPT = """You are distilling one day of a desktop assistant's \
-conversations into her long-term memory store. From the material below, \
+# Stage 1 of the two-stage ingest (memory-recall.md rule 27; nightly.md rules
+# 14c-14e): the summariser condenses each raw window FOR the judge. It is
+# told, in its own prompt, that it never judges — deciding what matters is
+# the judge's alone — because the correction this design lands removed
+# exactly the one-pass shape in which the summariser tier decided what
+# survived the night.
+SUMMARY_PROMPT = """You are the night's summariser for a desktop assistant, \
+condensing one window of her day — raw journal turns and transcripts — for \
+the night's JUDGE, who reads only your summary and decides what earns a \
+long-term memory record. You summarise; you never judge. Do not decide what \
+matters, do not curate, and do not propose records: report faithfully and \
+compactly, so the judge loses nothing you were shown. Keep, with the \
+timestamps and dates the chunk headers state:
+- every preference, rule, correction, or standing instruction the user \
+stated, QUOTED in his own words;
+- what the assistant finished, discovered, or was proven wrong about;
+- stable facts about the machine, people, or projects;
+- the moments of her own life — conversations enjoyed, people met or spoken \
+of, plans made, jokes that landed, opinions she formed, the texture of the \
+day — in enough detail that the judge could write each in her first person;
+- the day's shape: gaps and how long they ran, playfulness and pushback, \
+subjects that recur, threads raised and never resolved;
+- questions the user asked about himself that got no answer, in his own words.
+Skip only pure noise: bare commands, error loops, dictation with nothing \
+lived in it. Write plain chronological prose. Reply with ONLY the summary — \
+no preamble, no verdicts, no proposed records.
+
+MATERIAL:
+"""
+
+
+INGEST_PROMPT = """You are the night's judge, distilling one day of a \
+desktop assistant's conversations into her long-term memory store. The \
+material below is the day, condensed window by window by a subordinate \
+summariser; deciding what earns a record is YOURS alone — a record the \
+summariser proposed on its own initiative counts for nothing unless you \
+judge it in. From the material below, \
 extract what earns a record:
 - the user stated or corrected a preference, rule, or standing instruction \
 -> kind "directive", written in second person about him ("He wants...", \
@@ -1651,9 +1687,196 @@ def run_claude(prompt, model, timeout=600, log=None, kind="classify"):
     raise RuntimeError(f"every account refused ({refused} tried) — {last}")
 
 
-def extract_candidates(material, model, prompt=None):
-    body = run_claude((prompt or INGEST_PROMPT) + material, model,
-                      kind="ingest")
+# --- the codex engine, mirrored (model-backends.md rules 1-2, 16;
+# memory-recall.md rule 30). The night judge defaults to a codex name, and
+# nothing shell-side wraps these runs, so the python side mirrors the shell
+# router rather than inventing a second engine rule: the same name test, the
+# same slug resolve, the same one-login discipline — the shared cooldown is
+# honoured before booting and recorded on a limit refusal, and there is NO
+# fallback to a cheaper model, because the judge's failure must fail the
+# ingest rather than hand retention to a tier forbidden to judge
+# (nightly.md rule 14e).
+
+CODEX_LIMIT_RE_DEFAULT = (
+    r"usage.?limit|rate.?limit|limit.?reached|spend.?control|"
+    r"credits? (depleted|exhausted)|quota|plan limit|hit your .* limit|"
+    r"try again (at|in|later)|upgrade to|not logged in|login required|"
+    r"token expired|401 Unauthorized")
+
+
+def codex_bin():
+    codex = os.environ.get("CODEX_BIN") or "codex"
+    if not any(os.access(os.path.join(p, codex), os.X_OK)
+               for p in os.environ.get("PATH", "").split(":")) \
+            and not os.path.isfile(codex):
+        codex = os.path.expanduser("~/.local/bin/codex")
+    return codex
+
+
+def model_backend(model):
+    """Mirror of model_backend in lib/common.sh: the engine follows the model
+    name, an unknown name is a Claude name."""
+    return "codex" if re.match(
+        r"^(codex:|gpt-|gpt\d|o\d|sol$|sol-|.*-sol$)", model or "") else "claude"
+
+
+def codex_model_resolve(model):
+    m = (model or "")[6:] if (model or "").startswith("codex:") else (model or "")
+    if m == "sol":
+        m = os.environ.get("CODEX_MODEL_SOL") or "gpt-5.6-sol"
+    return m
+
+
+def _codex_state_path():
+    return os.environ.get("DESKCRAB_CODEX_STATE") or os.path.join(
+        os.environ.get("XDG_DATA_HOME")
+        or os.path.expanduser("~/.local/share"), "deskcrab", "codex-state")
+
+
+def codex_cooling_until():
+    """The shared cooldown's epoch while one stands, else None."""
+    try:
+        with open(_codex_state_path(), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if parts and parts[0] == "blocked-until" and len(parts) > 1 \
+                        and parts[1].isdigit() and int(parts[1]) > time.time():
+                    return int(parts[1])
+    except OSError:
+        pass
+    return None
+
+
+def codex_limit_record(reason):
+    try:
+        cool = int(os.environ.get("CODEX_LIMIT_COOLDOWN") or 1800)
+    except ValueError:
+        cool = 1800
+    path = _codex_state_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("blocked-until\t%d\t%s\n"
+                    % (int(time.time()) + cool,
+                       " ".join((reason or "limit").split())[:200]))
+    except OSError:
+        pass
+
+
+def run_codex(prompt, model, effort, timeout=600, kind="ingest"):
+    """One `codex exec` on the logged-in ChatGPT subscription — codex has one
+    login, so there is no walk. The exec road, like every classifier
+    (model-backends rule 16); OPENAI_API_KEY stripped (rule 5); the answer is
+    the completed agent message; usage from turn.completed lands on the token
+    ledger in the claude shape the ledger already reads."""
+    slug = codex_model_resolve(model)
+    until = codex_cooling_until()
+    if until is not None:
+        raise RuntimeError(
+            "the codex engine is cooling until %s — the judge cannot judge, "
+            "and no cheaper model may judge in its place"
+            % time.strftime("%H:%M", time.localtime(until)))
+    env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
+    instr = None
+    t0 = time.time()
+    try:
+        fd, instr = tempfile.mkstemp(prefix="deskcrab-ingest-instr.")
+        with os.fdopen(fd, "w") as f:
+            f.write("Answer in exactly the form asked for, nothing else.")
+        proc = subprocess.run(
+            [codex_bin(), "exec", "--ignore-user-config",
+             "--skip-git-repo-check",
+             "--dangerously-bypass-approvals-and-sandbox",
+             "--json", "--color", "never", "-C", sterile_cwd(), "-m", slug,
+             "-c", "model_instructions_file=%s" % instr,
+             "-c", "model_reasoning_effort=%s" % effort, "-"],
+            input=prompt, capture_output=True, text=True, timeout=timeout,
+            env=env, cwd=sterile_cwd())
+    finally:
+        if instr:
+            try:
+                os.unlink(instr)
+            except OSError:
+                pass
+    answer, usage, own = "", None, []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            own.append(line)
+            continue
+        if not isinstance(d, dict):
+            continue
+        t = d.get("type") or ""
+        if t == "item.completed":
+            item = d.get("item") or {}
+            if item.get("type") == "agent_message":
+                answer = item.get("text") or answer
+            elif item.get("type") == "error":
+                own.append(str(item.get("message") or ""))
+        elif t == "turn.completed" and isinstance(d.get("usage"), dict):
+            u = d["usage"]
+
+            def n(k):
+                try:
+                    return int(u.get(k) or 0)
+                except (TypeError, ValueError):
+                    return 0
+            cached = n("cached_input_tokens")
+            usage = {"input_tokens": max(n("input_tokens") - cached, 0),
+                     "cache_read_input_tokens": cached,
+                     "cache_creation_input_tokens": n("cache_write_input_tokens"),
+                     "output_tokens": n("output_tokens")}
+        elif t == "error":
+            own.append(str(d.get("message") or ""))
+        elif t == "turn.failed":
+            e = d.get("error")
+            own.append(str(e.get("message", "") if isinstance(e, dict) else e or ""))
+    if answer.strip():
+        _ledger_record({"usage": usage} if usage else None, kind, model,
+                       "", "ok", time.time() - t0)
+        return answer.strip()
+    own.append(proc.stderr or "")
+    said = "\n".join(own)
+    rx = re.compile(os.environ.get("DESKCRAB_CODEX_LIMIT_RE")
+                    or os.environ.get("CODEX_LIMIT_RE")
+                    or CODEX_LIMIT_RE_DEFAULT, re.I)
+    if rx.search(said):
+        codex_limit_record(said.strip().splitlines()[0] if said.strip() else "limit")
+        _ledger_record(None, kind, model, "", "refused", time.time() - t0)
+        raise RuntimeError(
+            "the codex login refused (%s) — cooldown recorded; no cheaper "
+            "model may judge in its place"
+            % " ".join(said.split())[:160])
+    _ledger_record(None, kind, model, "", "error", time.time() - t0)
+    raise RuntimeError("codex exited %s: %s"
+                       % (proc.returncode, " ".join(said.split())[:200]))
+
+
+def run_model(prompt, model, effort="high", timeout=600, log=None,
+              kind="ingest"):
+    """The engine follows the model name (model-backends rule 1). The effort
+    binds on the codex engine; a Claude name runs the classify walk at the
+    CLI's default effort, exactly as it always has."""
+    if model_backend(model) == "codex":
+        return run_codex(prompt, model, effort, timeout=timeout, kind=kind)
+    return run_claude(prompt, model, timeout=timeout, log=log, kind=kind)
+
+
+def summarize_window(material, model):
+    """Stage 1 (memory-recall.md rule 27): one faithful summary per raw
+    window, for the judge's eyes. Never a judgment."""
+    return run_model(SUMMARY_PROMPT + material, model,
+                     effort=os.environ.get("MEMORY_SUMMARY_EFFORT") or "low",
+                     kind="ingest-summary")
+
+
+def extract_candidates(material, model, prompt=None, effort="high"):
+    body = run_model((prompt or INGEST_PROMPT) + material, model,
+                     effort=effort, kind="ingest")
     m = re.search(r"\[.*\]", body, re.S)
     if not m:
         return []
@@ -1684,21 +1907,43 @@ def cmd_ingest(store, args):
         if not chunks:
             print("ingest: nothing new since last cursor")
             return 0
-        # Rule 29: never trim. A day past the cap is distilled in successive
+        # Rule 29: never trim. A day past the cap is summarised in successive
         # whole-chunk windows, in order, every pass reported — add_deduped
         # below absorbs any overlap between passes.
         materials = ["\n\n".join(w)
                      for w in window_chunks(chunks, args.max_chars)]
         total = sum(len(m) for m in materials)
+        # The header keeps its parseable shape — chunks, chars, "in N passes"
+        # — because the sleep stamp's coverage read (nightly.md rule 14a)
+        # is built on it. The passes counted are the summary passes: they
+        # are what covers the raw day.
         print(f"ingest: {len(chunks)} new chunks, {total} chars "
-              f"-> {args.model} for judgement"
+              f"-> {args.summary_model} for summaries, "
+              f"{args.model} ({args.effort}) for judgement"
               + (f" in {len(materials)} passes" if len(materials) > 1 else "")
               + "...")
-        candidates = []
+        # Stage 1 — the summariser (memory-recall.md rule 27): one faithful
+        # summary per raw window, labelled, never a judgment.
+        summaries = []
         for i, material in enumerate(materials, 1):
             if len(materials) > 1:
                 print(f"  pass {i}/{len(materials)}: {len(material)} chars")
-            candidates += extract_candidates(material, args.model)
+            summaries.append(
+                f"[day summary, window {i}/{len(materials)}]\n"
+                + summarize_window(material, args.summary_model))
+        # Stage 2 — the judge (nightly.md rules 14c-14e): the night judge
+        # reads the day's summaries together and decides what earns a
+        # record. The summaries window too (rule 29a) when they outgrow the
+        # cap — never trimmed, each judgement pass reported.
+        candidates = []
+        jwindows = window_chunks(summaries, args.max_chars)
+        for j, w in enumerate(jwindows, 1):
+            jmaterial = "\n\n".join(w)
+            if len(jwindows) > 1:
+                print(f"  judgement pass {j}/{len(jwindows)}: "
+                      f"{len(jmaterial)} chars")
+            candidates += extract_candidates(jmaterial, args.model,
+                                             effort=args.effort)
 
     counts = {"added": 0, "duplicate": 0, "superseded": 0, "rejected": 0}
     would = 0
@@ -1852,7 +2097,8 @@ def cmd_backfill_episodic(store, args):
         for material in ("\n\n".join(w)
                          for w in window_chunks(chunks, args.max_chars)):
             candidates += extract_candidates(material, args.model,
-                                             prompt=ARCHIVE_PROMPT)
+                                             prompt=ARCHIVE_PROMPT,
+                                             effort=args.effort)
         day_counts = dict.fromkeys(counts, 0)
         for cand in candidates:
             text = (cand.get("text") or "").strip()
@@ -2295,14 +2541,22 @@ def main():
     p.add_argument("ids", type=int, nargs="+")
     p.set_defaults(fn=cmd_reinforce)
 
-    p = sub.add_parser("ingest", help="distil new journal/transcript text into records")
+    p = sub.add_parser("ingest", help="distil new journal/transcript text "
+                                      "into records: summariser, then judge")
     p.add_argument("--journal-dir",
                    default=os.path.expanduser("~/.local/share/deskcrab/journal"))
     p.add_argument("--transcripts-dir",
                    default=os.path.expanduser("~/Documents/Transcriptions"))
     p.add_argument("--from-json", help="pre-judged candidates file (skips the model)")
+    # The night judge (nightly.md rules 14c-14e): every retention judgment is
+    # its, at its own effort; the summariser only condenses for it.
     p.add_argument("--model",
-                   default=os.environ.get("MEMORY_INGEST_MODEL") or "sonnet")
+                   default=os.environ.get("MEMORY_INGEST_MODEL")
+                   or "gpt-5.6-sol")
+    p.add_argument("--effort",
+                   default=os.environ.get("MEMORY_INGEST_EFFORT") or "high")
+    p.add_argument("--summary-model",
+                   default=os.environ.get("MEMORY_SUMMARY_MODEL") or "sonnet")
     p.add_argument("--max-chars", type=int, default=150000)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_ingest)
@@ -2318,8 +2572,15 @@ def main():
                    help="archive days to take this round (0 = all); the "
                         "cursor advances per finished day, so a long run "
                         "resumes instead of running away")
+    # The backfill judges retention from months-old raw material — a judge's
+    # job (nightly.md rule 14c), so it rides the same judge knobs; there is
+    # no summariser stage here, because the judge reading raw archive text
+    # itself is allowed — only a cheaper tier deciding is not.
     p.add_argument("--model",
-                   default=os.environ.get("MEMORY_INGEST_MODEL") or "sonnet")
+                   default=os.environ.get("MEMORY_INGEST_MODEL")
+                   or "gpt-5.6-sol")
+    p.add_argument("--effort",
+                   default=os.environ.get("MEMORY_INGEST_EFFORT") or "high")
     p.add_argument("--max-chars", type=int, default=100000)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_backfill_episodic)

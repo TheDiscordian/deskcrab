@@ -76,9 +76,13 @@ during the very investigation that produced these specs.
      destroyed. A real leak surfaces through the diff and is cleaned by a hand that read it; a
      stray clip is collected by the live instance's own hourly sweep. Held by
      `tests/test_sandbox_live_clips.sh`.
-10. **Spend.** A test MUST NOT start a real model session. The stub must be asserted as the **first**
-    check of any test that dispatches work, so a configuration that overwrites the CLI path is caught
-    before the money is spent.
+10. **Spend.** A test MUST NOT start a real model session — on EITHER engine. The stub must be
+    asserted as the **first** check of any test that dispatches work, so a configuration that
+    overwrites the CLI path is caught before the money is spent. The codex CLI is stubbed from the
+    same one list and pinned the same way (`CODEX_BIN`), because the night judge defaults to a
+    codex name ([nightly.md](nightly.md) rule 14c) and an unstubbed `codex` on the PATH is the
+    live ChatGPT subscription; the sandbox also pins `DESKCRAB_CODEX_STATE` into its own root, so
+    a stub's refusal can never bench the LIVE codex login for every real session.
 11. **Interrupt.** A test MUST NOT play audio, raise a notification, or open a window.
 12. **Speak and schedule.** A test MUST NOT book a real wake, dispatch a real job, or send a real
     push. The booking path MUST refuse to reach the user manager when the wakes directory is not the

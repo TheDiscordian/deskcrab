@@ -252,7 +252,15 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # MEMORY_STORE=1
 # MEMORY_EMBED_MODEL="nomic-embed-text"
 # MEMORY_EMBED_URL="http://localhost:11434/api/embed"
-# MEMORY_INGEST_MODEL="sonnet"   # judges what earns a record in `crab memory ingest`
+# The nightly ingest is two-stage (specs/memory-recall.md rule 27): the
+# summariser condenses each window of the day, and the NIGHT JUDGE decides
+# what earns a record. Every sleep judgment is the judge's — the summariser
+# tier never decides what survives, and no cheaper model ever judges in the
+# judge's place (specs/nightly.md rules 14c-14e).
+# MEMORY_INGEST_MODEL="gpt-5.6-sol"  # the night judge: what earns a record
+# MEMORY_INGEST_EFFORT="high"        # the judge's reasoning effort
+# MEMORY_SUMMARY_MODEL="sonnet"      # stage 1: summaries only, never judgment
+# MEMORY_SUMMARY_EFFORT="low"        # binds on a codex-named summariser only
 # Reinforcement: after each turn's reply is delivered, a detached judge asks
 # which of the injected records GENUINELY influenced the reply and reinforces
 # only those (bumping last_used_at/use_count, which score retrieval). Records
@@ -275,6 +283,20 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # PROMISE_CHECK_WAKE_CAP=3          # pending unkept-commitment wakes, at most
 # PROMISE_CHECK_REBOOK_MAX=2        # wakes one verbatim promise may earn a day
 # PROMISE_SWEEP_WAKE_AT="09:45"     # when the night sweep's misses are surfaced
+
+# The night judge's other roles (specs/nightly.md rules 14c-14e): every sleep
+# judgment — retention, deduplication, reconciliation, work selection — runs
+# on the night judge, gpt-5.6-sol at high by default, with NO fallback model.
+# The nightly ingest judge pair is MEMORY_INGEST_MODEL/_EFFORT above.
+# PROMISE_SWEEP_MODEL="gpt-5.6-sol"  # the night sweep's judge — never the
+#                                    # live checker's sonnet/haiku pair
+# PROMISE_SWEEP_EFFORT="high"
+# ENG_MERGE_MODEL="gpt-5.6-sol"      # the twin-merge judge (rule 53c)
+# ENG_MERGE_EFFORT="high"
+# NIGHT_WORK_MODEL="gpt-5.6-sol"     # the night-work selector (rule 58)
+# NIGHT_WORK_EFFORT="high"
+# NIGHT_WORK_CUTOFF="06:00"          # the hard dispatch line (rule 56)
+# NIGHT_WORK_CAP=2                   # concurrent builders, the user's ceiling
 
 # Optional: self-change awareness (lib/notice-selfchange, driven by
 # systemd/deskcrab-notice-selfchange.path). Wakes the assistant when files

@@ -119,12 +119,17 @@ NOW="$(date +%s)"
 LEDGER="$T/night-work/dispatched.tsv"
 
 night_work() {  # [env overrides...] — runs the night's work with the harness's paths pinned;
-           # the overrides come LAST, so a test may repoint any pinned path
+           # the overrides come LAST, so a test may repoint any pinned path.
+           # The model is pinned to a Claude-shaped name so the stub claude
+           # serves the selector: this suite owns the material, validation,
+           # cap and cutoff; the EFFECTIVE default routing to the night
+           # judge is tests/test_sleep_sol_judgment.sh's subject.
     env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
         PROMISE_LEDGER="$PLEDGER" WAKES_DIR="$DWAKES" \
         NIGHT_WORK_THREADS_DIR="$T/eng" \
         NIGHT_WORK_LEDGER="$LEDGER" \
         NIGHT_WORK_POLL=1 \
+        NIGHT_WORK_MODEL=stub-claude \
         "$@" \
         "$REPO/lib/night-work" run 2>&1
 }

@@ -59,9 +59,28 @@ say() { printf 'promise-check: %s\n' "$1"; }
 
 CHECK_MODEL="${PROMISE_CHECK_MODEL:-sonnet}"
 CHECK_FALLBACK_MODEL="${PROMISE_CHECK_FALLBACK_MODEL:-haiku}"
+# The night sweep's judge is the NIGHT JUDGE, never the live checker's model
+# pair (specs/nightly.md rules 14c-14e and 51): reconciling which promises
+# genuinely died is a sleep judgment, and no cheaper model may make it — no
+# fallback model, where the live pass above keeps its sonnet/haiku pair as
+# the live-turn role it is.
+SWEEP_MODEL="${PROMISE_SWEEP_MODEL:-gpt-5.6-sol}"
+SWEEP_EFFORT="${PROMISE_SWEEP_EFFORT:-high}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 [ -x "$CLAUDE_BIN" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
+
+# The sweep's one judgment call — the shared walk of specs/nightly.md rules
+# 14c-14e, sourced, never re-implemented here. Through common.sh's own
+# resolved LIB_DIR, not SCRIPT_DIR: a copy-scaffolded harness carries this
+# script beside a symlinked common.sh, and LIB_DIR always names the real
+# library directory that holds the walk.
+# shellcheck source=nightly-judge
+. "$LIB_DIR/nightly-judge"
+sweep_judge_walk() {  # <verdict-line-ERE>
+    nightly_judge_walk "$SWEEP_MODEL" "$SWEEP_EFFORT" \
+        "${PROMISE_SWEEP_TIMEOUT:-300}" promise-check "$1"
+}
 
 # One classify question under the ACCOUNT SELECTION, the auditor's walk with
 # one extra rung: an account that answers but yields no line matching the
@@ -1213,9 +1232,9 @@ $DIGEST
 $LIVE"
 
     local OUT
-    if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(MISS|CLEAN)\b')"; then
-        check_log "sweep $DAY: no verdict from $CHECK_MODEL or $CHECK_FALLBACK_MODEL — the day was not swept"
-        say "sweep $DAY: no verdict from $CHECK_MODEL or $CHECK_FALLBACK_MODEL — the day was not swept"
+    if ! OUT="$(printf '%s' "$PROMPT" | sweep_judge_walk '^(MISS|CLEAN)\b')"; then
+        check_log "sweep $DAY: no verdict from the night judge ($SWEEP_MODEL) — the day was not swept, and no cheaper model may sweep it"
+        say "sweep $DAY: no verdict from the night judge ($SWEEP_MODEL) — the day was not swept, and no cheaper model may sweep it"
         return 0
     fi
 

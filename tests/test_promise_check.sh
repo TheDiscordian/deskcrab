@@ -486,6 +486,10 @@ check_eq "an ordinary reason is not" \
 echo
 echo "the sweep: an end-of-day miss surfaces, a later-fulfilled promise is dropped,"
 echo "and the desk rows' own tool traces (rule 32e) refute or fulfil a completed claim:"
+# The sweep's judge is pinned Claude-shaped so the stub claude serves it;
+# the EFFECTIVE default — the night judge, gpt-5.6-sol at high, no fallback
+# (nightly.md rules 14c-14e) — is tests/test_sleep_sol_judgment.sh's subject.
+export PROMISE_SWEEP_MODEL=stub-claude
 reset
 DAY="$(date -d yesterday +%F)"
 mkdir -p "$DAY_JOURNAL_DIR"

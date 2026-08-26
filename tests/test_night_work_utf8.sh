@@ -111,6 +111,7 @@ out="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
     NIGHT_WORK_THREADS_DIR="$T/eng" \
     NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
     NIGHT_WORK_POLL=1 NIGHT_WORK_ROUNDS_MAX=1 \
+    NIGHT_WORK_MODEL=stub-claude \
     NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" \
     "$REPO/lib/night-work" run 2>&1)"; rc=$?
 check_eq "the night's work exits clean" "$rc" "0"
@@ -220,6 +221,7 @@ out2="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
     NIGHT_WORK_THREADS_DIR="$T/eng" \
     NIGHT_WORK_LEDGER="$T/night-work/dispatched.tsv" \
     NIGHT_WORK_POLL=1 NIGHT_WORK_ROUNDS_MAX=1 \
+    NIGHT_WORK_MODEL=stub-claude \
     NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" \
     "$REPO/lib/night-work" run 2>&1)"; rc2=$?
 check_eq "the night's work exits clean again" "$rc2" "0"

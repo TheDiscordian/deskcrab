@@ -50,7 +50,9 @@ ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
 # Yield alone can hide a truncated night: "added=8" reads the same whether the
 # ingest weighed the whole day or died after its first pass. The ingest header
 # states the night's own size — "ingest: 461 new chunks, 499751 chars ->
-# sonnet for judgement in 4 passes..." — so the stamp carries that claim too:
+# sonnet for summaries, gpt-5.6-sol (high) for judgement in 4 passes..."
+# (the summariser-then-judge shape of memory-recall.md rule 27; older logs
+# read "-> sonnet for judgement...") — so the stamp carries that claim too:
 # "chunks=461 chars=499751 passes=4", printed with no leading space, or less
 # where the log says less. tail -1 of the matching lines, exactly as the
 # added= parse takes its number. Older headers predate the pass count

@@ -42,7 +42,9 @@ two share a directory and nothing else.
    `cost` (the CLI's own `total_cost_usd` share), `duration` (seconds), `sid` (the CLI session
    id), and `pid`.
 4. The session kinds are: `turn` (desk), `phone`, `wake`, `job`, `summariser`, `memory-judge`,
-   `ingest`, `chess`, `promise-audit`, `promise-check`, `claudism-mirror`, `claudism-scan`,
+   `ingest` (the ingest's retention judge), `ingest-summary` (the ingest's stage-1 summariser,
+   [memory-recall.md](memory-recall.md) rule 27), `chess`, `promise-audit`, `promise-check`,
+   `claudism-mirror`, `claudism-scan`, `eng-merge` (the twin-merge judge),
    `night-work` (the night-work selector). A
    backfilled record whose kind cannot be told from its artifact carries the best approximation
    and `approx: true` — never a guess dressed as knowledge.

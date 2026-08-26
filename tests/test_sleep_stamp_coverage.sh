@@ -53,6 +53,24 @@ check_eq "the header pass count wins over counting the pass lines" \
     "$(cov "$T/died.log")" "chunks=461 chars=499751 passes=4"
 
 echo
+echo "the two-stage header (memory-recall.md rule 27) parses identically —"
+echo "summariser and judge named, judgement passes never miscounted as passes:"
+cat > "$T/twostage.log" <<'EOF'
+=== sleep 2026-08-26 03:10:12 ===
+ingest: 461 new chunks, 499751 chars -> sonnet for summaries, gpt-5.6-sol (high) for judgement in 4 passes...
+  pass 1/4: 149663 chars
+  pass 2/4: 149831 chars
+  pass 3/4: 149676 chars
+  pass 4/4: 50581 chars
+  judgement pass 1/2: 145000 chars
+  judgement pass 2/2: 22000 chars
+ingest: 12 added, 0 superseded, 0 duplicates, 0 rejected
+exit: 0
+EOF
+check_eq "chunks, chars and the SUMMARY pass count come from the header" \
+    "$(cov "$T/twostage.log")" "chunks=461 chars=499751 passes=4"
+
+echo
 echo "the older header, no pass count stated:"
 # The 2026-08-08 shape: chunks and chars, no "in N passes", no pass lines.
 cat > "$T/old.log" <<'EOF'

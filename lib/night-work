@@ -47,8 +47,11 @@
 #   NIGHT_WORK_WINDOW_MAX=21600  a start further than this from the next
 #                                   cutoff takes up nothing (the noon catch-up)
 #   NIGHT_WORK_ROUNDS_MAX=0      0 = rounds bounded by the cutoff alone
-#   NIGHT_WORK_MODEL=opus        the selector; picking work is judgement
-#   NIGHT_WORK_FALLBACK_MODEL=sonnet
+#   NIGHT_WORK_MODEL=gpt-5.6-sol the selector — picking work is judgement,
+#                                   and every sleep judgment is the night
+#                                   judge's (specs/nightly.md rules 14c-14e);
+#                                   no fallback model may select in its place
+#   NIGHT_WORK_EFFORT=high       the judge's reasoning effort
 #   NIGHT_WORK_TIMEOUT=600       seconds per selection call
 #   NIGHT_WORK_THREADS_DIR / _RECORDS_DIR / _LEDGER   the material paths
 #                                   (_RECORDS_DIR: the live records drawer,
@@ -80,8 +83,8 @@ CAP="${NIGHT_WORK_CAP:-2}"
 POLL="${NIGHT_WORK_POLL:-300}"
 WINDOW_MAX="${NIGHT_WORK_WINDOW_MAX:-21600}"
 ROUNDS_MAX="${NIGHT_WORK_ROUNDS_MAX:-0}"
-NIGHT_WORK_MODEL="${NIGHT_WORK_MODEL:-opus}"
-NIGHT_WORK_FALLBACK_MODEL="${NIGHT_WORK_FALLBACK_MODEL:-sonnet}"
+NIGHT_WORK_MODEL="${NIGHT_WORK_MODEL:-gpt-5.6-sol}"
+NIGHT_WORK_EFFORT="${NIGHT_WORK_EFFORT:-high}"
 CRAB="${CRAB_BIN:-$SCRIPT_DIR/crab}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 
@@ -106,51 +109,15 @@ section_overrun() {  # <section name> <true bytes> <budget bytes>
     say "round ${ROUNDS:-0}: the $1 outgrew its budget — $2 bytes against $3, cut to the budget on a character boundary (rule 58a)"
 }
 
-# One selection question under the ACCOUNT SELECTION — promise-check's walk,
-# with the night's own models. An account that answers but yields no line matching
-# the verdict pattern is retried once on the fallback model before the round
-# gives up. Reads the prompt on stdin; prints the answering model's output.
-# Returns 1 when every account refused or nothing parseable came back.
+# One selection question to the NIGHT JUDGE — the one shared walk of
+# specs/nightly.md rules 14c-14e, sourced, never re-implemented. No fallback
+# model: a round the judge cannot answer selects nothing, because picking the
+# night's work is exactly the judgment no cheaper model may make.
+# shellcheck source=nightly-judge
+. "$LIB_DIR/nightly-judge"
 classify_walk() {  # <verdict-line-ERE>
-    local VERDICT_RE="$1" PROMPT ACCT CONFDIR MODEL OUT REFUSAL
-    PROMPT="$(cat)"
-    local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-night-work-stream-XXXXXX")"
-    # Selected for the night's primary model (specs/account-fallback.md rule
-    # 10); a refusal is recorded with the model that was actually refused.
-    for ACCT in $(claude_accounts "$NIGHT_WORK_MODEL"); do
-        CONFDIR="$(claude_account_dir "$ACCT")"
-        for MODEL in "$NIGHT_WORK_MODEL" "$NIGHT_WORK_FALLBACK_MODEL"; do
-            : > "$CLOG"
-            printf '%s' "$PROMPT" | (
-                export CLAUDE_CONFIG_DIR="$CONFDIR"
-                CLAUDE_CLASSIFY_TIMEOUT="${NIGHT_WORK_TIMEOUT:-600}" \
-                CLAUDE_CLASSIFY_STREAM=1 \
-                    claude_classify "$MODEL" \
-                        "Answer in exactly the form asked for, nothing else."
-            ) >"$CLOG" 2>&1
-            # Recorded per attempt, before the next truncation wipes this
-            # one's stream (specs/metrics.md rules 13-14).
-            token_ledger_record "$CLOG" night-work "$MODEL" "" "$ACCT"
-            if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
-                say "account $ACCT refused — trying the next account"
-                claude_limit_record "$ACCT" "$REFUSAL" "$MODEL"
-                continue 2
-            fi
-            OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
-            if [ -z "$OUT" ] && ! grep -q '"type":' "$CLOG" 2>/dev/null; then
-                OUT="$(cat "$CLOG" 2>/dev/null)"
-            fi
-            if printf '%s\n' "$OUT" | tr -d '\r' | grep -qE "$VERDICT_RE"; then
-                rm -f "$CLOG"
-                printf '%s\n' "$OUT" | tr -d '\r'
-                return 0
-            fi
-            say "$MODEL answered with nothing parseable$( [ "$MODEL" = "$NIGHT_WORK_MODEL" ] && printf ' — falling to %s' "$NIGHT_WORK_FALLBACK_MODEL")"
-        done
-        break
-    done
-    rm -f "$CLOG"
-    return 1
+    nightly_judge_walk "$NIGHT_WORK_MODEL" "$NIGHT_WORK_EFFORT" \
+        "${NIGHT_WORK_TIMEOUT:-600}" night-work "$1"
 }
 
 running_jobs() {  # every sidecar standing dispatched or running — the whole box's, not ours
@@ -184,9 +151,21 @@ cmd_run() {
     if [ "${NIGHT_WORK:-1}" != 1 ]; then
         say "off (NIGHT_WORK=${NIGHT_WORK:-})"; return 0
     fi
-    if [ ! -x "$CLAUDE_BIN" ]; then
-        say "no claude binary — nothing selected, nothing dispatched"; return 0
-    fi
+    # The judge's own engine binary, by the model name (specs/nightly.md rule
+    # 14c; model-backends rule 1). Existence only — a cooling codex engine
+    # still runs the queue phase, and each round's failed selection says so
+    # in the walk's own name (rule 14e).
+    case "$(model_backend "$NIGHT_WORK_MODEL")" in
+        codex)
+            if ! [ -x "$CODEX_BIN" ] && ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+                say "no codex binary for the night judge ($NIGHT_WORK_MODEL) — nothing selected, nothing dispatched"
+                return 0
+            fi ;;
+        *)
+            if [ ! -x "$CLAUDE_BIN" ]; then
+                say "no claude binary — nothing selected, nothing dispatched"; return 0
+            fi ;;
+    esac
 
     # One-time move of the durable ledger: this mechanism was called the
     # backlog drain until 2026-08-20, and its dispatch record lived under
@@ -563,7 +542,7 @@ $LEDGER_TAIL"
 
         local OUT
         if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(TASK|NOTHING)\b')"; then
-            REASON="no selection from $NIGHT_WORK_MODEL or $NIGHT_WORK_FALLBACK_MODEL — nothing more can be judged tonight"
+            REASON="no selection from the night judge ($NIGHT_WORK_MODEL) — nothing more can be judged tonight, and no cheaper model may pick the night's work"
             break
         fi
 

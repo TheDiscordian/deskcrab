@@ -1083,7 +1083,7 @@ class TestArchiveBackfill(StoreCase):
             f.write(body)
 
     def stub(self, per_material):
-        def fake(material, model, prompt=None):
+        def fake(material, model, prompt=None, effort=None):
             self.assertEqual(prompt, memory.ARCHIVE_PROMPT)
             self.distilled.append(material)
             return per_material(material)
@@ -1091,7 +1091,7 @@ class TestArchiveBackfill(StoreCase):
 
     def args(self, **kw):
         base = dict(archive_dir=self.arch, days=5, model="stub",
-                    max_chars=100000, dry_run=False)
+                    effort="high", max_chars=100000, dry_run=False)
         base.update(kw)
         return Namespace(**base)
 
@@ -1618,7 +1618,8 @@ class TestWindowChunks(unittest.TestCase):
 class TestIngest(StoreCase):
     def test_ingest_windows_a_long_day_instead_of_trimming(self):
         """Rule 29 through cmd_ingest itself: a day past the cap reaches the
-        distiller in whole-chunk windows, in order, every pass reported."""
+        SUMMARISER in whole-chunk windows, in order, every pass reported —
+        and the judge receives the summaries, never the raw day (rule 27)."""
         jdir = os.path.join(self.dir, "journal")
         os.makedirs(jdir)
         with open(os.path.join(jdir, "2026-08-10.jsonl"), "w") as f:
@@ -1627,19 +1628,26 @@ class TestIngest(StoreCase):
                     {"time": f"2026-08-10T{i:02d}:00:00-0400",
                      "kind": "desktop", "user": f"turn {i} " + "x" * 60,
                      "reply": "noted"}) + "\n")
-        seen = []
-        real = memory.extract_candidates
+        seen, judged = [], []
+        real_sum = memory.summarize_window
+        real_extract = memory.extract_candidates
+        memory.summarize_window = \
+            lambda material, model: (seen.append(material),
+                                     "a faithful summary")[1]
         memory.extract_candidates = \
-            lambda material, model: (seen.append(material), [])[1]
+            lambda material, model, prompt=None, effort=None: \
+            (judged.append(material), [])[1]
         try:
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 rc = memory.cmd_ingest(self.store, Namespace(
                     dry_run=True, from_json=None, journal_dir=jdir,
                     transcripts_dir=os.path.join(self.dir, "none"),
-                    model="stub", max_chars=300))
+                    model="stub", effort="high", summary_model="stub-sum",
+                    max_chars=300))
         finally:
-            memory.extract_candidates = real
+            memory.summarize_window = real_sum
+            memory.extract_candidates = real_extract
         self.assertEqual(rc, 0)
         self.assertGreater(len(seen), 1,
                            "a single pass means the cap trimmed the day")
@@ -1648,6 +1656,13 @@ class TestIngest(StoreCase):
         # Joined back together, the passes are the whole day, in order.
         self.assertEqual("\n\n".join(seen),
                          "\n\n".join(memory.journal_delta(jdir, {})))
+        # The judge reads the summariser's labelled summaries, and not one
+        # byte of the raw day (rule 27's boundary).
+        self.assertTrue(judged, "the judge was never consulted")
+        self.assertIn("[day summary, window 1/", judged[0])
+        for material in judged:
+            self.assertIn("a faithful summary", material)
+            self.assertNotIn("turn 3", material)
         report = out.getvalue()
         self.assertIn(f"in {len(seen)} passes", report)
         for i, material in enumerate(seen, 1):
@@ -1685,7 +1700,7 @@ class TestIngest(StoreCase):
             [sys.executable, os.path.join(REPO, "lib", "memory.py"),
              "ingest", "--dry-run", "--journal-dir", jdir,
              "--transcripts-dir", os.path.join(self.dir, "none"),
-             "--model", "stub"],
+             "--model", "stub", "--summary-model", "stub"],
             capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("would add [note] (2026-08-10) "

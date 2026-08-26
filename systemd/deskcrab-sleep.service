@@ -13,11 +13,13 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # the start timeout is the runtime bound that actually applies.
 #
 # Sized for the night's work (specs/nightly.md rules 54-61), which runs as
-# the night's LAST phase — after the review and the promise sweep — and
-# holds the sleep run open from the stamp until its cutoff, 08:00 by default
-# against the 03:10 timer: sleeping is an active activity, and the night
-# spends its hours on builders. Six hours leaves the whole default window
-# plus headroom; raise this too if NIGHT_WORK_CUTOFF moves later, or the
+# the night's LAST phase — after the review, the promise sweep and the
+# twin-merge pass — and holds the sleep run open from the stamp until its
+# cutoff, 06:00 by default against the 03:10 timer (the user's stated hard
+# line since 2026-08-14; an earlier cut defaulted to 08:00 and ran builders
+# into the morning): sleeping is an active activity, and the night spends
+# its hours on builders. Six hours leaves the whole default window plus
+# headroom; raise this too if NIGHT_WORK_CUTOFF moves later, or the
 # timeout kills the night's work mid-round (the stamp, the review and the
 # sweep are already done by then — the night's work is all a timeout can
 # cost).
@@ -25,5 +27,5 @@ TimeoutStartSec=21600
 # The night-work knobs, all defaulted (lib/night-work's header is the list).
 # Set them here or in deskcrab.conf — this script sources lib/common.sh, so
 # the conf reaches it either way.
-# Environment=NIGHT_WORK_CUTOFF=08:00
+# Environment=NIGHT_WORK_CUTOFF=06:00
 # Environment=NIGHT_WORK_CAP=2

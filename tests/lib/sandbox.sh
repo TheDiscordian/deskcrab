@@ -238,9 +238,12 @@ CONF
         ARCHIVE_DIR="$_sb_root/data/deskcrab/archive" \
         NOTICE_STATE_DIR="$_sb_root/xdgstate/deskcrab" \
         CLAUDE_BIN="$_sb_root/bin/claude" \
+        CODEX_BIN="$_sb_root/bin/codex" \
+        DESKCRAB_CODEX_STATE="$_sb_root/data/deskcrab/codex-state" \
         COCOON_BWRAP="$_sb_lib/cocoon-passthru" \
         DESKCRAB_ALLOW_SCRATCH_BOOKING=1 \
         MEMORY_PYTHON="$_sb_venv" \
+        SANDBOX_CODEX_LOG="$_sb_root/witness/codex.log" \
         SANDBOX_SYSTEMD_LOG="$_sb_root/witness/systemd-run.log" \
         SANDBOX_SYSTEMCTL_LOG="$_sb_root/witness/systemctl.log" \
         SANDBOX_NOTIFY_LOG="$_sb_root/witness/notify.log" \

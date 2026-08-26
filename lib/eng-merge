@@ -42,10 +42,11 @@
 # small and honest. 0.80 is that distribution's p98, ~0.05 under the lowest
 # observed twin.
 #
-# The judgement is deciding what is a duplicate — taste — so it runs where
-# the phase-2 model rule puts taste (design-memory-store.md, 2026-08-06
-# 22:49: "what is a duplicate ... Opus, always"): ENG_MERGE_MODEL, default
-# opus, under the account chain, with NO model fallback. Every non-answer is
+# The judgement is deciding what is a duplicate — taste — and taste on the
+# sleep path belongs to the night judge (specs/nightly.md rules 14c-14e; the
+# 2026-08-25 ruling supersedes design-memory-store.md's 2026-08-06 "what is a
+# duplicate ... Opus, always" here): ENG_MERGE_MODEL at ENG_MERGE_EFFORT,
+# default gpt-5.6-sol at high, with NO model fallback. Every non-answer is
 # conservative: a refusal, an unparseable verdict and DISTINCT all leave
 # both records standing — and under --apply, so does any MERGE below the
 # fold gate.
@@ -56,7 +57,9 @@
 #   ENG_MERGE_MAX_JUDGED=8       judgement calls per run, highest first;
 #                                   a bound that bites is announced with the
 #                                   count it dropped (rule 58a's discipline)
-#   ENG_MERGE_MODEL=opus         the judge; phase-2 rule, no fallback
+#   ENG_MERGE_MODEL=gpt-5.6-sol  the judge — the night judge's role, no
+#                                   fallback (specs/nightly.md rule 53c)
+#   ENG_MERGE_EFFORT=high        the judge's reasoning effort
 #   ENG_MERGE_TIMEOUT=300        seconds per judgement call
 #   ENG_MERGE_FOLD_CONFIDENCE=certain   the fold gate under --apply:
 #                                   certain folds only MERGE CERTAIN; likely
@@ -79,7 +82,8 @@ export DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-${XDG_DATA_HOME:-$HOME/.local/share
 ENGDIR="$DESKCRAB_ENG_DIR"
 THRESH="${ENG_MERGE_THRESHOLD:-0.80}"
 MAX_JUDGED="${ENG_MERGE_MAX_JUDGED:-8}"
-ENG_MERGE_MODEL="${ENG_MERGE_MODEL:-opus}"
+ENG_MERGE_MODEL="${ENG_MERGE_MODEL:-gpt-5.6-sol}"
+ENG_MERGE_EFFORT="${ENG_MERGE_EFFORT:-high}"
 EMBED_URL="${MEMORY_EMBED_URL:-http://localhost:11434/api/embed}"
 EMBED_MODEL="${MEMORY_EMBED_MODEL:-nomic-embed-text}"
 
@@ -160,46 +164,16 @@ for s, a, b in pairs:
 PY
 }
 
-# One judgement question under the ACCOUNT SELECTION — night-work's walk,
-# with two deliberate differences (rule 53c): the model is the phase-2
-# model with NO fallback, and an account that answers gibberish is not
-# walked past — the pair simply stands. Reads the prompt on stdin; prints
-# the answering model's output. Returns 1 when nothing usable came back.
+# One judgement question to the NIGHT JUDGE — the one shared walk of
+# specs/nightly.md rules 14c-14e, sourced, never re-implemented. NO model
+# fallback, and an answer that is gibberish is not walked past — the pair
+# simply stands. Reads the prompt on stdin; prints the answering model's
+# output. Returns 1 when nothing usable came back.
+# shellcheck source=nightly-judge
+. "$LIB_DIR/nightly-judge"
 judge_walk() {
-    local PROMPT ACCT CONFDIR OUT REFUSAL
-    PROMPT="$(cat)"
-    local CLOG; CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-eng-merge-stream-XXXXXX")"
-    for ACCT in $(claude_accounts "$ENG_MERGE_MODEL"); do
-        CONFDIR="$(claude_account_dir "$ACCT")"
-        : > "$CLOG"
-        printf '%s' "$PROMPT" | (
-            export CLAUDE_CONFIG_DIR="$CONFDIR"
-            CLAUDE_CLASSIFY_TIMEOUT="${ENG_MERGE_TIMEOUT:-300}" \
-            CLAUDE_CLASSIFY_STREAM=1 \
-                claude_classify "$ENG_MERGE_MODEL" \
-                    "Answer in exactly the form asked for, nothing else."
-        ) >"$CLOG" 2>&1
-        # Recorded per attempt, before the next truncation wipes this one's
-        # stream (specs/metrics.md rules 13-14).
-        token_ledger_record "$CLOG" eng-merge "$ENG_MERGE_MODEL" "" "$ACCT"
-        if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
-            say "account $ACCT refused — trying the next account"
-            claude_limit_record "$ACCT" "$REFUSAL" "$ENG_MERGE_MODEL"
-            continue
-        fi
-        OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$SCRIPT_DIR/lib/extract-response" 2>/dev/null)"
-        if [ -z "$OUT" ] && ! grep -q '"type":' "$CLOG" 2>/dev/null; then
-            OUT="$(cat "$CLOG" 2>/dev/null)"
-        fi
-        if printf '%s\n' "$OUT" | tr -d '\r' | grep -qE '^(MERGE|DISTINCT)\b'; then
-            rm -f "$CLOG"
-            printf '%s\n' "$OUT" | tr -d '\r'
-            return 0
-        fi
-        break
-    done
-    rm -f "$CLOG"
-    return 1
+    nightly_judge_walk "$ENG_MERGE_MODEL" "$ENG_MERGE_EFFORT" \
+        "${ENG_MERGE_TIMEOUT:-300}" eng-merge '^(MERGE|DISTINCT)\b'
 }
 
 engf() { "$SCRIPT_DIR/lib/eng" field "$1" "$2" 2>/dev/null; }

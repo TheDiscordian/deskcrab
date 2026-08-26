@@ -1,0 +1,136 @@
+# nightly-judge — the night's one judgment walk. SOURCED, never executed:
+# every caller has already sourced lib/common.sh, and this file only adds the
+# one function they share.
+#
+# The sleep correction of 2026-08-25 (the record
+# sleep-should-be-orchestrated-and-judged-by-sol-h): every judgment the night
+# makes — what the day's material earns as a record, which two records are one
+# complaint, which promises genuinely died, what work the night buys — runs on
+# ONE judge, gpt-5.6-sol at high reasoning effort by default, and on NOTHING
+# cheaper. Claude Sonnet's only place in the night is producing summaries that
+# are handed TO this judge (lib/memory.py's ingest stage 1); it never decides
+# what survives and never picks work. Opus holds no sleep judgment role. And
+# there is NO model fallback here on purpose: a judgment the judge cannot make
+# tonight is not made — a skipped judgment is conservative everywhere it is
+# consumed (a pair stands, a day is not swept, a round selects nothing), where
+# a cheaper model's judgment is exactly the substitution the correction
+# removed. specs/nightly.md rules 13a-13c.
+#
+#   nightly_judge_walk <model> <effort> <timeout s> <ledger kind> <verdict-ERE>
+#
+# Reads the prompt on stdin; prints the answering model's output on stdout and
+# returns 0 when a line matches the verdict pattern. Diagnostics go to stderr
+# in the caller's ledger-kind name — the night phases run 2>&1 into the night
+# log, so the log carries them while a caller's $(...) capture stays clean.
+# Returns 1 when no usable verdict came back, whatever the reason.
+#
+# The engine follows the model name (specs/model-backends.md rules 1-3, 16):
+#   * a codex name runs ONE `codex exec` on the logged-in ChatGPT
+#     subscription — codex has one login, so there is no account walk; the
+#     reasoning effort rides `model_reasoning_effort`; the stream is
+#     translated by lib/codex-stream so the ledger, the extractor and the
+#     refusal read run unchanged; a limit refusal records the codex cooldown
+#     (codex_limit_record) and the walk ends — it never falls back to a
+#     Claude model, because the fallback would be the cheaper judge this file
+#     exists to forbid.
+#   * a Claude name takes the flat account walk exactly as eng-merge's judge
+#     always did: one model, claude_classify per account, a refusal recorded
+#     and the next account tried, an account that answers — however
+#     unhelpfully — ending the walk. The classify profile carries no effort
+#     flag, so a Claude-named judge runs at the CLI's default effort, exactly
+#     as every classify here always has; the effort knob binds on the codex
+#     engine, where the mandated judge lives.
+
+nightly_judge_walk() {  # <model> <effort> <timeout s> <ledger kind> <verdict-ERE>
+    local MODEL="$1" EFFORT="$2" NJ_TIMEOUT="$3" NJ_KIND="$4" VERDICT_RE="$5"
+    local PROMPT OUT REFUSAL CLOG
+    PROMPT="$(cat)"
+    CLOG="$(mktemp "${TMPDIR:-/tmp}/deskcrab-${NJ_KIND}-stream-XXXXXX")"
+
+    if [ "$(model_backend "$MODEL")" = "codex" ]; then
+        local SLUG D INSTR
+        SLUG="$(codex_model_resolve "$MODEL")"
+        if ! codex_available; then
+            echo "$NJ_KIND: the judge ($MODEL) is unavailable — $(codex_unavailable_why); no judgment is made and no cheaper model may make it" >&2
+            rm -f "$CLOG"
+            return 1
+        fi
+        D="$(claude_sterile_cwd)"
+        INSTR="$(mktemp "${TMPDIR:-/tmp}/deskcrab-${NJ_KIND}-instr-XXXXXX")"
+        printf '%s' "Answer in exactly the form asked for, nothing else." > "$INSTR"
+        local -a bound=()
+        [ "${NJ_TIMEOUT:-0}" -gt 0 ] 2>/dev/null \
+            && command -v timeout >/dev/null 2>&1 \
+            && bound=(timeout "$NJ_TIMEOUT")
+        # The exec road, like every classifier (model-backends rule 16) —
+        # nobody waits on a judge's voice. OPENAI_API_KEY is stripped so a
+        # stray key can never move the night onto metered billing (rule 5).
+        printf '%s' "$PROMPT" | (
+            cd "$D" 2>/dev/null || cd /
+            env -u OPENAI_API_KEY ${bound[@]+"${bound[@]}"} "$CODEX_BIN" exec \
+                --ignore-user-config --skip-git-repo-check \
+                --dangerously-bypass-approvals-and-sandbox --json --color never \
+                -C "$D" -m "$SLUG" \
+                -c "model_instructions_file=$INSTR" \
+                -c "model_reasoning_effort=$EFFORT" - 2>/dev/null
+        ) | CODEX_STREAM_MODEL="$SLUG" CODEX_STREAM_HEARTBEAT=0 \
+                "$LIB_DIR/codex-stream" > "$CLOG" 2>&1
+        rm -f "$INSTR"
+        # One record per attempt, model and effort as run (specs/metrics.md).
+        token_ledger_record "$CLOG" "$NJ_KIND" "$MODEL" "$EFFORT" ""
+        if REFUSAL="$(codex_stream_refusal "$CLOG")"; then
+            codex_limit_record "$REFUSAL"
+            echo "$NJ_KIND: the judge ($MODEL) refused — cooldown recorded; no judgment is made and no cheaper model may make it" >&2
+            rm -f "$CLOG"
+            return 1
+        fi
+        OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+        if [ -z "$OUT" ] && ! grep -q '"type":' "$CLOG" 2>/dev/null; then
+            OUT="$(cat "$CLOG" 2>/dev/null)"
+        fi
+        rm -f "$CLOG"
+        if printf '%s\n' "$OUT" | tr -d '\r' | grep -qE "$VERDICT_RE"; then
+            printf '%s\n' "$OUT" | tr -d '\r'
+            return 0
+        fi
+        echo "$NJ_KIND: the judge ($MODEL) answered with nothing parseable — no judgment is made and no cheaper model may make it" >&2
+        return 1
+    fi
+
+    # A Claude-named judge: the flat account walk, one model, no fallback.
+    local ACCT CONFDIR
+    for ACCT in $(claude_accounts "$MODEL"); do
+        CONFDIR="$(claude_account_dir "$ACCT")"
+        : > "$CLOG"
+        printf '%s' "$PROMPT" | (
+            export CLAUDE_CONFIG_DIR="$CONFDIR"
+            CLAUDE_CLASSIFY_TIMEOUT="$NJ_TIMEOUT" \
+            CLAUDE_CLASSIFY_STREAM=1 \
+                claude_classify "$MODEL" \
+                    "Answer in exactly the form asked for, nothing else."
+        ) >"$CLOG" 2>&1
+        # Recorded per attempt, before the next truncation wipes this one's
+        # stream (specs/metrics.md rules 13-14).
+        token_ledger_record "$CLOG" "$NJ_KIND" "$MODEL" "$EFFORT" "$ACCT"
+        if REFUSAL="$(claude_stream_refusal "$CLOG")"; then
+            echo "$NJ_KIND: account $ACCT refused — trying the next account" >&2
+            claude_limit_record "$ACCT" "$REFUSAL" "$MODEL"
+            continue
+        fi
+        OUT="$(DESKCRAB_DEBUGLOG="$CLOG" "$LIB_DIR/extract-response" 2>/dev/null)"
+        if [ -z "$OUT" ] && ! grep -q '"type":' "$CLOG" 2>/dev/null; then
+            OUT="$(cat "$CLOG" 2>/dev/null)"
+        fi
+        if printf '%s\n' "$OUT" | tr -d '\r' | grep -qE "$VERDICT_RE"; then
+            rm -f "$CLOG"
+            printf '%s\n' "$OUT" | tr -d '\r'
+            return 0
+        fi
+        # An account that answered — however unhelpfully — ends the walk;
+        # only a refusal moves the selection to the next account.
+        echo "$NJ_KIND: the judge ($MODEL) answered with nothing parseable — no judgment is made and no cheaper model may make it" >&2
+        break
+    done
+    rm -f "$CLOG"
+    return 1
+}

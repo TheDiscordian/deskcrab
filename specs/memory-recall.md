@@ -98,8 +98,16 @@ life, and she re-reads that store every single turn.
 
 ### Ingest
 
-27. Ingest MUST distil new day-journal turns and transcription files through a cheap session into
-    candidate records, tracking its position with a durable cursor.
+27. Ingest is TWO-STAGE (the sleep-orchestration correction of 2026-08-25,
+    [nightly.md](nightly.md) rules 14c-14e). Stage 1, the summariser: a cheap session
+    (`MEMORY_SUMMARY_MODEL`, default `sonnet`) condenses each window of new day-journal turns and
+    transcription files into a faithful summary — chronological, dated, the user's corrections
+    quoted in his own words, the moments and the day's texture kept — and it MUST NOT curate:
+    deciding what matters is the judge's, never the summariser's. Stage 2, the judge: the night
+    judge (`MEMORY_INGEST_MODEL` at `MEMORY_INGEST_EFFORT`, default `gpt-5.6-sol` at `high`,
+    engine routed by the model name) reads the day's summaries together and decides what earns a
+    record — every retention judgment is the judge's, and a candidate a summariser emits on its
+    own initiative never reaches the store. The position cursor stays durable as before.
 28. Deduplication MUST be by measured thresholds: an exact normalised match of the same kind bumps
     last-seen; a very close match with different text supersedes, newer winning, with the old record
     left readable and excluded from retrieval; anything below simply adds.
@@ -111,10 +119,21 @@ life, and she re-reads that store every single turn.
     deduplication, which already absorbs overlap between passes. The run MUST say what it did: the
     total character count always, and, when there is more than one window, how many passes and the
     size of each — a long day is visibly slept through, never quietly cut.
-30. The ingest session and the turn-end judge MUST run under the account chain, like every other
-    model call. Both reach the CLI through this module's own runner, so the chain is walked there;
-    one shot at the login handed in loses a whole turn's reinforcement the moment that account goes
-    dry, and loses it silently, because a judgement that cannot be made is skipped by design.
+29a. Both stages window under rule 29's discipline. Stage 1 windows the raw day on whole chunk
+    boundaries exactly as before; stage 2 windows the labelled summaries the same way when they
+    outgrow the cap, each judgement pass reported in its own words (`judgement pass i/N`), so
+    neither stage ever trims and neither is silent about its size. The header line keeps its
+    parseable shape — chunks, chars, and the summary pass count — because the sleep stamp's
+    coverage read ([nightly.md](nightly.md) rule 14a) is built on it.
+30. The ingest's Claude-engine calls and the turn-end judge MUST run under the account chain, like
+    every other model call; both reach the CLI through this module's own runner, so the chain is
+    walked there — one shot at the login handed in loses a whole turn's reinforcement the moment
+    that account goes dry, and loses it silently, because a judgement that cannot be made is
+    skipped by design. A codex-named ingest judge has one login and no chain: the runner mirrors
+    the shell router ([model-backends.md](model-backends.md) rules 1-2, 16), strips
+    `OPENAI_API_KEY`, honours the shared codex cooldown before booting and records it on a limit
+    refusal — and never falls back to a cheaper model, because the judge's failure MUST fail the
+    ingest rather than hand retention to a tier forbidden to judge (nightly.md rule 14e).
 41. **Ingest's `--dry-run` MUST NOT mutate the store at all** — no records added, no decay run, no
     cursor advanced; the only product is the report. The distiller still runs, and every candidate
     that survives validation is printed as what the pass WOULD add, so a dry run stays a real
@@ -322,7 +341,12 @@ judge), `crab memory`, and the nightly sleep.
 
 ## TESTS
 
-**Existing:** `tests/test_memory.py` (run under the venv interpreter; includes the judge's walk of
+**Existing:** `tests/test_sleep_sol_judgment.sh` — the two-stage boundary of rules 27 and 30 end
+to end through `crab memory ingest --dry-run` at the shipped defaults: the summariser (stub
+claude, `--model sonnet`) receives the raw day, the judge (stub codex, `-m gpt-5.6-sol`,
+`model_reasoning_effort=high`) receives the labelled summaries and not one byte of the raw
+material, the would-add candidates are the judge's answer, and a candidate array smuggled into
+the summariser's summary text never lands. `tests/test_memory.py` (run under the venv interpreter; includes the judge's walk of
 the account chain — a refused login moves to the next, a chain that is entirely dry skips the
 judgement and says so in the judge log, and a failure that is not a refusal spends no second login —
 and, since 2026-08-11, the whole-block cases of rule 14, the relative-when ladder and rendering of

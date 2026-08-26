@@ -41,7 +41,10 @@ which fails silently is worse than one that does not exist.
 10. The exit status that matters is the ingest's own, never a pipeline's last stage.
 11. Sleep MUST NOT touch the shelves. It is separate from tidy on purpose.
 12. Ingest MUST NOT tail-clamp its input. See [memory-recall.md](memory-recall.md) rule 29.
-13. Sleep MUST run its model call under the account chain.
+13. Sleep MUST run its model calls under the account chain wherever they run the Claude engine. A
+    codex-named call has one login and no chain: it honours and records the codex cooldown instead
+    ([model-backends.md](model-backends.md) rules 12-13), and never walks accounts codex does not
+    have.
 14. The rot threshold is two nights. Past it, the status command reports rot and exits non-zero, and
     something MUST read that.
 
@@ -65,6 +68,44 @@ which fails silently is worse than one that does not exist.
     complaint is evidence, never a gate: the stamp and the night's exit stay the ingest's own
     (rules 8 and 10) — a night is not unmade by a phase that could not speak, it is only never
     silent about one.
+
+### The night's judge — every sleep judgment is one mind's
+
+14c. The night is dream-shaped on purpose — form long-term memory from the day's material, then
+    reconcile and deduplicate the records and the owed work, then spend the idle hours on at most
+    two concurrent builders until the cutoff — and every JUDGMENT inside that shape is made by ONE
+    judge. Every retention call (what the day's material earns as a record), every deduplication
+    call (which two records are one complaint), every reconciliation call (which promises
+    genuinely died), and every work-selection call (what the night buys) runs on the night-judge
+    model at its own reasoning effort — `gpt-5.6-sol` at `high` by default, one knob pair per
+    role (`MEMORY_INGEST_MODEL`/`MEMORY_INGEST_EFFORT`, `ENG_MERGE_MODEL`/`ENG_MERGE_EFFORT`,
+    `PROMISE_SWEEP_MODEL`/`PROMISE_SWEEP_EFFORT`, `NIGHT_WORK_MODEL`/`NIGHT_WORK_EFFORT`) —
+    routed to its engine by the model name alone ([model-backends.md](model-backends.md)). The
+    shell-side walk is ONE implementation, `lib/nightly-judge`, sourced by every judging phase;
+    nothing on the sleep path re-implements it, and the ingest's python side mirrors the same
+    routing rather than inventing a second engine rule. (The user's correction of 2026-08-25,
+    the record `sleep-should-be-orchestrated-and-judged-by-sol-h`.)
+14d. Sonnet summarises; it never judges. The summariser tier's only place in the night is
+    producing summaries handed TO the judge — the ingest's stage 1
+    ([memory-recall.md](memory-recall.md) rules 27 and 29a) — and a summariser-tier model MUST
+    NOT decide what survives, what merges, what died, or what work runs. Opus holds no sleep
+    judgment role either: the 2026-08-06 phase-2 line ("what is a duplicate … Opus, always") is
+    superseded on this path by the 2026-08-25 ruling, and rule 53c carries the new default. The
+    claudism review's rewrite call is not a judgment role — nothing survives or runs on its
+    answer (rules 39 and 42) — and the post-turn reinforcement judge (`MEMORY_JUDGE_MODEL`) is
+    a live-turn role, not a sleep one; neither moves under this section.
+14e. No cheaper model may judge in the judge's place. A judgment the judge cannot make tonight —
+    the codex engine cooling, a refusal, an unparseable answer — is NOT made: the pair stands,
+    the day is not swept, the round selects nothing, and the walk says so in its own name on the
+    night log. A model fallback on a sleep judgment call is exactly the substitution this
+    section forbids (`NIGHT_WORK_FALLBACK_MODEL` is retired; the sweep no longer borrows the
+    live checker's model pair). The ingest's judge failing fails the ingest itself, so a night
+    that could not judge is never stamped as a night that happened (rule 8). A codex-named
+    judge has one login: a refusal records the cooldown and ends the walk
+    ([model-backends.md](model-backends.md) rules 12-13), falling back to no one; a
+    Claude-named judge override still walks the flat account list (rule 13) on its one model,
+    at the classify profile's own default effort — the effort knob binds on the codex engine,
+    where the mandated judge lives.
 
 ### Tidy — shelf maintenance
 
@@ -399,8 +440,11 @@ night is where the day's promises are settled honestly, from the whole record at
     work, sleep runs the promise
     sweep (`lib/promise-check sweep`) over the day that just ended: the day's journal, every
     channel's replies with the outcome and work trace each session left, beside the day's
-    promise ledger. One model call, the checker's own model and fallback, under the account
-    chain (rule 13 applies). Every channel's outcome carries its turn's own tool trace — the
+    promise ledger. One model call, and it is the night judge's (rules 14c-14e):
+    `PROMISE_SWEEP_MODEL` at `PROMISE_SWEEP_EFFORT`, default `gpt-5.6-sol` at `high`, with no
+    fallback model — never the live checker's model pair, which stays a live-turn role
+    (`PROMISE_CHECK_MODEL`/`PROMISE_CHECK_FALLBACK_MODEL`, untouched). Rule 13 applies as
+    written on either engine. Every channel's outcome carries its turn's own tool trace — the
     desk and phone rows exactly as the wake's ([turn-pipeline.md](turn-pipeline.md) rule 32e)
     — so a completed-work claim that slipped the live pre-check is refuted here from the day's
     own record, or shown done by it: a claim whose day carries no matching trace surfaces as a
@@ -458,11 +502,12 @@ near-twins are a certainty, not a risk (the record
     to judgement. 0.80 is that distribution's p98, ~0.05 under the lowest observed twin. An
     embedder that does not answer scores nothing, says so, and ends the pass — never a guessed
     score.
-53c. The judgement is deciding what is a duplicate, which is taste, so it runs where the
-    phase-2 model rule already puts taste (design-memory-store.md, 2026-08-06 22:49: phase 2, the
-    sift — "what is a duplicate … Opus, always"): `ENG_MERGE_MODEL`, default `opus`, under the
-    account chain (rule 13), with NO model fallback — a pair the model never answers is skipped,
-    never guessed at by a cheaper model. The rule the judge enforces, encoded in its prompt:
+53c. The judgement is deciding what is a duplicate, which is taste, and taste on the sleep path
+    is the night judge's (rules 14c-14e): `ENG_MERGE_MODEL` at `ENG_MERGE_EFFORT`, default
+    `gpt-5.6-sol` at `high` — the 2026-08-25 ruling supersedes the 2026-08-06 phase-2 line
+    (design-memory-store.md, 22:49: "what is a duplicate … Opus, always") on this path — under
+    rule 13's engine discipline, with NO model fallback — a pair the model never answers is
+    skipped, never guessed at by a cheaper model. The rule the judge enforces, encoded in its prompt:
     same-COMPLAINT merges only, never same-AREA — two records about chess are not a merge; two
     records about the same collapse are. The verdict carries the judge's own confidence in its
     leading tokens — `MERGE CERTAIN` (the two records state one complaint and no reading
@@ -567,7 +612,9 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     feature. A full slate is waited out, never overridden. Two is the user's standing overnight ceiling — eight
     builders at once burned through two logins inside an hour (2026-08-11 00:51), and he asked
     for two at a time, queued, never parallel swarms while she sleeps.
-58. Selection is judgement — one model call per round, under the account chain (rule 13 applies) —
+58. Selection is judgement — one call per round to the night judge (rules 14c-14e:
+    `NIGHT_WORK_MODEL` at `NIGHT_WORK_EFFORT`, default `gpt-5.6-sol` at `high`, no fallback
+    model, rule 13's engine discipline) —
     and a thread is dispatched only when it is genuinely actionable engineering work: never a note
     or an incident record with no work left in it, never work the threads record as done, never a
     duplicate of a running, queued, or recently finished job (a queued brief dispatches tonight on
@@ -815,6 +862,19 @@ stay proposals under the default gate, the records byte-identical, and
 nothing left to propose; and the wiring: sleep runs the pass after the promise sweep, before the
 night's work, WITH `--apply` (rule 53d), and the pass speaks through the deployed symlink (rule
 6a) even with no records drawer at all.
+`tests/test_sleep_sol_judgment.sh` — rules 14c-14e, the effective nightly call graph against a
+stub codex and a stub claude, no real model spent: the night-work selector, the promise sweep's
+judge, and the eng-merge judge (against a scratch HTTP embedder) each reach `codex exec` at the
+default `gpt-5.6-sol` with `model_reasoning_effort=high` on the argv, with not one claude call
+beside them; a codex refusal on the selector ends selection with the cooldown recorded in the
+scratch codex state and NO fallback model consulted (rule 14e); the shared walk's Claude branch
+still walks the flat list on a Claude-named override, model on the argv; the ingest's two-stage
+boundary (rule 14d) end to end through `crab memory ingest --dry-run` — the summariser (stub
+claude, `--model` the summary model) receives the raw day while the judge's codex stdin carries
+the summariser's summary and NOT the raw material's marker, the would-add candidates are the
+JUDGE's answer, and a candidate array smuggled into the summariser's summary text never lands;
+the default cutoff prints as 06:00 through the daylight guard and the default cap still counts
+two — the routine's shape unmoved under the model change.
 `tests/test_tidy_undestinated_claims.sh` — rules 21c/21d, against a fixture day and a fixture
 drawer: the one sentence that vouches durability, names no drawer, and has nothing on disk behind
 it is the day's ONE finding — quoted in the check's own name, written to the day's report, filed
