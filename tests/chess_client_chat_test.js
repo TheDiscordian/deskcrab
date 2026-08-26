@@ -1,5 +1,9 @@
-// Drives the shipped chess client's table-chat voice path — pollChat and the
-// clip queue — against stubs, by lifting the functions out of
+// Drives the shipped chess client's table-chat path — pollChat, the clip
+// queue, and the phone-vocabulary presentation (specs/chessweb.md, THE
+// SHIPPED CLIENT's table-chat bullet: turns with dim `› ` you-lines and no
+// name labels, the dimmed history seed, the instant pending echo of a send
+// adopted by the record's copy, restored to the box on a refused POST) —
+// against stubs, by lifting the functions out of
 // lib/chessweb_client/board.js and evaluating them with every free name
 // supplied (the phone client tests' own technique: the page has no module
 // boundary, so this is the only way to run its logic without a browser, and
@@ -55,23 +59,36 @@ const BrowserVoiceQueue = require(
 const NAMES = ['chatSpeakOn', 'renderChatMsg', 'chatReset', 'pollChat',
                'updateChatChrome', 'fetchChatRecord', 'speakChat', 'clipKey',
                'clipFailed', 'dropClipQueue', 'enqueueClip', 'playNextClip',
-               'buildClipQueue'];
+               'buildClipQueue',
+               // the phone-vocabulary presentation and the send echo
+               'chatFold', 'chatLine', 'chatContainer', 'adoptEcho',
+               'dropEcho', 'sendChat'];
 
 function makeCtx(opts) {
 	opts = opts || {};
 	const els = {};
-	const el = id => els[id] || (els[id] = {
-		id, textContent: '', value: '', checked: false, hidden: false,
-		children: [], scrollTop: 0, scrollHeight: 0,
-		appendChild(c) { this.children.push(c); },
-		classList: {add() {}, remove() {}, toggle() {},
-		            contains() { return false; }},
-	});
+	const el = id => {
+		if (els[id]) return els[id];
+		const o = {
+			id, _tc: '', value: '', checked: false, hidden: false,
+			children: [], scrollTop: 0, scrollHeight: 0,
+			appendChild(c) { this.children.push(c); c.parentNode = this; },
+			classList: {add() {}, remove() {}, toggle() {},
+			            contains() { return false; }},
+		};
+		// The page clears the log with `textContent = ''` (chatReset); the
+		// stub must actually drop the children or a reset tests as a leak.
+		Object.defineProperty(o, 'textContent', {
+			get() { return this._tc; },
+			set(v) { this._tc = v; if (v === '') this.children.length = 0; },
+		});
+		return (els[id] = o);
+	};
 	el('chat-speak').checked = opts.speak !== false;
 
 	const state = {
 		consoleLines: [], fetches: [], audioMade: [], playOrder: [],
-		overlaps: 0, active: 0, els,
+		overlaps: 0, active: 0, posts: [], els,
 	};
 
 	const chatResponses = (opts.chatResponses || []).slice();
@@ -122,6 +139,7 @@ function makeCtx(opts) {
 		ws: {readyState: 1}, chatBusy: false, chatGame: null, chatCount: 0,
 		chatHistory: true, chatPoll: null, playerLabel: null,
 		assistantName: 'Betty',
+		chatTurn: null, chatSeed: null, chatEchoes: [],
 		BrowserVoiceQueue, clipQ: null,
 		CLIP_START_GRACE_MS: 150,
 		// stubs
@@ -129,15 +147,34 @@ function makeCtx(opts) {
 		log: line => state.consoleLines.push(String(line)),
 		document: {createElement: () => ({
 			className: '', textContent: '', style: {}, children: [],
-			appendChild(c) { this.children.push(c); },
+			parentNode: null,
+			appendChild(c) { this.children.push(c); c.parentNode = this; },
+			remove() {
+				const p = this.parentNode;
+				if (!p) return;
+				const i = p.children.indexOf(this);
+				if (i >= 0) p.children.splice(i, 1);
+			},
 			setAttribute() {},
 			querySelector: () => ({setAttribute() {}}),
 		})},
 		URL: {createObjectURL: b => 'blob:' + (b && b.n),
 		      revokeObjectURL() {}},
 		Audio: FakeAudio,
-		fetch: url => {
+		fetch: (url, fopts) => {
 			state.fetches.push(url);
+			if (url === '/chat' && fopts && fopts.method === 'POST') {
+				state.posts.push(JSON.parse(fopts.body).text);
+				if (opts.onPost) opts.onPost();
+				const mode = opts.postMode || 'ok';
+				if (mode === 'neterr')
+					return Promise.reject(new Error('net down'));
+				if (mode === 'refuse')
+					return Promise.resolve({ok: true,
+						json: async () => ({error: 'no game'})});
+				return Promise.resolve({ok: true,
+				                        json: async () => ({ok: true})});
+			}
 			if (url.startsWith('/chat/audio')) {
 				const m = /[?&]n=(\d+)/.exec(url);
 				const n = m ? +m[1] : -1;
@@ -428,6 +465,207 @@ async function testDeadForGood() {
 		    audioFetches(ctx).length + ' fetch(es)');
 }
 
+// --- 7: the phone conversation's vocabulary — turns, no name labels --------
+
+// Walk a stub subtree collecting {className, textContent} of every node.
+function flatten(node, out) {
+	out = out || [];
+	out.push({cls: String(node.className || ''),
+	          text: String(node.textContent || '')});
+	for (const c of node.children || []) flatten(c, out);
+	return out;
+}
+
+async function testTurnVocabulary() {
+	console.log('');
+	console.log('the pane speaks the phone conversation\'s vocabulary — '
+	            + 'turns, no labels:');
+	const hist = {game: 'g-1', player: 'Visitor', name: 'Betty', count: 0,
+	              messages: []};
+	const ctx = makeCtx({speak: false, chatResponses: [hist, hist,
+		{game: 'g-1', player: 'Visitor', name: 'Betty', count: 3,
+		 messages: [{who: 'player', text: 'hello there'},
+		            {who: 'assistant', text: 'welcome to the table'},
+		            {who: 'assistant', text: 'your move'}]}]});
+	const api = build(ctx);
+	await primeThread(api, ctx);
+	await api.pollChat();
+	const logEl = ctx._state.els['chat-log'];
+	const turns = logEl.children;
+	if (turns.length === 2 && turns[0].className === 'turn'
+			&& turns[1].className === 'turn')
+		ok('a sitter line and her answer are ONE turn; her second message '
+		   + 'stands as its own');
+	else
+		bad('the exchange must group into phone-shaped turns',
+		    turns.map(t => t.className).join(' | ') || 'no turns');
+	const all = flatten(logEl);
+	if (!all.some(n => /chat-who/.test(n.cls))
+			&& !all.some(n => /^(Visitor|Betty)$/.test(n.text)))
+		ok('no name labels ride the lines — the head carries who is here');
+	else
+		bad('lines must not wear name labels',
+		    all.map(n => n.cls + ':' + n.text).join(' | '));
+	const you = all.find(n => n.cls === 'chat-you');
+	if (you && you.text === 'hello there')
+		ok('the sitter\'s words render as the dim you-line, bare');
+	else
+		bad('the sitter\'s line must be a chat-you carrying only the words',
+		    you ? you.text : 'no chat-you element');
+	const replies = all.filter(n => n.cls === 'chat-reply').map(n => n.text);
+	if (replies.length === 2 && replies[0] === 'welcome to the table'
+			&& replies[1] === 'your move')
+		ok('her words render as plain replies, in order');
+	else
+		bad('her messages must render as chat-reply blocks',
+		    replies.join(' | ') || 'none');
+}
+
+// --- 8: the page-load backlog is a dimmed seed, live turns land after it ---
+
+async function testHistorySeed() {
+	console.log('');
+	console.log('history renders as the phone\'s seed; live turns land '
+	            + 'after it:');
+	const swtch = {game: 'g-1', player: 'Visitor', name: 'Betty', count: 2,
+	               messages: []};
+	const ctx = makeCtx({speak: false, chatResponses: [swtch,
+		{game: 'g-1', player: 'Visitor', name: 'Betty', count: 2,
+		 messages: [{who: 'player', text: 'old question'},
+		            {who: 'assistant', text: 'old answer'}]},
+		{game: 'g-1', player: 'Visitor', name: 'Betty', count: 3,
+		 messages: [{who: 'assistant', text: 'fresh line'}]}]});
+	const api = build(ctx);
+	await primeThread(api, ctx);
+	const logEl = ctx._state.els['chat-log'];
+	const seed = logEl.children.find(c => c.id === 'chat-seed');
+	if (seed && logEl.children.length === 1)
+		ok('the backlog went into the one seed section');
+	else
+		bad('a page-load backlog must render inside the seed',
+		    logEl.children.map(c => c.id || c.className).join(' | ')
+		    || 'empty log');
+	if (seed && seed.children[0]
+			&& seed.children[0].className === 'seed-label')
+		ok('the seed wears its own label');
+	else
+		bad('the seed must carry a label saying what it is',
+		    seed ? (seed.children[0] || {}).className : 'no seed');
+	if (seed && seed.children.length === 2
+			&& seed.children[1].className === 'turn'
+			&& seed.children[1].children.length === 2)
+		ok('the old exchange grouped into one seed turn');
+	else
+		bad('history must group into turns inside the seed',
+		    seed ? seed.children.map(c => c.className).join(' | ')
+		         : 'no seed');
+	await api.pollChat();
+	const after = logEl.children;
+	if (after.length === 2 && after[1].className === 'turn'
+			&& after[1].children[0]
+			&& after[1].children[0].className === 'chat-reply'
+			&& after[1].children[0].textContent === 'fresh line')
+		ok('the live message landed OUTSIDE the seed, as its own turn');
+	else
+		bad('a live message must never render inside history\'s seed',
+		    after.map(c => (c.id || c.className)).join(' | '));
+}
+
+// --- 9: the send is instant — echoed pending, adopted by the record --------
+
+async function testInstantEcho() {
+	console.log('');
+	console.log('a send appears at once, pending, and the record\'s copy '
+	            + 'adopts it:');
+	const hist = {game: 'g-1', player: 'Visitor', name: 'Betty', count: 0,
+	              messages: []};
+	let atPost = null;
+	const ctx = makeCtx({speak: false,
+		chatResponses: [hist, hist,
+			{game: 'g-1', player: 'Visitor', name: 'Betty', count: 1,
+			 messages: [{who: 'player', text: 'good move'}]}],
+		onPost: () => {
+			const logEl = ctx._state.els['chat-log'];
+			const last = logEl.children[logEl.children.length - 1];
+			atPost = {
+				turns: logEl.children.length,
+				cls: last ? String(last.className) : 'nothing',
+				input: ctx._state.els['chat-input'].value,
+			};
+		}});
+	const api = build(ctx);
+	await primeThread(api, ctx);
+	ctx.$('chat-input').value = '  good move  ';
+	await api.sendChat({preventDefault() {}});
+	await sleep(30);  // the post-send pollChat
+	if (atPost && atPost.turns === 1 && atPost.cls === 'turn pending')
+		ok('the words were on screen, visibly pending, before the POST '
+		   + 'even landed');
+	else
+		bad('a send must echo instantly as a pending turn',
+		    atPost ? atPost.turns + ' turn(s), last=' + atPost.cls
+		           : 'no POST observed');
+	if (atPost && atPost.input === '')
+		ok('and the box had already cleared for the next thought');
+	else
+		bad('the input must clear at the send, not after the round trip',
+		    atPost ? '[' + atPost.input + ']' : 'no POST observed');
+	const logEl = ctx._state.els['chat-log'];
+	if (logEl.children.length === 1
+			&& logEl.children[0].className === 'turn'
+			&& ctx.chatEchoes.length === 0)
+		ok('the record\'s copy adopted the echo — one turn, pending no '
+		   + 'more, never doubled');
+	else
+		bad('the polled copy must adopt the echo in place',
+		    logEl.children.map(c => c.className).join(' | ')
+		    + ' echoes=' + ctx.chatEchoes.length);
+	const all = flatten(logEl);
+	if (!all.some(n => /…/.test(n.text)))
+		ok('and no awaiting-reply placeholder was invented — silence is '
+		   + 'hers to choose');
+	else
+		bad('the table must not promise a reply',
+		    all.map(n => n.text).join(' | '));
+}
+
+// --- 10: a refused or failed POST removes the echo and restores the box ----
+
+async function testFailedSendRestores() {
+	console.log('');
+	console.log('a POST the record refuses comes off the screen and back '
+	            + 'into the box:');
+	const hist = {game: 'g-1', player: 'Visitor', name: 'Betty', count: 0,
+	              messages: []};
+	for (const mode of ['refuse', 'neterr']) {
+		const ctx = makeCtx({speak: false, postMode: mode,
+		                     chatResponses: [hist, hist]});
+		const api = build(ctx);
+		await primeThread(api, ctx);
+		ctx.$('chat-input').value = 'lost words';
+		await api.sendChat({preventDefault() {}});
+		const logEl = ctx._state.els['chat-log'];
+		if (logEl.children.length === 0 && ctx.chatEchoes.length === 0)
+			ok(mode + ': the echo came off the screen — nothing shown as '
+			   + 'said that the record refused');
+		else
+			bad(mode + ': a failed send must remove its echo',
+			    logEl.children.map(c => c.className).join(' | ')
+			    + ' echoes=' + ctx.chatEchoes.length);
+		if (ctx.$('chat-input').value === 'lost words')
+			ok(mode + ': and the words went back in the box');
+		else
+			bad(mode + ': typed words must never be lost to a failure',
+			    '[' + ctx.$('chat-input').value + ']');
+		if (ctx._state.consoleLines.some(l =>
+				/Server: no game|Chat failed/.test(l)))
+			ok(mode + ': the failure is witnessed in the console');
+		else
+			bad(mode + ': a failed send must say so',
+			    ctx._state.consoleLines.join(' | ') || 'nothing');
+	}
+}
+
 (async () => {
 	await testAllVoiced();
 	await testDeadClipAdvances();
@@ -436,8 +674,12 @@ async function testDeadForGood() {
 	await testToggleAndRoles();
 	await testResetDropsQueue();
 	await testDeadForGood();
+	await testTurnVocabulary();
+	await testHistorySeed();
+	await testInstantEcho();
+	await testFailedSendRestores();
 	console.log('');
-	console.log('chess client chat voice: ' + PASS + ' passed, '
+	console.log('chess client chat: ' + PASS + ' passed, '
 	            + FAIL + ' failed');
 	process.exit(FAIL ? 1 : 0);
 })();

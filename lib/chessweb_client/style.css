@@ -503,14 +503,17 @@ button.armed:hover:not(:disabled) {
 }
 
 /* ------------------------------------------------------------- table chat
-   specs/chessweb.md rule 24: the thread, the send box, the speak toggle. */
+   specs/chessweb.md rule 24, presented in the phone conversation's own
+   vocabulary (THE SHIPPED CLIENT bullet): dim `› ` you-lines, bright
+   pre-wrap replies, the dimmed history seed, the pending echo — the mobile
+   conversation design (lib/webapp/index.html) over this page's palette. */
 .chatbox {
 	max-width: 46rem;
 	margin: 1.2rem auto 0;
 	background: var(--panel);
 	border: 1px solid var(--panel-edge);
 	border-radius: 10px;
-	padding: 0.6rem 0.9rem;
+	padding: 0.6rem 0.9rem 0.9rem;
 }
 
 .chat-head {
@@ -546,13 +549,18 @@ button.armed:hover:not(:disabled) {
 	user-select: none;
 }
 
+/* The log is a window into the conversation, not a peephole: the page's own
+   dark ground inside the panel, the phone's monospace type, and a real
+   reading height. */
 #chat-log {
-	max-height: 12rem;
+	background: var(--bg);
+	border: 1px solid var(--panel-edge);
+	border-radius: 8px;
+	height: clamp(12rem, 36vh, 24rem);
 	overflow-y: auto;
-	margin: 0.2rem 0 0.5rem;
-	display: flex;
-	flex-direction: column;
-	gap: 0.35rem;
+	margin: 0.2rem 0 0.6rem;
+	padding: 0.8rem 0.9rem;
+	font: 13.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 #chat-log:empty::before {
@@ -561,19 +569,46 @@ button.armed:hover:not(:disabled) {
 	font-size: 0.85rem;
 }
 
-.chat-msg {
-	font-size: 0.92rem;
-	line-height: 1.45;
+/* Turns, not a labeled transcript: the sitter's line dim behind `› `, her
+   words plain bright pre-wrap text beneath — the phone's own shapes. */
+#chat-log .turn { margin-bottom: 14px; }
+#chat-log .turn:last-child { margin-bottom: 0; }
+
+.chat-you {
+	color: var(--text-dim);
 	word-break: break-word;
 }
 
-.chat-msg .chat-who {
-	font-weight: 650;
-	margin-right: 0.45rem;
+.chat-you::before { content: "› "; }
+
+.chat-reply {
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--text);
 }
 
-.chat-msg.hers .chat-who { color: var(--accent); }
-.chat-msg.yours .chat-who { color: var(--text-dim); }
+.chat-you + .chat-reply { margin-top: 2px; }
+
+/* The local echo of a send, until the record's copy adopts it. */
+#chat-log .turn.pending { opacity: 0.55; }
+
+/* Where the thread already was when this page loaded — dimmed under its own
+   label and a dashed rule, so it never reads as something said just now. */
+#chat-seed {
+	margin-bottom: 16px;
+	padding-bottom: 10px;
+	border-bottom: 1px dashed var(--panel-edge);
+}
+
+#chat-seed .turn { opacity: 0.72; }
+
+.seed-label {
+	color: var(--text-dim);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	margin-bottom: 8px;
+}
 
 #chat-form {
 	display: flex;
@@ -584,16 +619,21 @@ input#chat-input {
 	flex: 1;
 	background: var(--bg);
 	border: 1px solid var(--panel-edge);
-	border-radius: 7px;
+	border-radius: 10px;
 	color: var(--text);
-	font: inherit;
-	padding: 0.35rem 0.6rem;
+	font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+	padding: 0.7rem 0.8rem;
 	min-width: 0;
 }
 
 input#chat-input:focus {
 	outline: none;
 	border-color: var(--accent);
+}
+
+button#chat-send {
+	border-radius: 10px;
+	padding: 0.7rem 1.1rem;
 }
 
 /* ------------------------------------------------------------- console */

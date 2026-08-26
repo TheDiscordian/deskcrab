@@ -783,8 +783,34 @@ the stock page. What it owes beyond the protocol:
   current text. Beside the chat panel, the standing score against the named player off
   `GET /record`, rendered from the sitter's side of the table.
 - **The table chat** (rule 24). A chat panel under the board: the thread off `GET /chat`, polled
-  while connected; a send box posting to `POST /chat`; each message labeled with the player's
-  name or the assistant's. And the speak toggle of rule 24e — default off, remembered, speaking
+  while connected, and a send box posting to `POST /chat` — presented in the PHONE
+  CONVERSATION'S OWN VOCABULARY (`lib/webapp/index.html`, the mobile conversation design),
+  adopted deliberately rather than re-invented, because the user named the gap himself
+  (2026-08-25: the table chat "doesn't feel nearly as good as the phone conversation
+  interface") and the first answer to that ask shipped only voice plumbing:
+  - *Turns, not a labeled transcript.* The sitter's line renders dim, prefixed `› ` — the
+    phone's own you-line — and her words render as plain bright pre-wrap text beneath it. No
+    `name:` labels ride the lines: the pane's head already says who is at the table, and the
+    record keeps carrying roles untouched (rule 24a). A sitter's message opens a turn; her
+    next message joins the turn it answers; a further message of hers — or one sent
+    unprompted, after a move (rule 24c) — stands as its own block, exactly as the phone
+    spaces its exchanges.
+  - *History is a seed.* The page-load backlog renders dimmed inside its own labeled section
+    under a dashed rule — the phone's seed presentation — so it never reads as something said
+    just now; a game switch or thread reset refetches into a fresh seed the same way.
+  - *The send is instant.* A submitted message appears in the pane at once, visibly pending,
+    the input cleared for the next thought; when the record's own copy arrives on the next
+    poll it is adopted in place (matched on the whitespace-folded text, oldest pending
+    first), and a failed POST removes the echo and puts the words back in the box — never a
+    message left on screen that the record refused. There is deliberately NO awaiting-reply
+    placeholder: silence is an answer she may choose (rule 24c's PASS), and a `…` that never
+    resolves would be a promise the table cannot keep.
+  - *The pane reads like a conversation, not a peephole.* Log, input and send wear the phone
+    conversation's monospace type and input shape over this page's own palette, and the log
+    stands at a real reading height (the shipped 12rem box was the reported feel gap's
+    largest visible part). New messages keep the log scrolled to its end; the empty pane
+    still says so in words.
+  And the speak toggle of rule 24e — default off, remembered, speaking
   only her messages and only those that arrive while it is on, each as a clip of her own voice
   off `GET /chat/audio`, through the one clip queue rule 24e demands: in order, one at a time,
   never a message dropped behind a busy or dead clip, never a backlog voiced after a reset. The
