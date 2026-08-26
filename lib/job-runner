@@ -319,8 +319,18 @@ STATE=finished
 # no record was owed.
 RECORD_UNTOUCHED=""
 if [ "$STATE" = finished ] && [ -n "$RECORD" ]; then
+    # The comparison floors on the ending gate's own attach write (jobs.md
+    # rule 27, engineering-records.md rule 15b): the gate touches the record
+    # moments AFTER dispatch to land the job id on it, and without the floor
+    # that attach would stand in for the builder's entry. Read here at check
+    # time, never at boot — the attach lands while the worker is starting.
+    RECORD_FLOOR="${DISPATCH_EPOCH:-0}"
+    ATTACH_EPOCH="$("$LIB_DIR/job-status" get "$STATUS" record_attached_epoch 2>/dev/null)"
+    if [ -n "$ATTACH_EPOCH" ] && [ "$ATTACH_EPOCH" -gt "${RECORD_FLOOR:-0}" ] 2>/dev/null; then
+        RECORD_FLOOR="$ATTACH_EPOCH"
+    fi
     if ! DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" \
-            touched-since "$RECORD" "${DISPATCH_EPOCH:-0}" 2>/dev/null; then
+            touched-since "$RECORD" "${RECORD_FLOOR:-0}" 2>/dev/null; then
         STATE=failed
         RC=1
         RECORD_UNTOUCHED=1

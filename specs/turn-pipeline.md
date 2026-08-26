@@ -200,6 +200,33 @@ slot is the loudest statement this machine can make that it was not listening.
      the wake path alone knew the marker: a desk reply opening "(quiet)" was streamed to the
      speakers marker-first, a phone turn synthesised the held thought into a clip, and a
      marker-only reply reached the chat as a bare "(quiet)" bubble.
+16c. **A delivered reply may not leave him a chore.** Nothing delivery puts on his screen may hand
+     the user a command line to run: work a reply assigns him is work this machine can dispatch,
+     so the chore becomes a detached job and the displayed text names the job instead. The origin
+     (2026-08-25, thread `my-output-can-end-in-a-chore-for-him-and-a-recor`): a night session
+     ended its work as two command lines for the user, one of them — "Also unset:
+     TIDY_CLAIMS_ROOTS" — a statement of fact phrased so it READ as an instruction, and he woke
+     to a chore his own machine could have run. The gate is ONE implementation
+     (`chore_gate_pass`, run inside rule 16b's split so every delivery path inherits it), and it
+     scans ONLY the display half — the channel where a command line renders as a thing to copy.
+     The voiced half is never touched (speech-output's standing rule: nothing gates her speech,
+     and the desk has often already spoken it), and a quiet bubble is a held thought, not an
+     assignment. A displayed block that ASSIGNS the user command-shaped work — a second-person
+     obligation with a command beside it ("you'll need to run `x`"), an imperative command line
+     ("Run: …", "Also unset: TIDY_CLAIMS_ROOTS" — judged on how it reads, because how it reads is
+     the harm), or a run-this lead-in over a fenced or indented command block — is dispatched
+     ONCE per reply through the job door (`crab job`'s own policy whole: queued while he is awake
+     and a shelf stands, the block marker honoured), the chore lines riding as the brief, and
+     every matched block is replaced by one line naming the job id. Ordinary quoted commands,
+     narration ("I ran `git diff --check`", "the suite runs via `bash tests/…`"), names
+     ("`crab eng list` is the way in") and statements of fact are NEVER touched: the detector
+     (`lib/chore-scan`, one implementation, shared with
+     [engineering-records.md](engineering-records.md) rule 15) requires the assignment, not the
+     command, and is deliberately narrow — what it misses is the record gate's and the night's
+     business, never a reason to widen it into a filter on her words. The gate FAILS OPEN: a
+     missing or crashing scanner, and a dispatch the door refuses, cost the conversion and never
+     the delivery — the reply goes out as written and the trace log says why. Nothing here may
+     warn instead of dispatching, leave the user instructions about the gate, or hold a reply.
 17. A turn whose every account refused over a usage limit MUST NOT speak the refusal, MUST NOT
     append it to the conversation, and MUST surface it through the notification, the session
     outcome, and the phone's `error` field.
@@ -425,6 +452,7 @@ file rather than re-instrumented every time the question comes up.
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
 | `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's records ([nightly.md](nightly.md) rule 53) |
 | `${STATE_PREFIX}-promise-check.log` | `fire_promise_check`, `lib/promise-check` | one line per run: the pre-check's verdict, the model's verdicts, or why nothing was judged |
+| `${STATE_PREFIX}-chore-gate.log` | `chore_gate_pass` (rule 16c) | one line per scanned display half: clean, fired with the job id, or why the conversion failed open |
 | `${STATE_PREFIX}-promise-evidence-*` | `fire_promise_check` (rule 32a) | the turn's stream log, snapshotted for the detached checker, removed by it |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |
 | `~/.local/share/deskcrab/metrics/<date>.log` | `turn_metric` (rule 33) | `epoch.ms \t pid \t kind \t stage \t detail` |
@@ -578,6 +606,16 @@ no conversation block and no phone payload half, and is journalled as the no-tex
 "(quiet) thought" desk reply is a bubble — marker normalised, never voiced, the guarantee silent;
 the same phone reply completes with the bubble as its spoken text, no clip and no error; a plain
 reply delivers exactly as before.
+
+`tests/test_chore_gate.sh` — rule 16c and [engineering-records.md](engineering-records.md) rules
+15–15c: a display half assigning the user a command — the clear "you'll need to run" shape, the
+run-this lead-in over a fenced command, and the ambiguous "Also unset: TIDY_CLAIMS_ROOTS" line —
+dispatches exactly one job whose brief carries the chore lines, and the forbidden instruction is
+absent from the display half, the conversation form, and a real desk turn's display window;
+benign mentions (first- and third-person narration, a named command, a statement of fact) pass
+byte-identical with nothing dispatched; two chore blocks in one reply are one job; the spoken
+half is untouched; a refused dispatch fails open with the reply as written and the trace naming
+why; and `CHORE_GATE=0` switches the gate off whole.
 
 **To be written:**
 

@@ -182,7 +182,14 @@ policy, collection of a finished builder's work, and the single channel a job ha
     record's `last_touched` is newer than the job's dispatch time (`started_epoch`) — the builder
     updated the record it came from, and there is no other way to that date, because state moves
     only through `crab eng` and every `touch` bumps it. The comparison is asked of the tool
-    (`eng touched-since`), never re-implemented in the runner.
+    (`eng touched-since`), never re-implemented in the runner. Where the sidecar carries
+    `record_attached_epoch` — the ending gate of
+    [engineering-records.md](engineering-records.md) rule 15 attaches the new job's id to the
+    record in a write that necessarily postdates dispatch — the comparison floors on it: without
+    the floor, the gate's own attach would stand in for the builder's entry and gut this rule for
+    exactly the jobs that exist to enforce follow-through. The floor is read at CHECK time, at the
+    end of the run, never at worker boot, because the attach lands moments after dispatch and a
+    fast worker would otherwise race past it.
 28. A clean build whose record was never touched ends `failed`, with a clear reason NAMING the
     record — in the log, in the sidecar summary, and in the completion wake's reason — so the next
     reader knows the work may be real and the record is what is owed. A run that failed on its own
@@ -336,7 +343,7 @@ re-derived it by hand.
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
@@ -473,7 +480,6 @@ an over-ceiling `running` orphan claims no new byte, and nothing calls a non-run
 through the busy and in-flight gates: delayed, delivered exactly once after the gate clears, and
 re-booked whole under the runner's own identity when the moment outlasts the wait; the cases live
 with the other delivery gates in [wake-queue.md](wake-queue.md) rule 27d).
-
 
 **To be written:**
 

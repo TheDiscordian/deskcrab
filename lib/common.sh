@@ -7576,6 +7576,92 @@ display_part() {
     printf '%s\n' "$1" | sed -n '/^---DISPLAY---$/,${/^---DISPLAY---$/d;p}'
 }
 
+# --- The chore gate (specs/turn-pipeline.md rule 16c) -----------------------
+# Nothing delivery puts on his screen may hand the user a command line to
+# run: the chore becomes a detached job, its lines riding as the brief, and
+# the displayed text names the job instead. The origin (2026-08-25): a night
+# session ended its work as two command lines for the user — one of them,
+# "Also unset: TIDY_CLAIMS_ROOTS", a statement that READ as an instruction —
+# and he woke to a chore his own machine could have run.
+#
+# Scans ONLY the display half: that is the channel where a command renders as
+# a thing to copy, and the voiced half may never be gated (speech-output's
+# standing rule — and the desk has usually already spoken it). Detection is
+# lib/chore-scan's, ONE implementation shared with the record gate
+# (engineering-records.md rule 15), and deliberately narrow: assignment
+# required, never just a command, so narration and quoted commands pass
+# byte-identical. FAILS OPEN: a missing scanner or a refused dispatch cost
+# the conversion, never the delivery — the reply goes out as written and the
+# trace log says why. One dispatch per reply, through the door with its
+# policy intact (queued while he is awake and a shelf stands, the block
+# marker honoured).
+chore_gate_log() {
+    printf '%s\t%s\n' "$(date '+%F %T')" "$1" \
+        >> "${STATE_PREFIX}-chore-gate.log" 2>/dev/null || true
+}
+
+chore_gate_pass() {  # <response> -> the response, displayed chores converted
+    local RESPONSE="$1"
+    if [ "${CHORE_GATE:-1}" != "1" ] || [ ! -x "$LIB_DIR/chore-scan" ]; then
+        printf '%s\n' "$RESPONSE"
+        return 0
+    fi
+    local DISPLAY
+    DISPLAY="$(display_part "$RESPONSE")"
+    if [ -z "$(printf '%s' "$DISPLAY" | tr -d '[:space:]')" ]; then
+        printf '%s\n' "$RESPONSE"
+        return 0
+    fi
+    local RANGES
+    RANGES="$(printf '%s\n' "$DISPLAY" | "$LIB_DIR/chore-scan" chores 2>/dev/null)" \
+        || RANGES=""
+    if [ -z "$RANGES" ]; then
+        printf '%s\n' "$RESPONSE"
+        chore_gate_log "clean"
+        return 0
+    fi
+    # The chore lines, flattened: they ride the job as its brief, so nothing
+    # leaves his screen without landing somewhere durable.
+    local CHORES
+    CHORES="$(printf '%s\n' "$DISPLAY" | awk -v ranges="$RANGES" '
+        BEGIN { n = split(ranges, R, "\n")
+                for (i = 1; i <= n; i++) if (R[i] != "") {
+                    split(R[i], ab, "-")
+                    for (j = ab[1]; j <= ab[2]; j++) M[j] = 1 } }
+        M[NR]' | tr '\n' ' ' | sed 's/  */ /g; s/ $//')"
+    # The dispatch goes to a file, not a substitution, so JOB_START_ID
+    # survives into this shell.
+    local OUTF="${STATE_PREFIX}-chore-gate-out.$$" OUT="" ID="" RC=0
+    job_start "Chore intercepted at delivery (specs/turn-pipeline.md rule 16c): my reply tried to hand the user this to do by hand. Do it from here instead, verify it, and report what you ran: $(printf '%.500s' "$CHORES")" \
+        >"$OUTF" 2>&1 || RC=$?
+    OUT="$(cat "$OUTF" 2>/dev/null)"
+    rm -f "$OUTF"
+    ID="$JOB_START_ID"
+    if [ "$RC" != 0 ] || [ -z "$ID" ]; then
+        chore_gate_log "fail-open (chore stays, no job): $(printf '%s' "$OUT" | tr '\n\t' '  ' | cut -c1-200)"
+        printf '%s\n' "$RESPONSE"
+        return 0
+    fi
+    local NOTICE="[chore intercepted — this was written as work for you to do by hand; detached job $ID now carries it${JOB_START_QUEUED:+, queued for the night}]"
+    local NEWDISPLAY
+    NEWDISPLAY="$(printf '%s\n' "$DISPLAY" | awk -v ranges="$RANGES" -v notice="$NOTICE" '
+        BEGIN { n = split(ranges, R, "\n")
+                for (i = 1; i <= n; i++) if (R[i] != "") {
+                    split(R[i], ab, "-")
+                    F[ab[1]] = 1
+                    for (j = ab[1]; j <= ab[2]; j++) M[j] = 1 } }
+        F[NR] { print notice; next }
+        M[NR] { next }
+        { print }')"
+    # Reassemble around the delimiter. The half above it is the same bytes
+    # that came in — only the display half was converted.
+    local ABOVE
+    ABOVE="$(printf '%s\n' "$RESPONSE" | sed -E '/^---DISPLAY---$/,$d')"
+    printf '%s\n---DISPLAY---\n%s\n' "$ABOVE" "$NEWDISPLAY"
+    chore_gate_log "fired: job $ID carries: $(printf '%.200s' "$CHORES")"
+    return 0
+}
+
 # ---- The delivery split: ONE place decides what a finished reply delivers ---
 # specs/turn-pipeline.md rule 16b. Every delivery path — desk, phone, wake —
 # calls this once, above every sink it owns, and branches on the answer. The
@@ -7610,6 +7696,10 @@ display_part() {
 # anything to deliver, not an opinion about it.
 reply_delivery_split() {  # <response>  -> 0 deliver, 1 nothing to deliver
     local RESPONSE="$1" THOUGHTS
+    # The chore gate (rule 16c) runs first, above every sink, so everything
+    # below — the display half, the conversation form, the journal — sees
+    # the converted text and never the instruction.
+    RESPONSE="$(chore_gate_pass "$RESPONSE")"
     REPLY_EMPTY="" REPLY_QUIET="" REPLY_QUIET_THOUGHT=""
     REPLY_SPOKEN="$(spoken_part "$RESPONSE")"
     REPLY_DISPLAY="$(display_part "$RESPONSE")"
@@ -8498,6 +8588,10 @@ job_stop() {
 }
 
 job_start() {
+    # The id of whatever this call shelves or dispatches, for callers that
+    # need it programmatically (the chore gate, turn-pipeline rule 16c) —
+    # parsing it back out of the human messages below was the alternative.
+    JOB_START_ID="" JOB_START_QUEUED=""
     local workdir="$PROJECT_DIR" force="" origin="" record="" want=""
     while :; do
         case "${1:-}" in
@@ -8578,6 +8672,7 @@ job_start() {
         local id
         id="$(date +%Y%m%d-%H%M%S)-$$"
         "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "" "$workdir" queued || return 1
+        JOB_START_ID="$id" JOB_START_QUEUED=1
         [ -n "$record" ] && \
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" record="$record"
         echo "Job $id QUEUED for the night — not dispatched. Awake, the door dispatches only want-linked work (jobs.md rule 30); the night takes up the queue after sleep."
@@ -8606,6 +8701,7 @@ job_start() {
     # must not collide on the id or the unit name.
     id="$(date +%Y%m%d-%H%M%S)-$$"
     "$LIB_DIR/job-status" new "$JOBS_DIR" "$id" "$task" "" "$workdir" dispatched || return 1
+    JOB_START_ID="$id"
     # The record rides the sidecar (jobs.md rule 7b): the runner reads it back
     # at completion, and requeue re-dispatches with the obligation intact.
     [ -n "$record" ] && \

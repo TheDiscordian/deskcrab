@@ -127,6 +127,40 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     (an existing slug is skipped, never overwritten) and the source files are left in place as a
     read-only archive.
 
+### The ending gate
+
+15. A record must not END at "I cannot do this", nor at a chore for the user. The origin
+    (2026-08-25 04:38, thread `my-output-can-end-in-a-chore-for-him-and-a-recor`): the
+    stale-tidy-unit record was closed for the night with two command lines for the user to run —
+    one of them, "Also unset: TIDY_CLAIMS_ROOTS", a statement phrased so it READ as an instruction
+    — and he woke at 09:51 to a chore his own machine could have run. So `crab eng touch` (kind
+    `eng` only — settle and kill are decisions about a thread, and killing a thread as impossible
+    is a decision, not an abdication) holds the gate: when the note's LAST non-blank line is part
+    of a chore aimed at the user, or its closing clause is inability, and the note attaches no job
+    id, the tool dispatches a builder against this record through the job door
+    (`crab job --record <id>`, [jobs.md](jobs.md) rules 7b and 27–30 — the door's own policy
+    stands whole, so while he is awake and a shelf exists the brief QUEUES, which still yields the
+    id) and appends the job id to the very entry, in the same write. The judgement is
+    `lib/chore-scan` — ONE detector, shared with the delivery gate of
+    [turn-pipeline.md](turn-pipeline.md) rule 16c, judged on how the words READ, because how they
+    read is the harm. Only the ENDING is judged: inability narrated mid-note on the way to an
+    outcome is history, exactly as a wait narrated mid-report is to [jobs.md](jobs.md) rule 39.
+15a. Exactly once. A note that already carries a job id passes untouched, and a record that a
+    `queued`, `dispatched` or `running` job already stands against gets THAT id named on the entry
+    instead of a second builder — which is also what ends the chain: the builder such a job runs
+    can write its own inability onto the record without dispatching a successor for itself.
+15b. The gate's own write must not satisfy the job hook. Attaching the id touches the record
+    AFTER dispatch, which is exactly the shape rule 13's comparison trusts — so the attach write's
+    epoch is stamped on the job sidecar as `record_attached_epoch`, and the runner's comparison
+    floors on it at check time ([jobs.md](jobs.md) rule 27). The builder still owes the record its
+    own entry; the gate's attach can never stand in for it.
+15c. The write is never lost to the gate. A dispatch the door refuses (the block marker, a broken
+    substitution shape, no door at all) is written onto the entry itself, named, in the same
+    write — so the record still never ends at "I can't" SILENTLY, and the failure is on the thread
+    where the next reader acts on it. Warning without dispatching is the failure this rule
+    replaces, not a fallback: the fallback is the named refusal on the record, which the next hand
+    (or the night) owes a dispatch.
+
 ## DATA
 
 | Path | Format |
@@ -134,6 +168,7 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 | `~/.local/share/deskcrab/engineering/records/<slug>.md` | frontmatter per rule 2, body per rule 3 |
 | `~/.local/share/deskcrab/engineering.md`, `engineering/INDEX.md`, `engineering/*.md` | the pre-records archive: read-only history, still indexed in WHERE THINGS ARE |
 | job sidecar field `record` | the engineering record a job was dispatched against ([jobs.md](jobs.md)) |
+| job sidecar field `record_attached_epoch` | when rule 15b's attach write touched the record, so the runner's rule-27 floor can discount it ([jobs.md](jobs.md)) |
 
 ## INTERACTIONS
 
@@ -142,8 +177,11 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 (`touched-since`).
 
 **The tool must never:** speak, notify, book a wake, dispatch a job, or write outside its records
-directory — with the one exception of the write declaration of rule 10a, which goes to the
-self-change watcher's suppression file through `crab touching`.
+directory — with two exceptions: the write declaration of rule 10a, which goes to the self-change
+watcher's suppression file through `crab touching`, and the ending gate of rule 15, which
+dispatches through `crab job --record` (the door's own policy intact) and stamps
+`record_attached_epoch` on the sidecar it just created. Both are the tool's own writes about its
+own act, never a second writer of anything.
 
 ## TESTS
 
@@ -156,4 +194,12 @@ withheld pointer appears exactly when something was withheld, one case is pinned
 byte size so regrowth is visible, and `--compact` (the interactive turn) is the count line alone);
 `tests/test_eng_selfchange.sh` (rule 10a: a real `crab eng touch` declares its own write and the
 self-change watcher stays quiet about it, while an undeclared out-of-band edit to the same record
-still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md)).
+still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md));
+`tests/test_chore_gate.sh` (rules 15–15c: a touch ending at inability, and one ending at the
+origin's chore shapes — a run-this command block and the ambiguous "Also unset:
+TIDY_CLAIMS_ROOTS" — each dispatch exactly one builder against the record and land the job id on
+the entry with `record_attached_epoch` on the sidecar; a second inability touch while that job
+lives names the existing id and starts nothing; a note already carrying a job id, a conclusive
+note, and inability mid-note all pass untouched; a refused dispatch is named on the entry and the
+write survives; and the runner floor of rule 15b — an attach write newer than dispatch does not
+stand in for the builder's own touch).

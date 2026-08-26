@@ -284,6 +284,12 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # PROMISE_CHECK_REBOOK_MAX=2        # wakes one verbatim promise may earn a day
 # PROMISE_SWEEP_WAKE_AT="09:45"     # when the night sweep's misses are surfaced
 
+# The chore gate (specs/turn-pipeline.md rule 16c): a displayed reply that
+# hands the user a command line to run has that chore converted into ONE
+# detached job — through the job door's own policy — and the display names
+# the job instead. Fails open; benign command mentions are never touched.
+# CHORE_GATE=1                      # set 0 to deliver displayed chores as written
+
 # The night judge's other roles (specs/nightly.md rules 14c-14e): every sleep
 # judgment — retention, deduplication, reconciliation, work selection — runs
 # on the night judge, gpt-5.6-sol at high by default, with NO fallback model.

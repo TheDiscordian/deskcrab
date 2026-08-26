@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""ONE detector for work handed to the user.
+
+specs/turn-pipeline.md rule 16c (the delivery gate on the display half) and
+specs/engineering-records.md rule 15 (the ending gate on `crab eng touch`)
+share this file, so "what counts as a chore" can never drift between the two
+places that act on it. Judged on how the words READ, not on what was meant:
+the origin (2026-08-25) was "Also unset: TIDY_CLAIMS_ROOTS" — a statement of
+fact that read as an instruction, and the reading is the harm.
+
+Deliberately NARROW, like the filler gate and the promise pre-check: an
+assignment is required, never just a command. First-person narration ("I ran
+`git diff --check`"), third-person description ("the suite runs via `bash
+tests/…`"), a named command ("`crab eng list` is the way in") and statements
+of fact ("TIDY_CLAIMS_ROOTS is also unset.") must never fire. Converting one
+real chore is the job; rewriting discussion would be a filter on her words,
+which is the thing this repo keeps tearing out.
+
+Modes — text on stdin, verdict as the exit status:
+
+    chore-scan chores      print "start-end" line ranges (1-based, inclusive)
+                           of chore blocks, one per line; exit 0 iff any
+    chore-scan ends-chore  exit 0 iff the LAST non-blank line of the text
+                           falls inside a chore block
+    chore-scan inability   exit 0 iff the text's CLOSING clause is inability
+                           ("I can't fix this from here" and its family) —
+                           closing only, like job-collect's wait test: an
+                           inability narrated mid-note on the way to an
+                           outcome is history, not an ending
+    chore-scan job-id      exit 0 iff a job-id token (YYYYMMDD-HHMMSS-pid)
+                           is present anywhere in the text
+
+Stdlib only, like job-status: this must run on an offline machine.
+"""
+
+import re
+import sys
+
+# The job-id shape `crab job` mints: date +%Y%m%d-%H%M%S, then the pid.
+JOB_ID_RE = re.compile(r"\b\d{8}-\d{6}-\d+\b")
+
+# Verbs that hand over operational work when aimed at the user. Deliberately
+# short; "start"/"stop" are absent on purpose ("Start here: specs/README.md"
+# is reading guidance, not a chore).
+VERBS = (r"(?:run|re-?run|execute|unset|set|export|restart|reload|"
+         r"re-?enable|enable|disable|install|re-?install|uninstall|"
+         r"remove|delete|kill|paste|type)")
+
+CMD_HEADS = (r"(?:systemctl|journalctl|loginctl|crab|git|sudo|bash|sh|"
+             r"python3?|rm|mv|cp|ln|chmod|chown|curl|wget|make|npm|pip3?|"
+             r"systemd-run|mkdir|touch)")
+
+# Command evidence: something on the line that renders as a thing to copy.
+# Required beside every directive, so "run the numbers again" stays prose.
+EVIDENCE_RE = re.compile(
+    r"`[^`]+`"                              # a backtick span
+    r"|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b"       # an ENV_VAR_NAME
+    r"|(?<!\w)--[a-z][\w-]*"                # a long flag
+    r"|(?<![\w.])(?:[\w.-]+/)+[\w.-]+"      # a path
+    r"|\b" + CMD_HEADS + r"(?:\s|$)")
+
+# A line-opening imperative: optional bullet/number is stripped first, then
+# optional connectives, then the verb — with whitespace after it (so
+# "run-all.sh covers it" never matches) or a colon straight into a target.
+LEAD = (r"(?:(?:also|then|and then|and|next|first|second|finally|"
+        r"afterwards?|now|just|please)[,:]?\s+)*(?:please\s+)?")
+IMPERATIVE_RE = re.compile(r"^" + LEAD + VERBS + r"\b\s*:?\s+\S", re.I)
+
+# A second-person obligation. "you can run X" is an offer and stays; the
+# gate wants the assignment.
+ASSIGN_RE = re.compile(
+    r"\byou(?:'|’)ll\s+(?:need|have|want)\s+to\b"
+    r"|\byou\s+(?:will\s+)?(?:need|have)\s+to\b"
+    r"|\byou\s+must\b"
+    r"|\byou(?:'|’)re\s+going\s+to\s+(?:need|have)\s+to\b"
+    r"|\byourself\b",
+    re.I)
+
+# A run-this lead-in whose colon points at the command block below it.
+LEADIN_RE = re.compile(
+    r"\b(?:run\s+(?:this|these|those|it|the\s+following)"
+    r"|to\s+(?:fix|clear|repair)\s+(?:it|this|that)"
+    r"|fix\s+(?:it|this)\s+with"
+    r"|when\s+you(?:'|’)re\s+(?:up|back|awake)"
+    r"|when\s+you\s+(?:are|get)\s+(?:up|back)"
+    r"|paste|type\s+(?:this|the\s+following))",
+    re.I)
+
+# A first-person or third-person subject opening the line: narration, never
+# an assignment. ("I ran…", "She restarted…", "It removes…")
+NARRATION_RE = re.compile(
+    r"^(?:i|i'll|i’ll|i've|i’ve|i'm|i’m|we|she|he|they|it|"
+    r"this|that)\b", re.I)
+
+BULLET_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
+FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+INDENT_RE = re.compile(r"^(?:    |\t)\s*\S")
+
+# Inability, judged on the closing clause only. Both apostrophes, because
+# the model writes the curly one.
+A = r"(?:'|’)"
+INABILITY_RE = re.compile(
+    r"\b(?:i\s+)?(?:can" + A + r"?t|cannot|could\s+not|couldn" + A + r"t|"
+    r"won" + A + r"t\s+be\s+able\s+to|am\s+unable\s+to|"
+    r"" + A + r"m\s+unable\s+to|unable\s+to)\s+"
+    r"(?:do|fix|finish|complete|reach|touch|test|verify|run|build|repair|"
+    r"restart|change|help|proceed|continue|manage|solve|clear)\b"
+    r"|\bcan" + A + r"?t\s+be\s+(?:done|fixed|tested|reached|repaired)\b"
+    r"|\bcannot\s+be\s+(?:done|fixed|tested|reached|repaired)\b"
+    r"|\bnothing\s+(?:more\s+)?i\s+can\s+do\b"
+    r"|\bnot\s+something\s+i\s+can\s+(?:do|fix|reach)\b"
+    r"|\bbeyond\s+(?:me|my\s+reach|this\s+session)\b"
+    r"|\bi\s+give\s+up\b"
+    r"|\bout\s+of\s+my\s+(?:reach|hands)\b"
+    r"|\bup\s+to\s+the\s+user\b"
+    r"|\b(?:needs|for)\s+the\s+user\s+to\b"
+    r"|\bthe\s+user\s+(?:will\s+have|has|needs)\s+to\b"
+    r"|\bi\s+can" + A + r"?t\s*$|\bi\s+cannot\s*$",
+    re.I)
+
+
+def _bare(line):
+    """The line stripped of leading whitespace, bullets and emphasis."""
+    s = line.strip()
+    s = BULLET_RE.sub("", s)
+    return s.lstrip("*_").rstrip()
+
+
+def _swallow_block(lines, i):
+    """A command block hanging off a lead-in: a fenced block, or consecutive
+    indented / backtick-only / command-headed lines. Returns the index just
+    past the block (== i when there is no block)."""
+    n = len(lines)
+    j = i
+    while j < n and not lines[j].strip():
+        j += 1
+    if j >= n:
+        return i
+    if FENCE_RE.match(lines[j]):
+        j += 1
+        while j < n and not FENCE_RE.match(lines[j]):
+            j += 1
+        return min(j + 1, n)
+    start = j
+    while j < n:
+        s = lines[j].strip()
+        if not s:
+            break
+        looks_cmd = (INDENT_RE.match(lines[j])
+                     or (s.startswith("`") and s.endswith("`"))
+                     or re.match(r"^" + CMD_HEADS + r"\b", s))
+        if not looks_cmd:
+            break
+        j += 1
+    return j if j > start else i
+
+
+def chore_ranges(lines):
+    """-> [(start, end)] 1-based inclusive ranges of chore blocks."""
+    ranges = []
+    i, n = 0, len(lines)
+    while i < n:
+        s = lines[i].strip()
+        if not s or s.startswith(">") or FENCE_RE.match(lines[i]):
+            i += 1
+            continue
+        bare = _bare(lines[i])
+        narration = NARRATION_RE.match(bare)
+        imperative = (not narration and IMPERATIVE_RE.match(bare)
+                      and EVIDENCE_RE.search(bare))
+        assign = (not narration and ASSIGN_RE.search(bare)
+                  and EVIDENCE_RE.search(bare))
+        if imperative or assign:
+            start = i
+            end = i + 1
+            if bare.rstrip().endswith(":"):
+                end = max(_swallow_block(lines, i + 1), end)
+            ranges.append((start + 1, end))
+            i = end
+            continue
+        # A lead-in over a command block: the assignment cue or run-this
+        # phrasing may carry no command itself — the block below is it.
+        if bare.rstrip().endswith(":") and not narration and (
+                ASSIGN_RE.search(bare) or LEADIN_RE.search(bare)):
+            end = _swallow_block(lines, i + 1)
+            if end > i + 1:
+                ranges.append((i + 1, end))
+                i = end
+                continue
+        i += 1
+    # Merge blocks separated by nothing (adjacent ranges read as one chore).
+    merged = []
+    for a, b in ranges:
+        if merged and a <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def closing_clause(text):
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        return ""
+    last = lines[-1].strip().rstrip(")]}\"'” ")
+    parts = [p.strip() for p in
+             re.split(r"[.;:!?]|—|–|\s-\s", last) if p.strip()]
+    clause = parts[-1] if parts else last
+    # A contrastive connective closes the story of the inability and opens
+    # the outcome: "thought I couldn't fix it, but the shim landed" ends on
+    # the shim, not the can't.
+    tails = [p.strip() for p in
+             re.split(r",\s+(?:but|and|so|yet|though|although|however)\b",
+                      clause) if p.strip()]
+    return tails[-1] if tails else clause
+
+
+def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    text = sys.stdin.read()
+    if mode == "job-id":
+        sys.exit(0 if JOB_ID_RE.search(text) else 1)
+    if mode == "inability":
+        sys.exit(0 if INABILITY_RE.search(closing_clause(text)) else 1)
+    if mode in ("chores", "ends-chore"):
+        lines = text.splitlines()
+        ranges = chore_ranges(lines)
+        if mode == "chores":
+            for a, b in ranges:
+                print("%d-%d" % (a, b))
+            sys.exit(0 if ranges else 1)
+        last = 0
+        for idx in range(len(lines), 0, -1):
+            if lines[idx - 1].strip():
+                last = idx
+                break
+        sys.exit(0 if any(a <= last <= b for a, b in ranges) else 1)
+    print("usage: chore-scan chores|ends-chore|inability|job-id  (text on "
+          "stdin)", file=sys.stderr)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
