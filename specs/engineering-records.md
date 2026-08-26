@@ -194,7 +194,18 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     text verbatim — is WRITTEN AND ON DISK before the job door is opened, so the redispatched
     builder reads an open record already carrying what it owes; then the remaining work is
     redispatched through the job door (`crab job -f --record <id>`) with a brief that quotes
-    those requirements and points at the record for the original ask. The force is the
+    those requirements and points at the record for the original ask. The redispatch is PLACED
+    where the originating build ran: the door opens with `-C` on the `workdir` of the newest
+    job sidecar carrying this record whose directory still exists — dispatch records the
+    workdir on every sidecar exactly so a redispatch never retypes it ([jobs.md](jobs.md) rule
+    7a's requeue discipline) — because the reviewing session sits in its own project
+    directory, not in the repository that owns the artefact, and a follow-up dispatched bare
+    starts a repository away from the work it owes. (That shape was live 2026-08-26: a
+    rejected deskcrab build was redispatched into the reviewer's own project directory.) The
+    `-C` lands on the new sidecar in turn, so the placement survives a chain of rejections
+    even after the original sidecar is gone; the entry's outcome names the workdir whenever
+    one was recovered. Only when no sidecar against the record offers a directory that still
+    exists does the door's own default stand. The force is the
     reviewer's own deliberate hand ([jobs.md](jobs.md) rule 31): work already chosen once does
     not queue behind the night a second time. The job id and the door's outcome then land on
     that same reject entry by RE-READING the record, never by writing back the body loaded
@@ -229,6 +240,7 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 | `~/.local/share/deskcrab/engineering.md`, `engineering/INDEX.md`, `engineering/*.md` | the pre-records archive: read-only history, still indexed in WHERE THINGS ARE |
 | job sidecar field `record` | the engineering record a job was dispatched against ([jobs.md](jobs.md)) |
 | job sidecar field `record_attached_epoch` | when rule 15b's attach write — or rule 16b's reject attach — touched the record, so the runner's rule-27 floor can discount it ([jobs.md](jobs.md)) |
+| job sidecar field `workdir` | where rule 16b's redispatch is placed: the originating build's own repository, recorded at every dispatch ([jobs.md](jobs.md) rule 7a) |
 
 ## INTERACTIONS
 
@@ -271,7 +283,10 @@ the state standing, while the same hands work without the marker; accept settles
 `review`, with the verdict on `settled_by`; reject returns the record to `open`, preserves the
 missing requirements verbatim on the entry AND on the redispatched brief — sidecar `record` set,
 `record_attached_epoch` stamped — and a dispatch the door refuses is named on the entry with the
-reopen surviving; the rejection is on disk as `open`, missing requirements included, by the
+reopen surviving; a reject issued from a FOREIGN current directory still places the follow-up in
+the originating job's workdir, read off the newest sidecar against the record, the placement
+survives a second rejection after the original sidecar is gone, and a recorded directory that no
+longer exists falls back to the door's own default; the rejection is on disk as `open`, missing requirements included, by the
 moment the dispatch runs, and a fast builder's touch and submission made during the dispatch
 window both SURVIVE the job-id annotation — the entry, the `review` state, and the builder's
 `last_touched` all stand (the rule 16b lost-update regression); and the 2026-08-26 regression

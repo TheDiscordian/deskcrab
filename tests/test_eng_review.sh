@@ -20,7 +20,13 @@
 #   - reject returns the record to open and PRESERVES the missing
 #     requirements, verbatim, on the entry and on the redispatched brief;
 #   - accept settles the record with the verdict on settled_by;
-#   - a reject whose dispatch does not land keeps the rejection anyway.
+#   - a reject whose dispatch does not land keeps the rejection anyway;
+#   - a reject issued from a FOREIGN current directory still places the
+#     follow-up in the originating job's workdir (the newest sidecar against
+#     the record), the placement survives a chain of rejections, and a
+#     recorded directory that no longer exists falls back to the door's
+#     default. The live defect (2026-08-26): a rejected deskcrab build was
+#     redispatched into the reviewing session's own project directory.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -372,6 +378,55 @@ check "the rejection and its annotation stand whole" \
     _ "$ENG" "$REPO" "$RID8"
 cp "$DESKCRAB_SANDBOX_LIB/stubs/systemd-run" "$SANDBOX_BIN/systemd-run"
 chmod +x "$SANDBOX_BIN/systemd-run"
+
+# ---------------------------------------------------------------------------
+echo
+echo "a rejection preserves the originating job's workdir (rule 16b): rejected"
+echo "from a FOREIGN current directory, the follow-up starts where the original ran:"
+reset_jobs
+ORIGIN="$T/origin-repo"
+ELSEWHERE="$T/reviewer-desk"
+mkdir -p "$ORIGIN" "$ELSEWHERE"
+RID9="$(E new "A thread whose builder ran in its own repository" --body "an ask")"
+"$REPO/lib/job-status" new "$JOBS" orig9 "the originating build" "" "$ORIGIN"
+"$REPO/lib/job-status" set "$JOBS/orig9.json" record="$RID9"
+E review "$RID9" "a claim the review will reject" >/dev/null
+OUT="$(cd "$ELSEWHERE" && E reject "$RID9" "the first missing half")"
+NEWID9="$(printf '%s\n' "$OUT" | sed -n 's/^redispatched as job \([^ ]*\).*/\1/p')"
+check "the redispatch landed" test -n "$NEWID9"
+check_eq "its workdir is the ORIGINATING repo, not the reviewer's cwd" \
+    "$("$REPO/lib/job-status" get "$JOBS/$NEWID9.json" workdir)" "$ORIGIN"
+check "the reject entry names the placement" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "in the originating workdir $4"' \
+    _ "$ENG" "$REPO" "$RID9" "$ORIGIN"
+
+echo
+echo "and DURABLY: a second rejection, the originating sidecar now gone, inherits"
+echo "the placement from the redispatched sidecar itself — the chain preserves it:"
+rm -f "$JOBS/orig9.json"
+E review "$RID9" "a second claim, also short" >/dev/null
+OUT="$(cd "$ELSEWHERE" && E reject "$RID9" "the second missing half")"
+NEWID9B="$(printf '%s\n' "$OUT" | sed -n 's/^redispatched as job \([^ ]*\).*/\1/p')"
+check "the second redispatch landed" test -n "$NEWID9B"
+check "as a new job" test "$NEWID9B" != "$NEWID9"
+check_eq "still placed in the originating repo, learned from the chain" \
+    "$("$REPO/lib/job-status" get "$JOBS/$NEWID9B.json" workdir)" "$ORIGIN"
+
+echo
+echo "a recorded workdir that no longer exists falls back to the door's default:"
+reset_jobs
+GONE="$T/gone-repo"
+mkdir -p "$GONE"
+RID10="$(E new "A thread whose repository has since vanished" --body "an ask")"
+"$REPO/lib/job-status" new "$JOBS" orig10 "a build whose tree is gone" "" "$GONE"
+"$REPO/lib/job-status" set "$JOBS/orig10.json" record="$RID10"
+rmdir "$GONE"
+E review "$RID10" "a claim" >/dev/null
+OUT="$(E reject "$RID10" "a missing piece")"
+NEWID10="$(printf '%s\n' "$OUT" | sed -n 's/^redispatched as job \([^ ]*\).*/\1/p')"
+check "the dispatch still lands" test -n "$NEWID10"
+check_eq "in the door's own default, never a dead directory" \
+    "$("$REPO/lib/job-status" get "$JOBS/$NEWID10.json" workdir)" "$SANDBOX/home"
 
 echo
 echo "summary: $PASS passed, $FAIL failed"

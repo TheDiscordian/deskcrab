@@ -424,11 +424,49 @@ def refuse_builder(verb, rid):
             "a submission." % (verb, rid))
 
 
+def _record_workdir(rid):
+    """Rule 16b: the redispatch is PLACED where the originating build ran.
+    Every dispatch records its workdir on the sidecar (jobs.md rule 7a),
+    and the sidecar carries the record it was dispatched against — so the
+    newest sidecar against this record whose directory still exists names
+    the repository that owns the artefact. The reviewing session's own cwd
+    is a different project (live 2026-08-26: a rejected deskcrab build was
+    redispatched into the reviewer's project directory), and each `-C`
+    lands on the new sidecar in turn, so the placement survives a chain of
+    rejections. -> the directory, or '' when no sidecar offers a live
+    one."""
+    import json
+    d = jobs_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return ""
+    found = []
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                j = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if j.get("record") != rid or not j.get("workdir"):
+            continue
+        stamp = j.get("started_epoch") or j.get("queued_epoch") or 0
+        found.append((stamp, n, j["workdir"]))
+    for _, _, wd in sorted(found, reverse=True):
+        if os.path.isdir(wd):
+            return wd
+    return ""
+
+
 def reject_dispatch(rid, missing):
     """Rule 16b: the missing requirements ride the new brief VERBATIM,
     through the job door with the reviewer's own deliberate force (jobs.md
     rule 31) — work already chosen once does not queue behind the night a
-    second time. -> (job id or '', the door's own line)."""
+    second time — and placed with -C in the originating job's workdir when
+    a sidecar against the record still names one that exists.
+    -> (job id or '', the door's own line)."""
     crab = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                         os.pardir, "crab")
     if not os.access(crab, os.X_OK):
@@ -441,8 +479,13 @@ def reject_dispatch(rid, missing):
             "real tests or greps, and submit again: crab eng review %s "
             "'<what you delivered and how you verified it>'."
             % (rid, " ".join(missing.split()), rid, rid))
+    wd = _record_workdir(rid)
+    cmd = [crab, "job", "-f", "--record", rid]
+    if wd:
+        cmd += ["-C", wd]
+    cmd.append(task)
     try:
-        r = subprocess.run([crab, "job", "-f", "--record", rid, task],
+        r = subprocess.run(cmd,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            timeout=90)
         out = r.stdout.decode("utf-8", "replace")
@@ -450,8 +493,11 @@ def reject_dispatch(rid, missing):
         return "", "the door raised: %s" % e
     m = re.search(r"^Job (\S+) (QUEUED|dispatched)", out, re.M)
     if m:
-        return m.group(1), ("queued for the night" if m.group(2) == "QUEUED"
-                            else "dispatched")
+        line = ("queued for the night" if m.group(2) == "QUEUED"
+                else "dispatched")
+        if wd:
+            line += ", in the originating workdir %s" % wd
+        return m.group(1), line
     first = (out.strip().splitlines()[0] if out.strip()
              else "the door produced nothing")
     return "", first
