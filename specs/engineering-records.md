@@ -188,17 +188,29 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     design were delivered. Two verdicts exist, both refused to a builder and both requiring state
     `review`: `crab eng accept <id> <what-was-verified>` settles the record with `settled_by`
     reading `review accepted: …`, and `crab eng reject <id> <missing…>` returns it to `open`.
-16b. A rejection PRESERVES the missing requirements and redispatches them at once. The reject
-    entry carries the reviewer's missing-requirements text verbatim, and in the same act the
-    remaining work is redispatched through the job door (`crab job -f --record <id>`) with a
-    brief that quotes those requirements and points at the record for the original ask. The
-    force is the reviewer's own deliberate hand ([jobs.md](jobs.md) rule 31): work already
-    chosen once does not queue behind the night a second time. The job id lands on the very
-    entry and the attach epoch is stamped on the new sidecar exactly as the ending gate stamps
-    it (rule 15b), so the redispatched builder still owes the record its own entry — and its
-    own submission. A dispatch the door refuses is named on the entry, in the same write, and
-    the record still returns to `open`: the rejection is never lost to its own dispatch
-    (rule 15c's discipline).
+16b. A rejection PRESERVES the missing requirements and redispatches them at once — in that
+    order, because the dispatch runs a builder against the very record the rejection is still
+    describing. The reject entry — state back to `open`, the reviewer's missing-requirements
+    text verbatim — is WRITTEN AND ON DISK before the job door is opened, so the redispatched
+    builder reads an open record already carrying what it owes; then the remaining work is
+    redispatched through the job door (`crab job -f --record <id>`) with a brief that quotes
+    those requirements and points at the record for the original ask. The force is the
+    reviewer's own deliberate hand ([jobs.md](jobs.md) rule 31): work already chosen once does
+    not queue behind the night a second time. The job id and the door's outcome then land on
+    that same reject entry by RE-READING the record, never by writing back the body loaded
+    before the dispatch: a fast builder may already have touched — or submitted — in the window
+    the dispatch held open, and every concurrent entry, the current state, and the current
+    `last_touched` survive the annotation. (The lost-update shape this forbids was live:
+    `cmd_reject` once loaded the record, dispatched while it was still in `review`, then wrote
+    its pre-dispatch body back as `open`, erasing whatever a fast builder had written between.)
+    When the annotation lands inside the standing entry it adds no entry and bumps nothing;
+    only if that entry cannot be found does it fall back to a fresh dated entry, and THAT write
+    stamps the attach epoch on the new sidecar exactly as the ending gate stamps it (rule 15b)
+    — the pre-dispatch reject write needs no discounting, since the runner's floor is the
+    dispatch moment itself. Either way the redispatched builder still owes the record its own
+    entry — and its own submission. A dispatch the door refuses is named on the entry the same
+    way, and the record still stands `open` from the write that preceded the attempt: the
+    rejection is never lost to its own dispatch (rule 15c's discipline).
 16c. `review` is a live state, not a closed one. It renders among the OPEN threads of the prompt
     block, marked as awaiting the review; it never ages out; and `settle` from it — the user's
     or the reviewer's own hand, outside a builder session — works exactly as rule 8 says. A
@@ -259,8 +271,12 @@ the state standing, while the same hands work without the marker; accept settles
 `review`, with the verdict on `settled_by`; reject returns the record to `open`, preserves the
 missing requirements verbatim on the entry AND on the redispatched brief — sidecar `record` set,
 `record_attached_epoch` stamped — and a dispatch the door refuses is named on the entry with the
-reopen surviving; and the 2026-08-26 regression end to end: a builder that substituted shared
-audio plumbing for the asked-for visible reuse of the phone conversation interface cannot settle
-the record — its settle is refused, its submission leaves the record unsettled, the completion
-wake is the review brief at the review effort, the reject carries the missing interface
-requirement onto the next brief, and only an accepted submission settles the record).
+reopen surviving; the rejection is on disk as `open`, missing requirements included, by the
+moment the dispatch runs, and a fast builder's touch and submission made during the dispatch
+window both SURVIVE the job-id annotation — the entry, the `review` state, and the builder's
+`last_touched` all stand (the rule 16b lost-update regression); and the 2026-08-26 regression
+end to end: a builder that substituted shared audio plumbing for the asked-for visible reuse of
+the phone conversation interface cannot settle the record — its settle is refused, its
+submission leaves the record unsettled, the completion wake is the review brief at the review
+effort pinned to the review model ([jobs.md](jobs.md) rule 29b), the reject carries the missing
+interface requirement onto the next brief, and only an accepted submission settles the record).

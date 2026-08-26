@@ -222,10 +222,14 @@ policy, collection of a finished builder's work, and the single channel a job ha
     `crab eng reject <id> <missing…>`, whose rejection preserves the missing requirements and
     redispatches them at once (engineering-records.md rules 16a–16b). The booking carries an
     effort override ([wake-queue.md](wake-queue.md) rule 13a) of `JOB_REVIEW_EFFORT`, default
-    `medium`, so the review runs with real hands whatever the wake path's default effort; a
-    level the booking side would refuse falls back to `medium` rather than costing the job its
-    only channel back (rule 7). Every other completion wake — blocked, failed, unreviewed, died
-    waiting — keeps its own reason: a review is owed only to work that claims to be done.
+    `medium`, AND a model override ([wake-queue.md](wake-queue.md) rule 13b) of
+    `JOB_REVIEW_MODEL`, default `sol`: the review was specified as a Sol review at medium — a
+    judgement pinned to its judge — and inheriting whichever ordinary wake model happens to be
+    configured is not that review. A level the booking side would refuse falls back to `medium`,
+    and a model name the record could not carry (empty, or bytes outside rule 13b's token) falls
+    back to `sol`, rather than costing the job its only channel back (rule 7). Every other
+    completion wake — blocked, failed, unreviewed, died waiting — keeps its own reason and
+    carries neither override: a review is owed only to work that claims to be done.
 
 ### The queue and the dispatch policy
 
@@ -469,8 +473,9 @@ known one; a clean build with an untouched record ends failed naming it; a clean
 touched its record but never submitted it for review ends failed naming the submission owed,
 with the wake reason saying so; a builder that touches its record and submits it with
 `crab eng review` finishes, with the record left in `review` and the completion wake carrying
-the review brief booked at the `JOB_REVIEW_EFFORT` override; a job with no record is untouched
-by the hook; requeue carries the record);
+the review brief booked at the `JOB_REVIEW_EFFORT` override and pinned to the
+`JOB_REVIEW_MODEL` model; a job with no record is untouched by the hook; requeue carries the
+record);
 `tests/test_eng_review.sh` (rules 29a–29b from the record side, with the 2026-08-26 regression —
 narrowed substituted work cannot settle its own ask — described in
 [engineering-records.md](engineering-records.md));

@@ -454,6 +454,13 @@ JOB_EFFORT="${JOB_EFFORT:-high}"
 # (low|medium|high); job-runner clamps anything else back to medium rather
 # than losing the job's only channel back to a refused booking.
 JOB_REVIEW_EFFORT="${JOB_REVIEW_EFFORT:-medium}"
+# ...and its model pin (jobs.md rule 29b, wake-queue.md rule 13b): the review
+# was specified as a Sol review — a judgement pinned to its judge — so the
+# booking carries the model as well, and the review never inherits whichever
+# ordinary wake model happens to be configured. `sol` resolves through
+# codex_model_resolve to CODEX_MODEL_SOL; job-runner clamps a name the record
+# could not carry back to sol, the same way it clamps the effort.
+JOB_REVIEW_MODEL="${JOB_REVIEW_MODEL:-sol}"
 # How many finished jobs the report lists, and how long finished job records
 # (status + log) are kept before pruning.
 JOBS_SHOW_FINISHED="${JOBS_SHOW_FINISHED:-6}"

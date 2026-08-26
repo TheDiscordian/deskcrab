@@ -30,12 +30,14 @@
 # file. Everything here reads records first and asks systemd second.
 #
 # Record format, tab separated, fixed order:
-#     fire-epoch \t kind \t reason \t booked-at \t booked-by [\t effort]
+#     fire-epoch \t kind \t reason \t booked-at \t booked-by [\t effort [\t model]]
 # Readers tolerate the older three-field shape — every record written before
 # 2026-08-07 has it — and fill the missing fields with "unknown" rather than
 # shifting the ones that are there. The sixth field is the per-wake effort
-# override (specs/wake-queue.md rule 13a), empty on every booking made without
-# one; absent and empty read the same.
+# override (specs/wake-queue.md rule 13a) and the seventh the per-wake model
+# pin (rule 13b), each empty on every booking made without one; absent and
+# empty read the same, and a model riding without an effort leaves the sixth
+# field empty rather than sliding into it.
 
 # The durable ledger. Every booking, cancellation, restoration, collapse and
 # purge lands here, because a queue change is a fact she has to be able to
@@ -136,13 +138,13 @@ _split_tabs() {  # <line>  -> _TF[]
 }
 
 # Read one record into WK_FIRE / WK_KIND / WK_REASON / WK_BOOKED_AT /
-# WK_BOOKED_BY / WK_EFFORT. Tolerant of the three-field shape: the missing
-# fields become "unknown", never a shift of the fields that ARE there. The
-# effort override has no "unknown" — a record without one IS a record without
-# one, and the wake runs at the config default.
+# WK_BOOKED_BY / WK_EFFORT / WK_MODEL. Tolerant of the three-field shape: the
+# missing fields become "unknown", never a shift of the fields that ARE there.
+# The effort and model overrides have no "unknown" — a record without one IS a
+# record without one, and the wake runs at the config default.
 wake_record_read() {  # <record path>
     WK_FIRE=""; WK_KIND=""; WK_REASON=""; WK_BOOKED_AT=""; WK_BOOKED_BY=""
-    WK_EFFORT=""
+    WK_EFFORT=""; WK_MODEL=""
     [ -s "$1" ] || return 1
     local line fire kind reason at by
     IFS= read -r line < "$1"
@@ -154,6 +156,7 @@ wake_record_read() {  # <record path>
     WK_FIRE="$fire"; WK_KIND="$WK_N_KIND"; WK_REASON="$WK_N_REASON"
     WK_BOOKED_AT="${at:-unknown}"; WK_BOOKED_BY="${by:-unknown}"
     WK_EFFORT="${_TF[5]:-}"
+    WK_MODEL="${_TF[6]:-}"
     [ -n "$WK_BOOKED_AT" ] || WK_BOOKED_AT="unknown"
     [ -n "$WK_BOOKED_BY" ] || WK_BOOKED_BY="unknown"
     return 0
@@ -182,17 +185,25 @@ _wake_reason_norm() {  # <reason>
 # rename is atomic and has no such window. The temp name is dot-prefixed and
 # carries this pid, so it matches no reader's `*.wake` glob and no two writers
 # share it.
-wake_state_write() {  # <unit> <fire-epoch> <kind> <reason> [booked-at] [booked-by] [effort]
+wake_state_write() {  # <unit> <fire-epoch> <kind> <reason> [booked-at] [booked-by] [effort] [model]
     mkdir -p "$WAKES_DIR"
     _wake_norm "${3:-}" "${4:-}"
     local tmp="$WAKES_DIR/.$1.$$.wtmp"
-    # The effort field only exists on a record that has one — absent and empty
-    # read the same (rule 13a), and a booking without an override keeps the
-    # five-field shape every reader and test already knows.
+    # The override fields only exist on a record that has one — absent and
+    # empty read the same (rules 13a, 13b), and a booking without an override
+    # keeps the five-field shape every reader and test already knows. A model
+    # riding without an effort writes the sixth field EMPTY rather than
+    # shifting into it: position is meaning in this record.
+    local overrides=""
+    if [ -n "${8:-}" ]; then
+        overrides="$(printf '\t%s\t%s' "${7:-}" "$8")"
+    elif [ -n "${7:-}" ]; then
+        overrides="$(printf '\t%s' "$7")"
+    fi
     if printf '%s\t%s\t%s\t%s\t%s%s\n' "$2" "$WK_N_KIND" \
         "$(_wake_reason_norm "$WK_N_REASON")" \
         "${5:-$(date +%s)}" "${6:-${DESKCRAB_WAKE_ORIGIN:-herself}}" \
-        "${7:+$(printf '\t%s' "$7")}" > "$tmp"; then
+        "$overrides" > "$tmp"; then
         mv -f "$tmp" "$WAKES_DIR/$1.wake"
         return 0
     fi
@@ -422,6 +433,7 @@ _wake_cluster_fold() {  # <by> <kind> <class-prefix> <window> <item> <fire-epoch
 
     local oldfire="$WK_FIRE" oldkind="$WK_KIND" oldreason="$WK_REASON"
     local oldat="$WK_BOOKED_AT" oldby="$WK_BOOKED_BY" oldeffort="$WK_EFFORT"
+    local oldmodel="$WK_MODEL"
     # Retire the old pair before re-booking — the tidy spread's own dance, at
     # the SAME fire moment rather than a new one.
     if _wake_manager_is_live; then
@@ -431,14 +443,14 @@ _wake_cluster_fold() {  # <by> <kind> <class-prefix> <window> <item> <fire-epoch
     wake_state_clear "$best"
     local newunit
     newunit="$(_wake_new_unit)"
-    wake_state_write "$newunit" "$oldfire" "$oldkind" "$merged" "$oldat" "$oldby" "$oldeffort"
-    if _wake_book "$newunit" "$(( oldfire - now ))s" "$oldkind" "$merged" "$oldby" "$oldeffort"; then
+    wake_state_write "$newunit" "$oldfire" "$oldkind" "$merged" "$oldat" "$oldby" "$oldeffort" "$oldmodel"
+    if _wake_book "$newunit" "$(( oldfire - now ))s" "$oldkind" "$merged" "$oldby" "$oldeffort" "$oldmodel"; then
         wake_ledger folded "$newunit" "$oldkind" "$merged" "$by (cluster fold, was $best)"
         echo "Folded into the cluster's pending wake: $newunit still fires $(date -d "@$oldfire" '+%H:%M:%S'), now carrying this item too."
         return 0
     fi
     wake_state_clear "$newunit"
-    wake_state_write "$best" "$oldfire" "$oldkind" "$oldreason" "$oldat" "$oldby" "$oldeffort"
+    wake_state_write "$best" "$oldfire" "$oldkind" "$oldreason" "$oldat" "$oldby" "$oldeffort" "$oldmodel"
     wake_ledger fold-failed "$best" "$oldkind" "$oldreason" "$by"
     return 1
 }
@@ -589,8 +601,8 @@ _wake_new_unit() {
 # sitting failed when this was written, one of them pointing at a deleted /tmp
 # checkout), and a start timeout so a runaway session has a ceiling the
 # in-process watchdog cannot provide.
-_wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
-    local unit="$1" when="$2" kind="$3" reason="$4" by="${5:-unknown}" effort="${6:-}"
+_wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort] [model]
+    local unit="$1" when="$2" kind="$3" reason="$4" by="${5:-unknown}" effort="${6:-}" model="${7:-}"
     if ! _wake_manager_is_live; then
         echo "  (scratch instance — record kept for $unit, no timer armed)" >&2
         return 0
@@ -606,11 +618,19 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
     [ -n "${BACKGROUND_NICE:-}" ] && extra+=(-p "Nice=$BACKGROUND_NICE")
     [ -n "${DESKCRAB_CONF:-}" ] && extra+=(--setenv=DESKCRAB_CONF="$DESKCRAB_CONF")
     [ -n "${DESKCRAB_STATE_PREFIX:-}" ] && extra+=(--setenv=DESKCRAB_STATE_PREFIX="$DESKCRAB_STATE_PREFIX")
-    # The effort override rides as the sixth argument only when there is one,
-    # so a wake booked without it fires with the argv it always had.
+    # The overrides ride as the sixth and seventh arguments only when there is
+    # one, so a wake booked without them fires with the argv it always had. A
+    # model with no effort still fills the sixth slot — empty, which the fire
+    # side ignores — because the seventh argument IS the model (rule 13b) and
+    # position may not shift.
+    local -a fired=("$SCRIPT_DIR/crab" wake "$kind" "$reason" "$unit" "$by")
+    if [ -n "$model" ]; then
+        fired+=("$effort" "$model")
+    elif [ -n "$effort" ]; then
+        fired+=("$effort")
+    fi
     systemd-run --user --quiet --unit="$unit" "${extra[@]}" --on-active="$when" \
-        "$SCRIPT_DIR/crab" wake "$kind" "$reason" "$unit" "$by" \
-        ${effort:+"$effort"}
+        "${fired[@]}"
 }
 
 # Book a wake. THE door: coalescing, spacing, the record, the timer, the
@@ -655,13 +675,14 @@ wake_work_shaped() {  # <reason> -> 0 when work-shaped
 }
 
 wake_book() {
-    local by="" cap="" capprefix="" effort="" cluster="" clusteritem="" clusterpin=""
+    local by="" cap="" capprefix="" effort="" model="" cluster="" clusteritem="" clusterpin=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --by)  by="${2:-}"; shift 2 || return 1 ;;
             --cap) cap="${2:-}"; shift 2 || return 1 ;;
             --cap-prefix) capprefix="${2:-}"; shift 2 || return 1 ;;
             --effort) effort="${2:-}"; shift 2 || return 1 ;;
+            --model) model="${2:-}"; shift 2 || return 1 ;;
             --cluster) cluster="${2:-}"; shift 2 || return 1 ;;
             --cluster-item) clusteritem="${2:-}"; shift 2 || return 1 ;;
             --cluster-pin-fire) clusterpin=1; shift ;;
@@ -671,6 +692,16 @@ wake_book() {
     case "$effort" in
         ''|low|medium|high) ;;
         *) echo "wake_book: '--effort $effort' is not a level the CLI knows (low, medium, high) — nothing scheduled." >&2
+           return 1 ;;
+    esac
+    # The model pin (rule 13b) is an open vocabulary — the engine follows the
+    # name — so the check is structural: one tab-free token, because a stray
+    # byte here corrupts the tab-separated record and the fired argv, hours
+    # later, with nobody watching.
+    case "$model" in
+        '') ;;
+        *[!A-Za-z0-9._:-]*)
+           echo "wake_book: '--model $model' is not a name the record can carry (one token of A-Za-z0-9._:-) — nothing scheduled." >&2
            return 1 ;;
     esac
     if [ -n "$cluster" ]; then
@@ -687,13 +718,13 @@ wake_book() {
     # One booker at a time, for the WHOLE check-then-act. Two wakes finishing
     # in the same second each found no pending floor and each booked one.
     _wake_under_lock "wake_book" _wake_book_locked "$by" "$cap" "$capprefix" "$effort" \
-        "$cluster" "$clusteritem" "$clusterpin" "$@"
+        "$model" "$cluster" "$clusteritem" "$clusterpin" "$@"
 }
 
-_wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <cluster> <cluster-item> <cluster-pin> <when> [kind] [reason]
-    local by="$1" cap="$2" capprefix="$3" effort="$4"
-    local cluster="$5" clusteritem="$6" clusterpin="$7"
-    local when="${8:-}" kind="${9:-scheduled}" reason="${10:-}"
+_wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <model> <cluster> <cluster-item> <cluster-pin> <when> [kind] [reason]
+    local by="$1" cap="$2" capprefix="$3" effort="$4" model="$5"
+    local cluster="$6" clusteritem="$7" clusterpin="$8"
+    local when="${9:-}" kind="${10:-scheduled}" reason="${11:-}"
     [ -n "$when" ] || { echo "wake_book: no moment given."; return 1; }
     mkdir -p "$WAKES_DIR"
     _wake_norm "$kind" "$reason"; kind="$WK_N_KIND"; reason="$WK_N_REASON"
@@ -750,8 +781,8 @@ _wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <cluster> <cluster-ite
     # reconciler honours, where the other order leaves a timer nothing
     # remembers. And if the timer cannot be armed, the record goes back —
     # a failed booking must not become a phantom promise.
-    wake_state_write "$unit" "$fire" "$kind" "$reason" "$now" "$by" "$effort"
-    if _wake_book "$unit" "${slot}s" "$kind" "$reason" "$by" "$effort"; then
+    wake_state_write "$unit" "$fire" "$kind" "$reason" "$now" "$by" "$effort" "$model"
+    if _wake_book "$unit" "${slot}s" "$kind" "$reason" "$by" "$effort" "$model"; then
         wake_ledger booked "$unit" "$kind" "$reason" "$by"
         echo "Wake scheduled ($when — $(date -d "@$fire" '+%H:%M:%S')) as $unit, booked by $by"
         return 0
@@ -980,7 +1011,7 @@ _wake_restore_locked() {
         fi
         wake_record_read "$f" || continue
         if [ "$WK_FIRE" -gt "$now" ]; then
-            if _wake_book "$unit" "$(( WK_FIRE - now ))s" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY" "$WK_EFFORT"; then
+            if _wake_book "$unit" "$(( WK_FIRE - now ))s" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY" "$WK_EFFORT" "$WK_MODEL"; then
                 wake_ledger restored "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
                 restored=$(( restored + 1 ))
                 echo "restored: $unit fires $(date -d "@$WK_FIRE" '+%F %H:%M') (${WK_KIND:-scheduled}${WK_REASON:+ — $WK_REASON}, booked by $WK_BOOKED_BY)"
@@ -1014,14 +1045,15 @@ _wake_restore_locked() {
         # pass computes its stagger from a fiction.
         local WAS_FIRE="$WK_FIRE" WAS_KIND="$WK_KIND" WAS_REASON="$WK_REASON"
         local WAS_AT="$WK_BOOKED_AT" WAS_BY="$WK_BOOKED_BY" WAS_EFFORT="$WK_EFFORT"
+        local WAS_MODEL="$WK_MODEL"
         wake_state_write "$unit" "$(( now + delay ))" "$WAS_KIND" "$WAS_REASON" \
-            "$WAS_AT" "$WAS_BY" "$WAS_EFFORT"
-        if _wake_book "$unit" "${delay}s" "$WAS_KIND" "$WAS_REASON" "$WAS_BY" "$WAS_EFFORT"; then
+            "$WAS_AT" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"
+        if _wake_book "$unit" "${delay}s" "$WAS_KIND" "$WAS_REASON" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"; then
             wake_ledger overdue "$unit" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"
             restored=$(( restored + 1 ))
             echo "overdue: $unit (was due $(date -d "@$WAS_FIRE" '+%F %H:%M')) fires in ${delay}s"
         else
-            wake_state_write "$unit" "$WAS_FIRE" "$WAS_KIND" "$WAS_REASON" "$WAS_AT" "$WAS_BY" "$WAS_EFFORT"
+            wake_state_write "$unit" "$WAS_FIRE" "$WAS_KIND" "$WAS_REASON" "$WAS_AT" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"
             wake_ledger restore-failed "$unit" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"
             failed=$(( failed + 1 ))
             echo "could not re-arm: $unit (still recorded, still overdue)"
@@ -1085,7 +1117,7 @@ _wake_tidy_locked() {
         echo "purged: $base (already fired — no booking record)"
     done
 
-    local f unit fire kind reason now keptf keptk keptr newfire newunit at by effort
+    local f unit fire kind reason now keptf keptk keptr newfire newunit at by effort model
     local -a kf=() kk=() kr=()
     now=$(date +%s)
     while IFS=$'\t' read -r fire f; do
@@ -1095,6 +1127,7 @@ _wake_tidy_locked() {
         wake_record_read "$f" || continue
         fire="$WK_FIRE"; kind="$WK_KIND"; reason="$WK_REASON"
         at="$WK_BOOKED_AT"; by="$WK_BOOKED_BY"; effort="$WK_EFFORT"
+        model="$WK_MODEL"
         [ "$fire" -gt "$now" ] || continue
         local i=0 dup="" near=0 diff
         while [ "$i" -lt "${#kf[@]}" ]; do
@@ -1123,15 +1156,15 @@ _wake_tidy_locked() {
             wake_state_clear "$unit"
             newfire=$(( now + $(wake_free_slot $(( fire - now )) ) ))
             newunit="$(_wake_new_unit)"
-            wake_state_write "$newunit" "$newfire" "$kind" "$reason" "$at" "$by" "$effort"
-            if _wake_book "$newunit" "$(( newfire - now ))s" "$kind" "$reason" "$by" "$effort"; then
+            wake_state_write "$newunit" "$newfire" "$kind" "$reason" "$at" "$by" "$effort" "$model"
+            if _wake_book "$newunit" "$(( newfire - now ))s" "$kind" "$reason" "$by" "$effort" "$model"; then
                 spread=$(( spread + 1 ))
                 wake_ledger spread "$newunit" "$kind" "$reason" "tidy (was $unit)"
                 echo "spread: $unit -> $(date -d "@$newfire" '+%H:%M:%S') (was sharing a moment with another wake)"
                 fire="$newfire"
             else
                 wake_state_clear "$newunit"
-                wake_state_write "$unit" "$fire" "$kind" "$reason" "$at" "$by" "$effort"
+                wake_state_write "$unit" "$fire" "$kind" "$reason" "$at" "$by" "$effort" "$model"
             fi
         fi
         kf+=("$fire"); kk+=("$kind"); kr+=("$reason")

@@ -192,6 +192,8 @@ if [ -n "$REVWAKE" ]; then
         grep -q "narrowed, or substituted" "$REVWAKE"
     check_eq "booked at the review effort override (medium)" \
         "$(awk -F'\t' '{print $6; exit}' "$REVWAKE")" "medium"
+    check_eq "and PINNED to the review model (sol) — a Sol review, never the wake default" \
+        "$(awk -F'\t' '{print $7; exit}' "$REVWAKE")" "sol"
 fi
 
 echo
@@ -248,7 +250,128 @@ FAILWAKE="$(grep -rl "never SUBMITTED for review" "$WAKES_DIR" 2>/dev/null | hea
 if [ -n "$FAILWAKE" ]; then
     check_eq "a non-review completion wake carries no effort override" \
         "$(awk -F'\t' '{print $6; exit}' "$FAILWAKE")" ""
+    check_eq "and no model pin either — a review is owed only to a claim" \
+        "$(awk -F'\t' '{print $7; exit}' "$FAILWAKE")" ""
 fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "a review-model name the record could not carry clamps back to sol:"
+reset_jobs
+rm -f "$WAKES_DIR"/*.wake
+RID6="$(E new "A thread whose review model knob went bad" --body "an ask")"
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "\${SANDBOX_CLAUDE_LOG:-/dev/null}"
+cat > /dev/null
+sleep 1
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" touch "$RID6" "did the work" >/dev/null 2>&1
+DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" review "$RID6" "a claim to judge" >/dev/null 2>&1
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"submitted."}]}}'
+printf '%s\n' '{"type":"result","result":"done"}'
+exit 0
+STUB
+"$REPO/lib/job-status" new "$JOBS" rev3 "a build whose review model knob is broken" ""
+"$REPO/lib/job-status" set "$JOBS/rev3.json" record="$RID6"
+JOB_REVIEW_MODEL="two words" WANTS_FILE="$XDG_DATA_HOME/deskcrab/wants.md" \
+    "$REPO/lib/job-runner" rev3 "$T/work" >/dev/null 2>&1
+REVWAKE6="$(grep -rl "THIS WAKE IS THE REVIEW" "$WAKES_DIR" 2>/dev/null | head -1)"
+check "the review wake still booked" test -n "$REVWAKE6"
+if [ -n "$REVWAKE6" ]; then
+    check_eq "pinned to sol, never to a name the record cannot hold" \
+        "$(awk -F'\t' '{print $7; exit}' "$REVWAKE6")" "sol"
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "the reject race: the rejection is on disk before the redispatched builder runs,"
+echo "and a FAST builder's writes during the dispatch window survive the annotation:"
+reset_jobs
+rm -f "$WAKES_DIR"/*.wake
+RID7="$(E new "A thread whose reject races its own fast builder" --body "$ASK")"
+E review "$RID7" "narrowed work, submitted" >/dev/null
+# The fast builder IS the dispatch: job dispatch reaches systemd-run with
+# lib/job-runner on the argv, synchronously inside cmd_reject's window — the
+# stub photographs what the record says at that instant, then writes onto the
+# thread as the redispatched builder would (role exported, touch, submission),
+# all BEFORE cmd_reject gets to annotate the job id. Exit 0 so no setsid
+# fallback doubles the builder. Timer shapes keep the shipped stub's answer.
+sandbox_stub systemd-run <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "\${SANDBOX_SYSTEMD_LOG:-/dev/null}"
+case " \$* " in
+    *" --on-active="*|*" --on-calendar="*) exit 0 ;;
+esac
+case " \$* " in
+    *"job-runner"*)
+        DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" field "$RID7" state > "$T/race-state-at-dispatch.txt" 2>&1
+        DESKCRAB_ENG_DIR="$ENG" python3 "$REPO/lib/eng" show "$RID7" > "$T/race-show-at-dispatch.txt" 2>&1
+        DESKCRAB_ENG_DIR="$ENG" DESKCRAB_ENG_ROLE=builder python3 "$REPO/lib/eng" \
+            touch "$RID7" "fast builder: delivered the visible interface, suites green" >/dev/null 2>&1
+        DESKCRAB_ENG_DIR="$ENG" DESKCRAB_ENG_ROLE=builder python3 "$REPO/lib/eng" \
+            review "$RID7" "fast builder: the table page now renders the phone conversation log" >/dev/null 2>&1
+        exit 0
+        ;;
+esac
+exit 1
+STUB
+MISSING7="the table page rendering the phone conversation interface is still owed"
+OUT="$(E reject "$RID7" "$MISSING7")"
+check_eq "at the moment the dispatch ran, the record was already OPEN" \
+    "$(cat "$T/race-state-at-dispatch.txt" 2>/dev/null)" "open"
+check "and already carried the missing requirements" \
+    grep -q "Missing: the table page rendering the phone conversation interface is still owed" \
+    "$T/race-show-at-dispatch.txt"
+NEWID7="$(printf '%s\n' "$OUT" | sed -n 's/^redispatched as job \([^ ]*\).*/\1/p')"
+check "the redispatch landed" test -n "$NEWID7"
+check "the fast builder's touch SURVIVES the job-id annotation" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "fast builder: delivered the visible interface"' \
+    _ "$ENG" "$REPO" "$RID7"
+check "the fast builder's submission survives too" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "Submitted for review: fast builder: the table page"' \
+    _ "$ENG" "$REPO" "$RID7"
+check_eq "the state is the builder's review, not the stale pre-dispatch open" \
+    "$(E field "$RID7" state)" "review"
+check "the rejection entry still stands, missing requirements verbatim" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "Missing: $4"' \
+    _ "$ENG" "$REPO" "$RID7" "$MISSING7"
+check "with the job id landed on it" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "job $4 now carries the missing requirements"' \
+    _ "$ENG" "$REPO" "$RID7" "$NEWID7"
+check "the builder last_touched stands — the annotation bumped nothing" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -A2 "^## $(DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" field "$3" last_touched)$" | grep -q "Submitted for review: fast builder"' \
+    _ "$ENG" "$REPO" "$RID7"
+
+echo
+echo "the same race with a builder that only touches: the reopen stands, the touch survives:"
+reset_jobs
+RID8="$(E new "A thread whose fast builder writes progress only" --body "an ask")"
+E review "$RID8" "a claim" >/dev/null
+sandbox_stub systemd-run <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "\${SANDBOX_SYSTEMD_LOG:-/dev/null}"
+case " \$* " in
+    *" --on-active="*|*" --on-calendar="*) exit 0 ;;
+esac
+case " \$* " in
+    *"job-runner"*)
+        DESKCRAB_ENG_DIR="$ENG" DESKCRAB_ENG_ROLE=builder python3 "$REPO/lib/eng" \
+            touch "$RID8" "fast builder: started, first findings on the thread" >/dev/null 2>&1
+        exit 0
+        ;;
+esac
+exit 1
+STUB
+OUT="$(E reject "$RID8" "one named gap")"
+check_eq "the record stands open" "$(E field "$RID8" state)" "open"
+check "the concurrent touch survives" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "fast builder: started, first findings"' \
+    _ "$ENG" "$REPO" "$RID8"
+check "the rejection and its annotation stand whole" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "Missing: one named gap"' \
+    _ "$ENG" "$REPO" "$RID8"
+cp "$DESKCRAB_SANDBOX_LIB/stubs/systemd-run" "$SANDBOX_BIN/systemd-run"
+chmod +x "$SANDBOX_BIN/systemd-run"
 
 echo
 echo "summary: $PASS passed, $FAIL failed"

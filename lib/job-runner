@@ -468,6 +468,15 @@ case "${JOB_REVIEW_EFFORT:-medium}" in
     low|medium|high) ;;
     *) JOB_REVIEW_EFFORT=medium ;;
 esac
+# The review model pin (jobs.md rule 29b, wake-queue.md rule 13b): the review
+# was specified as a Sol review at medium, so the booking carries the model —
+# inheriting whichever ordinary wake model happens to be configured is not
+# that review. A name the record could not carry (empty, or bytes outside the
+# booking side's token) falls back to sol the same way a bad effort falls
+# back to medium, never to a refused booking.
+case "${JOB_REVIEW_MODEL:-sol}" in
+    *[!A-Za-z0-9._:-]*|'') JOB_REVIEW_MODEL=sol ;;
+esac
 # ...but not when this runner is a test. A scratch run gets its own JOBS_DIR so
 # it cannot dirty the live jobs directory — and on 2026-08-07 one still woke me
 # for real, about a job called "testid" whose task was "do a thing", leaving no
@@ -525,10 +534,13 @@ fi
 if [ -n "$SCRATCH_RUN" ]; then
     echo "job-runner: scratch run ($JOBS_DIR) — event wake suppressed: $WAKE_REASON" >> "$LOG"
 elif [ -n "$WANTS_FILE" ]; then
-    # A review wake carries the effort override (wake-queue.md rule 13a,
-    # jobs.md rule 29b); every other completion wake books as it always has.
+    # A review wake carries the effort override AND the model pin
+    # (wake-queue.md rules 13a-13b, jobs.md rule 29b) — the review is a Sol
+    # review at medium by brief, not whatever the ordinary wake path runs;
+    # every other completion wake books as it always has.
     "$SCRIPT_DIR/crab" wake-at --by job-runner \
         ${REVIEW_WAKE:+--effort "${JOB_REVIEW_EFFORT:-medium}"} \
+        ${REVIEW_WAKE:+--model "${JOB_REVIEW_MODEL:-sol}"} \
         5s event "$WAKE_REASON" >/dev/null 2>&1
 fi
 

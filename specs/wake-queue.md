@@ -136,6 +136,22 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     (low, medium, high) — anything else is refused at booking time, not carried into a claude
     invocation that will refuse it later with nobody watching. Absent, the wake runs at
     `WAKE_EFFORT` from config, exactly as before the field existed.
+13b. A booking MAY carry a **model override** — `crab wake-at --model <name>` — naming the model
+    the fired session runs on, for a booker whose wake is a PINNED judgement rather than an
+    ordinary sitting. (The first such booker is the job runner's completion review,
+    [jobs.md](jobs.md) rule 29b: the review brief was specified as a Sol review at medium, and
+    until this field existed it fired on whichever ordinary wake model happened to be
+    configured.) The override is the record's seventh field and the fired unit's seventh
+    argument, and it survives exactly what the effort override survives: restore re-arms with
+    it, tidy's re-book and the cluster fold keep it, and the blocked-lock deferral re-books with
+    it intact. A model that rides without an effort still occupies the seventh position — the
+    sixth field is written empty rather than the fields shifting, because absent and empty
+    effort already read the same (rule 13a). The name is an open vocabulary (the engine follows
+    it, [model-backends.md](model-backends.md)), so validation is structural, not a roster: one
+    tab-free token of `A-Za-z0-9._:-` — anything else would corrupt the tab-separated record or
+    the argv, and is refused at booking time; the fire side applies the same filter and ignores
+    what fails it rather than refusing the whole wake. Absent, the wake runs at `WAKE_MODEL`
+    from config, exactly as before the field existed.
 
 ### Argument arity
 

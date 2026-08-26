@@ -495,9 +495,17 @@ def cmd_accept(argv):
 
 def cmd_reject(argv):
     """The review's no (rules 16a-16b): back to open, the missing
-    requirements preserved verbatim on the entry AND redispatched at once.
-    A dispatch the door refuses is named on the same entry and the reopen
-    survives — the rejection is never lost to its own dispatch."""
+    requirements preserved verbatim on the entry AND redispatched at once —
+    in that order. The rejection is ON DISK, open, before the job door is
+    opened, because the dispatch runs a builder against this very record: a
+    forced redispatch can have its builder touching — or submitting — within
+    seconds, and the old shape (load, dispatch, then write the pre-dispatch
+    body back) erased whatever landed in that window. The job id and the
+    door's outcome are added afterwards by RE-READING the record, so every
+    concurrent entry, the current state, and the current last_touched
+    survive. A dispatch the door refuses is named the same way and the
+    reopen stands from the first write — the rejection is never lost to its
+    own dispatch."""
     if len(argv) < 2:
         die("usage: eng reject <id> <the missing requirements>")
     refuse_builder("reject", argv[0])
@@ -506,28 +514,50 @@ def cmd_reject(argv):
     if meta.get("state") != "review":
         die("%s is %s, not in review — reject judges a submission"
             % (rid, meta.get("state") or "?"))
-    jid, doorline = reject_dispatch(rid, missing)
+    # First write, BEFORE the dispatch: the reopen and the missing
+    # requirements, verbatim. The builder the dispatch starts reads an open
+    # record already carrying what it owes.
     note = ("Review rejected — the full ask was not delivered. Missing: %s"
             % missing)
-    if jid:
-        note += ("\n\n(review: job %s now carries the missing requirements "
-                 "— %s)" % (jid, doorline))
-    else:
-        note += ("\n\n(review: the redispatch did not land — %s. The "
-                 "rejection stands, the record is OPEN again, and the next "
-                 "hand owes the dispatch.)" % doorline)
     stamp = now()
     meta["state"] = "open"
     meta["last_touched"] = stamp
     write(rec_path(rid), meta, add_entry(body, note, stamp))
+    jid, doorline = reject_dispatch(rid, missing)
+    if jid:
+        outcome = ("(review: job %s now carries the missing requirements "
+                   "— %s)" % (jid, doorline))
+    else:
+        outcome = ("(review: the redispatch did not land — %s. The "
+                   "rejection stands, the record is OPEN again, and the "
+                   "next hand owes the dispatch.)" % doorline)
+    # Second write, AFTER the dispatch: re-read and annotate. The entry is
+    # located by the exact text the first write put down; the outcome lands
+    # inside it without touching state or last_touched, so a fast builder's
+    # concurrent touch or submission stands whole. Only when the entry
+    # cannot be found (a concurrent hand rewrote it) does the outcome fall
+    # back to a fresh dated entry — and only THAT write, which postdates the
+    # dispatch and bumps last_touched, needs its epoch stamped for the
+    # runner's floor (rule 15b's discipline); the first write predates the
+    # dispatch, which is the floor already.
+    meta2, body2 = load(rid)
+    # add_entry strips the note on the way in; the anchor must match what
+    # was actually written, not what was handed over.
+    anchor = "## %s\n\n%s" % (stamp, note.strip())
+    attach = stamp
+    if anchor in body2:
+        write(rec_path(rid), meta2,
+              body2.replace(anchor, anchor + "\n\n" + outcome, 1))
+    else:
+        attach = now()
+        meta2["last_touched"] = attach
+        write(rec_path(rid), meta2, add_entry(body2, outcome, attach))
     print("%s rejected, open again %s" % (rid, stamp))
     print("missing, preserved on the record: %s" % missing)
     if jid:
         print("redispatched as job %s (%s)" % (jid, doorline))
-        # Rule 16b beside 15b: this very write postdates the dispatch —
-        # stamp its epoch so the runner's floor can discount it.
         try:
-            epoch = int(time.mktime(time.strptime(stamp, TIMEFMT)))
+            epoch = int(time.mktime(time.strptime(attach, TIMEFMT)))
         except (ValueError, OverflowError):
             epoch = int(time.time())
         _stamp_attach_epoch(jid, epoch)

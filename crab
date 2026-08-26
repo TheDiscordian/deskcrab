@@ -246,6 +246,18 @@ case "${1:-}" in
             low|medium|high) WAKE_EFFORT="$WAKE_EFFORT_OVERRIDE" ;;
             *) WAKE_EFFORT_OVERRIDE="" ;;
         esac
+        # The booking's model pin (specs/wake-queue.md rule 13b), the seventh
+        # argument — the job runner's completion review books its wake pinned
+        # to the review model this way. Applied by reassigning WAKE_MODEL
+        # before run_claude_wake reads it; the same structural filter as the
+        # booking side, and anything failing it is ignored rather than handed
+        # to an invocation that would refuse the whole wake over it.
+        WAKE_MODEL_OVERRIDE="${7:-}"
+        case "$WAKE_MODEL_OVERRIDE" in
+            '') ;;
+            *[!A-Za-z0-9._:-]*) WAKE_MODEL_OVERRIDE="" ;;
+            *) WAKE_MODEL="$WAKE_MODEL_OVERRIDE" ;;
+        esac
 
         # This booking has fired: retire its durable record before anything can
         # exit early, or wake-restore would resurrect a wake that already ran.
@@ -331,6 +343,7 @@ case "${1:-}" in
             fi
             "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
                 ${WAKE_EFFORT_OVERRIDE:+--effort "$WAKE_EFFORT_OVERRIDE"} \
+                ${WAKE_MODEL_OVERRIDE:+--model "$WAKE_MODEL_OVERRIDE"} \
                 "${_wake_retry}s" "${WAKE_KIND:-scheduled}" "$WAKE_REASON" >/dev/null
             exit 0
         fi
@@ -729,7 +742,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # This is a door onto the module, not a second implementation of it.
         shift
         if [ -z "${1:-}" ]; then
-            echo "Usage: crab wake-at [--by <who>] [--cap <n>] [--effort <low|medium|high>] <when> [kind] [reason]"
+            echo "Usage: crab wake-at [--by <who>] [--cap <n>] [--effort <low|medium|high>] [--model <name>] <when> [kind] [reason]"
             echo "       (when: 2h, 45min, \"09:30\", \"Sat 14:00\"; kind: scheduled|event)"
             echo "       Anything unrecognised in the kind slot is read as the reason."
             exit 1
