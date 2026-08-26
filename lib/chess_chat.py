@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""chess_chat: her side of the table chat (specs/chessweb.md rule 24).
+
+The game window carries a real chat between the sitter and her. This module
+owns her half of it: one background thread, one slot with newest-wins
+supersession — the resident mover's own discipline — and one minimal model
+call per trigger, in the mover's measured shape. A trigger is a landed move
+(either player's), a player chat message, or the end of the game; the reply
+is the message text alone, or the literal word PASS to stay silent. A PASS,
+an empty reply, or a failed call posts nothing and disturbs nothing: chat is
+downstream of the game, best-effort, and never retried — the next move
+brings the next chance.
+
+This chat is a SEPARATE conversational context from the phone conversation:
+nothing here reads or writes the conversation store, no session is resumed,
+and the game record is the chat's entire memory. The default model is `sol`
+at `low` effort; a codex-family name walks the codex login first and falls
+back to the Claude accounts, exactly as the mover does
+(specs/model-backends.md rule 15).
+"""
+
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+import chess_mover  # the call machinery this rides: accounts, env, codex
+
+PASS_RE = re.compile(r"^\W*pass\b", re.IGNORECASE)
+
+
+def chat_enabled():
+    return os.environ.get("DESKCRAB_CHESS_CHAT", "1") != "0"
+
+
+def chat_model():
+    return (os.environ.get("DESKCRAB_CHESS_CHAT_MODEL") or "sol")
+
+
+def chat_effort():
+    return (os.environ.get("DESKCRAB_CHESS_CHAT_EFFORT") or "low")
+
+
+def chat_timeout():
+    try:
+        return float(os.environ.get("DESKCRAB_CHESS_CHAT_TIMEOUT", "60"))
+    except ValueError:
+        return 60.0
+
+
+SYSTEM_PROMPT_TAIL = (
+    "You are at a chess board, chatting with your opponent in the game "
+    "window's own chat panel. Reply with the message you want to post — one "
+    "or two short sentences, plain text — or with the single word PASS to "
+    "say nothing. Most moves deserve no comment; PASS freely. Never reveal "
+    "your plans or your reasoning about the position: your opponent reads "
+    "everything you post.")
+
+
+def system_prompt():
+    return chess_mover._persona() + SYSTEM_PROMPT_TAIL
+
+
+def build_prompt(job):
+    """The whole context her chat gets. `job` carries: gid, ply, player
+    (label or None), side, event, fen, history, record_line, chat_tail
+    (rendered lines, this game), prev_tail (rendered lines, the previous
+    game against the same player, may be empty)."""
+    who = job.get("player") or "someone unnamed"
+    lines = [
+        f"You are speaking with {who}, the person across the chess board "
+        f"(game {job['gid']}). This is the table chat inside the game "
+        f"window — a separate conversation from your phone conversation; "
+        f"only what appears in this prompt has been said here.",
+        f"You are playing {job['side']}. Position after ply {job['ply']} "
+        f"(FEN): {job['fen']}",
+        f"Moves so far: {job['history']}",
+    ]
+    if job.get("record_line"):
+        lines.append("Your standing record against them, counted from the "
+                     f"stored games: {job['record_line']}")
+    if job.get("prev_tail"):
+        lines.append("From the chat of your previous game against them:")
+        lines.extend("  " + t for t in job["prev_tail"])
+    if job.get("chat_tail"):
+        lines.append("The chat so far in this game:")
+        lines.extend("  " + t for t in job["chat_tail"])
+    else:
+        lines.append("No one has said anything in this game yet.")
+    lines.append(f"Just now: {job['event']}")
+    lines.append("Your message, or PASS:")
+    return "\n".join(lines) + "\n"
+
+
+def parse_reply(text):
+    """The message to post, or None for silence. Strips wrapping quotes and
+    caps the length at the store's own bound."""
+    t = (text or "").strip()
+    if t[:1] in "\"'“" and t[-1:] in "\"'”" and len(t) > 1:
+        t = t[1:-1].strip()
+    if not t or PASS_RE.match(t):
+        return None
+    limit = 500
+    return t[:limit].strip() if len(t) > limit else t
+
+
+class ChessChat:
+    """One background thread, one slot, newest trigger wins. `post` is the
+    hub's callback: post(job, text) appends her message to the store under
+    the hub lock (and may refuse if the game moved on). Failures are logged
+    and dropped — a broken banter call must never disturb a game."""
+
+    def __init__(self, post, log=print, metric=lambda stage, detail="": None):
+        self.post = post
+        self.log = log
+        self.metric = metric
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.slot = None
+        self.proc = None          # the live call, killable on supersession
+        self.inflight = False
+        threading.Thread(target=self._run, daemon=True,
+                         name="chess-chat").start()
+
+    def trigger(self, job):
+        """The newest thing worth possibly speaking about. Replaces whatever
+        was pending and abandons an in-flight call — at most one message per
+        burst, about the board as it stands (rule 24c)."""
+        if not chat_enabled():
+            return
+        with self.lock:
+            self.slot = job
+            if self.proc is not None:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.cond.notify()
+
+    def wait_idle(self, timeout=30.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self.lock:
+                if self.slot is None and not self.inflight:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    # -- the thread --------------------------------------------------------
+    def _run(self):
+        while True:
+            with self.lock:
+                while self.slot is None:
+                    self.cond.wait()
+                job, self.slot = self.slot, None
+                self.inflight = True
+            try:
+                self._answer(job)
+            except Exception as e:  # never let banter kill the worker
+                self.log(f"chat: {job.get('gid')} failed unexpectedly: {e!r}")
+            finally:
+                with self.lock:
+                    self.inflight = False
+                    self.proc = None
+
+    def _answer(self, job):
+        gid, ply = job["gid"], job["ply"]
+        self.metric("chat-start", f"{gid} ply {ply} {job.get('why', '')}")
+        prompt = build_prompt(job)
+        t0 = time.time()
+        out, why = None, "no attempts ran"
+        for label, cmd, env in self._attempts():
+            out, why = self._call(cmd, env, prompt)
+            if why == "superseded":
+                self.metric("chat-model-end",
+                            f"{gid} ply {ply} {time.time() - t0:.1f}s "
+                            f"superseded")
+                return
+            if why is None:
+                break
+            self.log(f"chat: {gid} ply {ply} attempt {label} failed: {why}")
+        dt = time.time() - t0
+        if why is not None:
+            # Chat never retries (rule 24d): silence, loudly logged.
+            self.metric("chat-model-end", f"{gid} ply {ply} {dt:.1f}s {why}")
+            self.log(f"chat: {gid} ply {ply}: every attempt failed — "
+                     f"saying nothing ({why})")
+            return
+        self.metric("chat-model-end", f"{gid} ply {ply} {dt:.1f}s ok")
+        text = parse_reply(out)
+        if text is None:
+            self.metric("chat-pass", f"{gid} ply {ply}")
+            return
+        if self.post(job, text):
+            self.metric("chat-posted", f"{gid} ply {ply} assistant")
+
+    # -- the call ----------------------------------------------------------
+    def _attempts(self):
+        """(label, cmd, env) worth trying, the mover's walk at the chat's
+        own model and effort: a stub override wholesale; else codex first
+        for a codex-family name (unless cooling), then the Claude accounts
+        at the fallback model."""
+        override = os.environ.get("DESKCRAB_CHESS_CHAT_CMD")
+        if override:
+            yield "stub", shlex.split(override), chess_mover.Mover._env(None)
+            return
+        model = chat_model()
+        effort = chat_effort()
+        if chess_mover._codex_backend(model):
+            if not chess_mover._codex_cooling():
+                env = chess_mover.Mover._env(None)
+                env.pop("OPENAI_API_KEY", None)
+                yield "codex", self._codex_cmd(model, effort), env
+            model = os.environ.get("CODEX_FALLBACK_MODEL") or "sonnet"
+            if chess_mover._codex_backend(model):
+                model = "sonnet"
+            if effort == "ultra":
+                effort = "max"
+        for number, conf in chess_mover.Mover._accounts(model):
+            yield (f"account {number}", self._claude_cmd(model, effort),
+                   chess_mover.Mover._env(conf))
+
+    @staticmethod
+    def _claude_cmd(model, effort):
+        claude = os.environ.get("CLAUDE_BIN", "")
+        if claude:
+            claude = os.path.expanduser(os.path.expandvars(claude))
+        if not claude or not os.path.exists(claude):
+            claude = (shutil.which("claude")
+                      or os.path.expanduser("~/.local/bin/claude"))
+        cmd = [claude, "-p", "--dangerously-skip-permissions",
+               "--model", model, "--effort", effort,
+               "--output-format", "json",
+               "--disable-slash-commands",
+               "--system-prompt", system_prompt()]
+        empty_mcp = Path(__file__).resolve().parent / "empty-mcp.json"
+        if empty_mcp.is_file():
+            cmd += ["--strict-mcp-config", "--mcp-config", str(empty_mcp),
+                    "--tools", ""]
+        return cmd
+
+    @staticmethod
+    def _codex_cmd(model, effort):
+        codex = os.environ.get("CODEX_BIN", "")
+        if codex:
+            codex = os.path.expanduser(os.path.expandvars(codex))
+        if not codex or not os.path.exists(codex):
+            codex = (shutil.which("codex")
+                     or os.path.expanduser("~/.local/bin/codex"))
+        instr = os.path.join(chess_mover.Mover._sterile_cwd(),
+                             "codex-chat-instructions.md")
+        try:
+            with open(instr, "w") as fh:
+                fh.write(system_prompt())
+        except OSError:
+            instr = ""
+        cmd = [codex, "exec", "--ignore-user-config", "--skip-git-repo-check",
+               "--dangerously-bypass-approvals-and-sandbox",
+               "--json", "--color", "never",
+               "-m", chess_mover._codex_resolve(model),
+               "-c", "model_reasoning_effort=%s" % effort]
+        if instr:
+            cmd += ["-c", "model_instructions_file=%s" % instr]
+        cmd.append("-")
+        return cmd
+
+    def _call(self, cmd, env, prompt):
+        """(reply text, why-it-failed): why is None on success, 'superseded'
+        when a newer trigger killed or outran the call. Decodes the CLI's
+        json result object and the codex JSONL stream, and records each real
+        call to the token ledger (kind `chess`), exactly the mover's
+        bargains."""
+        import json as _json
+        try:
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True,
+                cwd=chess_mover.Mover._sterile_cwd(), env=env)
+        except OSError as e:
+            return None, f"spawn: {e}"
+        with self.lock:
+            if self.slot is not None:
+                proc.kill()
+                proc.wait()
+                return None, "superseded"
+            self.proc = proc
+        why = None
+        try:
+            out, err = proc.communicate(prompt, timeout=chat_timeout())
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            out, err = "", ""
+            why = f"timeout-{chat_timeout():.0f}s"
+        with self.lock:
+            self.proc = None
+            if self.slot is not None:
+                return None, "superseded"
+        if why:
+            return None, why
+        if proc.returncode != 0:
+            lines = [ln.strip()
+                     for ln in f"{err or ''}\n{out or ''}".splitlines()
+                     if ln.strip()]
+            detail = next((ln for ln in lines
+                           if any(m in ln.lower()
+                                  for m in chess_mover._CAUSE_MARKERS)),
+                          lines[-1] if lines else "")
+            self._ledger(cmd, env, None, f"{err or ''}\n{out or ''}")
+            return None, f"exit-{proc.returncode}: {detail[:200]}"
+        try:
+            doc = _json.loads((out or "").strip())
+        except (ValueError, TypeError):
+            text, usage = chess_mover._codex_jsonl_answer(out)
+            if text is not None:
+                doc = {"result": text}
+                if usage:
+                    doc["usage"] = usage
+                self._ledger(cmd, env, doc, "")
+                return text, None
+            return out or "", None
+        if isinstance(doc, dict) and "result" in doc:
+            self._ledger(cmd, env, doc, "")
+            return str(doc.get("result") or ""), None
+        return out or "", None
+
+    @staticmethod
+    def _ledger(cmd, env, doc, error_text):
+        try:
+            import token_ledger
+            model = ""
+            if "--model" in cmd:
+                model = cmd[cmd.index("--model") + 1]
+            elif "-m" in cmd:
+                model = cmd[cmd.index("-m") + 1]
+            status = "ok"
+            if doc is None:
+                status = "refused" if token_ledger.limit_re().search(
+                    error_text or "") else "error"
+            token_ledger.record_result_object(
+                doc, "chess", model=model, effort=chat_effort(),
+                account=env.get("CLAUDE_CONFIG_DIR", ""), status=status)
+        except Exception:
+            pass

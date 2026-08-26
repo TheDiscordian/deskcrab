@@ -67,6 +67,14 @@
 			<button id="connect" type="button">Connect</button>
 			<button id="join" type="button" disabled>Join</button>
 			<button id="watch" type="button" disabled>Watch</button>
+			<!-- The sitter names themselves before the deal (specs/chessweb.md
+			     rule 23): the name rides the /new post onto the game record,
+			     is remembered client-side, and an empty box deals an honestly
+			     unlabeled game. -->
+			<label class="pname">Name
+				<input id="playername" maxlength="40" placeholder="who plays?"
+					autocomplete="off">
+			</label>
 			<!-- The clock for the NEXT game (specs/chessweb.md rule 22h):
 			     exactly the standard set plus untimed, nothing invented.
 			     New Game posts the pick to /new; the server is the only
@@ -120,6 +128,28 @@
 			<div class="gy-score" id="gy-b-score">0 points</div>
 		</aside>
 	</main>
+
+	<!-- The table chat (specs/chessweb.md rule 24): the thread off GET /chat,
+	     a send box onto POST /chat, and the speak toggle of rule 24e — off by
+	     default, remembered, speaking only her messages and only those that
+	     arrive while it is on. -->
+	<section class="chatbox">
+		<div class="chat-head">
+			<h2>Table chat</h2>
+			<span id="chat-vs"></span>
+			<span id="chat-record"></span>
+			<label class="chat-speak">
+				<input type="checkbox" id="chat-speak"> speak
+			</label>
+		</div>
+		<div id="chat-log" aria-live="polite"></div>
+		<form id="chat-form">
+			<input id="chat-input" maxlength="500"
+				placeholder="Say something across the board…"
+				autocomplete="off">
+			<button id="chat-send" type="submit">Send</button>
+		</form>
+	</section>
 
 	<section class="consolebox">
 		<h2>Console</h2>

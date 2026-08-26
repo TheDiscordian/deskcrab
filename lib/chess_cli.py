@@ -371,8 +371,78 @@ def resolve_game(spec: str | None) -> dict:
     raise CliError(f"several active games ({ids}) — name one")
 
 
+def player_label(g: dict) -> str:
+    """Whom she is facing, as shown everywhere a game is shown: the named
+    player when the record carries one (specs/chessweb.md rule 23), the
+    opponent otherwise. The label is display and identity, never a key —
+    ids, store lookups and the browser guard all still read `opponent`."""
+    return (g.get("player") or "").strip() or g["opponent"]
+
+
 def side_name(g: dict, colour: str) -> str:
-    return "you" if g["my_side"] == colour else g["opponent"]
+    return "you" if g["my_side"] == colour else player_label(g)
+
+
+def clean_player(name) -> str | None:
+    """A player name fit to store, or None for 'unlabeled'. Raises CliError
+    on a name that is not a short string — validation is server-side only
+    (rule 23), and absence is recorded as absence, never guessed."""
+    if name is None:
+        return None
+    if not isinstance(name, str):
+        raise CliError("the player name must be text")
+    name = name.strip()
+    if not name:
+        return None
+    if len(name) > 40:
+        raise CliError("the player name must be 40 characters or fewer")
+    return name
+
+
+def record_tally(games: list[dict]) -> list[dict]:
+    """The counted record (specs/chessweb.md rule 23d): buckets keyed by the
+    player label, slug-folded so a CLI opponent name and a typed player name
+    that spell the same person count together; unlabeled browser games keep
+    their own visible bucket. Every result comes through compute_state —
+    the game JSON stores no result field, and a naive tally reads every
+    mated game as unfinished (measured 2026-08-20). Wins are HER wins;
+    readers on the other side of the table flip the view themselves."""
+    buckets: dict[str, dict] = {}
+    for g in games:
+        label = player_label(g)
+        labeled = bool((g.get("player") or "").strip())
+        b = buckets.setdefault(slugify(label), {
+            "player": label, "labeled": labeled,
+            "games": 0, "active": 0, "wins": 0, "draws": 0, "losses": 0,
+            "white": {"wins": 0, "draws": 0, "losses": 0},
+            "black": {"wins": 0, "draws": 0, "losses": 0},
+        })
+        if labeled:
+            # A typed name outranks a slug-matching opponent name for the
+            # bucket's face, and marks the whole bucket as a person.
+            b["player"] = label
+            b["labeled"] = True
+        b["games"] += 1
+        try:
+            board = build_board(g)
+        except CliError:
+            continue  # a corrupt record counts as a game, never as a result
+        key_, _desc, result = compute_state(g, board)
+        if key_ == "active":
+            b["active"] += 1
+            continue
+        mine = g["my_side"]
+        if result == "1/2-1/2":
+            outcome = "draws"
+        elif (result == "1-0") == (mine == "white"):
+            outcome = "wins"
+        else:
+            outcome = "losses"
+        b[outcome] += 1
+        b[mine][outcome] += 1
+    out = sorted(buckets.values(),
+                 key=lambda b: (-b["games"], b["player"].lower()))
+    return out
 
 
 # ---------------------------------------------------------------- rendering
@@ -672,6 +742,7 @@ def print_position(g: dict, board: chess.Board) -> None:
 
 def cmd_new(args):
     tc, ck = make_time_control(args.time_control)
+    player = clean_player(getattr(args, "player", None))
     slug = slugify(args.opponent)
     taken = {g["id"] for g in load_all()}
     n = 1
@@ -687,6 +758,8 @@ def cmd_new(args):
         "engine_level": args.engine_level,
         "created": now(),
     }
+    if player:
+        g["player"] = player
     if tc:
         g["time_control"] = tc
         g["clock"] = ck
@@ -721,7 +794,7 @@ def cmd_list(args):
 def cmd_show(args):
     g = resolve_game(args.game)
     board = build_board(g)
-    print(f"{g['id']}: you ({g['my_side']}) v {g['opponent']}")
+    print(f"{g['id']}: you ({g['my_side']}) v {player_label(g)}")
     print_position(g, board)
     if args.png is not None:
         out = Path(args.png) if args.png else default_png_path(g)
@@ -815,7 +888,7 @@ def cmd_status(args):
     g = resolve_game(args.game)
     board = build_board(g)
     key, desc, result = compute_state(g, board)
-    print(f"{g['id']}: you ({g['my_side']}) v {g['opponent']} "
+    print(f"{g['id']}: you ({g['my_side']}) v {player_label(g)} "
           f"({'black' if g['my_side'] == 'white' else 'white'})")
     if key == "active":
         mover = "white" if board.turn == chess.WHITE else "black"
@@ -864,6 +937,78 @@ def cmd_draw(args):
     g["draw_agreed"] = True
     save_game(g)
     print(f"{g['id']}: draw agreed  [1/2-1/2]")
+
+
+def cmd_label(args):
+    """Hand-label a game's sitter (specs/chessweb.md rule 23c) — the whole
+    migration story for records from before the player field, and it is
+    deliberately manual: nothing ever infers a name."""
+    g = resolve_game(args.game)
+    name = clean_player(args.name)
+    if name is None:
+        raise CliError("usage: betty-chess label <game> <name>")
+    g["player"] = name
+    save_game(g)
+    print(f"{g['id']}: playing {name}")
+
+
+def cmd_record(args):
+    """The counted win-loss record, per player (specs/chessweb.md rule 23d).
+    Derived from the game files on every call, never from memory: a stored
+    prose tally retrieves just as confidently whether or not it is current."""
+    games = load_all()
+    if not games:
+        print("no games — betty-chess new <opponent>")
+        return
+    rows = record_tally(games)
+    if args.player:
+        want = slugify(args.player)
+        rows = [b for b in rows if slugify(b["player"]) == want]
+        if not rows:
+            raise CliError(f"no games against '{args.player}'")
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return
+    for b in rows:
+        label = b["player"] + ("" if b["labeled"] else " (unlabeled)")
+        line = (f"{label:<24} {b['games']:>3} game(s): you "
+                f"{b['wins']}-{b['draws']}-{b['losses']} (W-D-L)")
+        parts = []
+        for colour in ("white", "black"):
+            c = b[colour]
+            if c["wins"] or c["draws"] or c["losses"]:
+                parts.append(f"as {colour} {c['wins']}-{c['draws']}-"
+                             f"{c['losses']}")
+        if parts:
+            line += "  [" + ", ".join(parts) + "]"
+        if b["active"]:
+            line += f"  ({b['active']} active)"
+        print(line)
+
+
+# ---------------------------------------------------------------- chat
+# The table chat (specs/chessweb.md rule 24): messages live on the game
+# record, written through save_game like every other fact. One appender for
+# every door, so the shape cannot drift between the bridge and any future
+# hand.
+
+CHAT_TEXT_MAX = 500
+
+
+def append_chat(g: dict, who: str, text: str) -> dict:
+    """Append one chat message to g (not yet saved) and return it. `who` is
+    the role — 'player' or 'assistant' — never a name (rule 24a). Raises
+    CliError on empty or over-long text."""
+    if who not in ("player", "assistant"):
+        raise CliError(f"chat 'who' must be player or assistant, not {who!r}")
+    text = (text or "").strip()
+    if not text:
+        raise CliError("an empty chat message")
+    if len(text) > CHAT_TEXT_MAX:
+        raise CliError(f"a chat message over {CHAT_TEXT_MAX} characters")
+    msg = {"who": who, "text": text, "at": now(), "ply": len(g["moves"])}
+    g.setdefault("chat", []).append(msg)
+    return msg
 
 
 def cmd_engine(args):
@@ -996,6 +1141,10 @@ def main(argv=None):
                     help="a chess clock for the game: one of "
                          f"{', '.join(TIME_CONTROLS)} (base+increment), or "
                          "untimed (the default, no clock at all)")
+    sp.add_argument("--player", default=None, metavar="NAME",
+                    help="who is actually sitting across the board "
+                         "(specs/chessweb.md rule 23); omitted, the game "
+                         "is honestly unlabeled")
     sp.set_defaults(func=cmd_new)
 
     sp = sub.add_parser("list", help="all games, newest first")
@@ -1042,6 +1191,22 @@ def main(argv=None):
     sp = sub.add_parser("draw", help="record an agreed draw")
     sp.add_argument("game", nargs="?")
     sp.set_defaults(func=cmd_draw)
+
+    sp = sub.add_parser("label", help="name a game's sitter by hand "
+                                      "(the legacy-game migration)")
+    sp.add_argument("game")
+    sp.add_argument("name")
+    sp.set_defaults(func=cmd_label)
+
+    sp = sub.add_parser("record",
+                        help="win-loss per player, counted from the games "
+                             "on disk — never from memory")
+    sp.add_argument("player", nargs="?", default=None,
+                    help="one player's record (default: everyone)")
+    sp.add_argument("--json", action="store_true",
+                    help="the tally as JSON, the same shape GET /record "
+                         "serves")
+    sp.set_defaults(func=cmd_record)
 
     sp = sub.add_parser("engine", help="let stockfish move for the side to play")
     sp.add_argument("game", nargs="?")

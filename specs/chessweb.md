@@ -522,6 +522,98 @@ cannot be changed.
        same LAN-trust posture (KNOWN LIMITS). Records from before this rule parse unchanged:
        a game with no control fields still IS an untimed game.
 
+23. **The named player.** The seat is a chair, not a person: every browser game before this rule
+    recorded `opponent: "browser"` and nothing about who actually sat down, so different people's
+    games landed in one pile and she could not tell whom she was facing — and the record she
+    quoted about it was a remembered sentence, not a count. So a game MAY carry `player`: the
+    sitter's name as they typed it, chosen at creation and never changed after (the clock's own
+    discipline, rule 22). `POST /new` takes an optional `"player"` beside `"control"`, validated
+    server-side only: a non-string, or a name over 40 characters once stripped, is an HTTP 400
+    refusal with nothing written; an omitted, empty or null name creates an UNLABELED game —
+    exactly the old record shape, because absence is recorded as absence, never guessed.
+    `betty-chess new` grows `--player` the same way. No name is ever baked into this repo:
+    the names are data in the store, typed by the people they belong to.
+    a. The name is a label and an identity, never a key. The game id keeps its opponent slug,
+       the store still loads by opponent, and rule 15b's browser guard still reads `opponent`.
+       But every reader that SHOWS a game labels it by player when one is present: `betty-chess
+       list` and `status` and `show` print the player where they printed the opponent,
+       `GET /state` carries `player`, both of rule 7's wake reasons name the player (each reason
+       is still one fixed sentence per game — the label is fixed at creation, so coalescing and
+       the cap are untouched), and the mover's prompt says whom she is playing. That is what
+       makes "whom am I facing" a fact read off the board instead of a guess.
+    b. Colour alternation (rule 4) follows the person when one is named: the "most recent game
+       against this opponent" consulted for the swap is the most recent against the SAME player,
+       falling back to the whole opponent pile while that player has no labeled game yet — two
+       people alternating their own colours, not sharing one coin.
+    c. Legacy games stay honest: a record without `player` is an unlabeled game and remains one;
+       nothing infers a name from dates, prose memory, or habit. `betty-chess label <game>
+       <name>` writes the field by hand, for a game whose sitter a human actually remembers —
+       that is the whole migration story, and it is deliberately manual.
+    d. **The record is counted, never remembered** (the 2026-08-20 rule: a stale prose tally
+       outranked the live figure and was defended). `betty-chess record [name]` tallies the
+       store: buckets keyed by the player label (slug-folded, so a CLI opponent name and a typed
+       player name that spell the same person count together), unlabeled browser games in their
+       own visible bucket, never merged into anyone. Per bucket: her wins-draws-losses overall
+       and per colour, plus the active count — every result computed through `compute_state`,
+       because the game JSON stores no result field and a naive tally reads every mated game as
+       unfinished (measured 2026-08-20). One implementation (`chess_cli.record_tally`) feeds the
+       CLI, `GET /record` (the same tally as JSON, so the page can show the standing score), and
+       the chat prompt's record line (rule 24). Prose memory is not a source for any of it.
+24. **The table chat.** The game window carries a real chat between the sitter and her —
+    persistent, tied to the game, and a SEPARATE conversational context from the phone
+    conversation: nothing in it reads or writes the conversation store, no session is booked or
+    resumed, and the game record is the chat's entire memory. The person at the board may be the
+    user or may not; the chat neither knows nor pretends.
+    a. Messages live on the game record under `chat`: a list of `{who, text, at, ply}`, `who`
+       being the role `player` or `assistant` — roles, not names, so the record stays truthful
+       whatever the display name or the player label is; readers render the labels. Chat is
+       written through `chess_cli.save_game` like every other fact, so a restart loses nothing
+       (rule 10), and a record without the field IS an empty chat — legacy games parse
+       unchanged.
+    b. `GET /chat?since=N` answers the messages from index N, with the total count, the game id,
+       the player label, and the assistant's display name (the same bargain as `/thinking`: a
+       page has no server-side template to hand it one). `POST /chat {"text": ...}` appends a
+       player message: refused 409 with no game loaded, 400 on an unreadable body, an empty
+       text, or one over 500 characters after stripping. Both ride HTTP beside `/state` and
+       `/new` under the same LAN-trust posture (KNOWN LIMITS).
+    c. **She may post after either player's move, alongside making her move — or say nothing.**
+       No move is ever gated on chat: her chat runs downstream of a landed move, best-effort
+       behind its own error handling, the stamps' own posture (rule 17). The chat worker holds
+       ONE slot with newest-wins supersession (the mover's discipline, rule 16c): a trigger
+       arriving while an older one is still being answered kills that flight, so a quick
+       exchange yields at most one message, about the board as it stands — never a backlog of
+       stale banter. The triggers: a player move the bridge records, her own landed move
+       (reflex or model alike), a player chat message, and the end of the game however it
+       arrives. A move mirrored from another hand by the store poll is not a trigger.
+    d. Each trigger is at most ONE minimal model call in the mover's measured shape (no tools,
+       the empty MCP config, sterile cwd, auto-memory off, the same persona file), model
+       `$DESKCRAB_CHESS_CHAT_MODEL` (default `sol` — a codex-family name, so the call walks
+       [model-backends.md](model-backends.md) rule 15: the codex login first unless cooling,
+       then the Claude accounts at the fallback model), effort `$DESKCRAB_CHESS_CHAT_EFFORT`
+       (default `low`), per-attempt ceiling `$DESKCRAB_CHESS_CHAT_TIMEOUT` (default 60s). The
+       prompt carries whom she is speaking with (the player label, or honestly "someone
+       unnamed"), where (the table chat in the game window, not the phone), the standing record
+       against that player counted from disk (rule 23d), the position and the recent moves, the
+       chat so far (a bounded tail), a short tail of the previous game's chat against the same
+       player — that is how a conversation is picked back up across games — and the event that
+       fired the trigger. The reply is the message text alone, or the literal word PASS to stay
+       silent: a PASS, an empty reply, or a failed call posts nothing and disturbs nothing —
+       silence is chosen while writing, and chat failures never retry (the next move brings the
+       next chance). Her opponent reads everything she posts, so the prompt forbids reasoning
+       and plans out loud, exactly rule 7's bargain. Every call lands in the token ledger (kind
+       `chess`) and stamps the chess metrics (`chat-start`, `chat-model-end`, `chat-posted` /
+       `chat-pass`), evidence never control flow. `DESKCRAB_CHESS_CHAT=0` switches her replies
+       off wholesale — player messages still record — and `$DESKCRAB_CHESS_CHAT_CMD` replaces
+       the invocation for tests (prompt on stdin, reply on stdout), so no test chats with a
+       real model.
+    e. Aloud, by choice: the shipped page's chat panel carries a speak toggle, default OFF and
+       remembered client-side. On, HER new messages are spoken by the browser's own speech
+       synthesis on the device showing the board — the window the sitter chose. Nothing
+       server-side speaks table chat: the desk and phone voices belong to the conversation
+       lanes ([speech-output.md](speech-output.md)), and this chat is not that conversation.
+       History is never spoken on a page load — only messages that arrive while the toggle is
+       on.
+
 ## THE SHIPPED CLIENT — lib/chessweb_client/
 
 A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
@@ -547,6 +639,16 @@ the stock page. What it owes beyond the protocol:
   pick to `/new` (rule 22h) and the board arrives back through the ordinary sync. Against a bridge
   without the endpoint the click falls back to the stock wire NewGame, losing nothing but the
   choice.
+- **The sitter names themselves.** A name box beside New Game (rule 23), remembered client-side
+  between visits, sent with the `/new` post; the page shows whom the LOADED game is against off
+  `/state`'s `player` — the label of an unlabeled game is honestly absent, never the box's
+  current text. Beside the chat panel, the standing score against the named player off
+  `GET /record`, rendered from the sitter's side of the table.
+- **The table chat** (rule 24). A chat panel under the board: the thread off `GET /chat`, polled
+  while connected; a send box posting to `POST /chat`; each message labeled with the player's
+  name or the assistant's. And the speak toggle of rule 24e — default off, remembered, speaking
+  only her messages and only those that arrive while it is on, through the browser's own speech
+  synthesis.
 - **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
   It never fires on one click: the first click arms it and says so on its own label, a second
   click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on

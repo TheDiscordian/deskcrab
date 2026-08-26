@@ -814,6 +814,177 @@ def s_wakecap(port, chess_dir, gid, exchanges):
     ok(f"{len(plan)} exchange(s) recorded in {gid} at browser speed")
 
 
+def get_json(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}",
+                                timeout=10) as r:
+        return json.loads(r.read().decode())
+
+
+def game_json(chess_dir, gid):
+    with open(Path(chess_dir) / "games" / f"{gid}.json") as f:
+        return json.load(f)
+
+
+def wait_for(what, test, timeout=15.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        got = test()
+        if got:
+            return got
+        time.sleep(0.15)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+def s_chat(port, chess_dir, wake_log, chat_log, mover_log):
+    # The named player and the table chat, end to end (chessweb.md rules
+    # 23 and 24). Seeded before the bridge: guest-000, a finished fool's
+    # mate she won, hand-labeled to the same sitter — the counted record
+    # the chat prompt must carry.
+    status, j = post_json(port, "/new",
+                          {"control": "untimed", "player": "  Visitor "})
+    assert status == 200 and j.get("player") == "Visitor", (status, j)
+    ok("/new stores the trimmed player name")
+    st = state_json(port)
+    assert st["player"] == "Visitor", st
+    assert game_json(chess_dir, "guest-001").get("player") == "Visitor"
+    ok("/state and the game record both carry the label")
+
+    status, j = post_json(port, "/chat", {"text": "x" * 501})
+    assert status == 400, (status, j)
+    status, j = post_json(port, "/chat", {"text": "   "})
+    assert status == 400, (status, j)
+    ok("empty and over-long chat messages are refused, nothing written")
+
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.expect(TEAM)
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+    c.expect_move("e7", "e5", timeout=20)
+    ok("the exchange landed; the mover was never gated on chat")
+
+    j = wait_for("her chat message", lambda: (
+        lambda d: d if any(m["who"] == "assistant" for m in d["messages"])
+        else None)(get_json(port, "/chat")))
+    hers = [m for m in j["messages"] if m["who"] == "assistant"]
+    assert "dance" in hers[0]["text"], hers
+    assert j["game"] == "guest-001" and j["player"] == "Visitor" \
+        and j["name"], j
+    ok("she posted at the table after the moves, roles on the wire")
+
+    g = game_json(chess_dir, "guest-001")
+    assert any(m["who"] == "assistant" for m in g.get("chat") or []), g
+    ok("her message is on the game record, not in any conversation store")
+
+    prompt = Path(chat_log).read_text()
+    assert "Visitor" in prompt and "phone conversation" in prompt \
+        and "PASS" in prompt, prompt
+    assert "you won 1, drew 0, lost 0" in prompt, prompt
+    assert "state block" not in prompt.lower(), prompt
+    ok("the chat prompt names the sitter, the venue, the counted record — "
+       "and nothing of the conversation prompt")
+
+    mover = Path(mover_log).read_text()
+    assert "against Visitor" in mover, mover
+    ok("the mover's prompt says whom she is playing")
+
+    before = get_json(port, "/chat")["count"]
+    status, j = post_json(port, "/chat", {"text": "hello there"})
+    assert status == 200 and j.get("ok"), (status, j)
+    page = get_json(port, f"/chat?since={before}")
+    assert page["messages"][0]["who"] == "player" \
+        and page["messages"][0]["text"] == "hello there", page
+    ok("POST /chat appends the sitter's message; ?since pages the thread")
+
+    wait_for("her reply to the message", lambda: any(
+        "Hello yourself" in m["text"]
+        for m in get_json(port, "/chat")["messages"]))
+    ok("she answered a message that was not a move")
+
+    wake = Path(wake_log).read_text()
+    assert "you played a move in game guest-001 against Visitor" in wake, wake
+    ok("the post-move wake names the player, one fixed sentence per game")
+
+    status, j = post_json(port, "/new", {"control": "untimed",
+                                         "player": {"forged": 1}})
+    assert status == 400, (status, j)
+    status, j = post_json(port, "/new", {"control": "untimed",
+                                         "player": "x" * 41})
+    assert status == 400, (status, j)
+    ok("a non-string or over-long player name is refused")
+
+
+def s_chat_pass(port, chess_dir, chat_log):
+    # A stub that always answers PASS: she was consulted and chose silence
+    # (rule 24d) — nothing lands on the record.
+    status, j = post_json(port, "/new", {"control": "untimed"})
+    assert status == 200 and j.get("player") is None, (status, j)
+    c = Client(port)
+    c.join()
+    c.expect(PLAYER)
+    c.expect(OPPONENT_JOINED)
+    c.expect(TEAM)
+    c.move("e2", "e4")
+    c.expect_move("e2", "e4")
+    c.expect_move("e7", "e5", timeout=20)
+    wait_for("the chat stub being consulted",
+             lambda: Path(chat_log).exists()
+             and Path(chat_log).read_text().strip())
+    prompt = Path(chat_log).read_text()
+    assert "someone unnamed" in prompt, prompt
+    ok("an unlabeled game is honestly 'someone unnamed' in her prompt")
+    time.sleep(0.8)
+    j = get_json(port, "/chat")
+    assert j["count"] == 0 and j["player"] is None, j
+    assert not (game_json(chess_dir, "guest-001").get("chat") or [])
+    ok("a PASS posts nothing: silence chosen, record untouched")
+
+
+def s_chat_off(port, chess_dir, chat_log):
+    # DESKCRAB_CHESS_CHAT=0 and a legacy record: her replies are off
+    # wholesale, the sitter's messages still record, and a game from
+    # before the chat field reads as an empty chat (rule 24a).
+    j = get_json(port, "/chat")
+    assert j["game"] == "guest-001" and j["count"] == 0 \
+        and j["messages"] == [] and j["player"] is None, j
+    ok("a legacy game IS an empty chat, player honestly null")
+    status, j = post_json(port, "/chat", {"text": "anyone there?"})
+    assert status == 200, (status, j)
+    j = get_json(port, "/chat")
+    assert j["count"] == 1 and j["messages"][0]["who"] == "player", j
+    g = game_json(chess_dir, "guest-001")
+    assert g["chat"][0]["text"] == "anyone there?", g["chat"]
+    time.sleep(0.8)
+    assert not (Path(chat_log).exists()
+                and Path(chat_log).read_text().strip()), \
+        "the chat model was called with DESKCRAB_CHESS_CHAT=0"
+    ok("chat off: the sitter's message records, no model call is made")
+
+
+def s_chat_nogame(port):
+    j = get_json(port, "/chat")
+    assert j["game"] is None and j["messages"] == [], j
+    status, j = post_json(port, "/chat", {"text": "hello?"})
+    assert status == 409, (status, j)
+    ok("no game: /chat answers empty and refuses a post")
+
+
+def s_record_http(port, chess_dir):
+    # GET /record (rule 23d): the same counted tally the CLI prints,
+    # computed through compute_state — the seeded games end in mate, which
+    # a naive tally reads as unfinished (the measured 2026-08-20 trap).
+    j = get_json(port, "/record")
+    by = {b["player"]: b for b in j["records"]}
+    v = by.get("Visitor")
+    assert v and v["labeled"] and v["games"] == 1 and v["wins"] == 1, j
+    u = by.get("fools")
+    assert u and not u["labeled"] and u["losses"] == 1, j
+    assert j.get("name"), j
+    ok("/record splits the counted score by player, unlabeled pile visible")
+
+
 def main():
     what = sys.argv[1]
     if what == "seed":
@@ -828,7 +999,9 @@ def main():
      "postkill": s_postkill, "reflex": s_reflex,
      "supersede": s_supersede, "shipped": s_shipped,
      "resign": s_resign, "newgame_active": s_newgame_active,
-     "wakecap": s_wakecap}[what](port, *rest)
+     "wakecap": s_wakecap, "chat": s_chat, "chat_pass": s_chat_pass,
+     "chat_off": s_chat_off, "chat_nogame": s_chat_nogame,
+     "record_http": s_record_http}[what](port, *rest)
 
 
 if __name__ == "__main__":

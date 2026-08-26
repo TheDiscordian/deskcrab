@@ -108,6 +108,30 @@ input#serveraddr:focus {
 	border-color: var(--accent);
 }
 
+/* The sitter's name for the next game (specs/chessweb.md rule 23). */
+.pname {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	color: var(--text-dim);
+	font-size: 0.9rem;
+}
+
+input#playername {
+	background: var(--bg);
+	border: 1px solid var(--panel-edge);
+	border-radius: 7px;
+	color: var(--text);
+	font: inherit;
+	padding: 0.35rem 0.6rem;
+	width: 8em;
+}
+
+input#playername:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
 /* The clock for the next game (specs/chessweb.md rule 22h). */
 .tc {
 	display: flex;
@@ -476,6 +500,100 @@ button.armed:hover:not(:disabled) {
 	border-radius: 12px;
 	padding: 0.8rem 1.6rem;
 	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* ------------------------------------------------------------- table chat
+   specs/chessweb.md rule 24: the thread, the send box, the speak toggle. */
+.chatbox {
+	max-width: 46rem;
+	margin: 1.2rem auto 0;
+	background: var(--panel);
+	border: 1px solid var(--panel-edge);
+	border-radius: 10px;
+	padding: 0.6rem 0.9rem;
+}
+
+.chat-head {
+	display: flex;
+	align-items: baseline;
+	gap: 0.7rem;
+	flex-wrap: wrap;
+}
+
+.chat-head h2 {
+	margin: 0 0 0.3rem;
+	font-size: 0.82rem;
+	font-weight: 650;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--text-dim);
+}
+
+#chat-vs,
+#chat-record {
+	font-size: 0.82rem;
+	color: var(--text-dim);
+}
+
+.chat-speak {
+	margin-left: auto;
+	font-size: 0.82rem;
+	color: var(--text-dim);
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	cursor: pointer;
+	user-select: none;
+}
+
+#chat-log {
+	max-height: 12rem;
+	overflow-y: auto;
+	margin: 0.2rem 0 0.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+
+#chat-log:empty::before {
+	content: "Nothing said yet.";
+	color: var(--text-dim);
+	font-size: 0.85rem;
+}
+
+.chat-msg {
+	font-size: 0.92rem;
+	line-height: 1.45;
+	word-break: break-word;
+}
+
+.chat-msg .chat-who {
+	font-weight: 650;
+	margin-right: 0.45rem;
+}
+
+.chat-msg.hers .chat-who { color: var(--accent); }
+.chat-msg.yours .chat-who { color: var(--text-dim); }
+
+#chat-form {
+	display: flex;
+	gap: 0.5rem;
+}
+
+input#chat-input {
+	flex: 1;
+	background: var(--bg);
+	border: 1px solid var(--panel-edge);
+	border-radius: 7px;
+	color: var(--text);
+	font: inherit;
+	padding: 0.35rem 0.6rem;
+	min-width: 0;
+}
+
+input#chat-input:focus {
+	outline: none;
+	border-color: var(--accent);
 }
 
 /* ------------------------------------------------------------- console */

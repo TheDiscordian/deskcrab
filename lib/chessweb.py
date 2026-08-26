@@ -37,6 +37,7 @@ syslog.openlog("deskcrab-chessweb")
 import chess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import chess_chat  # her side of the table chat (rule 24), never in the way
 import chess_cli  # the betty-chess store: build_board, save_game, compute_state
 import chess_mover  # the resident mover: the one model call, when memory fails
 import chess_reflex  # position memory, asked before any model call
@@ -422,19 +423,29 @@ class Store:
                     return g
         return None
 
-    def create(self, time_control=None):
+    def create(self, time_control=None, player=None):
         """One creation path for every door (rule 22h): the wire NewGame and
         the CLI-shaped serve default when time_control is None, the browser
         page's own explicit pick otherwise — the same make_time_control and
         the same save_game either way, so the record and the ledger split by
-        variant off one implementation."""
+        variant off one implementation. `player` is the sitter's own name
+        (rule 23), already validated; None is an unlabeled game."""
         if self.random_side:
             # "random" alternates (rule 4): the user gets the colour they
             # did not have in the most recent game against this opponent,
             # whatever its state; only the very first game is a coin flip.
+            # With a named player the alternation follows the person (rule
+            # 23b): their own most recent labeled game, falling back to the
+            # opponent pile while they have none.
             prev = [g for g in chess_cli.load_all()
                     if chess_cli.slugify(g["opponent"])
                     == chess_cli.slugify(self.opponent)]
+            if player:
+                mine = [g for g in prev
+                        if chess_cli.slugify((g.get("player") or "").strip()
+                                             or "-")
+                        == chess_cli.slugify(player)]
+                prev = mine or prev
             if prev:
                 self.her_side = ("black" if prev[-1]["my_side"] == "white"
                                  else "white")
@@ -449,6 +460,8 @@ class Store:
              "my_side": self.her_side, "moves": [], "resigned_by": None,
              "draw_agreed": False, "engine_level": None,
              "created": chess_cli.now()}
+        if player:
+            g["player"] = player
         tc, ck = chess_cli.make_time_control(
             self.time_control if time_control is None else time_control)
         if tc:
@@ -457,8 +470,10 @@ class Store:
             g["flag_fell"] = None
         chess_cli.save_game(g)
         self.game_id = g["id"]
-        log(f"created {g['id']}: the user is "
-            f"{'black' if self.her_side == 'white' else 'white'}")
+        log(f"created {g['id']}"
+            + (f" against {player}" if player else "")
+            + f": the user is "
+              f"{'black' if self.her_side == 'white' else 'white'}")
         return g
 
 
@@ -490,6 +505,11 @@ class Hub:
         self.voice_next = {}
         self.mover = chess_mover.Mover(self._post_model_move, log=log,
                                        metric=chess_cli.metric, alert=loud)
+        # The table chat (rule 24): her optional word after a landed move, a
+        # player message, or the end of the game — one slot, newest wins,
+        # never in any move's way.
+        self.chat = chess_chat.ChessChat(self._post_chat, log=log,
+                                         metric=chess_cli.metric)
 
     # -- helpers -----------------------------------------------------------
     def human_side(self):
@@ -538,13 +558,22 @@ class Hub:
         for m in msgs:
             self.broadcast(m)
         key, desc, result = chess_cli.compute_state(g, board)
-        log(f"{g['id']}: the user played {san} ({desc})")
+        label = chess_cli.player_label(g)
+        log(f"{g['id']}: {label} played {san} ({desc})")
         if key != "active":
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
             self.answer_position(g, board, san, over=f"{desc} [{result}]")
+            self.chat_about(g, board, f"{label} played {san}, and the game "
+                                      f"is over: {desc} [{result}].",
+                            why="their-move-over")
         else:
             self.answer_position(g, board, san)
+            self.chat_about(g, board, f"{label} played {san}. Your move "
+                                      f"will be made separately by your "
+                                      f"chess reflexes; this chat never "
+                                      f"chooses moves.",
+                            why="their-move")
 
     def notify_phone(self):
         # The board banner is only useful to someone looking at the board; a
@@ -598,8 +627,12 @@ class Hub:
             self.broadcast(self.result_msg(key, result))
             # She still hears how her game ended, even when memory ended it.
             self.answer_position(g, board, san, over=f"{desc} [{result}]")
+            self.chat_about(g, board, f"You played {san} from memory, and "
+                                      f"the game is over: {desc} "
+                                      f"[{result}].", why="her-move-over")
         else:
             self.spoken_move_wake(g, san, desc)
+            self.chat_about(g, board, f"You played {san}.", why="her-move")
         return True
 
     def move_effort(self, g, board):
@@ -655,7 +688,8 @@ class Hub:
         if over is not None:
             history = chess_cli.history(g["moves"])
             self.book_wake(
-                f"chessweb: the game against {g['opponent']} ({gid}) "
+                f"chessweb: the game against {chess_cli.player_label(g)} "
+                f"({gid}) "
                 f"just ended — {over}, after {san}. "
                 f"History: {history}. Board: betty-chess show {gid}",
                 f"the end of {gid}")
@@ -677,7 +711,11 @@ class Hub:
         # builder can forget it.
         self.mover.submit({
             "key": key, "gid": gid, "ply": ply, "fen": board.fen(),
-            "side": self.store.her_side, "opponent": g["opponent"],
+            # The label, so the prompt says whom she is playing (rule 23a);
+            # self-play detection keys on the id prefix and the literal
+            # opponent name, which an unlabeled selfplay game still is.
+            "side": self.store.her_side,
+            "opponent": chess_cli.player_label(g),
             "history": chess_cli.history(g["moves"]),
             # The live clock rides along VISIBLE to the mover (rule 22f);
             # reading it into the effort budget is separate, unadjudicated
@@ -743,8 +781,13 @@ class Hub:
                 self.over_announced = True
                 self.broadcast(self.result_msg(key, result))
                 self.answer_position(g, board, san, over=f"{desc} [{result}]")
+                self.chat_about(g, board, f"You played {san}, and the game "
+                                          f"is over: {desc} [{result}].",
+                                why="her-move-over")
             else:
                 self.spoken_move_wake(g, san, desc)
+                self.chat_about(g, board, f"You played {san}.",
+                                why="her-move")
             return True
 
     def book_wake(self, reason, what, cap_prefix=None, when=None):
@@ -837,7 +880,7 @@ class Hub:
         fuse = f"{max(1, int(fire_at - now + 0.5))}s"
         booked = self.book_wake(
             f"chessweb: you played a move in game {gid} against "
-            f"{g['opponent']}; it is already on their board, and nothing "
+            f"{chess_cli.player_label(g)}; it is already on their board, and nothing "
             f"waits on this wake. If you feel like it, say one sentence to "
             f"the user about the game — the position, or banter; never your "
             f"reasoning or plans, they hear everything you say — or say "
@@ -847,6 +890,127 @@ class Hub:
             when=fuse)
         if booked:
             self.voice_next[gid] = fire_at + cooldown
+
+    # -- the table chat (rule 24) -----------------------------------------
+    def _chat_lines(self, g, limit):
+        """The last `limit` chat messages of `g`, rendered for the prompt:
+        the assistant's own lines read as 'you', the sitter's as their
+        label. Roles on disk, labels at render (rule 24a)."""
+        label = chess_cli.player_label(g)
+        out = []
+        for m in (g.get("chat") or [])[-limit:]:
+            who = "you" if m.get("who") == "assistant" else label
+            out.append(f"{who}: {m.get('text', '')}")
+        return out
+
+    def _record_line(self, g):
+        """The standing record against this game's sitter, counted from
+        disk every time (rule 23d) — never from memory. None when the
+        count itself fails; the chat then simply carries no record line."""
+        try:
+            want = chess_cli.slugify(chess_cli.player_label(g))
+            for b in chess_cli.record_tally(chess_cli.load_all()):
+                if chess_cli.slugify(b["player"]) == want:
+                    done = b["wins"] + b["draws"] + b["losses"]
+                    if not done:
+                        return "no finished games yet"
+                    return (f"{done} finished game(s) — you won "
+                            f"{b['wins']}, drew {b['draws']}, lost "
+                            f"{b['losses']}")
+            return "no finished games yet"
+        except Exception:
+            return None
+
+    def _prev_chat_tail(self, g, limit=6):
+        """A short tail of the previous game's chat against the same NAMED
+        player — how a conversation is picked back up across games (rule
+        24d). Empty for an unlabeled game: no name, no thread to follow."""
+        player = (g.get("player") or "").strip()
+        if not player:
+            return []
+        want = chess_cli.slugify(player)
+        prev = [p for p in chess_cli.load_all()
+                if p["id"] != g["id"] and p.get("chat")
+                and chess_cli.slugify((p.get("player") or "").strip() or "-")
+                == want]
+        if not prev:
+            return []
+        last = max(prev, key=lambda p: (p.get("updated") or "", p["id"]))
+        return self._chat_lines(last, limit)
+
+    def chat_about(self, g, board, event, why=""):
+        """Her chance to speak at the table (rule 24c): a landed move,
+        a player message, or the end of the game. Best-effort behind its
+        own error handling — nothing on the move path may trip over chat —
+        and the worker's slot keeps at most one call in flight."""
+        try:
+            if not chess_chat.chat_enabled():
+                return
+            self.chat.trigger({
+                "gid": g["id"], "ply": len(g["moves"]),
+                "player": (g.get("player") or "").strip() or None,
+                "side": g.get("my_side"), "event": event, "why": why,
+                "fen": board.fen(),
+                "history": chess_cli.history(g["moves"]),
+                "record_line": self._record_line(g),
+                "chat_tail": self._chat_lines(g, 12),
+                "prev_tail": self._prev_chat_tail(g)})
+        except Exception as e:
+            log(f"chat trigger failed: {e!r}")
+
+    def _post_chat(self, job, text):
+        """The chat worker's answer, appended under the hub lock only when
+        the store still holds the game it was about. False means dropped."""
+        with self.lock:
+            g = self.store.load()
+            if g is None or g["id"] != job["gid"]:
+                log(f"chat: reply for {job['gid']} arrived after the game "
+                    f"was replaced — dropped")
+                return False
+            try:
+                chess_cli.append_chat(g, "assistant", text)
+            except chess_cli.CliError as e:
+                log(f"chat: refusing her message: {e}")
+                return False
+            chess_cli.save_game(g)
+            log(f"{g['id']}: she says: {text}")
+            return True
+
+    def chat_state(self, since=0):
+        """GET /chat (rule 24b): the thread from index `since`, the total,
+        and the labels a page needs to render it."""
+        with self.lock:
+            g = self.store.load()
+            if g is None:
+                return {"game": None, "player": None,
+                        "name": ASSISTANT_NAME, "count": 0,
+                        "messages": []}, 200
+            chat = g.get("chat") or []
+            since = max(0, min(since, len(chat)))
+            return {"game": g["id"],
+                    "player": (g.get("player") or "").strip() or None,
+                    "name": ASSISTANT_NAME, "count": len(chat),
+                    "messages": chat[since:]}, 200
+
+    def chat_post(self, text):
+        """POST /chat (rule 24b): the sitter's message onto the record,
+        then her chance to answer it. The verdicts are the store's."""
+        with self.lock:
+            g = self.store.load()
+            if g is None:
+                return {"error": "No game to chat in — deal one first."}, 409
+            try:
+                msg = chess_cli.append_chat(g, "player", text)
+            except chess_cli.CliError as e:
+                return {"error": str(e)}, 400
+            chess_cli.save_game(g)
+            chess_cli.metric("chat-posted", f"{g['id']} ply "
+                                            f"{len(g['moves'])} player")
+            label = chess_cli.player_label(g)
+            log(f"{g['id']}: {label} says: {msg['text']}")
+            self.chat_about(g, chess_cli.build_board(g),
+                            f"{label} says: {msg['text']}", why="said")
+            return {"ok": True, "count": len(g.get("chat") or [])}, 200
 
     def resign_human(self, want_gid=None):
         """POST /resign (rule 19): the user gives up their own side of the
@@ -878,19 +1042,22 @@ class Hub:
             self.broadcast(self.result_msg(key, result))
             self.activity.update(poked_at=None, started_at=None,
                                  played_at=None, san=None)
-            log(f"{g['id']}: the user resigned as {human} from the "
+            label = chess_cli.player_label(g)
+            log(f"{g['id']}: {label} resigned as {human} from the "
                 f"browser [{result}]")
             self.book_wake(
-                f"chessweb: the game against {g['opponent']} ({g['id']}) "
+                f"chessweb: the game against {label} ({g['id']}) "
                 f"just ended — {desc} [{result}]: the user resigned from "
                 f"the browser board. "
                 f"History: {chess_cli.history(g['moves'])}. "
                 f"Board: betty-chess show {g['id']}",
                 f"the end of {g['id']}")
+            self.chat_about(g, board, f"{label} resigned the game: {desc} "
+                                      f"[{result}].", why="resign")
             return {"ok": True, "game": g["id"], "desc": desc,
                     "result": result}, 200
 
-    def new_game_http(self, control):
+    def new_game_http(self, control, player=None):
         """POST /new (rule 22h): the opponent opens the next game from the
         page they actually load and picks its clock there. Validation is
         server-side ONLY — the control must be a NAME from the standard set,
@@ -909,6 +1076,10 @@ class Hub:
                              "client"}, 400
         try:
             chess_cli.make_time_control(control)
+            # Rule 23: the sitter's name, validated server-side exactly
+            # like the control; an omitted or empty one is an unlabeled
+            # game, recorded as absence and never guessed.
+            player = chess_cli.clean_player(player)
         except chess_cli.CliError as e:
             return {"error": str(e)}, 400
         with self.lock:
@@ -917,7 +1088,7 @@ class Hub:
                     g, chess_cli.build_board(g))[0] == "active":
                 return {"error": f"{g['id']} is still going — Resign ends "
                                  f"it, then New Game deals the next."}, 409
-            g = self.store.create(time_control=control)
+            g = self.store.create(time_control=control, player=player)
             self.pending_promo = None
             self.synced = list(g["moves"])
             self.over_announced = False
@@ -931,6 +1102,7 @@ class Hub:
             tc = g.get("time_control")
             return {"ok": True, "game": g["id"],
                     "control": tc["name"] if tc else "untimed",
+                    "player": g.get("player"),
                     "your_side": ("white" if self.human_side() == chess.WHITE
                                   else "black")}, 200
 
@@ -1062,13 +1234,19 @@ class Hub:
         self.synced = list(g["moves"])
         self.broadcast(msg_promote(tx, ty, rune))
         key, desc, result = chess_cli.compute_state(g, board)
-        log(f"{g['id']}: the user played {san} ({desc})")
+        label = chess_cli.player_label(g)
+        log(f"{g['id']}: {label} played {san} ({desc})")
         if key != "active":
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
             self.answer_position(g, board, san, over=f"{desc} [{result}]")
+            self.chat_about(g, board, f"{label} played {san}, and the game "
+                                      f"is over: {desc} [{result}].",
+                            why="their-move-over")
         else:
             self.answer_position(g, board, san)
+            self.chat_about(g, board, f"{label} played {san}.",
+                            why="their-move")
 
     def on_message(self, conn, mtype, payload):
         with self.lock:
@@ -1138,12 +1316,16 @@ class Hub:
             self.activity.update(poked_at=None, started_at=None,
                                  played_at=None, san=None)
             self.book_wake(
-                f"chessweb: the game against {g['opponent']} ({g['id']}) "
+                f"chessweb: the game against {chess_cli.player_label(g)} "
+                f"({g['id']}) "
                 f"just ended — {desc} [{result}]: a flag fell on the "
                 f"{(g.get('time_control') or {}).get('name')} clock. "
                 f"History: {chess_cli.history(g['moves'])}. "
                 f"Board: betty-chess show {g['id']}",
                 f"the end of {g['id']} on time")
+            self.chat_about(g, chess_cli.build_board(g),
+                            f"The game just ended on time: {desc} "
+                            f"[{result}].", why="flag")
         if self.synced is None:
             return  # nothing shown to anyone yet; NewGame does the first sync
         moves = g["moves"]
@@ -1185,6 +1367,11 @@ class Hub:
         if key != "active" and not self.over_announced:
             self.over_announced = True
             self.broadcast(self.result_msg(key, result))
+            # The end of the game is a chat trigger however it arrives
+            # (rule 24c) — here, noticed by the poll rather than recorded
+            # by the bridge. Mirrored MOVES are not triggers; the end is.
+            self.chat_about(g, board, f"The game is over: {_desc} "
+                                      f"[{result}].", why="poll-over")
         elif key == "active":
             self.over_announced = False
             if board.turn != self.human_side():
@@ -1223,11 +1410,18 @@ def make_handler(hub, client_dir):
             if self.headers.get("Upgrade", "").lower() == "websocket":
                 self.upgrade()
                 return
-            if self.path.split("?", 1)[0] == "/thinking":
+            path = self.path.split("?", 1)[0]
+            if path == "/thinking":
                 self.thinking_state()
                 return
-            if self.path.split("?", 1)[0] == "/state":
+            if path == "/state":
                 self.game_state()
+                return
+            if path == "/chat":
+                self.chat_get()
+                return
+            if path == "/record":
+                self.record_get()
                 return
             self.static()
 
@@ -1238,6 +1432,9 @@ def make_handler(hub, client_dir):
                 return
             if path == "/new":
                 self.new_game()
+                return
+            if path == "/chat":
+                self.chat_send()
                 return
             if path != "/thinking":
                 self.send_error(404)
@@ -1275,17 +1472,61 @@ def make_handler(hub, client_dir):
             hub."""
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
-            control = None
+            control, player = None, None
             if body:
                 try:
-                    control = json.loads(body).get("control")
+                    doc = json.loads(body)
+                    control = doc.get("control")
+                    player = doc.get("player")
                 except (ValueError, AttributeError):
                     self.json_body(
                         {"error": "unreadable request body — send "
-                                  '{"control": "<name>"} or nothing'}, 400)
+                                  '{"control": "<name>", "player": '
+                                  '"<name>"} or nothing'}, 400)
                     return
-            obj, status = hub.new_game_http(control)
+            obj, status = hub.new_game_http(control, player)
             self.json_body(obj, status)
+
+        def chat_get(self):
+            """GET /chat (rule 24b): the thread from ?since=N on."""
+            since = 0
+            q = self.path.split("?", 1)
+            if len(q) == 2:
+                for part in q[1].split("&"):
+                    if part.startswith("since="):
+                        try:
+                            since = int(part[6:])
+                        except ValueError:
+                            since = 0
+            obj, status = hub.chat_state(since)
+            self.json_body(obj, status)
+
+        def chat_send(self):
+            """POST /chat (rule 24b): the sitter's message. The body is
+            {"text": ...}; the verdicts come from the hub."""
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            try:
+                text = json.loads(body).get("text")
+            except (ValueError, AttributeError):
+                self.json_body({"error": "unreadable request body — send "
+                                         '{"text": "..."}'}, 400)
+                return
+            if not isinstance(text, str):
+                self.json_body({"error": "the message must be text"}, 400)
+                return
+            obj, status = hub.chat_post(text)
+            self.json_body(obj, status)
+
+        def record_get(self):
+            """GET /record (rule 23d): the counted per-player tally, the
+            same one implementation the CLI prints."""
+            try:
+                rows = chess_cli.record_tally(chess_cli.load_all())
+            except Exception as e:
+                self.json_body({"error": f"tally failed: {e}"}, 500)
+                return
+            self.json_body({"records": rows, "name": ASSISTANT_NAME})
 
         def thinking_state(self):
             with hub.lock:
@@ -1340,6 +1581,9 @@ def make_handler(hub, client_dir):
                              "promotion": bool(mv.promotion)})
                 self.json_body(
                     {"game": g["id"], "ply": len(g["moves"]),
+                     # Rule 23a: whom the LOADED game is against; null on
+                     # an unlabeled game — absence is shown as absence.
+                     "player": (g.get("player") or "").strip() or None,
                      "fen": board.fen(),
                      "turn": ("white" if board.turn == chess.WHITE
                               else "black"),
