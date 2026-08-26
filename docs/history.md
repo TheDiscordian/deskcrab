@@ -688,10 +688,16 @@ before, 38% after, with similar-game retrieval and two prompt changes inside the
 measured the fortnight, not the dial. The fix that shipped (3a1e4f2) interleaved the two pairs by
 game-id parity — odd games at `medium`/`high`, even at `low`/`medium`, a trailing `arm=` token on
 the effort metrics row so the ledger could split the games by arm instead of by date window. The
-user rejected the experiment outright: no arms, no parity, one uniform pair for every game. The
-dial went back to the 2026-08-10 adjudication's values — quiet `medium`, alarmed `high` — with the
-pre-experiment `DESKCRAB_CHESS_EFFORT_QUIET`/`_SHARP` knobs kept, so a re-adjudication stays a
-config line, not an edit. Effort rows written while the A/B was live still carry the `arm=` token;
+user rejected the experiment outright: no arms, no parity, one uniform pair for every game — and
+the pair he reaffirmed at 14:26 that day is the lowered `low`/`medium`: the permanent cleanup was
+the removal of the alternation, never of the lowering. The first rollback (2496838) was dispatched
+from a brief that misread the rejection as a return to the 2026-08-10 `medium`/`high` values and
+restored them as the source defaults against that live instruction, minutes after it; the live
+daemon stayed correct only because a runtime drop-in pinned `low`/`medium` over the defaults, and
+the correction landed the same afternoon. The pre-experiment
+`DESKCRAB_CHESS_EFFORT_QUIET`/`_SHARP` knobs stand, defaulting `low`/`medium`, so a
+re-adjudication stays a config line, not an edit. Effort rows written while the A/B was live still
+carry the `arm=` token;
 it is historical residue and readers ignore it. If a per-game experiment ever comes back, it comes
 back as a design the user has agreed to, never as a default.
 

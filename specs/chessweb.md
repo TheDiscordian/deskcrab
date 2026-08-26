@@ -322,16 +322,18 @@ cannot be changed.
     pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
     arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
     the call's `--effort`. The classifier is consulted by default: a quiet position goes at
-    `medium` and an alarming one at `high` — ONE uniform pair for every game. Each level is
-    its own knob — `DESKCRAB_CHESS_EFFORT_QUIET` (default `medium`) and
-    `DESKCRAB_CHESS_EFFORT_SHARP` (default `high`), both predating and surviving every
+    `low` and an alarming one at `medium` — ONE uniform pair for every game. Each level is
+    its own knob — `DESKCRAB_CHESS_EFFORT_QUIET` (default `low`) and
+    `DESKCRAB_CHESS_EFFORT_SHARP` (default `medium`), both predating and surviving every
     adjudication — so the next adjudication is a config line, not an edit. The pair's
     history: quiet ran at `medium` from 2026-08-10's adjudication (the per-move minutes were
-    the queue in front of the call, not the thinking inside it); the 2026-08-15 lowering to
-    `low`/`medium` ran nine days as one undifferentiated block and proved unadjudicatable;
-    and the game-id-parity A/B that then briefly interleaved the two pairs was rejected by
-    the user outright and is withdrawn — no arms, no parity, the same pair whichever game is
-    on the board (docs/history.md, 2026-08-26). Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
+    the queue in front of the call, not the thinking inside it); on 2026-08-15 the user
+    lowered the pair to `low`/`medium`; the game-id-parity A/B that then briefly interleaved
+    the lowered pair with the old one was rejected by the user outright and is withdrawn —
+    no arms, no parity, the same pair whichever game is on the board — and on 2026-08-26 he
+    reaffirmed the lowered `low`/`medium` as that one uniform pair: the permanent cleanup
+    was the removal of the alternation, never of the lowering (docs/history.md,
+    2026-08-26). Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
     move to `low` instead, skipping the classifier — for when reply latency matters more than
     the move. The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en

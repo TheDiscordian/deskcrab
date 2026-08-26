@@ -26,14 +26,15 @@ import chess
 # The two levels, each its own knob because the pair has been adjudicated
 # more than once. Quiet ran at medium and alarmed at high from 2026-08-10's
 # adjudication — the per-move minutes were the queue in front of the call,
-# not the thinking inside it. The 2026-08-15 lowering to low/medium ran nine
-# days as one undifferentiated block and proved unadjudicatable, and the
-# game-id-parity A/B that then interleaved the two pairs was rejected by the
-# user outright (docs/history.md, 2026-08-26): one uniform pair for every
-# game, no arms, no parity. The knobs make the next adjudication a config
-# line, not an edit (specs/chessweb.md rule 16b).
-QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "medium")
-SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "high")
+# not the thinking inside it. On 2026-08-15 the user lowered the pair to
+# low/medium, and the game-id-parity A/B that then interleaved the lowered
+# pair with the old one was rejected by him outright (docs/history.md,
+# 2026-08-26): one uniform pair for every game, no arms, no parity — and the
+# pair he reaffirmed that day is the lowered low/medium; the cleanup removed
+# the alternation, never the lowering. The knobs make the next adjudication
+# a config line, not an edit (specs/chessweb.md rule 16b).
+QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "low")
+SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 
 PIECE_VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
                chess.ROOK: 5, chess.QUEEN: 9}
