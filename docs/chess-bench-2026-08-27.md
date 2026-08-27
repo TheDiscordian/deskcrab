@@ -186,5 +186,7 @@ nothing measured here says a chess move needs it. The per-speed model knobs
 (`DESKCRAB_CHESS_MOVER_MODEL_<SPEED>`) stay unset — the mover's existing chain stands.
 
 Generated alongside: 24 finished benchmark games fed the pattern store as every self-play
-game does (reflex db grew through the night), ~1,050 counted self-play model calls on the
-night's ledger, and per-move bench rows in every game record for any deeper reading later.
+game does (reflex db grew from 4,022,272 to 4,755,456 bytes over the run), 893 counted
+model-call attempts on the night's self-play ledger (benchmark games, probes, and the
+night's earlier ordinary grind together, against the run's explicit 1200 ceiling), and
+per-move bench rows in every game record for any deeper reading later.
