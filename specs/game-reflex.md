@@ -51,11 +51,16 @@ Three parts:
    `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
    `fatigue` (0–100), `x` and `z` (world coordinates), `in_combat`, `opponent` (`{"x":…,"z":…}`
    while a fighting opponent is visible, else `null`), `inventory` (array of `{"id":…,"count":…}`
-   in slot order), `messages` (the last few game messages, newest last), and `npcs` (the NPCs the
+   in slot order), `messages` (the last few game messages, newest last), `npcs` (the NPCs the
    client currently holds as visible, nearest to the player first, capped at 12: each
    `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
-   its world tile). Only what the player's own client can see is ever in it; the bridge reads no
-   server internals.
+   its world tile), `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
+   the client currently holds as loaded, nearest first, capped at 12: each
+   `{"id":…,"x":…,"z":…,"dir":…}` — type id, world tile, facing direction), and `bounds` (the
+   wall objects — doors and other boundaries — likewise nearest first, capped at 12, the same
+   four fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
+   tile stay distinct). Only what the player's own client can see is ever in it; the bridge reads
+   no server internals.
 
 4. The bridge is **inert by default**. It activates only when `DESKCRAB_GAME_STATE_DIR` is present
    in the client's environment; the stock launcher does not set it, so the plain client is
@@ -73,10 +78,16 @@ Three parts:
 5. The action vocabulary is closed, and grows only by a change to this spec: `eat` (use one
    inventory food item, by slot), `walk` (walk to an absolute tile; `flee` in a rule compiles to
    this), `warn` (display a local client-side message to the player — nothing is sent to the
-   server), and `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
+   server), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
    same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
-   NPCs only and structurally cannot message another player). `talk-npc` belongs to the
-   deliberate-play channel — an action file written by the player's own hand or harness — not to
+   NPCs only and structurally cannot message another player), `interact-object` (perform a menu
+   command on a loaded game object at an absolute tile — the same walk-and-act the object's own
+   right-click Command entry performs; `cmd` 1 or 2 picks the object definition's first or second
+   command, so a fishing spot's Net and Bait, a gate's Open, a range's nothing-at-all are all the
+   game's own menu, never an invented verb), and `interact-bound` (the same for a wall object —
+   a door or other boundary — at a tile and wall direction; Open and Close are its usual
+   commands). `talk-npc`, `interact-object` and `interact-bound` belong to the deliberate-play
+   channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
    (rule 9). Nothing in this layer can log in, create or delete a character, talk to another
    player, drop, trade, or spend. The bridge refuses any action type it does not know.
@@ -87,7 +98,12 @@ Three parts:
    for walk; `text` for warn; `sidx` and `npc` — the server index and the type id the emitter saw
    there, the latter deliberately NOT named `id` so it can never collide with the action id line —
    for talk-npc, so a despawned or swapped NPC is refused as `refused-no-such-npc` or
-   `refused-npc-mismatch`, never talked to blind). `action.json` is a single slot: one action, and the engine never
+   `refused-npc-mismatch`, never talked to blind; `x`, `z`, `obj` — the object type id, NOT named
+   `id` for the same collision reason — and `cmd` for interact-object, so an unloaded or swapped
+   object is refused as `refused-no-such-object` or `refused-object-mismatch` and a `cmd` outside
+   1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on
+   tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
+   `refused-bad-command` the same way). `action.json` is a single slot: one action, and the engine never
    writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
    firing is written to its own `notice-<id>.json`, named by the same monotonic id it carries, so
    two notice rules firing on one snapshot — or on adjacent snapshots inside one bridge tick —

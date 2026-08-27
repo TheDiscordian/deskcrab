@@ -23,9 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 2)
 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
-TRIGGER_KEYS = ("objective_is", "npc_visible", "message_contains",
-                "near_tile", "inventory_has", "inventory_lacks")
-ACTIONS = ("talk-npc", "walk")
+TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
+                "message_contains", "near_tile", "inventory_has", "inventory_lacks")
+ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound")
 
 DEFAULTS = {
     "stale_ms": 2000,
@@ -147,9 +147,10 @@ def validate_config(cfg: dict) -> None:
                         or set(val) != {"x", "z", "radius"}):
                     bad(f"{where}: trigger.near_tile must be "
                         "{{\"x\":int,\"z\":int,\"radius\":0..50}}")
-            elif key in ("npc_visible", "inventory_has", "inventory_lacks"):
+            elif key in ("npc_visible", "object_visible", "bound_visible",
+                         "inventory_has", "inventory_lacks"):
                 if not isinstance(val, int) or val < 0:
-                    bad(f"{where}: trigger.{key} must be a non-negative item/npc id")
+                    bad(f"{where}: trigger.{key} must be a non-negative type/item id")
         if "inventory_has" in trig and "inventory_lacks" in trig \
                 and trig["inventory_has"] == trig["inventory_lacks"]:
             bad(f"{where}: inventory_has and inventory_lacks name the same id")
@@ -166,6 +167,12 @@ def validate_config(cfg: dict) -> None:
                     or not isinstance(action.get("x"), int) \
                     or not isinstance(action.get("z"), int):
                 bad(f"{where}: walk takes exactly integer x and z")
+        elif atype in ("interact-object", "interact-bound"):
+            if not set(action) <= {"type", "obj", "cmd"} \
+                    or not isinstance(action.get("obj"), int) or action["obj"] < 0:
+                bad(f"{where}: {atype} takes obj=<type id> and optionally cmd")
+            if "cmd" in action and action["cmd"] not in (1, 2):
+                bad(f"{where}: {atype} cmd must be 1 or 2 (the def's menu commands)")
 
 
 def load_config() -> dict:
@@ -259,6 +266,14 @@ def make_trigger_fn(objective: str):
             if not any(n.get("id") == trig["npc_visible"]
                        for n in snap.get("npcs") or []):
                 return False
+        if "object_visible" in trig:
+            if not any(o.get("id") == trig["object_visible"]
+                       for o in snap.get("objects") or []):
+                return False
+        if "bound_visible" in trig:
+            if not any(b.get("id") == trig["bound_visible"]
+                       for b in snap.get("bounds") or []):
+                return False
         if "message_contains" in trig:
             want = trig["message_contains"].lower()
             texts = [(m.get("text", "") if isinstance(m, dict) else str(m))
@@ -291,12 +306,29 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, "npc-not-visible"
     if action["type"] == "walk":
         return {"type": "walk", "x": action["x"], "z": action["z"]}, None
+    if action["type"] == "interact-object":
+        want = action["obj"]
+        for obj in snap.get("objects") or []:    # already nearest-first (rule 3 there)
+            if obj.get("id") == want and isinstance(obj.get("x"), int) \
+                    and isinstance(obj.get("z"), int):
+                return {"type": "interact-object", "x": obj["x"], "z": obj["z"],
+                        "obj": want, "cmd": action.get("cmd", 1)}, None
+        return None, "object-not-loaded"
+    if action["type"] == "interact-bound":
+        want = action["obj"]
+        for bnd in snap.get("bounds") or []:     # already nearest-first
+            if bnd.get("id") == want and isinstance(bnd.get("x"), int) \
+                    and isinstance(bnd.get("z"), int):
+                return {"type": "interact-bound", "x": bnd["x"], "z": bnd["z"],
+                        "dir": bnd.get("dir", 0), "obj": want,
+                        "cmd": action.get("cmd", 1)}, None
+        return None, "bound-not-loaded"
     return None, f"unknown-action-{action['type']}"
 
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("sidx", "npc", "x", "z"):
+    for key in ("sidx", "npc", "x", "z", "dir", "obj", "cmd"):
         if key in action:
             lines.append(f"{key}={action[key]}")
     game_reflex.atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")

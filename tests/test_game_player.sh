@@ -291,6 +291,57 @@ check_eq "inventory_lacks refuses while the item is held" "$CODE" "4"
 python3 "$GP" remove walk-near >/dev/null
 
 echo
+echo "doors and scenery: interact-object / interact-bound (spec rules 4-5):"
+refute "interact-object without its obj id is refused" \
+    python3 "$GP" learn bad5 --priority 1 --trigger object_visible=493 --action interact-object
+refute "a cmd outside 1-2 is refused" \
+    python3 "$GP" learn bad6 --priority 1 --trigger object_visible=493 \
+        --action interact-object --param obj=493 --param cmd=3
+refute "a non-integer bound_visible is refused" \
+    python3 "$GP" learn bad7 --priority 1 --trigger bound_visible=door \
+        --action interact-bound --param obj=1
+python3 "$GP" objective seek-fred >/dev/null
+python3 "$GP" learn open-farm-door --priority 70 --cooldown-ms 0 --once-per-objective \
+    --trigger objective_is=seek-fred --trigger bound_visible=1 \
+    --action interact-bound --param obj=1 >/dev/null
+python3 "$GP" learn net-fishing-spot --priority 60 --cooldown-ms 0 \
+    --trigger objective_is=seek-fred --trigger object_visible=493 \
+    --action interact-object --param obj=493 --param cmd=2 >/dev/null
+# Two doors of the wanted id, nearest first: the emitted tile must be the near one.
+snap 130 '[]' '{"bounds":[{"id":1,"x":159,"z":617,"dir":0},{"id":1,"x":170,"z":640,"dir":2}],"objects":[{"id":493,"x":196,"z":726,"dir":6}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the door rule wins the slot and a done receipt exits 0" "$CODE" "0"
+contains "$OUT" "fired rule=open-farm-door" && ok "the verdict names the door rule" \
+    || fail "the verdict names the door rule" "$OUT"
+check_eq "the action is interact-bound" "$(last_action 'type=interact-bound')" "1"
+check_eq "aimed at the NEAREST matching door tile" "$(last_action 'x=159')" "1"
+check_eq "with the wall direction riding the file" "$(last_action 'dir=0')" "1"
+check_eq "the type id rides as obj, never id" "$(last_action 'obj=1')" "1"
+check_eq "and the default command is 1" "$(last_action 'cmd=1')" "1"
+# The door rule is spent (once per objective): the fishing spot gets the next step.
+snap 131 '[]' '{"objects":[{"id":493,"x":196,"z":726,"dir":6}],"bounds":[]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+contains "$OUT" "fired rule=net-fishing-spot" && ok "the fishing rule fires when the spot is loaded" \
+    || fail "the fishing rule fires when the spot is loaded" "$OUT"
+check_eq "as an interact-object" "$(last_action 'type=interact-object')" "1"
+check_eq "on the spot's tile" "$(last_action 'x=196')" "1"
+check_eq "with its chosen verb riding (cmd 2, the second menu command)" "$(last_action 'cmd=2')" "1"
+python3 "$GP" learn open-gate --priority 40 --cooldown-ms 0 \
+    --trigger objective_is=seek-fred --action interact-object --param obj=60 >/dev/null
+snap 132 '[]' '{"objects":[],"bounds":[]}'
+CODE=0; python3 "$GP" step >/dev/null || CODE=$?
+check_eq "a rule whose object is not loaded refuses at compile: exit 4" "$CODE" "4"
+check_eq "and the refusal is logged" "$(decided refused)" "2"
+python3 "$GP" remove open-farm-door >/dev/null
+python3 "$GP" remove net-fishing-spot >/dev/null
+python3 "$GP" remove open-gate >/dev/null
+python3 "$GP" objective --clear >/dev/null
+
+echo
 echo "the real playing entrypoint invokes this layer (spec rule 12):"
 # The game tree is borrowed READ-ONLY, recovered the same way the bridge
 # suite borrows it: the sandbox moved HOME, the live-data path remembers.

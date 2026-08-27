@@ -53,6 +53,8 @@ deliberate-play channel.
    - `objective_is` (string): the objective file's line equals it exactly. A rule carrying
      `objective_is` can never fire while no objective is set.
    - `npc_visible` (int): the snapshot's `npcs` list holds that type id.
+   - `object_visible` (int): the snapshot's `objects` list holds that type id.
+   - `bound_visible` (int): the snapshot's `bounds` list holds that type id.
    - `message_contains` (string, non-empty, single-line): some message in the snapshot's
      `messages` contains it, case-insensitively.
    - `near_tile` (`{"x":…,"z":…,"radius":…}`): Chebyshev distance from the player's tile is at
@@ -62,9 +64,15 @@ deliberate-play channel.
 5. The action vocabulary is closed: `talk-npc` (`npc`: the type id; the server index is resolved
    from the snapshot at fire time — nearest matching NPC — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
-   click) and `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
+   click), `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
-   rule about panic moves, not a bridge property). Everything the bridge refuses stays refused;
+   rule about panic moves, not a bridge property), `interact-object` (`obj`: the object type id,
+   optional `cmd` 1 or 2 defaulting to 1 — the nearest matching entry in the snapshot's
+   `objects` list is resolved at fire time and its tile rides the action file, so the bridge's
+   unloaded/swapped re-checks protect the act; this is how a door-less fishing spot is fished
+   and a gate is opened), and `interact-bound` (`obj` and optional `cmd`, resolved the same way
+   from the snapshot's `bounds` list, tile and wall direction riding the file — this is how a
+   door is opened). Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
    (camera-dependent presses) are structurally outside the vocabulary — an action that cannot
    be expressed here belongs in `unfinished`, not approximated.
@@ -139,8 +147,9 @@ deliberate-play channel.
 
 ## KNOWN LIMITS
 
-- The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors, scenery,
-  quest state and dialogue menus are invisible; plays that need them wait in `unfinished` for
+- The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery
+  became visible (`bounds`, `objects`) when the bridge grew on 2026-08-27; quest state and
+  dialogue menus remain invisible, and plays that need them wait in `unfinished` for
   the bridge to grow, by spec change there and here.
 - `message_contains` reads the snapshot's short message tail; a message that scrolled out
   between polls is missed. Rules should trigger on state where possible and messages only for
