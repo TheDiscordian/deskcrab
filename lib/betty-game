@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# betty-game — the visible-state reflex engine CLI (specs/game-reflex.md).
+# Plain python3 and stdlib only, so there is no venv to own: this wrapper
+# exists for symmetry with the other betty-* doors and to keep the entry
+# point stable if the implementation ever moves.
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec python3 "$HERE/game_reflex.py" "$@"

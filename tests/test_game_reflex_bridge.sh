@@ -1,0 +1,160 @@
+#!/bin/bash
+# The bridge<->engine protocol of specs/game-reflex.md, proven cross-language:
+# the REAL orsc.ReflexBridge is compiled read-only out of the local game
+# checkout (the same file the client jar carries) and driven against a
+# scripted fake host, while the real Python engine reads the snapshots it
+# writes and writes the actions it consumes. No game, no display, no login —
+# and skipped honestly where there is no local game tree to borrow.
+# Run: bash tests/test_game_reflex_bridge.sh
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
+set -u
+
+REPO="$SANDBOX_REPO"
+BG="$REPO/lib/betty-game"
+
+# The game tree is borrowed READ-ONLY, like the chess venv: the sandbox moved
+# HOME, so the real one is recovered from the live-data path the sandbox
+# recorded before the move.
+REAL_HOME="$(cd "$SANDBOX_LIVE_DATA/../../.." 2>/dev/null && pwd)"
+GAME_TREE="${DESKCRAB_OPENRSC_TREE:-$REAL_HOME/Games/OpenRSC}"
+BRIDGE_SRC="$GAME_TREE/Core-Framework/Client_Base/src/orsc/ReflexBridge.java"
+JAVAC="$GAME_TREE/tools/jdk17/bin/javac"
+JAVA="$GAME_TREE/tools/jdk17/bin/java"
+if [ ! -f "$BRIDGE_SRC" ] || [ ! -x "$JAVAC" ] || [ ! -x "$JAVA" ]; then
+    sandbox_skip "no local OpenRSC tree with the reflex bridge at $GAME_TREE"
+fi
+
+refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
+
+JOUT="$SANDBOX/jout"
+mkdir -p "$JOUT"
+# A compile failure is DRIFT between the two repos and must fail, not skip.
+"$JAVAC" -d "$JOUT" "$BRIDGE_SRC" "$REPO/tests/data/ReflexBridgeHarness.java" \
+    2> "$SANDBOX/javac.err" \
+    || die "the bridge no longer compiles against the harness: $(cat "$SANDBOX/javac.err")"
+ok "the game tree's ReflexBridge compiles against this repo's harness"
+
+S="$SANDBOX/gstate"
+mkdir -p "$S"
+harness() { "$JAVA" -cp "$JOUT" ReflexBridgeHarness "$S" "$1"; }
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+rstatus() { python3 -c "import json; print(json.load(open('$S/receipt.json'))['status'])"; }
+# wact <id> <ts> <lines...> — write an action file by hand.
+wact() {
+    local id="$1" ts="$2"; shift 2
+    { echo "ts=$ts"; echo "id=$id"; for l in "$@"; do echo "$l"; done; } > "$S/action.json"
+}
+
+echo "the snapshot (rules 2-3):"
+OUT="$(harness state-out)"
+check "a logged-out tick writes a snapshot" test -f "$S/state.json"
+python3 - "$S/state.json" <<'PY' && ok "it says logged_in false and carries no player fields" \
+    || fail "it says logged_in false and carries no player fields"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["v"] == 1 and s["logged_in"] is False and "hits" not in s, s
+PY
+OUT="$(harness state)"
+python3 - "$S/state.json" <<'PY' && ok "a logged-in snapshot carries the visible state, JSON-escaped" \
+    || fail "a logged-in snapshot carries the visible state, JSON-escaped"
+import json, sys, time
+s = json.load(open(sys.argv[1]))
+assert s["v"] == 1 and s["logged_in"] is True
+assert s["hits"] == 4 and s["hits_max"] == 10 and s["fatigue"] == 12
+assert s["x"] == 120 and s["z"] == 650 and s["in_combat"] is False
+assert s["opponent"] is None
+assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
+assert s["messages"] == [{"text": 'Welcome to the "quoted" world'}]
+assert abs(time.time() * 1000 - s["ts"]) < 60000 and s["tick"] >= 1, s
+PY
+
+echo
+echo "the engine against a real bridge snapshot (rules 6, 10, 12):"
+export DESKCRAB_GAME_STATE_DIR="$S"
+export DESKCRAB_GAME_DIR="$SANDBOX/gdata"
+cat > "$SANDBOX/food.xml" <<'EOF'
+<map><entry><int>132</int><int>3</int></entry></map>
+EOF
+"$BG" init --food-xml "$SANDBOX/food.xml" >/dev/null
+"$BG" enable eat-low-health >/dev/null
+"$BG" set eat-low-health hold_ticks 1 >/dev/null
+check "the engine evaluates the bridge's own snapshot" "$BG" run --once
+check "and fires an eat" test -f "$S/action.json"
+check_eq "slot 0" "$(sandbox_count_in '^slot=0' "$S/action.json")" "1"
+check_eq "item 132" "$(sandbox_count_in '^item=132' "$S/action.json")" "1"
+
+echo
+echo "execution and the receipt (rule 7):"
+OUT="$(harness exec)"
+contains "$OUT" "eat slot=0" && ok "the bridge executed the engine's eat" \
+    || fail "the bridge executed the engine's eat" "$OUT"
+refute "the action file was consumed" test -f "$S/action.json"
+check_eq "the receipt says done" "$(rstatus)" "done"
+"$BG" run --once
+check_eq "the engine consumed the receipt" \
+    "$(sandbox_count_in '"kind":"receipt"' "$S/decisions.jsonl")" "1"
+python3 - "$S/engine-state.json" <<'PY' && ok "and cleared the in-flight slot" \
+    || fail "and cleared the in-flight slot"
+import json, sys
+assert json.load(open(sys.argv[1]))["inflight"] is None
+PY
+
+echo
+echo "the refusal ladder (rule 7):"
+wact 50 "$(now_ms)" "type=eat" "slot=0" "item=132"
+touch "$S/hold"
+OUT="$(harness exec)"
+refute "held: not executed" contains "$OUT" "eat slot"
+refute "held: the file is still consumed" test -f "$S/action.json"
+check_eq "held: the receipt says so" "$(rstatus)" "held"
+rm "$S/hold"
+
+wact 51 "$(( $(now_ms) - 5000 ))" "type=eat" "slot=0" "item=132"
+OUT="$(harness exec)"
+refute "stale: not executed" contains "$OUT" "eat slot"
+check_eq "stale: the receipt says so" "$(rstatus)" "stale"
+
+wact 52 "$(now_ms)" "type=eat" "slot=0" "item=999"
+OUT="$(harness exec)"
+refute "a shifted bag is never eaten blind" contains "$OUT" "eat slot"
+check_eq "item mismatch is named" "$(rstatus)" "refused-item-mismatch"
+
+wact 53 "$(now_ms)" "type=eat" "slot=1" "item=81"
+OUT="$(harness exec)"
+refute "a non-food item is never consumed" contains "$OUT" "eat slot"
+check_eq "not-food is named" "$(rstatus)" "refused-not-food"
+
+wact 54 "$(now_ms)" "type=eat" "slot=9" "item=1"
+harness exec >/dev/null
+check_eq "a slot outside the bag is named" "$(rstatus)" "refused-no-such-slot"
+
+wact 55 "$(now_ms)" "type=dance"
+harness exec >/dev/null
+check_eq "an unknown type is refused, never guessed" "$(rstatus)" "refused-unknown-type"
+
+wact 56 "$(now_ms)" "type=eat" "slot=0" "item=132"
+harness exec-out >/dev/null
+check_eq "logged out: nothing executes" "$(rstatus)" "refused-logged-out"
+
+echo
+echo "walk and warn (rules 5-7):"
+wact 57 "$(now_ms)" "type=walk" "x=125" "z=655"
+OUT="$(harness exec)"
+contains "$OUT" "walk x=125 z=655" && ok "walk reaches the host with its coordinates" \
+    || fail "walk reaches the host with its coordinates" "$OUT"
+check_eq "and is receipted done" "$(rstatus)" "done"
+RECEIPT_BEFORE="$(cat "$S/receipt.json")"
+{ echo "ts=$(now_ms)"; echo "id=58"; echo "type=warn"; echo "text=danger: health low"; } > "$S/notice.json"
+OUT="$(harness exec)"
+contains "$OUT" "shown danger: health low" && ok "warn shows a local message" \
+    || fail "warn shows a local message" "$OUT"
+refute "the notice file was consumed" test -f "$S/notice.json"
+check_eq "and a notice writes NO receipt" "$(cat "$S/receipt.json")" "$RECEIPT_BEFORE"
+
+echo
+echo "the bridge may never break the game (rule 8):"
+OUT="$(harness fail5)"
+contains "$OUT" "disabled=true" && ok "five failing ticks disable the bridge" \
+    || fail "five failing ticks disable the bridge" "$OUT"
+check_eq "the disablement was announced exactly once" \
+    "$(printf '%s\n' "$OUT" | grep -c 'shown reflex bridge disabled')" "1"
