@@ -26,7 +26,9 @@ import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
 TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
                 "message_contains", "near_tile", "inventory_has", "inventory_lacks")
-ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity")
+ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity",
+           "click-inventory")
+SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 
 # Spec rule 4: a stored near_tile radius below this evaluates as this, and the
 # lint (rule 17) refuses to author one. A trigger names the vicinity while
@@ -57,6 +59,7 @@ EXIT_NOT_READY = 3
 EXIT_NO_RULE = 4
 EXIT_HELD = 5
 EXIT_PLAYER_MESSAGE = 6
+EXIT_SYSTEM_MESSAGE = 7
 
 EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
 
@@ -219,6 +222,14 @@ def validate_config(cfg: dict) -> None:
                     "entity=<type id>, with optional button")
             if "button" in action and action["button"] not in (1, 2, 3):
                 bad(f"{where}: click-entity button must be 1, 2, or 3")
+        elif atype == "click-inventory":
+            if set(action) - {"type", "item", "button"} \
+                    or not isinstance(action.get("item"), int) \
+                    or action["item"] < 0:
+                bad(f"{where}: click-inventory takes item=<item id>, "
+                    "with optional button")
+            if "button" in action and action["button"] not in (1, 2, 3):
+                bad(f"{where}: click-inventory button must be 1, 2, or 3")
 
 
 def load_config() -> dict:
@@ -281,6 +292,8 @@ def load_player_state() -> dict:
     est.setdefault("objective_fired", {})   # "rule\tobjective" -> epoch ms
     est.setdefault("seen_message_ids", [])
     est.setdefault("pending_messages", [])
+    est.setdefault("seen_system_message_ids", [])
+    est.setdefault("pending_system_messages", [])
     return est
 
 
@@ -342,6 +355,66 @@ def capture_player_messages(snap: dict, est: dict, events: list) -> None:
 def oldest_pending_message(est: dict):
     pending = est.get("pending_messages") or []
     return min(pending, key=lambda m: m["id"]) if pending else None
+
+
+def is_idle_movement_warning(message: dict) -> bool:
+    """The server's blue idle warning, tolerant of wording variants."""
+    if not isinstance(message, dict) or message.get("channel") != "game":
+        return False
+    text = " ".join(str(message.get("text", "")).casefold().split())
+    standing = "standing here for" in text or "standing still for" in text
+    return standing and (" min" in text or "minute" in text) and "move" in text
+
+
+def capture_urgent_system_messages(snap: dict, est: dict, events: list) -> None:
+    """Persist the idle warning until a changed player tile proves movement."""
+    px, pz = snap.get("x"), snap.get("z")
+    pending = est.get("pending_system_messages") or []
+    still_pending = []
+    for message in pending:
+        if isinstance(px, int) and isinstance(pz, int) \
+                and (px != message.get("x") or pz != message.get("z")):
+            events.append({"ts": now_ms(), "kind": "system-message-handled",
+                           "id": message.get("id"), "reason": "player-moved",
+                           "x": px, "z": pz})
+        else:
+            still_pending.append(message)
+    pending = still_pending
+
+    seen = set(est.get("seen_system_message_ids") or [])
+    for message in snap.get("messages") or []:
+        if not is_idle_movement_warning(message):
+            continue
+        message_id = message.get("id")
+        text = message.get("text")
+        if not isinstance(message_id, int) or message_id in seen \
+                or not isinstance(text, str) or not isinstance(px, int) \
+                or not isinstance(pz, int):
+            continue
+        item = {"id": message_id, "channel": message.get("channel", "game"),
+                "text": text, "x": px, "z": pz}
+        pending.append(item)
+        seen.add(message_id)
+        events.append({"ts": now_ms(), "kind": "system-message-received", **item})
+    est["pending_system_messages"] = sorted(pending, key=lambda m: m["id"])
+    est["seen_system_message_ids"] = sorted(seen)[-500:]
+
+
+def oldest_pending_system_message(est: dict):
+    pending = est.get("pending_system_messages") or []
+    return min(pending, key=lambda m: m["id"]) if pending else None
+
+
+def latest_system_feedback(snap: dict):
+    """Latest non-player game text, compact enough to ride a play verdict."""
+    for message in reversed(snap.get("messages") or []):
+        if not isinstance(message, dict) \
+                or message.get("channel") not in SYSTEM_FEEDBACK_CHANNELS:
+            continue
+        text = " ".join(str(message.get("text", "")).split())
+        if text:
+            return text[:240]
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -440,12 +513,18 @@ def compile_player_action(rule, snap, food, eat_pick):
                     compiled["dir"] = entity.get("dir", 0)
                 return compiled, None
         return None, f"{kind}-not-loaded"
+    if action["type"] == "click-inventory":
+        want = action["item"]
+        if any(entry.get("id") == want for entry in snap.get("inventory") or []):
+            return {"type": "click-inventory", "item": want,
+                    "button": action.get("button", 1)}, None
+        return None, "item-not-held"
     return None, f"unknown-action-{action['type']}"
 
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "button",
+    for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "item", "button",
                 "target", "text"):
         if key in action:
             lines.append(f"{key}={action[key]}")
@@ -602,16 +681,24 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
 
-    # Spec rule 7b: capture and surface player input before ordinary play.
+    # Spec rules 7b-7c: capture urgent messages before ordinary play.
     # The small lock prevents the resident runner from racing a Sol reply.
     message_events = []
     with player_state_lock():
         est = load_player_state()
         est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
         capture_player_messages(snap, est, message_events)
+        capture_urgent_system_messages(snap, est, message_events)
+        pending_system_message = oldest_pending_system_message(est)
         pending_message = oldest_pending_message(est)
         save_player_state(est)
         flush_events(message_events)
+    if pending_system_message is not None and snap.get("logged_in") \
+            and now - snap.get("ts", 0) <= defaults["stale_ms"]:
+        report("system-message", id=pending_system_message["id"],
+               channel=pending_system_message["channel"],
+               action="move-required", text=pending_system_message["text"])
+        return "system-message", EXIT_SYSTEM_MESSAGE
     if pending_message is not None and snap.get("logged_in") \
             and now - snap.get("ts", 0) <= defaults["stale_ms"]:
         report("player-message", id=pending_message["id"],
@@ -665,7 +752,8 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
             return "stale", EXIT_NOT_READY
         report("no-rule-matched", objective=objective or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
-               cooldown_holds=cooldown_holds)
+               cooldown_holds=cooldown_holds,
+               feedback=latest_system_feedback(snap))
         return "no-rule-matched", EXIT_NO_RULE
 
     event = fired[0]
@@ -1226,7 +1314,8 @@ def cmd_run(args):
             # still hands the model its exit-4 licence when one is due.
             if verdict != "same-tick":
                 last_verdict = verdict
-            write_heartbeat(last_verdict)
+            write_heartbeat(last_verdict,
+                            latest_system_feedback(game_reflex.read_snapshot() or {}) or "")
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -1351,13 +1440,24 @@ def main():
                     else:
                         report("runner-player-message", age_ms=now_ms() - hb.get("ts", 0),
                                pid=hb.get("pid"))
+                elif verdict == "system-message":
+                    pending = oldest_pending_system_message(load_player_state())
+                    if pending is not None:
+                        report("system-message", id=pending["id"],
+                               channel=pending["channel"], action="move-required",
+                               text=pending["text"])
+                    else:
+                        report("runner-system-message", age_ms=now_ms() - hb.get("ts", 0),
+                               pid=hb.get("pid"))
                 else:
                     report(f"runner-{verdict or 'unknown'}",
-                           age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"))
+                           age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
+                           feedback=hb.get("detail") or None)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
                           "held": EXIT_HELD,
                           "fired": EXIT_FIRED,
-                          "player-message": EXIT_PLAYER_MESSAGE}.get(verdict, EXIT_NOT_READY))
+                          "player-message": EXIT_PLAYER_MESSAGE,
+                          "system-message": EXIT_SYSTEM_MESSAGE}.get(verdict, EXIT_NOT_READY))
         cfg = load_config()
         if args.wait_ms is None:
             args.wait_ms = config_defaults(cfg)["inflight_timeout_ms"]

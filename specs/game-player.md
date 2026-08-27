@@ -80,9 +80,13 @@ deliberate-play channel.
    is compiled to stable game identity — NPC server index and type, or object/bound type and world
    placement — while screen coordinates are deliberately absent. The bridge re-matches that
    identity and resolves the entity's latest rendered point immediately before moving and clicking,
-   so a moving NPC cannot leave a screenshot coordinate behind. Everything the bridge refuses stays refused;
+   so a moving NPC cannot leave a screenshot coordinate behind), and `click-inventory` (`item`:
+   the item id; optional `button` 1, 2, or 3 defaulting to 1). The compiled inventory action carries
+   only that item identity. The bridge finds its current slot, opens the inventory tab, and resolves
+   the slot centre immediately before clicking; a missing item is refused instead of allowing a
+   remembered slot to target its replacement. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
-   that do not name a rendered game entity remain structurally outside the vocabulary — an action
+   that do not name a rendered game entity or current inventory item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.
 
 6. `unfinished` is the honesty ledger of migration: entries (`name`, `note`) for learned plays
@@ -116,6 +120,10 @@ deliberate-play channel.
      reasoning about the next action**. Fields include `cooldown_holds`, so a temporarily
      suppressed rule is visible to the falling-back mind.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
+   - `player-message` (exit 6): an incoming local or private message must be answered through
+     rule 7b before ordinary play continues.
+   - `system-message` (exit 7): rule 7c's idle movement warning is pending; the player must walk
+     to a different tile before any non-walk action continues.
    `step --max N` repeats while rules fire cleanly (at most N actions), then reports the
    stopping verdict; the exit code is 0 if anything fired.
 
@@ -144,6 +152,19 @@ deliberate-play channel.
    clicking without answering. There is no chat daemon, side queue, or second controller:
    observation, priority, action, receipt, logging, and durable state all stay in this player
    action system.
+
+7c. System messages remain structured in the bridge snapshot even though they are not player
+   speech. The blue idle warning is detected by its stable meaning — standing here/still for a
+   number of minutes and an instruction to move — so minor wording changes do not hide it. The
+   warning is copied into `pending_system_messages` in the existing player engine state and
+   `step` reports it as `system-message id=… channel=… action=move-required text=…` with exit 7
+   before player messages and ordinary rules. While it is pending, the autonomous harness permits
+   a receipted `walk` and refuses every other action door. A later snapshot on a different player
+   tile is the only completion proof; it clears the warning and records `system-message-handled`.
+   Repeated snapshots cannot duplicate it. Other system messages remain available in snapshot
+   context without all becoming interrupts: the latest non-player game text rides the
+   `no-rule-matched` verdict and the resident runner heartbeat, so Sol sees feedback such as a
+   missing requirement without another subsystem or another model turn.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule

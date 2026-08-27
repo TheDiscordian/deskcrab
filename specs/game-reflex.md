@@ -91,8 +91,10 @@ Three parts:
    game's own menu, never an invented verb), and `interact-bound` (the same for a wall object —
    a door or other boundary — at a tile and wall direction; Open and Close are its usual
    commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
-   game object, or wall object identified by stable game identity, then click button 1, 2, or 3).
-   `talk-npc`, `interact-object`, `interact-bound`, `click-entity`, `chat-local`, and `chat-private` belong to the deliberate-play
+   game object, or wall object identified by stable game identity, then click button 1, 2, or 3),
+   and `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
+   current slot centre, and click button 1, 2, or 3). `talk-npc`, `interact-object`,
+   `interact-bound`, `click-entity`, `click-inventory`, `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
    (rule 9). The reflex table cannot author speech. Nothing in this layer can log in, create or
@@ -110,11 +112,15 @@ Three parts:
    1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on
    tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
-   click-entity, plus the same identity fields as that entity's normal action). The bridge resolves
+   click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
+   for click-inventory). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
-   `refused-not-on-screen`; no screen coordinates cross the action file. `action.json` is a single slot: one action, and the engine never
+   `refused-not-on-screen`; no screen coordinates cross the action file. For click-inventory it
+   finds the first matching current item id, opens the inventory tab, and calculates the slot
+   centre from the current client UI; a missing item is `refused-no-such-item`. No slot or screen
+   coordinate crosses the action file. `action.json` is a single slot: one action, and the engine never
    writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
    firing is written to its own `notice-<id>.json`, named by the same monotonic id it carries, so
    two notice rules firing on one snapshot — or on adjacent snapshots inside one bridge tick —
@@ -135,9 +141,9 @@ Three parts:
    a refused action is never silently dropped. Notices need no receipt; `action.json` always gets
    one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`. Chat text and
    private targets must be non-empty single lines; text is capped at the client's 80-character
-   input limit and targets at 40 characters. `click-entity` accepts only mouse buttons 1, 2, and 3,
-   and never falls back to coordinates supplied by its caller. Invalid values are refused rather
-   than truncated.
+   input limit and targets at 40 characters. `click-entity` and `click-inventory` accept only mouse
+   buttons 1, 2, and 3, and never fall back to coordinates supplied by the caller. Invalid values
+   are refused rather than truncated.
 
 8. The bridge may never break the game: every per-tick step runs inside a catch-everything guard,
    and after 5 consecutive failing ticks the bridge announces once (a local client message) that it

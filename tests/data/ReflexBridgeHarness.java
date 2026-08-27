@@ -92,6 +92,10 @@ public class ReflexBridgeHarness {
 			return invCounts[slot];
 		}
 
+		public int[] inventoryScreenPoint(int slot) {
+			return projectionsVisible ? new int[]{610 + slot, 310 + slot} : null;
+		}
+
 		public boolean isConsumable(int slot) {
 			return invIds[slot] == 132;
 		}

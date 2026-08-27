@@ -319,6 +319,12 @@ refute "click-entity refuses an unknown entity kind" \
 refute "click-entity refuses a mouse button outside 1-3" \
     python3 "$GP" learn bad9 --priority 1 --trigger npc_visible=2 \
         --action click-entity --param kind=npc --param entity=2 --param button=4
+refute "click-inventory without an item id is refused" \
+    python3 "$GP" learn bad10 --priority 1 --trigger inventory_has=145 \
+        --action click-inventory
+refute "click-inventory refuses a mouse button outside 1-3" \
+    python3 "$GP" learn bad11 --priority 1 --trigger inventory_has=145 \
+        --action click-inventory --param item=145 --param button=4
 python3 "$GP" objective seek-fred >/dev/null
 python3 "$GP" learn open-farm-door --priority 70 --cooldown-ms 0 --once-per-objective \
     --trigger objective_is=seek-fred --trigger bound_visible=1 \
@@ -384,6 +390,28 @@ python3 "$GP" remove click-sheep >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
+echo "identity-based inventory clicks compile without slots or pixels (spec rule 5):"
+python3 "$GP" objective spin-wool >/dev/null
+python3 "$GP" learn click-raw-wool --priority 80 --cooldown-ms 0 --once-per-objective \
+    --trigger objective_is=spin-wool --trigger inventory_has=145 \
+    --action click-inventory --param item=145 --param button=1 >/dev/null
+snap 134 '[]' '{"inventory":[{"id":145,"count":3},{"id":207,"count":1}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the learned inventory click receives a done receipt" "$CODE" "0"
+contains "$OUT" "fired rule=click-raw-wool" && ok "the inventory rule owned the play" \
+    || fail "the inventory rule owned the play" "$OUT"
+check_eq "the action is click-inventory" "$(last_action 'type=click-inventory')" "1"
+check_eq "the item id crosses ACTIONS" "$(last_action 'item=145')" "1"
+check_eq "the pointer button rides the inventory action" "$(last_action 'button=1')" "1"
+refute "no inventory slot crosses the action" grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "no inventory x coordinate crosses the action" grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "no inventory y coordinate crosses the action" grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+python3 "$GP" remove click-raw-wool >/dev/null
+python3 "$GP" objective --clear >/dev/null
+
+echo
 echo "the real playing entrypoint invokes this layer (spec rule 12):"
 # The game tree is borrowed READ-ONLY, recovered the same way the bridge
 # suite borrows it: the sandbox moved HOME, the live-data path remembers.
@@ -395,6 +423,8 @@ if [ ! -f "$HEADLESS" ]; then
 fi
 check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
+check_eq "the harness carries the identity-based inventory door" \
+    "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
 check_eq "the harness carries a play door" \
     "$(sandbox_count_in '^    play' "$HEADLESS")" "1"
 check_eq "wired to game_player.py, not merely present in lib" \
@@ -428,6 +458,18 @@ refute "the entity door did not write a screen x coordinate" \
     grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 refute "the entity door did not write a screen y coordinate" \
     grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 1172 '[]' '{"inventory":[{"id":145,"count":2}]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" inventory 145 3)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the inventory door completes through the shared ACTIONS receipt" "$CODE" "0"
+contains "$OUT" "inventory(item=145 button=3)" \
+    && ok "and reports the item identity it targeted" \
+    || fail "and reports the item identity it targeted" "$OUT"
+check_eq "the door wrote click-inventory" "$(last_action 'type=click-inventory')" "1"
+check_eq "the door wrote only the item id" "$(last_action 'item=145')" "1"
+refute "the inventory door did not write a slot" \
+    grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 python3 "$GP" enable walk-high >/dev/null
 python3 "$GP" set walk-high action.x 120 >/dev/null
 python3 "$GP" set walk-high action.z 649 >/dev/null
@@ -687,6 +729,12 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "resume-target" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "entity KIND TYPE-ID" \
     && ok "the resumed thread receives the identity-targeting ability" \
     || fail "the resumed thread receives the identity-targeting ability"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "inventory ITEM-ID" \
+    && ok "the resumed thread receives inventory identity targeting" \
+    || fail "the resumed thread receives inventory identity targeting"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
+    && ok "the resumed thread receives the urgent idle-warning action" \
+    || fail "the resumed thread receives the urgent idle-warning action"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \
@@ -746,6 +794,51 @@ grep -q '"kind":"player-message-received"' "$DESKCRAB_GAME_STATE_DIR/player-deci
     && grep -q '"kind":"player-message-reply"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl" \
     && ok "observation and replies stay in the existing player decision log" \
     || fail "observation and replies stay in the existing player decision log"
+
+echo
+echo "the standing-still system warning blocks everything except movement (rule 7c):"
+SYSTEM0="$(decided system-message-received)"
+snap 147 '[]' '{"messages":[
+    {"id":9100,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
+]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the blue idle warning is the priority verdict: exit 7" "$CODE" "7"
+contains "$OUT" "action=move-required" \
+    && ok "the verdict gives Sol one immediate job" \
+    || fail "the verdict gives Sol one immediate job" "$OUT"
+check_eq "the system warning is captured once in ACTIONS state" \
+    "$(( $(decided system-message-received) - SYSTEM0 ))" "1"
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" inventory 376 2 2>&1)" || CODE=$?
+check_eq "a non-walk action is refused while movement is urgent" "$CODE" "7"
+contains "$OUT" "move before any other play" \
+    && ok "the refusal points to the receipted walk door" \
+    || fail "the refusal points to the receipted walk door" "$OUT"
+refute "the refused inventory click emitted no action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+fake_bridge done
+OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" walk 121 648)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the urgent gate permits a receipted walk" "$CODE" "0"
+check_eq "and the shared action is a walk" "$(last_action 'type=walk')" "1"
+snap 148 '[]' '{"x":121,"z":648,"messages":[
+    {"id":9100,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
+]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "a changed snapshot tile clears the warning and resumes play" "$CODE" "4"
+check_eq "the old warning is not duplicated from the still-visible message" \
+    "$(( $(decided system-message-received) - SYSTEM0 ))" "1"
+grep -q '"kind":"system-message-handled"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl" \
+    && ok "the movement proof is recorded in the existing decision log" \
+    || fail "the movement proof is recorded in the existing decision log"
+snap 149 '[]' '{"messages":[
+    {"id":9101,"channel":"game","incoming":false,"sender":"","text":"You do not have enough coins"}
+]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "ordinary system feedback does not create a second interrupt" "$CODE" "4"
+contains "$OUT" "feedback=You do not have enough coins" \
+    && ok "but the ACTIONS verdict carries it into Sol's next decision" \
+    || fail "but the ACTIONS verdict carries it into Sol's next decision" "$OUT"
 
 echo
 echo "a walk verifies against the TARGET, never the receipt (spec rule 7a):"

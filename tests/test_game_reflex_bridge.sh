@@ -382,6 +382,24 @@ harness exec >/dev/null
 check_eq "an unknown entity kind is refused" "$(rstatus)" "refused-bad-entity-kind"
 
 echo
+echo "click-inventory resolves an item id to its current slot (rules 5-7):"
+wact 85 "$(now_ms)" "type=click-inventory" "item=81" "button=3"
+OUT="$(harness exec)"
+contains "$OUT" "click x=611 y=311 button=3" \
+    && ok "an item id resolves to its current inventory slot centre" \
+    || fail "an item id resolves to its current inventory slot centre" "$OUT"
+check_eq "the inventory click is receipted done" "$(rstatus)" "done"
+wact 86 "$(now_ms)" "type=click-inventory" "item=999" "button=1"
+harness exec >/dev/null
+check_eq "an item no longer held is refused" "$(rstatus)" "refused-no-such-item"
+wact 87 "$(now_ms)" "type=click-inventory" "item=81" "button=4"
+harness exec >/dev/null
+check_eq "an unsupported inventory button is refused" "$(rstatus)" "refused-bad-button"
+wact 88 "$(now_ms)" "type=click-inventory" "item=81" "button=1"
+harness exec-offscreen >/dev/null
+check_eq "an inventory point that cannot be rendered is refused" "$(rstatus)" "refused-not-on-screen"
+
+echo
 echo "the learned player opens a door through the real bridge (game-player rules 5, 7):"
 GP="$REPO/lib/game_player.py"
 rm -f "$S/receipt.json" "$S/action.json"
