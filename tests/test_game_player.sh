@@ -782,9 +782,12 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "inventory ITEM-ID" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
     && ok "the resumed thread receives the urgent idle-warning action" \
     || fail "the resumed thread receives the urgent idle-warning action"
-contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until CONDITION" \
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until with exactly one named state" \
     && ok "the resumed thread receives the state-based wait replacement" \
     || fail "the resumed thread receives the state-based wait replacement"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait for not_walking directly" \
+    && ok "the resumed thread avoids a redundant walking transition wait" \
+    || fail "the resumed thread avoids a redundant walking transition wait"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \
