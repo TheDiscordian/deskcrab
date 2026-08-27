@@ -164,6 +164,27 @@ def build_prompt(job):
     else:
         lines.append("No one has said anything in this game yet.")
     lines.append(f"Just now: {scrub(job['event'])}")
+    # A player MESSAGE gets its likely reference anchored (specs/chessweb.md
+    # rule 24d): her own most recent line re-quoted beside the event, with
+    # the instruction to answer what was actually said. A low-effort call
+    # can hold both lines and still miss the relation — in browser-043
+    # (2026-08-27) a direct "sorry, you mentioned a loss?" was answered as
+    # though the sitter had misheard, the whole exchange already in the
+    # tail. The anchor beats raising the effort: speed is the table's
+    # bargain. Move and game-end triggers stay bare (a quip needs no
+    # scaffold), as does a thread with no line of hers yet, and the one
+    # pathological label that renders as "you" — there the quote's
+    # ownership would be ambiguous, so the prompt simply stays as it was.
+    if job.get("why") == "said" and scrub(job.get("player") or "") != "you":
+        own = next((scrub(t)[len("you: "):]
+                    for t in reversed(job.get("chat_tail") or [])
+                    if scrub(t).startswith("you: ")), "")
+        if own:
+            lines.append(
+                f'They are speaking to you within the chat above — your '
+                f'own last line there was: "{own}". A reference in their '
+                f'message points into that chat, most often at that line '
+                f'of yours; answer what they actually said.')
     lines.append("Your message, or PASS:")
     return "\n".join(lines) + "\n"
 

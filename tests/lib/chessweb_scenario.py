@@ -964,6 +964,15 @@ def s_chat(port, chess_dir, wake_log, chat_log, mover_log):
         for m in get_json(port, "/chat")["messages"]))
     ok("she answered a message that was not a move")
 
+    # The reference anchor (rule 24d, the browser-043 miss): the said
+    # trigger's prompt re-quotes her own latest line beside the event and
+    # says to answer what the sitter actually said — and no move trigger's
+    # prompt in the same log carries it, so board banter stays bare.
+    prompt = Path(chat_log).read_text()
+    assert 'your own last line there was: "Happy to dance' in prompt, prompt
+    assert prompt.count("answer what they actually said") == 1, prompt
+    ok("the said prompt anchors her latest line — and only the said prompt")
+
     wake = Path(wake_log).read_text()
     assert "a move landed in game guest-001 against Visitor" in wake, wake
     ok("the post-move wake names the player, one fixed sentence per game")
