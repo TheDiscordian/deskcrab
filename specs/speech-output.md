@@ -11,11 +11,15 @@ the rules that keep the plumbing from ever deciding her words are not worth voic
 A filter that decides her words are not worth voicing is a self-inflicted injury, and it has been
 built twice and removed twice. Silence is chosen while writing, or not at all.
 
-One mechanism is allowed to stand between a drafted sentence and the synthesiser — the pre-speech
-mirror (rules 38–46) — and only because it decides nothing: it shows her a line that tripped her
-own phrase list and she chooses again, rewrite or the original, never silence and never machine
-text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as clarified
-2026-08-08. Any failure anywhere in the mirror speaks the original untouched.
+Two mechanisms are allowed to stand between a drafted sentence and the synthesiser, and only
+because neither decides anything about whether her words are worth voicing. The pre-speech mirror
+(rules 38–46) shows her a line that tripped her own phrase list and she chooses again, rewrite or
+the original, never silence and never machine text; the authority for that distinction is
+`conduct/no-gate-on-my-tongue.md` as clarified 2026-08-08, and any failure anywhere in the mirror
+speaks the original untouched. The acceptance hold (rule 12b) delays a finished message's hand-off
+to piper until the CLI's own turn machinery has moved past it: every word it releases is hers
+unaltered, and what it discards is only a draft she herself replaced under a Stop-hook rejection —
+the same authority rule 5a already exercises on the stored reply.
 
 ## CONTRACT
 
@@ -91,6 +95,29 @@ text. The authority for that distinction is `conduct/no-gate-on-my-tongue.md` as
     the tail-loss defect wearing the dedup's clothes. A rewrite whose deltas streamed live will
     therefore still sound; cutting a voice already mid-sentence is the mid-speech supersede, a
     separate piece of work this rule deliberately does not claim.
+12b. The acceptance boundary (adopted 2026-08-26; NOT YET IMPLEMENTED — held red by
+    `tests/test_reply_stop_acceptance.sh` until the hold is built). The CLI can hand a finished
+    message back as rejected: a synthetic user event whose text opens `Stop hook feedback:`,
+    answered by a corrected assistant message (rule 5a's shape). Rule 5a drops the rejected
+    draft from the stored reply, but it cannot unsay it — and rule 12's early sentence
+    streaming had every sentence of the 2026-08-25 draft through piper before the hook had
+    decided. So on the desktop stream an assistant message MUST NOT cross the external piper
+    boundary until it is ACCEPTED — until the stream has moved past the completed message with
+    anything other than that feedback. When feedback does follow, the ENTIRE pending draft is
+    discarded, every sentence of it, queued or already chunked, and only the corrected
+    assistant message that answers the feedback reaches piper. The tradeoff is deliberate and
+    outranks rules 11 and 12 for an unaccepted message: speech already handed to piper cannot
+    be unsaid, so a message that may yet be rejected waits, and the desk's first audio arrives
+    later by the width of the acceptance. The cost of the opposite choice is measured: at
+    10:17:50 on 2026-08-25 (`/tmp/deskcrab-speech.log` lines 467–476) the four-sentence draft
+    and its correction both sounded, eight SAID rows back to back, draft then rewrite. Never-
+    silent still outranks the hook, exactly as in rule 5a: a rejection that no real message
+    follows releases the held draft, and a stream that ends with a message still pending — the
+    terminator, a killed CLI, a reaped watchdog — speaks it before the tail closes. The hold
+    may delay her speech; it may never swallow it. Rule 12a's carve-out ("a rewrite whose
+    deltas streamed live will still sound") described the world before this boundary: with the
+    draft held, the rewrite is the only copy piper ever gets. The witness for this boundary is
+    the external piper trace, never the streamer's own logs or receipts.
 13. The streamer MUST NEVER count bytes it did not read. The read counter is advanced by the length
     of lines actually read, never by a size taken from the file's metadata. Assigning the stat size
     to the read counter counts bytes appended between the read and the stat, and then counts them
@@ -544,6 +571,14 @@ at block and at paragraph level while every genuinely distinct consecutive pair 
 the display half rides the collapse whole; the shared registry holds a never-voiced near-duplicate
 block off the speakers while a distinct block and a partly-streamed block's own tail keep their
 voice, and an unterminated final sentence still flushes at close.
+
+Rule 12b is owed to `tests/test_reply_stop_acceptance.sh` and stands RED there by design until
+the acceptance hold is built: the 2026-08-25 honest/straight stream driven end to end through
+`lib/tts-streamer` — a fully streamed four-sentence draft, its completed assistant event, the
+synthetic Stop-hook feedback, then the fully streamed corrected message and the result — with
+piper stubbed outside the streamer, asserting the stub's own stdin trace carries exactly the
+correction and not one draft word. The external trace is the witness, never the streamer's
+receipt or speech log.
 
 Rule 57 is held by `tests/test_empty_delivery.sh`: a quiet-opening desk reply reaches the stub
 synthesiser not at all — judged from the speaker side — while the same reply without the marker
