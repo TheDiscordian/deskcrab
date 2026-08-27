@@ -90,6 +90,12 @@ python3 - "$S/state.json" <<'PY' && ok "NPC-spoken quest dialogue lingers long e
 import json, sys
 assert json.load(open(sys.argv[1]))["talking_to_npc"] is True
 PY
+OUT="$(harness state-player-dialogue)"
+python3 - "$S/state.json" <<'PY' && ok "the player's own quest reply is not misclassified as NPC speech" \
+    || fail "the player's own quest reply is not misclassified as NPC speech"
+import json, sys
+assert json.load(open(sys.argv[1]))["talking_to_npc"] is False
+PY
 
 echo
 echo "the engine against a real bridge snapshot (rules 6, 10, 12):"

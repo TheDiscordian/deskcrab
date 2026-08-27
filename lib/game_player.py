@@ -526,6 +526,15 @@ def cmd_wait_until(args):
         baseline = game_reflex.read_snapshot()
         baseline_tick = baseline.get("tick") if isinstance(baseline, dict) else None
         baseline_ts = baseline.get("ts") if isinstance(baseline, dict) else None
+        # Immediately after a dialogue click, the first replacement can still
+        # describe the gap before the server's reply. A negative dialogue wait
+        # that began in that gap must observe dialogue start before it is
+        # allowed to observe dialogue end.
+        dialogue_observed = (
+            condition == "not_talking_to_npc"
+            and isinstance(baseline, dict)
+            and baseline.get("talking_to_npc") is True
+        )
         while True:
             latest = game_reflex.read_snapshot()
             newer = isinstance(latest, dict) and (
@@ -534,7 +543,12 @@ def cmd_wait_until(args):
                 or (isinstance(latest.get("ts"), int)
                     and isinstance(baseline_ts, int) and latest["ts"] > baseline_ts)
             )
-            if newer and wait_condition_met(condition, latest):
+            if newer and condition == "not_talking_to_npc" \
+                    and isinstance(latest, dict) \
+                    and latest.get("talking_to_npc") is True:
+                dialogue_observed = True
+            phase_ready = condition != "not_talking_to_npc" or dialogue_observed
+            if newer and phase_ready and wait_condition_met(condition, latest):
                 report("condition-met", condition=condition,
                        tick=latest.get("tick"), x=latest.get("x"), z=latest.get("z"))
                 return

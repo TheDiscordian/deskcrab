@@ -265,7 +265,10 @@ public class ReflexBridgeHarness {
 			host.npcDialogueOpen = true;
 		}
 		if ("state-dialogue".equals(mode)) {
-			bridge.recordMessage("quest", false, "Guide", "What can I do for you?");
+			bridge.recordMessage("quest", false, "", "Guide: What can I do for you?");
+		}
+		if ("state-player-dialogue".equals(mode)) {
+			bridge.recordMessage("quest", false, "Player", "What can I do for you?");
 		}
 		if ("state-out".equals(mode) || "exec-out".equals(mode)) {
 			host.loggedIn = false;

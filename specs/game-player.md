@@ -173,6 +173,8 @@ deliberate-play channel.
    accepting the pre-action snapshot. Conditions are
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, and `not_talking_to_npc`; dashes are accepted in place of underscores.
+   When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
+   false; a pre-reply false snapshot cannot masquerade as the end of the conversation.
    Success reports `condition-met` with the condition and snapshot tick. A wait has a 15-second
    default and a caller-selected ceiling no greater than 60 seconds; expiry reports the latest
    observed state as `condition-timeout` and exits 2, so a missing transition can never block the

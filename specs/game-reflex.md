@@ -52,7 +52,8 @@ Three parts:
    `fatigue` (0–100), `x` and `z` (world coordinates), `walking` (the local player still has
    an unconsumed client waypoint, or a movement-capable bridge action was dispatched within the
    last second and may still be waiting for its server path), `in_combat`, `talking_to_npc` (an NPC choice menu is open or
-   the client received NPC-spoken quest dialogue within the last four seconds), `opponent`
+   the client received NPC-spoken quest dialogue within the last four seconds; NPC speech is the
+   quest-channel `Name: words` form with an empty sender, not the local player's named reply), `opponent`
    (`{"x":…,"z":…}`
    while a fighting opponent is visible, else `null`), `inventory` (array of `{"id":…,"count":…}`
    in slot order), `messages` (the last 20 messages seen by the client, newest last; each is

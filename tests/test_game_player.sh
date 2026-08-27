@@ -188,6 +188,23 @@ check_eq "a satisfied NPC-dialogue wait exits 0" "$CODE" "0"
 contains "$OUT" "condition-met condition=talking_to_npc tick=1041" \
     && ok "the wait reports the grounded condition and snapshot tick" \
     || fail "the wait reports the grounded condition and snapshot tick" "$OUT"
+snap 1042 '[]' '{"walking":false,"talking_to_npc":false}'
+python3 "$GP" wait-until not-talking-to-npc --timeout 1 > "$SANDBOX/wait-end-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 1043 '[]' '{"walking":false,"talking_to_npc":false}'
+sleep 0.05
+check "a pre-dialogue false snapshot cannot finish the dialogue-end wait" kill -0 "$WAIT_PID"
+snap 1044 '[]' '{"walking":false,"talking_to_npc":true}'
+sleep 0.05
+check "observing dialogue begin does not finish the dialogue-end wait" kill -0 "$WAIT_PID"
+snap 1045 '[]' '{"walking":false,"talking_to_npc":false}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+OUT="$(cat "$SANDBOX/wait-end-out")"
+check_eq "dialogue end succeeds only after dialogue was observed" "$CODE" "0"
+contains "$OUT" "condition-met condition=not_talking_to_npc tick=1045" \
+    && ok "the dialogue-end wait reports the grounded ending snapshot" \
+    || fail "the dialogue-end wait reports the grounded ending snapshot" "$OUT"
 CODE=0; OUT="$(python3 "$GP" wait-until in_combat --timeout 0.05)" || CODE=$?
 check_eq "a missing transition reaches its hard ceiling: exit 2" "$CODE" "2"
 contains "$OUT" "condition-timeout condition=in_combat" \
