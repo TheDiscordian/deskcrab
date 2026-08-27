@@ -313,6 +313,12 @@ refute "a cmd outside 1-2 is refused" \
 refute "a non-integer bound_visible is refused" \
     python3 "$GP" learn bad7 --priority 1 --trigger bound_visible=door \
         --action interact-bound --param obj=1
+refute "click-entity refuses an unknown entity kind" \
+    python3 "$GP" learn bad8 --priority 1 --trigger npc_visible=2 \
+        --action click-entity --param kind=widget --param entity=2
+refute "click-entity refuses a mouse button outside 1-3" \
+    python3 "$GP" learn bad9 --priority 1 --trigger npc_visible=2 \
+        --action click-entity --param kind=npc --param entity=2 --param button=4
 python3 "$GP" objective seek-fred >/dev/null
 python3 "$GP" learn open-farm-door --priority 70 --cooldown-ms 0 --once-per-objective \
     --trigger objective_is=seek-fred --trigger bound_visible=1 \
@@ -355,6 +361,29 @@ python3 "$GP" remove open-gate >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
+echo "identity-based pointer actions compile without pixel coordinates (spec rule 5):"
+python3 "$GP" objective shear-sheep >/dev/null
+python3 "$GP" learn click-sheep --priority 80 --cooldown-ms 0 --once-per-objective \
+    --trigger objective_is=shear-sheep --trigger npc_visible=2 \
+    --action click-entity --param kind=npc --param entity=2 --param button=1 >/dev/null
+snap 133 '[{"sidx":27,"id":2,"x":121,"z":648},{"sidx":39,"id":2,"x":130,"z":655}]'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the learned entity click receives a done receipt" "$CODE" "0"
+contains "$OUT" "fired rule=click-sheep" && ok "the entity rule owned the play" \
+    || fail "the entity rule owned the play" "$OUT"
+check_eq "the action is click-entity" "$(last_action 'type=click-entity')" "1"
+check_eq "its kind is NPC" "$(last_action 'kind=npc')" "1"
+check_eq "it uses the nearest matching server index" "$(last_action 'sidx=27')" "1"
+check_eq "it double-checks the NPC type" "$(last_action 'npc=2')" "1"
+check_eq "the pointer button rides the action" "$(last_action 'button=1')" "1"
+refute "no stale screen x coordinate enters the action" grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "no stale screen y coordinate enters the action" grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+python3 "$GP" remove click-sheep >/dev/null
+python3 "$GP" objective --clear >/dev/null
+
+echo
 echo "the real playing entrypoint invokes this layer (spec rule 12):"
 # The game tree is borrowed READ-ONLY, recovered the same way the bridge
 # suite borrows it: the sandbox moved HOME, the live-data path remembers.
@@ -364,12 +393,28 @@ HEADLESS="$GAME_TREE/headless/orsc-headless.sh"
 if [ ! -f "$HEADLESS" ]; then
     sandbox_skip "no local OpenRSC headless harness at $HEADLESS"
 fi
+check_eq "the harness carries the identity-based entity door" \
+    "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries a play door" \
     "$(sandbox_count_in '^    play' "$HEADLESS")" "1"
 check_eq "wired to game_player.py, not merely present in lib" \
     "$(grep -c 'game_player.py' "$HEADLESS")" "1"
 check_eq "and the policy step is rules-first: play refuses reasoning until exit 4" \
     "$(grep -c 'no-rule-matched' "$HEADLESS")" "1"
+snap 1171 '[{"sidx":55,"id":2,"x":121,"z":648},{"sidx":66,"id":2,"x":130,"z":655}]'
+fake_bridge done
+OUT="$(bash "$HEADLESS" entity npc 2 3)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the entity door completes through the shared ACTIONS receipt" "$CODE" "0"
+contains "$OUT" "entity(npc type=2 button=3)" \
+    && ok "and reports the identity it targeted" \
+    || fail "and reports the identity it targeted" "$OUT"
+check_eq "the door wrote click-entity" "$(last_action 'type=click-entity')" "1"
+check_eq "the door selected the nearest stable server index" "$(last_action 'sidx=55')" "1"
+refute "the entity door did not write a screen x coordinate" \
+    grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "the entity door did not write a screen y coordinate" \
+    grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 python3 "$GP" enable walk-high >/dev/null
 python3 "$GP" set walk-high action.x 120 >/dev/null
 python3 "$GP" set walk-high action.z 649 >/dev/null
@@ -472,8 +517,8 @@ echo
 echo "the ordinary player command (spec rule 14):"
 # The ordinary command must be committed bytes, installed on PATH, pinned to
 # the real model, supervised (Restart=always), and every start must recompose
-# its prompt from ground truth as it is now — never from a copy taken when
-# play began.
+# its first prompt from ground truth as it is now, then resume the same Sol
+# thread across routine process boundaries.
 BOC="$GAME_TREE/headless/betty-openrsc"
 check "the command is deployed beside the harness" test -f "$BOC"
 BOCR="$(readlink -f "$BOC")"
@@ -496,6 +541,9 @@ check "the background author is pinned to GPT Sol" \
     grep -q 'AUTHOR_MODEL:-gpt-5.6-sol' "$BOC"
 check "the author runs Sol through Codex" \
     grep -q '"$CODEX" exec --json.*--ephemeral' "$BOC"
+check "the Sol author carries the same no-sleep command guard" \
+    grep -A4 '"$CODEX" exec --json.*--ephemeral' "$BOC" | \
+        grep -q -- '--profile.*CODEX_PROFILE.*--dangerously-bypass-hook-trust'
 check "the author streams its prompt on stdin instead of risking ARG_MAX" \
     grep -q -- '-C "$OHOME" - < "$prompt"' "$BOC"
 check "the author is event-driven by the outcome queue, with no sleep loop" \
@@ -526,6 +574,13 @@ ALLOWED_STATE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh pla
     | python3 "$SLEEP_HOOK")"
 check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
 check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
+check "routine player process boundaries resume the saved Codex thread" \
+    grep -q '"$CODEX" --profile.*CODEX_PROFILE.*exec resume' "$BOC"
+check "resumed play keeps the no-sleep command guard" \
+    grep -A4 '"$CODEX" --profile.*CODEX_PROFILE.*exec resume' "$BOC" | \
+        grep -q -- '--dangerously-bypass-hook-trust'
+check "the restart delay is one second, not five seconds of dead time" \
+    grep -q 'RestartSec=1' "$BOC"
 check "and restarts are never rate-limited away" grep -q 'StartLimitIntervalSec=0' "$BOC"
 check "as its own transient user unit" grep -q 'orsc-player.service' "$BOC"
 check "the live display is read from the harness run state" grep -q 'run/display' "$BOC"
@@ -563,11 +618,11 @@ contains "$OUT" "step 7 of 9" && ok "so does the handoff's exact state" \
 contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
     || fail "and a fresh snapshot summary" "$OUT"
 
-# Functional: the unit contract and forced-exit recomposition, through the
+# Functional: the unit contract and same-thread continuation, through the
 # same shimmed systemd doors as the engine test above. The fake codex
-# records the exact prompt it was handed; run-player is what systemd
-# re-execs on every restart, so driving it again after moving the handoff
-# IS the forced-exit path: the successor must see the moved handoff.
+# records the exact invocation and emits a stable thread id. Driving
+# run-player again is the routine process-boundary path: it must resume that
+# conversation with current state instead of recomposing the standing prompt.
 PSD="$SANDBOX/psdfake"; mkdir -p "$PSD"
 cp "$SDFAKE/systemd-run" "$SDFAKE/systemctl" "$PSD/"
 cat > "$PSD/fakecodex" <<'SH'
@@ -575,10 +630,12 @@ cat > "$PSD/fakecodex" <<'SH'
 dir="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$@" >> "$dir/codex-capture"
 printf -- '----8<----\n' >> "$dir/codex-capture"
+printf '%s\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
 exit 0
 SH
 chmod +x "$PSD/fakecodex"
 POCENV=(PATH="$PSD:$PATH" "${BOCENV[@]}" BETTY_OPENRSC_CODEX="$PSD/fakecodex" \
+        BETTY_OPENRSC_CODEX_STREAM="$REPO/lib/codex-stream" \
         BETTY_OPENRSC_TEST_SKIP_RECOVERY=1)
 CODE=0; OUT="$(env "${POCENV[@]}" bash "$BOC" player-start 2>&1)" || CODE=$?
 check_eq "player-start through the shimmed doors answers cleanly" "$CODE" "0"
@@ -592,7 +649,7 @@ grep -q 'Restart=always' "$PSD/systemd-run-args" 2>/dev/null \
     || fail "with Restart=always riding the unit"
 grep -q 'StartLimitIntervalSec=0' "$PSD/systemd-run-args" 2>/dev/null \
     && ok "and the start limit disarmed" || fail "and the start limit disarmed"
-for i in $(seq 1 50); do [ -s "$PSD/codex-capture" ] && break; sleep 0.1; done
+for i in $(seq 1 50); do [ -s "$PH/player-thread" ] && break; sleep 0.1; done
 contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "step 7 of 9" \
     && ok "the first player received the composed prompt, handoff included" \
     || fail "the first player received the composed prompt, handoff included"
@@ -603,10 +660,19 @@ contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "model_reasoning_effort=low" 
     && ok "at the pinned low reasoning effort" \
     || fail "at the pinned low reasoning effort"
 printf 'goal: NEW-GOAL; step 8 of 9; next: buy the pot\n' > "$PH/handoff.md"
+printf 'resume-target\n' > "$DESKCRAB_GAME_DIR/objective"
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
-contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "NEW-GOAL" \
-    && ok "a restarted player recomposes: the successor sees the moved handoff" \
-    || fail "a restarted player recomposes: the successor sees the moved handoff"
+check_eq "the first run captured its durable Codex thread id" \
+    "$(cat "$PH/player-thread" 2>/dev/null)" "11111111-2222-3333-4444-555555555555"
+check_eq "the restarted process used Codex resume exactly once" \
+    "$(grep -c '^resume$' "$PSD/codex-capture" 2>/dev/null)" "1"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "resume-target" \
+    && ok "the resumed thread receives current objective and snapshot facts" \
+    || fail "the resumed thread receives current objective and snapshot facts"
+refute "the resumed thread is not handed the full standing prompt again" \
+    grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
+refute "nor is the emergency handoff re-read for a routine process boundary" \
+    grep -q 'NEW-GOAL' "$PH/run-prompt.txt"
 check_eq "both player runs were captured" \
     "$(grep -c -- '----8<----' "$PSD/codex-capture" 2>/dev/null)" "2"
 check "every start leaves the exact composed prompt on file" \
@@ -753,7 +819,7 @@ for i in $(seq 1 50); do
 done
 check "the runner writes its heartbeat" \
     test -f "$DESKCRAB_GAME_STATE_DIR/player-runner.json"
-sleep 0.6
+sleep 0.9
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 contains "$OUT" "runner-" && ok "step defers to the live runner instead of evaluating" \
     || fail "step defers to the live runner instead of evaluating" "$OUT"
@@ -763,8 +829,10 @@ grep -q '"kind":"gap"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" 2>/dev/null \
     || fail "the runner queued the gap for the background author"
 check_eq "an unchanged game gap queues once, not on a timer" \
     "$(grep -c '"kind":"gap"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl")" "1"
-check "gap deduplication keys on actionable state, not game ticks" \
-    grep -q 'last_gap_signature' "$GP"
+check "gap deduplication waits for stable actionable state instead of waking Sol per tile" \
+    grep -q 'GAP_STABLE_MS = 750' "$GP"
+check "and preserves the candidate across same-tick polls while it settles" \
+    grep -q 'gap_candidate_signature is not None' "$GP"
 kill "$RUNNER_PID" 2>/dev/null; wait "$RUNNER_PID" 2>/dev/null
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 case "$OUT" in

@@ -73,12 +73,17 @@ deliberate-play channel.
    optional `cmd` 1 or 2 defaulting to 1 — the nearest matching entry in the snapshot's
    `objects` list is resolved at fire time and its tile rides the action file, so the bridge's
    unloaded/swapped re-checks protect the act; this is how a door-less fishing spot is fished
-   and a gate is opened), and `interact-bound` (`obj` and optional `cmd`, resolved the same way
+   and a gate is opened), `interact-bound` (`obj` and optional `cmd`, resolved the same way
    from the snapshot's `bounds` list, tile and wall direction riding the file — this is how a
-   door is opened). Everything the bridge refuses stays refused;
+   door is opened), and `click-entity` (`kind`: `npc`, `object`, or `bound`; `entity`: its type id;
+   optional `button` 1, 2, or 3 defaulting to 1). At fire time the nearest matching snapshot entry
+   is compiled to stable game identity — NPC server index and type, or object/bound type and world
+   placement — while screen coordinates are deliberately absent. The bridge re-matches that
+   identity and resolves the entity's latest rendered point immediately before moving and clicking,
+   so a moving NPC cannot leave a screenshot coordinate behind. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
-   (camera-dependent presses) are structurally outside the vocabulary — an action that cannot
-   be expressed here belongs in `unfinished`, not approximated.
+   that do not name a rendered game entity remain structurally outside the vocabulary — an action
+   that cannot be expressed here belongs in `unfinished`, not approximated.
 
 6. `unfinished` is the honesty ledger of migration: entries (`name`, `note`) for learned plays
    whose trigger or action cannot yet be grounded in rules 4–5 — camera-dependent screen
@@ -215,16 +220,22 @@ deliberate-play channel.
       exact composed prompt of the latest start (`run-prompt.txt`) and its log (`player.log`)
       live in the durable player home (`BETTY_OPENRSC_HOME`, a directory in the user's own
       files). Nothing of the player — prompt, handoff or log — lives under `/tmp`.
-    - Every player start — the first, or a restart after any exit — recomposes the effective
-      prompt from ground truth discovered at that moment (`run-player`, the unit's exec
-      target): the live display read from the harness's `run/display` (never hard-coded), the
-      bridge state dir, the durable objective, a fresh snapshot summary, the decision log's
-      tail, and the handoff file's contents as they are NOW. The base prompt obliges the
-      player to overwrite the handoff after every verified action, so a forced kill loses at
-      most the interval since the last action — and the composition never depends on the dead
-      predecessor having finished anything: with no handoff on file the successor is told to
-      derive the situation from the ground truth instead. `prompt` prints exactly what the
-      next start would receive — the audit door the tests pin.
+    - The first player start composes its effective prompt from ground truth discovered at that
+      moment (`run-player`, the unit's exec target): the live display read from the harness's
+      `run/display` (never hard-coded), the bridge state dir, the durable objective, a fresh
+      snapshot summary, the decision log's tail, and the handoff file's contents as they are NOW.
+      The Codex thread id is captured durably in the player home. A normal process boundary or
+      service restart resumes that same Sol thread with a compact current-state continuation,
+      instead of opening a new conversation that re-reads the standing instructions and audits
+      the stack. If the saved thread cannot be resumed, its id is cleared and the next supervised
+      start makes a newly composed player. `prompt` prints exactly what a new player would receive
+      — the audit door the tests pin.
+    - The handoff is an emergency checkpoint, not a per-action journal. The player overwrites it
+      when the objective or plan changes, before or during a dialogue/UI sequence that the bridge
+      cannot reconstruct, after a meaningful batch of verified actions, and immediately before a
+      deliberate exit. Ordinary receipted actions rely on the durable objective, snapshot, and
+      decision log. A resumed thread continues directly; a new thread derives current state from
+      those facts and the latest checkpoint without rechecking healthy stack layers.
     - `play` also raises rule 15's resident runner (`orsc-runner.service`, through the
       harness's `runner` door) and rule 16's background author (`orsc-author.service`,
       `run-author`), so the standing stack has five runtime processes: client, reflex engine,
@@ -267,15 +278,17 @@ deliberate-play channel.
     — rule, action, receipt status, rule 7a's intended target versus settled tile, the
     snapshot brief — is appended to the durable outcome queue,
     `$DESKCRAB_GAME_DIR/outcome-queue.jsonl`; the runner also records a `gap` when no rule
-    matches and the actionable state signature changes (objective, position, inventory, game
-    messages, and visible entity types/objects, excluding tick churn and NPC wandering), and
-    `note <text…>` is the playing
+    matches and a changed actionable state signature remains unchanged for at least 750 ms
+    (objective, position, inventory, game messages, and visible entity types/objects, excluding
+    tick churn and NPC wandering). Movement therefore produces one gap after the body settles,
+    not one gap for every crossed tile. `note <text…>` is the playing
     hand's one-line door for lessons the queue cannot see (it stamps the current position,
     objective and inventory alongside the text). The queue is the inbox of the background
     author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
     durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at low
-    effort, reads new outcomes, writes and refines rules through the rule 11 doors, maintains rule
+    effort under the same no-sleep command hook as the playing hand, reads new outcomes, writes
+    and refines rules through the rule 11 doors, maintains rule
     17's cases, and never touches the bridge, the screen, or the reflex engine: every action
     that CAN become a reflex SHOULD become one, but rule creation must never block the body.
 

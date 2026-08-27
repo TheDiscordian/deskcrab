@@ -350,6 +350,38 @@ harness exec >/dev/null
 check_eq "the same tile on the WRONG wall is no such bound" "$(rstatus)" "refused-no-such-bound"
 
 echo
+echo "click-entity resolves stable identities at execution time (rules 5-7):"
+wact 78 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=474" "button=1"
+OUT="$(harness exec)"
+contains "$OUT" "click x=411 y=211 button=1" \
+    && ok "an NPC identity resolves to its latest rendered point" \
+    || fail "an NPC identity resolves to its latest rendered point" "$OUT"
+check_eq "the NPC click is receipted done" "$(rstatus)" "done"
+wact 79 "$(now_ms)" "type=click-entity" "kind=object" "x=121" "z=649" "obj=57" "button=3"
+OUT="$(harness exec)"
+contains "$OUT" "click x=311 y=161 button=3" \
+    && ok "an object identity resolves after the action is written" \
+    || fail "an object identity resolves after the action is written" "$OUT"
+wact 80 "$(now_ms)" "type=click-entity" "kind=bound" "x=121" "z=650" \
+    "dir=0" "obj=1" "button=2"
+OUT="$(harness exec)"
+contains "$OUT" "click x=261 y=131 button=2" \
+    && ok "a boundary identity includes its wall direction" \
+    || fail "a boundary identity includes its wall direction" "$OUT"
+wact 81 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=999" "button=1"
+harness exec >/dev/null
+check_eq "a changed NPC type is refused" "$(rstatus)" "refused-npc-mismatch"
+wact 82 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=474" "button=4"
+harness exec >/dev/null
+check_eq "an unsupported pointer button is refused" "$(rstatus)" "refused-bad-button"
+wact 83 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=474" "button=1"
+harness exec-offscreen >/dev/null
+check_eq "an entity no longer on-screen is refused" "$(rstatus)" "refused-not-on-screen"
+wact 84 "$(now_ms)" "type=click-entity" "kind=widget" "x=1" "z=1" "obj=1" "button=1"
+harness exec >/dev/null
+check_eq "an unknown entity kind is refused" "$(rstatus)" "refused-bad-entity-kind"
+
+echo
 echo "the learned player opens a door through the real bridge (game-player rules 5, 7):"
 GP="$REPO/lib/game_player.py"
 rm -f "$S/receipt.json" "$S/action.json"

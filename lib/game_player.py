@@ -26,7 +26,7 @@ import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
 TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
                 "message_contains", "near_tile", "inventory_has", "inventory_lacks")
-ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound")
+ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity")
 
 # Spec rule 4: a stored near_tile radius below this evaluates as this, and the
 # lint (rule 17) refuses to author one. A trigger names the vicinity while
@@ -42,6 +42,7 @@ WALK_TIMEOUT_S = 25.0       # hard ceiling on one walk's verification
 RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) means the
                             # runner owns evaluation; wide enough to cover one walk's
                             # verification, and a crashed runner fails the pid check at once
+GAP_STABLE_MS = 750          # moving across tiles is one situation, not one Sol wake per tile
 
 DEFAULTS = {
     "stale_ms": 2000,
@@ -209,6 +210,15 @@ def validate_config(cfg: dict) -> None:
                 bad(f"{where}: {atype} takes obj=<type id> and optionally cmd")
             if "cmd" in action and action["cmd"] not in (1, 2):
                 bad(f"{where}: {atype} cmd must be 1 or 2 (the def's menu commands)")
+        elif atype == "click-entity":
+            if set(action) - {"type", "kind", "entity", "button"} \
+                    or action.get("kind") not in ("npc", "object", "bound") \
+                    or not isinstance(action.get("entity"), int) \
+                    or action["entity"] < 0:
+                bad(f"{where}: click-entity takes kind=npc|object|bound and "
+                    "entity=<type id>, with optional button")
+            if "button" in action and action["button"] not in (1, 2, 3):
+                bad(f"{where}: click-entity button must be 1, 2, or 3")
 
 
 def load_config() -> dict:
@@ -408,12 +418,35 @@ def compile_player_action(rule, snap, food, eat_pick):
                         "dir": bnd.get("dir", 0), "obj": want,
                         "cmd": action.get("cmd", 1)}, None
         return None, "bound-not-loaded"
+    if action["type"] == "click-entity":
+        kind = action["kind"]
+        want = action["entity"]
+        button = action.get("button", 1)
+        if kind == "npc":
+            for npc in snap.get("npcs") or []:
+                if npc.get("id") == want and isinstance(npc.get("sidx"), int):
+                    return {"type": "click-entity", "kind": "npc",
+                            "sidx": npc["sidx"], "npc": want,
+                            "button": button}, None
+            return None, "npc-not-visible"
+        source = snap.get("objects" if kind == "object" else "bounds") or []
+        for entity in source:
+            if entity.get("id") == want and isinstance(entity.get("x"), int) \
+                    and isinstance(entity.get("z"), int):
+                compiled = {"type": "click-entity", "kind": kind,
+                            "x": entity["x"], "z": entity["z"],
+                            "obj": want, "button": button}
+                if kind == "bound":
+                    compiled["dir"] = entity.get("dir", 0)
+                return compiled, None
+        return None, f"{kind}-not-loaded"
     return None, f"unknown-action-{action['type']}"
 
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("sidx", "npc", "x", "z", "dir", "obj", "cmd", "target", "text"):
+    for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "button",
+                "target", "text"):
         if key in action:
             lines.append(f"{key}={action[key]}")
     game_reflex.atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")
@@ -1143,6 +1176,8 @@ def cmd_run(args):
     except OSError:
         table_mtime = 0
     last_gap_signature = None
+    gap_candidate_signature = None
+    gap_candidate_since = 0
     last_verdict = "starting"
     while True:
         try:
@@ -1167,15 +1202,24 @@ def cmd_run(args):
 
             verdict, _code = step_once(cfg, read_objective(), wait_ms)
 
-            if verdict == "no-rule-matched":
+            if verdict in ("no-rule-matched", "same-tick") \
+                    and (verdict == "no-rule-matched" or gap_candidate_signature is not None):
                 snap = game_reflex.read_snapshot() or {}
                 objective = read_objective()
                 signature = gap_signature(snap, objective)
-                if signature != last_gap_signature:
+                now = now_ms()
+                if signature != gap_candidate_signature:
+                    gap_candidate_signature = signature
+                    gap_candidate_since = now
+                elif signature != last_gap_signature \
+                        and now - gap_candidate_since >= GAP_STABLE_MS:
                     append_outcome({"ts": now_ms(), "kind": "gap",
                                     "objective": objective or None,
                                     "snap": snap_brief(snap)})
                     last_gap_signature = signature
+            elif verdict != "same-tick":
+                gap_candidate_signature = None
+                gap_candidate_since = 0
 
             # same-tick is no news between game ticks: the heartbeat keeps
             # carrying the last substantive verdict so `step`'s deferral

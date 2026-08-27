@@ -14,6 +14,7 @@ import orsc.ReflexBridge;
  *   state      logged in  (writes the snapshot, executes pending)
  *   state-out  logged out
  *   exec       alias of state, named for the action-execution cases
+ *   exec-offscreen logged in, but entity projections are unavailable
  *   exec-out   alias of state-out
  *   hurt       logged in at 3/10 hits: the flee-starved band
  *   fail5      seven ticks against a throwing host: the disable path
@@ -22,13 +23,15 @@ import orsc.ReflexBridge;
  *
  * Every host action the bridge executes is printed to stdout, one line each:
  * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
- * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N".
+ * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
+ * "click x=N y=N button=N".
  */
 public class ReflexBridgeHarness {
 
 	static class FakeHost implements ReflexBridge.Host {
 		boolean loggedIn = true;
 		boolean failing = false;
+		boolean projectionsVisible = true;
 		int hitsNow = 4;
 		final List<String> events = new ArrayList<String>();
 		final int[] invIds = {132, 81};
@@ -122,6 +125,10 @@ public class ReflexBridgeHarness {
 			return npcAbsZ[i];
 		}
 
+		public int[] npcScreenPoint(int i) {
+			return projectionsVisible ? new int[]{410 + i, 210 + i} : null;
+		}
+
 		public void talkToNpc(int serverIndex) {
 			events.add("talk sidx=" + serverIndex);
 		}
@@ -152,6 +159,10 @@ public class ReflexBridgeHarness {
 
 		public int objectDir(int i) {
 			return objDir[i];
+		}
+
+		public int[] objectScreenPoint(int i) {
+			return projectionsVisible ? new int[]{310 + i, 160 + i} : null;
 		}
 
 		public void interactObject(int i, int command) {
@@ -187,6 +198,10 @@ public class ReflexBridgeHarness {
 			return bndDir[i];
 		}
 
+		public int[] boundScreenPoint(int i) {
+			return projectionsVisible ? new int[]{260 + i, 130 + i} : null;
+		}
+
 		public void interactBound(int i, int command) {
 			events.add("bound x=" + bndAbsX[i] + " z=" + bndAbsZ[i]
 					+ " dir=" + bndDir[i] + " cmd=" + command);
@@ -208,6 +223,11 @@ public class ReflexBridgeHarness {
 			events.add("chat-private target=" + target + " text=" + text);
 		}
 
+		public boolean clickPointer(int x, int y, int button) {
+			events.add("click x=" + x + " y=" + y + " button=" + button);
+			return true;
+		}
+
 		public void showLocalMessage(String text) {
 			events.add("shown " + text);
 		}
@@ -226,6 +246,9 @@ public class ReflexBridgeHarness {
 		}
 		if ("state-out".equals(mode) || "exec-out".equals(mode)) {
 			host.loggedIn = false;
+		}
+		if ("exec-offscreen".equals(mode)) {
+			host.projectionsVisible = false;
 		}
 		if ("hurt".equals(mode)) {
 			host.hitsNow = 3;
