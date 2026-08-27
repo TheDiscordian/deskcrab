@@ -335,7 +335,20 @@ cannot be changed.
     was the removal of the alternation, never of the lowering (docs/history.md,
     2026-08-26). Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
     move to `low` instead, skipping the classifier — for when reply latency matters more than
-    the move. The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
+    the move.
+    **The clock now picks the pair** (adopted 2026-08-27, the user's design: tighter clocks
+    think cheaper, looser clocks or meaningful increment can afford more): for a game
+    carrying a time control, the pair read is the game's SPEED's own —
+    `DESKCRAB_CHESS_EFFORT_<BULLET|BLITZ|RAPID>_QUIET` / `_SHARP`, defaults in
+    `chess_effort.SPEED_PAIRS`, chosen from the 2026-08-27 self-play benchmark
+    (chess-selfplay.md rules 14-19; docs/chess-bench-2026-08-27.md carries the measured
+    results) — and an untimed game keeps the uniform pair above, exactly as adjudicated.
+    The game's speed may pick the model the same way: `answer_position` puts
+    `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` on the job as its `model` when that knob is set,
+    and the mover prefers a real-game job's `model` over its environment chain; unset knobs
+    change nothing — the mover-model knob stands for every speed, so the per-speed knobs are
+    an offer, never a new default. Self-play jobs never read these knobs; their model is
+    chess-selfplay.md's business (rules 2 and 15). The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
     prise by a simple attackers-versus-defenders count; a capture worth a rook or more available
     to either side; a pawn on its seventh rank, either side; her king's pawn shield broken or an
@@ -605,7 +618,20 @@ cannot be changed.
        against that player counted from disk (rule 23d), the position and the recent moves, the
        chat so far (a bounded tail), a short tail of the previous game's chat against the same
        player — that is how a conversation is picked back up across games — and the event that
-       fired the trigger. The reply is the message text alone, or the literal word PASS to stay
+       fired the trigger. For a player-MESSAGE trigger the prompt also anchors the reference
+       the message most likely makes: beside the event it re-quotes her own most recent line
+       from this game's tail and says to answer what the sitter actually said. This exists
+       because a low-effort call can hold both lines and still miss the relation between them:
+       in a stored browser game (browser-043, 2026-08-27) the sitter asked "sorry, you
+       mentioned a loss?" — a direct reference to her immediately preceding quip — and was
+       answered as though they had misheard, with the whole exchange already in the tail
+       (reproduced live, two of three runs incoherent). The anchor makes the immediate
+       reference explicit rather than raising the chat's effort, so the speed bargain above
+       stands. No anchor rides a move or game-end trigger (a quip needs no scaffold, and the
+       tone of ordinary board banter stays untouched), a thread with no line of hers yet
+       (nothing to quote), or the one pathological sitter label that renders as `you` (rule
+       24a's rendering would make the quote's ownership ambiguous, so the prompt simply stays
+       bare). The reply is the message text alone, or the literal word PASS to stay
        silent: a PASS, an empty reply, or a failed call posts nothing and disturbs nothing —
        silence is chosen while writing, and chat failures never retry (the next move brings the
        next chance). Her opponent reads everything she posts, so the prompt forbids reasoning

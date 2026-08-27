@@ -36,6 +36,32 @@ import chess
 QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "low")
 SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 
+# The clock picks the pair (specs/chessweb.md rule 16b, adopted 2026-08-27):
+# a timed game reads its SPEED's pair, so a bullet game stops paying rapid
+# thinking prices and a rapid game with increment can afford real thought.
+# The defaults come from the 2026-08-27 self-play benchmark
+# (docs/chess-bench-2026-08-27.md); each is overridable by its own knob, so
+# the next adjudication is a config line here too. An untimed game — and any
+# speed outside this table — keeps the uniform pair above, exactly as the
+# 2026-08-26 adjudication left it.
+SPEED_PAIRS = {
+    "bullet": ("low", "medium"),
+    "blitz": ("low", "medium"),
+    "rapid": ("low", "medium"),
+}
+
+
+def pair_for(speed):
+    """(quiet, sharp) for a game of `speed` — the per-speed knobs first,
+    then the benchmark-chosen defaults; (QUIET, SHARP) for no speed."""
+    if not speed or speed not in SPEED_PAIRS:
+        return (QUIET, SHARP)
+    dq, ds = SPEED_PAIRS[speed]
+    return (os.environ.get("DESKCRAB_CHESS_EFFORT_%s_QUIET" % speed.upper(),
+                           dq),
+            os.environ.get("DESKCRAB_CHESS_EFFORT_%s_SHARP" % speed.upper(),
+                           ds))
+
 PIECE_VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
                chess.ROOK: 5, chess.QUEEN: 9}
 MINOR_VALUE = 3
@@ -145,15 +171,19 @@ def _king_danger(board, us):
     return reasons
 
 
-def classify(board: chess.Board, novel=None) -> tuple[str, list[str]]:
+def classify(board: chess.Board, novel=None,
+             pair=None) -> tuple[str, list[str]]:
     """The effort a position deserves: (level, reasons-that-fired). QUIET
     with no reasons is the quiet default; any reason at all means SHARP — a
     cheap alarm that rings falsely now and then costs one deliberate turn,
     where an alarm that stays quiet falsely can cost the game. Pure
     arithmetic on the board; `novel` is the store's verdict (novelty()),
     passed in so this function stays free of I/O and deterministic under
-    test."""
+    test. `pair` is an optional (quiet, sharp) override — pair_for(speed)
+    for a timed game, a benchmark side's own pair — and its absence is the
+    module pair, exactly as before it existed."""
     us = board.turn
+    quiet_level, sharp_level = pair or (QUIET, SHARP)
     reasons = []
 
     if board.is_check():
@@ -200,7 +230,7 @@ def classify(board: chess.Board, novel=None) -> tuple[str, list[str]]:
     if novel:
         reasons.append("novel")
 
-    return (SHARP if reasons else QUIET), reasons
+    return (sharp_level if reasons else quiet_level), reasons
 
 
 def novelty(fen: str, min_rows: int = None, min_sim: float = None):

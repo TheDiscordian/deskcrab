@@ -383,6 +383,18 @@ class WSConn:
 
 # ------------------------------------------------------------- the store
 
+def mover_model_for(g):
+    """The per-speed model offer (rule 16b, 2026-08-27): the value of
+    DESKCRAB_CHESS_MOVER_MODEL_<SPEED> for a timed game whose speed has one
+    set, else None — and None means no `model` rides the job, so the mover's
+    own environment chain stands exactly as before the knobs existed."""
+    speed = ((g or {}).get("time_control") or {}).get("speed")
+    if not speed:
+        return None
+    return os.environ.get("DESKCRAB_CHESS_MOVER_MODEL_"
+                          + speed.upper()) or None
+
+
 class Store:
     """The bridge's one view of the betty-chess game files. Every read is from
     disk; every write goes through chess_cli.save_game. No cached truth."""
@@ -665,8 +677,13 @@ class Hub:
             return "low"
         try:
             import chess_effort
+            # The clock picks the pair (rule 16b, 2026-08-27): a timed game
+            # reads its speed's own quiet/sharp levels; an untimed one keeps
+            # the uniform pair exactly as adjudicated.
+            speed = (g.get("time_control") or {}).get("speed")
             level, reasons = chess_effort.classify(
-                board, novel=chess_effort.novelty(board.fen()))
+                board, novel=chess_effort.novelty(board.fen()),
+                pair=chess_effort.pair_for(speed))
             why = ",".join(reasons) if reasons else "quiet"
             chess_cli.metric("effort", f"{g['id']} ply {ply} {level} {why}")
             log(f"{g['id']}: her move will think at {level} ({why})")
@@ -724,6 +741,9 @@ class Hub:
             # reading it into the effort budget is separate, unadjudicated
             # work, so nothing in the mover consults it yet.
             "clock": chess_cli.clock_remaining(g, board),
+            # The speed may pick the model too (rule 16b): the per-speed
+            # knob when set, else no field and the mover's own chain stands.
+            "model": mover_model_for(g),
             "effort": self.move_effort(g, board), "t0": t0})
         # A retry of the SAME position is the same think (rule 12): the
         # started stamp is set once, when the position first goes to the

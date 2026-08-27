@@ -377,3 +377,64 @@ grep -q "a move landed in game" "$WAKE_LOG" \
   && ! grep -v "a move landed in game" "$WAKE_LOG" | grep -q . \
   && ok "the only wakes are post-move consequences — the queue never gated a move" \
   || fail "wake log" "$(cat "$WAKE_LOG")"
+
+echo
+echo "the clock picks the pair (rule 16b, adopted 2026-08-27):"
+pairfor() { local sp="$1"; shift; env "$@" "$PY" -B - "$sp" <<EOF
+import sys; sys.path.insert(0, "$REPO/lib")
+import chess_effort
+speed = sys.argv[1] if sys.argv[1] != "-" else None
+q, s = chess_effort.pair_for(speed)
+print(q, s)
+EOF
+}
+check_eq "no speed keeps the adjudicated uniform pair" "$(pairfor -)" "low medium"
+check_eq "an unknown speed keeps it too" "$(pairfor correspondence)" "low medium"
+check_eq "bullet reads its own benchmark-chosen pair" "$(pairfor bullet)" "low medium"
+check_eq "blitz reads its own" "$(pairfor blitz)" "low medium"
+check_eq "rapid reads its own" "$(pairfor rapid)" "low medium"
+check_eq "a per-speed knob overrides by env alone" \
+    "$(pairfor rapid DESKCRAB_CHESS_EFFORT_RAPID_QUIET=medium \
+       DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "medium max"
+check_eq "and leaves the other speeds where they were" \
+    "$(pairfor bullet DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "low medium"
+
+PAIRED="$("$PY" -B - <<EOF
+import sys; sys.path.insert(0, "$REPO/lib")
+import chess, chess_effort
+quiet = chess.Board()
+sharp = chess.Board("rnb1kbnr/pppp1ppp/4p3/3Q4/8/8/PPPP1PPP/RNB1KBNR w KQkq - 0 1")
+print("quiet:", chess_effort.classify(quiet, pair=("q1", "s1"))[0])
+print("sharp:", chess_effort.classify(sharp, pair=("q1", "s1"))[0])
+print("bare:", chess_effort.classify(quiet)[0])
+EOF
+)"
+contains "$PAIRED" "quiet: q1" && contains "$PAIRED" "sharp: s1" \
+    && ok "classify prices the answer with the pair it was handed" \
+    || fail "classify pair: $PAIRED"
+contains "$PAIRED" "bare: low" \
+    && ok "and without one, the module pair stands exactly as before" \
+    || fail "classify pair: $PAIRED"
+
+echo
+echo "the speed may pick the model too (rule 16b):"
+MM="$("$PY" -B - <<EOF
+import sys, os; sys.path.insert(0, "$REPO/lib")
+import chessweb
+timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
+print("unset:", chessweb.mover_model_for(timed))
+os.environ["DESKCRAB_CHESS_MOVER_MODEL_BULLET"] = "haiku"
+print("set:", chessweb.mover_model_for(timed))
+print("untimed:", chessweb.mover_model_for({}))
+print("none-game:", chessweb.mover_model_for(None))
+EOF
+)"
+contains "$MM" "unset: None" \
+    && ok "no per-speed knob means no model on the job — the mover chain stands" \
+    || fail "mover_model_for: $MM"
+contains "$MM" "set: haiku" \
+    && ok "the per-speed knob rides the job for its speed" \
+    || fail "mover_model_for: $MM"
+contains "$MM" "untimed: None" && contains "$MM" "none-game: None" \
+    && ok "an untimed game and a missing game read as no offer" \
+    || fail "mover_model_for: $MM"

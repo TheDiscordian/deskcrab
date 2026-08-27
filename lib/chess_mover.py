@@ -486,6 +486,38 @@ def selfplay_nightly_moves():
         return 150
 
 
+def selfplay_models():
+    """The models a self-play job may name for itself (specs/chess-selfplay.md
+    rule 15): the benchmark's allowlist, cheap Claude names by default. The
+    operator widens it deliberately, per run, never here."""
+    return (os.environ.get("DESKCRAB_CHESS_SELFPLAY_MODELS")
+            or "haiku sonnet").split()
+
+
+def selfplay_job_model(job, alert=lambda *a: None):
+    """The model a SELF-PLAY job's own `model` field earns it: the field
+    itself when it is allowlisted Claude, else None (rule 2's knob decides).
+    A codex-family name is refused unconditionally — the one codex login is
+    the user's conversation engine, and no grind may be able to drain it —
+    and an unlisted name is refused loudly rather than silently honoured:
+    2026-08-15 is what a self-play loop quietly naming a dear model does."""
+    model = (job.get("model") or "").strip()
+    if not model:
+        return None
+    if _codex_backend(model):
+        alert("mover: self-play job %s names codex-family model %r — "
+              "refused, the conversation engine is not for grinding; "
+              "using the self-play default" % (job.get("gid"), model))
+        return None
+    if model not in selfplay_models():
+        alert("mover: self-play job %s names model %r outside "
+              "DESKCRAB_CHESS_SELFPLAY_MODELS (%s) — refused, using the "
+              "self-play default" % (job.get("gid"), model,
+                                     " ".join(selfplay_models())))
+        return None
+    return model
+
+
 def selfplay_calls_tonight():
     """Lines in the night's counter file — one per model attempt, appended
     with O_APPEND so concurrent movers count truly."""
@@ -815,9 +847,16 @@ class Mover:
         prompt = self._prompt(job, board)
         effort = job.get("effort") or os.environ.get(
             "DESKCRAB_CHESS_MOVER_EFFORT", "low")
+        # The job's own model, when it may carry one: a self-play job's is
+        # allowlist-bound (specs/chess-selfplay.md rule 15); a real game's is
+        # the bridge's per-speed offer (chessweb.md rule 16b), passed as-is.
+        if selfplay:
+            job_model = selfplay_job_model(job, alert=self.alert)
+        else:
+            job_model = (job.get("model") or "").strip() or None
         move = None
         last_why = ""
-        for label, cmd, env in self._attempts(effort, selfplay):
+        for label, cmd, env in self._attempts(effort, selfplay, job_model):
             t0 = time.time()
             if selfplay:
                 _selfplay_charge(f"{job['gid']} ply {job['ply']} {label}")
@@ -849,12 +888,12 @@ class Mover:
         return ("posted" if self.play(job, move) else "stale"), None
 
     # -- the call ----------------------------------------------------------
-    def _attempts(self, effort, selfplay=False):
+    def _attempts(self, effort, selfplay=False, job_model=None):
         override = os.environ.get("DESKCRAB_CHESS_MOVER_CMD")
         if override:
             yield "stub", shlex.split(override), self._env(None)
             return
-        model = self._model(selfplay)
+        model = job_model or self._model(selfplay)
         if _codex_backend(model):
             # specs/model-backends.md rule 15: the one codex login first —
             # unless it is already cooling — then the Claude accounts at the

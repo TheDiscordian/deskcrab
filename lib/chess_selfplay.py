@@ -32,6 +32,8 @@ Usage: chess_selfplay.py [--budget SECONDS] [--games N] [--deadline HH:MM]
 import argparse
 import json
 import os
+import random
+import statistics
 import sys
 import time
 from datetime import datetime, timedelta
@@ -165,8 +167,15 @@ def make_play(side):
         san = board.san(move)
         board.push(move)
         g["moves"].append(move.uci())
-        chess_cli.save_game(g)
         took = time.time() - job["t0"]
+        # The same clock charge as every other recording path (rule 17); an
+        # untimed game — every ordinary self-play game — is untouched by it.
+        chess_cli.clock_move(g)
+        if "bench" in g:
+            g["bench"]["rows"].append([job["ply"], side, "model",
+                                       job.get("effort") or "default",
+                                       round(took, 2)])
+        chess_cli.save_game(g)
         chess_cli.metric("move-played", f"{job['gid']} ply {job['ply']} "
                          f"{san} model")
         chess_cli.metric("move-latency", f"{job['gid']} ply {job['ply']} "
@@ -211,6 +220,10 @@ def try_reflex(g, board, t0):
     side = "white" if board.turn == chess.WHITE else "black"
     board.push(move)
     g["moves"].append(move.uci())
+    chess_cli.clock_move(g)  # timed benchmark games only; untimed untouched
+    if "bench" in g:
+        g["bench"]["rows"].append([ply, side, "reflex", "",
+                                   round(time.time() - t0, 2)])
     chess_cli.save_game(g)
     chess_cli.metric("move-played", f"{g['id']} ply {ply} {san} reflex")
     chess_cli.metric("move-latency",
@@ -221,9 +234,13 @@ def try_reflex(g, board, t0):
     return True
 
 
-def play_one_move(g, movers):
+def play_one_move(g, movers, bench=None):
     """One ply, whoever's turn it is. Returns 'moved', 'over', 'hot',
-    'budget-spent', 'failed', or 'stalled'."""
+    'budget-spent', 'failed', or 'stalled'. `bench` is (plan, spec) in
+    benchmark mode: openings come from the book at random for the first
+    plies (rule 18), and the side to move thinks with its OWN configuration
+    — its model on the job, its quiet/sharp pair through the classifier
+    (rule 15)."""
     board = chess_cli.build_board(g)
     state, desc, result = chess_cli.compute_state(g, board)
     if state != "active":
@@ -246,6 +263,8 @@ def play_one_move(g, movers):
         log(f"{g['id']}: draw claimed (fifty-move rule) at ply {ply}")
         return "over"
     t0 = time.time()
+    if bench and bench_book_move(g, board, t0):
+        return "moved"
     if try_reflex(g, board, t0):
         return "moved"
     # The nightly move budget, checked HERE before anything is submitted
@@ -262,8 +281,14 @@ def play_one_move(g, movers):
     # rule 14); no note is computed here.
     job = {"key": key, "gid": g["id"], "ply": ply, "fen": board.fen(),
            "side": side, "opponent": g["opponent"],
-           "history": chess_cli.history(g["moves"]),
-           "effort": move_effort(g, board), "t0": t0}
+           "history": chess_cli.history(g["moves"]), "t0": t0}
+    if bench:
+        plan, spec = bench
+        cfg = plan["configs"][spec[side]]
+        job["model"] = cfg["model"]
+        job["effort"] = bench_effort(g, board, cfg)
+    else:
+        job["effort"] = move_effort(g, board)
     deadline = time.time() + MOVE_TIMEOUT
     while time.time() < deadline:
         if mover.claim(key):
@@ -274,6 +299,13 @@ def play_one_move(g, movers):
             g.clear()
             g.update(g2)
             return "moved"
+        # A clock may have run out while the think was in flight: a fallen
+        # flag is a finished game, never a failed move (rule 17).
+        if chess_cli.compute_state(g2, chess_cli.build_board(g2))[0] \
+                != "active":
+            g.clear()
+            g.update(g2)
+            return "over"
         n, stalled, why = mover.failure_state(key)
         if why and "budget spent" in why:
             return "budget-spent"
@@ -286,6 +318,416 @@ def play_one_move(g, movers):
     log(f"{g['id']} ply {ply}: {side} made no move inside {MOVE_TIMEOUT}s "
         f"({n} failed round(s), last cause: {why or 'unknown'})")
     return "failed"
+
+
+# --- the benchmark (specs/chess-selfplay.md rules 14-19) --------------------
+# Adopted 2026-08-27: batches of self-play across the standard time controls,
+# a model-and-effort configuration per side, colours rotated, so the pairing a
+# real game should think at per control is chosen from measured games. Every
+# guard above rides along unchanged; the plan file plus the game files are the
+# whole resumable state.
+
+def bench_book_plies():
+    try:
+        return int(os.environ.get("DESKCRAB_CHESS_BENCH_BOOK_PLIES", "6"))
+    except ValueError:
+        return 6
+
+
+def bench_book_move(g, board, t0):
+    """Rule 18: for the first plies of a benchmark game, a uniformly random
+    legal book move — so a batch samples openings instead of replaying the
+    store's one favourite line into itself. False (fall through to the
+    normal path) past the ply window, on an empty book, or on any failure."""
+    ply = len(board.move_stack)
+    if ply >= bench_book_plies():
+        return False
+    try:
+        legal = []
+        for cand in chess_reflex.lookup(board.fen()):
+            if not cand["book"]:
+                continue
+            try:
+                m = chess.Move.from_uci(cand["move"])
+            except (chess.InvalidMoveError, ValueError):
+                continue
+            if m in board.legal_moves:
+                legal.append(m)
+    except Exception as e:
+        log(f"bench book lookup failed, normal path instead: {e!r}")
+        return False
+    if not legal:
+        return False
+    move = random.choice(legal)
+    san = board.san(move)
+    side = "white" if board.turn == chess.WHITE else "black"
+    board.push(move)
+    g["moves"].append(move.uci())
+    chess_cli.clock_move(g)
+    g["bench"]["rows"].append([ply, side, "book", "",
+                               round(time.time() - t0, 2)])
+    chess_cli.save_game(g)
+    chess_cli.metric("move-played", f"{g['id']} ply {ply} {san} book")
+    log(f"{g['id']} ply {ply}: {side} played {san} (book, random opening)")
+    return True
+
+
+def bench_effort(g, board, cfg):
+    """Rule 15: the classifier decides quiet-or-sharp exactly as a real game
+    would, and the SIDE'S OWN pair prices the answer. The config's quiet
+    level on any failure — a benchmark move must never fall back to another
+    side's price."""
+    ply = len(board.move_stack)
+    try:
+        level, reasons = chess_effort.classify(
+            board, novel=chess_effort.novelty(board.fen()),
+            pair=(cfg["quiet"], cfg["sharp"]))
+        why = ",".join(reasons) if reasons else "quiet"
+        chess_cli.metric("effort", f"{g['id']} ply {ply} {level} {why}")
+        return level
+    except Exception as e:
+        log(f"bench effort pre-check failed, quiet level: {e!r}")
+        chess_cli.metric("effort", f"{g['id']} ply {ply} {cfg['quiet']} error")
+        return cfg["quiet"]
+
+
+def bench_ledger_path(plan):
+    return SP_DIR / ("bench-%s.jsonl" % plan["run"])
+
+
+def bench_ledger_append(plan, entry):
+    SP_DIR.mkdir(parents=True, exist_ok=True)
+    with open(bench_ledger_path(plan), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def bench_ledger_lines(plan):
+    out = []
+    try:
+        with open(bench_ledger_path(plan), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def bench_recorded(plan):
+    """Game ids already on the ledger — the exactly-once guard (rule 19)."""
+    return {e["game"] for e in bench_ledger_lines(plan) if "game" in e}
+
+
+def bench_new_game(spec, plan):
+    tc, ck = chess_cli.make_time_control(spec["control"])
+    g = {"id": spec["id"], "opponent": "selfplay", "my_side": "white",
+         "moves": [], "resigned_by": None, "draw_agreed": False,
+         "engine_level": None, "created": chess_cli.now(),
+         "bench": {"control": spec["control"],
+                   "white": spec["white"], "black": spec["black"],
+                   "rows": []}}
+    if tc:
+        g["time_control"] = tc
+        g["clock"] = ck
+    chess_cli.save_game(g)
+    log(f"{g['id']}: new benchmark game — {spec['control']}, "
+        f"white {spec['white']}, black {spec['black']}")
+    return g
+
+
+def bench_record_game(plan, spec, g):
+    """One ledger line per finished game. A live-judged flag is recorded
+    onto the game first, so the file reads finished forever without a wall
+    clock in hand."""
+    board = chess_cli.build_board(g)
+    flagged = chess_cli.flag_fallen(g, board)
+    if flagged and not g.get("flag_fell"):
+        g["flag_fell"] = flagged
+        chess_cli.save_game(g)
+    state, desc, result = chess_cli.compute_state(g, board)
+    rows = (g.get("bench") or {}).get("rows", [])
+
+    def side_summary(side):
+        mine = [r for r in rows if r[1] == side]
+        model = [r[4] for r in mine if r[2] == "model"]
+        return {"model_moves": len(model),
+                "reflex_moves": sum(1 for r in mine if r[2] == "reflex"),
+                "book_moves": sum(1 for r in mine if r[2] == "book"),
+                "model_secs_median": (round(statistics.median(model), 2)
+                                      if model else None),
+                "model_secs_max": max(model) if model else None}
+
+    bench_ledger_append(plan, {
+        "game": g["id"], "control": spec["control"],
+        "white": spec["white"], "black": spec["black"],
+        "result": result, "state": state, "desc": desc,
+        "plies": len(g["moves"]), "flagged": g.get("flag_fell"),
+        "sides": {"white": side_summary("white"),
+                  "black": side_summary("black")},
+        "finished": chess_cli.now()})
+    log(f"{g['id']}: recorded — {desc} [{result}] "
+        f"after {len(g['moves'])} plies")
+
+
+def run_bench(args, plan, started, deadline_ts):
+    """The benchmark chunk: the plan's games in order, one at a time,
+    skipping what is finished and recorded — so the plan file plus the game
+    files are the resumable state, and a re-run of a finished plan replays
+    nothing. Returns (status, moved)."""
+    movers = {"white": chess_mover.Mover(make_play("white"), log=log,
+                                         metric=chess_cli.metric, alert=log),
+              "black": chess_mover.Mover(make_play("black"), log=log,
+                                         metric=chess_cli.metric, alert=log)}
+    recorded = bench_recorded(plan)
+    moved = 0
+    status = "bench-done"
+    consecutive_failures = 0
+    try:
+        for spec in plan["games"]:
+            path = chess_cli.GAMES_DIR / (spec["id"] + ".json")
+            g = load_game(spec["id"]) if path.exists() else None
+            if g is not None and chess_cli.compute_state(
+                    g, chess_cli.build_board(g))[0] != "active":
+                if spec["id"] not in recorded:
+                    bench_record_game(plan, spec, g)
+                    recorded.add(spec["id"])
+                continue
+            while True:
+                if time.time() - started >= args.budget:
+                    return "budget", moved
+                if time.time() >= deadline_ts:
+                    return "deadline", moved
+                if chess_mover.selfplay_budget_spent():
+                    log("nightly move budget spent "
+                        f"({chess_mover.selfplay_calls_tonight()}"
+                        f"/{chess_mover.selfplay_nightly_moves()}) "
+                        "— stopping")
+                    return "budget-spent", moved
+                if g is None:
+                    games = selfplay_games()
+                    if sum(1 for x in games
+                           if created_tonight(x)) >= args.games:
+                        log(f"games cap reached ({args.games} tonight) "
+                            "— stopping")
+                        return "games-cap", moved
+                    if browser_game_hot():
+                        log("live browser game is hot — waiting")
+                        time.sleep(60)
+                        continue
+                    g = bench_new_game(spec, plan)
+                outcome = play_one_move(g, movers, bench=(plan, spec))
+                if outcome == "moved":
+                    moved += 1
+                    consecutive_failures = 0
+                elif outcome == "over":
+                    bench_record_game(plan, spec, g)
+                    recorded.add(spec["id"])
+                    break
+                elif outcome == "budget-spent":
+                    log("nightly move budget spent "
+                        f"({chess_mover.selfplay_calls_tonight()}"
+                        f"/{chess_mover.selfplay_nightly_moves()}) "
+                        "— stopping")
+                    return "budget-spent", moved
+                elif outcome == "hot":
+                    log("live browser game is hot — pausing the grind")
+                    time.sleep(60)
+                elif outcome in ("failed", "stalled"):
+                    consecutive_failures += 1
+                    if outcome == "stalled" or consecutive_failures >= 2:
+                        return "failing", moved
+                    time.sleep(10)
+    finally:
+        for m in movers.values():
+            m.reset()
+    return status, moved
+
+
+def bench_probe(args, plan):
+    """Rule 19's probe: bare per-call latency for the plan's probe
+    configurations over its fixed positions — each call a self-play mover
+    call, budget-counted and allowlist-bound, so a model too dear to grind
+    still gets its latency measured for a few counted calls."""
+    probe = plan.get("probe") or {}
+    configs = probe.get("configs") or []
+    fens = probe.get("positions") or [chess.STARTING_FEN]
+    rounds = int(probe.get("rounds", 1))
+    done = 0
+    landed = []
+
+    def play(job, move):
+        landed.append(job["key"])
+        return True
+
+    mover = chess_mover.Mover(play, log=log, metric=chess_cli.metric,
+                              alert=log)
+    try:
+        for r in range(rounds):
+            for model, effort in configs:
+                for i, fen in enumerate(fens):
+                    if chess_mover.selfplay_budget_spent():
+                        log("nightly move budget spent — probe stops")
+                        return done
+                    if browser_game_hot():
+                        log("live browser game is hot — probe stops")
+                        return done
+                    board = chess.Board(fen)
+                    key = f"probe-{model}-{effort}-{i}-{r}"
+                    t0 = time.time()
+                    job = {"key": key, "gid": "selfplay-bench-probe",
+                           "ply": 0, "fen": board.fen(),
+                           "side": ("white" if board.turn else "black"),
+                           "opponent": "selfplay", "history": "",
+                           "model": model, "effort": effort, "t0": t0}
+                    mover.submit(job)
+                    mover.wait_idle(timeout=240)
+                    secs = round(time.time() - t0, 2)
+                    ok = key in landed
+                    n, _, why = mover.failure_state(key)
+                    bench_ledger_append(plan, {
+                        "probe": model, "effort": effort, "pos": i,
+                        "round": r, "secs": secs, "ok": ok,
+                        "why": (why or None) if not ok else None})
+                    log(f"probe {model}/{effort} pos {i}: "
+                        f"{secs}s {'ok' if ok else 'FAILED: ' + (why or '?')}")
+                    done += 1
+    finally:
+        mover.reset()
+    return done
+
+
+# Three probe positions: the opening (quiet), a middlegame with tension, a
+# sharp tactical stand — so a probe prices the prompt sizes a real game
+# actually produces.
+PROBE_FENS = [
+    chess.STARTING_FEN,
+    "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2P1PN2/PP1N1PPP/R2QKB1R w KQ - 0 8",
+    "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 4 5",
+]
+
+
+def bench_default_plan(run):
+    """The shipped schedule: five affordable configurations bracketing the
+    model-and-effort space, each control comparing the neighbours its clock
+    makes interesting, every matchup twice with colours swapped (rule 16)."""
+    configs = {
+        "haiku-ll": {"model": "haiku", "quiet": "low", "sharp": "low"},
+        "haiku-lm": {"model": "haiku", "quiet": "low", "sharp": "medium"},
+        "sonnet-ll": {"model": "sonnet", "quiet": "low", "sharp": "low"},
+        "sonnet-lm": {"model": "sonnet", "quiet": "low", "sharp": "medium"},
+        "sonnet-mh": {"model": "sonnet", "quiet": "medium", "sharp": "high"},
+    }
+    matchups = {
+        "1+0": [("haiku-ll", "sonnet-ll"), ("haiku-ll", "haiku-lm")],
+        "2+1": [("haiku-ll", "sonnet-ll"), ("sonnet-ll", "sonnet-lm")],
+        "3+2": [("sonnet-ll", "sonnet-lm"), ("sonnet-ll", "haiku-lm")],
+        "5+0": [("sonnet-ll", "sonnet-lm"), ("sonnet-lm", "haiku-lm")],
+        "10+0": [("sonnet-lm", "sonnet-mh"), ("sonnet-ll", "sonnet-lm")],
+        "15+10": [("sonnet-lm", "sonnet-mh"), ("sonnet-ll", "sonnet-mh")],
+    }
+    games = []
+    n = 0
+    for control, pairs in matchups.items():
+        for a, b in pairs:
+            for white, black in ((a, b), (b, a)):
+                n += 1
+                games.append({"id": "selfplay-bench%s-%03d" % (run, n),
+                              "control": control,
+                              "white": white, "black": black})
+    return {"run": run,
+            "probe": {"configs": [["haiku", "low"], ["haiku", "medium"],
+                                  ["sonnet", "low"], ["sonnet", "medium"],
+                                  ["sonnet", "high"]],
+                      "positions": PROBE_FENS, "rounds": 1},
+            "configs": configs, "games": games}
+
+
+def bench_report(plan):
+    """Rule 19's report: the measured tables, no recommendation — choosing
+    is the reader's job. Markdown to stdout."""
+    lines = bench_ledger_lines(plan)
+    games = [e for e in lines if "game" in e]
+    probes = [e for e in lines if "probe" in e]
+    print(f"# Self-play benchmark {plan['run']}")
+    print()
+    total = len(plan.get("games", []))
+    print(f"{len(games)} of {total} scheduled games finished, "
+          f"{len(probes)} probe calls.")
+    if probes:
+        print()
+        print("## Probe: bare per-call latency (seconds)")
+        print()
+        print("| model | effort | calls | min | median | max | failures |")
+        print("|---|---|---|---|---|---|---|")
+        by = {}
+        for p in probes:
+            by.setdefault((p["probe"], p["effort"]), []).append(p)
+        for (model, effort), ps in sorted(by.items()):
+            secs = [p["secs"] for p in ps if p["ok"]]
+            fails = sum(1 for p in ps if not p["ok"])
+            if secs:
+                print(f"| {model} | {effort} | {len(ps)} | {min(secs):.1f} "
+                      f"| {statistics.median(secs):.1f} | {max(secs):.1f} "
+                      f"| {fails} |")
+            else:
+                print(f"| {model} | {effort} | {len(ps)} | - | - | - "
+                      f"| {fails} |")
+    controls = []
+    for spec in plan.get("games", []):
+        if spec["control"] not in controls:
+            controls.append(spec["control"])
+    for control in controls:
+        cg = [e for e in games if e["control"] == control]
+        if not cg:
+            continue
+        print()
+        print(f"## {control} — {len(cg)} game(s)")
+        print()
+        tally = {}
+        for e in cg:
+            for side in ("white", "black"):
+                cfg = e[side]
+                t = tally.setdefault(cfg, {"games": 0, "wins": 0, "draws": 0,
+                                           "losses": 0, "flags": 0,
+                                           "model_moves": 0, "secs": []})
+                t["games"] += 1
+                won = {"1-0": "white", "0-1": "black"}.get(e["result"])
+                if won is None:
+                    t["draws"] += 1
+                elif won == side:
+                    t["wins"] += 1
+                else:
+                    t["losses"] += 1
+                if e.get("flagged") == side:
+                    t["flags"] += 1
+                s = e.get("sides", {}).get(side, {})
+                t["model_moves"] += s.get("model_moves") or 0
+                if s.get("model_secs_median") is not None:
+                    t["secs"].append(s["model_secs_median"])
+        print("| config | games | W-D-L | points | flag losses "
+              "| model moves | median model secs |")
+        print("|---|---|---|---|---|---|---|")
+        for cfg, t in sorted(tally.items(),
+                             key=lambda kv: -(kv[1]["wins"]
+                                              + 0.5 * kv[1]["draws"])):
+            pts = t["wins"] + 0.5 * t["draws"]
+            med = (f"{statistics.median(t['secs']):.1f}"
+                   if t["secs"] else "-")
+            print(f"| {cfg} | {t['games']} "
+                  f"| {t['wins']}-{t['draws']}-{t['losses']} "
+                  f"| {pts:g} | {t['flags']} | {t['model_moves']} "
+                  f"| {med} |")
+        print()
+        for e in cg:
+            flag = f", {e['flagged']} flagged" if e.get("flagged") else ""
+            print(f"- {e['game']}: {e['white']} (white) vs {e['black']} "
+                  f"(black) — {e['result']} ({e['desc']}), "
+                  f"{e['plies']} plies{flag}")
 
 
 def resolve_deadline(started, deadline, day):
@@ -322,7 +764,33 @@ def main():
     ap.add_argument("--day", action="store_true",
                     help="a deliberate daytime chunk: run even when the "
                          "start is nowhere near the night's wall")
+    ap.add_argument("--bench", metavar="PLAN",
+                    help="play the benchmark plan (JSON) for this chunk")
+    ap.add_argument("--bench-init", action="store_true",
+                    help="write the default benchmark plan and exit")
+    ap.add_argument("--bench-probe", metavar="PLAN",
+                    help="run the plan's latency probes and exit")
+    ap.add_argument("--bench-report", metavar="PLAN",
+                    help="render the plan's results and exit")
+    ap.add_argument("--run", default=time.strftime("%Y%m%d"),
+                    help="benchmark run name for --bench-init")
     args = ap.parse_args()
+
+    if args.bench_init:
+        SP_DIR.mkdir(parents=True, exist_ok=True)
+        path = SP_DIR / ("bench-%s.json" % args.run)
+        if path.exists():
+            print(f"refusing: {path} already exists", file=sys.stderr)
+            sys.exit(1)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(bench_default_plan(args.run), fh, indent=1)
+            fh.write("\n")
+        print(path)
+        return
+    if args.bench_report:
+        with open(args.bench_report, encoding="utf-8") as fh:
+            bench_report(json.load(fh))
+        return
 
     started = time.time()
     deadline_ts = resolve_deadline(started, args.deadline, args.day)
@@ -339,6 +807,30 @@ def main():
             "selfplay_finished": done, "selfplay_total": len(games)}),
             flush=True)
         sys.exit(2)
+
+    if args.bench_probe:
+        with open(args.bench_probe, encoding="utf-8") as fh:
+            plan = json.load(fh)
+        done = bench_probe(args, plan)
+        print("STATUS " + json.dumps({
+            "status": "probe-done", "probe_calls": done}), flush=True)
+        return
+
+    if args.bench:
+        with open(args.bench, encoding="utf-8") as fh:
+            plan = json.load(fh)
+        status, moved = run_bench(args, plan, started, deadline_ts)
+        recorded = bench_recorded(plan)
+        games = selfplay_games()
+        done = sum(1 for g in games if chess_cli.compute_state(
+            g, chess_cli.build_board(g))[0] != "active")
+        print("STATUS " + json.dumps({
+            "status": status, "moves_this_chunk": moved,
+            "bench_recorded": len(recorded),
+            "bench_total": len(plan["games"]),
+            "selfplay_finished": done, "selfplay_total": len(games)}),
+            flush=True)
+        return
 
     movers = {"white": chess_mover.Mover(make_play("white"), log=log,
                                          metric=chess_cli.metric, alert=log),
