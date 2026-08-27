@@ -203,3 +203,30 @@ contains "$OUT" "disabled=true" && ok "five failing ticks disable the bridge" \
     || fail "five failing ticks disable the bridge" "$OUT"
 check_eq "the disablement was announced exactly once" \
     "$(printf '%s\n' "$OUT" | grep -c 'shown reflex bridge disabled')" "1"
+
+echo
+echo "the opt-in launcher is versioned, and only it opens the bridge (rule 4):"
+CF="$GAME_TREE/Core-Framework"
+check_eq "launch-client-reflex.sh is committed in the game checkout" \
+    "$(git -C "$CF" ls-files -- launch-client-reflex.sh)" "launch-client-reflex.sh"
+check_eq "the callable door beside the stock launcher is that committed copy" \
+    "$(readlink -f "$GAME_TREE/launch-client-reflex.sh" 2>/dev/null)" \
+    "$CF/launch-client-reflex.sh"
+check_eq "the stock launcher stays bridge-less — it never names the switch" \
+    "$(grep -c 'DESKCRAB_GAME_STATE_DIR' "$GAME_TREE/launch-client.sh")" "0"
+# Execute the committed bytes against a stub stock launcher: the reflex door
+# must export the exchange directory, and hand over to the launcher it finds
+# beside the checkout.
+mkdir -p "$SANDBOX/cf"
+cp "$CF/launch-client-reflex.sh" "$SANDBOX/cf/launch-client-reflex.sh" 2>/dev/null || true
+cat > "$SANDBOX/launch-client.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "stock-launcher saw [${DESKCRAB_GAME_STATE_DIR:-unset}]"
+EOF
+chmod +x "$SANDBOX/launch-client.sh" "$SANDBOX/cf/launch-client-reflex.sh" 2>/dev/null
+OUT="$(env -u DESKCRAB_GAME_STATE_DIR "$SANDBOX/cf/launch-client-reflex.sh" 2>&1)"
+check_eq "the reflex launcher sets the exchange directory, then hands over" \
+    "$OUT" "stock-launcher saw [/tmp/deskcrab-game]"
+OUT="$(DESKCRAB_GAME_STATE_DIR=/tmp/elsewhere "$SANDBOX/cf/launch-client-reflex.sh" 2>&1)"
+check_eq "an exchange path already set is respected, never clobbered" \
+    "$OUT" "stock-launcher saw [/tmp/elsewhere]"

@@ -393,3 +393,23 @@ LOG_OUT="$("$BG" log -n 5)"
 contains "$LOG_OUT" '"kind"' && ok "log tails the decisions" || fail "log tails the decisions" "$LOG_OUT"
 check "remove takes a rule out" "$BG" remove panic-walk
 refute "and it is gone" grep -q panic-walk "$DESKCRAB_GAME_DIR/reflex-rules.json"
+
+echo
+echo "the installed door (rule 17):"
+# The sandbox moved HOME; the real one is recovered from the live-data path
+# the sandbox recorded before the move, the same way the bridge suite borrows
+# the game tree. These cases pin the LIVE install: the command a shell finds
+# by name, not this checkout's wrapper — a missing door must fail here, never
+# hide behind a repo-relative path.
+REAL_HOME="$(cd "$SANDBOX_LIVE_DATA/../../.." 2>/dev/null && pwd)"
+DOOR="$REAL_HOME/.local/bin/betty-game"
+check "betty-game stands in the user's bin" test -x "$DOOR"
+check_eq "and a shell resolves it by name off that PATH" \
+    "$(PATH="$REAL_HOME/.local/bin" command -v betty-game || true)" "$DOOR"
+check_eq "the door runs the deployed copy, through ~/.local/lib/deskcrab" \
+    "$(readlink -f "$DOOR" 2>/dev/null)" \
+    "$(readlink -f "$REAL_HOME/.local/lib/deskcrab/betty-game" 2>/dev/null)"
+DOOR_OUT="$("$DOOR" actions 2>&1)" && ok "the installed command executes" \
+    || fail "the installed command executes" "$DOOR_OUT"
+contains "$DOOR_OUT" "eat" && ok "and answers with the action vocabulary" \
+    || fail "and answers with the action vocabulary" "$DOOR_OUT"

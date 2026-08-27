@@ -57,7 +57,13 @@ Three parts:
 4. The bridge is **inert by default**. It activates only when `DESKCRAB_GAME_STATE_DIR` is present
    in the client's environment; the stock launcher does not set it, so the plain client is
    byte-for-byte unaffected in behaviour. A separate launcher script beside the stock one is the
-   opt-in door.
+   opt-in door: `launch-client-reflex.sh`, **committed at the root of the same Core-Framework
+   checkout that carries the bridge** — it exports `DESKCRAB_GAME_STATE_DIR` (respecting a value
+   already set) and hands over to the stock launcher it finds beside the checkout; the callable
+   file next to the stock launcher is a symlink to that committed copy, so both routes run the
+   same versioned bytes. The bridge suite pins all three properties: the launcher is under
+   version control, the stock launcher never mentions the variable, and executing the committed
+   bytes sets the exchange directory before handing over.
 
 ### Actions
 
@@ -168,7 +174,11 @@ Three parts:
     parameters), `enable <rule>` / `disable <rule>`, `set <rule> <key> <value>` (dotted keys reach
     trigger and action parameters), `add` / `remove`, `hold` / `resume`, `run`, `replay`, `log`,
     and `init` (write the default table if absent, install the food table). Every mutation is
-    validated by rule 9's loader before it is written.
+    validated by rule 9's loader before it is written. The installed door is
+    `~/.local/bin/betty-game`, a symlink to the deployed `~/.local/lib/deskcrab/betty-game`, so
+    the command resolves by name from an ordinary shell like the other `betty-*` doors — and the
+    suite pins the door itself, resolved off the user's own `bin` and executed, never only the
+    checkout-relative wrapper.
 
 ### Boundaries
 
