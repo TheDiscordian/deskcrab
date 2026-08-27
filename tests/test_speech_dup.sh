@@ -127,6 +127,10 @@ echo "the crash replay — a dead streamer must still leave a receipt:"
 
 start_streamer crash
 j "$MSTART"; j "$TBLOCK"; j "$DELTA1"
+# The acceptance hold (specs/speech-output.md rule 12b) keeps msg_A's sentence
+# off piper until the stream moves past it — a second message_start is that
+# movement, and speech flows while the streamer is still tailing.
+j '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_B"}}}'
 # WAIT for the precondition rather than sleeping at it. The case is "a streamer
 # that had already spoken was killed before it could write its receipt", and it
 # only tests that if the sentence really did reach the stub piper first. A flat

@@ -297,6 +297,10 @@ DESKCRAB_DEBUGLOG="$STREAMLOG" DESKCRAB_PIPER_VOICE="$WORK/voice.onnx" \
     "$REPO/lib/tts-streamer" &
 STREAMER=$!
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Half of it is said already."}]}}' >> "$STREAMLOG"
+# The acceptance hold (specs/speech-output.md rule 12b): the message may not
+# speak until the stream moves past it — a tool result is that movement, and
+# the notice below is published mid-stream exactly as before.
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}' >> "$STREAMLOG"
 for _ in $(seq 50); do
     [ -f "${DESKCRAB_STATE_PREFIX}-live-speech" ] && break
     sleep 0.1

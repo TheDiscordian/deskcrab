@@ -16,7 +16,11 @@
 # 2. LATENCY. A plain stream-json run only emits a completed `assistant` event
 #    once a WHOLE text block is generated, so the first word was spoken when
 #    the answer finished, not when it started. With --include-partial-messages
-#    the streamer speaks each sentence as it completes.
+#    the streamer chunks each sentence as it completes; the acceptance hold
+#    (specs/speech-output.md rule 12b, adopted 2026-08-26) then releases them
+#    the moment the stream moves past the completed message with anything
+#    other than Stop-hook feedback — so speech follows acceptance, and a
+#    message that may yet be rejected never reaches piper early.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -154,25 +158,32 @@ CHARS=$(sed -n 's/^chars=//p' "$RECEIPT" 2>/dev/null | head -1)
     || fail "the receipt read chars=0 — the guarantee would replay the whole reply" "${CHARS:-missing}"
 
 echo
-echo "the streaming path (--include-partial-messages): first sentence, not last:"
+echo "the streaming path (--include-partial-messages): chunked live, spoken at acceptance:"
 
+# The acceptance hold (specs/speech-output.md rule 12b): sentences chunk as
+# the deltas land, but none crosses to piper while the message could still be
+# Stop-rejected. The 2.0 s gap before the last delta is the teeth — a streamer
+# that leaked early speech says its first sentence ~2 s before the completed
+# event, and the pin below catches exactly that.
 stream partials '
     a "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"}}"
     tblock 0
     sleep 0.3; delta "First sentence, which"
-    sleep 0.2; delta " could have been spoken much earlier."
+    sleep 0.2; delta " is held until the message stands accepted."
     sleep 0.2; delta " Second sentence."
     sleep 2.0; delta " Third and last."
-    say_json "First sentence, which could have been spoken much earlier. Second sentence. Third and last."
+    date +%s.%N > "'"$T"'/partials.closed-at"
+    say_json "First sentence, which is held until the message stands accepted. Second sentence. Third and last."
     done_json'
-FIRST=$(at 1); LAST=$(at 3)
+FIRST=$(at 1)
+CLOSED_AT=$(python3 -c "import sys;print('%.2f'%(float(open(sys.argv[1]).read())-float(sys.argv[2])))" "$T/partials.closed-at" "$START")
 [ "$(printf '%s\n' "$SAID" | wc -l)" = 3 ] \
     && ok "three sentences, spoken one at a time" || fail "sentence chunking" "$SAID"
-python3 -c "import sys;sys.exit(0 if float(sys.argv[1])<1.2 else 1)" "$FIRST" \
-    && ok "first speech at ${FIRST}s — before the block was finished (${LAST}s)" \
-    || fail "first speech must not wait for the block" "$FIRST"
+python3 -c "import sys;sys.exit(0 if float(sys.argv[1])>=float(sys.argv[2]) else 1)" "$FIRST" "$CLOSED_AT" \
+    && ok "first speech at ${FIRST}s — held past the completed event (${CLOSED_AT}s) until acceptance (rule 12b)" \
+    || fail "a sentence crossed piper before the message stood accepted" "first=$FIRST closed=$CLOSED_AT"
 [ "$(printf '%s' "$SAID" | grep -c "First sentence")" = 1 ] \
-    && ok "the completed assistant event does not repeat what was already said" \
+    && ok "the completed assistant event does not repeat what was already chunked" \
     || fail "double speech" "$SAID"
 [ "$(grep -c 'START' "$TRACE")" = 1 ] \
     && ok "one piper process for the whole burst (the voice model loads once)" \

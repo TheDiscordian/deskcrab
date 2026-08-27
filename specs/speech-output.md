@@ -95,8 +95,8 @@ the same authority rule 5a already exercises on the stored reply.
     the tail-loss defect wearing the dedup's clothes. A rewrite whose deltas streamed live will
     therefore still sound; cutting a voice already mid-sentence is the mid-speech supersede, a
     separate piece of work this rule deliberately does not claim.
-12b. The acceptance boundary (adopted 2026-08-26; NOT YET IMPLEMENTED — held red by
-    `tests/test_reply_stop_acceptance.sh` until the hold is built). The CLI can hand a finished
+12b. The acceptance boundary (adopted 2026-08-26; built in `lib/tts-streamer` the same day —
+    held green by `tests/test_reply_stop_acceptance.sh`). The CLI can hand a finished
     message back as rejected: a synthetic user event whose text opens `Stop hook feedback:`,
     answered by a corrected assistant message (rule 5a's shape). Rule 5a drops the rejected
     draft from the stored reply, but it cannot unsay it — and rule 12's early sentence
@@ -526,7 +526,8 @@ book a wake, or dispatch a job.
 
 **Existing:** `tests/test_regroup.sh` (the live-speech record and the block it produces: rules 34–37,
 including the live regression of 2026-08-07 driven end to end through two phone turns),
-`tests/test_speech_path.sh` (timing: first speech well before block completion),
+`tests/test_speech_path.sh` (timing: sentences chunk as deltas land and are released at acceptance,
+never before the completed message stands accepted — rule 12b's boundary over the streaming path),
 `tests/test_speech_dup.sh` (a shrinking log; a reply behind a thinking block),
 `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_silent_wake.sh`.
 
@@ -572,13 +573,16 @@ the display half rides the collapse whole; the shared registry holds a never-voi
 block off the speakers while a distinct block and a partly-streamed block's own tail keep their
 voice, and an unterminated final sentence still flushes at close.
 
-Rule 12b is owed to `tests/test_reply_stop_acceptance.sh` and stands RED there by design until
-the acceptance hold is built: the 2026-08-25 honest/straight stream driven end to end through
-`lib/tts-streamer` — a fully streamed four-sentence draft, its completed assistant event, the
-synthetic Stop-hook feedback, then the fully streamed corrected message and the result — with
-piper stubbed outside the streamer, asserting the stub's own stdin trace carries exactly the
-correction and not one draft word. The external trace is the witness, never the streamer's
-receipt or speech log.
+Rule 12b is held by `tests/test_reply_stop_acceptance.sh` (written red 2026-08-26 against the
+unbuilt hold, green since the hold landed in `lib/tts-streamer` the same day): the 2026-08-25
+honest/straight stream driven end to end through `lib/tts-streamer` — a fully streamed
+four-sentence draft, its completed assistant event, the synthetic Stop-hook feedback, then the
+fully streamed corrected message and the result — with piper stubbed outside the streamer,
+asserting the stub's own stdin trace carries exactly the correction and not one draft word. The
+external trace is the witness, never the streamer's receipt or speech log. The boundary's other
+faces are pinned where they live: the release-at-acceptance timing in `tests/test_speech_path.sh`,
+the mid-tail acceptance in `tests/test_speech_dup.sh`'s crash case, and the mid-stream publish in
+`tests/test_regroup.sh`.
 
 Rule 57 is held by `tests/test_empty_delivery.sh`: a quiet-opening desk reply reaches the stub
 synthesiser not at all — judged from the speaker side — while the same reply without the marker

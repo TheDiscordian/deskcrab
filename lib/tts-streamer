@@ -15,11 +15,25 @@ Two things this must get right, and both were broken:
    only emits a completed `assistant` event once a whole text block has been
    generated, so a ten-second answer began speaking ten seconds late. With
    `--include-partial-messages` the CLI also emits `stream_event` text deltas
-   as they are produced; those are chunked into SENTENCES here and spoken the
-   moment each one is complete. The completed `assistant` event still arrives
-   afterwards and is still handled — only the part not already spoken is
-   voiced, so a stream WITHOUT partial messages (a wake, an older CLI) behaves
-   exactly as it always did.
+   as they are produced; those are chunked into SENTENCES here. The completed
+   `assistant` event still arrives afterwards and is still handled — only the
+   part not already chunked is taken — so a stream WITHOUT partial messages
+   (a wake, an older CLI) behaves exactly as it always did.
+
+   Chunked, but not spoken on the spot: the ACCEPTANCE HOLD
+   (specs/speech-output.md rule 12b) sits between the chunker and piper. The
+   CLI's Stop hook can reject a message only after it is complete, and on
+   2026-08-25 every sentence of a four-sentence draft was through piper before
+   the hook had decided — the draft and its correction both sounded. So no
+   message's sentences cross the piper boundary until the stream has moved
+   past that message with anything other than the hook's synthetic
+   `Stop hook feedback:` user event. Feedback discards the whole held draft
+   (into a pocket, never silently) and only the correction speaks; anything
+   else releases the held sentences in order. Never-silent outranks the hook:
+   a rejection nothing real follows, or a stream that just ends — terminator,
+   killed CLI, reaped watchdog, orphaned tail — releases what is held before
+   the tail closes. The hold delays speech by the width of the acceptance; it
+   never swallows it.
 
 piper and aplay are started ONCE per speaking burst and kept alive, because
 loading the voice model costs ~0.9 s. One long-lived pair means that cost is
@@ -589,11 +603,111 @@ def for_speech(text):
 
 
 def _voice_chunk(chunk):
-    """What the shared chunker calls with each complete raw chunk: the desk's
-    hand-off to piper, with the raw text riding along for the mirror."""
+    """The desk's hand-off to piper, with the raw text riding along for the
+    mirror. Everything the acceptance hold releases comes through here."""
     spoken = for_speech(chunk)
     if spoken:
         VOICE.say(spoken, chunk)
+
+
+class AcceptanceHold:
+    """The acceptance boundary (specs/speech-output.md rule 12b).
+
+    The registry's chunks land here instead of on the voice: at most ONE
+    message's sentences are ever waiting, and they cross to piper only when
+    the main loop sees the stream move past that message with anything other
+    than the Stop hook's synthetic rejection. Feedback discards the whole
+    held draft — every sentence, queued or already chunked — into a pocket;
+    only its correction reaches piper. Never-silent outranks the hook: the
+    pocket is dropped only once real speech follows the rejection, and a
+    stream that ends with anything still held speaks it before the tail
+    closes. This class decides NOTHING about whether words are worth voicing
+    — what it discards is only a draft she herself replaced, the same
+    authority extract-response rule 5a exercises on the stored reply."""
+
+    def __init__(self, speak):
+        self._speak = speak       # _voice_chunk: the actual piper hand-off
+        self.registry = None      # the BlockRegistry, once it exists
+        self.pending = []         # held sentences of the message awaiting acceptance
+        self.pending_mid = None   # which message they belong to
+        self.rejected = []        # the newest Stop-rejected draft — the never-silent pocket
+        self._draft_open = False  # chunks still arriving belong to the rejected draft
+        self._mark = 0            # registry.voiced_texts length when the pending message began
+        self._anon = 0
+
+    def anon_mid(self):
+        """A distinct slot for a message the stream never named."""
+        self._anon += 1
+        return "hold-anon-%d" % self._anon
+
+    def add(self, chunk):
+        """The registry's voice callback: every chunk waits here."""
+        if not (chunk or "").strip():
+            return
+        if self._draft_open:
+            # The tail of a message already rejected belongs with its head.
+            self.rejected.append(chunk)
+        else:
+            self.pending.append(chunk)
+
+    def begin(self, mid):
+        """A new message takes the pending slot. Whatever stands there was
+        moved past by something other than feedback — accepted."""
+        self.accept()
+        self.pending_mid = mid
+
+    def accept(self):
+        """The stream moved past the pending message with anything other
+        than Stop-hook feedback: the held sentences are hers, voice them."""
+        chunks, self.pending = self.pending, []
+        self.pending_mid = None
+        self._draft_open = False
+        if chunks:
+            # Real speech moved on past the rejection: the pocketed draft
+            # was genuinely replaced (rule 5a's test) and goes for good.
+            self.rejected = []
+        for c in chunks:
+            self._speak(c)
+        if self.registry is not None:
+            self._mark = len(self.registry.voiced_texts)
+
+    def reject(self):
+        """Stop-hook feedback: the ENTIRE held draft is discarded — into the
+        pocket, and onto the speech log for the record, never silently."""
+        if self.pending:
+            speech_log("stop-hook rejection — %d held sentence(s) of the "
+                       "draft discarded: %s"
+                       % (len(self.pending),
+                          " | ".join(" ".join(c.split())[:60]
+                                     for c in self.pending)))
+            self.rejected = self.pending    # the newest rejection takes the pocket
+            self.pending = []
+        self._draft_open = True
+        if self.registry is not None:
+            # The rejected message's texts leave the near-duplicate corpus
+            # (rule 12a's voiced_texts): they never sounded, and holding its
+            # own correction off the speakers as "already voiced" would turn
+            # the hold into the silence rule 12b forbids.
+            del self.registry.voiced_texts[self._mark:]
+
+    def release_final(self):
+        """End of the stream — the terminator, a killed CLI, a reaped
+        watchdog, an orphaned tail. Never-silent outranks the hold: the
+        pending message speaks; a rejection nothing real followed releases
+        the pocketed draft instead (rule 5a's never-silent shape)."""
+        if self.pending:
+            self.rejected = []
+            chunks, self.pending = self.pending, []
+            for c in chunks:
+                self._speak(c)
+        elif self.rejected:
+            speech_log("stream ended with the rejection unanswered — "
+                       "releasing the held draft (never silent)")
+            chunks, self.rejected = self.rejected, []
+            for c in chunks:
+                self._speak(c)
+        self.pending_mid = None
+        self._draft_open = False
 
 
 # Remember who launched us (the crab process). If it dies we get reparented —
@@ -608,10 +722,13 @@ speech_log("tailing %s" % LOG)
 while not os.path.exists(LOG):
     time.sleep(0.05)
 
-REG = BlockRegistry(_voice_chunk)  # every block of every message, the replay
+HOLD = AcceptanceHold(_voice_chunk)  # rule 12b: every chunk waits here for
+                     # its message's acceptance before the piper hand-off
+REG = BlockRegistry(HOLD.add)  # every block of every message, the replay
                      # cursors, and both dedup sets — the shared registry of
-                     # sentence_stream.py, with the desk's piper hand-off as
-                     # its voice
+                     # sentence_stream.py, its voice now the acceptance hold
+                     # in front of the desk's piper hand-off
+HOLD.registry = REG
 held_refusal = ""    # the newest limit refusal, held off the speakers — and
                      # kept off them: refusals are never voiced, only logged;
                      # the caller notifies when a whole chain refuses
@@ -670,6 +787,10 @@ with open(LOG) as f:
             # so stop instead of tailing the log forever.
             if os.getppid() != ORIG_PPID:
                 speech_log("launching process gone — stopping the tail")
+                # Rule 12b's never-silent half: an orphaned tail (killed CLI,
+                # reaped watchdog, dead crab) ends with whatever is held
+                # spoken, never swallowed.
+                HOLD.release_final()
                 break
             time.sleep(0.02)
             continue
@@ -708,12 +829,46 @@ with open(LOG) as f:
                 # under a new message id and message_start rebinds it. The
                 # BlockRegistry docstring carries why touching the block map
                 # at all was the doubling.
+                # The chain moved past whatever was pending with a refusal,
+                # not with feedback — accepted (rule 12b).
+                HOLD.accept()
                 continue
+            # The terminator: a stream ending with a message still held
+            # speaks it before the tail closes (rule 12b, never silent).
+            HOLD.release_final()
             break
 
-        # --- streaming half: speak each sentence the moment it is complete ---
+        # The Stop hook's rejection arrives as a user event whose text opens
+        # a fixed prefix (extract-response rule 5a's own test); it discards
+        # the whole held draft. ANY other user event — a tool result, queued
+        # mail — moves the stream past the pending message and accepts it.
+        if kind == "user":
+            content = (d.get("message") or {}).get("content")
+            texts = []
+            if isinstance(content, str):
+                texts = [content]
+            elif isinstance(content, list):
+                texts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"]
+            if any(t.startswith("Stop hook feedback:") for t in texts):
+                HOLD.reject()
+            else:
+                HOLD.accept()
+            continue
+
+        # --- streaming half: chunk each sentence the moment it is complete
+        #     (the acceptance hold decides when the chunks may speak) ---
         if kind == "stream_event":
-            REG.stream_event(d.get("event") or {})
+            ev = d.get("event") or {}
+            if ev.get("type") == "message_start":
+                mid = (ev.get("message") or {}).get("id")
+                # A message_start for any OTHER message moves the stream past
+                # the pending one — accepted. The same id again is the CLI
+                # re-emitting or a truncation replay: neutral, the registry's
+                # replay cursors keep it off the speakers.
+                if mid is None or mid != HOLD.pending_mid:
+                    HOLD.begin(mid or HOLD.anon_mid())
+            REG.stream_event(ev)
             continue
 
         # --- completed half: authoritative, and the ONLY half when the run
@@ -734,11 +889,37 @@ with open(LOG) as f:
                 held_refusal = "\n".join(b.get("text", "") for b in content
                                          if b.get("type") == "text")
                 continue
+            # The acceptance classification (rule 12b). A completed event
+            # belonging to a DIFFERENT message than the pending one moves the
+            # stream past it — accepted. One belonging to the pending message
+            # itself decides nothing: same id, or — for an id-less event —
+            # its text extending (or extended by) a block still in flight,
+            # the registry's own content test, because an id-less completed
+            # event is the finished form of the streamed block, not a new
+            # message. Ids win when both sides carry one.
+            mid = d["message"].get("id")
+            if HOLD.pending:
+                if (mid is not None and HOLD.pending_mid is not None
+                        and not HOLD.pending_mid.startswith("hold-anon-")):
+                    same = (mid == HOLD.pending_mid)
+                else:
+                    same = any(
+                        b.raw and text
+                        and (text.startswith(b.raw) or b.raw.startswith(text))
+                        for b in REG.blocks.values()
+                        for text in (blk.get("text") or ""
+                                     for blk in content
+                                     if blk.get("type") == "text"))
+                if not same:
+                    HOLD.accept()
+            if not HOLD.pending and HOLD.pending_mid is None:
+                # Whatever close_text produces below belongs to this
+                # event's message.
+                HOLD.pending_mid = mid or HOLD.anon_mid()
             # The dedup (by id AND by content), the content-keyed block
             # match, and the never-reset registry invariant all live in
             # BlockRegistry.close_text — including the history of the all-day
             # doubling of 2026-08-07 that shaped them.
-            mid = d["message"].get("id")
             idx = 0
             for block in content:
                 if block.get("type") == "text":
