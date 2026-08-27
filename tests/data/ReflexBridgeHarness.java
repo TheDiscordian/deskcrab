@@ -32,6 +32,9 @@ public class ReflexBridgeHarness {
 		boolean loggedIn = true;
 		boolean failing = false;
 		boolean projectionsVisible = true;
+		boolean walking = false;
+		boolean inCombat = false;
+		boolean npcDialogueOpen = false;
 		int hitsNow = 4;
 		final List<String> events = new ArrayList<String>();
 		final int[] invIds = {132, 81};
@@ -64,8 +67,16 @@ public class ReflexBridgeHarness {
 			return 650;
 		}
 
+		public boolean isWalking() {
+			return walking;
+		}
+
 		public boolean inCombat() {
-			return false;
+			return inCombat;
+		}
+
+		public boolean isNpcDialogueOpen() {
+			return npcDialogueOpen;
 		}
 
 		public boolean hasOpponent() {
@@ -247,6 +258,14 @@ public class ReflexBridgeHarness {
 		if ("state-chat".equals(mode)) {
 			bridge.recordMessage("local", true, "Nearby Friend", "Try the east door");
 			bridge.recordMessage("private", true, "Far Friend", "I can help from here");
+		}
+		if ("state-active".equals(mode)) {
+			host.walking = true;
+			host.inCombat = true;
+			host.npcDialogueOpen = true;
+		}
+		if ("state-dialogue".equals(mode)) {
+			bridge.recordMessage("quest", false, "Guide", "What can I do for you?");
 		}
 		if ("state-out".equals(mode) || "exec-out".equals(mode)) {
 			host.loggedIn = false;

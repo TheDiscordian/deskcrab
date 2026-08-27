@@ -13,9 +13,11 @@ Stdlib only, plain python3.
 """
 
 import argparse
+import ctypes
 import fcntl
 import json
 import os
+import select
 import sys
 import time
 from pathlib import Path
@@ -29,6 +31,13 @@ TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible"
 ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity",
            "click-inventory")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
+WAIT_CONDITIONS = (
+    "logged_in", "logged_out", "walking", "not_walking", "in_combat",
+    "out_of_combat", "talking_to_npc", "not_talking_to_npc",
+)
+WAIT_DEFAULT_S = 15.0
+WAIT_MAX_S = 60.0
+WAIT_SNAPSHOT_FRESH_MS = 2000
 
 # Spec rule 4: a stored near_tile radius below this evaluates as this, and the
 # lint (rule 17) refuses to author one. A trigger names the vicinity while
@@ -418,6 +427,126 @@ def latest_system_feedback(snap: dict):
 
 
 # --------------------------------------------------------------------------
+# State waiting (spec rule 7d): one ACTIONS snapshot path, no timed polling.
+# Atomic snapshot writes arrive as inotify move/create events. A hard deadline
+# is mandatory so a missing transition can never strand the playing hand.
+# --------------------------------------------------------------------------
+class SnapshotChangeWatch:
+    IN_CLOSE_WRITE = 0x00000008
+    IN_MOVED_TO = 0x00000080
+    IN_CREATE = 0x00000100
+    MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE
+
+    def __enter__(self):
+        state_dir().mkdir(parents=True, exist_ok=True)
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.libc.inotify_init1.argtypes = [ctypes.c_int]
+        self.libc.inotify_init1.restype = ctypes.c_int
+        self.libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                                                ctypes.c_uint32]
+        self.libc.inotify_add_watch.restype = ctypes.c_int
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+        if self.fd < 0:
+            err = ctypes.get_errno()
+            die(f"cannot watch ACTIONS state: {os.strerror(err)}")
+        wd = self.libc.inotify_add_watch(
+            self.fd, os.fsencode(str(state_dir())), self.MASK)
+        if wd < 0:
+            err = ctypes.get_errno()
+            os.close(self.fd)
+            die(f"cannot watch ACTIONS state directory: {os.strerror(err)}")
+        self.poller = select.poll()
+        self.poller.register(self.fd, select.POLLIN)
+        return self
+
+    def wait(self, seconds: float) -> None:
+        timeout_ms = max(1, int(seconds * 1000))
+        if self.poller.poll(timeout_ms):
+            try:
+                os.read(self.fd, 65536)
+            except BlockingIOError:
+                pass
+
+    def __exit__(self, exc_type, exc, tb):
+        os.close(self.fd)
+
+
+def normalise_wait_condition(value: str) -> str:
+    condition = value.strip().casefold().replace("-", "_")
+    if condition not in WAIT_CONDITIONS:
+        die(f"unknown wait condition '{value}' (known: {', '.join(WAIT_CONDITIONS)})")
+    return condition
+
+
+def wait_condition_met(condition: str, snap: dict) -> bool:
+    if not isinstance(snap, dict) or not isinstance(snap.get("ts"), int) \
+            or now_ms() - snap["ts"] > WAIT_SNAPSHOT_FRESH_MS:
+        return False
+    logged_in = snap.get("logged_in") is True
+    if condition == "logged_in":
+        return logged_in
+    if condition == "logged_out":
+        return snap.get("logged_in") is False
+    if not logged_in:
+        return False
+    if condition == "walking":
+        return snap.get("walking") is True
+    if condition == "not_walking":
+        return snap.get("walking") is False
+    if condition == "in_combat":
+        return snap.get("in_combat") is True
+    if condition == "out_of_combat":
+        return snap.get("in_combat") is False
+    if condition == "talking_to_npc":
+        return snap.get("talking_to_npc") is True
+    if condition == "not_talking_to_npc":
+        return snap.get("talking_to_npc") is False
+    return False
+
+
+def wait_state_brief(snap: dict) -> str:
+    if not isinstance(snap, dict):
+        return "none"
+    parts = []
+    for key in ("logged_in", "walking", "in_combat", "talking_to_npc"):
+        value = snap.get(key)
+        if isinstance(value, bool):
+            value = str(value).lower()
+        parts.append(f"{key}:{value}")
+    return ",".join(parts)
+
+
+def cmd_wait_until(args):
+    condition = normalise_wait_condition(args.condition)
+    if not 0 < args.timeout <= WAIT_MAX_S:
+        die(f"wait timeout must be greater than 0 and no more than {WAIT_MAX_S:g} seconds")
+    deadline = time.monotonic() + args.timeout
+    latest = None
+    with SnapshotChangeWatch() as watch:
+        baseline = game_reflex.read_snapshot()
+        baseline_tick = baseline.get("tick") if isinstance(baseline, dict) else None
+        baseline_ts = baseline.get("ts") if isinstance(baseline, dict) else None
+        while True:
+            latest = game_reflex.read_snapshot()
+            newer = isinstance(latest, dict) and (
+                baseline is None
+                or latest.get("tick") != baseline_tick
+                or (isinstance(latest.get("ts"), int)
+                    and isinstance(baseline_ts, int) and latest["ts"] > baseline_ts)
+            )
+            if newer and wait_condition_met(condition, latest):
+                report("condition-met", condition=condition,
+                       tick=latest.get("tick"), x=latest.get("x"), z=latest.get("z"))
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                report("condition-timeout", condition=condition,
+                       timeout=f"{args.timeout:g}", state=wait_state_brief(latest))
+                sys.exit(EXIT_NOT_DONE)
+            watch.wait(remaining)
+
+
+# --------------------------------------------------------------------------
 # The vocabulary plugged into game_reflex.evaluate (spec rules 4, 5, 8).
 # A field the snapshot does not carry makes the condition false, never an
 # exception — the same fail-safe rule the reflex triggers follow.
@@ -537,7 +666,7 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
 # --------------------------------------------------------------------------
 def snap_brief(snap: dict) -> dict:
     brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
-                                      "in_combat")}
+                                      "walking", "in_combat", "talking_to_npc")}
     brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
     brief["messages"] = (snap.get("messages") or [])[-5:]
     brief["npcs"] = (snap.get("npcs") or [])[:12]
@@ -1412,6 +1541,13 @@ def main():
     p.add_argument("message_id", type=int)
     p.add_argument("text", nargs="+")
     p.set_defaults(fn=cmd_reply)
+
+    p = sub.add_parser("wait-until", aliases=["wait_until"],
+                       help="wait on live ACTIONS state without sleeps or screenshots")
+    p.add_argument("condition")
+    p.add_argument("--timeout", type=float, default=WAIT_DEFAULT_S,
+                   help=f"hard ceiling in seconds (default {WAIT_DEFAULT_S:g}, max {WAIT_MAX_S:g})")
+    p.set_defaults(fn=cmd_wait_until)
 
     p = sub.add_parser("test", help="replay the cases against the table "
                                     "(spec rule 17)")

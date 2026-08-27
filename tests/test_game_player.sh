@@ -37,7 +37,8 @@ import json, sys, time
 path, tick, npcs, extra = sys.argv[1:5]
 snap = {"v": 1, "ts": int(time.time() * 1000), "tick": int(tick),
         "logged_in": True, "hits": 10, "hits_max": 10, "fatigue": 0,
-        "x": 120, "z": 648, "in_combat": False, "opponent": None,
+        "x": 120, "z": 648, "walking": False, "in_combat": False,
+        "talking_to_npc": False, "opponent": None,
         "inventory": [{"id": 376, "count": 1}, {"id": 349, "count": 1}],
         "messages": [{"text": "Welcome to the game"}],
         "npcs": json.loads(npcs)}
@@ -173,6 +174,27 @@ snap 104 '[{"sidx":77,"id":478,"x":121,"z":648}]'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "right NPC but no objective set: objective_is can never hold" "$CODE" "4"
 refute "still no action" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+
+echo
+echo "state-based waits use the ACTIONS snapshot without polling (spec rule 7d):"
+snap 1040 '[]' '{"walking":false,"talking_to_npc":false}'
+python3 "$GP" wait-until talking-to-npc --timeout 1 > "$SANDBOX/wait-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 1041 '[]' '{"walking":false,"talking_to_npc":true}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+OUT="$(cat "$SANDBOX/wait-out")"
+check_eq "a satisfied NPC-dialogue wait exits 0" "$CODE" "0"
+contains "$OUT" "condition-met condition=talking_to_npc tick=1041" \
+    && ok "the wait reports the grounded condition and snapshot tick" \
+    || fail "the wait reports the grounded condition and snapshot tick" "$OUT"
+CODE=0; OUT="$(python3 "$GP" wait-until in_combat --timeout 0.05)" || CODE=$?
+check_eq "a missing transition reaches its hard ceiling: exit 2" "$CODE" "2"
+contains "$OUT" "condition-timeout condition=in_combat" \
+    && ok "the timeout names the missing condition" \
+    || fail "the timeout names the missing condition" "$OUT"
+refute "a wait above the permanent-block ceiling is refused" \
+    python3 "$GP" wait-until walking --timeout 61
 
 echo
 echo "priority and conflict logging (spec rule 8):"
@@ -425,6 +447,8 @@ check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
+check_eq "the harness carries the event-driven state wait door" \
+    "$(sandbox_count_in '^    wait-until|wait_until)' "$HEADLESS")" "1"
 check_eq "the harness carries a play door" \
     "$(sandbox_count_in '^    play' "$HEADLESS")" "1"
 check_eq "wired to game_player.py, not merely present in lib" \
@@ -487,6 +511,18 @@ check_eq "with no rule applicable the entrypoint hands back exit 4 — only then
 contains "$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" play rules)" "walk-high" \
     && ok "play passes subcommands through (rules)" \
     || fail "play passes subcommands through (rules)"
+snap 1191 '[]' '{"walking":true}'
+DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" wait_until not_walking 1 \
+    > "$SANDBOX/headless-wait-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 1192 '[]' '{"walking":false}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+OUT="$(cat "$SANDBOX/headless-wait-out")"
+check_eq "the direct harness wait delegates to the ACTIONS player" "$CODE" "0"
+contains "$OUT" "condition-met condition=not_walking" \
+    && ok "and accepts the underscore spelling used in play commands" \
+    || fail "and accepts the underscore spelling used in play commands" "$OUT"
 
 echo
 echo "the entrypoint is versioned bytes, deployed, and durable (spec rule 13):"
@@ -625,6 +661,17 @@ BLOCKED_SLEEP="$(printf '%s\n' '{"tool_input":{"command":"for n in 1 2; do sleep
 contains "$BLOCKED_SLEEP" '"permissionDecision":"deny"' \
     && ok "the hook denies a nested shell sleep before execution" \
     || fail "the hook denies a nested shell sleep before execution" "$BLOCKED_SLEEP"
+BLOCKED_SHOTS="$(python3 -c 'import json; print(json.dumps({"tool_input":{"command":"/bin/bash -lc '\''./orsc-headless.sh play; rc=$?; ./orsc-headless.sh screenshot >/dev/null; ./orsc-headless.sh screenshot; exit $rc'\''"}}))' \
+    | python3 "$SLEEP_HOOK")"
+contains "$BLOCKED_SHOTS" '"permissionDecision":"deny"' \
+    && ok "the hook denies repeated screenshots used as a fake wait" \
+    || fail "the hook denies repeated screenshots used as a fake wait" "$BLOCKED_SHOTS"
+contains "$BLOCKED_SHOTS" 'wait-until CONDITION' \
+    && ok "the refusal points Sol to the state-based replacement" \
+    || fail "the refusal points Sol to the state-based replacement" "$BLOCKED_SHOTS"
+ALLOWED_SHOT="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh screenshot"}}' \
+    | python3 "$SLEEP_HOOK")"
+check_eq "the hook permits one screenshot for real visual inspection" "$ALLOWED_SHOT" ""
 ALLOWED_STATE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh play"}}' \
     | python3 "$SLEEP_HOOK")"
 check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
@@ -735,6 +782,9 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "inventory ITEM-ID" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
     && ok "the resumed thread receives the urgent idle-warning action" \
     || fail "the resumed thread receives the urgent idle-warning action"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until CONDITION" \
+    && ok "the resumed thread receives the state-based wait replacement" \
+    || fail "the resumed thread receives the state-based wait replacement"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \

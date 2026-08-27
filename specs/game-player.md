@@ -166,6 +166,19 @@ deliberate-play channel.
    `no-rule-matched` verdict and the resident runner heartbeat, so Sol sees feedback such as a
    missing requirement without another subsystem or another model turn.
 
+7d. State-based waiting is part of this ACTIONS player, not a shell delay. `wait-until CONDITION`
+   observes the same atomically replaced `state.json` as rule evaluation and blocks on filesystem
+   change notifications until a snapshot newer than the one seen at invocation satisfies the
+   named condition. This prevents an action receipt followed immediately by `not_walking` from
+   accepting the pre-action snapshot. Conditions are
+   `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
+   `talking_to_npc`, and `not_talking_to_npc`; dashes are accepted in place of underscores.
+   Success reports `condition-met` with the condition and snapshot tick. A wait has a 15-second
+   default and a caller-selected ceiling no greater than 60 seconds; expiry reports the latest
+   observed state as `condition-timeout` and exits 2, so a missing transition can never block the
+   player permanently. It consumes no action slot, creates no second game-state path, uses no
+   model call, and performs no timed polling.
+
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule
    `cooldown_ms` with `cooldown-hold` logged once per blocked episode, `hold_ticks` debounce,
@@ -204,7 +217,9 @@ deliberate-play channel.
     checkout runs `step` (default `--max 8`) against the deployed
     `~/.local/lib/deskcrab/game_player.py` (`DESKCRAB_GAME_PLAYER` overrides, which is how the
     test sandbox pins its own copy), and passes any other subcommand through, so the sitting
-    has one door for stepping, learning and objectives. The playing policy the sittings read
+    has one door for stepping, state-based waiting, learning and objectives. The direct harness
+    door `orsc-headless.sh wait-until CONDITION [SECONDS]` delegates to that same module.
+    The playing policy the sittings read
     makes rules-first mandatory: reasoning about the next action is licensed only by rule 7's
     `no-rule-matched` (exit 4), and a newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
@@ -275,12 +290,15 @@ deliberate-play channel.
       deliberation while the body stands still is the exact failure this shape exists to
       prevent. A single bridge action, an engine reflex, a login, or any builder job is
       not playing; playing is that loop, continued for the whole run.
-    - Arbitrary timed waits are structurally forbidden in the Sol player's shell commands.
+    - Arbitrary timed waits and screenshot loops are structurally forbidden in the Sol player's
+      shell commands.
       The player starts with the `openrsc-player` Codex profile and its trusted `PreToolUse`
       hook; a shell command that executes `sleep` or a language-runtime sleep is denied before
-      execution. Waiting for the game is expressed only through this ACTIONS system's receipts,
-      snapshot changes, runner verdicts, and state-triggered rules. The hook does not apply to
-      the runner, bridge, client, or background author.
+      execution, as is a command containing more than one game screenshot. Waiting for the game
+      is expressed only through this ACTIONS system's `wait-until`, receipts, snapshot changes,
+      runner verdicts, and state-triggered rules. A single screenshot remains available for
+      genuine visual inspection. The hook does not apply to the runner, bridge, client, or
+      background author.
     - The sandbox drives all of it through env doors: `BETTY_OPENRSC_HOME`,
       `BETTY_OPENRSC_HEADLESS`, `BETTY_OPENRSC_CODEX`, `BETTY_OPENRSC_MODEL`,
       `BETTY_OPENRSC_UNIT`, `BETTY_OPENRSC_AUTHOR_MODEL`, `BETTY_OPENRSC_AUTHOR_UNIT`.
@@ -333,8 +351,8 @@ deliberate-play channel.
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery
-  are visible through `bounds` and `objects`; quest state and dialogue menus remain invisible,
-  and plays that need them wait in `unfinished` for
+  are visible through `bounds` and `objects`; exact quest state and dialogue choices remain
+  invisible, and plays that need them wait in `unfinished` for
   the bridge to grow, by spec change there and here.
 - `message_contains` reads the snapshot's short message tail; a message that scrolled out
   between polls is missed. Rules should trigger on state where possible and messages only for

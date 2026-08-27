@@ -61,7 +61,9 @@ import json, sys, time
 s = json.load(open(sys.argv[1]))
 assert s["v"] == 1 and s["logged_in"] is True
 assert s["hits"] == 4 and s["hits_max"] == 10 and s["fatigue"] == 12
-assert s["x"] == 120 and s["z"] == 650 and s["in_combat"] is False
+assert s["x"] == 120 and s["z"] == 650
+assert s["walking"] is False and s["in_combat"] is False
+assert s["talking_to_npc"] is False
 assert s["opponent"] is None
 assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
 messages = s["messages"]
@@ -73,6 +75,20 @@ assert [(m["channel"], m["incoming"], m["sender"], m["text"]) for m in messages]
 assert all(isinstance(m["id"], int) for m in messages)
 assert messages[0]["id"] < messages[1]["id"] < messages[2]["id"]
 assert abs(time.time() * 1000 - s["ts"]) < 60000 and s["tick"] >= 1, s
+PY
+OUT="$(harness state-active)"
+python3 - "$S/state.json" <<'PY' && ok "walking, combat, and open NPC dialogue are direct snapshot state" \
+    || fail "walking, combat, and open NPC dialogue are direct snapshot state"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["walking"] is True and s["in_combat"] is True
+assert s["talking_to_npc"] is True
+PY
+OUT="$(harness state-dialogue)"
+python3 - "$S/state.json" <<'PY' && ok "NPC-spoken quest dialogue lingers long enough for a waiter" \
+    || fail "NPC-spoken quest dialogue lingers long enough for a waiter"
+import json, sys
+assert json.load(open(sys.argv[1]))["talking_to_npc"] is True
 PY
 
 echo
@@ -150,6 +166,13 @@ OUT="$(harness exec)"
 contains "$OUT" "walk x=125 z=655" && ok "walk reaches the host with its coordinates" \
     || fail "walk reaches the host with its coordinates" "$OUT"
 check_eq "and is receipted done" "$(rstatus)" "done"
+wact 570 "$(now_ms)" "type=walk" "x=126" "z=655"
+OUT="$(harness exec 13)"
+python3 - "$S/state.json" <<'PY' && ok "a dispatched walk remains walking until its server path can appear" \
+    || fail "a dispatched walk remains walking until its server path can appear"
+import json, sys
+assert json.load(open(sys.argv[1]))["walking"] is True
+PY
 RECEIPT_BEFORE="$(cat "$S/receipt.json")"
 { echo "ts=$(now_ms)"; echo "id=58"; echo "type=warn"; echo "text=danger: health low"; } > "$S/notice-58.json"
 OUT="$(harness exec)"

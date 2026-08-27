@@ -49,7 +49,11 @@ Three parts:
    The snapshot is one JSON object: `v` (format version, this document describes 1), `ts` (epoch
    milliseconds at write), `tick` (a counter that increments every client game tick since launch),
    `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
-   `fatigue` (0–100), `x` and `z` (world coordinates), `in_combat`, `opponent` (`{"x":…,"z":…}`
+   `fatigue` (0–100), `x` and `z` (world coordinates), `walking` (the local player still has
+   an unconsumed client waypoint, or a movement-capable bridge action was dispatched within the
+   last second and may still be waiting for its server path), `in_combat`, `talking_to_npc` (an NPC choice menu is open or
+   the client received NPC-spoken quest dialogue within the last four seconds), `opponent`
+   (`{"x":…,"z":…}`
    while a fighting opponent is visible, else `null`), `inventory` (array of `{"id":…,"count":…}`
    in slot order), `messages` (the last 20 messages seen by the client, newest last; each is
    `{"id":…,"channel":…,"incoming":…,"sender":…,"text":…}`, where `id` is unique across
