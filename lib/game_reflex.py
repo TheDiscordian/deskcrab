@@ -342,6 +342,27 @@ def read_snapshot():
         return None
 
 
+def sweep_dead_notices(now: int) -> None:
+    """Spec rule 6: a notice whose ts has aged past the bridge's freshness
+    window is dead either way — the bridge would drop it as stale — so the
+    live loop sweeps it, and an exchange directory with no bridge attached
+    cannot fill without bound. Never called from replay."""
+    for path in state_dir().glob("notice-*.json"):
+        try:
+            ts = 0
+            for line in path.read_text().splitlines():
+                if line.startswith("ts="):
+                    ts = int(line[3:])
+                    break
+        except (OSError, ValueError):
+            ts = 0  # unreadable or unparseable: dead by definition
+        if now - ts > ACTION_FRESH_MS:
+            try:
+                path.unlink()
+            except OSError:
+                pass  # the bridge consumed it first; that is fine
+
+
 def consume_receipt(est: dict, now: int, sink=None) -> None:
     path = state_dir() / "receipt.json"
     try:
@@ -529,7 +550,11 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
     snap_brief = {k: snap.get(k) for k in ("tick", "hits", "hits_max", "fatigue",
                                            "x", "z", "in_combat")}
 
-    # Notice channel: independent (spec rule 10).
+    # Notice channel: independent (spec rule 10). Every firing lands in its
+    # own queue file, notice-<id>.json (spec rule 6) — two rules firing on one
+    # snapshot must both reach the bridge, so a single shared filename would
+    # let the last atomic rename silently swallow the first warning while the
+    # log claimed delivery.
     for rule in eligible:
         if rule["channel"] != "notice":
             continue
@@ -539,7 +564,7 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
                        "why": why}, sink)
             continue
         est["action_seq"] += 1
-        emit("notice.json", action, est["action_seq"], now)
+        emit("notice-%d.json" % est["action_seq"], action, est["action_seq"], now)
         est["fired"][rule["name"]] = now
         log_event({"ts": now, "kind": "fired", "rule": rule["name"],
                    "id": est["action_seq"], "action": action,
@@ -803,6 +828,7 @@ def cmd_run(args):
         while True:
             now = now_ms()
             consume_receipt(est, now)
+            sweep_dead_notices(now)
             snap = read_snapshot()
             if snap is not None:
                 seen = (snap.get("tick"), snap.get("ts"))

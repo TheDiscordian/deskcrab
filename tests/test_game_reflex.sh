@@ -45,6 +45,9 @@ PY
 
 action_field() { sandbox_count_in "^$1" "$DESKCRAB_GAME_STATE_DIR/action.json"; }
 decided() { sandbox_count_in "\"kind\":\"$1\"" "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl"; }
+# The notice queue (rule 6): one notice-<id>.json per firing, never one slot.
+notice_count() { ls "$DESKCRAB_GAME_STATE_DIR"/notice-*.json 2>/dev/null | wc -l; }
+notice_field() { cat "$DESKCRAB_GAME_STATE_DIR"/notice-*.json 2>/dev/null | grep -c -- "^$1" || true; }
 
 echo "init and the rule table:"
 check "init writes the default table" "$BG" init
@@ -101,10 +104,10 @@ check_eq "the action is an eat" "$(action_field 'type=eat')" "1"
 check_eq "of slot 0" "$(action_field 'slot=0')" "1"
 check_eq "carrying the item id the engine saw" "$(action_field 'item=132')" "1"
 check_eq "a fired event was logged" "$(decided fired)" "2"  # warn (hold 1) + eat
-check_eq "warn fired independently on the notice channel" \
-    "$(sandbox_count_in 'type=warn' "$DESKCRAB_GAME_STATE_DIR/notice.json")" "1"
-check_eq "warn text interpolated the snapshot" \
-    "$(sandbox_count_in 'text=health low: 4/10' "$DESKCRAB_GAME_STATE_DIR/notice.json")" "1"
+check_eq "warn fired independently on the notice channel" "$(notice_field 'type=warn')" "1"
+check_eq "warn text interpolated the snapshot" "$(notice_field 'text=health low: 4/10')" "1"
+check "the notice file is named by its engine id (rule 6)" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/notice-1.json"
 
 echo
 echo "eat_pick chooses among foods:"
@@ -135,11 +138,11 @@ check_eq "eat_pick min wastes the least (slot 0, id 132)" "$(action_field 'slot=
 echo
 echo "a healthy player fires nothing:"
 rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/action.json" \
-      "$DESKCRAB_GAME_STATE_DIR/notice.json"
+      "$DESKCRAB_GAME_STATE_DIR"/notice-*.json
 snap 5 9
 "$BG" run --once
 refute "no game action at 9/10" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
-refute "no warn at 9/10" test -f "$DESKCRAB_GAME_STATE_DIR/notice.json"
+check_eq "no warn at 9/10" "$(notice_count)" "0"
 
 echo
 echo "cooldown and the in-flight gate (rule 10):"
@@ -296,6 +299,42 @@ check_eq "the loser was logged as a conflict loss" "$(decided conflict-loss)" "1
 "$BG" disable panic-walk >/dev/null
 
 echo
+echo "the notice queue: simultaneous firings never overwrite (rules 6, 10):"
+rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl" \
+      "$DESKCRAB_GAME_STATE_DIR/action.json" "$DESKCRAB_GAME_STATE_DIR"/notice-*.json
+"$BG" disable eat-low-health >/dev/null
+"$BG" add warn-fatigue --channel notice --priority 1 --cooldown-ms 0 --hold-ticks 1 \
+    --trigger fatigue_above=0.05 --action warn --param "text=fatigue up" >/dev/null
+"$BG" enable warn-fatigue >/dev/null
+snap 55 4
+"$BG" run --once
+check_eq "two eligible notice rules leave two notice files" "$(notice_count)" "2"
+check_eq "both were logged as fired" "$(decided fired)" "2"
+check_eq "the first kept its own text" "$(notice_field 'text=health low: 4/10')" "1"
+check_eq "the second kept its own text — nothing overwritten" "$(notice_field 'text=fatigue up')" "1"
+check_eq "each carries its own id" \
+    "$(grep -h '^id=' "$DESKCRAB_GAME_STATE_DIR"/notice-*.json 2>/dev/null | sort -u | wc -l)" "2"
+
+echo
+echo "the engine sweeps dead notices (rule 6):"
+rm -f "$DESKCRAB_GAME_STATE_DIR"/notice-*.json
+printf 'ts=%s\nid=999\ntype=warn\ntext=long dead\n' \
+    "$(( $(python3 -c 'import time; print(int(time.time()*1000))') - 5000 ))" \
+    > "$DESKCRAB_GAME_STATE_DIR/notice-999.json"
+printf 'ts=%s\nid=1000\ntype=warn\ntext=still alive\n' \
+    "$(python3 -c 'import time; print(int(time.time()*1000))')" \
+    > "$DESKCRAB_GAME_STATE_DIR/notice-1000.json"
+snap 56 9 '[{"id":132,"count":1}]' '{"fatigue":0}'
+"$BG" run --once
+refute "a notice older than the freshness window is swept" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/notice-999.json"
+check "a fresh, unconsumed notice is left for the bridge" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/notice-1000.json"
+rm -f "$DESKCRAB_GAME_STATE_DIR"/notice-*.json
+"$BG" remove warn-fatigue >/dev/null
+"$BG" enable eat-low-health >/dev/null
+
+echo
 echo "flee and walk arithmetic (rule 13):"
 rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/action.json"
 "$BG" disable eat-low-health >/dev/null
@@ -334,12 +373,12 @@ for i, tick in enumerate((1, 2)):
                  "inventory": [{"id": 132, "count": 1}], "messages": []})
 open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
 PY
-rm -f "$DESKCRAB_GAME_STATE_DIR/action.json" "$DESKCRAB_GAME_STATE_DIR/notice.json"
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json" "$DESKCRAB_GAME_STATE_DIR"/notice-*.json
 REPLAY_OUT="$("$BG" replay "$RECORDING")"
 contains "$REPLAY_OUT" '"kind":"fired"' && ok "replay reports what would have fired" \
     || fail "replay reports what would have fired" "$REPLAY_OUT"
 refute "replay wrote no action file" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
-refute "replay wrote no notice file" test -f "$DESKCRAB_GAME_STATE_DIR/notice.json"
+check_eq "replay wrote no notice file" "$(notice_count)" "0"
 
 echo
 echo "the viewing CLI:"

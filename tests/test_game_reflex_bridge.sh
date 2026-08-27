@@ -144,12 +144,57 @@ contains "$OUT" "walk x=125 z=655" && ok "walk reaches the host with its coordin
     || fail "walk reaches the host with its coordinates" "$OUT"
 check_eq "and is receipted done" "$(rstatus)" "done"
 RECEIPT_BEFORE="$(cat "$S/receipt.json")"
-{ echo "ts=$(now_ms)"; echo "id=58"; echo "type=warn"; echo "text=danger: health low"; } > "$S/notice.json"
+{ echo "ts=$(now_ms)"; echo "id=58"; echo "type=warn"; echo "text=danger: health low"; } > "$S/notice-58.json"
 OUT="$(harness exec)"
 contains "$OUT" "shown danger: health low" && ok "warn shows a local message" \
     || fail "warn shows a local message" "$OUT"
-refute "the notice file was consumed" test -f "$S/notice.json"
+refute "the notice file was consumed" test -f "$S/notice-58.json"
 check_eq "and a notice writes NO receipt" "$(cat "$S/receipt.json")" "$RECEIPT_BEFORE"
+
+echo
+echo "two simultaneous warnings both reach the player (rules 6-7, 10):"
+rm -f "$S"/notice-*.json "$S/engine-state.json"
+"$BG" disable eat-low-health >/dev/null
+"$BG" add warn-second --channel notice --priority 1 --cooldown-ms 0 --hold-ticks 1 \
+    --trigger hp_below=0.6 --action warn --param "text=second warning" >/dev/null
+"$BG" enable warn-second >/dev/null
+harness state >/dev/null   # a fresh snapshot from the real bridge
+"$BG" run --once
+check_eq "the engine left one notice file per firing" \
+    "$(ls "$S"/notice-*.json 2>/dev/null | wc -l)" "2"
+RECEIPT_BEFORE="$(cat "$S/receipt.json")"
+OUT="$(harness exec)"
+check_eq "the bridge showed BOTH warnings in one tick" \
+    "$(printf '%s\n' "$OUT" | grep -c '^shown')" "2"
+contains "$OUT" "shown health low: 4/10" && ok "the first kept its text" \
+    || fail "the first kept its text" "$OUT"
+contains "$OUT" "shown second warning" && ok "the second kept its text" \
+    || fail "the second kept its text" "$OUT"
+check_eq "delivered in engine-id order" \
+    "$(printf '%s\n' "$OUT" | grep '^shown' | head -1)" "shown health low: 4/10"
+check_eq "both files were consumed" "$(ls "$S"/notice-*.json 2>/dev/null | wc -l)" "0"
+check_eq "and notices still write no receipt" "$(cat "$S/receipt.json")" "$RECEIPT_BEFORE"
+"$BG" remove warn-second >/dev/null
+
+echo
+echo "the queue drains oldest id first, bounded per tick (rule 7):"
+TS="$(now_ms)"
+for i in 2 3 4 5 6 7 8 9 10; do
+    { echo "ts=$TS"; echo "id=$i"; echo "type=warn"; echo "text=w$i"; } > "$S/notice-$i.json"
+done
+OUT="$(harness exec)"
+check_eq "one tick executes at most 8 notices" \
+    "$(printf '%s\n' "$OUT" | grep -c '^shown')" "8"
+check_eq "the lowest id went first" \
+    "$(printf '%s\n' "$OUT" | grep '^shown' | head -1)" "shown w2"
+check "id 10 waits its turn — numeric order, not lexical" test -f "$S/notice-10.json"
+refute "while id 2 is gone" test -f "$S/notice-2.json"
+# Re-stamp the survivor before the second tick: this case pins order and the
+# cap, and must not flake on the 1500 ms freshness clock pinned above.
+{ echo "ts=$(now_ms)"; echo "id=10"; echo "type=warn"; echo "text=w10"; } > "$S/notice-10.json"
+OUT="$(harness exec)"
+contains "$OUT" "shown w10" && ok "the next tick delivers the remainder" \
+    || fail "the next tick delivers the remainder" "$OUT"
 
 echo
 echo "the bridge may never break the game (rule 8):"

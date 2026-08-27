@@ -17,9 +17,10 @@ which is a closed list this spec owns.
 
 Three parts:
 
-- **the bridge** — a per-tick hook inside the game client (`orsc/reflex/ReflexBridge.java` in the
-  local OpenRSC checkout, not this repo). It publishes a snapshot of what the player can see and
-  executes the small closed set of actions. It holds no opinions: no thresholds, no rules.
+- **the bridge** — a per-tick hook inside the game client (`orsc/ReflexBridge.java` under
+  `Core-Framework/Client_Base/src` in the local OpenRSC checkout, not this repo). It publishes a
+  snapshot of what the player can see and executes the small closed set of actions. It holds no
+  opinions: no thresholds, no rules.
 - **the engine** — `lib/game_reflex.py`, stdlib only, run as `betty-game run`. It reads snapshots,
   evaluates the rule table, and emits at most one game action at a time.
 - **the rule table** — a durable JSON file the player views and edits through `betty-game`.
@@ -29,8 +30,9 @@ Three parts:
 ### Files and places
 
 1. Ephemeral exchange lives in `$DESKCRAB_GAME_STATE_DIR` (default `/tmp/deskcrab-game`):
-   `state.json` (bridge → engine), `action.json` (engine → bridge, game channel), `notice.json`
-   (engine → bridge, notice channel), `receipt.json` (bridge → engine), `hold` (the override flag,
+   `state.json` (bridge → engine), `action.json` (engine → bridge, game channel), `notice-<id>.json`
+   (engine → bridge, the notice queue — one file per notice firing), `receipt.json` (bridge → engine),
+   `hold` (the override flag,
    either side may create it), `decisions.jsonl` (the engine's event log), `engine-state.json`
    (the engine's own counters, so cooldowns survive a restart). Durable configuration lives in
    `$DESKCRAB_GAME_DIR` (default `~/.local/share/deskcrab/game`): `reflex-rules.json` and
@@ -65,21 +67,29 @@ Three parts:
    server). Nothing in this layer can log in, create or delete a character, talk to another
    player, drop, trade, or spend. The bridge refuses any action type it does not know.
 
-6. `action.json` and `notice.json` are flat `key=value` lines: `ts` (epoch ms when the engine
+6. `action.json` and every notice file are flat `key=value` lines: `ts` (epoch ms when the engine
    emitted it), `id` (the engine's monotonically increasing action id), `type`, then the type's
    parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`
-   for walk; `text` for warn). One action per file; the engine never writes a second
-   `action.json` while one is in flight (rule 10).
+   for walk; `text` for warn). `action.json` is a single slot: one action, and the engine never
+   writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
+   firing is written to its own `notice-<id>.json`, named by the same monotonic id it carries, so
+   two notice rules firing on one snapshot — or on adjacent snapshots inside one bridge tick —
+   can never overwrite each other; every firing the log records is a file the bridge will see.
+   The engine sweeps notice files whose `ts` has aged past rule 7's 1500 ms freshness window (the
+   bridge would drop them as stale anyway), so an exchange directory with no bridge attached
+   cannot fill without bound; the sweep runs only in the live loop, never in replay.
 
-7. The bridge polls both files every client tick and executes at most one action from each per
-   tick, then deletes the file. Before executing it checks, in order: the client is logged in, the
-   `hold` flag is absent, and `ts` is no older than 1500 ms. An `eat` additionally executes only
-   when the named slot still holds the named `item` and that item's own first inventory command is
-   eat or drink — a shifted bag or a poisoned food table must not make the bridge consume, bury,
-   or light something else. A check that fails still deletes the file and writes the receipt with
-   status `held`, `stale`, or `refused-<why>` — a refused action is never silently dropped.
-   `notice.json` needs no receipt; `action.json` always gets one: `receipt.json` carrying `id`,
-   `status` (`done` or the refusal), and `ts`.
+7. The bridge polls `action.json` and the notice queue every client tick. It executes at most one
+   game action per tick from `action.json`, then deletes the file; it drains the notice queue
+   oldest id first — numeric id order, not filename order — at most 8 notices per tick, the rest
+   waiting their turn with order preserved. Before executing anything it checks, in order: the
+   client is logged in, the `hold` flag is absent, and `ts` is no older than 1500 ms. An `eat`
+   additionally executes only when the named slot still holds the named `item` and that item's own
+   first inventory command is eat or drink — a shifted bag or a poisoned food table must not make
+   the bridge consume, bury, or light something else. A check that fails still deletes the file
+   and, on the game channel, writes the receipt with status `held`, `stale`, or `refused-<why>` —
+   a refused action is never silently dropped. Notices need no receipt; `action.json` always gets
+   one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`.
 
 8. The bridge may never break the game: every per-tick step runs inside a catch-everything guard,
    and after 5 consecutive failing ticks the bridge announces once (a local client message) that it
@@ -100,7 +110,9 @@ Three parts:
 
 10. Engine evaluation, once per fresh snapshot: rules are considered in descending priority.
     Notice-channel rules fire independently (each is only bound by its own cooldown and
-    `hold_ticks`). Game-channel rules compete for one slot: the highest-priority eligible rule
+    `hold_ticks`), and every firing lands in its own queue file (rule 6) — when two notice rules
+    fire on one snapshot, both are delivered, neither overwritten. Game-channel rules compete for
+    one slot: the highest-priority eligible rule
     fires; every other eligible game rule is logged as a conflict loss, not fired. A game action
     fires only when no previous game action is in flight (receipt received, or
     `inflight_timeout_ms` passed), at least `min_action_interval_ms` after the previous one, and
