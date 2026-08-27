@@ -145,6 +145,19 @@ deliberate-play channel.
     `no-rule-matched` (exit 4), and a newly verified play must be written back with `learn` —
     an executable rule, not only a prose note.
 
+13. The harness is itself versioned bytes, and its processes outlive their launcher. The
+    entrypoint and its helpers are committed in the game checkout's repository
+    (`Core-Framework/headless/`) and deployed into the live tree as symlinks beside their
+    unversioned runtime state (`vendor/`, `run/`, `shots/`) — the same shape as the committed
+    launcher — so the door a green test proves is the door the repository carries. And every
+    long-lived process the harness starts (Xvfb, the client, the reflex engine, the viewer)
+    starts as its own transient systemd user unit (`orsc-<name>.service`), a sibling of the
+    launching process, never a `setsid` child of it: a child, however detached from its
+    terminal, still dies with the launching service's cgroup — a builder job's collection
+    killed the whole live stack exactly that way on 2026-08-27. Where no user manager is
+    reachable the harness refuses to start rather than pretend durability;
+    `ORSC_HEADLESS_DETACH=setsid` is the explicit sandbox opt-down.
+
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery

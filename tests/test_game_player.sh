@@ -372,5 +372,88 @@ check_eq "with no rule applicable the entrypoint hands back exit 4 — only then
 contains "$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" play rules)" "walk-high" \
     && ok "play passes subcommands through (rules)" \
     || fail "play passes subcommands through (rules)"
+
+echo
+echo "the entrypoint is versioned bytes, deployed, and durable (spec rule 13):"
+# The 2026-08-27 completion review found this door outside every git repo,
+# and the whole live stack dead minutes after the builder job that started
+# it was collected: a setsid child still dies with the launching service's
+# cgroup. The door must be committed bytes deployed by symlink, and every
+# long-lived process must start as its own transient systemd user unit.
+CF="$GAME_TREE/Core-Framework"
+RESOLVED="$(readlink -f "$HEADLESS")"
+case "$RESOLVED" in
+    "$CF"/*) ok "the deployed play door resolves into the game repo" ;;
+    *)       fail "the deployed play door resolves into the game repo" "$RESOLVED" ;;
+esac
+git -C "$CF" ls-files --error-unmatch headless/orsc-headless.sh >/dev/null 2>&1 \
+    && ok "and is committed there, not untracked" \
+    || fail "and is committed there, not untracked"
+check_eq "deployed bytes are the committed bytes (clean git status on the harness)" \
+    "$(git -C "$CF" status --porcelain -- headless/orsc-headless.sh 2>/dev/null | grep -c '')" "0"
+check_eq "the helpers it invokes are versioned beside it" \
+    "$(git -C "$CF" ls-files headless/ 2>/dev/null | grep -cE 'orsc-view\.py|find-blob\.py')" "2"
+check_eq "xvfb, client, engine and viewer all start through one durable detach door" \
+    "$(grep -cE '\$\(detach (xvfb|client|engine|viewer) ' "$HEADLESS")" "4"
+check_eq "which is a transient systemd --user unit, not a child of the caller" \
+    "$(grep -c 'systemd-run --user' "$HEADLESS")" "1"
+check_eq "bare setsid survives only as the explicit no-user-manager fallback" \
+    "$(grep -c 'setsid nohup' "$HEADLESS")" "1"
+
+# Functional: drive the real engine door with the systemd doors shimmed at
+# the head of PATH, and watch the engine start as the orsc-engine unit.
+SDFAKE="$SANDBOX/sdfake"
+mkdir -p "$SDFAKE" "$SANDBOX/orschome"
+cat > "$SDFAKE/systemd-run" <<'SH'
+#!/bin/bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+printf '%s\n' "$@" >> "$dir/systemd-run-args"
+args=("$@"); i=0
+while [ $i -lt ${#args[@]} ]; do
+    case "${args[$i]}" in
+        -p)  i=$((i+2)) ;;
+        --*) i=$((i+1)) ;;
+        *)   break ;;
+    esac
+done
+setsid "${args[@]:$i}" >/dev/null 2>&1 &
+echo $! > "$dir/systemd-run-pid"
+SH
+cat > "$SDFAKE/systemctl" <<'SH'
+#!/bin/bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+case "$*" in
+    *MainPID*) cat "$dir/systemd-run-pid" 2>/dev/null || echo 0 ;;
+    *stop*)    echo "$*" >> "$dir/systemctl-stops" ;;
+esac
+exit 0
+SH
+cat > "$SDFAKE/betty-game" <<'SH'
+#!/bin/bash
+case "${1:-}" in
+    run)   exec sleep 60 ;;
+    rules) printf '[on ] fake-eat\n[on ] fake-flee\n' ;;
+esac
+SH
+chmod +x "$SDFAKE/systemd-run" "$SDFAKE/systemctl" "$SDFAKE/betty-game"
+ENGENV=(PATH="$SDFAKE:$PATH" ORSC_HEADLESS_HOME="$SANDBOX/orschome" DESKCRAB_BETTY_GAME="$SDFAKE/betty-game")
+CODE=0; OUT="$(env "${ENGENV[@]}" bash "$HEADLESS" engine start 2>&1)" || CODE=$?
+check_eq "engine start through the shimmed doors answers cleanly" "$CODE" "0"
+contains "$OUT" "engine running" && ok "and says so" || fail "and says so" "$OUT"
+EPID="$(cat "$SANDBOX/orschome/run/engine.pid" 2>/dev/null)"
+[ -n "$EPID" ] && kill -0 "$EPID" 2>/dev/null \
+    && ok "the engine process is alive and its pid recorded" \
+    || fail "the engine process is alive and its pid recorded" "pid [$EPID]"
+grep -q -- '--user' "$SDFAKE/systemd-run-args" 2>/dev/null \
+    && grep -q -- '--unit=orsc-engine.service' "$SDFAKE/systemd-run-args" 2>/dev/null \
+    && ok "and it was started as the transient orsc-engine user unit" \
+    || fail "and it was started as the transient orsc-engine user unit" \
+            "$(cat "$SDFAKE/systemd-run-args" 2>/dev/null)"
+contains "$(env "${ENGENV[@]}" bash "$HEADLESS" engine status 2>&1)" "alive" \
+    && ok "engine status sees it" || fail "engine status sees it"
+CODE=0; OUT="$(env "${ENGENV[@]}" bash "$HEADLESS" engine stop 2>&1)" || CODE=$?
+check_eq "engine stop tears it down" "$CODE" "0"
+refute "and the engine process is gone" sh -c "kill -0 $EPID 2>/dev/null"
+
 refute "and still: no model CLI was invoked anywhere in the suite" \
     test -f "$SANDBOX/model-called"
