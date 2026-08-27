@@ -492,13 +492,21 @@ check_eq "and the installed door is the same committed bytes" \
     "$(readlink -f "$PATHDOOR" 2>/dev/null)" "$BOCR"
 check "the player model is pinned to a real GPT Sol" grep -q 'gpt-5.6-sol' "$BOC"
 check "the player reasoning effort is pinned low" grep -q 'model_reasoning_effort=.*EFFORT' "$BOC"
-check "the background author is pinned to Fable" grep -q 'AUTHOR_MODEL:-fable' "$BOC"
-check "the author walks the shared fallback account chain" \
-    grep -q 'claude_accounts.*AUTHOR_MODEL' "$BOC"
+check "the background author is pinned to GPT Sol" \
+    grep -q 'AUTHOR_MODEL:-gpt-5.6-sol' "$BOC"
+check "the author runs Sol through Codex" \
+    grep -q '"$CODEX" exec --json.*--ephemeral' "$BOC"
+check "the author streams its prompt on stdin instead of risking ARG_MAX" \
+    grep -q -- '-C "$OHOME" - < "$prompt"' "$BOC"
 check "the author is event-driven by the outcome queue, with no sleep loop" \
     grep -q 'path-property=.*PathModified' "$BOC"
 check "the author is forbidden from touching the game action slot" \
     grep -q 'NEVER play the game, touch action.json' "$BOC"
+contains "$(sed -n '/cmd_run_player.*what systemd execs/,/compose_prompt/p' "$BOC")" 'stack_up' \
+    && ok "every replacement player repairs the stack before Sol starts" \
+    || fail "every replacement player repairs the stack before Sol starts"
+check "dead-stack recovery clears abandoned ACTIONS state" \
+    grep -q 'rm -f.*action.json' "$BOC"
 SLEEP_HOOK="$CF/headless/no-sleep-hook.py"
 SLEEP_PROFILE="$CF/headless/openrsc-player.config.toml"
 check "the no-sleep command guard is committed beside the player" test -f "$SLEEP_HOOK"
@@ -570,7 +578,8 @@ printf -- '----8<----\n' >> "$dir/codex-capture"
 exit 0
 SH
 chmod +x "$PSD/fakecodex"
-POCENV=(PATH="$PSD:$PATH" "${BOCENV[@]}" BETTY_OPENRSC_CODEX="$PSD/fakecodex")
+POCENV=(PATH="$PSD:$PATH" "${BOCENV[@]}" BETTY_OPENRSC_CODEX="$PSD/fakecodex" \
+        BETTY_OPENRSC_TEST_SKIP_RECOVERY=1)
 CODE=0; OUT="$(env "${POCENV[@]}" bash "$BOC" player-start 2>&1)" || CODE=$?
 check_eq "player-start through the shimmed doors answers cleanly" "$CODE" "0"
 grep -q -- '--user' "$PSD/systemd-run-args" 2>/dev/null \

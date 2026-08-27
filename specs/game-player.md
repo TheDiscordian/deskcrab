@@ -274,7 +274,7 @@ deliberate-play channel.
     objective and inventory alongside the text). The queue is the inbox of the background
     author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
-    durable cursor, and then exits; there is no sleep or polling loop. It runs on Fable at low
+    durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at low
     effort, reads new outcomes, writes and refines rules through the rule 11 doors, maintains rule
     17's cases, and never touches the bridge, the screen, or the reflex engine: every action
     that CAN become a reflex SHOULD become one, but rule creation must never block the body.
