@@ -666,6 +666,46 @@ def one_line(meta):
     return line
 
 
+def utf8_clip(text, max_bytes):
+    """Collapse a prompt field to one line and bound it without splitting UTF-8."""
+    text = " ".join(str(text or "").split())
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    if max_bytes <= 3:
+        return "." * max(0, max_bytes)
+    tail = "…"
+    room = max_bytes - len(tail.encode("utf-8"))
+    clipped = raw[:room].decode("utf-8", "ignore").rstrip()
+    return clipped + tail
+
+
+def prompt_one_line(meta, max_bytes):
+    """A bounded shelf pointer; `show` retains the record's complete prose."""
+    max_bytes = max(200, max_bytes)
+    state = meta.get("state", OPEN_STATE)
+    rid = meta.get("id", "?")
+    title = meta.get("title", "?")
+    if state in CLOSED_STATES:
+        middle = " [%s] — %s %s: " % (
+            rid, state, meta.get(CLOSED_AT) or "(undated)")
+        available = max(40, max_bytes - len(middle.encode("utf-8")))
+        title_budget = min(120, max(20, available // 2))
+        shown_title = utf8_clip(title, title_budget)
+        reason_budget = max(20, available - len(shown_title.encode("utf-8")))
+        return "%s%s%s" % (
+            shown_title, middle,
+            utf8_clip(meta.get(CLOSED_BY) or "(unrecorded)", reason_budget))
+
+    tail = " [%s] — opened %s, last touched %s" % (
+        rid, meta.get("opened") or "(undated)",
+        meta.get("last_touched") or "(undated)")
+    if state == "review":
+        tail += " (in review — inspect, then crab eng accept or reject)"
+    title_budget = max(20, max_bytes - len(tail.encode("utf-8")))
+    return "%s%s" % (utf8_clip(title, title_budget), tail)
+
+
 def state_rank(meta):
     """List order: the pursued before the resting before the closed."""
     s = meta.get("state", "")
@@ -1146,33 +1186,31 @@ def cmd_migrate_want(argv):
 
 
 def cmd_prompt(argv):
-    """The shelves-layer block (prompt-assembly rule 21a). Open records are
-    live threads with their dates, never aged out however long untouched;
-    settled and dead ones are ONE line of outcome each, body prose never
-    shown — a resolved worry must read as resolved, not as a quotable
-    present-tense fact. That disarming is owed only to RECENT closures, the
-    ones she might still be carrying as live (engineering-records rule 11a):
-    the full rendering (wakes, her own maintenance time) shows closures
-    settled inside a window, always at least the few most recent whatever
-    their age, never more than the cap, and says how many older ones live on
-    disk and how to reach them; `--compact` (interactive turns) shows the
-    count line alone. Measured 2026-08-14: without the window, one evening
-    of correct settling GREW the block from ~15.3 KB to ~20.1 KB — and by
-    2026-08-15 the settled tail alone was 20 KB of outcome essays riding
-    every speaking prompt, history nobody asked that turn for, while the
-    drawer held every word one command away. Empty drawer, no block."""
+    """The bounded shelves-layer index (prompt-assembly rule 21a).
+
+    Review records lead, then the freshest open records, with omitted live
+    threads counted beside commands that retrieve them. Wakes also receive a
+    bounded recent-closure sample; interactive turns receive only its count.
+    Every rendered record is a bounded pointer, while `show` retains every
+    byte of the record itself. Empty drawer, no block.
+    """
     compact = "--compact" in argv
     window = env_int("DESKCRAB_ENG_PROMPT_WINDOW_DAYS", 7)
     floor = env_int("DESKCRAB_ENG_PROMPT_MIN_CLOSED", 5)
-    cap = env_int("DESKCRAB_ENG_PROMPT_MAX_CLOSED", 25)
+    cap = max(0, env_int("DESKCRAB_ENG_PROMPT_MAX_CLOSED", 10))
+    open_cap_name = ("DESKCRAB_ENG_PROMPT_MAX_OPEN_TURN" if compact
+                     else "DESKCRAB_ENG_PROMPT_MAX_OPEN")
+    open_cap = max(0, env_int(open_cap_name, 12 if compact else 20))
+    line_bytes = max(200, env_int("DESKCRAB_ENG_PROMPT_LINE_BYTES", 360))
     recs = [m for m, _ in all_records()]
     if not recs:
         return
     # A record in `review` is live — a completion claim awaiting judgement,
     # never a resolution (rule 16c) — so it renders among the open threads,
-    # carrying its own marker from one_line.
+    # carrying its own marker from prompt_one_line.
     opens = sorted((m for m in recs if m.get("state") in ("open", "review")),
-                   key=touched_epoch, reverse=True)
+                   key=lambda m: (m.get("state") == "review", touched_epoch(m)),
+                   reverse=True)
     closed = sorted((m for m in recs if m.get("state") in ("settled", "dead")),
                     key=lambda m: m.get("settled_at") or "", reverse=True)
     # Recent means settled_at inside the window; the floor keeps the freshest
@@ -1181,6 +1219,8 @@ def cmd_prompt(argv):
     cutoff = time.time() - window * 86400
     n = sum(1 for m in closed if settled_epoch(m) >= cutoff)
     n = max(0, min(max(n, floor), cap))
+    shown_opens = opens[:open_cap]
+    withheld_opens = len(opens) - len(shown_opens)
     shown = [] if compact else closed[:n]
     withheld = len(closed) - len(shown)
     out = ["YOUR ENGINEERING RECORDS — one thread per file in %s. Read one "
@@ -1189,8 +1229,13 @@ def cmd_prompt(argv):
            "stay true." % eng_dir()]
     if opens:
         out.append("OPEN — live threads, still current:")
-        for m in opens:
-            out.append("  - %s" % one_line(m))
+        if withheld_opens:
+            out.append("  (%d other live thread%s remain in the drawer: "
+                       "'crab eng list --state all' lists them and 'crab "
+                       "eng search <words>' finds the relevant record.)"
+                       % (withheld_opens, "s" if withheld_opens != 1 else ""))
+        for m in shown_opens:
+            out.append("  - %s" % prompt_one_line(m, line_bytes))
     if closed:
         if shown:
             out.append("SETTLED or DEAD — recent history, not live worries. "
@@ -1203,7 +1248,7 @@ def cmd_prompt(argv):
                            "eng search <words>' finds by content.)"
                            % (withheld, "s" if withheld != 1 else ""))
             for m in shown:
-                out.append("  - %s" % one_line(m))
+                out.append("  - %s" % prompt_one_line(m, line_bytes))
         else:
             out.append("SETTLED or DEAD — %d thread%s of history, one "
                        "outcome line each in the drawer: 'crab eng list "

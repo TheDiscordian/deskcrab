@@ -160,7 +160,9 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 ## INTERACTIONS
 
 **The router is consulted by:** `claude_generate`, `wake_claude_run_chain`, `lib/job-runner`,
-`lib/chess_mover.py`, `claude_classify` — and nothing else decides engines.
+`lib/chess_mover.py`, `claude_classify` — and nothing else decides engines. Conversation
+compaction invokes `claude_classify` with Sol first, then uses the ordinary Claude outage walk if
+that one codex attempt fails.
 **The translator is run by:** the codex run functions only, outside the wrap, reading the wrapped
 CLI's stdout.
 **The account-fallback machinery** (specs/account-fallback.md) is untouched: codex is not an

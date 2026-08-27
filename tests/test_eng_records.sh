@@ -113,7 +113,7 @@ check "and the pointer counts what was withheld" \
 check "with the command that opens it" \
     contains "$NARROW" "crab eng list --state all"
 COMPACT="$(E prompt --compact)"
-check "compact keeps the open threads whole" \
+check "compact keeps the selected open threads visible" \
     contains "$COMPACT" "opened 20"
 refute "compact shows no outcome line at all" \
     contains "$COMPACT" "overtaken by events"
@@ -285,13 +285,42 @@ for i in $(seq 0 29); do
     mkrec "rc-$i" settled "$(ts "-$((i + 100)) seconds")"
 done
 BLOCK_CAP="$(E prompt)"
-check_eq "the cap holds at 25 when many closures are recent" \
-    "$(printf '%s\n' "$BLOCK_CAP" | grep -c '^  - rc-')" "25"
+check_eq "the cap holds at 10 when many closures are recent" \
+    "$(printf '%s\n' "$BLOCK_CAP" | grep -c '^  - rc-')" "10"
 check "counting everything else it withheld" \
-    contains "$BLOCK_CAP" "(15 older closures not shown"
+    contains "$BLOCK_CAP" "(30 older closures not shown"
 BLOCK_CAP3="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=3 E prompt)"
 check_eq "and the cap knob binds over window and floor alike" \
     "$(printf '%s\n' "$BLOCK_CAP3" | grep -c '^  - ')" "4"
 BLOCK_BAD="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=banana E prompt)"
 check_eq "an unparseable knob falls back to its default, never a traceback" \
-    "$(printf '%s\n' "$BLOCK_BAD" | grep -c '^  - rc-')" "25"
+    "$(printf '%s\n' "$BLOCK_BAD" | grep -c '^  - rc-')" "10"
+
+echo
+echo "the live index is bounded, review-first, and every hidden record remains reachable:"
+for i in $(seq 0 24); do
+    mkrec "live-$i" open "" "$(ts "-$((i + 1)) seconds")"
+done
+mkrec old-review review "" "$(ts '-500 days')"
+BLOCK_OPEN="$(E prompt)"
+LIVE_SECTION="$(printf '%s\n' "$BLOCK_OPEN" | sed -n '/^OPEN/,/^SETTLED/p')"
+check "a review leads even when it is old" contains "$LIVE_SECTION" "old-review"
+check "the freshest ordinary live record is shown" contains "$LIVE_SECTION" "live-0"
+refute "a live record beyond the cap is not injected" contains "$LIVE_SECTION" "live-24"
+check "the omitted live count names both retrieval doors" \
+    contains "$LIVE_SECTION" "other live threads remain in the drawer: 'crab eng list --state all'"
+check "a hidden live record is still reachable through show" \
+    bash -c 'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" show live-24 | grep -q "Body prose of live-24"'
+COMPACT_OPEN="$(E prompt --compact)"
+check_eq "the turn index has its smaller twelve-record cap" \
+    "$(printf '%s\n' "$COMPACT_OPEN" | sed -n '/^OPEN/,/^SETTLED/p' | grep -c '^  - ')" "12"
+
+LONG_WORDS="$(printf 'unnecessarily-long-field %.0s' $(seq 1 80))"
+LONG_WORDS="${LONG_WORDS% }"
+LONG_ID="$(E new "$LONG_WORDS")"
+E settle "$LONG_ID" "$LONG_WORDS" >/dev/null
+LONG_LINE="$(E prompt | grep "\[$LONG_ID\]")"
+check "a rendered pointer is byte-bounded" \
+    test "$(printf '%s' "$LONG_LINE" | wc -c)" -le 364
+check_eq "the full long outcome remains in its record" \
+    "$(E field "$LONG_ID" settled_by)" "$LONG_WORDS"

@@ -231,8 +231,9 @@ it is ten minutes of silence with nothing on screen explaining it.
     empty login that answers "Not logged in" while the real account sits logged in — and would
     break the state-file match too, wedging the walk onto a dead login (2026-08-11, the chess
     mover; [chessweb.md](chessweb.md) rule 16e carries the incident).
-30. The summariser MUST capture standard error, so a refusal that arrives only there cannot break the
-    walk.
+30. The summariser MUST capture standard error on both engines. Sol is attempted once; a capacity
+    refusal records the codex cooldown and the Claude outage walk composes continuity without ever
+    persisting the refusal text.
 31. A refusal MUST NEVER be committed as a summary. See [turn-pipeline.md](turn-pipeline.md) rule 27.
 
 ## DATA
@@ -328,10 +329,10 @@ journals a failed run naming the session limit, writes nothing to the conversati
 through the outage-retry path; a walk with credit left delivers the later account's reply and
 re-books nothing; and a mixed walk — a cut, then a network death on the next login — re-books on
 the ordinary outage slot, never the drought's cooldown-keyed wait.
-`tests/test_convo_compaction.sh` — the summariser's own judgement, at both exit codes: a summary
-whose text is full of the signature's words is committed and folds its blocks away and cools
-nobody, while a stream carrying the CLI's synthetic refusal and no genuine output skips the
-compaction, keeps every turn, and records the refusal.
+`tests/test_convo_compaction.sh` — the summariser uses Sol for continuity, records a Sol capacity
+refusal, and falls through without persisting provider text; on the Claude path, a summary whose
+text contains the signature's words is still committed as genuine output, while a synthetic
+refusal skips compaction, keeps every turn, and records the refusal.
 `tests/test_memory.py` — the turn-end judge walks the list: a refused account moves to the next and
 the judgement lands, an entirely dry list skips the judgement and names it in the judge log, and a
 failure that is not a refusal spends no second account.

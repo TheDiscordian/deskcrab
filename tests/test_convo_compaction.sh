@@ -32,6 +32,7 @@ SESSIONS_LOG="$T/sessions.log"
 WANTS_FILE=""
 PROMISE_AUDIT=0
 MEMORY_STORE=0
+CONVO_SUMMARY_MODEL=haiku
 EOF
 
 # shellcheck source=/dev/null
@@ -195,7 +196,54 @@ check_eq "[$FMT] no warnings from the split" "$(compact_convo 2>&1 >/dev/null)" 
 
 done
 
-# --- 7. a refusal is the CLI's own verdict, never the summary's words ---------
+# --- 7. conversation continuity is Sol, with errors outside the summary -------
+echo
+echo "=== the Sol conversation summariser ==="
+CONVO_SUMMARY_MODEL=sol
+CODEX_BIN="$T/bin/codex"
+CODEX_STATE="$T/codex-state"
+DESKCRAB_CODEX_STATE="$CODEX_STATE"
+
+sandbox_stub codex <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"SOL CONTINUITY SUMMARY"}}'
+exit 0
+STUB
+reset
+rm -f "$CODEX_STATE" "$ACCOUNT_STATE_FILE"
+build_convo 2 12
+compact_convo
+check_eq "Sol writes the conversation summary" \
+    "$(cat "$SUMMARYFILE" 2>/dev/null)" "SOL CONTINUITY SUMMARY"
+
+sandbox_stub codex <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' 'You have hit your usage limit. Try again later.' >&2
+exit 1
+STUB
+sandbox_stub claude <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' \
+  '{"type":"assistant","message":{"model":"claude-opus","content":[{"type":"text","text":"SAFE OUTAGE SUMMARY"}]}}' \
+  '{"type":"result","subtype":"success","is_error":false,"result":"SAFE OUTAGE SUMMARY"}'
+STUB
+reset
+rm -f "$CODEX_STATE" "$ACCOUNT_STATE_FILE"
+build_convo 2 12
+compact_convo
+check_eq "a Sol capacity refusal falls back without entering continuity" \
+    "$(cat "$SUMMARYFILE" 2>/dev/null)" "SAFE OUTAGE SUMMARY"
+check "the provider refusal is absent from the saved summary" \
+    bash -c 'case "$1" in *"usage limit"*) exit 1;; esac' _ \
+    "$(cat "$SUMMARYFILE" 2>/dev/null)"
+check "the refused Sol login is cooled before the next compaction" \
+    test -s "$CODEX_STATE"
+CONVO_SUMMARY_MODEL=haiku
+
+# --- 8. a refusal is the CLI's own verdict, never the summary's words ---------
 # specs/account-fallback.md rules 15, 30 and 31. The summariser is handed the
 # older half of a conversation with her, and the conversations long enough to
 # reach this threshold are frequently ABOUT the chain running dry — so a

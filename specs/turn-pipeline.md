@@ -256,8 +256,11 @@ slot is the loudest statement this machine can make that it was not listening.
     ([speech-output.md](speech-output.md) rule 7a), so an error-only stream folds nothing rather
     than committing the CLI's words — on 2026-08-20 an OAuth auth failure the signature did not
     then know was committed as the summary the phone renders.
-28. The summariser MUST capture stderr. A refusal that arrives only on stderr must not break the
-    walk.
+28. The summariser MUST use the speaking-tier Sol model first because the resulting text is
+    conversation continuity, not background classification. A failed or cooling Sol login falls
+    through to the configured Claude outage model and account walk; provider errors and capacity
+    text never enter the saved summary. Both engines MUST capture stderr, and a Sol capacity
+    refusal MUST record the codex cooldown before fallback.
 29. Rotation MUST archive on inactivity, and the archived pair (transcript and summary) MUST move
     together.
 

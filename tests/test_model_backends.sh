@@ -364,6 +364,11 @@ echo "the classifier routes by the same rule (rule 16):"
 rm -f "$CODEX_STATE"
 OUT="$(printf 'the question' | sb "CODEX_BIN='$SANDBOX_BIN/codex' claude_classify sol 'sys'" 2>/dev/null)"
 check_eq "a codex classify answers with the bare text" "$OUT" "codex stub reply."
+rm -f "$CODEX_STATE"
+printf 'the question' | sb "CODEX_BIN='$SANDBOX_BIN/codex' CODEX_STUB_LIMIT=1 \
+    claude_classify sol 'sys'" >/dev/null 2>&1 || true
+check "a classifier capacity refusal cools the one codex login" \
+    test -s "$CODEX_STATE"
 
 echo
 echo "a builder on codex is BLOCKED when refused, never downgraded (rule 14):"
@@ -460,4 +465,3 @@ PYEOF
     check "the fallback accounts run a Claude model" contains "$OUT" "fallback-model sonnet"
     check "the first attempt is the codex one" contains "$OUT" "order ['codex']"
 fi
-

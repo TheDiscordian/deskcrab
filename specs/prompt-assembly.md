@@ -82,17 +82,17 @@ flowchart TD
 | Layer | turn | wake | job | classify |
 |---:|---:|---:|---:|---:|
 | L1 identity | 10,400 | 10,400 | 800 | 0 |
-| L2 state | 1,500 | 1,500 | 0 | 0 |
-| L3 memory | 9,600 | 9,600 | 0 | 0 |
+| L2 state | 5,500 | 5,500 | 0 | 0 |
+| L3 memory | 16,000 | 16,000 | 0 | 0 |
 | L4 shelves | 12,000 | 16,000 | 0 | 0 |
-| L5 where things are | 1,000 | 1,000 | 1,000 | 0 |
+| L5 where things are | 2,000 | 2,000 | 2,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
 | L8 turn frame | 1,500 | 1,500 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional interrupt | 2,600 | 0 | 0 | 0 |
 | conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 51,500** | **≤ 45,500** | **≤ 2,000** | **≤ 200** |
+| **system-prompt total** | **≤ 62,900** | **≤ 56,900** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to

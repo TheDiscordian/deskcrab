@@ -136,9 +136,14 @@ deliberate-play channel.
    and marks the message handled. A refusal, a server error, or an unconfirmed dispatch leaves it
    pending. Handling one message also
    handles older pending messages from the same sender and channel, allowing one concise response
-   to cover a burst without producing stale replies. There is no chat daemon, side queue, or
-   second controller: observation, priority, action, receipt, logging, and durable state all stay
-   in this player action system.
+   to cover a burst without producing stale replies. While an incoming message is pending, the
+   autonomous player's direct movement, interaction, and screen-input doors exit 6 and point to
+   `play reply`; inspection remains available. This is enforced only for the model player's
+   inherited `BETTY_OPENRSC_AUTONOMOUS=1` environment, so mechanical login and manual controls are
+   not caught behind chat state. The model therefore cannot acknowledge the verdict and continue
+   clicking without answering. There is no chat daemon, side queue, or second controller:
+   observation, priority, action, receipt, logging, and durable state all stay in this player
+   action system.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule

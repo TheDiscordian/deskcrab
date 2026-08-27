@@ -115,8 +115,9 @@ ASSISTANT_NAME="${ASSISTANT_NAME:-Crab}"
 # so roughly double the intended history rode along on every single turn.
 CONVO_MAX_TURNS="${CONVO_MAX_TURNS:-20}"
 CONVO_SUMMARIZE_TURNS="${CONVO_SUMMARIZE_TURNS:-10}"
-# Model used for the cheap summarization pass (keep it small/fast).
-CONVO_SUMMARY_MODEL="${CONVO_SUMMARY_MODEL:-haiku}"
+# Conversation continuity is part of her voice, so it follows the speaking
+# engine rather than a cheap classifier model.
+CONVO_SUMMARY_MODEL="${CONVO_SUMMARY_MODEL:-sol}"
 # Durable "wants" file the assistant maintains and pursues during autonomous
 # wakes (crab wake / crab wake-at). Unset = feature off.
 WANTS_FILE="${WANTS_FILE:-}"
@@ -2246,27 +2247,54 @@ $(cat "$OLDFILE")"
     # and its whole text is the answer: degrading to the old shape is right, and
     # a refusal on that path still reads as one, because a stream with nothing
     # but the CLI's own words in it is exactly what rule 12 describes.
-    local SUMRC=0 SUMACCT REFUSAL
+    local SUMRC=0 SUMACCT REFUSAL SUMMODEL ATTEMPTS MODEL_USED
     local SUMLOG="${STATE_PREFIX}-convo-sum-stream.$$"
     NEWSUM=""
-    for SUMACCT in $(claude_accounts "$CONVO_SUMMARY_MODEL"); do
+    SUMMODEL="$CONVO_SUMMARY_MODEL"
+    if [ "$(model_backend "$SUMMODEL")" = "codex" ]; then
+        ATTEMPTS="codex $(claude_accounts "$(codex_fallback_model)")"
+    else
+        ATTEMPTS="$(claude_accounts "$SUMMODEL")"
+    fi
+    for SUMACCT in $ATTEMPTS; do
         SUMRC=0
         : > "$SUMLOG"
-        printf '%s' "$SUMMATERIAL" \
-            | CLAUDE_CONFIG_DIR="$(claude_account_dir "$SUMACCT")" \
-              CLAUDE_CLASSIFY_STREAM=1 \
-              claude_classify "$CONVO_SUMMARY_MODEL" "$SUMSYS" \
-            >>"$SUMLOG" 2>&1 || SUMRC=$?
+        if [ "$SUMACCT" = codex ]; then
+            # Sol gets the first and only codex attempt. A refusal records the
+            # engine cooldown inside codex_classify; any failed or empty run
+            # falls through to the ordinary Claude outage path, never into the
+            # saved summary.
+            codex_available || continue
+            MODEL_USED="$CONVO_SUMMARY_MODEL"
+            printf '%s' "$SUMMATERIAL" \
+                | CLAUDE_CLASSIFY_STREAM=1 \
+                  claude_classify "$MODEL_USED" "$SUMSYS" \
+                >>"$SUMLOG" 2>&1 || SUMRC=$?
+        else
+            MODEL_USED="$SUMMODEL"
+            [ "$(model_backend "$MODEL_USED")" != "codex" ] \
+                || MODEL_USED="$(codex_fallback_model)"
+            printf '%s' "$SUMMATERIAL" \
+                | CLAUDE_CONFIG_DIR="$(claude_account_dir "$SUMACCT")" \
+                  CLAUDE_CLASSIFY_STREAM=1 \
+                  claude_classify "$MODEL_USED" "$SUMSYS" \
+                >>"$SUMLOG" 2>&1 || SUMRC=$?
+        fi
         # Recorded per attempt, before the next login's truncation wipes this
         # one's stream (specs/metrics.md rule 14).
-        token_ledger_record "$SUMLOG" summariser "$CONVO_SUMMARY_MODEL" "" "$SUMACCT"
-        if REFUSAL="$(claude_stream_refusal "$SUMLOG")"; then
-            claude_limit_record "$SUMACCT" "$REFUSAL" "$CONVO_SUMMARY_MODEL"
+        token_ledger_record "$SUMLOG" summariser "$MODEL_USED" "" \
+            "$([ "$SUMACCT" = codex ] || printf '%s' "$SUMACCT")"
+        if [ "$SUMACCT" != codex ] \
+                && REFUSAL="$(claude_stream_refusal "$SUMLOG")"; then
+            claude_limit_record "$SUMACCT" "$REFUSAL" "$MODEL_USED"
             continue
         fi
-        # Not a refusal. Anything else that went wrong goes wrong on the next
-        # account too, so it ends the walk rather than spending the list.
-        [ "$SUMRC" -eq 0 ] || break
+        # A failed codex run takes the outage fallback. A non-limit Claude
+        # failure ends the walk because another account would repeat it.
+        if [ "$SUMRC" -ne 0 ]; then
+            [ "$SUMACCT" = codex ] && continue
+            break
+        fi
         # The committed text must never be the CLI's own error in ANY wording
         # (specs/turn-pipeline.md rule 27): DESKCRAB_DROP_SYNTHETIC=1 makes an
         # error-only stream extract to nothing, so a failure the signature
@@ -2280,6 +2308,9 @@ $(cat "$OLDFILE")"
             "$LIB_DIR/extract-response" 2>/dev/null)"
         if [ -z "$NEWSUM" ] && ! grep -q '"type":' "$SUMLOG" 2>/dev/null; then
             NEWSUM="$(cat "$SUMLOG" 2>/dev/null)"
+        fi
+        if [ -z "$NEWSUM" ] && [ "$SUMACCT" = codex ]; then
+            continue
         fi
         break
     done
@@ -2500,15 +2531,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # was set, and the rest is room for the sheet to grow without a section
         # coming off the end of it.
         L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
-        L2:turn|L2:wake) v=1500 ;;
-        # 9,600 since 2026-08-15; 3,200 before, a number from when the store
-        # was young. The block's size is bounded by RETRIEVAL — TOP_K notes,
-        # the directive cap, the pinned tier — and with the store at ~209
-        # records of ~360 chars each, a full retrieval measures 9,215. That
-        # is the contract doing exactly what it promises, not growth to slim,
-        # so the budget rises to the measured need (rule 36: raise the budget
-        # or slim the source, never cut).
-        L3:turn|L3:wake) v=9600 ;;
+        # State is authoritative and never cut. The live report normally sits
+        # below 5 KB; the remainder absorbs ordinary queue and status motion.
+        L2:turn|L2:wake) v=5500 ;;
+        # Retrieval bounds the memory block by record count and field sizes.
+        # This budget holds a full live retrieval with working room.
+        L3:turn|L3:wake) v=16000 ;;
         # Split by profile since 2026-08-15, and the engineering drawer is
         # why. 8,000 (2026-08-11) was sized for a working drawer of open
         # threads beside the shelf, conduct and the catches — but the settled
@@ -2526,13 +2554,9 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # and ~15,400 on a wake. The numbers hold those shapes with room.
         # (4,000 since 2026-08-09 before all this; 2,400 before that.)
         L4:turn) v=12000 ;;  L4:wake) v=16000 ;;
-        # The spec's table read 600 here until 2026-08-08 and the assembler has
-        # always set 1,000; the table was corrected to the shipped number rather
-        # than the other way round, because rule 22 names nine drawers the index
-        # must carry, each a path and a description, and nine of those do not
-        # fit in 600 bytes. Holding the smaller number meant dropping a drawer,
-        # which is the failure rule 22 exists to prevent.
-        L5:turn|L5:wake|L5:job) v=1000 ;;
+        # The complete drawer index is small but grows when a durable source is
+        # added. It always rides whole, including on jobs.
+        L5:turn|L5:wake|L5:job) v=2000 ;;
         L6:turn) v=8000 ;;  L6:wake) v=3000 ;;
         L7:turn|L7:wake) v=500 ;;
         # 300 in the spec's table, and 300 was the size of the frame BEFORE it
@@ -6078,11 +6102,15 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
 # event stream instead of the bare answer, and CLAUDE_CLASSIFY_TIMEOUT as the
 # same ceiling the Claude path takes.
 codex_classify() {  # <model> <system prompt>  [question on stdin]
-    local model="$1" sys="$2" slug d instr rc
+    local model="$1" sys="$2" slug d instr err raw rc refusal
     slug="$(codex_model_resolve "$model")"
     codex_available || return 1
     d="$(claude_sterile_cwd)"
     instr="$(mktemp "${TMPDIR:-/tmp}/deskcrab-codex-classify.XXXXXX")" || return 1
+    err="$(mktemp "${TMPDIR:-/tmp}/deskcrab-codex-classify-err.XXXXXX")" \
+        || { rm -f "$instr"; return 1; }
+    raw="$(mktemp "${TMPDIR:-/tmp}/deskcrab-codex-classify-raw.XXXXXX")" \
+        || { rm -f "$instr" "$err"; return 1; }
     printf '%s' "$sys" > "$instr"
     local -a bound=()
     [ "${CLAUDE_CLASSIFY_TIMEOUT:-0}" -gt 0 ] 2>/dev/null \
@@ -6092,7 +6120,8 @@ codex_classify() {  # <model> <system prompt>  [question on stdin]
       env -u OPENAI_API_KEY ${bound[@]+"${bound[@]}"} "$CODEX_BIN" exec \
           --ignore-user-config --skip-git-repo-check \
           --dangerously-bypass-approvals-and-sandbox --json --color never \
-          -C "$d" -m "$slug" -c "model_instructions_file=$instr" - 2>/dev/null )  \
+          -C "$d" -m "$slug" -c "model_instructions_file=$instr" - 2>"$err" )  \
+    | tee "$raw" \
     | if [ "${CLAUDE_CLASSIFY_STREAM:-0}" = "1" ]; then
           CODEX_STREAM_MODEL="$slug" CODEX_STREAM_HEARTBEAT=0 "$LIB_DIR/codex-stream"
       else
@@ -6110,7 +6139,11 @@ for line in sys.stdin:
 print(text)'
       fi
     rc=${PIPESTATUS[0]}
-    rm -f "$instr" 2>/dev/null
+    if [ "$rc" -ne 0 ]; then
+        refusal="$(grep -iEhm1 "$CODEX_LIMIT_RE" "$err" "$raw" 2>/dev/null || true)"
+        [ -n "$refusal" ] && codex_limit_record "$refusal"
+    fi
+    rm -f "$instr" "$err" "$raw" 2>/dev/null
     return "$rc"
 }
 

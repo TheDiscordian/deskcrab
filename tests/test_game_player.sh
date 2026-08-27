@@ -401,6 +401,19 @@ check_eq "wired to game_player.py, not merely present in lib" \
     "$(grep -c 'game_player.py' "$HEADLESS")" "1"
 check_eq "and the policy step is rules-first: play refuses reasoning until exit 4" \
     "$(grep -c 'no-rule-matched' "$HEADLESS")" "1"
+snap 1170 '[]' '{"messages":[
+    {"id":9010,"channel":"local","incoming":true,"sender":"Nearby Player","text":"Try the east door"}
+]}'
+python3 "$GP" step --local >/dev/null 2>&1 || true
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" walk 130 650 2>&1)" || CODE=$?
+check_eq "an unanswered player message blocks autonomous movement: exit 6" "$CODE" "6"
+contains "$OUT" "reply before any further play" \
+    && ok "the refusal points Sol to the shared reply ACTION" \
+    || fail "the refusal points Sol to the shared reply ACTION" "$OUT"
+refute "the blocked movement emitted no game action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
 snap 1171 '[{"sidx":55,"id":2,"x":121,"z":648},{"sidx":66,"id":2,"x":130,"z":655}]'
 fake_bridge done
 OUT="$(bash "$HEADLESS" entity npc 2 3)"; CODE=$?
@@ -576,6 +589,8 @@ check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
 check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
 check "routine player process boundaries resume the saved Codex thread" \
     grep -q '"$CODEX" --profile.*CODEX_PROFILE.*exec resume' "$BOC"
+check "the autonomous player exports the pending-message action gate" \
+    grep -q 'export BETTY_OPENRSC_AUTONOMOUS=1' "$BOC"
 check "resumed play keeps the no-sleep command guard" \
     grep -A4 '"$CODEX" --profile.*CODEX_PROFILE.*exec resume' "$BOC" | \
         grep -q -- '--dangerously-bypass-hook-trust'
