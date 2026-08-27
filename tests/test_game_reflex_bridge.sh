@@ -152,6 +152,34 @@ refute "the notice file was consumed" test -f "$S/notice-58.json"
 check_eq "and a notice writes NO receipt" "$(cat "$S/receipt.json")" "$RECEIPT_BEFORE"
 
 echo
+echo "talk-npc and the npcs snapshot field (rules 3, 5-7):"
+python3 - "$S/state.json" <<'PY' && ok "the snapshot lists visible NPCs nearest first" \
+    || fail "the snapshot lists visible NPCs nearest first"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["npcs"] == [
+    {"sidx": 7, "id": 474, "x": 121, "z": 651},
+    {"sidx": 9, "id": 485, "x": 125, "z": 650},
+], s["npcs"]
+PY
+wact 60 "$(now_ms)" "type=talk-npc" "sidx=7" "npc=474"
+OUT="$(harness exec)"
+contains "$OUT" "talk sidx=7" && ok "talk-npc reaches the host with the server index" \
+    || fail "talk-npc reaches the host with the server index" "$OUT"
+check_eq "and is receipted done" "$(rstatus)" "done"
+contains "$(cat "$S/receipt.json")" '"id":60' \
+    && ok "the receipt carries the ACTION id, not the npc type id" \
+    || fail "the receipt carries the ACTION id, not the npc type id" "$(cat "$S/receipt.json")"
+wact 61 "$(now_ms)" "type=talk-npc" "sidx=7" "npc=999"
+OUT="$(harness exec)"
+refute "a swapped NPC is not talked to" contains "$OUT" "talk sidx"
+check_eq "the type mismatch is named" "$(rstatus)" "refused-npc-mismatch"
+wact 62 "$(now_ms)" "type=talk-npc" "sidx=42" "npc=474"
+OUT="$(harness exec)"
+refute "a despawned NPC is not talked to" contains "$OUT" "talk sidx"
+check_eq "the missing NPC is named" "$(rstatus)" "refused-no-such-npc"
+
+echo
 echo "two simultaneous warnings both reach the player (rules 6-7, 10):"
 rm -f "$S"/notice-*.json "$S/engine-state.json"
 "$BG" disable eat-low-health >/dev/null

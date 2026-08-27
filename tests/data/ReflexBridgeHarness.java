@@ -94,6 +94,39 @@ public class ReflexBridgeHarness {
 			return out;
 		}
 
+		// Two scripted visible NPCs: server index 7 is type 474 two tiles
+		// away, server index 9 is type 485 five tiles away. Deliberately
+		// listed FAR one first, so the snapshot's nearest-first sort is
+		// observable, not an accident of input order.
+		final int[] npcSidx = {9, 7};
+		final int[] npcType = {485, 474};
+		final int[] npcAbsX = {125, 121};
+		final int[] npcAbsZ = {650, 651};
+
+		public int npcCount() {
+			return npcSidx.length;
+		}
+
+		public int npcServerIndex(int i) {
+			return npcSidx[i];
+		}
+
+		public int npcTypeId(int i) {
+			return npcType[i];
+		}
+
+		public int npcX(int i) {
+			return npcAbsX[i];
+		}
+
+		public int npcZ(int i) {
+			return npcAbsZ[i];
+		}
+
+		public void talkToNpc(int serverIndex) {
+			events.add("talk sidx=" + serverIndex);
+		}
+
 		public void useItem(int slot) {
 			events.add("eat slot=" + slot);
 		}

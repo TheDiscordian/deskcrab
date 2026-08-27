@@ -51,8 +51,11 @@ Three parts:
    `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
    `fatigue` (0–100), `x` and `z` (world coordinates), `in_combat`, `opponent` (`{"x":…,"z":…}`
    while a fighting opponent is visible, else `null`), `inventory` (array of `{"id":…,"count":…}`
-   in slot order), and `messages` (the last few game messages, newest last). Only what the player's
-   own client can see is ever in it; the bridge reads no server internals.
+   in slot order), `messages` (the last few game messages, newest last), and `npcs` (the NPCs the
+   client currently holds as visible, nearest to the player first, capped at 12: each
+   `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
+   its world tile). Only what the player's own client can see is ever in it; the bridge reads no
+   server internals.
 
 4. The bridge is **inert by default**. It activates only when `DESKCRAB_GAME_STATE_DIR` is present
    in the client's environment; the stock launcher does not set it, so the plain client is
@@ -69,14 +72,22 @@ Three parts:
 
 5. The action vocabulary is closed, and grows only by a change to this spec: `eat` (use one
    inventory food item, by slot), `walk` (walk to an absolute tile; `flee` in a rule compiles to
-   this), and `warn` (display a local client-side message to the player — nothing is sent to the
-   server). Nothing in this layer can log in, create or delete a character, talk to another
+   this), `warn` (display a local client-side message to the player — nothing is sent to the
+   server), and `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
+   same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
+   NPCs only and structurally cannot message another player). `talk-npc` belongs to the
+   deliberate-play channel — an action file written by the player's own hand or harness — not to
+   reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
+   (rule 9). Nothing in this layer can log in, create or delete a character, talk to another
    player, drop, trade, or spend. The bridge refuses any action type it does not know.
 
 6. `action.json` and every notice file are flat `key=value` lines: `ts` (epoch ms when the engine
    emitted it), `id` (the engine's monotonically increasing action id), `type`, then the type's
    parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`
-   for walk; `text` for warn). `action.json` is a single slot: one action, and the engine never
+   for walk; `text` for warn; `sidx` and `npc` — the server index and the type id the emitter saw
+   there, the latter deliberately NOT named `id` so it can never collide with the action id line —
+   for talk-npc, so a despawned or swapped NPC is refused as `refused-no-such-npc` or
+   `refused-npc-mismatch`, never talked to blind). `action.json` is a single slot: one action, and the engine never
    writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
    firing is written to its own `notice-<id>.json`, named by the same monotonic id it carries, so
    two notice rules firing on one snapshot — or on adjacent snapshots inside one bridge tick —
