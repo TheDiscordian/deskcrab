@@ -455,5 +455,123 @@ CODE=0; OUT="$(env "${ENGENV[@]}" bash "$HEADLESS" engine stop 2>&1)" || CODE=$?
 check_eq "engine stop tears it down" "$CODE" "0"
 refute "and the engine process is gone" sh -c "kill -0 $EPID 2>/dev/null"
 
+echo
+echo "the ordinary player command (spec rule 14):"
+# The 2026-08-27 completion review found the GPT Sol player running as an ad
+# hoc transient unit whose prompt and log lived only in /tmp, with no
+# installed command, no forced-exit handoff, and a hard-coded display. The
+# ordinary command must be committed bytes, installed on PATH, pinned to the
+# real model, supervised (Restart=always), and every start must recompose
+# its prompt from ground truth as it is NOW — never from a copy taken when
+# play began.
+BOC="$GAME_TREE/headless/betty-openrsc"
+check "the command is deployed beside the harness" test -f "$BOC"
+BOCR="$(readlink -f "$BOC")"
+case "$BOCR" in
+    "$CF"/*) ok "and resolves into the game repo" ;;
+    *)       fail "and resolves into the game repo" "$BOCR" ;;
+esac
+git -C "$CF" ls-files --error-unmatch headless/betty-openrsc >/dev/null 2>&1 \
+    && ok "and is committed there, not untracked" \
+    || fail "and is committed there, not untracked"
+check_eq "deployed bytes are the committed bytes (clean git status)" \
+    "$(git -C "$CF" status --porcelain -- headless/betty-openrsc 2>/dev/null | grep -c '')" "0"
+PATHDOOR="$REAL_HOME/.local/bin/betty-openrsc"
+check "the command is installed on PATH (.local/bin)" test -x "$PATHDOOR"
+check_eq "and the installed door is the same committed bytes" \
+    "$(readlink -f "$PATHDOOR" 2>/dev/null)" "$BOCR"
+check "the player model is pinned to a real GPT Sol" grep -q 'gpt-5.6-sol' "$BOC"
+check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
+check "and restarts are never rate-limited away" grep -q 'StartLimitIntervalSec=0' "$BOC"
+check "as its own transient user unit" grep -q 'orsc-player.service' "$BOC"
+check "the live display is read from the harness run state" grep -q 'run/display' "$BOC"
+refute "and never hard-coded (no :97 anywhere in the door)" grep -q ':97' "$BOC"
+refute "nothing of the player lives under /tmp" \
+    grep -qE '/tmp/[a-z.-]*(player|prompt|handoff)' "$BOC"
+check "login reads the stored credentials file, not an inline secret" \
+    grep -q 'credentials' "$BOC"
+check_eq "play walks the whole stack in order: client, login, engine, player" \
+    "$(sed -n '/^cmd_play()/,/^}/p' "$BOC" | grep -c 'stack_up\|ensure_login\|engine_up\|player_start')" "4"
+
+if [ -f "$BOC" ]; then
+# Functional: composition. A fake player home and harness run dir; the
+# prompt door must discover the display, objective, snapshot and CURRENT
+# handoff at the moment it is asked.
+PH="$SANDBOX/phome"; OH2="$SANDBOX/ohome2"
+mkdir -p "$PH" "$OH2/run"
+echo 55 > "$OH2/run/display"
+printf 'BASE-PROMPT-MARKER\n' > "$PH/prompt.md"
+printf 'goal: fetch flour; step 7 of 9; next: walk to the mill\n' > "$PH/handoff.md"
+printf 'cooks-two\n' > "$DESKCRAB_GAME_DIR/objective"
+snap 140 '[{"sidx":9,"id":11,"x":121,"z":649}]'
+BOCENV=(BETTY_OPENRSC_HOME="$PH" BETTY_OPENRSC_HEADLESS="$OH2" \
+        DESKCRAB_GAME_STATE_DIR="$DESKCRAB_GAME_STATE_DIR" \
+        DESKCRAB_GAME_DIR="$DESKCRAB_GAME_DIR")
+OUT="$(env "${BOCENV[@]}" bash "$BOC" prompt 2>&1)"
+contains "$OUT" "BASE-PROMPT-MARKER" && ok "prompt opens with the durable base prompt" \
+    || fail "prompt opens with the durable base prompt" "$OUT"
+contains "$OUT" ":55" && ok "the display is discovered from run/display, not remembered" \
+    || fail "the display is discovered from run/display, not remembered" "$OUT"
+contains "$OUT" "cooks-two" && ok "the durable objective rides the composition" \
+    || fail "the durable objective rides the composition" "$OUT"
+contains "$OUT" "step 7 of 9" && ok "so does the handoff's exact state" \
+    || fail "so does the handoff's exact state" "$OUT"
+contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
+    || fail "and a fresh snapshot summary" "$OUT"
+
+# Functional: the unit contract and forced-exit recomposition, through the
+# same shimmed systemd doors as the engine test above. The fake codex
+# records the exact prompt it was handed; run-player is what systemd
+# re-execs on every restart, so driving it again after moving the handoff
+# IS the forced-exit path: the successor must see the moved handoff.
+PSD="$SANDBOX/psdfake"; mkdir -p "$PSD"
+cp "$SDFAKE/systemd-run" "$SDFAKE/systemctl" "$PSD/"
+cat > "$PSD/fakecodex" <<'SH'
+#!/bin/bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+printf '%s\n' "$@" >> "$dir/codex-capture"
+printf -- '----8<----\n' >> "$dir/codex-capture"
+exit 0
+SH
+chmod +x "$PSD/fakecodex"
+POCENV=(PATH="$PSD:$PATH" "${BOCENV[@]}" BETTY_OPENRSC_CODEX="$PSD/fakecodex")
+CODE=0; OUT="$(env "${POCENV[@]}" bash "$BOC" player-start 2>&1)" || CODE=$?
+check_eq "player-start through the shimmed doors answers cleanly" "$CODE" "0"
+grep -q -- '--user' "$PSD/systemd-run-args" 2>/dev/null \
+    && grep -q -- '--unit=orsc-player.service' "$PSD/systemd-run-args" 2>/dev/null \
+    && ok "the player was started as the transient orsc-player user unit" \
+    || fail "the player was started as the transient orsc-player user unit" \
+            "$(cat "$PSD/systemd-run-args" 2>/dev/null)"
+grep -q 'Restart=always' "$PSD/systemd-run-args" 2>/dev/null \
+    && ok "with Restart=always riding the unit" \
+    || fail "with Restart=always riding the unit"
+grep -q 'StartLimitIntervalSec=0' "$PSD/systemd-run-args" 2>/dev/null \
+    && ok "and the start limit disarmed" || fail "and the start limit disarmed"
+for i in $(seq 1 50); do [ -s "$PSD/codex-capture" ] && break; sleep 0.1; done
+contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "step 7 of 9" \
+    && ok "the first player received the composed prompt, handoff included" \
+    || fail "the first player received the composed prompt, handoff included"
+contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "gpt-5.6-sol" \
+    && ok "and was invoked pinned to GPT Sol" \
+    || fail "and was invoked pinned to GPT Sol"
+printf 'goal: NEW-GOAL; step 8 of 9; next: buy the pot\n' > "$PH/handoff.md"
+env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "NEW-GOAL" \
+    && ok "a restarted player recomposes: the successor sees the moved handoff" \
+    || fail "a restarted player recomposes: the successor sees the moved handoff"
+check_eq "both player runs were captured" \
+    "$(grep -c -- '----8<----' "$PSD/codex-capture" 2>/dev/null)" "2"
+check "every start leaves the exact composed prompt on file" \
+    test -s "$PH/run-prompt.txt"
+check_eq "and stamps the durable player log" \
+    "$(grep -c 'player start' "$PH/player.log" 2>/dev/null)" "2"
+env "${POCENV[@]}" bash "$BOC" stop player >/dev/null 2>&1 || true
+grep -q 'stop orsc-player.service' "$PSD/systemctl-stops" 2>/dev/null \
+    && ok "stop player goes through the unit door" \
+    || fail "stop player goes through the unit door" \
+            "$(cat "$PSD/systemctl-stops" 2>/dev/null)"
+fi
+
+echo
 refute "and still: no model CLI was invoked anywhere in the suite" \
     test -f "$SANDBOX/model-called"

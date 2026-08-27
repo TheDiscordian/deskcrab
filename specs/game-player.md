@@ -158,6 +158,45 @@ deliberate-play channel.
     reachable the harness refuses to start rather than pretend durability;
     `ORSC_HEADLESS_DETACH=setsid` is the explicit sandbox opt-down.
 
+14. Playing is one ordinary installed command. `betty-openrsc` is committed in the game
+    checkout's repository (`Core-Framework/headless/betty-openrsc`), deployed into the live
+    tree as a symlink beside the harness (rule 13's shape), and installed on PATH — the same
+    ordinariness as the chess doors. Its doors:
+    - `play` brings the whole stack up from stopped state, in order: Xvfb and the client
+      (`orsc-headless.sh start`), a mechanical login from the stored credentials file when the
+      snapshot says logged out (login is plumbing, never play), the reflex engine
+      (`engine start`), and the player itself — a real GPT Sol model (`codex exec --model
+      gpt-5.6-sol`, the pin visible in the committed bytes) running as its own transient user
+      unit `orsc-player.service` with `Restart=always` and `StartLimitIntervalSec=0`: a player
+      that exits, normally or killed, is restarted by the service manager, never by a watching
+      shell, and restarts are never rate-limited away. Layers already up are left alone, so
+      `play` is also the resume door.
+    - `status`, `log` and `stop` are the matching operational doors; `stop player` stops the
+      player alone, bare `stop` tears the whole stack down (the game server is not this
+      command's to stop). `login` is the mechanical login alone, and `player-start` starts the
+      supervised player unit alone when the stack is already up.
+    - The player's durable base prompt (`prompt.md`), its handoff file (`handoff.md`), the
+      exact composed prompt of the latest start (`run-prompt.txt`) and its log (`player.log`)
+      live in the durable player home (`BETTY_OPENRSC_HOME`, a directory in the user's own
+      files). Nothing of the player — prompt, handoff or log — lives under `/tmp`.
+    - Every player start — the first, or a restart after any exit — recomposes the effective
+      prompt from ground truth discovered at that moment (`run-player`, the unit's exec
+      target): the live display read from the harness's `run/display` (never hard-coded), the
+      bridge state dir, the durable objective, a fresh snapshot summary, the decision log's
+      tail, and the handoff file's contents as they are NOW. The base prompt obliges the
+      player to overwrite the handoff after every verified action, so a forced kill loses at
+      most the interval since the last action — and the composition never depends on the dead
+      predecessor having finished anything: with no handoff on file the successor is told to
+      derive the situation from the ground truth instead. `prompt` prints exactly what the
+      next start would receive — the audit door the tests pin.
+    - The playing loop the prompt demands is rule 12's: rules first through `orsc-headless.sh
+      play`, model judgment only on the `no-rule-matched` exit 4, verified plays written back
+      with `learn`. A single bridge action, an engine reflex, a login, or any builder job is
+      not playing; playing is that loop, continued for the whole run.
+    - The sandbox drives all of it through env doors: `BETTY_OPENRSC_HOME`,
+      `BETTY_OPENRSC_HEADLESS`, `BETTY_OPENRSC_CODEX`, `BETTY_OPENRSC_MODEL`,
+      `BETTY_OPENRSC_UNIT`.
+
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery
