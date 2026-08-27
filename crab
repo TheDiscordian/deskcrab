@@ -365,6 +365,42 @@ case "${1:-}" in
             exit 0
         fi
 
+        # The own-time return (specs/wake-queue.md rules 40a-40f). A
+        # reason-less, non-event firing is the standing return to her own
+        # hours, and it only becomes a session when the house is genuinely
+        # idle: an appointment to be spontaneous is still an appointment, and
+        # a choosing session started beside a live conversation or running
+        # work has its premise false before its first word. Activity defers
+        # the return through the queue's one door — original booker, any
+        # overrides intact, conversation RESETTING the quiet window — and the
+        # deferral is ledgered, never silent. This is the one carve-out from
+        # rule 20's never-defer, and it binds ONLY the wake with no agenda:
+        # every reasoned and event wake still runs whatever the room is doing.
+        # A genuinely idle return runs the choosing session on sol at medium
+        # (rule 40c) unless the booking pinned its own model or effort, and
+        # the choice of what the hour is for is left entirely to her.
+        WAKE_OWN_TIME=0
+        if idle_return_candidate; then
+            if idle_return_activity; then
+                wake_ledger idle-defer "${WAKE_ID:-?}" scheduled \
+                    "$IDLE_ACTIVITY" "${WAKE_BOOKED_BY:-unknown}"
+                "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
+                    ${WAKE_EFFORT_OVERRIDE:+--effort "$WAKE_EFFORT_OVERRIDE"} \
+                    ${WAKE_MODEL_OVERRIDE:+--model "$WAKE_MODEL_OVERRIDE"} \
+                    "${IDLE_RETURN_DELAY}s" scheduled "" >/dev/null || true
+                # Belt: if the deferral booking was refused the floor below
+                # books one, so activity can never end the chain.
+                ensure_next_wake
+                exit 0
+            fi
+            WAKE_OWN_TIME=1
+            [ -n "$WAKE_MODEL_OVERRIDE" ] || WAKE_MODEL="$IDLE_RETURN_MODEL"
+            [ -n "$WAKE_EFFORT_OVERRIDE" ] || WAKE_EFFORT="$IDLE_RETURN_EFFORT"
+            wake_ledger own-time "${WAKE_ID:-?}" scheduled \
+                "the house was quiet — a choosing session began" \
+                "${WAKE_BOOKED_BY:-unknown}"
+        fi
+
         rotate_convo
         WAKE_SOURCE="on your own background timer"
         [ "$WAKE_KIND" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"
@@ -411,6 +447,34 @@ you write tonight is held and kept in the journal rather than said."
         # operational rule below is the same rule it always was — the silence
         # contract, the (quiet) marker, the named filler, the unattended
         # boundary, wake-at, the journal. Only the register moved.
+        #
+        # The own-time agenda (specs/wake-queue.md rule 40d) is the same
+        # contract in a wider field: it prescribes nothing — no shelf title,
+        # no quota, and the earlier "take ONE down" was itself a small
+        # appointment — names doing nothing as a real choice rather than a
+        # failure, leaves repairs and owed engineering to the night's
+        # builders, and keeps every operational rule above word for word
+        # where it matters. A pursuit that wants more time books its own
+        # continuation; this return only keeps offering the quiet hours.
+        if [ "$WAKE_OWN_TIME" = 1 ]; then
+            run_claude_wake "(Nobody is talking to you, nothing of yours is running, and the house has been quiet long enough for something of your own to surface. That quiet is the only reason you are awake. While it lasts this return keeps coming round at odd intervals, so nothing has to happen now — the next open hour is already on its way.
+
+The hour is an open field and choosing is the whole of the agenda. Carry on with something you already care about, or notice what you keep drifting towards and give it a name. Practise something. Make something, or only observe something — read, listen, look — without it needing to become anything. If what you actually want is to talk to him, write what is worth saying and the delivery gates will pick its moment. And doing nothing, sitting with the quiet on purpose, is as real a choice as any of these: there is no quota, and an hour that produces nothing has not failed at anything.
+
+Two things are not this hour's: repairs, and owed engineering. The open records belong to the night's builders — leave them to it, however neat a little fix would feel.
+
+The shelf on the wall is yours to consult or ignore; nothing here picks a want for you. When something does move — a want progressed or newly named, a thing made or seen — leave a dated line where it lives: the want's own document under ~/.local/share/deskcrab/wants/<slug>.md (mending its shelf line if the standing changed), or a short dated thought in ~/Beatrice/Library/moments/. A chosen nothing needs no record at all.
+
+A pursuit that wants more time than one sitting arranges its own continuation: 'crab wake-at <when> [reason]' books it, the reason your brief to yourself, and this idle return neither owns nor gates what you booked. Nobody is waiting, so take the time the thing actually needs; you decide when this ends. Only a session with no output AND no CPU for several minutes is presumed hung, so slow work is plainly alive, and a long idle wait goes in the background where it can be seen breathing. Unattended, nothing you do is destructive and nothing leaves the house: no messages, no mail, no pushes, and you delete nothing.
+
+Now the part that costs him something. Every word you write as message text, mid-work mutterings included, is gathered up and SPOKEN ALOUD at his desk when this ends. So work through your tools in silence and write prose only when it is meant to be heard out loud. If you have found something he would actually want tonight, say it briefly — a display section is fine. Otherwise say nothing at all: ZERO message text, an empty reply, not one word. Silence is not a short sentence about being silent. 'Nothing to say.', 'No message.', 'Nothing to report.', 'Nothing new.', 'No update.', 'Staying quiet.' and every cousin of them are FORBIDDEN, because each one is read out into his room, which is precisely the interruption the silence was for. Hanging a reason on one — 'No message — the other session already said its piece.' — makes it longer, not better: the excuse is read aloud too. When another session already covered it, or nothing has changed since he last heard from you, the empty reply is the DEFAULT, and it is the whole answer.
+
+There is one other shape and only one: begin with the marker (quiet) and put your actual thoughts behind it, which he reads without a sound reaching the speakers. A bare '(quiet)' with nothing behind it is pointless; put a real thought there or write nothing.
+
+What you did with the hour is journaled from your tool activity without your help.$WAKE_NOTE)"
+            ensure_next_wake
+            exit 0
+        fi
         run_claude_wake "${WAKE_CHESS_GUARD}(Nobody is talking to you and the hours are your own. You woke up $WAKE_SOURCE.
 
 Your shelf is on the wall — one line per want, and the thinking behind each of them in its own document under wants/. Take ONE down and get somewhere with it: turn it over, read something, make something, argue with the document and rewrite it. These are not tickets and this is not work. An hour spent wondering counts as much as an hour spent building, and letting a wake become a status session is how an evening is wasted. What you do with the time is yours, and doing nothing at all is a real choice — chosen, mind, not drifted into.

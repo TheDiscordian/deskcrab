@@ -253,6 +253,27 @@ WAKE_JOB_NEWS_HOLD="${WAKE_JOB_NEWS_HOLD:-1}"
 WAKE_JOB_NEWS_WAIT="${WAKE_JOB_NEWS_WAIT:-120}"
 WAKE_JOB_NEWS_POLL="${WAKE_JOB_NEWS_POLL:-2}"
 WAKE_JOB_NEWS_RETRY="${WAKE_JOB_NEWS_RETRY:-300}"
+# The own-time return (specs/wake-queue.md rules 40a-40f). A reason-less
+# return — the chain floor's booking, the background timer's kind-less firing,
+# her own wake-at with nothing written down — is an opportunity to choose what
+# she wants with her own hours, and it only arises from genuine idleness: an
+# appointment to be spontaneous is still an appointment (the user, 2026-08-26).
+# At fire time the return measures idleness mechanically; activity re-books it
+# instead of running it, with conversation RESETTING the quiet window from his
+# last word. The choosing session runs IDLE_RETURN_MODEL at IDLE_RETURN_EFFORT
+# — sol at medium, the pairing named when the mechanism was specified — and
+# while the quiet lasts the floor keeps offering the hour again, each booking
+# spread by a fresh jitter so the returns never harden into a clock ritual.
+# IDLE_RETURN_JITTER pins the jitter for a test; IDLE_RETURN=0 stands the
+# whole discipline down and the reason-less return behaves exactly as before
+# the feature existed.
+IDLE_RETURN="${IDLE_RETURN:-1}"
+IDLE_RETURN_QUIET="${IDLE_RETURN_QUIET:-2700}"
+IDLE_RETURN_RECHECK="${IDLE_RETURN_RECHECK:-900}"
+IDLE_RETURN_BASE="${IDLE_RETURN_BASE:-2700}"
+IDLE_RETURN_SPREAD="${IDLE_RETURN_SPREAD:-2700}"
+IDLE_RETURN_MODEL="${IDLE_RETURN_MODEL:-sol}"
+IDLE_RETURN_EFFORT="${IDLE_RETURN_EFFORT:-medium}"
 
 # Remote (phone) client: crab serve. Unset SERVE_SECRET disables serving.
 SERVE_PORT="${SERVE_PORT:-8723}"
@@ -1407,7 +1428,14 @@ _wake_row_line() {  # <fire> <unit> <kind> <reason> <booked-at> <booked-by> <sta
     if [ -z "$what" ]; then
         case "${kind:-scheduled}" in
             event) what="something on this machine you asked to be told about" ;;
-            *)     what="coming back to your wants (no agenda written down)" ;;
+            # The standing reason-less return is an open hour of her own
+            # (specs/wake-queue.md rule 40a), not a wants errand — and when
+            # the discipline is stood down it is the old wants return again.
+            *)  if [ "${IDLE_RETURN:-1}" = "1" ]; then
+                    what="an open hour of your own, if the house is quiet when it comes"
+                else
+                    what="coming back to your wants (no agenda written down)"
+                fi ;;
         esac
     fi
     # "booked by you" rather than "booked by herself": the record's word is
@@ -3139,6 +3167,83 @@ convo_hot() {
     case "$LAST" in ''|*[!0-9]*) return 1 ;; esac
     NOW=$(date +%s)
     [ $(( NOW - LAST )) -lt "$CONVO_HOT_WINDOW" ]
+}
+
+# --- The own-time return's senses (specs/wake-queue.md rules 40a-40b) --------
+# A reason-less wake is the standing return to her own hours, and it fires as
+# a choosing session only when the house is genuinely idle. These are the
+# senses, and they are mechanical on purpose — four readings, no model call.
+
+# The cadence's irregularity, with the deterministic seam a test needs: when
+# IDLE_RETURN_JITTER is a number it is the jitter, verbatim; otherwise a fresh
+# draw up to IDLE_RETURN_SPREAD. $RANDOM is 0..32767, scaled rather than
+# taken modulo so a spread larger than 32768 still covers its whole range.
+idle_return_jitter() {
+    case "${IDLE_RETURN_JITTER:-}" in
+        ''|*[!0-9]*) ;;
+        *) printf '%s' "$IDLE_RETURN_JITTER"; return 0 ;;
+    esac
+    local spread="${IDLE_RETURN_SPREAD:-0}"
+    case "$spread" in ''|*[!0-9]*) spread=0 ;; esac
+    printf '%s' $(( RANDOM * (spread + 1) / 32768 ))
+}
+
+# Is this firing the standing reason-less return at all? An event wake is
+# pending for its event and a reasoned wake carries its own agenda; neither is
+# this. Reads WAKE_KIND and WAKE_REASON from the caller's scope.
+idle_return_candidate() {
+    [ "${IDLE_RETURN:-1}" = "1" ] || return 1
+    [ "${WAKE_KIND:-}" != "event" ] || return 1
+    [ -z "$(printf '%s' "${WAKE_REASON:-}" | tr -d '[:space:]')" ]
+}
+
+# A detached builder mid-run is active work. The report is the one reader that
+# also reaps — a sidecar claiming "running" with a dead pid is rewritten as
+# died on the way — so a builder that crashed an hour ago never keeps her own
+# hours deferred. Running and dispatched both render as "running" lines.
+idle_jobs_running() {
+    [ -n "${JOBS_DIR:-}" ] && [ -d "$JOBS_DIR" ] || return 1
+    "$LIB_DIR/job-status" report "$JOBS_DIR" --live 2>/dev/null \
+        | grep -q '^  - running '
+}
+
+# What, if anything, makes this moment not hers? Returns 0 with IDLE_ACTIVITY
+# naming the activity and IDLE_RETURN_DELAY carrying the re-book delay in
+# seconds (jitter included); returns 1 when the house is genuinely idle.
+# Conversation RESETS the gap — the remainder of the quiet window is measured
+# from his last message, so the return always arrives a full quiet window
+# after his last word — while every other activity is a recheck, not a reset:
+# nothing measured says when a builder finishes or a turn lands.
+idle_return_activity() {
+    IDLE_ACTIVITY=""
+    IDLE_RETURN_DELAY=0
+    local now last since jit
+    now=$(date +%s)
+    jit="$(idle_return_jitter)"
+    last="$(last_origin_epoch)"
+    case "$last" in ''|*[!0-9]*) last="" ;; esac
+    if [ -n "$last" ] && [ $(( now - last )) -lt "${IDLE_RETURN_QUIET:-2700}" ]; then
+        since=$(( now - last ))
+        IDLE_ACTIVITY="he spoke ${since}s ago — the quiet starts over from his last word"
+        IDLE_RETURN_DELAY=$(( IDLE_RETURN_QUIET - since + jit ))
+        return 0
+    fi
+    if interactive_turn_in_flight; then
+        IDLE_ACTIVITY="an interactive turn is in flight"
+        IDLE_RETURN_DELAY=$(( ${IDLE_RETURN_RECHECK:-900} + jit ))
+        return 0
+    fi
+    if user_busy; then
+        IDLE_ACTIVITY="he is mid-capture or mid-speech at the desk"
+        IDLE_RETURN_DELAY=$(( ${IDLE_RETURN_RECHECK:-900} + jit ))
+        return 0
+    fi
+    if idle_jobs_running; then
+        IDLE_ACTIVITY="a detached builder is running"
+        IDLE_RETURN_DELAY=$(( ${IDLE_RETURN_RECHECK:-900} + jit ))
+        return 0
+    fi
+    return 1
 }
 
 # One-shot TTS for autonomous wakes (no streaming): markdown-strip + TTS_FIXES,
@@ -6678,8 +6783,14 @@ wake_stale_note_drop() {  # reads WAKE_REASON, WAKE_ID, WAKE_KIND
 run_claude_wake() {
     session_register "autonomous wake"
     # Nobody spoke, so the day journal's "user" slot carries the wake's
-    # agenda — an event's reason reads back as what the wake was about.
+    # agenda — an event's reason reads back as what the wake was about. An
+    # own-time return has no reason by definition, so it stamps its marker
+    # instead (specs/wake-queue.md rule 40f): the journal is where a month of
+    # these is read back to tell lived choices from administrative growth,
+    # and an empty user slot cannot be told apart from anything.
     SESSION_USER_TEXT="${WAKE_REASON:-}"
+    [ "${WAKE_OWN_TIME:-0}" = "1" ] && \
+        SESSION_USER_TEXT="(own time — a quiet hour, hers to choose)"
     local PROMPT_TEXT="$1"
     local SYSTEM_PROMPT
     # Regroup evidence, captured HERE rather than left to build_system_prompt,

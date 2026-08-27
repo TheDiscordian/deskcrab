@@ -127,8 +127,13 @@ for forbidden in PIPEORGAN_SHELF_TOPIC SEMAPHORE_OTHER_WANT CURRENT_PROGRESS_MAR
 done
 
 # --- (b) an autonomous wake composes from the one want in hand --------------
+# IDLE_RETURN=0: the remote turn above stamped a conversation origin seconds
+# ago, so with the own-time discipline standing this reason-less wake would be
+# deferred as activity (specs/wake-queue.md rule 40b) and no query would ever
+# compose. The subject here is the WAKE query shape, on the historic walk;
+# rule 40e's stand-down is the contract that this path survives exactly.
 rm -f "$WORK/composed.txt"
-"$WORK/repo/crab" wake >/dev/null 2>&1 || true
+IDLE_RETURN=0 "$WORK/repo/crab" wake >/dev/null 2>&1 || true
 [ -f "$WORK/composed.txt" ] || fail "the wake never built a recall query"
 
 SHAPE="$(head -n1 "$WORK/composed.txt")"

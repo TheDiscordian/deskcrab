@@ -49,7 +49,14 @@ CLAUDE_BIN="$SANDBOX_BIN/claude"
 LAST_ORIGIN_FILE="$WORK/last-origin"
 WANTS_FILE="$WORK/wants.md"
 WAKE_QUIET_HOURS=""
+IDLE_RETURN=0
 EOF
+# IDLE_RETURN=0: the wake below is fired with no positional reason, and in an
+# idle sandbox the own-time discipline (specs/wake-queue.md rules 40a-40f)
+# would route it to the choosing session on the codex engine — whose stub
+# emits no tool_use block, so the work trace this file exists to follow would
+# vanish for a reason that has nothing to do with reinforcement. The subject
+# here is the wordless wake's path to the judge, on the historic wants walk.
 printf '# Wants\n\n- a want, so the wake path is enabled at all\n' > "$WORK/wants.md"
 
 "$REPO/crab" memory add --kind directive --topics files \

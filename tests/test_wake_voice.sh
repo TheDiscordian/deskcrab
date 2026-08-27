@@ -71,6 +71,12 @@ Old, proud, fond of your own library, and brief. There is no register in which
 you stop being yourself.
 EOF
 
+# IDLE_RETURN=0 for the historic sections: their subject is the wants agenda
+# the reason-less wake has always carried, and rule 40e's stand-down is the
+# contract that it survives verbatim. The own-time agenda — what a reason-less
+# wake becomes in an idle house with the discipline standing — has its own
+# section at the bottom of this file, where the same operational rules are
+# proved to ride it unchanged (specs/wake-queue.md rule 40d).
 write_conf() {  # <quiet hours>
     cat > "$DESKCRAB_CONF" <<EOF
 ASSISTANT_NAME="Crab"
@@ -81,6 +87,7 @@ PROJECT_DIR="$SANDBOX/home"
 CUSTOM_PROMPT="$SANDBOX/persona.md"
 WANTS_FILE="$D/wants.md"
 WAKE_QUIET_HOURS="${1:-}"
+IDLE_RETURN=0
 EOF
 }
 write_conf ""
@@ -238,3 +245,76 @@ printf '\nBe honest with him about what you got through tonight.\n' >> "$SANDBOX
 check "a planted instruction is caught" [ -n "$(sweep turn)" ]
 mv "$SANDBOX/persona.orig" "$SANDBOX/persona.md"
 check_eq "and the sweep is clean again once it is removed" "$(sweep turn)" ""
+
+echo
+echo "the own-time agenda carries every operational rule too (rule 40d):"
+
+# Stand the discipline up (specs/wake-queue.md rules 40a-40f): a reason-less
+# wake in an idle sandbox is now the choosing session, and it runs on the
+# codex engine — so the capture moves to a codex stub, the same last-argument
+# discipline as the claude stub above. The exec road's last argument is the
+# prompt; the app-server probe is refused before the capture, exactly as the
+# shared stub refuses it, so a probe cannot blank the agenda under judgment.
+sandbox_stub codex <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${SANDBOX_CODEX_LOG:-/dev/null}"
+if [ "${1:-}" = "app-server" ]; then exit 75; fi
+printf '%s' "${@: -1}" > "$SANDBOX_AGENDA_FILE"
+cat > /dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"stub reply."}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2}}'
+exit 0
+STUB
+
+write_conf ""
+printf 'IDLE_RETURN=1\nIDLE_RETURN_JITTER=3\n' >> "$DESKCRAB_CONF"
+A="$(agenda scheduled "")"
+[ -n "$A" ] || die "the own-time return never reached the codex engine"
+
+check "silence is still asked for in words" has "$A" 'ZERO message text'
+for filler in "Nothing to say." "No message." "Nothing to report." \
+              "Nothing new." "No update." "Staying quiet."; do
+    check "the filler sentence is still named: $filler" \
+        grep -qF -- "$filler" <<<"$A"
+done
+check "naming them is still a prohibition" has "$A" 'FORBIDDEN'
+check "the reason is still given: they are read out into the room" \
+    has "$A" 'read out into his room|spoken aloud'
+check "the (quiet) marker still stands" grep -qF -- '(quiet)' <<<"$A"
+check "a bare marker is still refused" has "$A" "bare '\(quiet\)'"
+check "message text is still said out loud" has "$A" 'SPOKEN ALOUD'
+check "the display channel is still offered" has "$A" 'display section'
+check "dated progress still goes to the want's own document" \
+    has "$A" 'wants/<slug>\.md'
+check "a dated thought still has its home" has "$A" 'moments/'
+check "work bigger than one sitting still books its own next sitting" \
+    has "$A" 'crab wake-at'
+check "the stall reaper's terms still stand" has "$A" 'no output AND no CPU'
+check "long idle work still goes to the background" has "$A" 'background'
+check "the unattended boundary still holds" \
+    has "$A" 'no messages, no mail, no pushes'
+check "and nothing is deleted" has "$A" 'delete nothing'
+check "the journal still writes itself from her tools" has "$A" 'journaled'
+
+echo
+echo "while the field opens into a choosing hour, not a work order:"
+check "doing nothing is named as a real choice" has "$A" 'as real a choice'
+check "and an hour that produces nothing has not failed" has "$A" 'has not failed'
+refute "no shelf title is picked for her" \
+    has "$A" 'Learn to read a score|Keep a window box'
+check "repairs and owed engineering stay with the night's builders" \
+    has "$A" "night's builders"
+for ticket in "Review your wants shelf" "pick at most ONE want" \
+              "do not let this turn into a work or status session" \
+              "Take ONE down"; do
+    refute "the work order's sentence stays gone: $ticket" \
+        grep -qiF -- "$ticket" <<<"$A"
+done
+refute "the choosing agenda does not model the banned word" \
+    has "$A" '\bhonest(ly|y)?\b'
+check "it still addresses her, in the second person" has "$A" '\byour own\b|\byou\b'
+BYTES="$(printf '%s' "$A" | wc -c)"
+printf '  note  the own-time agenda is %s bytes (ceiling 3,600)\n' "$BYTES"
+check "it is inside the same agenda ceiling" [ "$BYTES" -le 3600 ]

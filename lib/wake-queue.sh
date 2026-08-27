@@ -1207,5 +1207,13 @@ ensure_next_wake() {
         wake_record_read "$f" || continue
         [ "$WK_KIND" = "scheduled" ] && [ "$WK_FIRE" -gt "$now" ] && return 0
     done
-    wake_book --by wake-chain-floor "$ENSURE_WAKE_DELAY" scheduled "" >/dev/null 2>&1 || true
+    # The floor's delay carries a fresh jitter while the own-time discipline
+    # stands (specs/wake-queue.md rule 40e), so recurring opportunities land
+    # irregularly instead of hardening into a clock ritual. Stood down, the
+    # flat historic delay comes back exactly.
+    local delay="$ENSURE_WAKE_DELAY"
+    if [ "${IDLE_RETURN:-1}" = "1" ]; then
+        delay="$(( ${IDLE_RETURN_BASE:-2700} + $(idle_return_jitter) ))s"
+    fi
+    wake_book --by wake-chain-floor "$delay" scheduled "" >/dev/null 2>&1 || true
 }

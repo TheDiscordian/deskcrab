@@ -307,8 +307,13 @@ check "and names it as this session's agenda" \
 MSG="$(wake_msg event "$AGENDA")"
 check "an event wake still carries its reason" contains "$MSG" "$AGENDA"
 
-# The timer's own wake has no agenda and must not invent one.
-MSG="$(wake_msg scheduled "")"
+# The timer's own wake has no agenda and must not invent one. IDLE_RETURN=0
+# stands the own-time discipline down (specs/wake-queue.md rule 40e) so the
+# historic reason-less path is the subject here — an idle sandbox would
+# otherwise route this firing to the choosing session on the codex engine,
+# whose own agenda is test_wake_idle_return.sh's and test_wake_voice.sh's to
+# judge.
+MSG="$(IDLE_RETURN=0 wake_msg scheduled "")"
 refute "a reasonless wake says nothing about an agenda it does not have" \
     contains "$MSG" "That is this session's agenda"
 check "and it still knows where it came from" \

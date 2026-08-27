@@ -151,6 +151,22 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Nobody is waiting on a wake, so it can afford more thinking.
 # WAKE_EFFORT="medium"
 
+# Optional: the own-time return (specs/wake-queue.md rules 40a-40f). A
+# reason-less wake — the chain floor's, the background timer's — fires as a
+# free choosing session only when the machine is genuinely idle: no recent
+# conversation, no turn in flight, nobody on the microphone, no builder
+# running. Activity re-books it instead, with conversation resetting the
+# quiet window, and the floor's delay carries a jitter so the returns never
+# harden into a clock ritual. Set IDLE_RETURN=0 to restore the flat floor,
+# the ordinary wake model and the wants agenda exactly.
+# IDLE_RETURN=1
+# IDLE_RETURN_QUIET=2700     # seconds since his last message that count as idle
+# IDLE_RETURN_RECHECK=900    # re-book delay when non-conversation activity is found
+# IDLE_RETURN_BASE=2700      # the floor's base delay between opportunities
+# IDLE_RETURN_SPREAD=2700    # up to this much fresh jitter on every booking
+# IDLE_RETURN_MODEL="sol"    # the choosing session's model
+# IDLE_RETURN_EFFORT="medium"
+
 # Optional: the staleness gate on held wake notes (specs/wake-queue.md rule
 # 27b). A note held for a hot conversation comes back through the queue; before
 # it is delivered, a cheap bounded judge reads what has actually been said

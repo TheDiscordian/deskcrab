@@ -732,7 +732,9 @@ herself, and a transcript whose last block is the previous night's note written 
 the embedder's own doorstep — memory-recall.md carries the assertions),
 `tests/test_wake_voice.sh` (the register the wake agenda is written in: every operational rule it
 carries, its own byte ceiling, and a sweep of all four assembled profiles for text that models the
-word her conduct bans),
+word her conduct bans — both agendas the reason-less wake can carry: the wants agenda under
+wake-queue.md rule 40e's stand-down, and the own-time choosing agenda with the same operational
+rules riding it unchanged per rule 40d, inside the same ceiling),
 `tests/test_wants_titles.sh` (one shelf reader), `tests/test_no_project_memory.sh` (persona
 separation on every invocation), `tests/test_regroup.sh` (the conditional block, and rule 37:
 a long quote arrives whole, the instructions stand whole, no clip marker anywhere),

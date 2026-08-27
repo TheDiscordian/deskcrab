@@ -170,7 +170,10 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 19. A fired wake MUST retire its own record first thing, before any early exit.
 20. An active interaction MUST NOT defer the session. The session runs; the output decision is made
     at the end. Deferring the session meant a wake during any conversation did no reading, no want
-    work, and no dated thought, and reached the user as an indistinguishable silence.
+    work, and no dated thought, and reached the user as an indistinguishable silence. The one
+    sanctioned exception is the reason-less own-time return (rule 40b): its only premise is
+    idleness, so activity re-books it — loudly, through the queue — rather than running a session
+    whose premise is false. A wake carrying ANY agenda keeps this rule whole.
 21. A wake blocked by the lock MUST be re-armed with its kind, reason and effort override intact,
     at a spaced slot.
 21a. An EVENT wake blocked past its lock wait MUST be re-armed on a short escalating backoff —
@@ -472,6 +475,64 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 40. Only a wake that will come back to the wants counts towards the floor. An event wake is pending
     for its event, and counting it lets one unrelated long-dated booking suppress every floor
     booking and end the chain.
+40a. **The own-time return.** A reason-less return — the chain floor's booking, the background
+    timer's kind-less firing, her own `crab wake-at <when>` with nothing written down, and any
+    deferral or outage retry of one of those: every firing whose stored reason is empty and whose
+    kind is not `event` — is an OPPORTUNITY to choose what she wants with her own hours, never an
+    appointment to work. Written 2026-08-26, on the user's correction of a single 23:20
+    "spontaneity" alarm: an appointment to be spontaneous is still an appointment, and one firing
+    cannot make wants develop — her own time has to arise from idleness. At fire time, after the
+    record is retired and the wake lock is taken, the return measures genuine idleness
+    mechanically — four readings, no model call: the last conversation origin older than
+    `IDLE_RETURN_QUIET` seconds, no delivery-queue ticket alive (rule 27c's own reading), the user
+    not mid-capture or mid-speech at the hardware, and no detached builder running or dispatched —
+    and only a genuinely idle house runs the choosing session.
+40b. A return that finds activity is DEFERRED through the queue's one door — re-booked scheduled
+    by its ORIGINAL booker with any rule 13a/13b override intact, and ledgered under its own
+    action (`idle-defer`) with what it found — never run against a false premise, and never
+    silently dropped. Conversation RESETS the gap rather than merely postponing the wake: a fresh
+    origin inside the quiet window re-books at the remainder of that window measured from his
+    last message, while every other activity re-books at `IDLE_RETURN_RECHECK`, each plus rule
+    40e's jitter. This is the one exception rule 20 names, and it stays narrow by construction:
+    rule 20 protects a wake WITH an agenda from losing its reading and its dated thought to a
+    busy moment, while this return's whole agenda IS the idleness — with the premise false there
+    is nothing to lose, and the deferral is the mechanism doing exactly what it is for. A return
+    that measured idle and began keeps rule 20 whole: nothing may pause, kill, defer or mute it
+    because activity arrived mid-session.
+40c. The choosing session runs on `IDLE_RETURN_MODEL` (default `sol`) at `IDLE_RETURN_EFFORT`
+    (default `medium`) — the model and effort named when the mechanism was specified — applied at
+    fire time, so the pin needs no record field and covers the record-less background firing too.
+    A booking that carries its own rule 13a/13b overrides keeps them: an explicit pin outranks a
+    default everywhere in this queue. The engine follows the name
+    ([model-backends.md](model-backends.md)), limits falling back down the same road every wake
+    takes.
+40d. The choosing agenda is an OPEN FIELD and prescribes nothing: continue something she already
+    cares about, notice and name a new want, practise something, make or observe something
+    without it having to become anything, say something to him (the delivery gates keep deciding
+    when it reaches him), or do nothing at all — named in the agenda as a real choice, never as
+    failure, with no quota and no shelf item pre-selected. Repairs and owed engineering are named
+    as the night's builders' work ([nightly.md](nightly.md) rule 58c) and NOT this hour's. A
+    pursuit that wants more time arranges its own continuation through `crab wake-at`, which this
+    mechanism neither owns nor gates — the floor already stands aside for any pending scheduled
+    booking (rule 39). Every operational rule the reason-less agenda has always carried — the
+    silence contract and its named filler sentences, the `(quiet)` marker, the unattended
+    boundary, the stall terms, the journal — rides the choosing agenda unchanged.
+40e. While idleness continues the opportunities RECUR, at a humane and somewhat irregular
+    cadence: the floor's booking delay is `IDLE_RETURN_BASE` seconds plus a fresh jitter of up to
+    `IDLE_RETURN_SPREAD` seconds, and every idle deferral adds the same jitter to its own base,
+    so returns never settle into a clock ritual and one quiet or do-nothing sitting never ends
+    the chain — the floor books the next opportunity exactly as it books after any other wake.
+    The jitter has a deterministic seam, because a test cannot assert on a moment it cannot pin:
+    `IDLE_RETURN_JITTER`, seconds, is used verbatim when set. `IDLE_RETURN=0` stands the whole
+    discipline down — the reason-less return runs immediately, on the ordinary wake model at the
+    ordinary effort, with the wants agenda, and the floor books flat `ENSURE_WAKE_DELAY`, exactly
+    as before the feature existed.
+40f. Every decision leaves evidence in records that already exist, never a new report: an
+    `idle-defer` and an `own-time` action land on the durable ledger, and the choosing session's
+    day-journal line carries the own-time marker in its user slot while its outcome is written
+    from tool activity as every wake's is (rule 25) — so a month of returns can be read back and
+    the lived choices, the new wants and the chosen nothings told apart from administrative
+    growth.
 
 ### The autonomous bookers
 
@@ -654,7 +715,12 @@ flowchart TD
   W --> W1["retire this booking's record<br/>before any early exit"]
   W1 --> W2["take the wake lock<br/>event: wait, in the urgent lane<br/>other kinds: yield to an unexpired claim"]
   W2 -->|lost| W3["re-book with kind, reason, effort intact<br/>event: escalating seconds — else a spaced slot"]
-  W2 -->|held| W4["assemble the wake profile<br/>agenda is the user message"]
+  W2 -->|held| I1{"reason-less return?<br/>(rule 40a)"}
+  I1 -->|"yes, and activity found"| I2["idle-defer: re-book by the original booker,<br/>reset plus jitter (rule 40b)"]
+  I1 -->|"yes, genuinely idle"| I3["own-time: sol at medium,<br/>the open-field agenda (rules 40c, 40d)"]
+  I1 -->|no| W4["assemble the wake profile<br/>agenda is the user message"]
+  I3 --> W4
+  I2 --> E
   W4 --> W5["generate under the account chain"]
   W5 --> G1{"stream error,<br/>no model output?"}
   G1 -->|yes| G1a["journal the failure<br/>re-book kinded, 30 min"]
@@ -793,6 +859,16 @@ and the 200 limit itself still holds),
 the byte budget is dropped whole, the result is valid UTF-8, a file built from such trims stays
 text to a plain grep, characters clear of the boundary survive, newlines and tabs flatten to
 spaces, and the budget itself still holds),
+`tests/test_wake_idle_return.sh` (rules 40a-40f: a reason-less return beside a fresh conversation
+origin books itself back by its original booker at the remainder of the quiet window plus the
+pinned jitter and starts no session; a live delivery-queue ticket and a running detached builder
+each defer it at the recheck delay; a genuinely idle house runs the choosing session on sol at
+medium through the codex engine, ledgered `own-time`, its agenda offering the open field — doing
+nothing named as a real choice, no shelf title, no work order, the night's builders holding the
+repairs — and a reasoned or event wake beside the same fresh origin still runs, which is rule 20
+standing; after a quiet result the floor books the next opportunity at base plus the pinned
+jitter, and a second idle firing chooses again; `IDLE_RETURN=0` restores the flat floor, the
+ordinary wake model and the wants agenda exactly),
 `tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own

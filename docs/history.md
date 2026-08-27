@@ -217,6 +217,24 @@ A run whose `WAKES_DIR` is not the live one does not arm anything at all — the
 gate, matching `job-runner`'s existing jobs-dir guard. The record is written, no unit is created, and
 a harness that has stubbed `systemd-run` opts in with `DESKCRAB_ALLOW_SCRATCH_BOOKING=1`.
 
+### 2026-08-27 — an appointment to be spontaneous is still an appointment
+
+The evening before, a single 23:20 wake stood on the queue with a reason telling her to develop a
+want at that hour. The user's correction: spontaneity cannot be booked, and one firing cannot make
+wants develop — her own time has to arise from idleness, not appointed wants. The standing
+reason-less return (the chain floor, the background timer) became the mechanism instead of a new
+alarm: at fire time it measures genuine idleness mechanically — conversation recency, delivery-queue
+tickets, the microphone, running builders — and only a quiet house runs the choosing session, on
+sol at medium. Activity defers the return through the queue's own door, with conversation RESETTING
+the quiet window rather than merely postponing the wake, and the floor's delay carries a jitter so
+recurring opportunities never harden into a clock ritual. The choosing agenda is an open field —
+continue, discover, practise, make, observe, speak, or do nothing, with doing nothing named as a
+real choice — and it prescribes no shelf title, because the earlier work-order agenda ("pick at
+most ONE want") was itself a small appointment. Repairs and owed engineering stay with the night's
+builders. The deliberate exception to rule 20 (an active interaction never defers a session) is
+carved for exactly this one wake class: its whole premise is the idleness, so a deferral loses no
+reading and no dated thought. Contract: rules 40a-40f.
+
 Contract: [`specs/wake-queue.md`](../specs/wake-queue.md).
 
 ---
