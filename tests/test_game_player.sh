@@ -669,6 +669,9 @@ check_eq "the restarted process used Codex resume exactly once" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "resume-target" \
     && ok "the resumed thread receives current objective and snapshot facts" \
     || fail "the resumed thread receives current objective and snapshot facts"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "entity KIND TYPE-ID" \
+    && ok "the resumed thread receives the identity-targeting ability" \
+    || fail "the resumed thread receives the identity-targeting ability"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \
