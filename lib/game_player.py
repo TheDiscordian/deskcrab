@@ -13,6 +13,7 @@ Stdlib only, plain python3.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -27,6 +28,21 @@ TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible"
                 "message_contains", "near_tile", "inventory_has", "inventory_lacks")
 ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound")
 
+# Spec rule 4: a stored near_tile radius below this evaluates as this, and the
+# lint (rule 17) refuses to author one. A trigger names the vicinity while
+# walk verification owns the exact destination.
+NEAR_RADIUS_FLOOR = 2
+
+# Spec rule 7a: a walk's receipt is dispatch, not completion. Verification
+# follows the snapshot until the body stops moving, then compares the settled
+# tile against the TARGET's coordinates within the action's arrive tolerance.
+WALK_ARRIVE_DEFAULT = 1     # Chebyshev tiles
+WALK_SETTLE_S = 1.6         # no position change for this long = stopped
+WALK_TIMEOUT_S = 25.0       # hard ceiling on one walk's verification
+RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) means the
+                            # runner owns evaluation; wide enough to cover one walk's
+                            # verification, and a crashed runner fails the pid check at once
+
 DEFAULTS = {
     "stale_ms": 2000,
     "min_action_interval_ms": 600,
@@ -39,6 +55,7 @@ EXIT_NOT_DONE = 2
 EXIT_NOT_READY = 3
 EXIT_NO_RULE = 4
 EXIT_HELD = 5
+EXIT_PLAYER_MESSAGE = 6
 
 EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
 
@@ -57,6 +74,22 @@ def rules_path() -> Path:
 
 def objective_path() -> Path:
     return game_dir() / "objective"
+
+
+def tests_path() -> Path:
+    return game_dir() / "learned-rule-tests.json"
+
+
+def queue_path() -> Path:
+    return game_dir() / "outcome-queue.jsonl"
+
+
+def runner_path() -> Path:
+    return state_dir() / "player-runner.json"
+
+
+def player_lock_path() -> Path:
+    return state_dir() / "player-engine.lock"
 
 
 def die(msg: str) -> None:
@@ -163,10 +196,13 @@ def validate_config(cfg: dict) -> None:
             if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
                 bad(f"{where}: talk-npc takes exactly npc=<type id>")
         elif atype == "walk":
-            if set(action) != {"type", "x", "z"} \
+            if not set(action) <= {"type", "x", "z", "arrive"} \
                     or not isinstance(action.get("x"), int) \
                     or not isinstance(action.get("z"), int):
-                bad(f"{where}: walk takes exactly integer x and z")
+                bad(f"{where}: walk takes integer x and z (and optionally arrive)")
+            if "arrive" in action and (not isinstance(action["arrive"], int)
+                                       or not 0 <= action["arrive"] <= 10):
+                bad(f"{where}: walk arrive must be an integer 0..10")
         elif atype in ("interact-object", "interact-bound"):
             if not set(action) <= {"type", "obj", "cmd"} \
                     or not isinstance(action.get("obj"), int) or action["obj"] < 0:
@@ -233,6 +269,8 @@ def load_player_state() -> dict:
     est.setdefault("was_out", False)
     est.setdefault("was_held", False)
     est.setdefault("objective_fired", {})   # "rule\tobjective" -> epoch ms
+    est.setdefault("seen_message_ids", [])
+    est.setdefault("pending_messages", [])
     return est
 
 
@@ -250,6 +288,50 @@ def flush_events(events: list) -> None:
     with open(path, "a") as fh:
         for event in events:
             fh.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+
+class player_state_lock:
+    """Cross-process guard for the runner and deliberate reply command."""
+    def __enter__(self):
+        player_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(player_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def capture_player_messages(snap: dict, est: dict, events: list) -> None:
+    """Copy new incoming local/private messages into the existing engine state."""
+    seen = set(est.get("seen_message_ids") or [])
+    pending = est.get("pending_messages") or []
+    for message in snap.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        message_id = message.get("id")
+        channel = message.get("channel")
+        if not isinstance(message_id, int) or message_id in seen \
+                or message.get("incoming") is not True \
+                or channel not in ("local", "private"):
+            continue
+        sender, text = message.get("sender"), message.get("text")
+        if not isinstance(sender, str) or not sender.strip() \
+                or not isinstance(text, str) or not text.strip():
+            continue
+        item = {"id": message_id, "channel": channel,
+                "sender": sender, "text": text}
+        pending.append(item)
+        seen.add(message_id)
+        events.append({"ts": now_ms(), "kind": "player-message-received", **item})
+    est["pending_messages"] = sorted(pending, key=lambda m: m["id"])
+    est["seen_message_ids"] = sorted(seen)[-500:]
+
+
+def oldest_pending_message(est: dict):
+    pending = est.get("pending_messages") or []
+    return min(pending, key=lambda m: m["id"]) if pending else None
 
 
 # --------------------------------------------------------------------------
@@ -285,7 +367,10 @@ def make_trigger_fn(objective: str):
             t = trig["near_tile"]
             if not isinstance(px, int) or not isinstance(pz, int):
                 return False
-            if max(abs(px - t["x"]), abs(pz - t["z"])) > t["radius"]:
+            # Spec rule 4: the effective radius floor keeps vicinity triggers
+            # from being mistaken for destination checks.
+            radius = max(t["radius"], NEAR_RADIUS_FLOOR)
+            if max(abs(px - t["x"]), abs(pz - t["z"])) > radius:
                 return False
         inv_ids = {i.get("id") for i in snap.get("inventory") or []}
         if "inventory_has" in trig and trig["inventory_has"] not in inv_ids:
@@ -328,16 +413,129 @@ def compile_player_action(rule, snap, food, eat_pick):
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("sidx", "npc", "x", "z", "dir", "obj", "cmd"):
+    for key in ("sidx", "npc", "x", "z", "dir", "obj", "cmd", "target", "text"):
         if key in action:
             lines.append(f"{key}={action[key]}")
     game_reflex.atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")
 
 
 # --------------------------------------------------------------------------
+# The outcome queue (spec rule 16): the background author's inbox. Play
+# appends and keeps moving; nothing here ever blocks an action.
+# --------------------------------------------------------------------------
+def snap_brief(snap: dict) -> dict:
+    brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
+                                      "in_combat")}
+    brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
+    brief["messages"] = (snap.get("messages") or [])[-5:]
+    brief["npcs"] = (snap.get("npcs") or [])[:12]
+    brief["objects"] = (snap.get("objects") or [])[:12]
+    brief["bounds"] = (snap.get("bounds") or [])[:12]
+    return brief
+
+
+def gap_signature(snap: dict, objective: str) -> str:
+    """Stable author input: game ticks and wandering NPC tiles are not new gaps."""
+    game_messages = [
+        {"channel": m.get("channel"), "sender": m.get("sender"), "text": m.get("text")}
+        for m in (snap.get("messages") or [])[-5:]
+        if isinstance(m, dict) and m.get("channel") not in ("local", "private")
+    ]
+    shape = {
+        "objective": objective or None,
+        "x": snap.get("x"),
+        "z": snap.get("z"),
+        "inventory": [i.get("id") for i in snap.get("inventory") or []],
+        "messages": game_messages,
+        "npcs": sorted(n.get("id") for n in snap.get("npcs") or []
+                       if isinstance(n, dict) and isinstance(n.get("id"), int)),
+        "objects": sorted((o.get("id"), o.get("x"), o.get("z"))
+                          for o in snap.get("objects") or []
+                          if isinstance(o, dict) and isinstance(o.get("id"), int)),
+        "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"))
+                         for b in snap.get("bounds") or []
+                         if isinstance(b, dict) and isinstance(b.get("id"), int)),
+    }
+    return json.dumps(shape, sort_keys=True, separators=(",", ":"))
+
+
+def append_outcome(record: dict) -> None:
+    path = queue_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+# --------------------------------------------------------------------------
+# Walk verification (spec rule 7a): the receipt is dispatch, not completion.
+# Follow the snapshot until the body stops moving, then judge against the
+# TARGET's coordinates — never the receipt alone.
+# --------------------------------------------------------------------------
+def verify_walk(tx: int, tz: int, arrive: int,
+                timeout_s: float = WALK_TIMEOUT_S,
+                settle_s: float = WALK_SETTLE_S,
+                poll_s: float = 0.2):
+    """Returns (status, final_x, final_z): status 'done', 'walk-short' or
+    'walk-unverified' (snapshot lost or logged out mid-walk)."""
+    deadline = time.time() + timeout_s
+    last_pos, last_move = None, time.time()
+    while time.time() < deadline:
+        snap = game_reflex.read_snapshot()
+        if snap is None or not snap.get("logged_in"):
+            return "walk-unverified", None, None
+        px, pz = snap.get("x"), snap.get("z")
+        if not isinstance(px, int) or not isinstance(pz, int):
+            return "walk-unverified", None, None
+        if max(abs(px - tx), abs(pz - tz)) <= arrive:
+            return "done", px, pz
+        if (px, pz) != last_pos:
+            last_pos, last_move = (px, pz), time.time()
+        elif time.time() - last_move >= settle_s:
+            return "walk-short", px, pz
+        time.sleep(poll_s)
+    return "walk-short", (last_pos or (None, None))[0], (last_pos or (None, None))[1]
+
+
+# --------------------------------------------------------------------------
+# The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
+# A fresh heartbeat makes the runner the only evaluator; `step` defers.
+# --------------------------------------------------------------------------
+def write_heartbeat(verdict: str, detail: str = "") -> None:
+    game_reflex.atomic_write(runner_path(), json.dumps(
+        {"pid": os.getpid(), "ts": now_ms(),
+         "verdict": verdict, "detail": detail}) + "\n")
+
+
+def read_live_runner():
+    """The heartbeat, iff fresh and its pid is alive; else None."""
+    try:
+        hb = json.loads(runner_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if now_ms() - hb.get("ts", 0) > RUNNER_FRESH_MS:
+        return None
+    pid = hb.get("pid")
+    if not isinstance(pid, int) or pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return None
+    return hb
+
+
+# --------------------------------------------------------------------------
 # step (spec rule 7): one rules-first evaluation and one report line.
 # --------------------------------------------------------------------------
+QUIET_REPEATS = False       # the resident runner's log discipline: repeated
+_last_verdict = None        # idle verdicts collapse; firings always print
+
+
 def report(verdict, **fields):
+    global _last_verdict
+    if QUIET_REPEATS and verdict == _last_verdict and verdict != "fired":
+        return
+    _last_verdict = verdict
     parts = [verdict]
     for key, val in fields.items():
         if val is not None:
@@ -370,6 +568,23 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
     if snap is None:
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
+
+    # Spec rule 7b: capture and surface player input before ordinary play.
+    # The small lock prevents the resident runner from racing a Sol reply.
+    message_events = []
+    with player_state_lock():
+        est = load_player_state()
+        est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
+        capture_player_messages(snap, est, message_events)
+        pending_message = oldest_pending_message(est)
+        save_player_state(est)
+        flush_events(message_events)
+    if pending_message is not None and snap.get("logged_in") \
+            and now - snap.get("ts", 0) <= defaults["stale_ms"]:
+        report("player-message", id=pending_message["id"],
+               channel=pending_message["channel"], sender=pending_message["sender"],
+               text=pending_message["text"])
+        return "player-message", EXIT_PLAYER_MESSAGE
 
     if (state_dir() / "action.json").exists():
         report("slot-busy")
@@ -448,15 +663,127 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         time.sleep(0.05)
 
     rule = next((r for r in cfg["rules"] if r["name"] == rule_name), None)
-    if rule is not None and rule.get("once_per_objective"):
+
+    # Spec rule 7a: a walk's `done` receipt is dispatch, not arrival. Verify
+    # against the target's coordinates before anything treats it as complete.
+    action = event["action"]
+    final_x = final_z = None
+    if status == "done" and action["type"] == "walk":
+        arrive = WALK_ARRIVE_DEFAULT
+        if rule is not None and isinstance(rule["action"].get("arrive"), int):
+            arrive = rule["action"]["arrive"]
+        status, final_x, final_z = verify_walk(action["x"], action["z"], arrive)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "intended": {"x": action["x"], "z": action["z"]},
+                           "settled": {"x": final_x, "z": final_z}}])
+
+    # The once-per-objective mark is spent only on a VERIFIED done (rule 7a).
+    if rule is not None and rule.get("once_per_objective") and status == "done":
         est = load_player_state()
         est["objective_fired"][once_key(rule_name, objective)] = now
         save_player_state(est)
 
-    report("fired", rule=rule_name, id=action_id,
-           type=event["action"]["type"], status=status,
-           objective=objective or None)
+    # Every outcome feeds the background author (spec rule 16).
+    outcome = {"ts": now_ms(), "kind": "outcome", "rule": rule_name,
+               "id": action_id, "action": action, "status": status,
+               "objective": objective or None, "snap": snap_brief(snap)}
+    if action["type"] == "walk":
+        outcome["intended"] = {"x": action["x"], "z": action["z"]}
+        if final_x is not None:
+            outcome["settled"] = {"x": final_x, "z": final_z}
+    append_outcome(outcome)
+
+    if action["type"] == "walk" and final_x is not None:
+        report("fired", rule=rule_name, id=action_id, type=action["type"],
+               status=status, x=final_x, z=final_z, objective=objective or None)
+    else:
+        report("fired", rule=rule_name, id=action_id, type=action["type"],
+               status=status, objective=objective or None)
     return "fired", (EXIT_FIRED if status == "done" else EXIT_NOT_DONE)
+
+
+# --------------------------------------------------------------------------
+# The test suite and the gate (spec rule 17): rules are deterministic
+# trigger-to-action data, so they are tested like data. `predict` is the pure
+# selection — triggers and compilation in priority order, no cooldowns, no
+# marks, no pacing — and every table-mutating door runs the whole suite
+# against the WOULD-BE table before writing a byte.
+# --------------------------------------------------------------------------
+EMPTY_TESTS = {"v": 1, "cases": []}
+
+
+def load_tests() -> dict:
+    path = tests_path()
+    if not path.exists():
+        return dict(EMPTY_TESTS, cases=[])
+    try:
+        tests = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        die(f"test cases {path} are not valid JSON: {e}")
+    if not isinstance(tests, dict) or not isinstance(tests.get("cases"), list):
+        die(f"test cases {path} must be an object with a 'cases' list")
+    for case in tests["cases"]:
+        if not isinstance(case, dict) or not case.get("name") \
+                or not isinstance(case.get("snapshot"), dict):
+            die(f"test cases {path}: every case needs a name and a snapshot object")
+    return tests
+
+
+def save_tests(tests: dict) -> None:
+    game_reflex.atomic_write(tests_path(), json.dumps(tests, indent=2) + "\n")
+
+
+def predict(cfg: dict, snap: dict, objective: str):
+    """The rule that would win the slot for this snapshot: the highest
+    priority whose trigger holds AND whose action compiles. Pure."""
+    trigger_fn = make_trigger_fn(objective)
+    rules = sorted((r for r in cfg["rules"] if r["enabled"]),
+                   key=lambda r: -r["priority"])
+    for rule in rules:
+        if not trigger_fn(rule["trigger"], snap, {}):
+            continue
+        action, _why = compile_player_action(rule, snap, {}, "min")
+        if action is not None:
+            return rule["name"], action
+    return None, None
+
+
+def lint_table(cfg: dict) -> list:
+    problems = []
+    for rule in cfg["rules"]:
+        tile = rule["trigger"].get("near_tile")
+        if tile and tile["radius"] < NEAR_RADIUS_FLOOR:
+            problems.append(
+                f"lint: rule '{rule['name']}' near_tile radius {tile['radius']} "
+                f"is below the floor {NEAR_RADIUS_FLOOR} — scope the vicinity "
+                "honestly; verification owns the destination")
+    return problems
+
+
+def run_suite(cfg: dict):
+    """(failures, case-count) for lint plus every replay case."""
+    failures = lint_table(cfg)
+    tests = load_tests()
+    for case in tests["cases"]:
+        want = case.get("expect")
+        if want in (None, "", "none"):
+            want = None
+        got, _action = predict(cfg, case["snapshot"], case.get("objective") or "")
+        if got != want:
+            failures.append(f"case '{case['name']}': expected "
+                            f"{want or 'none'}, got {got or 'none'}")
+    return failures, len(tests["cases"])
+
+
+def gate_or_die(cfg: dict, doing: str) -> None:
+    failures, _n = run_suite(cfg)
+    if failures:
+        for line in failures:
+            print(f"gate: {line}", file=sys.stderr)
+        die(f"{doing} refused — {len(failures)} failure(s) against the "
+            "would-be table; a broken rule must not be armed (fix the rule, "
+            "or update the cases through the test doors first)")
 
 
 # --------------------------------------------------------------------------
@@ -526,9 +853,11 @@ def cmd_learn(args):
         rule["note"] = args.note
     cfg["rules"].append(rule)
     try:
-        save_config(cfg)
+        validate_config(cfg)
     except ValueError as e:
         die(str(e))
+    gate_or_die(cfg, f"learning '{args.name}'")
+    save_config(cfg)
     print(f"learned '{args.name}' "
           f"({'disabled' if args.disabled else 'enabled'}, durable)")
 
@@ -555,6 +884,7 @@ def find_rule(cfg, name):
 def cmd_enable(args, value=True):
     cfg = load_config()
     find_rule(cfg, args.rule)["enabled"] = value
+    gate_or_die(cfg, f"{'enabling' if value else 'disabling'} '{args.rule}'")
     save_config(cfg)
     print(f"{args.rule}: {'enabled' if value else 'disabled'}")
 
@@ -576,11 +906,11 @@ def cmd_set(args):
         die(f"unknown key '{key}' — priority, cooldown_ms, hold_ticks, enabled, "
             "once_per_objective, note, trigger.<cond>, action.<param>")
     try:
-        save_config(cfg)
-    except SystemExit:
-        raise
+        validate_config(cfg)
     except ValueError as e:
         die(str(e))
+    gate_or_die(cfg, f"setting '{args.rule}' {key}")
+    save_config(cfg)
     print(f"{args.rule}: {key} = {value!r}")
 
 
@@ -591,6 +921,7 @@ def cmd_remove(args):
     cfg["unfinished"] = [e for e in cfg["unfinished"] if e["name"] != args.rule]
     if len(cfg["rules"]) + len(cfg["unfinished"]) == before:
         die(f"nothing named '{args.rule}' in rules or unfinished")
+    gate_or_die(cfg, f"removing '{args.rule}'")
     save_config(cfg)
     print(f"removed '{args.rule}'")
 
@@ -623,6 +954,247 @@ def cmd_log(args):
         return
     for line in lines[-args.n:]:
         print(line)
+
+
+def cmd_note(args):
+    """Spec rule 16: the playing hand's one-line door for lessons — stamped
+    with the live context and queued for the background author."""
+    snap = game_reflex.read_snapshot() or {}
+    append_outcome({"ts": now_ms(), "kind": "lesson", "text": " ".join(args.text),
+                    "objective": read_objective() or None,
+                    "snap": snap_brief(snap)})
+    print("noted for the background author")
+
+
+def validate_reply_text(text: str) -> None:
+    if not text.strip() or "\n" in text or "\r" in text:
+        die("reply text must be one non-empty line")
+    if len(text) > 80:
+        die("reply text exceeds the client's 80-character limit")
+
+
+def verify_chat_delivery(action: dict, after_id: int, timeout_s: float = 3.0) -> str:
+    """Confirm the server echoed outgoing chat; a bridge receipt is dispatch only."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        snap = game_reflex.read_snapshot() or {}
+        for message in snap.get("messages") or []:
+            if not isinstance(message, dict) or message.get("id", -1) <= after_id:
+                continue
+            if message.get("channel") == "game" \
+                    and "unable to send message" in message.get("text", "").casefold():
+                return "refused-server"
+            channel = "private" if action["type"] == "chat-private" else "local"
+            if message.get("channel") == channel \
+                    and message.get("incoming") is False \
+                    and message.get("text") == action["text"]:
+                if channel != "private" \
+                        or message.get("sender", "").casefold() == action["target"].casefold():
+                    return "done"
+        time.sleep(0.05)
+    return "chat-unconfirmed"
+
+
+def cmd_reply(args):
+    """Answer one pending player message through the shared action slot."""
+    text = " ".join(args.text)
+    validate_reply_text(text)
+    cfg = load_config()
+    defaults = config_defaults(cfg)
+    snap = game_reflex.read_snapshot()
+    if snap is None or not snap.get("logged_in"):
+        die("cannot reply while the game is logged out")
+    if now_ms() - snap.get("ts", 0) > defaults["stale_ms"]:
+        die("cannot reply from a stale game snapshot")
+    if (state_dir() / "hold").exists():
+        die("cannot reply while play is held")
+    if (state_dir() / "action.json").exists():
+        die("cannot reply while the shared action slot is busy")
+
+    baseline_message_id = max((m.get("id", -1) for m in snap.get("messages") or []
+                               if isinstance(m, dict)), default=-1)
+    with player_state_lock():
+        # The runner may have filled the slot after the quick check above but
+        # before this reply acquired the shared state lock.
+        if (state_dir() / "action.json").exists():
+            die("cannot reply while the shared action slot is busy")
+        est = load_player_state()
+        pending = next((m for m in est["pending_messages"] if m["id"] == args.message_id), None)
+        if pending is None:
+            die(f"no pending player message {args.message_id}")
+        action = {"type": "chat-local", "text": text}
+        if pending["channel"] == "private":
+            action = {"type": "chat-private", "target": pending["sender"], "text": text}
+        est["action_seq"] += 1
+        action_id = est["action_seq"]
+        sent_at = now_ms()
+        est["inflight"] = {"id": action_id, "ts": sent_at}
+        save_player_state(est)
+        emit_player_action("action.json", action, action_id, sent_at)
+
+    status = "no-receipt"
+    deadline = time.time() + defaults["inflight_timeout_ms"] / 1000.0
+    receipt_path = state_dir() / "receipt.json"
+    while time.time() < deadline:
+        try:
+            receipt = json.loads(receipt_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            receipt = None
+        if receipt and receipt.get("id") == action_id:
+            status = receipt.get("status", "no-status")
+            try:
+                receipt_path.unlink()
+            except OSError:
+                pass
+            break
+        time.sleep(0.05)
+
+    if status == "done":
+        status = verify_chat_delivery(action, baseline_message_id)
+
+    with player_state_lock():
+        est = load_player_state()
+        est["inflight"] = None
+        if status == "done":
+            est["pending_messages"] = [m for m in est["pending_messages"]
+                    if not (m["channel"] == pending["channel"]
+                            and m["sender"].casefold() == pending["sender"].casefold()
+                            and m["id"] <= pending["id"])]
+        save_player_state(est)
+        flush_events([{"ts": now_ms(), "kind": "player-message-reply",
+                       "message_id": pending["id"], "action_id": action_id,
+                       "channel": pending["channel"], "sender": pending["sender"],
+                       "status": status}])
+    report("replied", message_id=pending["id"], action_id=action_id,
+           channel=pending["channel"], sender=pending["sender"], status=status)
+    if status != "done":
+        sys.exit(EXIT_NOT_DONE)
+
+
+def cmd_test(args):
+    if args.action in ("run", None):
+        cfg = load_config()
+        failures, count = run_suite(cfg)
+        for line in failures:
+            print(f"FAIL {line}")
+        print(f"suite: {count} case(s), {len(failures)} failure(s)")
+        sys.exit(1 if failures else 0)
+    if args.action == "list":
+        tests = load_tests()
+        if not tests["cases"]:
+            print("no cases yet")
+        for case in tests["cases"]:
+            print(f"{case['name']}: objective={case.get('objective') or '(none)'} "
+                  f"expect={case.get('expect') or 'none'}")
+        return
+    if args.action == "add":
+        if not args.name or not args.snapshot or args.expect is None:
+            die("test add <name> --expect <rule|none> --snapshot <file|-> "
+                "[--objective OBJ]")
+        raw = sys.stdin.read() if args.snapshot == "-" \
+            else Path(args.snapshot).read_text()
+        try:
+            snapshot = json.loads(raw)
+        except json.JSONDecodeError as e:
+            die(f"snapshot is not valid JSON: {e}")
+        tests = load_tests()
+        if any(c["name"] == args.name for c in tests["cases"]):
+            die(f"a case named '{args.name}' already exists")
+        case = {"name": args.name, "objective": args.objective or "",
+                "expect": None if args.expect == "none" else args.expect,
+                "snapshot": snapshot}
+        # A case must be true the moment it is added — the suite stays green
+        # so the gate only trips when a MUTATION breaks something.
+        cfg = load_config()
+        got, _ = predict(cfg, snapshot, case["objective"])
+        want = case["expect"]
+        if got != want:
+            die(f"case would fail right now: expected {want or 'none'}, "
+                f"the live table gives {got or 'none'} — learn/fix the rule first")
+        tests["cases"].append(case)
+        save_tests(tests)
+        print(f"case '{args.name}' added ({len(tests['cases'])} total)")
+        return
+    if args.action == "remove":
+        if not args.name:
+            die("test remove <name>")
+        tests = load_tests()
+        kept = [c for c in tests["cases"] if c["name"] != args.name]
+        if len(kept) == len(tests["cases"]):
+            die(f"no case named '{args.name}'")
+        tests["cases"] = kept
+        save_tests(tests)
+        print(f"case '{args.name}' removed")
+        return
+    die(f"unknown test action '{args.action}' — run, list, add, remove")
+
+
+def cmd_run(args):
+    """Spec rule 15: the resident runner. Rules fire within a poll interval
+    of their trigger becoming true; no model anywhere in the loop."""
+    global QUIET_REPEATS
+    QUIET_REPEATS = True
+    cfg = load_config()
+    wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+    poll_s = (args.poll_ms or 400) / 1000.0
+    state_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        table_mtime = rules_path().stat().st_mtime
+    except OSError:
+        table_mtime = 0
+    last_gap_signature = None
+    last_verdict = "starting"
+    while True:
+        try:
+            # Reload the table when its mtime moves; an invalid table is
+            # refused loudly and the last valid one kept (spec rule 15).
+            try:
+                mt = rules_path().stat().st_mtime
+            except OSError:
+                mt = table_mtime
+            if mt != table_mtime:
+                table_mtime = mt
+                try:
+                    fresh = json.loads(rules_path().read_text())
+                    validate_config(fresh)
+                    fresh.setdefault("unfinished", [])
+                    cfg = fresh
+                    wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+                    flush_events([{"ts": now_ms(), "kind": "table-reloaded"}])
+                except (ValueError, json.JSONDecodeError) as e:
+                    flush_events([{"ts": now_ms(), "kind": "table-invalid",
+                                   "error": str(e)[:300]}])
+
+            verdict, _code = step_once(cfg, read_objective(), wait_ms)
+
+            if verdict == "no-rule-matched":
+                snap = game_reflex.read_snapshot() or {}
+                objective = read_objective()
+                signature = gap_signature(snap, objective)
+                if signature != last_gap_signature:
+                    append_outcome({"ts": now_ms(), "kind": "gap",
+                                    "objective": objective or None,
+                                    "snap": snap_brief(snap)})
+                    last_gap_signature = signature
+
+            # same-tick is no news between game ticks: the heartbeat keeps
+            # carrying the last substantive verdict so `step`'s deferral
+            # still hands the model its exit-4 licence when one is due.
+            if verdict != "same-tick":
+                last_verdict = verdict
+            write_heartbeat(last_verdict)
+        except SystemExit:
+            raise
+        except Exception as e:  # one bad pass must not kill the unit
+            try:
+                flush_events([{"ts": now_ms(), "kind": "runner-error",
+                               "error": repr(e)[:300]}])
+            except Exception:
+                pass
+            time.sleep(1.0)
+        if args.once:
+            break
+        time.sleep(0.05 if last_verdict == "fired" else poll_s)
 
 
 def main():
@@ -683,14 +1255,65 @@ def main():
                    help="keep stepping while rules fire cleanly, at most N actions")
     p.add_argument("--wait-ms", type=int, default=None,
                    help="receipt wait (default: defaults.inflight_timeout_ms)")
+    p.add_argument("--local", action="store_true",
+                   help="evaluate here even if the resident runner is live")
     p.set_defaults(fn=None)  # handled below: needs config-aware default
 
     p = sub.add_parser("log", help="tail the player decision log")
     p.add_argument("-n", type=int, default=20)
     p.set_defaults(fn=cmd_log)
 
+    p = sub.add_parser("run", help="the resident runner: rules fire on their "
+                                   "triggers, continuously (spec rule 15)")
+    p.add_argument("--once", action="store_true")
+    p.add_argument("--poll-ms", type=int)
+    p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("note", help="queue a lesson for the background author "
+                                    "(spec rule 16)")
+    p.add_argument("text", nargs="+")
+    p.set_defaults(fn=cmd_note)
+
+    p = sub.add_parser("reply", help="answer a pending player message through "
+                                      "the shared action slot (spec rule 7b)")
+    p.add_argument("message_id", type=int)
+    p.add_argument("text", nargs="+")
+    p.set_defaults(fn=cmd_reply)
+
+    p = sub.add_parser("test", help="replay the cases against the table "
+                                    "(spec rule 17)")
+    p.add_argument("action", nargs="?", default="run",
+                   choices=["run", "list", "add", "remove"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--expect", help="the rule that must win, or 'none'")
+    p.add_argument("--snapshot", help="snapshot JSON file, or - for stdin")
+    p.add_argument("--objective", help="objective the case runs under")
+    p.set_defaults(fn=cmd_test)
+
     args = parser.parse_args()
     if args.cmd == "step":
+        # Spec rule 15: while the resident runner is live it is the ONLY
+        # evaluator — report ITS latest verdict under the same exit contract.
+        if not args.local:
+            hb = read_live_runner()
+            if hb is not None:
+                verdict = hb.get("verdict", "")
+                if verdict == "player-message":
+                    pending = oldest_pending_message(load_player_state())
+                    if pending is not None:
+                        report("player-message", id=pending["id"],
+                               channel=pending["channel"], sender=pending["sender"],
+                               text=pending["text"])
+                    else:
+                        report("runner-player-message", age_ms=now_ms() - hb.get("ts", 0),
+                               pid=hb.get("pid"))
+                else:
+                    report(f"runner-{verdict or 'unknown'}",
+                           age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"))
+                sys.exit({"no-rule-matched": EXIT_NO_RULE,
+                          "held": EXIT_HELD,
+                          "fired": EXIT_FIRED,
+                          "player-message": EXIT_PLAYER_MESSAGE}.get(verdict, EXIT_NOT_READY))
         cfg = load_config()
         if args.wait_ms is None:
             args.wait_ms = config_defaults(cfg)["inflight_timeout_ms"]

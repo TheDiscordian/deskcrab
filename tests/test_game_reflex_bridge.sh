@@ -54,7 +54,7 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["v"] == 1 and s["logged_in"] is False and "hits" not in s, s
 PY
-OUT="$(harness state)"
+OUT="$(harness state-chat)"
 python3 - "$S/state.json" <<'PY' && ok "a logged-in snapshot carries the visible state, JSON-escaped" \
     || fail "a logged-in snapshot carries the visible state, JSON-escaped"
 import json, sys, time
@@ -64,7 +64,14 @@ assert s["hits"] == 4 and s["hits_max"] == 10 and s["fatigue"] == 12
 assert s["x"] == 120 and s["z"] == 650 and s["in_combat"] is False
 assert s["opponent"] is None
 assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
-assert s["messages"] == [{"text": 'Welcome to the "quoted" world'}]
+messages = s["messages"]
+assert [(m["channel"], m["incoming"], m["sender"], m["text"]) for m in messages] == [
+    ("game", False, "", 'Welcome to the "quoted" world'),
+    ("local", True, "Nearby Friend", "Try the east door"),
+    ("private", True, "Far Friend", "I can help from here"),
+], messages
+assert all(isinstance(m["id"], int) for m in messages)
+assert messages[0]["id"] < messages[1]["id"] < messages[2]["id"]
 assert abs(time.time() * 1000 - s["ts"]) < 60000 and s["tick"] >= 1, s
 PY
 
@@ -150,6 +157,28 @@ contains "$OUT" "shown danger: health low" && ok "warn shows a local message" \
     || fail "warn shows a local message" "$OUT"
 refute "the notice file was consumed" test -f "$S/notice-58.json"
 check_eq "and a notice writes NO receipt" "$(cat "$S/receipt.json")" "$RECEIPT_BEFORE"
+
+echo
+echo "local and private player chat use the shared action slot (rules 5-7):"
+wact 59 "$(now_ms)" "type=chat-local" "text=Thanks, I will try that"
+OUT="$(harness exec)"
+contains "$OUT" "chat-local text=Thanks, I will try that" \
+    && ok "nearby chat reaches the client's public-chat path" \
+    || fail "nearby chat reaches the client's public-chat path" "$OUT"
+check_eq "local chat is receipted done" "$(rstatus)" "done"
+wact 590 "$(now_ms)" "type=chat-private" "target=Far Friend" "text=Thanks for the private message"
+OUT="$(harness exec)"
+contains "$OUT" "chat-private target=Far Friend text=Thanks for the private message" \
+    && ok "private chat retains the target and reaches the private-message path" \
+    || fail "private chat retains the target and reaches the private-message path" "$OUT"
+check_eq "private chat is receipted done" "$(rstatus)" "done"
+wact 591 "$(now_ms)" "type=chat-private" "target=" "text=hello"
+harness exec >/dev/null
+check_eq "an empty private target is refused" "$(rstatus)" "refused-empty-target"
+LONG_TEXT="$(printf 'x%.0s' $(seq 1 81))"
+wact 592 "$(now_ms)" "type=chat-local" "text=$LONG_TEXT"
+harness exec >/dev/null
+check_eq "chat beyond the client limit is refused, not truncated" "$(rstatus)" "refused-bad-text"
 
 echo
 echo "talk-npc and the npcs snapshot field (rules 3, 5-7):"

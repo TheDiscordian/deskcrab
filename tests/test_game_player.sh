@@ -60,6 +60,17 @@ for _ in range(100):
         open(os.path.join(sd, "last-action"), "w").write(body)
         fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
         os.remove(ap)
+        if status == "done" and fields.get("type") in ("chat-local", "chat-private"):
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            messages = state.setdefault("messages", [])
+            next_id = max([m.get("id", 0) for m in messages if isinstance(m, dict)] + [0]) + 1
+            messages.append({"id": next_id,
+                "channel": "private" if fields["type"] == "chat-private" else "local",
+                "incoming": False,
+                "sender": fields.get("target", "Player"), "text": fields["text"]})
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         tmp = os.path.join(sd, ".receipt.tmp")
         json.dump({"id": int(fields["id"]), "status": status,
                    "ts": int(time.time() * 1000)}, open(tmp, "w"))
@@ -175,7 +186,9 @@ OUT="$(python3 "$GP" step)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 contains "$OUT" "fired rule=walk-high" && ok "the higher priority took the one slot" \
     || fail "the higher priority took the one slot" "$OUT"
-check_eq "message_contains matched case-insensitively" "$CODE" "0"
+check_eq "a receipted walk that never moved the body is exit 2 (rule 7a)" "$CODE" "2"
+contains "$OUT" "status=walk-short" && ok "and named walk-short, not done" \
+    || fail "and named walk-short, not done" "$OUT"
 check_eq "the walk is unclamped deliberate travel (x=200 from 120)" "$(last_action 'x=200')" "1"
 check_eq "the loser is logged as a conflict loss" "$(decided conflict-loss)" "1"
 
@@ -274,7 +287,7 @@ echo "the trigger vocabulary grounds in the snapshot (spec rule 4):"
 python3 "$GP" disable walk-high >/dev/null
 python3 "$GP" learn walk-near --priority 20 --cooldown-ms 0 \
     --trigger 'near_tile={"x":122,"z":648,"radius":3}' --trigger inventory_has=376 \
-    --action walk --param x=126 --param z=648 >/dev/null
+    --action walk --param x=121 --param z=649 >/dev/null
 snap 115
 fake_bridge done
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
@@ -358,6 +371,8 @@ check_eq "wired to game_player.py, not merely present in lib" \
 check_eq "and the policy step is rules-first: play refuses reasoning until exit 4" \
     "$(grep -c 'no-rule-matched' "$HEADLESS")" "1"
 python3 "$GP" enable walk-high >/dev/null
+python3 "$GP" set walk-high action.x 120 >/dev/null
+python3 "$GP" set walk-high action.z 649 >/dev/null
 snap 118
 fake_bridge done
 OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" play)"; CODE=$?
@@ -375,11 +390,9 @@ contains "$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" play rules)" "walk-high"
 
 echo
 echo "the entrypoint is versioned bytes, deployed, and durable (spec rule 13):"
-# The 2026-08-27 completion review found this door outside every git repo,
-# and the whole live stack dead minutes after the builder job that started
-# it was collected: a setsid child still dies with the launching service's
-# cgroup. The door must be committed bytes deployed by symlink, and every
-# long-lived process must start as its own transient systemd user unit.
+# A setsid child still dies with the launching service's cgroup. The door must
+# be committed bytes deployed by symlink, and every long-lived process must
+# start as its own transient systemd user unit.
 CF="$GAME_TREE/Core-Framework"
 RESOLVED="$(readlink -f "$HEADLESS")"
 case "$RESOLVED" in
@@ -393,8 +406,8 @@ check_eq "deployed bytes are the committed bytes (clean git status on the harnes
     "$(git -C "$CF" status --porcelain -- headless/orsc-headless.sh 2>/dev/null | grep -c '')" "0"
 check_eq "the helpers it invokes are versioned beside it" \
     "$(git -C "$CF" ls-files headless/ 2>/dev/null | grep -cE 'orsc-view\.py|find-blob\.py')" "2"
-check_eq "xvfb, client, engine and viewer all start through one durable detach door" \
-    "$(grep -cE '\$\(detach (xvfb|client|engine|viewer) ' "$HEADLESS")" "4"
+check_eq "xvfb, client, engine, runner and viewer all start through one durable detach door" \
+    "$(grep -cE '\$\(detach (xvfb|client|engine|runner|viewer) ' "$HEADLESS")" "5"
 check_eq "which is a transient systemd --user unit, not a child of the caller" \
     "$(grep -c 'systemd-run --user' "$HEADLESS")" "1"
 check_eq "bare setsid survives only as the explicit no-user-manager fallback" \
@@ -457,12 +470,9 @@ refute "and the engine process is gone" sh -c "kill -0 $EPID 2>/dev/null"
 
 echo
 echo "the ordinary player command (spec rule 14):"
-# The 2026-08-27 completion review found the GPT Sol player running as an ad
-# hoc transient unit whose prompt and log lived only in /tmp, with no
-# installed command, no forced-exit handoff, and a hard-coded display. The
-# ordinary command must be committed bytes, installed on PATH, pinned to the
-# real model, supervised (Restart=always), and every start must recompose
-# its prompt from ground truth as it is NOW — never from a copy taken when
+# The ordinary command must be committed bytes, installed on PATH, pinned to
+# the real model, supervised (Restart=always), and every start must recompose
+# its prompt from ground truth as it is now — never from a copy taken when
 # play began.
 BOC="$GAME_TREE/headless/betty-openrsc"
 check "the command is deployed beside the harness" test -f "$BOC"
@@ -481,6 +491,32 @@ check "the command is installed on PATH (.local/bin)" test -x "$PATHDOOR"
 check_eq "and the installed door is the same committed bytes" \
     "$(readlink -f "$PATHDOOR" 2>/dev/null)" "$BOCR"
 check "the player model is pinned to a real GPT Sol" grep -q 'gpt-5.6-sol' "$BOC"
+check "the player reasoning effort is pinned low" grep -q 'model_reasoning_effort=.*EFFORT' "$BOC"
+check "the background author is pinned to Fable" grep -q 'AUTHOR_MODEL:-fable' "$BOC"
+check "the author walks the shared fallback account chain" \
+    grep -q 'claude_accounts.*AUTHOR_MODEL' "$BOC"
+check "the author is event-driven by the outcome queue, with no sleep loop" \
+    grep -q 'path-property=.*PathModified' "$BOC"
+check "the author is forbidden from touching the game action slot" \
+    grep -q 'NEVER play the game, touch action.json' "$BOC"
+SLEEP_HOOK="$CF/headless/no-sleep-hook.py"
+SLEEP_PROFILE="$CF/headless/openrsc-player.config.toml"
+check "the no-sleep command guard is committed beside the player" test -f "$SLEEP_HOOK"
+check "the player uses the isolated no-sleep Codex profile" \
+    grep -q -- '--profile.*CODEX_PROFILE.*--dangerously-bypass-hook-trust' "$BOC"
+check "play installs the isolated profile before starting Sol" \
+    grep -q 'ensure_player_policy' "$BOC"
+check_eq "the installed no-sleep profile resolves to committed bytes" \
+    "$(readlink -f "$REAL_HOME/.codex/openrsc-player.config.toml" 2>/dev/null)" \
+    "$(readlink -f "$SLEEP_PROFILE")"
+BLOCKED_SLEEP="$(printf '%s\n' '{"tool_input":{"command":"for n in 1 2; do sleep 1; done"}}' \
+    | python3 "$SLEEP_HOOK")"
+contains "$BLOCKED_SLEEP" '"permissionDecision":"deny"' \
+    && ok "the hook denies a nested shell sleep before execution" \
+    || fail "the hook denies a nested shell sleep before execution" "$BLOCKED_SLEEP"
+ALLOWED_STATE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh play"}}' \
+    | python3 "$SLEEP_HOOK")"
+check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
 check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
 check "and restarts are never rate-limited away" grep -q 'StartLimitIntervalSec=0' "$BOC"
 check "as its own transient user unit" grep -q 'orsc-player.service' "$BOC"
@@ -490,8 +526,8 @@ refute "nothing of the player lives under /tmp" \
     grep -qE '/tmp/[a-z.-]*(player|prompt|handoff)' "$BOC"
 check "login reads the stored credentials file, not an inline secret" \
     grep -q 'credentials' "$BOC"
-check_eq "play walks the whole stack in order: client, login, engine, player" \
-    "$(sed -n '/^cmd_play()/,/^}/p' "$BOC" | grep -c 'stack_up\|ensure_login\|engine_up\|player_start')" "4"
+check_eq "play walks the whole stack in order: client, login, engine, runner, author, player" \
+    "$(sed -n '/^cmd_play()/,/^}/p' "$BOC" | grep -c 'stack_up\|ensure_login\|engine_up\|runner_up\|author_up\|player_start')" "6"
 
 if [ -f "$BOC" ]; then
 # Functional: composition. A fake player home and harness run dir; the
@@ -554,6 +590,9 @@ contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "step 7 of 9" \
 contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "gpt-5.6-sol" \
     && ok "and was invoked pinned to GPT Sol" \
     || fail "and was invoked pinned to GPT Sol"
+contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "model_reasoning_effort=low" \
+    && ok "at the pinned low reasoning effort" \
+    || fail "at the pinned low reasoning effort"
 printf 'goal: NEW-GOAL; step 8 of 9; next: buy the pot\n' > "$PH/handoff.md"
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "NEW-GOAL" \
@@ -571,6 +610,188 @@ grep -q 'stop orsc-player.service' "$PSD/systemctl-stops" 2>/dev/null \
     || fail "stop player goes through the unit door" \
             "$(cat "$PSD/systemctl-stops" 2>/dev/null)"
 fi
+
+echo
+echo "incoming local and private messages interrupt play and reply through its action slot (rule 7b):"
+snap 145 '[]' '{"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east door"},
+    {"id":9002,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"}
+]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the oldest incoming player message is the priority verdict: exit 6" "$CODE" "6"
+contains "$OUT" "channel=local sender=Nearby Friend text=Try the east door" \
+    && ok "the verdict retains the local channel, sender, and text" \
+    || fail "the verdict retains the local channel, sender, and text" "$OUT"
+refute "observing a message emits no action before Sol writes the reply" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the pending message survives a repeated snapshot and remains urgent" "$CODE" "6"
+fake_bridge done
+OUT="$(python3 "$GP" reply 9001 Thanks, I will try that)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a receipted local reply exits 0" "$CODE" "0"
+check_eq "the reply used the shared chat-local action" "$(last_action 'type=chat-local')" "1"
+check_eq "and preserved Sol's text" "$(last_action 'text=Thanks, I will try that')" "1"
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the private message is next, still before ordinary rules" "$CODE" "6"
+contains "$OUT" "channel=private sender=Far Friend" \
+    && ok "the private sender and channel remain structured" \
+    || fail "the private sender and channel remain structured" "$OUT"
+fake_bridge done
+OUT="$(python3 "$GP" reply 9002 I got your private message)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a receipted private reply exits 0" "$CODE" "0"
+check_eq "the reply used chat-private" "$(last_action 'type=chat-private')" "1"
+check_eq "and addressed the original sender at any distance" "$(last_action 'target=Far Friend')" "1"
+snap 146 '[]' '{"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east door"},
+    {"id":9002,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"}
+]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "handled ids are not re-added from later snapshots" "$CODE" "4"
+grep -q '"kind":"player-message-received"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl" \
+    && grep -q '"kind":"player-message-reply"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl" \
+    && ok "observation and replies stay in the existing player decision log" \
+    || fail "observation and replies stay in the existing player decision log"
+
+echo
+echo "a walk verifies against the TARGET, never the receipt (spec rule 7a):"
+WS0="$(decided walk-short)"
+python3 "$GP" learn walk-verify --priority 97 --cooldown-ms 0 \
+    --trigger message_contains=welcome --action walk --param x=500 --param z=500 >/dev/null
+snap 150
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a done receipt that never arrived is exit 2" "$CODE" "2"
+contains "$OUT" "status=walk-short" && ok "and named walk-short, with the settled tile" \
+    || fail "and named walk-short, with the settled tile" "$OUT"
+check_eq "the shortfall is one decision-log event" "$((  $(decided walk-short) - WS0 ))" "1"
+grep -q '"intended":{"x":500,"z":500}' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" 2>/dev/null \
+    && ok "the outcome queue carries intended versus settled for the author" \
+    || fail "the outcome queue carries intended versus settled for the author"
+python3 "$GP" set walk-verify action.x 121 >/dev/null
+python3 "$GP" set walk-verify action.z 649 >/dev/null
+snap 151
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a walk that settles within the arrive tolerance is done: exit 0" "$CODE" "0"
+contains "$OUT" "status=done" && ok "and says done" || fail "and says done" "$OUT"
+
+echo
+echo "a once-per-objective mark is spent only on a VERIFIED done (spec rule 7a):"
+python3 "$GP" objective verify-marks >/dev/null
+python3 "$GP" set walk-verify once_per_objective true >/dev/null
+python3 "$GP" set walk-verify action.x 500 >/dev/null
+python3 "$GP" set walk-verify action.z 500 >/dev/null
+snap 152
+fake_bridge done
+CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the walk fell short: exit 2" "$CODE" "2"
+snap 153
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+contains "$OUT" "fired rule=walk-verify" \
+    && ok "the unarrived rule is still live for the objective — no spent mark" \
+    || fail "the unarrived rule is still live for the objective — no spent mark" "$OUT"
+python3 "$GP" set walk-verify action.x 121 >/dev/null
+python3 "$GP" set walk-verify action.z 649 >/dev/null
+snap 154
+fake_bridge done
+CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "then it arrives: exit 0" "$CODE" "0"
+snap 155
+CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+check_eq "and only the verified done spent the mark: no refire" "$CODE" "4"
+python3 "$GP" remove walk-verify >/dev/null
+python3 "$GP" objective --clear >/dev/null
+
+echo
+echo "the near_tile radius floor (spec rules 4 and 17):"
+refute "authoring an exact-tile radius is refused by the lint gate" \
+    python3 "$GP" learn walk-pin --priority 5 --cooldown-ms 0 \
+        --trigger 'near_tile={"x":120,"z":648,"radius":1}' \
+        --action walk --param x=121 --param z=648
+python3 - "$DESKCRAB_GAME_DIR/learned-rules.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["rules"].append({"name": "walk-legacy-pin", "enabled": True, "priority": 5,
+    "cooldown_ms": 0, "hold_ticks": 1,
+    "trigger": {"near_tile": {"x": 122, "z": 648, "radius": 0}},
+    "action": {"type": "walk", "x": 121, "z": 649}})
+json.dump(cfg, open(sys.argv[1], "w"))
+PY
+snap 156
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+contains "$OUT" "fired rule=walk-legacy-pin" \
+    && ok "a legacy exact-tile rule still fires from two tiles away: the floor holds" \
+    || fail "a legacy exact-tile rule still fires from two tiles away: the floor holds" "$OUT"
+python3 "$GP" remove walk-legacy-pin >/dev/null
+
+echo
+echo "the resident runner, step's deferral, the queue and the note door (spec rules 15-16):"
+snap 160
+python3 "$GP" run --poll-ms 100 > "$SANDBOX/runner-out" 2>&1 &
+RUNNER_PID=$!
+for i in $(seq 1 50); do
+    [ -f "$DESKCRAB_GAME_STATE_DIR/player-runner.json" ] && break; sleep 0.1
+done
+check "the runner writes its heartbeat" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/player-runner.json"
+sleep 0.6
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+contains "$OUT" "runner-" && ok "step defers to the live runner instead of evaluating" \
+    || fail "step defers to the live runner instead of evaluating" "$OUT"
+check_eq "and hands back the runner's own fallback licence: exit 4" "$CODE" "4"
+grep -q '"kind":"gap"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" 2>/dev/null \
+    && ok "the runner queued the gap for the background author" \
+    || fail "the runner queued the gap for the background author"
+check_eq "an unchanged game gap queues once, not on a timer" \
+    "$(grep -c '"kind":"gap"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl")" "1"
+check "gap deduplication keys on actionable state, not game ticks" \
+    grep -q 'last_gap_signature' "$GP"
+kill "$RUNNER_PID" 2>/dev/null; wait "$RUNNER_PID" 2>/dev/null
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+case "$OUT" in
+    runner-*) fail "a dead runner defers nothing: step evaluates locally again" "$OUT" ;;
+    *)        ok   "a dead runner defers nothing: step evaluates locally again" ;;
+esac
+OUT="$(python3 "$GP" note "the mill door sticks; approach from the south")"
+contains "$OUT" "noted" && ok "the note door answers" || fail "the note door answers" "$OUT"
+grep -q '"kind":"lesson"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" 2>/dev/null \
+    && ok "and the lesson landed in the queue, stamped with live context" \
+    || fail "and the lesson landed in the queue, stamped with live context"
+
+echo
+echo "the test gate catches a broken rule before it is armed (spec rule 17):"
+python3 "$GP" learn walk-keeper --priority 30 --cooldown-ms 0 \
+    --trigger 'near_tile={"x":140,"z":640,"radius":4}' \
+    --action walk --param x=141 --param z=641 >/dev/null
+python3 - > "$SANDBOX/case-snap.json" <<'PY'
+import json, time
+print(json.dumps({"v": 1, "ts": int(time.time() * 1000), "tick": 170,
+    "logged_in": True, "hits": 10, "hits_max": 10, "x": 141, "z": 640,
+    "inventory": [], "messages": [], "npcs": []}))
+PY
+check "a replay case is added, pinned to the current winner" \
+    python3 "$GP" test add keeper-wins --expect walk-keeper \
+        --snapshot "$SANDBOX/case-snap.json"
+check "the suite door reports green" python3 "$GP" test
+refute "a hijacking higher-priority rule is refused before it is armed" \
+    python3 "$GP" learn walk-hijack --priority 95 --cooldown-ms 0 \
+        --trigger 'near_tile={"x":140,"z":640,"radius":10}' \
+        --action walk --param x=1 --param z=1
+contains "$(python3 "$GP" rules)" "walk-hijack" \
+    && fail "the refused rule never landed in the table" \
+    || ok "the refused rule never landed in the table"
+python3 "$GP" test remove keeper-wins >/dev/null
+python3 "$GP" remove walk-keeper >/dev/null
 
 echo
 refute "and still: no model CLI was invoked anywhere in the suite" \

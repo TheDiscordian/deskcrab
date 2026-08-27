@@ -2,8 +2,8 @@
 
 ## PURPOSE
 
-Deliberate play taught itself actions all through Tutorial Island (2026-08-27) and wrote them down
-as prose — triggers like "tutorial cooking instruction needed" in `learned-actions.json` — and
+Deliberate play can write verified actions down as prose — triggers like "tutorial cooking
+instruction needed" in `learned-actions.json` — and
 prose is not runnable: every sitting re-read the notes and spent a reasoning turn re-deciding what
 the notes already knew. This layer makes the learned knowledge executable. A durable table of
 trigger+action rules, written by the deliberate hand at the moment a play verifies, is evaluated
@@ -58,7 +58,9 @@ deliberate-play channel.
    - `message_contains` (string, non-empty, single-line): some message in the snapshot's
      `messages` contains it, case-insensitively.
    - `near_tile` (`{"x":…,"z":…,"radius":…}`): Chebyshev distance from the player's tile is at
-     most `radius` (0 ≤ radius ≤ 50).
+     most `radius` (0 ≤ radius ≤ 50). Evaluation applies an effective floor of 2: a stored
+     radius below 2 evaluates as 2, and rule 17's lint refuses to author one. The trigger names
+     the vicinity; rule 7a's verification owns the exact destination.
    - `inventory_has` / `inventory_lacks` (int): an item of that id is / is not in the inventory.
 
 5. The action vocabulary is closed: `talk-npc` (`npc`: the type id; the server index is resolved
@@ -66,7 +68,8 @@ deliberate-play channel.
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
    click), `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
-   rule about panic moves, not a bridge property), `interact-object` (`obj`: the object type id,
+   rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
+   Chebyshev tolerance rule 7a's verification accepts as arrival), `interact-object` (`obj`: the object type id,
    optional `cmd` 1 or 2 defaulting to 1 — the nearest matching entry in the snapshot's
    `objects` list is resolved at fire time and its tile rides the action file, so the bridge's
    unloaded/swapped re-checks protect the act; this is how a door-less fishing spot is fished
@@ -90,9 +93,18 @@ deliberate-play channel.
    `inflight_timeout_ms`), and report one line on stdout: `<verdict> key=value…`. Verdicts and
    exit codes:
    - `fired` (exit 0): a rule fired and the receipt came back `done` — fields `rule`, `id`,
-     `type`, `status`, `objective`.
+     `type`, `status`, `objective` — and, for a walk, rule 7a's verification confirmed arrival.
    - `fired` with a non-`done` status, or no receipt inside the window (exit 2): the action was
      emitted but did not execute; the model should look before retrying.
+
+7a. **A receipt is dispatch, not completion.** The bridge answers `done` when the click is
+   delivered, while the body may still be walking. A fired `walk` is verified against the TARGET's coordinates,
+   never the receipt alone: after `done`, evaluation follows the snapshot until the position
+   stops changing (or a hard timeout), and the verdict status is `done` only when the settled
+   tile is within the action's `arrive` tolerance of the target; otherwise it is
+   `walk-short x=… z=…` (exit 2), naming where the body actually stopped. A
+   `once_per_objective` mark is spent only on a VERIFIED `done` — a refused, short or
+   unreceipted firing leaves the rule live for the objective.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the fallback signal — **only this verdict licenses model
@@ -101,6 +113,27 @@ deliberate-play channel.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    `step --max N` repeats while rules fire cleanly (at most N actions), then reports the
    stopping verdict; the exit code is 0 if anything fired.
+
+7b. Incoming player chat interrupts ordinary rule selection. Every structured snapshot message
+   with `incoming: true` and channel `local` or `private` is copied into the existing
+   `player-engine-state.json`, keyed by its bridge message id. Repeated snapshots cannot duplicate
+   it, and it remains pending after it scrolls out of the snapshot. Before rules are evaluated,
+   `step` reports the oldest pending message as
+   `player-message id=… channel=… sender=… text=…` and exits 6, which licenses the Sol player
+   to consider the message immediately. Player information is part of play: the player may change
+   the current plan when the message supplies help, identifies a problem, or requests
+   coordination.
+
+   `reply MESSAGE_ID TEXT` answers through the same shared action slot and receipt path as every
+   other deliberate action. A local incoming message compiles to `chat-local`; a private incoming
+   message compiles to `chat-private` with the original sender as target. The bridge receipt proves
+   dispatch; only the matching outgoing message echo in a later snapshot proves server acceptance
+   and marks the message handled. A refusal, a server error, or an unconfirmed dispatch leaves it
+   pending. Handling one message also
+   handles older pending messages from the same sender and channel, allowing one concise response
+   to cover a burst without producing stale replies. There is no chat daemon, side queue, or
+   second controller: observation, priority, action, receipt, logging, and durable state all stay
+   in this player action system.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule
@@ -142,8 +175,12 @@ deliberate-play channel.
     test sandbox pins its own copy), and passes any other subcommand through, so the sitting
     has one door for stepping, learning and objectives. The playing policy the sittings read
     makes rules-first mandatory: reasoning about the next action is licensed only by rule 7's
-    `no-rule-matched` (exit 4), and a newly verified play must be written back with `learn` —
-    an executable rule, not only a prose note.
+    `no-rule-matched` (exit 4), and a newly verified play must become an executable rule — but
+    authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
+    leaves a `note` in the outcome queue and keeps moving. While rule 15's resident runner is
+    live, `step` defers to it instead of evaluating — one engine-state writer at a time — and
+    reports the runner's own latest verdict with the same exit mapping, so exit 4 keeps its
+    meaning as the one licence to reason.
 
 13. The harness is itself versioned bytes, and its processes outlive their launcher. The
     entrypoint and its helpers are committed in the game checkout's repository
@@ -153,8 +190,7 @@ deliberate-play channel.
     long-lived process the harness starts (Xvfb, the client, the reflex engine, the viewer)
     starts as its own transient systemd user unit (`orsc-<name>.service`), a sibling of the
     launching process, never a `setsid` child of it: a child, however detached from its
-    terminal, still dies with the launching service's cgroup — a builder job's collection
-    killed the whole live stack exactly that way on 2026-08-27. Where no user manager is
+    terminal, still dies with the launching service's cgroup. Where no user manager is
     reachable the harness refuses to start rather than pretend durability;
     `ORSC_HEADLESS_DETACH=setsid` is the explicit sandbox opt-down.
 
@@ -166,7 +202,7 @@ deliberate-play channel.
       (`orsc-headless.sh start`), a mechanical login from the stored credentials file when the
       snapshot says logged out (login is plumbing, never play), the reflex engine
       (`engine start`), and the player itself — a real GPT Sol model (`codex exec --model
-      gpt-5.6-sol`, the pin visible in the committed bytes) running as its own transient user
+      gpt-5.6-sol -c model_reasoning_effort=low`, both pins visible in the committed bytes) running as its own transient user
       unit `orsc-player.service` with `Restart=always` and `StartLimitIntervalSec=0`: a player
       that exits, normally or killed, is restarted by the service manager, never by a watching
       shell, and restarts are never rate-limited away. Layers already up are left alone, so
@@ -189,19 +225,77 @@ deliberate-play channel.
       predecessor having finished anything: with no handoff on file the successor is told to
       derive the situation from the ground truth instead. `prompt` prints exactly what the
       next start would receive — the audit door the tests pin.
-    - The playing loop the prompt demands is rule 12's: rules first through `orsc-headless.sh
-      play`, model judgment only on the `no-rule-matched` exit 4, verified plays written back
-      with `learn`. A single bridge action, an engine reflex, a login, or any builder job is
+    - `play` also raises rule 15's resident runner (`orsc-runner.service`, through the
+      harness's `runner` door) and rule 16's background author (`orsc-author.service`,
+      `run-author`), so the standing stack has five runtime processes: client, reflex engine,
+      rules runner, author, and player. Mechanical login is the setup step between client and
+      engine startup.
+    - The playing loop the prompt demands is rule 12's:
+      learned rules fire from the resident runner with no model anywhere near them; the
+      model's whole job is the GAP — when `play` hands back exit 4, make ONE quick decision,
+      act through the bridge doors, verify against the snapshot, `play note` the outcome for
+      the background author, and keep moving. Acting never waits on authoring; minutes of
+      deliberation while the body stands still is the exact failure this shape exists to
+      prevent. A single bridge action, an engine reflex, a login, or any builder job is
       not playing; playing is that loop, continued for the whole run.
+    - Arbitrary timed waits are structurally forbidden in the Sol player's shell commands.
+      The player starts with the `openrsc-player` Codex profile and its trusted `PreToolUse`
+      hook; a shell command that executes `sleep` or a language-runtime sleep is denied before
+      execution. Waiting for the game is expressed only through this ACTIONS system's receipts,
+      snapshot changes, runner verdicts, and state-triggered rules. The hook does not apply to
+      the runner, bridge, client, or background author.
     - The sandbox drives all of it through env doors: `BETTY_OPENRSC_HOME`,
       `BETTY_OPENRSC_HEADLESS`, `BETTY_OPENRSC_CODEX`, `BETTY_OPENRSC_MODEL`,
-      `BETTY_OPENRSC_UNIT`.
+      `BETTY_OPENRSC_UNIT`, `BETTY_OPENRSC_AUTHOR_MODEL`, `BETTY_OPENRSC_AUTHOR_UNIT`.
+
+### The resident runner, the outcome queue, and the test gate
+
+15. `run` is the resident rules engine: the same one-step evaluation as rule 7, in a loop, as
+    its own long-lived process (`orsc-runner.service` beside the reflex engine), so a matching
+    rule fires within a poll interval of its trigger becoming true — never waiting on a model
+    turn. Each iteration re-reads the objective, reloads the table when
+    `learned-rules.json`'s mtime moves (an invalid table is refused loudly and the last valid
+    one kept), evaluates, verifies per rule 7a, and writes a heartbeat —
+    `$DESKCRAB_GAME_STATE_DIR/player-runner.json`: pid, ts, latest verdict and detail — every
+    pass. A fresh heartbeat (pid alive, ts within 30 s, covering an in-progress walk verification)
+    is how rule 12's `step` knows to defer:
+    two writers of the engine state would race, so while the runner is live it is the ONLY
+    evaluator. The hold flag, stale, logged-out and slot-busy protections all hold inside the
+    loop exactly as in `step`.
+
+16. Authoring happens in parallel with play, never instead of it. Every fired action's outcome
+    — rule, action, receipt status, rule 7a's intended target versus settled tile, the
+    snapshot brief — is appended to the durable outcome queue,
+    `$DESKCRAB_GAME_DIR/outcome-queue.jsonl`; the runner also records a `gap` when no rule
+    matches and the actionable state signature changes (objective, position, inventory, game
+    messages, and visible entity types/objects, excluding tick churn and NPC wandering), and
+    `note <text…>` is the playing
+    hand's one-line door for lessons the queue cannot see (it stamps the current position,
+    objective and inventory alongside the text). The queue is the inbox of the background
+    author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
+    `orsc-author.service`) that starts when the queue changes, processes only bytes after its
+    durable cursor, and then exits; there is no sleep or polling loop. It runs on Fable at low
+    effort, reads new outcomes, writes and refines rules through the rule 11 doors, maintains rule
+    17's cases, and never touches the bridge, the screen, or the reflex engine: every action
+    that CAN become a reflex SHOULD become one, but rule creation must never block the body.
+
+17. Rules are deterministic trigger-to-action data, so they are tested like data.
+    `$DESKCRAB_GAME_DIR/learned-rule-tests.json` holds replay cases — `name`, `objective`,
+    a captured `snapshot`, and `expect` (the rule name that must win the slot, or `none`) —
+    and `test` replays every case against the live table with rule 7's own trigger and
+    compile functions (cooldowns, marks and pacing excluded: cases are pure), plus a lint
+    pass (including a `near_tile` radius below rule 4's floor). `test add <name> --expect R
+    --snapshot F [--objective O]`, `test remove`, `test list` maintain the cases. The gate:
+    every table-mutating door — `learn`, `enable`, `disable`, `set`, `remove` — runs the full
+    suite against the WOULD-BE table first and refuses the write on any failure, so a broken
+    rule is caught before it is armed, and a new rule that would steal an existing case's
+    trigger state is caught the moment it is proposed.
 
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery
-  became visible (`bounds`, `objects`) when the bridge grew on 2026-08-27; quest state and
-  dialogue menus remain invisible, and plays that need them wait in `unfinished` for
+  are visible through `bounds` and `objects`; quest state and dialogue menus remain invisible,
+  and plays that need them wait in `unfinished` for
   the bridge to grow, by spec change there and here.
 - `message_contains` reads the snapshot's short message tail; a message that scrolled out
   between polls is missed. Rules should trigger on state where possible and messages only for

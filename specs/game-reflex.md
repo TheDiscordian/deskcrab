@@ -51,7 +51,10 @@ Three parts:
    `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
    `fatigue` (0–100), `x` and `z` (world coordinates), `in_combat`, `opponent` (`{"x":…,"z":…}`
    while a fighting opponent is visible, else `null`), `inventory` (array of `{"id":…,"count":…}`
-   in slot order), `messages` (the last few game messages, newest last), `npcs` (the NPCs the
+   in slot order), `messages` (the last 20 messages seen by the client, newest last; each is
+   `{"id":…,"channel":…,"incoming":…,"sender":…,"text":…}`, where `id` is unique across
+   client restarts, `channel` distinguishes `local`, `private`, and non-player message types, and
+   `incoming` is true only for chat received from another player), `npcs` (the NPCs the
    client currently holds as visible, nearest to the player first, capped at 12: each
    `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
    its world tile), `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
@@ -78,7 +81,8 @@ Three parts:
 5. The action vocabulary is closed, and grows only by a change to this spec: `eat` (use one
    inventory food item, by slot), `walk` (walk to an absolute tile; `flee` in a rule compiles to
    this), `warn` (display a local client-side message to the player — nothing is sent to the
-   server), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
+   server), `chat-local` (send public chat to nearby players), `chat-private` (send a private
+   message to a named online player at any distance), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
    same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
    NPCs only and structurally cannot message another player), `interact-object` (perform a menu
    command on a loaded game object at an absolute tile — the same walk-and-act the object's own
@@ -86,16 +90,16 @@ Three parts:
    command, so a fishing spot's Net and Bait, a gate's Open, a range's nothing-at-all are all the
    game's own menu, never an invented verb), and `interact-bound` (the same for a wall object —
    a door or other boundary — at a tile and wall direction; Open and Close are its usual
-   commands). `talk-npc`, `interact-object` and `interact-bound` belong to the deliberate-play
+   commands). `talk-npc`, `interact-object`, `interact-bound`, `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
-   (rule 9). Nothing in this layer can log in, create or delete a character, talk to another
-   player, drop, trade, or spend. The bridge refuses any action type it does not know.
+   (rule 9). The reflex table cannot author speech. Nothing in this layer can log in, create or
+   delete a character, drop, trade, or spend. The bridge refuses any action type it does not know.
 
 6. `action.json` and every notice file are flat `key=value` lines: `ts` (epoch ms when the engine
    emitted it), `id` (the engine's monotonically increasing action id), `type`, then the type's
    parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`
-   for walk; `text` for warn; `sidx` and `npc` — the server index and the type id the emitter saw
+   for walk; `text` for warn and chat-local; `target` and `text` for chat-private; `sidx` and `npc` — the server index and the type id the emitter saw
    there, the latter deliberately NOT named `id` so it can never collide with the action id line —
    for talk-npc, so a despawned or swapped NPC is refused as `refused-no-such-npc` or
    `refused-npc-mismatch`, never talked to blind; `x`, `z`, `obj` — the object type id, NOT named
@@ -122,7 +126,9 @@ Three parts:
    the bridge consume, bury, or light something else. A check that fails still deletes the file
    and, on the game channel, writes the receipt with status `held`, `stale`, or `refused-<why>` —
    a refused action is never silently dropped. Notices need no receipt; `action.json` always gets
-   one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`.
+   one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`. Chat text and
+   private targets must be non-empty single lines; text is capped at the client's 80-character
+   input limit and targets at 40 characters. Invalid values are refused rather than truncated.
 
 8. The bridge may never break the game: every per-tick step runs inside a catch-everything guard,
    and after 5 consecutive failing ticks the bridge announces once (a local client message) that it

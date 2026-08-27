@@ -93,12 +93,6 @@ public class ReflexBridgeHarness {
 			return invIds[slot] == 132;
 		}
 
-		public List<String> recentMessages(int max) {
-			List<String> out = new ArrayList<String>();
-			out.add("Welcome to the \"quoted\" world");
-			return out;
-		}
-
 		// Two scripted visible NPCs: server index 7 is type 474 two tiles
 		// away, server index 9 is type 485 five tiles away. Deliberately
 		// listed FAR one first, so the snapshot's nearest-first sort is
@@ -206,6 +200,14 @@ public class ReflexBridgeHarness {
 			events.add("walk x=" + absX + " z=" + absZ);
 		}
 
+		public void sendLocalChat(String text) {
+			events.add("chat-local text=" + text);
+		}
+
+		public void sendPrivateChat(String target, String text) {
+			events.add("chat-private target=" + target + " text=" + text);
+		}
+
 		public void showLocalMessage(String text) {
 			events.add("shown " + text);
 		}
@@ -217,6 +219,11 @@ public class ReflexBridgeHarness {
 		int ticks = args.length > 2 ? Integer.parseInt(args[2]) : 1;
 		ReflexBridge bridge = new ReflexBridge(Paths.get(dir));
 		FakeHost host = new FakeHost();
+		bridge.recordMessage("game", false, "", "Welcome to the \"quoted\" world");
+		if ("state-chat".equals(mode)) {
+			bridge.recordMessage("local", true, "Nearby Friend", "Try the east door");
+			bridge.recordMessage("private", true, "Far Friend", "I can help from here");
+		}
 		if ("state-out".equals(mode) || "exec-out".equals(mode)) {
 			host.loggedIn = false;
 		}
