@@ -486,13 +486,27 @@ def emit_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
 # --------------------------------------------------------------------------
 # One evaluation of one snapshot (spec rules 10 and 11). `emit` is real in
 # the run loop and a no-op in replay; `sink` collects events for replay.
+#
+# The machinery is shared with the deliberate-play channel
+# (specs/game-player.md rule 8): `trigger_fn` and `compile_fn` plug that
+# layer's own vocabulary into the SAME priority/cooldown/debounce/slot
+# discipline, and `live` says whether the hold flag governs — it defaults
+# to "emitting for real", which is exactly the old `emit is emit_action`
+# test, so replay stays hold-blind and the run loop stays hold-bound.
 # --------------------------------------------------------------------------
 def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
-             emit=emit_action, sink=None) -> None:
+             emit=emit_action, sink=None, trigger_fn=None, compile_fn=None,
+             live=None) -> None:
+    if trigger_fn is None:
+        trigger_fn = trigger_true
+    if compile_fn is None:
+        compile_fn = compile_action
+    if live is None:
+        live = emit is emit_action
     defaults = config_defaults(cfg)
     est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
 
-    held = (state_dir() / "hold").exists() if emit is emit_action else False
+    held = (state_dir() / "hold").exists() if live else False
     if held != est["was_held"]:
         log_event({"ts": now, "kind": "hold" if held else "resume"}, sink)
         est["was_held"] = held
@@ -529,7 +543,7 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
     eligible = []
     for rule in rules:
         name = rule["name"]
-        if trigger_true(rule["trigger"], snap, food):
+        if trigger_fn(rule["trigger"], snap, food):
             est["streak"][name] = est["streak"].get(name, 0) + 1
         else:
             est["streak"][name] = 0
@@ -558,7 +572,7 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
     for rule in eligible:
         if rule["channel"] != "notice":
             continue
-        action, why = compile_action(rule, snap, food, defaults["eat_pick"])
+        action, why = compile_fn(rule, snap, food, defaults["eat_pick"])
         if action is None:
             log_event({"ts": now, "kind": "refused", "rule": rule["name"],
                        "why": why}, sink)
@@ -595,7 +609,7 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
             log_event({"ts": now, "kind": "conflict-loss", "rule": rule["name"],
                        "lost_to": game[0]["name"]}, sink)
             continue
-        action, why = compile_action(rule, snap, food, defaults["eat_pick"])
+        action, why = compile_fn(rule, snap, food, defaults["eat_pick"])
         if action is None:
             log_event({"ts": now, "kind": "refused", "rule": rule["name"],
                        "why": why}, sink)
