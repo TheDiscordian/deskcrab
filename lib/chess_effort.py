@@ -39,14 +39,18 @@ SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 # The clock picks the pair (specs/chessweb.md rule 16b, adopted 2026-08-27):
 # a timed game reads its SPEED's pair, so a bullet game stops paying rapid
 # thinking prices and a rapid game with increment can afford real thought.
-# The defaults come from the 2026-08-27 self-play benchmark
-# (docs/chess-bench-2026-08-27.md); each is overridable by its own knob, so
-# the next adjudication is a config line here too. An untimed game — and any
-# speed outside this table — keeps the uniform pair above, exactly as the
-# 2026-08-26 adjudication left it.
+# The defaults are the 2026-08-27 self-play benchmark's verdict
+# (docs/chess-bench-2026-08-27.md): bullet and blitz go low/low because the
+# medium sharp call's in-game tail (p90 ~15s against low's steady ~3s) is
+# exactly what the measured 2+1 and 3+2 flag losses died of and 0-2s of
+# increment cannot cover it; rapid keeps low/medium because that pair never
+# flagged in six rapid games — 10+0/15+10 clocks absorb the tail. Each level
+# is overridable by its own knob, so the next adjudication is a config line
+# here too. An untimed game — and any speed outside this table — keeps the
+# uniform pair above, exactly as the 2026-08-26 adjudication left it.
 SPEED_PAIRS = {
-    "bullet": ("low", "medium"),
-    "blitz": ("low", "medium"),
+    "bullet": ("low", "low"),
+    "blitz": ("low", "low"),
     "rapid": ("low", "medium"),
 }
 

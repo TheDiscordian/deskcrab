@@ -342,7 +342,12 @@ cannot be changed.
     `DESKCRAB_CHESS_EFFORT_<BULLET|BLITZ|RAPID>_QUIET` / `_SHARP`, defaults in
     `chess_effort.SPEED_PAIRS`, chosen from the 2026-08-27 self-play benchmark
     (chess-selfplay.md rules 14-19; docs/chess-bench-2026-08-27.md carries the measured
-    results) — and an untimed game keeps the uniform pair above, exactly as adjudicated.
+    results): bullet `low`/`low`, blitz `low`/`low`, rapid `low`/`medium` — bullet and
+    blitz drop the `medium` sharp because a sonnet `medium` call's in-game tail (p90 ~15s
+    against a ~3s `low`) is what the measured flag losses at 2+1 and 3+2 died of, and 0-2s
+    of increment cannot cover it; rapid keeps `medium` because the pair never flagged in
+    six rapid games and 10+0/15+10 clocks absorb the tail — and an untimed game keeps the
+    uniform pair above, exactly as adjudicated.
     The game's speed may pick the model the same way: `answer_position` puts
     `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` on the job as its `model` when that knob is set,
     and the mover prefers a real-game job's `model` over its environment chain; unset knobs

@@ -697,6 +697,25 @@ Contract: [`specs/phone.md`](../specs/phone.md).
 
 ## The chess bridge
 
+### 2026-08-27 — the benchmark played, and the clock picked the pairs
+
+The self-play benchmark the mechanism commit (5aa7754) was built for ran to completion the same
+night: 24 games across 1+0 through 15+10, five haiku/sonnet configurations, colours rotated, real
+clocks, plus counted probe calls for fable. The finding that decided everything was the in-game
+latency tail, not the win column: sonnet `low` is steady (median 3.1s, p90 3.7s), sonnet `medium`
+holds the same median but hides a p90 of ~15s, and sonnet `high` runs a 15.8s median with a 64s
+p90 in real games — against a 3.1s bare-call probe, which is what an idle account and a tiny
+prompt price, not what a game pays. Every decisive result but one checkmate was a flag: the
+`medium` sharp tail bled out against +1s and +2s increments (2+1, 3+2, genuine zero-clock deaths
+over 50-73 plies), `high` flagged four of six rapid games, and haiku never answered a game
+position under 18s at any effort and flagged every timed game it played. So `SPEED_PAIRS` landed
+its measured values — bullet `low`/`low`, blitz `low`/`low`, rapid `low`/`medium` — untimed games
+keeping the user's adjudicated uniform pair, and the per-speed model knobs staying unset:
+sonnet is the mover everywhere, and fable, playable at ~3.9s, stays out of reach of the grind on
+2026-08-15's lesson alone. The full tables are docs/chess-bench-2026-08-27.md. The one checkmate
+(game 024, `medium`/`high` surviving 15+10 to mate `low`/`low`) is the standing note that high
+effort plays better chess than the standard clocks let it prove.
+
 ### 2026-08-26 — the effort dial's parity A/B, rejected
 
 The 2026-08-15 lowering of the effort pair to `low`/`medium` ran nine days as one undifferentiated

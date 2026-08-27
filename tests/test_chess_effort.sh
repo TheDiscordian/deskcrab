@@ -390,14 +390,14 @@ EOF
 }
 check_eq "no speed keeps the adjudicated uniform pair" "$(pairfor -)" "low medium"
 check_eq "an unknown speed keeps it too" "$(pairfor correspondence)" "low medium"
-check_eq "bullet reads its own benchmark-chosen pair" "$(pairfor bullet)" "low medium"
-check_eq "blitz reads its own" "$(pairfor blitz)" "low medium"
+check_eq "bullet reads its own benchmark-chosen pair" "$(pairfor bullet)" "low low"
+check_eq "blitz reads its own" "$(pairfor blitz)" "low low"
 check_eq "rapid reads its own" "$(pairfor rapid)" "low medium"
 check_eq "a per-speed knob overrides by env alone" \
     "$(pairfor rapid DESKCRAB_CHESS_EFFORT_RAPID_QUIET=medium \
        DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "medium max"
 check_eq "and leaves the other speeds where they were" \
-    "$(pairfor bullet DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "low medium"
+    "$(pairfor bullet DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "low low"
 
 PAIRED="$("$PY" -B - <<EOF
 import sys; sys.path.insert(0, "$REPO/lib")
