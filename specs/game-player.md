@@ -28,8 +28,17 @@ deliberate-play channel.
    `$DESKCRAB_GAME_DIR/objective`, and the immediate activity is
    `$DESKCRAB_GAME_DIR/activity` (each one line, empty or absent meaning none). The objective is
    the longer-lived goal (for example `thieving-to-30`); the activity is what the player is doing
-   now (for example `thieving`, `banking`, or `trading`). The engine's own
-   counters live in `$DESKCRAB_GAME_STATE_DIR/player-engine-state.json` and its decisions in
+   now (for example `thieving`, `banking`, or `trading`).
+   `$DESKCRAB_GAME_DIR/activity-stats.json` is the selected activity's measured clock: its start
+   time, per-skill cumulative-XP baselines, latest observed XP values, and the most recent positive
+   XP delta. Selecting a different activity or `activity --restart` resets that baseline; selecting
+   the already-current activity does not accidentally erase it, and clearing activity removes it.
+   The resident runner compares the bridge's structured `skills` XP every pass, so an XP-bearing
+   game action becomes a grounded `+N/action` delta and cumulative gain divided by elapsed activity
+   time becomes XP/hour. Only skills with positive gain are reported. No screen counter, level
+   estimate, or model inference is involved.
+
+   The engine's own counters live in `$DESKCRAB_GAME_STATE_DIR/player-engine-state.json` and its decisions in
    `$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl` — separate files from the reflex engine's,
    because the two engines are tuned and audited independently. The exchange files
    (`state.json`, `action.json`, `receipt.json`, `hold`) are game-reflex rule 1's, shared:
@@ -90,7 +99,10 @@ deliberate-play channel.
    approach their chosen visible target. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
-   Chebyshev tolerance rule 7a's verification accepts as arrival), `interact-object` (`obj`: the object type id,
+   Chebyshev tolerance rule 7a's verification accepts as arrival), `retreat` (optional `distance`
+   1–10, default 5, and fallback direction `dx`/`dz`; while fighting, the bridge prefers away from
+   the identified opponent and tries alternate directions and nearer tiles until its collision
+   map finds one reachable ordinary walk), `interact-object` (`obj`: the object type id,
    optional `cmd` 1 or 2 defaulting to 1 — the nearest matching entry in the snapshot's
    `objects` list is resolved at fire time and its tile rides the action file, so the bridge's
    unloaded/swapped re-checks protect the act; this is how a door-less fishing spot is fished
@@ -112,9 +124,11 @@ deliberate-play channel.
    clicking), and `take-ground` (`item`: the item id; optional `within` 0–10 caps its current
    Chebyshev distance). The
    nearest matching `ground_items` entry is compiled to item id and current world tile; the bridge
-   re-matches both immediately before sending the game's own walk-and-take action. Global
-   kill-tile loot reflexes use `within` so they may remain activity-agnostic without chasing a
-   distant or unreachable pile. Everything the bridge refuses stays refused;
+   re-matches both immediately before sending the game's own walk-and-take action. Wanted-loot
+   reflexes deliberately omit `within`: visibility licenses a pathfinding attempt, and an actual
+   route failure is evidence to report instead of waiting for the wanted item to wander closer.
+   `within` is only for a rule whose intended behaviour is explicitly local, never an implicit
+   safety restriction on an ordinary desire. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
    that do not name a rendered game entity or current inventory, shop, or bank item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.
@@ -126,7 +140,8 @@ deliberate-play channel.
 
 ### Evaluation
 
-7. `step` is one rules-first evaluation: read the snapshot, evaluate the table through
+7. `step` is one rules-first evaluation: read the snapshot, update the selected activity's XP
+   measurements, evaluate the table through
    `game_reflex.evaluate` with this layer's trigger and compile functions, emit at most one
    action into the shared `action.json` slot, await the receipt (up to
    `inflight_timeout_ms`), and report one line on stdout: `<verdict> key=value…`. Verdicts and
@@ -144,12 +159,27 @@ deliberate-play channel.
    `walk-short x=… z=…` (exit 2), naming where the body actually stopped. A
    `once_per_objective` mark is spent only on a VERIFIED `done` — a refused, short or
    unreceipted firing leaves the rule live for the objective.
+   `retreat` is verified against `in_combat`, not its dispatch receipt or an invented client
+   timer. OpenRSC permits escape only after the opponent's third hit, a server counter the client
+   is not sent. A still-fighting attempt becomes `retreat-locked` or `retreat-unconfirmed`
+   (exit 2), remains eligible, and retries on later runner passes; only a snapshot with
+   `in_combat: false` is `done`.
+   `take-ground` is likewise a commitment, not a dispatch receipt. Evaluation retains control
+   while the bridge walks to the targeted item; `done` requires the matching ground entry at that
+   exact tile to decrease and the same item id's inventory quantity to increase. A vanished pile
+   without inventory gain is `take-missed`, and a settled body with the pile still present is
+   `take-short`. Routine activity cannot fire midway through this verification and cancel the
+   approach. The direct `take ITEM-ID` door uses this same verifier and publishes a short-lived
+   in-progress record so the resident runner also stays out of its way.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the fallback signal — **only this verdict licenses model
      reasoning about the next action**. Fields include `cooldown_holds`, so a temporarily
      suppressed rule is visible to the falling-back mind, and `ground_items` names every visible
      ground-item id so a newly entered room cannot hide an actionable pickup behind another query.
+     The current `activity` and any positive `activity_xp` measurements ride the ordinary verdict;
+     the resident-runner heartbeat preserves them when a separate player process asks through
+     `play`, so performance feedback is ambient rather than a special inspection ritual.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.
@@ -160,7 +190,9 @@ deliberate-play channel.
    `step --max N` repeats while rules fire cleanly (at most N actions), then reports the
    stopping verdict; the exit code is 0 if anything fired.
 
-7b. Incoming player chat interrupts ordinary rule selection. Every structured snapshot message
+7b. Incoming player chat interrupts ordinary rule selection, except that a matching `retreat`
+   rule while `in_combat` takes temporary precedence: avoiding an unwanted kill cannot wait for
+   conversation, and the pending message remains queued for the first safe pass. Every structured snapshot message
    with `incoming: true` and channel `local` or `private` is copied into the existing
    `player-engine-state.json`, keyed by its bridge message id. Repeated snapshots cannot duplicate
    it, and it remains pending after it scrolls out of the snapshot. The first new message opens a
@@ -195,6 +227,13 @@ deliberate-play channel.
    observation, priority, action, receipt, logging, and durable state all stay in this player
    action system.
 
+   A reply attempted while logged out reports `reply-needs-login ... pending=preserved`; it does
+   not consume the message. The harness's mechanical login inputs explicitly bypass the
+   autonomous conversation gate, because login is the prerequisite that makes replying possible.
+   At reply time the idle-warning state is refreshed under the player-state lock; a pending
+   warning instead reports `reply-needs-movement ... pending=preserved`, so conversation cannot
+   spend the remaining idle window and cause its own logout.
+
 7c. System messages remain structured in the bridge snapshot even though they are not player
    speech. The blue idle warning is detected by its stable meaning — standing here/still for a
    number of minutes and an instruction to move — so minor wording changes do not hide it. The
@@ -225,6 +264,10 @@ deliberate-play channel.
    observed state as `condition-timeout` and exits 2, so a missing transition can never block the
    player permanently. It consumes no action slot, creates no second game-state path, uses no
    model call, and performs no timed polling.
+   A special causal guard applies to `out_of_combat`: while combat is still active and the
+   server's “first 3 rounds” refusal is present, waiting alone cannot make escape happen.
+   The wait exits 2 immediately as `condition-needs-action ... next=retreat` and records the
+   failed strategy in the outcome queue instead of allowing an unchanged wait/retry loop.
 
 7e. Long-distance walking is a durable route in this same ACTIONS player. `route X Z
    [--arrive N]` atomically records one absolute destination, the current objective, and an arrival
@@ -281,7 +324,11 @@ deliberate-play channel.
     `~/.local/lib/deskcrab/game_player.py` (`DESKCRAB_GAME_PLAYER` overrides, which is how the
     test sandbox pins its own copy), and passes any other subcommand through, so the sitting
     has one door for stepping, state-based waiting, learning and objectives. The direct harness
-    door `orsc-headless.sh wait-until CONDITION [SECONDS]` delegates to that same module.
+    doors `orsc-headless.sh wait-until CONDITION [SECONDS]` and `orsc-headless.sh retreat
+    [SECONDS]` delegate to that same module. `retreat` creates one bounded request which the
+    resident runner owns (or the caller evaluates through the identical step path if no runner
+    exists), retries through the server lock, and returns only after observed safety or its hard
+    ceiling.
     The playing policy the sittings read
     makes rules-first mandatory: reasoning about the next action is licensed only by rule 7's
     `no-rule-matched` or rule 7e's `route-blocked` (exit 4), and a newly verified play must become an executable rule — but
@@ -404,7 +451,10 @@ deliberate-play channel.
 
 16. Authoring happens in parallel with play, never instead of it. Every fired action's outcome
     — rule, action, receipt status, rule 7a's intended target versus settled tile, the
-    snapshot brief — is appended to the durable outcome queue,
+    snapshot brief — is appended to the durable outcome queue. State-wait timeouts and causal
+    `condition-needs-action` failures enter the same queue with objective, activity, feedback,
+    and snapshot context, so a failed strategy is available to the next author pass rather than
+    forgotten. The queue is
     `$DESKCRAB_GAME_DIR/outcome-queue.jsonl`; the runner also records a `gap` when no rule
     matches and a changed actionable state signature remains unchanged for at least 750 ms
     (objective, position, inventory, game messages, visible ground items, and visible entity types/objects, excluding

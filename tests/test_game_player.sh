@@ -114,6 +114,94 @@ PY
     FAKE_BRIDGE_PID=$!
 }
 
+# A retreat packet is only dispatch. The scripted server can keep combat
+# locked (and publish its authoritative reason) or accept the retreat.
+fake_retreat_bridge() {  # locked|done
+    python3 - "$DESKCRAB_GAME_STATE_DIR" "$1" <<'PY' &
+import json, os, sys, time
+sd, outcome = sys.argv[1:3]
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    if os.path.exists(ap):
+        body = open(ap).read()
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        os.remove(ap)
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        state["tick"] = state.get("tick", 0) + 1
+        state["ts"] = int(time.time() * 1000)
+        if outcome == "done":
+            state["in_combat"] = False
+            state["walking"] = True
+        else:
+            state["in_combat"] = True
+            state["walking"] = False
+            state.setdefault("messages", []).append({
+                "id": state["tick"] * 1000, "channel": "game", "incoming": False,
+                "sender": "", "text": "You can't retreat during the first 3 rounds of combat"})
+        tmp_state = os.path.join(sd, ".state.tmp")
+        json.dump(state, open(tmp_state, "w"))
+        os.replace(tmp_state, state_path)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
+# A ground-take receipt is only dispatch. The collected case changes both
+# sides of the grounded transfer; missed removes the pile without inventory
+# gain, modelling despawn or another player taking it.
+fake_take_bridge() {  # collected|missed
+    python3 - "$DESKCRAB_GAME_STATE_DIR" "$1" <<'PY' &
+import json, os, sys, time
+sd, outcome = sys.argv[1:3]
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    if os.path.exists(ap):
+        body = open(ap).read()
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        os.remove(ap)
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        item_id, x, z = int(fields["item"]), int(fields["x"]), int(fields["z"])
+        removed = False
+        remaining = []
+        for item in state.get("ground_items") or []:
+            if not removed and item.get("id") == item_id \
+                    and item.get("x") == x and item.get("z") == z:
+                removed = True
+            else:
+                remaining.append(item)
+        state["ground_items"] = remaining
+        if outcome == "collected":
+            stack = next((item for item in state.get("inventory") or []
+                          if item.get("id") == item_id), None)
+            if stack is None:
+                state.setdefault("inventory", []).append({"id": item_id, "count": 1})
+            else:
+                stack["count"] = stack.get("count", stack.get("amount", 1)) + 1
+        state.update({"x": x, "z": z, "walking": False,
+                      "tick": state.get("tick", 0) + 1,
+                      "ts": int(time.time() * 1000)})
+        tmp_state = os.path.join(sd, ".state.tmp")
+        json.dump(state, open(tmp_state, "w"))
+        os.replace(tmp_state, state_path)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
 last_action() { sandbox_count_in "^$1" "$DESKCRAB_GAME_STATE_DIR/last-action"; }
 decided() { sandbox_count_in "\"kind\":\"$1\"" "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl"; }
 loosen() {  # pacing must not couple unrelated cases: interval 0, wide cap
@@ -156,6 +244,9 @@ refute "an impossible inventory capacity range is refused" \
 refute "an empty activity scope is refused" \
     python3 "$GP" learn bad-activity --priority 1 --trigger activity_is= \
         --action walk --param x=1 --param z=1
+refute "retreat refuses a zero fallback direction" \
+    python3 "$GP" learn bad-retreat --priority 1 --trigger in_combat=true \
+        --action retreat --param dx=0 --param dz=0
 refute "a near_tile radius beyond 50 is refused" \
     python3 "$GP" learn bad4 --priority 1 --trigger 'near_tile={"x":1,"z":1,"radius":99}' --action walk --param x=1 --param z=1
 check "learn persists a valid rule" \
@@ -267,6 +358,52 @@ check "the immediate activity can be cleared" python3 "$GP" activity --clear
 check_eq "a cleared activity reads as none" "$(python3 "$GP" activity)" "(none)"
 
 echo
+echo "an activity measures grounded action XP and elapsed rate (spec rules 1, 7):"
+snap 1035 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1000}]}'
+check "selecting an activity starts its cumulative-XP baseline" \
+    python3 "$GP" activity farmer-thieving
+check "the activity measurement is durable" test -f "$DESKCRAB_GAME_DIR/activity-stats.json"
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+s = json.load(open(p))
+s["started_ms"] = int(time.time() * 1000) - 3600000
+json.dump(s, open(p, "w"))
+PY
+snap 1036 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1012}]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "a pure measurement pass still leaves reasoning licensed" "$CODE" "4"
+contains "$OUT" "activity_xp=Thieving:+12/action,+12_total,12/hr" \
+    && ok "the verdict exposes XP per action, activity gain, and XP/hour" \
+    || fail "the verdict exposes XP per action, activity gain, and XP/hour" "$OUT"
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY' \
+    && ok "the exact positive XP delta is recorded as the last XP-bearing action" \
+    || fail "the exact positive XP delta is recorded as the last XP-bearing action"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["baseline_xp"] == {"17": 1000}, s
+assert s["last_action_xp"] == [{"id": 17, "name": "Thieving", "xp": 12}], s
+PY
+python3 "$GP" activity farmer-thieving >/dev/null
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY' \
+    && ok "re-selecting the current activity does not erase its history" \
+    || fail "re-selecting the current activity does not erase its history"
+import json, sys
+assert json.load(open(sys.argv[1]))["baseline_xp"] == {"17": 1000}
+PY
+python3 "$GP" activity farmer-thieving --restart >/dev/null
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY' \
+    && ok "an explicit restart resets the baseline to current XP" \
+    || fail "an explicit restart resets the baseline to current XP"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["baseline_xp"] == {"17": 1012} and s["last_action_xp"] == [], s
+PY
+python3 "$GP" activity --clear >/dev/null
+refute "clearing activity also clears its measurement" \
+    test -e "$DESKCRAB_GAME_DIR/activity-stats.json"
+
+echo
 echo "state-based waits use the ACTIONS snapshot without polling (spec rule 7d):"
 snap 1040 '[]' '{"walking":false,"talking_to_npc":false}'
 python3 "$GP" wait-until talking-to-npc --timeout 1 > "$SANDBOX/wait-out" &
@@ -330,6 +467,44 @@ contains "$OUT" "condition-timeout condition=in_combat" \
     || fail "the timeout names the missing condition" "$OUT"
 refute "a wait above the permanent-block ceiling is refused" \
     python3 "$GP" wait-until walking --timeout 61
+
+echo
+echo "retreat breaks the three-round causal deadlock and remembers it (spec rules 7, 7d):"
+snap 10457 '[]' '{"in_combat":true,"messages":[{"id":10457000,"channel":"game","incoming":false,"sender":"","text":"You can\u0027t retreat during the first 3 rounds of combat"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until out_of_combat --timeout 5)" || CODE=$?
+check_eq "waiting cannot pretend it will cause a locked retreat: exit 2" "$CODE" "2"
+contains "$OUT" "condition-needs-action condition=out_of_combat reason=retreat-locked next=retreat" \
+    && ok "the deadlock names the action that must be retried" \
+    || fail "the deadlock names the action that must be retried" "$OUT"
+check_eq "the failed strategy entered the durable learning queue" \
+    "$(sandbox_count_in '"status":"needs-retreat-action"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl")" "1"
+
+python3 "$GP" activity farmer-thieving >/dev/null
+check "an activity-scoped retreat rule can be learned" \
+    python3 "$GP" learn retreat-from-farmer-test --priority 1000 --cooldown-ms 0 \
+        --trigger activity_is=farmer-thieving --trigger in_combat=true \
+        --action retreat --param distance=5 --param dx=0 --param dz=1
+snap 10458 '[]' '{"in_combat":true,"messages":[{"id":10458000,"channel":"local","incoming":true,"sender":"Ryan","text":"Please do not kill him"}]}'
+fake_retreat_bridge locked
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a server-locked first attempt is not called success" "$CODE" "2"
+contains "$OUT" "status=retreat-locked" \
+    && ok "the rejected escape is classified for the next pass" \
+    || fail "the rejected escape is classified for the next pass" "$OUT"
+check_eq "retreat used its own stable bridge action" "$(last_action 'type=retreat')" "1"
+fake_retreat_bridge done
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the next eligible attempt ends only on observed safety" "$CODE" "0"
+contains "$OUT" "type=retreat status=done" \
+    && ok "the verified escape is reported as done" \
+    || fail "the verified escape is reported as done" "$OUT"
+check_eq "urgent activity retreat outranked the pending conversation" \
+    "$(last_action 'type=retreat')" "1"
+python3 "$GP" remove retreat-from-farmer-test >/dev/null
+python3 "$GP" activity --clear >/dev/null
+rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
 
 echo
 echo "durable routes advance through ACTIONS without model turns (spec rule 7e):"
@@ -553,7 +728,7 @@ python3 "$GP" learn take-quest-skull --priority 90 --cooldown-ms 0 --once-per-ob
     --trigger objective_is=recover-ghost-skull --trigger ground_item_visible=27 \
     --action take-ground --param item=27 >/dev/null
 snap 129 '[]' '{"ground_items":[{"id":27,"x":218,"z":3527},{"id":27,"x":230,"z":3540}]}'
-fake_bridge done
+fake_take_bridge collected
 OUT="$(python3 "$GP" step)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the visible quest item rule receives a done receipt" "$CODE" "0"
@@ -575,12 +750,32 @@ snap 1292 '[]' '{"x":120,"z":648,"ground_items":[{"id":27,"x":124,"z":648}]}'
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 check_eq "a local loot reflex will not chase a distant visible pile" "$CODE" "4"
 snap 1293 '[]' '{"x":120,"z":648,"ground_items":[{"id":27,"x":122,"z":649}]}'
-fake_bridge done
+fake_take_bridge collected
 OUT="$(python3 "$GP" step)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the same loot reflex fires when the pile is genuinely nearby" "$CODE" "0"
 check_eq "the nearby pile still compiles to its exact live tile" "$(last_action 'x=122')" "1"
 python3 "$GP" remove take-nearby-skull >/dev/null
+python3 "$GP" learn routine-farmer-pocket --priority 40 --cooldown-ms 0 \
+    --trigger npc_visible=63 --trigger out_of_combat=true \
+    --action interact-npc --param npc=63 --param cmd=1 >/dev/null
+python3 "$GP" learn wanted-coins-before-routine --priority 900 --cooldown-ms 0 \
+    --trigger ground_item_visible=10 --trigger out_of_combat=true \
+    --action take-ground --param item=10 >/dev/null
+snap 1294 '[{"sidx":63,"id":63,"x":121,"z":648}]' \
+    '{"ground_items":[{"id":10,"x":128,"z":648}]}'
+fake_take_bridge collected
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "wanted distant loot preempts routine activity and verifies collection" "$CODE" "0"
+contains "$OUT" "rule=wanted-coins-before-routine" \
+    && contains "$OUT" "status=done" \
+    && ok "the pickup commitment survives its approach instead of falling back to the NPC" \
+    || fail "the pickup commitment survives its approach instead of falling back to the NPC" "$OUT"
+check_eq "the distant wanted pile is approached through take-ground" \
+    "$(last_action 'type=take-ground')" "1"
+python3 "$GP" remove routine-farmer-pocket >/dev/null
+python3 "$GP" remove wanted-coins-before-routine >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
@@ -805,6 +1000,8 @@ check_eq "the harness carries the identity-based ground-item take door" \
     "$(sandbox_count_in '^    take)' "$HEADLESS")" "1"
 check_eq "the harness carries the event-driven state wait door" \
     "$(sandbox_count_in '^    wait-until|wait_until)' "$HEADLESS")" "1"
+check_eq "the harness carries the bounded verified retreat door" \
+    "$(sandbox_count_in '^    retreat)' "$HEADLESS")" "1"
 check_eq "the harness carries a play door" \
     "$(sandbox_count_in '^    play' "$HEADLESS")" "1"
 check_eq "wired to game_player.py, not merely present in lib" \
@@ -980,13 +1177,13 @@ wait "$FAKE_BRIDGE_PID"
 check_eq "bank withdraw bypasses the amount buttons" "$CODE" "0"
 check_eq "withdraw all resolves the bank quantity" "$(last_action 'amount=7')" "1"
 snap 1173 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}]}'
-fake_bridge done
-OUT="$(bash "$HEADLESS" take 27)"; CODE=$?
+fake_take_bridge collected
+OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" take 27)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "the ground-item door completes through the shared ACTIONS receipt" "$CODE" "0"
-contains "$OUT" "take(item=27)" \
-    && ok "and reports the item identity it targeted" \
-    || fail "and reports the item identity it targeted" "$OUT"
+check_eq "the ground-item door completes only after grounded transfer" "$CODE" "0"
+contains "$OUT" "taken" && contains "$OUT" "item=27" && contains "$OUT" "gained=1" \
+    && ok "and reports the verified item and inventory gain" \
+    || fail "and reports the verified item and inventory gain" "$OUT"
 check_eq "the door wrote take-ground" "$(last_action 'type=take-ground')" "1"
 check_eq "the door wrote the current item tile" "$(last_action 'x=121')" "1"
 python3 "$GP" enable walk-high >/dev/null
@@ -1018,6 +1215,18 @@ check_eq "the direct harness wait delegates to the ACTIONS player" "$CODE" "0"
 contains "$OUT" "condition-met condition=not_walking" \
     && ok "and accepts the underscore spelling used in play commands" \
     || fail "and accepts the underscore spelling used in play commands" "$OUT"
+snap 1193 '[]' '{"in_combat":true,"opponent":{"x":120,"z":648}}'
+fake_retreat_bridge done
+CODE=0; OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" retreat 2)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the direct retreat door exits only after observed safety" "$CODE" "0"
+contains "$OUT" "retreated status=done" \
+    && ok "and reports the verified combat transition" \
+    || fail "and reports the verified combat transition" "$OUT"
+check_eq "the direct retreat door still uses the shared ACTIONS slot" \
+    "$(last_action 'type=retreat')" "1"
+refute "the bounded request is cleared after safety" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/retreat-request.json"
 
 echo
 echo "the entrypoint is versioned bytes, deployed, and durable (spec rule 13):"
@@ -1273,6 +1482,34 @@ check_eq "the hook permits one screenshot for real visual inspection" "$ALLOWED_
 ALLOWED_STATE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh play"}}' \
     | python3 "$SLEEP_HOOK")"
 check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
+snap 15000 '[]' '{"logged_in":true}'
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+json.dump({"pending_messages":[{"id":1}],
+           "pending_system_messages":[{"id":2,"x":120,"z":648}]},
+          open(sys.argv[1], "w"))
+PY
+BLOCKED_IDLE="$(printf '%s\n' '{"tool_input":{"command":"betty-openrsc recall Discordian"}}' \
+    | python3 "$SLEEP_HOOK")"
+contains "$BLOCKED_IDLE" 'five-minute standing warning is pending' \
+    && ok "the hook makes one-tile movement outrank conversation" \
+    || fail "the hook makes one-tile movement outrank conversation" "$BLOCKED_IDLE"
+ALLOWED_IDLE_MOVE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh walk 121 648"}}' \
+    | python3 "$SLEEP_HOOK")"
+check_eq "the urgent gate permits the required one-tile move" "$ALLOWED_IDLE_MOVE" ""
+ALLOWED_MOVE_WAIT="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh wait-until not_walking"}}' \
+    | python3 "$SLEEP_HOOK")"
+check_eq "the urgent gate permits verification of that move" "$ALLOWED_MOVE_WAIT" ""
+snap 15001 '[]' '{"logged_in":false}'
+BLOCKED_LOGOUT_REPLY="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh play reply 1 hello"}}' \
+    | python3 "$SLEEP_HOOK")"
+contains "$BLOCKED_LOGOUT_REPLY" 'Run betty-openrsc login first' \
+    && ok "logged out with queued work makes login the prerequisite" \
+    || fail "logged out with queued work makes login the prerequisite" "$BLOCKED_LOGOUT_REPLY"
+ALLOWED_LOGIN="$(printf '%s\n' '{"tool_input":{"command":"betty-openrsc login"}}' \
+    | python3 "$SLEEP_HOOK")"
+check_eq "mechanical login is never blocked by its queued reply" "$ALLOWED_LOGIN" ""
+rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
 check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
 check "the player unit refuses accidental manual stops" grep -q 'RefuseManualStop=yes' "$BOC"
 check "the explicit operator stop uses a protected control dependency" \
@@ -1305,6 +1542,8 @@ refute "nothing of the player lives under /tmp" \
     grep -qE '/tmp/[a-z.-]*(player|prompt|handoff)' "$BOC"
 check "login reads the stored credentials file, not an inline secret" \
     grep -q 'credentials' "$BOC"
+check_eq "every mechanical login input bypasses the autonomous conversation gate" \
+    "$(sed -n '/^ensure_login()/,/^}/p' "$BOC" | grep -c 'BETTY_OPENRSC_AUTONOMOUS=0.*"\$ORSC"')" "5"
 check_eq "play walks the whole stack in order: client, login, engine, runner, author, player" \
     "$(sed -n '/^cmd_play()/,/^}/p' "$BOC" | grep -c 'stack_up\|ensure_login\|engine_up\|runner_up\|author_up\|player_start')" "6"
 
@@ -1564,6 +1803,12 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until with exactly one 
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait for not_walking directly" \
     && ok "the resumed thread avoids a redundant walking transition wait" \
     || fail "the resumed thread avoids a redundant walking transition wait"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh retreat once" \
+    && ok "the resumed thread receives the verified retreat loop" \
+    || fail "the resumed thread receives the verified retreat loop"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "failed command sequence is evidence" \
+    && ok "the resumed thread must resolve and retain failed strategies" \
+    || fail "the resumed thread must resolve and retain failed strategies"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \
@@ -1743,6 +1988,33 @@ contains "$OUT" "id=9002 channel=local sender=Nearby Friend count=2" \
     || fail "the settled verdict must carry the whole local chain" "$OUT"
 refute "observing a message burst emits no action before Sol writes the reply" \
     test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 1452 '[]' '{"logged_in":false}'
+CODE=0; OUT="$(python3 "$GP" reply 9002 premature)" || CODE=$?
+check_eq "a logged-out reply names login as its prerequisite: exit 3" "$CODE" "3"
+contains "$OUT" "reply-needs-login message_id=9002 next=betty-openrsc-login pending=preserved" \
+    && ok "logout cannot consume or obscure the queued reply" \
+    || fail "logout cannot consume or obscure the queued reply" "$OUT"
+check_eq "the pending conversation survives logout" \
+    "$(sandbox_count_in '"id":[[:space:]]*9002' "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json")" "1"
+snap 1453 '[]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
+    {"id":9002,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"door by the mill"},
+    {"id":9100,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
+]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the idle warning outranks the already-pending conversation" "$CODE" "7"
+CODE=0; OUT="$(python3 "$GP" reply 9002 premature)" || CODE=$?
+check_eq "a direct reply cannot race past the one-tile interrupt: exit 7" "$CODE" "7"
+contains "$OUT" "reply-needs-movement message_id=9002" \
+    && ok "the reply door preserves the message and orders the move" \
+    || fail "the reply door preserves the message and orders the move" "$OUT"
+refute "the blocked reply emits no chat action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 1454 '[]' '{"x":121,"z":648,"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
+    {"id":9002,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"door by the mill"},
+    {"id":9100,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
+]}'
 fake_bridge done
 OUT="$(python3 "$GP" reply 9002 Thanks, I will try that)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -1800,7 +2072,7 @@ echo
 echo "the standing-still system warning blocks everything except movement (rule 7c):"
 SYSTEM0="$(decided system-message-received)"
 snap 147 '[]' '{"messages":[
-    {"id":9100,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
+    {"id":9200,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
 ]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 check_eq "the blue idle warning is the priority verdict: exit 7" "$CODE" "7"
@@ -1809,6 +2081,14 @@ contains "$OUT" "action=move-required" \
     || fail "the verdict gives Sol one immediate job" "$OUT"
 check_eq "the system warning is captured once in ACTIONS state" \
     "$(( $(decided system-message-received) - SYSTEM0 ))" "1"
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["pending_messages"] = [{"id": 9201, "channel": "private", "sender": "Friend",
+                          "text": "Are you there?", "captured_ts": 1}]
+json.dump(s, open(p, "w"))
+PY
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" inventory 376 2 2>&1)" || CODE=$?
 check_eq "a non-walk action is refused while movement is urgent" "$CODE" "7"
@@ -1822,8 +2102,15 @@ OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" walk 121 648)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the urgent gate permits a receipted walk" "$CODE" "0"
 check_eq "and the shared action is a walk" "$(last_action 'type=walk')" "1"
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["pending_messages"] = []
+json.dump(s, open(p, "w"))
+PY
 snap 148 '[]' '{"x":121,"z":648,"messages":[
-    {"id":9100,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
+    {"id":9200,"channel":"game","incoming":false,"sender":"","text":"You have been standing here for 5 mins! Please move to a new area"}
 ]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 check_eq "a changed snapshot tile clears the warning and resumes play" "$CODE" "4"
@@ -1833,7 +2120,7 @@ grep -q '"kind":"system-message-handled"' "$DESKCRAB_GAME_STATE_DIR/player-decis
     && ok "the movement proof is recorded in the existing decision log" \
     || fail "the movement proof is recorded in the existing decision log"
 snap 149 '[]' '{"messages":[
-    {"id":9101,"channel":"game","incoming":false,"sender":"","text":"You do not have enough coins"}
+    {"id":9202,"channel":"game","incoming":false,"sender":"","text":"You do not have enough coins"}
 ]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 check_eq "ordinary system feedback does not create a second interrupt" "$CODE" "4"

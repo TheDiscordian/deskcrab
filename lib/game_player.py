@@ -31,7 +31,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "in_combat", "out_of_combat")
-ACTIONS = ("talk-npc", "interact-npc", "walk", "interact-object", "interact-bound", "click-entity",
+ACTIONS = ("talk-npc", "interact-npc", "walk", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 WAIT_CONDITIONS = (
@@ -55,6 +55,9 @@ NEAR_RADIUS_FLOOR = 2
 WALK_ARRIVE_DEFAULT = 1     # Chebyshev tiles
 WALK_SETTLE_S = 1.6         # no position change for this long = stopped
 WALK_TIMEOUT_S = 25.0       # hard ceiling on one walk's verification
+TAKE_TIMEOUT_S = 25.0       # a pickup can include the same bounded pathing delay
+TAKE_MISSING_GRACE_S = 0.75 # let inventory follow a just-removed ground entry
+RETREAT_VERIFY_S = 1.25     # one server-round-sized observation before a retry
 RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) means the
                             # runner owns evaluation; wide enough to cover one walk's
                             # verification, and a crashed runner fails the pid check at once
@@ -62,6 +65,8 @@ GAP_STABLE_MS = 750          # moving across tiles is one situation, not one Sol
 PLAYER_MESSAGE_SETTLE_MS = 5000  # collect one RuneScape-length chat chain before Sol replies
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
+MANUAL_RETREAT_RULE_NAME = "manual-retreat-request"
+MANUAL_RETREAT_PRIORITY = 1_000_000
 
 DEFAULTS = {
     "stale_ms": 2000,
@@ -105,6 +110,60 @@ def objective_path() -> Path:
 
 def activity_path() -> Path:
     return game_dir() / "activity"
+
+
+def activity_stats_path() -> Path:
+    return game_dir() / "activity-stats.json"
+
+
+def retreat_request_path() -> Path:
+    return state_dir() / "retreat-request.json"
+
+
+def take_progress_path() -> Path:
+    return state_dir() / "take-in-progress.json"
+
+
+def foreign_take_in_progress() -> dict | None:
+    try:
+        progress = json.loads(take_progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(progress, dict) or progress.get("v") != 1 \
+            or not isinstance(progress.get("pid"), int) \
+            or not isinstance(progress.get("expires"), int) \
+            or progress["expires"] <= now_ms():
+        try:
+            take_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+        return None
+    return progress if progress["pid"] != os.getpid() else None
+
+
+def load_retreat_request():
+    try:
+        request = json.loads(retreat_request_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(request, dict) or request.get("v") != 1 \
+            or not isinstance(request.get("expires"), int) \
+            or request["expires"] <= now_ms() \
+            or not isinstance(request.get("distance"), int) \
+            or not 1 <= request["distance"] <= 10 \
+            or request.get("dx") not in (-1, 0, 1) \
+            or request.get("dz") not in (-1, 0, 1) \
+            or (request.get("dx") == 0 and request.get("dz") == 0):
+        clear_retreat_request()
+        return None
+    return request
+
+
+def clear_retreat_request() -> None:
+    try:
+        retreat_request_path().unlink()
+    except FileNotFoundError:
+        pass
 
 
 def route_path() -> Path:
@@ -363,6 +422,15 @@ def validate_config(cfg: dict) -> None:
             if "arrive" in action and (not isinstance(action["arrive"], int)
                                        or not 0 <= action["arrive"] <= 10):
                 bad(f"{where}: walk arrive must be an integer 0..10")
+        elif atype == "retreat":
+            if set(action) - {"type", "distance", "dx", "dz"}:
+                bad(f"{where}: retreat takes only optional distance/dx/dz")
+            distance = action.get("distance", 5)
+            dx, dz = action.get("dx", 0), action.get("dz", 1)
+            if not isinstance(distance, int) or not 1 <= distance <= 10:
+                bad(f"{where}: retreat distance must be an integer 1..10")
+            if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
+                bad(f"{where}: retreat dx/dz must be -1, 0, or 1 and not both zero")
         elif atype in ("interact-object", "interact-bound"):
             if not set(action) <= {"type", "obj", "cmd"} \
                     or not isinstance(action.get("obj"), int) or action["obj"] < 0:
@@ -435,6 +503,130 @@ def read_activity() -> str:
         return activity_path().read_text().strip()
     except OSError:
         return ""
+
+
+def snapshot_skills(snap: dict) -> dict:
+    """Skill id -> the grounded cumulative XP currently published by the client."""
+    found = {}
+    for skill in snap.get("skills") or []:
+        if not isinstance(skill, dict) or not isinstance(skill.get("id"), int) \
+                or not isinstance(skill.get("xp"), int):
+            continue
+        found[str(skill["id"])] = {
+            "id": skill["id"],
+            "name": str(skill.get("name") or f"skill-{skill['id']}")[:64],
+            "level": skill.get("level") if isinstance(skill.get("level"), int) else None,
+            "xp": skill["xp"],
+        }
+    return found
+
+
+def load_activity_stats() -> dict:
+    try:
+        body = json.loads(activity_stats_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def clear_activity_stats() -> None:
+    try:
+        activity_stats_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def start_activity_stats(activity: str, snap: dict, started_ms=None) -> dict:
+    """Start one activity clock from a cumulative-XP snapshot, when available."""
+    skills = snapshot_skills(snap)
+    if not activity or not skills:
+        return {}
+    started = started_ms if isinstance(started_ms, int) else now_ms()
+    stats = {
+        "v": 1,
+        "activity": activity,
+        "started_ms": started,
+        "baseline_xp": {key: val["xp"] for key, val in skills.items()},
+        "last_xp": {key: val["xp"] for key, val in skills.items()},
+        "skill_names": {key: val["name"] for key, val in skills.items()},
+        "last_action_xp": [],
+        "updated_ms": started,
+    }
+    game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
+    return stats
+
+
+def refresh_activity_stats(snap: dict, activity: str) -> dict:
+    """Observe XP drops without inventing an action from chat or screen state.
+
+    OpenRSC changes cumulative XP once for each XP-bearing game action. The
+    resident 150ms observer records each positive delta as that action's XP;
+    the longer-lived baseline remains tied to the selected activity.
+    """
+    if not activity:
+        return {}
+    skills = snapshot_skills(snap)
+    stats = load_activity_stats()
+    if stats.get("activity") != activity or not stats.get("baseline_xp"):
+        return start_activity_stats(activity, snap)
+    if not skills:
+        return stats
+
+    previous = stats.get("last_xp") if isinstance(stats.get("last_xp"), dict) else {}
+    changes = []
+    for key, skill in skills.items():
+        old = previous.get(key)
+        if isinstance(old, int) and skill["xp"] > old:
+            changes.append({"id": skill["id"], "name": skill["name"],
+                            "xp": skill["xp"] - old})
+    current = {key: val["xp"] for key, val in skills.items()}
+    names = {key: val["name"] for key, val in skills.items()}
+    if current != previous or names != stats.get("skill_names"):
+        stats["last_xp"] = current
+        stats["skill_names"] = names
+        stats["updated_ms"] = now_ms()
+        if changes:
+            stats["last_action_xp"] = changes
+            stats["last_action_ms"] = snap.get("ts") if isinstance(snap.get("ts"), int) \
+                else stats["updated_ms"]
+        game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
+    return stats
+
+
+def activity_metrics(snap: dict, activity: str) -> dict:
+    stats = refresh_activity_stats(snap, activity)
+    if not stats:
+        return {}
+    now = now_ms()
+    elapsed = max(1, now - stats.get("started_ms", now))
+    baseline = stats.get("baseline_xp") or {}
+    current = snapshot_skills(snap)
+    last_by_id = {str(v.get("id")): v for v in stats.get("last_action_xp") or []
+                  if isinstance(v, dict)}
+    skills = []
+    for key, skill in current.items():
+        start_xp = baseline.get(key)
+        if not isinstance(start_xp, int) or skill["xp"] <= start_xp:
+            continue
+        gained = skill["xp"] - start_xp
+        item = {"id": skill["id"], "name": skill["name"], "gained": gained,
+                "xp_per_hour": round(gained * 3600000 / elapsed)}
+        if key in last_by_id and isinstance(last_by_id[key].get("xp"), int):
+            item["last_action_xp"] = last_by_id[key]["xp"]
+        skills.append(item)
+    return {"activity": activity, "started_ms": stats.get("started_ms"),
+            "elapsed_ms": elapsed, "skills": skills}
+
+
+def activity_xp_text(snap: dict, activity: str) -> str:
+    parts = []
+    for skill in activity_metrics(snap, activity).get("skills") or []:
+        fields = []
+        if skill.get("last_action_xp", 0) > 0:
+            fields.append(f"+{skill['last_action_xp']}/action")
+        fields.extend((f"+{skill['gained']}_total", f"{skill['xp_per_hour']}/hr"))
+        parts.append(f"{skill['name']}:" + ",".join(fields))
+    return ";".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -616,6 +808,28 @@ def latest_system_feedback(snap: dict):
     return None
 
 
+def retreat_lock_feedback(snap: dict) -> bool:
+    """The server's authoritative refusal. If it is still in the current
+    snapshot while combat remains active, merely waiting cannot clear combat:
+    a later retreat request is still required."""
+    needle = "can't retreat during the first 3 rounds of combat"
+    return any(
+        isinstance(message, dict)
+        and needle in str(message.get("text", "")).casefold()
+        for message in snap.get("messages") or []
+    )
+
+
+def record_wait_failure(condition: str, verdict: str, snap: dict, timeout=None) -> None:
+    record = {"ts": now_ms(), "kind": "wait-failure", "condition": condition,
+              "status": verdict, "objective": read_objective() or None,
+              "activity": read_activity() or None, "snap": snap_brief(snap)}
+    if timeout is not None:
+        record["timeout"] = timeout
+    append_outcome(record)
+    flush_events([{k: v for k, v in record.items() if k != "snap"}])
+
+
 # --------------------------------------------------------------------------
 # State waiting (spec rule 7d): one ACTIONS snapshot path, no timed polling.
 # Atomic snapshot writes arrive as inotify move/create events. A hard deadline
@@ -743,6 +957,13 @@ def cmd_wait_until(args):
             report("condition-met", condition=condition,
                    tick=baseline.get("tick"), x=baseline.get("x"), z=baseline.get("z"))
             return
+        if condition == "out_of_combat" and isinstance(baseline, dict) \
+                and baseline.get("in_combat") is True \
+                and retreat_lock_feedback(baseline):
+            record_wait_failure(condition, "needs-retreat-action", baseline)
+            report("condition-needs-action", condition=condition,
+                   reason="retreat-locked", next="retreat")
+            sys.exit(EXIT_NOT_DONE)
         while True:
             latest = game_reflex.read_snapshot()
             newer = isinstance(latest, dict) and (
@@ -760,12 +981,173 @@ def cmd_wait_until(args):
                 report("condition-met", condition=condition,
                        tick=latest.get("tick"), x=latest.get("x"), z=latest.get("z"))
                 return
+            if condition == "out_of_combat" and newer \
+                    and isinstance(latest, dict) \
+                    and latest.get("in_combat") is True \
+                    and retreat_lock_feedback(latest):
+                record_wait_failure(condition, "needs-retreat-action", latest)
+                report("condition-needs-action", condition=condition,
+                       reason="retreat-locked", next="retreat")
+                sys.exit(EXIT_NOT_DONE)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                record_wait_failure(condition, "timeout", latest or {}, args.timeout)
                 report("condition-timeout", condition=condition,
                        timeout=f"{args.timeout:g}", state=wait_state_brief(latest))
                 sys.exit(EXIT_NOT_DONE)
             watch.wait(remaining)
+
+
+def cmd_retreat(args):
+    """One bounded intent, not a wait-for-the-impossible loop. The resident
+    runner owns it when present; otherwise this process uses the identical
+    rules-first step path until the server verifies combat has ended."""
+    if not 0 < args.timeout <= 30:
+        die("retreat timeout must be greater than 0 and no more than 30 seconds")
+    if not 1 <= args.distance <= 10:
+        die("retreat distance must be an integer 1..10")
+    if args.dx not in (-1, 0, 1) or args.dz not in (-1, 0, 1) \
+            or (args.dx == 0 and args.dz == 0):
+        die("retreat dx/dz must be -1, 0, or 1 and not both zero")
+    if (state_dir() / "hold").exists():
+        report("retreat-held", reason="maintenance-hold")
+        sys.exit(EXIT_HELD)
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+        report("retreat-not-ready", state=wait_state_brief(snap))
+        sys.exit(EXIT_NOT_READY)
+    if snap.get("in_combat") is False:
+        clear_retreat_request()
+        report("retreated", status="already-safe", x=snap.get("x"), z=snap.get("z"))
+        return
+
+    expires = now_ms() + int(args.timeout * 1000)
+    request = {"v": 1, "requested": now_ms(), "expires": expires,
+               "distance": args.distance, "dx": args.dx, "dz": args.dz}
+    game_reflex.atomic_write(retreat_request_path(), json.dumps(request) + "\n")
+    cfg = load_config()
+    wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+    deadline = time.monotonic() + args.timeout
+    latest = snap
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                clear_retreat_request()
+                report("retreat-unverified", reason="logged-out")
+                sys.exit(EXIT_NOT_READY)
+            if latest.get("in_combat") is False:
+                clear_retreat_request()
+                report("retreated", status="done", tick=latest.get("tick"),
+                       x=latest.get("x"), z=latest.get("z"))
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                clear_retreat_request()
+                record_wait_failure("out_of_combat", "retreat-timeout", latest,
+                                    args.timeout)
+                report("retreat-timeout", timeout=f"{args.timeout:g}",
+                       feedback=latest_system_feedback(latest),
+                       state=wait_state_brief(latest))
+                sys.exit(EXIT_NOT_DONE)
+            # A live runner sees retreat-request.json and gives it precedence
+            # over chat and ordinary activity. Without one, use exactly the
+            # same evaluation locally—never a second ad-hoc action loop.
+            if read_live_runner() is None:
+                step_once(cfg, read_objective(), read_activity(), wait_ms)
+            else:
+                watch.wait(min(remaining, 0.5))
+
+
+def cmd_take(args):
+    """Take one wanted visible item and keep routine play from cancelling the
+    walk. Completion requires both the targeted ground entry to decrease and
+    the matching inventory quantity to increase."""
+    cfg = load_config()
+    defaults = config_defaults(cfg)
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+        report("take-not-ready", item=args.item, state=wait_state_brief(snap))
+        sys.exit(EXIT_NOT_READY)
+    if (state_dir() / "hold").exists():
+        report("take-held", item=args.item, reason="maintenance-hold")
+        sys.exit(EXIT_HELD)
+    matches = [entry for entry in snap.get("ground_items") or []
+               if isinstance(entry, dict) and entry.get("id") == args.item
+               and isinstance(entry.get("x"), int) and isinstance(entry.get("z"), int)]
+    if not matches:
+        report("take-not-visible", item=args.item)
+        sys.exit(EXIT_NOT_DONE)
+    px, pz = snap.get("x"), snap.get("z")
+    target = min(matches, key=lambda entry: max(
+        abs(entry["x"] - px), abs(entry["z"] - pz)))
+    action = {"type": "take-ground", "item": args.item,
+              "x": target["x"], "z": target["z"]}
+    before_inventory = inventory_quantity(snap, args.item)
+    before_ground = ground_quantity_at(snap, args.item, target["x"], target["z"])
+    progress = {"v": 1, "pid": os.getpid(), "started": now_ms(),
+                "expires": now_ms() + int((TAKE_TIMEOUT_S + 5) * 1000),
+                "item": args.item, "x": target["x"], "z": target["z"]}
+    game_reflex.atomic_write(take_progress_path(), json.dumps(progress) + "\n")
+    status = "no-receipt"
+    final_x = final_z = None
+    gained = 0
+    action_id = None
+    try:
+        with player_state_lock():
+            if (state_dir() / "action.json").exists():
+                report("take-not-ready", item=args.item, reason="slot-busy")
+                sys.exit(EXIT_NOT_READY)
+            est = load_player_state()
+            est["action_seq"] += 1
+            action_id = est["action_seq"]
+            sent_at = now_ms()
+            est["inflight"] = {"id": action_id, "ts": sent_at}
+            save_player_state(est)
+            emit_player_action("action.json", action, action_id, sent_at)
+
+        deadline = time.monotonic() + defaults["inflight_timeout_ms"] / 1000.0
+        receipt_path = state_dir() / "receipt.json"
+        with SnapshotChangeWatch() as watch:
+            while time.monotonic() < deadline:
+                try:
+                    receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    receipt = None
+                if receipt and receipt.get("id") == action_id:
+                    status = receipt.get("status", "no-status")
+                    try:
+                        receipt_path.unlink()
+                    except OSError:
+                        pass
+                    break
+                watch.wait(max(0.01, min(0.25, deadline - time.monotonic())))
+        if status == "done":
+            status, final_x, final_z, gained = verify_take_ground(
+                args.item, target["x"], target["z"],
+                before_inventory, before_ground)
+    finally:
+        with player_state_lock():
+            est = load_player_state()
+            if action_id is not None and (est.get("inflight") or {}).get("id") == action_id:
+                est["inflight"] = None
+                save_player_state(est)
+        try:
+            take_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+
+    record = {"ts": now_ms(), "kind": "manual-take", "id": action_id,
+              "action": action, "status": status, "gained": gained,
+              "settled": {"x": final_x, "z": final_z}}
+    append_outcome(record)
+    flush_events([record])
+    report("taken", id=action_id, item=args.item, status=status,
+           x=final_x, z=final_z, gained=gained)
+    if status != "done":
+        sys.exit(EXIT_NOT_DONE)
 
 
 # --------------------------------------------------------------------------
@@ -865,6 +1247,11 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "walk":
         return {"type": "walk", "x": action["x"], "z": action["z"]}, None
+    if action["type"] == "retreat":
+        if snap.get("in_combat") is not True:
+            return None, "already-out-of-combat"
+        return {"type": "retreat", "distance": action.get("distance", 5),
+                "dx": action.get("dx", 0), "dz": action.get("dz", 1)}, None
     if action["type"] == "interact-object":
         want = action["obj"]
         for obj in snap.get("objects") or []:    # already nearest-first (rule 3 there)
@@ -947,6 +1334,7 @@ def compile_player_action(rule, snap, food, eat_pick):
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
     for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "item", "button",
+                "distance", "dx", "dz",
                 "target", "text"):
         if key in action:
             lines.append(f"{key}={action[key]}")
@@ -1041,15 +1429,102 @@ def verify_walk(tx: int, tz: int, arrive: int,
     return "walk-short", (last_pos or (None, None))[0], (last_pos or (None, None))[1]
 
 
+def inventory_quantity(snap: dict, item_id: int) -> int:
+    return sum(
+        entry.get("count", entry.get("amount", 1))
+        for entry in snap.get("inventory") or []
+        if isinstance(entry, dict) and entry.get("id") == item_id
+        and isinstance(entry.get("count", entry.get("amount", 1)), int)
+    )
+
+
+def ground_quantity_at(snap: dict, item_id: int, x: int, z: int) -> int:
+    return sum(
+        1 for entry in snap.get("ground_items") or []
+        if isinstance(entry, dict) and entry.get("id") == item_id
+        and entry.get("x") == x and entry.get("z") == z
+    )
+
+
+def verify_take_ground(item_id: int, x: int, z: int,
+                       before_inventory: int, before_ground: int,
+                       timeout_s: float = TAKE_TIMEOUT_S):
+    """Keep the action slot conceptually occupied until the wanted pickup is
+    grounded. A pile disappearing is not collection: inventory must also grow.
+    While this function observes the walk-and-take, the runner cannot issue a
+    routine interaction that cancels the path halfway to the drop."""
+    deadline = time.monotonic() + timeout_s
+    latest = game_reflex.read_snapshot() or {}
+    last_pos = (latest.get("x"), latest.get("z"))
+    last_progress = time.monotonic()
+    missing_since = None
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "take-unverified", latest.get("x"), latest.get("z"), 0
+            now = time.monotonic()
+            current_inventory = inventory_quantity(latest, item_id)
+            current_ground = ground_quantity_at(latest, item_id, x, z)
+            gained = current_inventory - before_inventory
+            removed = current_ground < before_ground
+            if gained > 0 and removed:
+                return "done", latest.get("x"), latest.get("z"), gained
+            if removed:
+                missing_since = missing_since or now
+                if now - missing_since >= TAKE_MISSING_GRACE_S:
+                    return "take-missed", latest.get("x"), latest.get("z"), max(0, gained)
+            else:
+                missing_since = None
+
+            pos = (latest.get("x"), latest.get("z"))
+            if pos != last_pos or latest.get("walking") is True:
+                last_pos, last_progress = pos, now
+            elif now - last_progress >= WALK_SETTLE_S:
+                return "take-short", latest.get("x"), latest.get("z"), max(0, gained)
+
+            remaining = deadline - now
+            if remaining <= 0:
+                return "take-short", latest.get("x"), latest.get("z"), max(0, gained)
+            wake_in = min(remaining, 0.5)
+            if missing_since is not None:
+                wake_in = min(wake_in, TAKE_MISSING_GRACE_S - (now - missing_since))
+            watch.wait(max(0.01, wake_in))
+
+
+def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
+    """Verify the effect the player actually wants: combat ended. A bridge
+    receipt proves only that a reachable escape walk was sent; the server may
+    still reject it during the first three opposing hits."""
+    deadline = time.monotonic() + timeout_s
+    latest = game_reflex.read_snapshot() or {}
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "retreat-unverified", latest.get("x"), latest.get("z")
+            if latest.get("in_combat") is False:
+                return "done", latest.get("x"), latest.get("z")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                status = "retreat-locked" if retreat_lock_feedback(latest) \
+                    else "retreat-unconfirmed"
+                return status, latest.get("x"), latest.get("z")
+            watch.wait(remaining)
+
+
 # --------------------------------------------------------------------------
 # The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
 # --------------------------------------------------------------------------
-def write_heartbeat(verdict: str, detail: str = "", ground_items=None) -> None:
+def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
+                    activity: str = "", activity_xp: str = "") -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
          "verdict": verdict, "detail": detail,
-         "ground_items": ground_items or []}) + "\n")
+         "ground_items": ground_items or [],
+         "activity": activity or None,
+         "activity_xp": activity_xp or None}) + "\n")
 
 
 def read_live_runner():
@@ -1114,6 +1589,31 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if snap is None:
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
+    xp_text = activity_xp_text(snap, activity)
+    source_rules = list(cfg["rules"])
+    retreat_request = load_retreat_request()
+    if retreat_request is not None and snap.get("in_combat") is False:
+        clear_retreat_request()
+        retreat_request = None
+    if retreat_request is not None:
+        source_rules.append({
+            "name": MANUAL_RETREAT_RULE_NAME, "enabled": True,
+            "priority": MANUAL_RETREAT_PRIORITY, "cooldown_ms": 0,
+            "hold_ticks": 1, "once_per_objective": False,
+            "note": "one bounded explicit retreat request",
+            "trigger": {"in_combat": True},
+            "action": {"type": "retreat",
+                       "distance": retreat_request["distance"],
+                       "dx": retreat_request["dx"], "dz": retreat_request["dz"]},
+        })
+    trigger_true = make_trigger_fn(objective, activity)
+    urgent_retreat_names = {
+        rule["name"] for rule in source_rules
+        if rule.get("enabled")
+        and (rule.get("action") or {}).get("type") == "retreat"
+        and snap.get("in_combat") is True
+        and trigger_true(rule.get("trigger") or {}, snap, {})
+    }
 
     # Spec rules 7b-7c: capture urgent messages before ordinary play.
     # The small lock prevents the resident runner from racing a Sol reply.
@@ -1129,13 +1629,13 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         settle_until = est.get("message_settle_until", 0)
         save_player_state(est)
         flush_events(message_events)
-    if pending_system_message is not None and snap.get("logged_in") \
+    if not urgent_retreat_names and pending_system_message is not None and snap.get("logged_in") \
             and now - snap.get("ts", 0) <= defaults["stale_ms"]:
         report("system-message", id=pending_system_message["id"],
                channel=pending_system_message["channel"],
                action="move-required", text=pending_system_message["text"])
         return "system-message", EXIT_SYSTEM_MESSAGE
-    if pending_message is not None and snap.get("logged_in") \
+    if not urgent_retreat_names and pending_message is not None and snap.get("logged_in") \
             and now - snap.get("ts", 0) <= defaults["stale_ms"]:
         if now < settle_until:
             report("player-message-settling", count=len(pending_batch),
@@ -1160,6 +1660,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if (state_dir() / "action.json").exists():
         report("slot-busy")
         return "slot-busy", EXIT_NOT_READY
+
+    take_progress = foreign_take_in_progress()
+    if take_progress is not None:
+        report("take-in-progress", item=take_progress.get("item"),
+               x=take_progress.get("x"), z=take_progress.get("z"))
+        return "take-in-progress", EXIT_NOT_READY
 
     if snap.get("logged_in") and snap.get("tick", -1) == est["last_tick"]:
         report("same-tick", tick=snap.get("tick"))
@@ -1201,14 +1707,16 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
     # engine sees the table, so the machinery stays vocabulary-blind.
     live_rules = []
-    for rule in cfg["rules"]:
+    for rule in source_rules:
+        if urgent_retreat_names and rule["name"] not in urgent_retreat_names:
+            continue
         if rule.get("once_per_objective") and rule["enabled"] \
                 and once_key(rule["name"], objective) in est["objective_fired"]:
             continue
         # Every player rule is game-channel by construction (spec rule 5);
         # the shared engine wants the key spelled out.
         live_rules.append(dict(rule, channel="game"))
-    if route is not None and not route_blocked:
+    if route is not None and not route_blocked and not urgent_retreat_names:
         live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
                            "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
                            "hold_ticks": 1, "channel": "game", "trigger": {},
@@ -1225,7 +1733,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     game_reflex.evaluate(
         eval_cfg, {}, snap, est, now,
         emit=emit_player_action, sink=events,
-        trigger_fn=make_trigger_fn(objective, activity),
+        trigger_fn=trigger_true,
         compile_fn=compile_player_action, live=True)
 
     fired = [e for e in events if e.get("kind") == "fired"]
@@ -1252,6 +1760,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             return "route-waiting", EXIT_NOT_READY
         report("no-rule-matched", objective=objective or None,
                activity=activity or None,
+               activity_xp=xp_text or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
                ground_items=",".join(str(i.get("id"))
@@ -1292,7 +1801,16 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # against the target's coordinates before anything treats it as complete.
     action = event["action"]
     final_x = final_z = None
-    if status == "done" and action["type"] == "walk":
+    gained = 0
+    is_retreat = rule is not None and rule["action"].get("type") == "retreat"
+    if status == "done" and is_retreat:
+        status, final_x, final_z = verify_retreat()
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "x": final_x, "z": final_z,
+                           "feedback": latest_system_feedback(
+                               game_reflex.read_snapshot() or snap)}])
+    elif status == "done" and action["type"] == "walk":
         arrive = WALK_ARRIVE_DEFAULT
         if rule is not None and isinstance(rule["action"].get("arrive"), int):
             arrive = rule["action"]["arrive"]
@@ -1301,6 +1819,17 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
                            "id": action_id, "intended": {"x": action["x"], "z": action["z"]},
                            "settled": {"x": final_x, "z": final_z}}])
+    elif status == "done" and action["type"] == "take-ground":
+        before_inventory = inventory_quantity(snap, action["item"])
+        before_ground = ground_quantity_at(
+            snap, action["item"], action["x"], action["z"])
+        status, final_x, final_z, gained = verify_take_ground(
+            action["item"], action["x"], action["z"],
+            before_inventory, before_ground)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "item": action["item"],
+                           "x": final_x, "z": final_z, "gained": gained}])
 
     is_route = rule_name == ROUTE_RULE_NAME and route is not None
     route_was_blocked = False
@@ -1343,22 +1872,28 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         outcome["intended"] = {"x": action["x"], "z": action["z"]}
         if final_x is not None:
             outcome["settled"] = {"x": final_x, "z": final_z}
+    elif action["type"] == "take-ground":
+        outcome["target"] = {"item": action["item"], "x": action["x"], "z": action["z"]}
+        outcome["settled"] = {"x": final_x, "z": final_z}
+        outcome["gained"] = gained
     append_outcome(outcome)
 
-    if action["type"] == "walk" and final_x is not None:
+    if action["type"] in ("walk", "take-ground") and final_x is not None:
         if route_was_blocked:
             report("route-blocked", id=action_id, x=final_x, z=final_z,
                    target_x=action["x"], target_z=action["z"])
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
-                   status=status, x=final_x, z=final_z, objective=objective or None)
+                   status=status, x=final_x, z=final_z, objective=objective or None,
+                   activity=activity or None, activity_xp=xp_text or None)
     else:
         if route_was_blocked:
             report("route-blocked", id=action_id, target_x=action["x"],
                    target_z=action["z"], reason=status)
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
-                   status=status, objective=objective or None)
+                   status=status, objective=objective or None,
+                   activity=activity or None, activity_xp=xp_text or None)
     if route_was_blocked:
         return "route-blocked", EXIT_NO_RULE
     return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete")
@@ -1617,6 +2152,7 @@ def cmd_activity(args):
             activity_path().unlink()
         except FileNotFoundError:
             pass
+        clear_activity_stats()
         print("activity cleared")
         return
     if args.name is None:
@@ -1625,9 +2161,14 @@ def cmd_activity(args):
         return
     if "\n" in args.name or not args.name.strip():
         die("the activity is one non-empty line")
+    selected = args.name.strip()
+    previous = read_activity()
     game_dir().mkdir(parents=True, exist_ok=True)
-    game_reflex.atomic_write(activity_path(), args.name.strip() + "\n")
-    print(f"activity: {args.name.strip()}")
+    game_reflex.atomic_write(activity_path(), selected + "\n")
+    if selected != previous or args.restart:
+        clear_activity_stats()
+        start_activity_stats(selected, game_reflex.read_snapshot() or {})
+    print(f"activity: {selected}")
 
 
 def cmd_session(args):
@@ -1761,14 +2302,36 @@ def cmd_reply(args):
     cfg = load_config()
     defaults = config_defaults(cfg)
     snap = game_reflex.read_snapshot()
-    if snap is None or not snap.get("logged_in"):
-        die("cannot reply while the game is logged out")
+    if snap is None:
+        report("reply-not-ready", message_id=args.message_id, reason="no-snapshot")
+        sys.exit(EXIT_NOT_READY)
+    if not snap.get("logged_in"):
+        report("reply-needs-login", message_id=args.message_id,
+               next="betty-openrsc-login", pending="preserved")
+        sys.exit(EXIT_NOT_READY)
     if now_ms() - snap.get("ts", 0) > defaults["stale_ms"]:
         die("cannot reply from a stale game snapshot")
     if (state_dir() / "hold").exists():
         die("cannot reply while play is held")
     if (state_dir() / "action.json").exists():
         die("cannot reply while the shared action slot is busy")
+
+    # The idle warning outranks conversation even when that conversation was
+    # already pending. Refresh it against the current tile here as well as in
+    # the runner, so a direct reply can neither race past a new warning nor be
+    # blocked by one whose required move just completed.
+    with player_state_lock():
+        est = load_player_state()
+        system_events = []
+        capture_urgent_system_messages(snap, est, system_events)
+        pending_system = oldest_pending_system_message(est)
+        save_player_state(est)
+        flush_events(system_events)
+    if pending_system is not None:
+        report("reply-needs-movement", message_id=args.message_id,
+               system_message_id=pending_system["id"], next="walk-one-tile",
+               pending="preserved")
+        sys.exit(EXIT_SYSTEM_MESSAGE)
 
     baseline_message_id = max((m.get("id", -1) for m in snap.get("messages") or []
                                if isinstance(m, dict)), default=-1)
@@ -1973,8 +2536,11 @@ def cmd_run(args):
                 route_detail = (f"route {active_route['status']} to "
                                 f"({active_route['x']},{active_route['z']})")
                 detail = f"{route_detail}; {detail}" if detail else route_detail
+            live_activity = read_activity()
+            live_xp = activity_xp_text(latest, live_activity)
             write_heartbeat(last_verdict, detail,
-                            [i.get("id") for i in latest.get("ground_items") or []])
+                            [i.get("id") for i in latest.get("ground_items") or []],
+                            live_activity, live_xp)
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -2044,6 +2610,8 @@ def main():
     p = sub.add_parser("activity", help="show, select or clear the current activity")
     p.add_argument("name", nargs="?")
     p.add_argument("--clear", action="store_true")
+    p.add_argument("--restart", action="store_true",
+                   help="restart this activity's elapsed time and XP baseline")
     p.set_defaults(fn=cmd_activity)
 
     p = sub.add_parser("session", help="the sitting's clock: open, status, end")
@@ -2098,6 +2666,22 @@ def main():
                    help=f"hard ceiling in seconds (default {WAIT_DEFAULT_S:g}, max {WAIT_MAX_S:g})")
     p.set_defaults(fn=cmd_wait_until)
 
+    p = sub.add_parser("retreat",
+                       help="keep sending reachable escape walks until combat really ends")
+    p.add_argument("--timeout", type=float, default=20.0,
+                   help="hard ceiling in seconds (default 20, max 30)")
+    p.add_argument("--distance", type=int, default=5)
+    p.add_argument("--dx", type=int, default=0,
+                   help="fallback x direction when the opponent is not identified")
+    p.add_argument("--dz", type=int, default=1,
+                   help="fallback z direction when the opponent is not identified")
+    p.set_defaults(fn=cmd_retreat)
+
+    p = sub.add_parser("take",
+                       help="take a visible item and verify it entered inventory")
+    p.add_argument("item", type=int)
+    p.set_defaults(fn=cmd_take)
+
     p = sub.add_parser("test", help="replay the cases against the table "
                                     "(spec rule 17)")
     p.add_argument("action", nargs="?", default="run",
@@ -2140,6 +2724,8 @@ def main():
                 else:
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
+                           activity=hb.get("activity") or None,
+                           activity_xp=hb.get("activity_xp") or None,
                            ground_items=",".join(str(i)
                                                  for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None)

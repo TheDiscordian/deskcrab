@@ -60,6 +60,11 @@ import json, sys, time
 s = json.load(open(sys.argv[1]))
 assert s["v"] == 1 and s["logged_in"] is True
 assert s["hits"] == 4 and s["hits_max"] == 10 and s["fatigue"] == 12
+assert s["skills"] == [
+    {"id": 0, "name": "Attack", "level": 12, "xp": 1540},
+    {"id": 1, "name": "Defense", "level": 10, "xp": 1000},
+    {"id": 2, "name": "Thieving", "level": 24, "xp": 8421},
+], s.get("skills")
 assert s["x"] == 120 and s["z"] == 650
 assert s["walking"] is False and s["in_combat"] is False
 assert s["talking_to_npc"] is False
@@ -80,6 +85,7 @@ assert s["players"] == [
     {"sidx": 11, "name": "Nearby Friend", "x": 121, "z": 650},
     {"sidx": 22, "name": "Distant Player", "x": 130, "z": 660},
 ], s.get("players")
+assert s["npc_count"] == 2 and s["npcs_truncated"] is False
 assert s["ground_items"] == [
     {"id": 27, "x": 121, "z": 650},
     {"id": 10, "x": 130, "z": 650},
@@ -212,6 +218,22 @@ refute "a destination with no progressive collision path sends no walk" \
     contains "$OUT" "walk x="
 check_eq "and is refused truthfully instead of receipted done" \
     "$(rstatus)" "refused-no-path"
+wact 572 "$(now_ms)" "type=retreat" "distance=5" "dx=0" "dz=1"
+OUT="$(harness exec-combat)"
+contains "$OUT" "walk x=120 z=655" \
+    && ok "retreat chooses a reachable tile in its grounded fallback direction" \
+    || fail "retreat chooses a reachable tile in its grounded fallback direction" "$OUT"
+check_eq "the retreat request is receipted as dispatch, not as escape" "$(rstatus)" "done"
+wact 573 "$(now_ms)" "type=retreat" "distance=5" "dx=0" "dz=1"
+OUT="$(harness exec-combat-no-route)"
+refute "retreat never sends a guessed path when every candidate is blocked" \
+    contains "$OUT" "walk x="
+check_eq "a combat area with no reachable escape tile is named" \
+    "$(rstatus)" "refused-no-retreat-path"
+wact 574 "$(now_ms)" "type=retreat" "distance=5" "dx=0" "dz=1"
+OUT="$(harness exec)"
+refute "retreat is an honest no-op once combat is already over" contains "$OUT" "walk x="
+check_eq "an already-safe retreat is successful" "$(rstatus)" "done"
 wact 570 "$(now_ms)" "type=walk" "x=126" "z=655"
 OUT="$(harness exec 13)"
 python3 - "$S/state.json" <<'PY' && ok "a dispatched walk remains walking until its server path can appear" \

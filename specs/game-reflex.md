@@ -49,7 +49,8 @@ Three parts:
    The snapshot is one JSON object: `v` (format version, this document describes 1), `ts` (epoch
    milliseconds at write), `tick` (a counter that increments every client game tick since launch),
    `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
-   `fatigue` (0–100), `x` and `z` (world coordinates), `walking` (the local player still has
+   `fatigue` (0–100), `skills` (every skill's `id`, `name`, base `level`, and cumulative `xp`),
+   `x` and `z` (world coordinates), `walking` (the local player still has
    an unconsumed client waypoint, or a movement-capable bridge action was dispatched within the
    last second and may still be waiting for its server path), `in_combat`,
    `right_click_menu_open` (the ordinary world context menu is visibly open), `menu_options`
@@ -66,9 +67,12 @@ Three parts:
    `incoming` is true only for chat received from another player), `players` (other players the
    client currently holds as visible, nearest first, capped at 24: each
    `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
-   client currently holds as visible, nearest to the player first, capped at 12: each
+   client currently holds as loaded, nearest to the player first, capped at 64: each
    `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
-   its world tile), `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
+   its world tile), plus `npc_count` (the complete loaded count) and `npcs_truncated` (whether the
+   64-entry safety cap omitted anything). Scenery does not occlude this list: an absent NPC is
+   outside the client's loaded set or, when explicitly marked, beyond the cap; the snapshot never
+   establishes a fence as the cause. `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
    the client currently holds as loaded, nearest first, capped at 12: each
    `{"id":…,"x":…,"z":…,"dir":…}` — type id, world tile, facing direction), and `bounds` (the
    wall objects — doors and other boundaries — likewise nearest first, capped at 12, the same
@@ -122,10 +126,13 @@ Three parts:
    without selecting a row or an amount button), `trade-player` (send the ordinary Trade-with
    request to a currently visible non-local player by server identity), `choose-menu` (choose an
    option from the context menu that is open now by a case-insensitive text fragment; an absent or
-   ambiguous fragment is refused), and `take-ground` (walk to and take a
-   currently visible ground item identified by item id and world tile). `talk-npc`,
+   ambiguous fragment is refused), `take-ground` (walk to and take a
+   currently visible ground item identified by item id and world tile), and `retreat` (while in
+   combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
+   fallback direction, trying alternate directions and nearer tiles without sending failed path
+   probes). `talk-npc`,
    `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `click-shop`,
-   `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `take-ground`,
+   `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
@@ -150,7 +157,7 @@ Three parts:
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
    for click-inventory, click-shop, and click-bank; `item` and `amount` for the
    four transaction actions; `sidx` for trade-player; `text` for choose-menu; `x`, `z`, and
-   `item` for take-ground). The bridge resolves
+   `item` for take-ground; `distance` 1–10 and fallback `dx`/`dz` for retreat). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
@@ -196,7 +203,12 @@ Three parts:
    and dispatches one regional leg. A later action re-plans from the resulting live region; no
    guessed intermediate coordinates cross the action file. If the destination is already loaded,
    the walk remains exact. A walk for which no progressive local path exists is
-   `refused-no-path`, never `done`. Chat text and
+   `refused-no-path`, never `done`. A retreat tries the requested distance first in its preferred
+   direction, then alternate directions and shorter nonzero distances, and sends only the first
+   pathfinder-approved ordinary walk. With no reachable candidate it reports
+   `refused-no-retreat-path`. Its `done` receipt remains dispatch only: the server's three-opponent-
+   hit escape lock is authoritative, and the game-player layer verifies `in_combat: false` before
+   calling the retreat complete. Chat text and
    private targets must be non-empty single lines; text is capped at the client's 80-character
    input limit and targets at 40 characters. `click-entity`, `click-inventory`, `click-shop`, and
    `click-bank` accept only mouse

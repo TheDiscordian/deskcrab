@@ -79,6 +79,22 @@ public class ReflexBridgeHarness {
 			return 12;
 		}
 
+		public int skillCount() {
+			return 3;
+		}
+
+		public String skillName(int index) {
+			return new String[]{"Attack", "Defense", "Thieving"}[index];
+		}
+
+		public int skillLevel(int index) {
+			return new int[]{12, 10, 24}[index];
+		}
+
+		public int skillExperience(int index) {
+			return new int[]{1540, 1000, 8421}[index];
+		}
+
 		public int x() {
 			return 120;
 		}
@@ -521,6 +537,9 @@ public class ReflexBridgeHarness {
 			host.tradeOpen = true;
 			host.npcDialogueOpen = true;
 		}
+		if ("exec-combat".equals(mode) || "exec-combat-no-route".equals(mode)) {
+			host.inCombat = true;
+		}
 		if ("exec-menu".equals(mode)) {
 			host.rightClickMenuOpen = true;
 		}
@@ -544,7 +563,7 @@ public class ReflexBridgeHarness {
 		if ("exec-offscreen".equals(mode)) {
 			host.projectionsVisible = false;
 		}
-		if ("exec-no-route".equals(mode)) {
+		if ("exec-no-route".equals(mode) || "exec-combat-no-route".equals(mode)) {
 			host.routeAvailable = false;
 		}
 		if ("exec-closed".equals(mode)) {
