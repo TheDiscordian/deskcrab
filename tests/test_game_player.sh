@@ -343,6 +343,37 @@ check_eq "inventory_lacks refuses while the item is held" "$CODE" "4"
 python3 "$GP" remove walk-near >/dev/null
 
 echo
+echo "visible ground items become identity-based learned actions (spec rules 4-5):"
+refute "take-ground without an item id is refused" \
+    python3 "$GP" learn bad-ground --priority 1 --trigger ground_item_visible=27 \
+        --action take-ground
+refute "a non-integer ground_item_visible is refused" \
+    python3 "$GP" learn bad-ground2 --priority 1 --trigger ground_item_visible=skull \
+        --action take-ground --param item=27
+python3 "$GP" objective recover-ghost-skull >/dev/null
+python3 "$GP" learn take-quest-skull --priority 90 --cooldown-ms 0 --once-per-objective \
+    --trigger objective_is=recover-ghost-skull --trigger ground_item_visible=27 \
+    --action take-ground --param item=27 >/dev/null
+snap 129 '[]' '{"ground_items":[{"id":27,"x":218,"z":3527},{"id":27,"x":230,"z":3540}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the visible quest item rule receives a done receipt" "$CODE" "0"
+contains "$OUT" "fired rule=take-quest-skull" && ok "the skull rule owns the play" \
+    || fail "the skull rule owns the play" "$OUT"
+check_eq "the action is take-ground" "$(last_action 'type=take-ground')" "1"
+check_eq "the item identity crosses ACTIONS" "$(last_action 'item=27')" "1"
+check_eq "the nearest current tile crosses ACTIONS" "$(last_action 'x=218')" "1"
+snap 1291 '[]' '{"ground_items":[{"id":27,"x":218,"z":3527}]}'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "an unmatched fallback with a visible pickup exits 4" "$CODE" "4"
+contains "$OUT" "ground_items=27" \
+    && ok "the fallback verdict makes the visible pickup explicit" \
+    || fail "the fallback verdict makes the visible pickup explicit" "$OUT"
+python3 "$GP" remove take-quest-skull >/dev/null
+python3 "$GP" objective --clear >/dev/null
+
+echo
 echo "doors and scenery: interact-object / interact-bound (spec rules 4-5):"
 refute "interact-object without its obj id is refused" \
     python3 "$GP" learn bad5 --priority 1 --trigger object_visible=493 --action interact-object
@@ -464,6 +495,10 @@ check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
+check_eq "the harness carries the visible ground-item listing door" \
+    "$(sandbox_count_in '^    items)' "$HEADLESS")" "1"
+check_eq "the harness carries the identity-based ground-item take door" \
+    "$(sandbox_count_in '^    take)' "$HEADLESS")" "1"
 check_eq "the harness carries the event-driven state wait door" \
     "$(sandbox_count_in '^    wait-until|wait_until)' "$HEADLESS")" "1"
 check_eq "the harness carries a play door" \
@@ -511,6 +546,16 @@ check_eq "the door wrote click-inventory" "$(last_action 'type=click-inventory')
 check_eq "the door wrote only the item id" "$(last_action 'item=145')" "1"
 refute "the inventory door did not write a slot" \
     grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 1173 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" take 27)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the ground-item door completes through the shared ACTIONS receipt" "$CODE" "0"
+contains "$OUT" "take(item=27)" \
+    && ok "and reports the item identity it targeted" \
+    || fail "and reports the item identity it targeted" "$OUT"
+check_eq "the door wrote take-ground" "$(last_action 'type=take-ground')" "1"
+check_eq "the door wrote the current item tile" "$(last_action 'x=121')" "1"
 python3 "$GP" enable walk-high >/dev/null
 python3 "$GP" set walk-high action.x 120 >/dev/null
 python3 "$GP" set walk-high action.z 649 >/dev/null
@@ -644,9 +689,11 @@ check "the command is installed on PATH (.local/bin)" test -x "$PATHDOOR"
 check_eq "and the installed door is the same committed bytes" \
     "$(readlink -f "$PATHDOOR" 2>/dev/null)" "$BOCR"
 check "the player model is pinned to a real GPT Sol" grep -q 'gpt-5.6-sol' "$BOC"
-check "the player reasoning effort is pinned low" grep -q 'model_reasoning_effort=.*EFFORT' "$BOC"
+check "the player reasoning effort is pinned medium" grep -q 'EFFORT=.*medium' "$BOC"
 check "the background author is pinned to GPT Sol" \
     grep -q 'AUTHOR_MODEL:-gpt-5.6-sol' "$BOC"
+check "the background author reasoning effort is pinned medium" \
+    grep -q 'AUTHOR_EFFORT=.*medium' "$BOC"
 check "the author runs Sol through Codex" \
     grep -q '"$CODEX" exec --json.*--ephemeral' "$BOC"
 check "the Sol author carries the same no-sleep command guard" \
@@ -693,13 +740,20 @@ ALLOWED_STATE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh pla
     | python3 "$SLEEP_HOOK")"
 check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
 check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
+check "the player unit refuses accidental manual stops" grep -q 'RefuseManualStop=yes' "$BOC"
+check "the explicit operator stop uses a protected control dependency" \
+    grep -q 'PartOf=.*CONTROL_UNIT' "$BOC"
 check "self-steering is an ordinary command" grep -q '^cmd_steer()' "$BOC"
 STEER_FN="$(sed -n '/^cmd_steer()/,/^}/p' "$BOC")"
 RESUME_FN="$(sed -n '/^compose_resume_prompt()/,/^}/p' "$BOC")"
 check "steering changes only the Sol player process" \
-    contains "$STEER_FN" 'systemctl --user restart "$UNIT"'
+    contains "$STEER_FN" 'systemctl --user kill --kill-whom=all --signal=TERM "$UNIT"'
+check "steering is stored beside the writable ACTIONS state" \
+    contains "$STEER_FN" '$GDATA/steering.md'
 check "the newest self-direction rides every continuation" \
     contains "$RESUME_FN" 'steering_block'
+check "phone turns identify themselves to local control doors" \
+    grep -q 'DESKCRAB_TURN_ORIGIN=phone' "$REPO/lib/common.sh"
 check "routine player process boundaries resume the saved Codex thread" \
     grep -q '"$CODEX" --profile.*CODEX_PROFILE.*exec resume' "$BOC"
 check "the autonomous player exports the pending-message action gate" \
@@ -777,6 +831,8 @@ grep -q 'Restart=always' "$PSD/systemd-run-args" 2>/dev/null \
     || fail "with Restart=always riding the unit"
 grep -q 'StartLimitIntervalSec=0' "$PSD/systemd-run-args" 2>/dev/null \
     && ok "and the start limit disarmed" || fail "and the start limit disarmed"
+grep -q 'RefuseManualStop=yes' "$PSD/systemd-run-args" 2>/dev/null \
+    && ok "and accidental manual stops refused" || fail "and accidental manual stops refused"
 for i in $(seq 1 50); do [ -s "$PH/player-thread" ] && break; sleep 0.1; done
 contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "step 7 of 9" \
     && ok "the first player received the composed prompt, handoff included" \
@@ -784,12 +840,12 @@ contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "step 7 of 9" \
 contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "gpt-5.6-sol" \
     && ok "and was invoked pinned to GPT Sol" \
     || fail "and was invoked pinned to GPT Sol"
-contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "model_reasoning_effort=low" \
-    && ok "at the pinned low reasoning effort" \
-    || fail "at the pinned low reasoning effort"
+contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "model_reasoning_effort=medium" \
+    && ok "at the pinned medium reasoning effort" \
+    || fail "at the pinned medium reasoning effort"
 printf 'goal: NEW-GOAL; step 8 of 9; next: buy the pot\n' > "$PH/handoff.md"
 printf 'resume-target\n' > "$DESKCRAB_GAME_DIR/objective"
-printf 'Stop circling the village; continue south to the tower.\n' > "$PH/steering.md"
+printf 'Stop circling the village; continue south to the tower.\n' > "$DESKCRAB_GAME_DIR/steering.md"
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 check_eq "the first run captured its durable Codex thread id" \
     "$(cat "$PH/player-thread" 2>/dev/null)" "11111111-2222-3333-4444-555555555555"
@@ -827,8 +883,13 @@ check "every start leaves the exact composed prompt on file" \
     test -s "$PH/run-prompt.txt"
 check_eq "and stamps the durable player log" \
     "$(grep -c 'player start' "$PH/player.log" 2>/dev/null)" "2"
+rm -f "$PSD/systemctl-stops"
+CODE=0; OUT="$(env "${POCENV[@]}" DESKCRAB_TURN_ORIGIN=phone bash "$BOC" stop player 2>&1)" || CODE=$?
+[ "$CODE" -ne 0 ] && ok "a phone turn cannot stop the playing arm" \
+    || fail "a phone turn must not be allowed to stop the playing arm" "$OUT"
+refute "the refused phone stop never reaches systemd" test -e "$PSD/systemctl-stops"
 env "${POCENV[@]}" bash "$BOC" stop player >/dev/null 2>&1 || true
-grep -q 'stop orsc-player.service' "$PSD/systemctl-stops" 2>/dev/null \
+grep -q 'stop orsc-player-control.service' "$PSD/systemctl-stops" 2>/dev/null \
     && ok "stop player goes through the unit door" \
     || fail "stop player goes through the unit door" \
             "$(cat "$PSD/systemctl-stops" 2>/dev/null)"
@@ -1004,7 +1065,7 @@ python3 "$GP" remove walk-legacy-pin >/dev/null
 
 echo
 echo "the resident runner, step's deferral, the queue and the note door (spec rules 15-16):"
-snap 160
+snap 160 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}]}'
 python3 "$GP" run --poll-ms 100 > "$SANDBOX/runner-out" 2>&1 &
 RUNNER_PID=$!
 for i in $(seq 1 50); do
@@ -1017,6 +1078,9 @@ CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 contains "$OUT" "runner-" && ok "step defers to the live runner instead of evaluating" \
     || fail "step defers to the live runner instead of evaluating" "$OUT"
 check_eq "and hands back the runner's own fallback licence: exit 4" "$CODE" "4"
+contains "$OUT" "ground_items=27" \
+    && ok "the deferred fallback still exposes visible pickups" \
+    || fail "the deferred fallback still exposes visible pickups" "$OUT"
 grep -q '"kind":"gap"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" 2>/dev/null \
     && ok "the runner queued the gap for the background author" \
     || fail "the runner queued the gap for the background author"

@@ -66,6 +66,10 @@ assert s["walking"] is False and s["in_combat"] is False
 assert s["talking_to_npc"] is False
 assert s["opponent"] is None
 assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
+assert s["ground_items"] == [
+    {"id": 27, "x": 121, "z": 650},
+    {"id": 10, "x": 130, "z": 650},
+], s["ground_items"]
 messages = s["messages"]
 assert [(m["channel"], m["incoming"], m["sender"], m["text"]) for m in messages] == [
     ("game", False, "", 'Welcome to the "quoted" world'),
@@ -427,6 +431,21 @@ check_eq "an unsupported inventory button is refused" "$(rstatus)" "refused-bad-
 wact 88 "$(now_ms)" "type=click-inventory" "item=81" "button=1"
 harness exec-offscreen >/dev/null
 check_eq "an inventory point that cannot be rendered is refused" "$(rstatus)" "refused-not-on-screen"
+
+echo
+echo "take-ground resolves a visible item identity at execution time (rules 3, 5-7):"
+wact 89 "$(now_ms)" "type=take-ground" "x=121" "z=650" "item=27"
+OUT="$(harness exec)"
+contains "$OUT" "take x=121 z=650 id=27" \
+    && ok "the visible skull reaches the game's walk-and-take path" \
+    || fail "the visible skull reaches the game's walk-and-take path" "$OUT"
+check_eq "the ground-item take is receipted done" "$(rstatus)" "done"
+wact 90 "$(now_ms)" "type=take-ground" "x=121" "z=650" "item=999"
+harness exec >/dev/null
+check_eq "a changed ground item is refused" "$(rstatus)" "refused-ground-item-mismatch"
+wact 91 "$(now_ms)" "type=take-ground" "x=5" "z=5" "item=27"
+harness exec >/dev/null
+check_eq "an empty ground-item tile is refused" "$(rstatus)" "refused-no-such-ground-item"
 
 echo
 echo "the learned player opens a door through the real bridge (game-player rules 5, 7):"

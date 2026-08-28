@@ -24,7 +24,7 @@ import orsc.ReflexBridge;
  * Every host action the bridge executes is printed to stdout, one line each:
  * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
  * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
- * "click x=N y=N button=N".
+ * "click x=N y=N button=N", "take x=N z=N id=N".
  */
 public class ReflexBridgeHarness {
 
@@ -220,6 +220,32 @@ public class ReflexBridgeHarness {
 		public void interactBound(int i, int command) {
 			events.add("bound x=" + bndAbsX[i] + " z=" + bndAbsZ[i]
 					+ " dir=" + bndDir[i] + " cmd=" + command);
+		}
+
+		// Two ground items, deliberately far-first so the snapshot sort is tested.
+		final int[] groundId = {10, 27};
+		final int[] groundAbsX = {130, 121};
+		final int[] groundAbsZ = {650, 650};
+
+		public int groundItemCount() {
+			return groundId.length;
+		}
+
+		public int groundItemId(int i) {
+			return groundId[i];
+		}
+
+		public int groundItemX(int i) {
+			return groundAbsX[i];
+		}
+
+		public int groundItemZ(int i) {
+			return groundAbsZ[i];
+		}
+
+		public void takeGroundItem(int i) {
+			events.add("take x=" + groundAbsX[i] + " z=" + groundAbsZ[i]
+					+ " id=" + groundId[i]);
 		}
 
 		public void useItem(int slot) {

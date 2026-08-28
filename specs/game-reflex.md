@@ -67,7 +67,9 @@ Three parts:
    `{"id":…,"x":…,"z":…,"dir":…}` — type id, world tile, facing direction), and `bounds` (the
    wall objects — doors and other boundaries — likewise nearest first, capped at 12, the same
    four fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
-   tile stay distinct). Only what the player's own client can see is ever in it; the bridge reads
+   tile stay distinct), and `ground_items` (items currently visible on the ground, nearest first,
+   capped at 12: each `{"id":…,"x":…,"z":…}` — item id and world tile). Only what the
+   player's own client can see is ever in it; the bridge reads
    no server internals.
 
 4. The bridge is **inert by default**. It activates only when `DESKCRAB_GAME_STATE_DIR` is present
@@ -97,9 +99,11 @@ Three parts:
    a door or other boundary — at a tile and wall direction; Open and Close are its usual
    commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
    game object, or wall object identified by stable game identity, then click button 1, 2, or 3),
-   and `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
-   current slot centre, and click button 1, 2, or 3). `talk-npc`, `interact-object`,
-   `interact-bound`, `click-entity`, `click-inventory`, `chat-local`, and `chat-private` belong to the deliberate-play
+   `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
+   current slot centre, and click button 1, 2, or 3), and `take-ground` (walk to and take a
+   currently visible ground item identified by item id and world tile). `talk-npc`,
+   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `take-ground`,
+   `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
    (rule 9). The reflex table cannot author speech. Nothing in this layer can log in, create or
@@ -118,14 +122,16 @@ Three parts:
    tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
-   for click-inventory). The bridge resolves
+   for click-inventory; `x`, `z`, and `item` for take-ground). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
    `refused-not-on-screen`; no screen coordinates cross the action file. For click-inventory it
    finds the first matching current item id, opens the inventory tab, and calculates the slot
    centre from the current client UI; a missing item is `refused-no-such-item`. No slot or screen
-   coordinate crosses the action file. `action.json` is a single slot: one action, and the engine never
+   coordinate crosses the action file. `take-ground` re-matches the item id at the named tile
+   immediately before sending the game's own walk-and-take action; a missing tile or changed item
+   is refused rather than taking a replacement. `action.json` is a single slot: one action, and the engine never
    writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
    firing is written to its own `notice-<id>.json`, named by the same monotonic id it carries, so
    two notice rules firing on one snapshot — or on adjacent snapshots inside one bridge tick —

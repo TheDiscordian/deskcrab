@@ -57,6 +57,16 @@ done
 check_eq "five refusals wrote nothing into the jobs directory" \
     "$(jobs_snapshot)" "$BEFORE"
 
+echo "an immediate OpenRSC steering control never becomes builder work:"
+run_rc 'rm -f "$JOBS_BLOCKED_FILE"; job_start "Run ~/.local/bin/betty-openrsc steer Stop circling and continue the quest"'
+[ "$JG_RC" -ne 0 ] && ok "steering dispatch is refused, non-zero" \
+    || fail "steering must stay in the requesting turn" "rc=$JG_RC: $JG_OUT"
+case "$JG_OUT" in *"immediate local control"*) ok "the refusal explains the direct control path" ;;
+    *) fail "the steering refusal must explain why" "$JG_OUT" ;; esac
+case "$JG_OUT" in *"Would dispatch"*) fail "steering must never reach dispatch" "$JG_OUT" ;;
+    *) ok "the steering refusal comes before dispatch" ;; esac
+check_eq "the refused steering control wrote no job" "$(jobs_snapshot)" "$BEFORE"
+
 echo "…and a real brief still walks through:"
 run_rc 'rm -f "$JOBS_BLOCKED_FILE"; job_start "refit the letterbox flap"'
 [ "$JG_RC" -eq 0 ] && ok "a real brief exits zero" || fail "a real brief must not be refused" "rc=$JG_RC: $JG_OUT"

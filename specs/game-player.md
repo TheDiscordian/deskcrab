@@ -55,6 +55,7 @@ deliberate-play channel.
    - `npc_visible` (int): the snapshot's `npcs` list holds that type id.
    - `object_visible` (int): the snapshot's `objects` list holds that type id.
    - `bound_visible` (int): the snapshot's `bounds` list holds that type id.
+   - `ground_item_visible` (int): the snapshot's `ground_items` list holds that item id.
    - `message_contains` (string, non-empty, single-line): some message in the snapshot's
      `messages` contains it, case-insensitively.
    - `near_tile` (`{"x":…,"z":…,"radius":…}`): Chebyshev distance from the player's tile is at
@@ -84,7 +85,9 @@ deliberate-play channel.
    the item id; optional `button` 1, 2, or 3 defaulting to 1). The compiled inventory action carries
    only that item identity. The bridge finds its current slot, opens the inventory tab, and resolves
    the slot centre immediately before clicking; a missing item is refused instead of allowing a
-   remembered slot to target its replacement. Everything the bridge refuses stays refused;
+   remembered slot to target its replacement), and `take-ground` (`item`: the item id). The
+   nearest matching `ground_items` entry is compiled to item id and current world tile; the bridge
+   re-matches both immediately before sending the game's own walk-and-take action. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
    that do not name a rendered game entity or current inventory item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.
@@ -118,7 +121,8 @@ deliberate-play channel.
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the fallback signal — **only this verdict licenses model
      reasoning about the next action**. Fields include `cooldown_holds`, so a temporarily
-     suppressed rule is visible to the falling-back mind.
+     suppressed rule is visible to the falling-back mind, and `ground_items` names every visible
+     ground-item id so a newly entered room cannot hide an actionable pickup behind another query.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.
@@ -250,8 +254,9 @@ deliberate-play channel.
       (`orsc-headless.sh start`), a mechanical login from the stored credentials file when the
       snapshot says logged out (login is plumbing, never play), the reflex engine
       (`engine start`), and the player itself — a real GPT Sol model (`codex exec --model
-      gpt-5.6-sol -c model_reasoning_effort=low`, both pins visible in the committed bytes) running as its own transient user
-      unit `orsc-player.service` with `Restart=always` and `StartLimitIntervalSec=0`: a player
+      gpt-5.6-sol -c model_reasoning_effort=medium`, both pins visible in the committed bytes) running as its own transient user
+      unit `orsc-player.service` with `Restart=always`, `StartLimitIntervalSec=0`, and
+      `RefuseManualStop=yes`: a player
       that exits, normally or killed, is restarted by the service manager, never by a watching
       shell, and restarts are never rate-limited away. Layers already up are left alone, so
       `play` is also the resume door.
@@ -262,19 +267,26 @@ deliberate-play channel.
     - The Sol player is her own continuing play, not a subordinate agent or another personality.
       `steer <instruction>` is her ordinary self-direction door for redirecting that play whenever
       she notices it is wrong, stalled or looping, as well as when the user asks for a correction.
-      It atomically records the newest direction in the durable player home and restarts only
-      `orsc-player.service`, resuming the same Sol thread with that direction placed prominently
-      in its compact continuation prompt. The client, bridge, reflex engine, resident runner,
-      author, and spectator remain running. If the player unit is down, `steer` raises the normal
-      stack instead. Steering is durable ground truth across later player-process boundaries; a
+      It atomically records the newest direction in `$DESKCRAB_GAME_DIR/steering.md`, beside the
+      existing ACTIONS state, and signals only the Sol process inside `orsc-player.service` so
+      `Restart=always` resumes the same Sol thread with that direction placed prominently in its
+      compact continuation prompt. The client, bridge, reflex engine, resident runner, author,
+      and spectator remain running. If the player unit is down, `steer` raises the normal stack
+      instead. Steering is writable from phone turns without changing their filesystem boundary.
+      Steering is durable ground truth across later player-process boundaries; a
       repeated direction never means undoing completed progress to reenact it. Noticing a bad
       course is itself sufficient reason to steer; narrating distress about the course is not a
       substitute for changing it.
-    - The player's durable base prompt (`prompt.md`), its latest steering direction
-      (`steering.md`), its handoff file (`handoff.md`), the
+    - The player's durable base prompt (`prompt.md`), its handoff file (`handoff.md`), the
       exact composed prompt of the latest start (`run-prompt.txt`) and its log (`player.log`)
       live in the durable player home (`BETTY_OPENRSC_HOME`, a directory in the user's own
-      files). Nothing of the player — prompt, handoff or log — lives under `/tmp`.
+      files). The latest steering direction lives with the ACTIONS state as described above.
+      Nothing of the player — prompt, handoff, steering, or log — lives under `/tmp`.
+    - A phone turn identifies itself with `DESKCRAB_TURN_ORIGIN=phone`. The installed stop door
+      refuses that origin, and the transient unit refuses direct manual stops. An operator outside
+      a phone turn can still deliberately use `stop [player]`; that door stops the companion
+      control unit, whose `PartOf` relationship stops the protected player indirectly. A
+      correction uses `steer`, never stop, direct manual play, or a detached job.
     - The first player start composes its effective prompt from ground truth discovered at that
       moment (`run-player`, the unit's exec target): the live display read from the harness's
       `run/display` (never hard-coded), the bridge state dir, the durable objective, a fresh
@@ -325,7 +337,8 @@ deliberate-play channel.
     turn. Each iteration re-reads the objective, reloads the table when
     `learned-rules.json`'s mtime moves (an invalid table is refused loudly and the last valid
     one kept), evaluates, verifies per rule 7a, and writes a heartbeat —
-    `$DESKCRAB_GAME_STATE_DIR/player-runner.json`: pid, ts, latest verdict and detail — every
+    `$DESKCRAB_GAME_STATE_DIR/player-runner.json`: pid, ts, latest verdict, detail, and visible
+    ground-item ids — every
     pass. A fresh heartbeat (pid alive, ts within 30 s, covering an in-progress walk verification)
     is how rule 12's `step` knows to defer:
     two writers of the engine state would race, so while the runner is live it is the ONLY
@@ -337,14 +350,14 @@ deliberate-play channel.
     snapshot brief — is appended to the durable outcome queue,
     `$DESKCRAB_GAME_DIR/outcome-queue.jsonl`; the runner also records a `gap` when no rule
     matches and a changed actionable state signature remains unchanged for at least 750 ms
-    (objective, position, inventory, game messages, and visible entity types/objects, excluding
+    (objective, position, inventory, game messages, visible ground items, and visible entity types/objects, excluding
     tick churn and NPC wandering). Movement therefore produces one gap after the body settles,
     not one gap for every crossed tile. `note <text…>` is the playing
     hand's one-line door for lessons the queue cannot see (it stamps the current position,
     objective and inventory alongside the text). The queue is the inbox of the background
     author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
-    durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at low
+    durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at medium
     effort under the same no-sleep command hook as the playing hand, reads new outcomes, writes
     and refines rules through the rule 11 doors, maintains rule
     17's cases, and never touches the bridge, the screen, or the reflex engine: every action

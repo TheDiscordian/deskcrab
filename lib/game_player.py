@@ -27,9 +27,10 @@ import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 
 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
 TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
-                "message_contains", "near_tile", "inventory_has", "inventory_lacks")
+                "ground_item_visible", "message_contains", "near_tile",
+                "inventory_has", "inventory_lacks")
 ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity",
-           "click-inventory")
+           "click-inventory", "take-ground")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
@@ -194,6 +195,7 @@ def validate_config(cfg: dict) -> None:
                     bad(f"{where}: trigger.near_tile must be "
                         "{{\"x\":int,\"z\":int,\"radius\":0..50}}")
             elif key in ("npc_visible", "object_visible", "bound_visible",
+                         "ground_item_visible",
                          "inventory_has", "inventory_lacks"):
                 if not isinstance(val, int) or val < 0:
                     bad(f"{where}: trigger.{key} must be a non-negative type/item id")
@@ -239,6 +241,11 @@ def validate_config(cfg: dict) -> None:
                     "with optional button")
             if "button" in action and action["button"] not in (1, 2, 3):
                 bad(f"{where}: click-inventory button must be 1, 2, or 3")
+        elif atype == "take-ground":
+            if set(action) != {"type", "item"} \
+                    or not isinstance(action.get("item"), int) \
+                    or action["item"] < 0:
+                bad(f"{where}: take-ground takes exactly item=<item id>")
 
 
 def load_config() -> dict:
@@ -582,6 +589,10 @@ def make_trigger_fn(objective: str):
             if not any(b.get("id") == trig["bound_visible"]
                        for b in snap.get("bounds") or []):
                 return False
+        if "ground_item_visible" in trig:
+            if not any(i.get("id") == trig["ground_item_visible"]
+                       for i in snap.get("ground_items") or []):
+                return False
         if "message_contains" in trig:
             want = trig["message_contains"].lower()
             texts = [(m.get("text", "") if isinstance(m, dict) else str(m))
@@ -662,6 +673,14 @@ def compile_player_action(rule, snap, food, eat_pick):
             return {"type": "click-inventory", "item": want,
                     "button": action.get("button", 1)}, None
         return None, "item-not-held"
+    if action["type"] == "take-ground":
+        want = action["item"]
+        for item in snap.get("ground_items") or []:  # already nearest-first
+            if item.get("id") == want and isinstance(item.get("x"), int) \
+                    and isinstance(item.get("z"), int):
+                return {"type": "take-ground", "x": item["x"], "z": item["z"],
+                        "item": want}, None
+        return None, "ground-item-not-visible"
     return None, f"unknown-action-{action['type']}"
 
 
@@ -686,6 +705,7 @@ def snap_brief(snap: dict) -> dict:
     brief["npcs"] = (snap.get("npcs") or [])[:12]
     brief["objects"] = (snap.get("objects") or [])[:12]
     brief["bounds"] = (snap.get("bounds") or [])[:12]
+    brief["ground_items"] = (snap.get("ground_items") or [])[:12]
     return brief
 
 
@@ -710,6 +730,9 @@ def gap_signature(snap: dict, objective: str) -> str:
         "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"))
                          for b in snap.get("bounds") or []
                          if isinstance(b, dict) and isinstance(b.get("id"), int)),
+        "ground_items": sorted((i.get("id"), i.get("x"), i.get("z"))
+                               for i in snap.get("ground_items") or []
+                               if isinstance(i, dict) and isinstance(i.get("id"), int)),
     }
     return json.dumps(shape, sort_keys=True, separators=(",", ":"))
 
@@ -755,10 +778,11 @@ def verify_walk(tx: int, tz: int, arrive: int,
 # The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
 # --------------------------------------------------------------------------
-def write_heartbeat(verdict: str, detail: str = "") -> None:
+def write_heartbeat(verdict: str, detail: str = "", ground_items=None) -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
-         "verdict": verdict, "detail": detail}) + "\n")
+         "verdict": verdict, "detail": detail,
+         "ground_items": ground_items or []}) + "\n")
 
 
 def read_live_runner():
@@ -896,6 +920,8 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         report("no-rule-matched", objective=objective or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
+               ground_items=",".join(str(i.get("id"))
+                                     for i in snap.get("ground_items") or []) or None,
                feedback=latest_system_feedback(snap))
         return "no-rule-matched", EXIT_NO_RULE
 
@@ -1457,8 +1483,10 @@ def cmd_run(args):
             # still hands the model its exit-4 licence when one is due.
             if verdict != "same-tick":
                 last_verdict = verdict
+            latest = game_reflex.read_snapshot() or {}
             write_heartbeat(last_verdict,
-                            latest_system_feedback(game_reflex.read_snapshot() or {}) or "")
+                            latest_system_feedback(latest) or "",
+                            [i.get("id") for i in latest.get("ground_items") or []])
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -1602,6 +1630,8 @@ def main():
                 else:
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
+                           ground_items=",".join(str(i)
+                                                 for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
                           "held": EXIT_HELD,

@@ -8173,6 +8173,11 @@ _run_claude_remote_locked() {
     session_register "phone turn"
     turn_metric turn-start phone
     record_origin phone
+    # Local control doors can distinguish a phone conversation from an
+    # operator shell without changing the phone's filesystem boundary.
+    # In particular, live OpenRSC play may be steered here but not stopped.
+    local DESKCRAB_TURN_ORIGIN=phone
+    export DESKCRAB_TURN_ORIGIN
     local TEXT="$1"
     SESSION_USER_TEXT="$TEXT"
     # He has answered whatever was last said to this phone, so nothing said to
@@ -8778,6 +8783,15 @@ job_start() {
     done
     local task="$*"
     [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [-f] <description of the work>"; return 1; }
+    # Live steering is a synchronous ACTIONS control, not build work. Sending
+    # this one-line correction to a detached builder delays it and makes a
+    # second personality responsible for the assistant's own play.
+    case "$(printf '%s' "$task" | tr '[:upper:]' '[:lower:]')" in
+        *betty-openrsc*steer*)
+            echo "Not dispatched — OpenRSC steering is an immediate local control."
+            echo "  Run ~/.local/bin/betty-openrsc steer <instruction> directly in this turn."
+            return 1 ;;
+    esac
     # An automatic retry inherits the obligation its origin carried: the brief
     # is the same brief, so the record rides the sidecar chain (rule 7b).
     if [ -z "$record" ] && [ -n "$origin" ] && [ -e "$JOBS_DIR/$origin.json" ]; then
