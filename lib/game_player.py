@@ -521,6 +521,13 @@ def snapshot_skills(snap: dict) -> dict:
     return found
 
 
+def skills_ready(skills: dict) -> bool:
+    """Login briefly exposes zero-filled client arrays. A real RSC skill table
+    always has at least one positive base level, even for a new character."""
+    return any(isinstance(skill.get("level"), int) and skill["level"] > 0
+               for skill in skills.values())
+
+
 def load_activity_stats() -> dict:
     try:
         body = json.loads(activity_stats_path().read_text())
@@ -539,13 +546,14 @@ def clear_activity_stats() -> None:
 def start_activity_stats(activity: str, snap: dict, started_ms=None) -> dict:
     """Start one activity clock from a cumulative-XP snapshot, when available."""
     skills = snapshot_skills(snap)
-    if not activity or not skills:
+    if not activity or not skills_ready(skills):
         return {}
     started = started_ms if isinstance(started_ms, int) else now_ms()
     stats = {
-        "v": 1,
+        "v": 2,
         "activity": activity,
         "started_ms": started,
+        "baseline_ready": True,
         "baseline_xp": {key: val["xp"] for key, val in skills.items()},
         "last_xp": {key: val["xp"] for key, val in skills.items()},
         "skill_names": {key: val["name"] for key, val in skills.items()},
@@ -569,8 +577,12 @@ def refresh_activity_stats(snap: dict, activity: str) -> dict:
     stats = load_activity_stats()
     if stats.get("activity") != activity or not stats.get("baseline_xp"):
         return start_activity_stats(activity, snap)
-    if not skills:
+    if not skills_ready(skills):
         return stats
+    # A pre-v2 baseline has no proof it was not captured from the zero-filled
+    # login placeholder. Establish it honestly from this first ready frame.
+    if stats.get("baseline_ready") is not True:
+        return start_activity_stats(activity, snap)
 
     previous = stats.get("last_xp") if isinstance(stats.get("last_xp"), dict) else {}
     changes = []

@@ -36,7 +36,10 @@ deliberate-play channel.
    The resident runner compares the bridge's structured `skills` XP every pass, so an XP-bearing
    game action becomes a grounded `+N/action` delta and cumulative gain divided by elapsed activity
    time becomes XP/hour. Only skills with positive gain are reported. No screen counter, level
-   estimate, or model inference is involved.
+   estimate, or model inference is involved. The client briefly publishes zero-filled skill
+   arrays during login; that placeholder is never a baseline. Measurement waits until at least
+   one real positive base level exists, and pre-v2 baselines without that readiness proof are
+   re-established from the first ready snapshot.
 
    The engine's own counters live in `$DESKCRAB_GAME_STATE_DIR/player-engine-state.json` and its decisions in
    `$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl` — separate files from the reflex engine's,

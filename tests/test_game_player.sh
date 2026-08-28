@@ -359,9 +359,14 @@ check_eq "a cleared activity reads as none" "$(python3 "$GP" activity)" "(none)"
 
 echo
 echo "an activity measures grounded action XP and elapsed rate (spec rules 1, 7):"
-snap 1035 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1000}]}'
-check "selecting an activity starts its cumulative-XP baseline" \
+snap 1034 '[]' '{"skills":[{"id":17,"name":"Thieving","level":0,"xp":0}]}'
+check "selecting during the zero-filled login frame does not invent a baseline" \
     python3 "$GP" activity farmer-thieving
+refute "the placeholder skill table produces no activity stats" \
+    test -e "$DESKCRAB_GAME_DIR/activity-stats.json"
+snap 1035 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1000}]}'
+CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+check_eq "the first ready skill snapshot starts the cumulative-XP baseline" "$CODE" "4"
 check "the activity measurement is durable" test -f "$DESKCRAB_GAME_DIR/activity-stats.json"
 python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY'
 import json, sys, time
