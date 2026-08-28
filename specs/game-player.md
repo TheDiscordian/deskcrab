@@ -502,22 +502,38 @@ deliberate-play channel.
     rules 7b and 7c — a person who spoke still gets answered, and the idle warning still gets
     moved for, because being logged out mid-routine helps nothing — and above everything else.
 
-21b. **The wind-down routine is HERS.** Nothing here prescribes what ending a sitting looks like:
-    reaching a safe tile, stowing what she is carrying, saying goodbye to whoever is standing
-    there, logging out. Her ordinary bridge doors stay open the whole time — `session-over`
-    suppresses the RULE TABLE, never her hands — and she declares herself finished with
-    `play session-end`, which closes the session and stops the stack. A sitting that ends early
-    and tidily is the good case; the grace exists for the other one.
+21b. **The wind-down routine is HERS, except for its last two steps, which are fixed.** What she
+    does with the time is unprescribed — reaching a safe tile, stowing or burying what she is
+    carrying, saying goodbye to whoever is standing there, writing the handoff — and her ordinary
+    bridge doors stay open throughout, because `session-over` suppresses the RULE TABLE, never her
+    hands. But she MUST log out, and she MUST do it BEFORE ending the sitting. Nothing in this
+    system logs a character out: there is no such bridge action and no harness door, so it is her
+    own hands through the client's own menu or it does not happen. Ending a sitting takes the
+    reflex guards down with it, and a character left standing in the world without them dies idle
+    with her bag on. The `session-end` door therefore REFUSES while the snapshot says she is
+    logged in, and says why — the refusal is the teaching, not an obstacle. Documentation that
+    implies the stack, the stop, or the server's idle rule handles the logout is a defect: it was
+    read exactly that way once, and the sitting ended with the character still in the world.
 
 21c. The stop does not depend on a model. `play` arms two transient user timers beside the units
     it starts: one at the limit that marks the session over, and one at limit plus grace that
     ends it regardless — so a player that is wedged, refused by its engine, or simply gone still
-    stops on time. Ending a session, by her hand or the timer's, stops every layer that ACTS: the
-    player, the author, the runner and the reflex engine. The client and its display stay up,
-    because the next sitting should open in a second rather than a minute. The harness has no
-    mechanical logout door and this does not invent one — with nothing acting, the server's own
-    idle rule takes the character offline, and a deliberate logout is one of the things rule 21b's
-    wind-down may choose to do.
+    stops on time. Ending a session stops every layer that ACTS, in an order the guards survive:
+    the player FIRST and confirmed down before anything else, because its supervisor block raises
+    the engine and runner on every start and stopping those while it is still cycling brings them
+    straight back; then the author and the runner; and the reflex guards LAST, only once she is
+    out of the world. The client and its display stay up when she logged out cleanly, so the next
+    sitting opens in a second. The timer's path cannot be refused by rule 21b — nobody is there to
+    be told — so when it finds her still logged in it stops the CLIENT, disconnecting her rather
+    than leaving her standing in the world with the guards coming down around her. A disconnect is
+    a worse ending than a clean logout, and that asymmetry is deliberate: it is the incentive.
+
+21c-i. A closed session suppresses exactly as an over-run one does (rule 21a's `ended` phase).
+    Ending a sitting means play has STOPPED, so a resident runner that outlived the stop finds the
+    table quiet instead of resuming unattended. Without this the stop had a hole: the runner came
+    back under the player's supervisor, the closed session suppressed nothing, and the character
+    went on playing herself with no model watching — pickpocketing, in the observed case. Only
+    opening a new sitting lifts it.
 
 21d. Nothing schedules the next sitting: that is hers to choose, and `play` is the door. The
     end-of-session report names the elapsed time and says so, so a sitting that ends while she is

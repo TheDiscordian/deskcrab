@@ -874,12 +874,27 @@ refute "and no rule took the action slot" test -e "$DESKCRAB_GAME_STATE_DIR/acti
 OUT="$(gp session end 2>&1)"; contains "$OUT" "ended" \
     && ok "she can declare the wind-down finished" \
     || fail "she can declare the wind-down finished" "$OUT"
-contains "$(gp session 2>&1)" "none open" \
-    && ok "which closes the sitting" || fail "which closes the sitting"
+# Rule 21c-i: a CLOSED sitting suppresses exactly as an over-run one does.
+# Without this the stop had a hole — the resident runner can outlive it under
+# the player's supervisor, and a closed sitting that suppressed nothing left
+# the character playing herself unattended.
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 702 '[{"sidx":9,"id":11,"x":120,"z":648}]'
 CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
-refute "and play is no longer suppressed once it is closed" test "$CODE" = 8
+check_eq "a closed sitting keeps play suppressed, not released" "$CODE" "8"
+contains "$OUT" "phase=ended" && ok "naming the closed phase" \
+    || fail "naming the closed phase" "$OUT"
+refute "so a surviving runner takes no action slot" \
+    test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
+# Only opening the next sitting lifts it — and a LIVE one refuses to reopen.
+gp session open --limit-ms 7200000 --grace-ms 600000 >/dev/null 2>&1
+snap 703 '[{"sidx":9,"id":11,"x":120,"z":648}]'
+CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
+refute "opening the next sitting lifts the suppression" test "$CODE" = 8
+contains "$(gp session open --limit-ms 60000 2>&1)" "already open" \
+    && ok "while a live sitting still refuses to be reopened" \
+    || fail "while a live sitting still refuses to be reopened"
+gp session end >/dev/null 2>&1
 # A damaged session file is no session: the clock never invents a deadline.
 printf 'not json at all\n' > "$DESKCRAB_GAME_DIR/session.json"
 CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
@@ -1208,6 +1223,43 @@ check_eq "and no second resume was attempted against the stale thread" \
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 check_eq "an unchanged sheet resumes the same conversation as before" \
     "$(grep -c '^resume$' "$PSD/codex-capture" 2>/dev/null)" "2"
+
+# Rule 21b: LOGGING OUT IS HERS AND COMES FIRST. Ending a sitting takes the
+# reflex guards down, so the door refuses while the snapshot still says she is
+# in the world — a character left standing there without them dies idle. This
+# refusal is the whole teaching; documentation once implied the stop handled
+# the logout and a sitting ended with her still logged in.
+snap 800 '[]'   # snap() writes a logged_in snapshot
+CODE=0; OUT="$(env "${BOCENV[@]}" bash "$BOC" session-end 2>&1)" || CODE=$?
+[ "$CODE" -ne 0 ] && ok "session-end refuses while she is still logged in" \
+    || fail "session-end must refuse while she is still logged in" "$OUT"
+contains "$OUT" "STILL LOGGED IN" \
+    && ok "and says so in as many words" || fail "and says so in as many words" "$OUT"
+contains "$OUT" "does not log you out" \
+    && ok "naming plainly that nothing here logs her out" \
+    || fail "naming plainly that nothing here logs her out" "$OUT"
+refute "and the refusal closes no sitting" \
+    grep -q '"ended"' "$DESKCRAB_GAME_DIR/session.json"
+# The grace timer has nobody to tell, so its path proceeds — and the arming
+# call must actually use it.
+contains "$(sed -n '/^session_open()/,/^}/p' "$BOC")" 'session-end --force' \
+    && ok "the grace timer is armed on the forced path" \
+    || fail "the grace timer is armed on the forced path"
+contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'stop orsc-client.service' \
+    && ok "which disconnects her rather than leaving her unguarded" \
+    || fail "which disconnects her rather than leaving her unguarded"
+# Rule 21c: the player goes down FIRST and is confirmed down, because its
+# supervisor block raises the engine and runner on every start.
+SEBODY="$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")"
+PLAYER_AT="$(printf '%s\n' "$SEBODY" | grep -n 'stop "$CONTROL_UNIT"' | head -1 | cut -d: -f1)"
+RUNNER_AT="$(printf '%s\n' "$SEBODY" | grep -n 'runner stop' | head -1 | cut -d: -f1)"
+ENGINE_AT="$(printf '%s\n' "$SEBODY" | grep -n 'engine stop' | head -1 | cut -d: -f1)"
+[ -n "$PLAYER_AT" ] && [ -n "$RUNNER_AT" ] && [ "$PLAYER_AT" -lt "$RUNNER_AT" ] \
+    && ok "the player is stopped before the runner it would otherwise re-raise" \
+    || fail "the player is stopped before the runner it would otherwise re-raise"
+[ -n "$ENGINE_AT" ] && [ "$RUNNER_AT" -lt "$ENGINE_AT" ] \
+    && ok "and the reflex guards come down last of all" \
+    || fail "and the reflex guards come down last of all"
 
 # Rule 20: the engine follows the model name, so moving the player between
 # engines is one word — and the same word moves it back. A fake Claude CLI

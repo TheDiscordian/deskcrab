@@ -109,22 +109,33 @@ def session_path() -> Path:
 
 
 def read_session() -> dict:
-    """The open sitting, or {} when none is (spec rule 21). A file that cannot
-    be read is no session: the clock never invents a deadline out of damage."""
+    """The session record, ended or not, or {} when there is none (spec rule
+    21). A file that cannot be read is no session: the clock never invents a
+    deadline out of damage."""
     try:
         body = json.loads(session_path().read_text())
     except (OSError, ValueError):
         return {}
-    if not isinstance(body, dict) or not body.get("started") or body.get("ended"):
+    if not isinstance(body, dict) or not body.get("started"):
         return {}
     return body
 
 
 def session_state(now: int = None) -> dict:
-    """Where the open sitting stands: `open`, `over` (past its limit, inside
-    the grace) or `expired` (past the grace too). No session at all reports
-    `none`, which never suppresses play — the limit binds a sitting that was
-    opened, not the act of playing."""
+    """Where the sitting stands:
+
+    - `none`    — no record at all. Nothing is suppressed: the limit bounds a
+                  sitting that was opened, not the act of playing.
+    - `open`    — inside its limit.
+    - `over`    — past the limit, inside the grace. Wind-down time.
+    - `expired` — past the grace too.
+    - `ended`   — closed, by her hand or the timer's.
+
+    `ended` SUPPRESSES exactly as `over` does, and that is the point: a closed
+    sitting means play has stopped, so a resident runner that outlived the stop
+    (its supervisor can re-raise it) finds the table quiet instead of happily
+    resuming unattended play. Only opening a new sitting lifts it.
+    """
     s = read_session()
     if not s:
         return {"phase": "none"}
@@ -135,7 +146,10 @@ def session_state(now: int = None) -> dict:
     out = {"phase": "open", "started": int(s["started"]), "elapsed_ms": elapsed,
            "limit_ms": limit, "grace_ms": grace,
            "grace_ms_left": max(0, limit + grace - elapsed)}
-    if elapsed >= limit + grace:
+    if s.get("ended"):
+        out["phase"] = "ended"
+        out["grace_ms_left"] = 0
+    elif elapsed >= limit + grace:
         out["phase"] = "expired"
     elif elapsed >= limit:
         out["phase"] = "over"
@@ -1051,10 +1065,9 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
     # moved for, because being logged out mid-routine helps nothing. Her own
     # bridge doors stay open; what stops here is the table, not her hands.
     sess = session_state(now)
-    if sess["phase"] in ("over", "expired"):
-        report("session-over", elapsed_ms=sess["elapsed_ms"],
-               limit_ms=sess["limit_ms"], grace_ms_left=sess["grace_ms_left"],
-               expired=("yes" if sess["phase"] == "expired" else None))
+    if sess["phase"] in ("over", "expired", "ended"):
+        report("session-over", phase=sess["phase"], elapsed_ms=sess["elapsed_ms"],
+               limit_ms=sess["limit_ms"], grace_ms_left=sess["grace_ms_left"])
         return "session-over", EXIT_SESSION_OVER
 
     if (state_dir() / "action.json").exists():
@@ -1513,9 +1526,11 @@ def cmd_session(args):
     wind-down finished; it is also what the grace timer runs when nobody
     declared anything. `status` is one line either hand can read."""
     if args.action == "open":
-        existing = read_session()
-        if existing:
-            st = session_state()
+        # An ENDED record is not an open sitting — opening past one is exactly
+        # how the next sitting starts, and it is what lifts rule 21c-i's
+        # suppression. Only a live sitting refuses to be reopened.
+        st = session_state()
+        if st["phase"] in ("open", "over", "expired"):
             print(f"session already open: {st['elapsed_ms'] // 60000}m elapsed "
                   f"of {st['limit_ms'] // 60000}m ({st['phase']})")
             return
