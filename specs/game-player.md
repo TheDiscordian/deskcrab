@@ -434,12 +434,22 @@ deliberate-play channel.
     is the game's equivalent of the chess chat re-reading its sheet per call: an edited sheet
     lands without anyone hand-restarting the stack.
 
-19. Playing is a social act, and the people in the world are people she already knows. Her
-    durable store is reachable from the game by the same retrieval every other prompt of hers
-    uses (memory-recall.md), through two doors and no third:
-    - **At composition.** A new thread's prompt carries a recall block whose query is composed
-      from the live snapshot's nearby `players` and the durable objective. With nobody nearby the
-      query is the objective alone, and a recall that returns nothing adds nothing.
+19. Playing draws on things she learned about the world as well as the people in it. Her durable
+    store is reachable from the game through memory-recall.md's retrieval, through two doors and
+    no third:
+    - **At composition.** A new thread carries two explicit, independently bounded views. The
+      play-knowledge view always runs, including in an empty room: its semantic query names the
+      durable objective and asks for RuneScape/OpenRSC quest facts, learned habits, executable
+      rules, prior mistakes, safety lessons, routes, dialogue and items. It is lexically scoped
+      to `OpenRSC`, `RuneScape`, and the non-empty objective; it selects at most six notes, four
+      directives and three moments, with a 6000-character rendered-block ceiling. The nearby-
+      people view runs only when the live snapshot contains players, asks about relationships and
+      obligations separately, scopes itself to those actual names, and selects at most three
+      notes, two directives and two moments under 3000 characters. The ceilings are configurable
+      by `BETTY_OPENRSC_PLAY_MEMORY_CHARS` and `BETTY_OPENRSC_SOCIAL_MEMORY_CHARS`, but are never
+      post-render truncation: memory-recall rule 13a selects only whole records that fit. A view
+      that returns nothing adds no section. Desk and chess memories outside those scopes do not
+      ride either block, pinned or otherwise.
     - **At reply time.** `betty-openrsc recall <text…>` prints the block for a query given on the
       command line. Rule 7b's `player-message` verdict makes it part of answering: the playing
       hand recalls against the sender's name and what they actually said BEFORE composing a

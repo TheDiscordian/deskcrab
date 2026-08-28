@@ -47,7 +47,14 @@ life, and she re-reads that store every single turn.
 12. Notes are ranked by similarity, confidence, decay, a capped use bonus, and the
     recency-of-relevance factor of rule 37. Directives are ranked by raw similarity and are never
     decayed or boosted.
-13. Every pinned record MUST ride along regardless of score.
+13. Every pinned record MUST ride along regardless of score in the general recall view.
+13a. A specialised prompt MAY declare a lexical domain scope over record text, source, topics,
+    participants and opinion, plus smaller per-kind and rendered-character retrieval budgets.
+    Scope terms are ORed and applied before selection, including to pinned records: a pinned desk
+    rule is not a RuneScape memory merely because it is pinned. The character budget is likewise
+    a selection gate — candidates that would exceed it are not retrieved — never a renderer cut.
+    The general recall view declares no scope or character budget and remains byte-for-byte under
+    rules 11–15.
 14. **The recall block is NEVER truncated.** Every retrieved row reaches the block, whole. Its size
     is governed by retrieval — the note top-K, the directive cap, the pinned tier — and by nothing
     after retrieval. This rule used to say the opposite ("the recall block MUST be capped; when the
@@ -56,6 +63,9 @@ life, and she re-reads that store every single turn.
     he ordered it removed. A memory retrieved and then dropped to fit a size cap is amnesia wearing
     a header. A block that outgrows its prompt layer is the assembler's over-budget warning to
     raise ([prompt-assembly.md](prompt-assembly.md) rules 4 and 36), never this module's to cut.
+    Rule 13a's specialised bound is compatible by construction: it decides which rows retrieval
+    selects, then this builder renders every selected row whole and reports exactly those rows in
+    the reinforcement sidecar.
 15. Because nothing is dropped, no drop order exists to get wrong. (This rule once guarded pinned
     records against being truncated first; with rule 14 as it now stands there is nothing to guard
     against, and the guarantee — every pinned record reaches the prompt — holds trivially.)

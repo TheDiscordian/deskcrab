@@ -623,6 +623,8 @@ if [ ! -f "$HEADLESS" ]; then
 fi
 check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
+check_eq "the harness carries the bounded visual aiming fallback" \
+    "$(sandbox_count_in '^    aim)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based shop door" \
@@ -641,6 +643,33 @@ check_eq "wired to game_player.py, not merely present in lib" \
     "$(grep -c 'game_player.py' "$HEADLESS")" "1"
 check_eq "and the policy step is rules-first: play refuses reasoning until exit 4" \
     "$(grep -c 'no-rule-matched' "$HEADLESS")" "1"
+
+# The visual fallback is wired through the real harness, which supplies the
+# private display and state path instead of asking Sol to remember either.
+AIMHOME="$SANDBOX/aimhome"; mkdir -p "$AIMHOME/run"
+printf '98\n' > "$AIMHOME/run/display"
+printf '%s\n' "$$" > "$AIMHOME/run/xvfb.pid"
+AIMFAKE="$SANDBOX/fake-aim.py"; AIMCAP="$SANDBOX/aim-capture"
+cat > "$AIMFAKE" <<'PY'
+#!/usr/bin/env python3
+import os, sys
+open(os.environ['AIM_CAPTURE'], 'w').write('\n'.join(sys.argv[1:]))
+print('dry-run intent=red-cape gate=skipped')
+PY
+OUT="$(ORSC_HEADLESS_HOME="$AIMHOME" DESKCRAB_GAME_NPC_CLICK="$AIMFAKE" \
+       AIM_CAPTURE="$AIMCAP" bash "$HEADLESS" aim red-cape --dry-run)"
+contains "$OUT" "dry-run intent=red-cape" \
+    && ok "the real harness delegates visual aiming to the one implementation" \
+    || fail "the real harness delegates visual aiming to the one implementation" "$OUT"
+contains "$(cat "$AIMCAP")" $'--display\n98' \
+    && ok "the aiming door discovers the private display" \
+    || fail "the aiming door discovers the private display" "$(cat "$AIMCAP")"
+contains "$(cat "$AIMCAP")" $'--state-dir\n'"$DESKCRAB_GAME_STATE_DIR" \
+    && ok "the aiming door supplies the shared guarded state" \
+    || fail "the aiming door supplies the shared guarded state" "$(cat "$AIMCAP")"
+contains "$(cat "$AIMCAP")" "red-cape" \
+    && ok "the visual intent crosses the door unchanged" \
+    || fail "the visual intent crosses the door unchanged" "$(cat "$AIMCAP")"
 snap 1170 '[]' '{"messages":[
     {"id":9010,"channel":"local","incoming":true,"sender":"Nearby Player","text":"Try the east door"}
 ]}'
@@ -1035,8 +1064,23 @@ MEMFAKE="$SANDBOX/memfake"; mkdir -p "$MEMFAKE"
 cat > "$MEMFAKE/memory.py" <<'SH'
 #!/bin/bash
 dir="$(cd "$(dirname "$0")" && pwd)"
-printf '%s\n' "$@" >> "$dir/recall-capture"
-printf 'RECALL-BLOCK-MARKER\n'
+printf 'CALL' >> "$dir/recall-capture"
+for arg in "$@"; do printf '\t%s' "$arg" >> "$dir/recall-capture"; done
+printf '\n' >> "$dir/recall-capture"
+query=""; scoped=0; prev=""
+for arg in "$@"; do
+    [ "$prev" = "--query" ] && query="$arg"
+    [ "$arg" = "--scope" ] && scoped=1
+    prev="$arg"
+done
+case "$query" in
+    *"play knowledge"*)
+        printf 'PLAY-QUEST-MEMORY-MARKER\n'
+        [ "$scoped" -eq 1 ] || printf 'IRRELEVANT-DESK-LIFE-MARKER\n'
+        ;;
+    *"nearby players"*) printf 'NEARBY-RELATIONSHIP-MEMORY-MARKER\n' ;;
+    *) printf 'REPLY-RECALL-MARKER\n' ;;
+esac
 SH
 chmod +x "$MEMFAKE/memory.py"
 # Nearby players ride the composed recall query: the people standing there are
@@ -1066,10 +1110,22 @@ contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
 contains "$OUT" "PERSONA-SHEET-MARKER" \
     && ok "her voice rides the composition from the game persona sheet" \
     || fail "her voice rides the composition from the game persona sheet" "$OUT"
-# Rule 19: and so does what she already knows about whoever is standing there.
-contains "$OUT" "RECALL-BLOCK-MARKER" \
-    && ok "so does a recall block from her own durable store" \
-    || fail "so does a recall block from her own durable store" "$OUT"
+# Rule 19: play knowledge is recalled independently of whoever happens to be
+# nearby, and relationships ride a separate, smaller section.
+contains "$OUT" "PLAY-QUEST-MEMORY-MARKER" \
+    && ok "durable play and quest knowledge rides the composed prompt" \
+    || fail "durable play and quest knowledge rides the composed prompt" "$OUT"
+contains "$OUT" "NEARBY-RELATIONSHIP-MEMORY-MARKER" \
+    && ok "nearby-player relationship memory rides separately" \
+    || fail "nearby-player relationship memory rides separately" "$OUT"
+contains "$OUT" "## OpenRSC play knowledge" \
+    && ok "play recall has an explicit prompt section" \
+    || fail "play recall has an explicit prompt section" "$OUT"
+contains "$OUT" "## People nearby in OpenRSC" \
+    && ok "social recall has an explicit prompt section" \
+    || fail "social recall has an explicit prompt section" "$OUT"
+refute "irrelevant desk-life recall is not carried into a play prompt" \
+    grep -q 'IRRELEVANT-DESK-LIFE-MARKER' <<<"$OUT"
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "recall-block" \
     && ok "composed through the store's own fail-safe recall door" \
     || fail "composed through the store's own fail-safe recall door" \
@@ -1081,6 +1137,18 @@ contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "Neighbour One, Neighbou
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "cooks-two" \
     && ok "and about the goal she is actually pursuing" \
     || fail "and about the goal she is actually pursuing"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" $'--scope\tOpenRSC' \
+    && ok "play recall is lexically scoped to OpenRSC" \
+    || fail "play recall is lexically scoped to OpenRSC"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" $'--scope\tRuneScape' \
+    && ok "play recall also finds RuneScape-tagged memories" \
+    || fail "play recall also finds RuneScape-tagged memories"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" $'--max-chars\t6000' \
+    && ok "the play-memory section has an explicit character bound" \
+    || fail "the play-memory section has an explicit character bound"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" $'--max-chars\t3000' \
+    && ok "nearby-player memory has its own smaller bound" \
+    || fail "nearby-player memory has its own smaller bound"
 # What recall hands back is hers to read, never a script: the world hears
 # whatever reaches local chat.
 contains "$OUT" "not something to recite" \
@@ -1091,13 +1159,26 @@ contains "$OUT" "not something to recite" \
 # action slot and speaks to nobody.
 rm -f "$MEMFAKE/recall-capture"
 OUT="$(env "${BOCENV[@]}" bash "$BOC" recall "Neighbour One said hello" 2>&1)"
-contains "$OUT" "RECALL-BLOCK-MARKER" && ok "the recall door answers with her store" \
+contains "$OUT" "REPLY-RECALL-MARKER" && ok "the recall door answers with her store" \
     || fail "the recall door answers with her store" "$OUT"
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "Neighbour One said hello" \
     && ok "asking exactly what the player was told" \
     || fail "asking exactly what the player was told"
 refute "and it emits no action into the shared slot" \
     test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
+
+# An empty room still recalls play knowledge; it simply does not spend a
+# second retrieval on absent relationships.
+rm -f "$MEMFAKE/recall-capture"
+snap 141 '[{"sidx":9,"id":11,"x":121,"z":649}]' '{"players":[]}'
+OUT="$(env "${BOCENV[@]}" bash "$BOC" prompt 2>&1)"
+contains "$OUT" "PLAY-QUEST-MEMORY-MARKER" \
+    && ok "play knowledge is recalled even with nobody nearby" \
+    || fail "play knowledge is recalled even with nobody nearby" "$OUT"
+refute "an empty room does not invent a nearby-people memory section" \
+    grep -q 'People nearby in OpenRSC' <<<"$OUT"
+check_eq "an empty room performs only the play-scoped retrieval" \
+    "$(grep -c '^CALL' "$MEMFAKE/recall-capture" 2>/dev/null || true)" "1"
 
 # Fail-safe by memory-recall.md's contract, and rule 18's bound: a missing
 # store or an oversized sheet degrades the prompt, never breaks it.
@@ -1107,7 +1188,7 @@ contains "$OUT" "BASE-PROMPT-MARKER" \
     && ok "an unreachable store still composes a whole prompt" \
     || fail "an unreachable store still composes a whole prompt" "$OUT"
 refute "with no recall block invented in its place" \
-    grep -q 'RECALL-BLOCK-MARKER' <<<"$OUT"
+    grep -q 'PLAY-QUEST-MEMORY-MARKER' <<<"$OUT"
 BIGSHEET="$SANDBOX/oversized-persona.md"
 head -c 70000 /dev/zero | tr '\0' 'x' > "$BIGSHEET"
 OUT="$(env "${BOCENV[@]}" BETTY_OPENRSC_PERSONA_SHEET="$BIGSHEET" \

@@ -362,6 +362,52 @@ def score_row(row, now):
     return sim * row[6] * decay * boost * recency
 
 
+def normalize_scope_terms(terms):
+    """Case-folded non-empty terms for a specialised recall boundary."""
+    return tuple(dict.fromkeys(
+        " ".join(str(term).split()).casefold()
+        for term in (terms or ())
+        if " ".join(str(term).split())
+    ))
+
+
+def row_matches_scope(row, terms):
+    """Whether a prompt-facing row belongs to any requested lexical scope.
+
+    Text is included deliberately: older hand-written play lessons predate
+    consistent `source`/`topics` metadata but name OpenRSC in the sentence.
+    Newer records remain findable through their metadata, participants, or
+    episodic opinion as well.
+    """
+    terms = normalize_scope_terms(terms)
+    if not terms:
+        return True
+    fields = (row[1], row[4], row[5],
+              row[13] if len(row) > 13 else "",
+              row[14] if len(row) > 14 else "")
+    haystack = "\n".join(str(field or "") for field in fields).casefold()
+    return any(term in haystack for term in terms)
+
+
+def select_prompt_rows(rows, scope=(), max_chars=0, warning=""):
+    """Filter and size-bound already-ranked rows without cutting any row.
+
+    This serves the no-query and degraded pinned-only paths. Semantic
+    retrieval enforces the same rule while filling its separate pools in
+    Store.search.
+    """
+    terms = normalize_scope_terms(scope)
+    picked = []
+    for row in rows:
+        if terms and not row_matches_scope(row, terms):
+            continue
+        candidate = picked + [row]
+        if max_chars and len(build_block(candidate, warning)[0]) > max_chars:
+            continue
+        picked.append(row)
+    return picked
+
+
 def pack(vec):
     return struct.pack(f"{len(vec)}f", *vec)
 
@@ -643,7 +689,9 @@ class Store:
                 return True
         return False
 
-    def search(self, query, k=TOP_K, deliberate=False):
+    def search(self, query, k=TOP_K, deliberate=False, scope=(),
+               directive_cap=DIRECTIVE_CAP, episodic_cap=EPISODIC_TOP_K,
+               max_chars=0):
         """The retrieval rule from the design's 13:15 revision — two pools
         with different floors, queried separately so the assistant's own
         chatter can never crowd the user's rules out: notes take the top-K
@@ -657,20 +705,34 @@ class Store:
         observations and misses never reach a prompt this way, however well
         they match (rule 43). `deliberate` is the CLI search verb's opt-in: a
         typed query is a request to read, so the hidden kinds are matched too
-        and returned as their own pool, raw cosine, after the others."""
+        and returned as their own pool, raw cosine, after the others.
+
+        A specialised prompt may additionally pass lexical `scope` terms and
+        smaller pool/character caps. Scope is an OR across the record's text,
+        source, topics, participants and opinion, applied before selection and
+        to pinned rows too. `max_chars` bounds selection against the rendered
+        block; build_block still renders every selected row whole."""
         t0 = time.monotonic()
         qvec = embed([query], query=True)[0]
         t1 = time.monotonic()
+        terms = normalize_scope_terms(scope)
         rows = self.knn(qvec, 0, kinds=None if deliberate else RECALL_KINDS)
+        if terms:
+            rows = [row for row in rows if row_matches_scope(row, terms)]
         now = datetime.now().astimezone()
         picked, seen = [], set()
 
         def take(row):
-            if row[0] not in seen and not self._near_dup(row, picked):
-                picked.append(row)
-                seen.add(row[0])
-                return True
-            return False
+            if row[0] in seen or (terms and not row_matches_scope(row, terms)):
+                return False
+            if self._near_dup(row, picked):
+                return False
+            candidate = picked + [row]
+            if max_chars and len(build_block(candidate)[0]) > max_chars:
+                return False
+            picked.append(row)
+            seen.add(row[0])
+            return True
 
         notes = sorted((r for r in rows if r[2] == "note" and r[9] >= SIM_FLOOR),
                        key=lambda r: score_row(r, now), reverse=True)
@@ -687,7 +749,7 @@ class Store:
                           key=lambda r: score_row(r, now), reverse=True)
         etaken = 0
         for row in episodic:
-            if etaken >= EPISODIC_TOP_K:
+            if etaken >= episodic_cap:
                 break
             etaken += take(row)
         # Rule 48: a query that names a calendar day gets that day's moments
@@ -697,7 +759,7 @@ class Store:
             take(row)
         directives = 0
         for row in rows:
-            if directives >= DIRECTIVE_CAP:
+            if directives >= directive_cap:
                 break
             if row[2] == "directive" and row[9] >= DIRECTIVE_FLOOR:
                 directives += take(row)
@@ -709,9 +771,18 @@ class Store:
                 if row[2] in HIDDEN_KINDS and row[9] >= SIM_FLOOR:
                     hidden += take(row)
         for row in self.pinned_rows():
-            if row[0] not in seen:
-                picked.append(row)
-                seen.add(row[0])
+            # General recall's pinned tier is unconditional and predates the
+            # near-duplicate rule: preserve it exactly. A specialised scope
+            # may filter/budget pinned rows, but a relevant pinned record is
+            # never silently squashed merely because a selected note echoes
+            # it.
+            if row[0] in seen or (terms and not row_matches_scope(row, terms)):
+                continue
+            candidate = picked + [row]
+            if max_chars and len(build_block(candidate)[0]) > max_chars:
+                continue
+            picked.append(row)
+            seen.add(row[0])
         t2 = time.monotonic()
         if picked:
             now = now_iso()
@@ -1231,21 +1302,32 @@ def write_ids_out(path, rows):
 def cmd_recall_block(store, args):
     query = args.query or recall_query(args.reason, args.wants, args.convo,
                                        wake=args.wake, log=args.log or None)
+    if min(args.notes, args.directives, args.episodes, args.max_chars) < 0:
+        print("memory: recall caps must be non-negative", file=sys.stderr)
+        return 2
+    if args.max_chars and args.max_chars < 256:
+        print("memory: --max-chars must be 0 or at least 256", file=sys.stderr)
+        return 2
     if not query:
-        rows = store.pinned_rows()
+        rows = select_prompt_rows(store.pinned_rows(), args.scope,
+                                  args.max_chars)
         block, kept = build_block(rows)
         write_ids_out(args.ids_out, kept)
         print(block, end="" if not rows else "\n")
         return 0
     try:
-        rows, _, _ = store.search(query)
+        rows, _, _ = store.search(
+            query, k=args.notes, scope=args.scope,
+            directive_cap=args.directives, episodic_cap=args.episodes,
+            max_chars=args.max_chars)
     except (urllib.error.URLError, OSError, RuntimeError) as e:
         # Degraded recall, never silent amnesia: the pinned tier plus a loud
         # warning still reach the prompt.
-        rows = store.pinned_rows()
-        block, kept = build_block(
-            rows, f"WARNING: memory retrieval is DOWN ({e}); only pinned "
-                  "records are shown. 'crab memory list' still works.")
+        warning = (f"WARNING: memory retrieval is DOWN ({e}); only pinned "
+                   "records are shown. 'crab memory list' still works.")
+        rows = select_prompt_rows(store.pinned_rows(), args.scope,
+                                  args.max_chars, warning)
+        block, kept = build_block(rows, warning)
         write_ids_out(args.ids_out, kept)
         if block:
             print(block)
@@ -2637,6 +2719,18 @@ def main():
     p.add_argument("--log", default="",
                    help="where to record a truncated query (default: "
                         "${DESKCRAB_STATE_PREFIX}-memory-recall.log)")
+    p.add_argument("--scope", action="append", default=[],
+                   help="only select records whose text or metadata contains "
+                        "this term (repeatable; terms are ORed)")
+    p.add_argument("--notes", type=int, default=TOP_K,
+                   help="maximum selected notes (default: %(default)s)")
+    p.add_argument("--directives", type=int, default=DIRECTIVE_CAP,
+                   help="maximum selected directives (default: %(default)s)")
+    p.add_argument("--episodes", type=int, default=EPISODIC_TOP_K,
+                   help="maximum selected episodic records (default: %(default)s)")
+    p.add_argument("--max-chars", type=int, default=0,
+                   help="maximum rendered block characters, selecting only "
+                        "whole records; 0 keeps the general unbounded default")
     p.set_defaults(fn=cmd_recall_block)
 
     p = sub.add_parser("judge-turn",

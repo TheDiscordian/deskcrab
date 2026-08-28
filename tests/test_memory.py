@@ -1390,6 +1390,67 @@ class TestSearchScoring(StoreCase):
         self.assertTrue(order(rows))
 
 
+class TestScopedRecall(StoreCase):
+    """A specialised prompt can ask the same store for one domain without
+    weakening the general recall contract or trimming selected memories."""
+
+    def test_play_scope_keeps_quest_knowledge_and_excludes_desk_life(self):
+        quest = self.store.insert(
+            "Captain Rovin is upstairs in Varrock Castle for Demon Slayer.",
+            kind="note", topics="RuneScape, quest")
+        lesson = self.store.insert(
+            "In OpenRSC, bank or equip valuable drops before another fight.",
+            kind="directive")
+        desk = self.store.insert(
+            "At the desk, finish the chess benchmark before opening mail.",
+            kind="directive", pinned=True)
+
+        rows, _, _ = self.store.search(
+            "OpenRSC Demon Slayer quest facts and learned play mistakes",
+            scope=("OpenRSC", "RuneScape", "Demon Slayer"),
+            k=6, directive_cap=4, episodic_cap=3, max_chars=2000)
+        ids = {row[0] for row in rows}
+        self.assertIn(quest, ids)
+        self.assertIn(lesson, ids)
+        self.assertNotIn(desk, ids)  # even pinned cannot cross the scope
+        block, kept = memory.build_block(rows)
+        self.assertLessEqual(len(block), 2000)
+        self.assertEqual({row[0] for row in kept}, ids)
+
+    def test_bounded_selection_keeps_every_selected_record_whole(self):
+        rows = [fake_row(rec_id=i, text=f"play lesson {i} " + "x" * 220)
+                for i in range(1, 12)]
+        kept = memory.select_prompt_rows(rows, max_chars=760)
+        block, rendered = memory.build_block(kept)
+        self.assertTrue(kept)
+        self.assertLess(len(kept), len(rows))
+        self.assertLessEqual(len(block), 760)
+        self.assertEqual(kept, rendered)
+        for row in kept:
+            self.assertIn(row[1], block)
+        self.assertNotIn("TRUNCATED", block)
+
+    def test_degraded_scoped_cli_filters_pinned_rows_and_stays_bounded(self):
+        self.store.insert(
+            "OpenRSC lesson: carry food before entering a demon fight.",
+            kind="directive", pinned=True, vec=[0.1] * memory.EMBED_DIM)
+        self.store.insert(
+            "Desk lesson: resume the chess benchmark after lunch.",
+            kind="directive", pinned=True, vec=[0.2] * memory.EMBED_DIM)
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   MEMORY_EMBED_URL="http://127.0.0.1:9")
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "recall-block", "--query", "current demon fight",
+             "--scope", "OpenRSC", "--max-chars", "1000"],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("memory retrieval is DOWN", proc.stdout)
+        self.assertIn("carry food", proc.stdout)
+        self.assertNotIn("chess benchmark", proc.stdout)
+        self.assertLessEqual(len(proc.stdout.rstrip("\n")), 1000)
+
+
 class TestBlockWhole(unittest.TestCase):
     """The block is NEVER truncated (memory-recall.md rule 14). It held a
     ~800-token cap that popped rows from the tail and stamped 'TRUNCATED to
