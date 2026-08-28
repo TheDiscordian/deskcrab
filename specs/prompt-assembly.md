@@ -81,18 +81,18 @@ flowchart TD
 
 | Layer | turn | wake | job | classify |
 |---:|---:|---:|---:|---:|
-| L1 identity | 10,400 | 10,400 | 800 | 0 |
+| L1 identity | 11,200 | 11,200 | 800 | 0 |
 | L2 state | 5,500 | 5,500 | 0 | 0 |
 | L3 memory | 16,000 | 16,000 | 0 | 0 |
 | L4 shelves | 12,000 | 16,000 | 0 | 0 |
 | L5 where things are | 2,000 | 2,000 | 2,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
-| L8 turn frame | 1,500 | 1,500 | 200 | 200 |
+| L8 turn frame | 2,400 | 2,400 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional interrupt | 2,600 | 0 | 0 | 0 |
 | conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 62,900** | **≤ 56,900** | **≤ 3,000** | **≤ 200** |
+| **system-prompt total** | **≤ 64,600** | **≤ 58,600** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -110,9 +110,8 @@ L1 read 9,600 until 2026-08-08, which fitted her whole persona sheet with 131 by
 identity layer then took on the THINKING line — her reasoning is in her own voice too, and the words
 her conduct keeps out of her mouth stay out of her thinking and out of a note she writes only for
 herself — and at 9,600 that sentence would have paid for itself by dropping the last section of who
-she is, which is the failure the previous raise existed to end. Identity and sheet measure 9,801
-together; the rest of the 10,400 is deliberate room for the sheet to grow. The turn and wake totals
-move by the same 800.
+she is, which is the failure the previous raise existed to end. The 11,200-byte budget carries the
+whole current identity sheet with room to grow. The turn and wake totals move with it.
 
 L8 read 300 until the turn frame took on the register rule — the state block is how she sees and not
 how she speaks ([self-awareness.md](self-awareness.md) rules 33 and 34) — which is an instruction
@@ -421,6 +420,15 @@ the register rule in L8).
     or a decision about her own files, drawers or systems is hers to ACT on, never news to bring
     him or a question to ask him — act, then a one-line mention at most. Bringing him her own
     drawer's problem as a report is handing him her work.
+39a. **The frame layer MUST turn requests into action, on every speaking profile.** An imperative,
+    or a request to change, fix, check or do something, including a polite request whose reason
+    states the desired result, authorises safe in-scope work now. She uses her tools and completes
+    the action before replying. A plan, promise, apology, diagnosis or self-critique is not the
+    action. A pure question asks for an answer; a pure opinion is not permission to act.
+39b. **The frame layer MUST forbid wallowing, on every speaking profile.** When she was wrong, she
+    may name the correction in one clause at most, then acts or answers. She does not echo the
+    user's anger, insult or diagnose herself, repeat an apology, or spend the reply lamenting the
+    failure. Evidence of the correction replaces an apology.
 
 ### One copy of anything — the de-duplication pass
 

@@ -559,8 +559,8 @@ check_eq "deployed bytes are the committed bytes (clean git status on the harnes
     "$(git -C "$CF" status --porcelain -- headless/orsc-headless.sh 2>/dev/null | grep -c '')" "0"
 check_eq "the helpers it invokes are versioned beside it" \
     "$(git -C "$CF" ls-files headless/ 2>/dev/null | grep -cE 'orsc-view\.py|find-blob\.py')" "2"
-check_eq "xvfb, client, engine, runner and viewer all start through one durable detach door" \
-    "$(grep -cE '\$\(detach (xvfb|client|engine|runner|viewer) ' "$HEADLESS")" "5"
+check_eq "xvfb, client, engine, runner and viewer always start through one durable detach door" \
+    "$(grep -cE '\$\(detach (xvfb|client|engine|runner|viewer) ' "$HEADLESS")" "6"
 check_eq "which is a transient systemd --user unit, not a child of the caller" \
     "$(grep -c 'systemd-run --user' "$HEADLESS")" "1"
 check_eq "bare setsid survives only as the explicit no-user-manager fallback" \
@@ -693,6 +693,13 @@ ALLOWED_STATE="$(printf '%s\n' '{"tool_input":{"command":"./orsc-headless.sh pla
     | python3 "$SLEEP_HOOK")"
 check_eq "the hook leaves ACTIONS state commands untouched" "$ALLOWED_STATE" ""
 check "the player unit carries Restart=always" grep -q 'Restart=always' "$BOC"
+check "self-steering is an ordinary command" grep -q '^cmd_steer()' "$BOC"
+STEER_FN="$(sed -n '/^cmd_steer()/,/^}/p' "$BOC")"
+RESUME_FN="$(sed -n '/^compose_resume_prompt()/,/^}/p' "$BOC")"
+check "steering changes only the Sol player process" \
+    contains "$STEER_FN" 'systemctl --user restart "$UNIT"'
+check "the newest self-direction rides every continuation" \
+    contains "$RESUME_FN" 'steering_block'
 check "routine player process boundaries resume the saved Codex thread" \
     grep -q '"$CODEX" --profile.*CODEX_PROFILE.*exec resume' "$BOC"
 check "the autonomous player exports the pending-message action gate" \
@@ -782,6 +789,7 @@ contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "model_reasoning_effort=low" 
     || fail "at the pinned low reasoning effort"
 printf 'goal: NEW-GOAL; step 8 of 9; next: buy the pot\n' > "$PH/handoff.md"
 printf 'resume-target\n' > "$DESKCRAB_GAME_DIR/objective"
+printf 'Stop circling the village; continue south to the tower.\n' > "$PH/steering.md"
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 check_eq "the first run captured its durable Codex thread id" \
     "$(cat "$PH/player-thread" 2>/dev/null)" "11111111-2222-3333-4444-555555555555"
@@ -790,6 +798,10 @@ check_eq "the restarted process used Codex resume exactly once" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "resume-target" \
     && ok "the resumed thread receives current objective and snapshot facts" \
     || fail "the resumed thread receives current objective and snapshot facts"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "Stop circling the village; continue south to the tower." \
+    && ok "the resumed thread receives the assistant's newest self-steering direction" \
+    || fail "the resumed thread receives the assistant's newest self-steering direction"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "entity KIND TYPE-ID" \
     && ok "the resumed thread receives the identity-targeting ability" \
     || fail "the resumed thread receives the identity-targeting ability"

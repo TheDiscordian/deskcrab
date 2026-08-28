@@ -259,7 +259,19 @@ deliberate-play channel.
       player alone, bare `stop` tears the whole stack down (the game server is not this
       command's to stop). `login` is the mechanical login alone, and `player-start` starts the
       supervised player unit alone when the stack is already up.
-    - The player's durable base prompt (`prompt.md`), its handoff file (`handoff.md`), the
+    - The Sol player is her own continuing play, not a subordinate agent or another personality.
+      `steer <instruction>` is her ordinary self-direction door for redirecting that play whenever
+      she notices it is wrong, stalled or looping, as well as when the user asks for a correction.
+      It atomically records the newest direction in the durable player home and restarts only
+      `orsc-player.service`, resuming the same Sol thread with that direction placed prominently
+      in its compact continuation prompt. The client, bridge, reflex engine, resident runner,
+      author, and spectator remain running. If the player unit is down, `steer` raises the normal
+      stack instead. Steering is durable ground truth across later player-process boundaries; a
+      repeated direction never means undoing completed progress to reenact it. Noticing a bad
+      course is itself sufficient reason to steer; narrating distress about the course is not a
+      substitute for changing it.
+    - The player's durable base prompt (`prompt.md`), its latest steering direction
+      (`steering.md`), its handoff file (`handoff.md`), the
       exact composed prompt of the latest start (`run-prompt.txt`) and its log (`player.log`)
       live in the durable player home (`BETTY_OPENRSC_HOME`, a directory in the user's own
       files). Nothing of the player — prompt, handoff or log — lives under `/tmp`.

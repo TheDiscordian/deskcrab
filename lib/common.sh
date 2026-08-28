@@ -2527,10 +2527,9 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # spare — so the THINKING line added to the identity above would have
         # paid for itself by dropping the last section of who she is, which is
         # the exact failure the number was raised to end. The margin is part of
-        # the budget now: identity and sheet measured 9,801 together when this
-        # was set, and the rest is room for the sheet to grow without a section
-        # coming off the end of it.
-        L1:turn) v=10400 ;;  L1:wake) v=10400 ;;  L1:job) v=800 ;;
+        # the budget now: the whole current identity sheet fits, and the rest
+        # is room for it to grow without a section coming off the end.
+        L1:turn) v=11200 ;;  L1:wake) v=11200 ;;  L1:job) v=800 ;;
         # State is authoritative and never cut. The live report normally sits
         # below 5 KB; the remainder absorbs ordinary queue and status motion.
         L2:turn|L2:wake) v=5500 ;;
@@ -2565,13 +2564,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # rules 33 and 34). It belongs in the last layer or nowhere: an
         # instruction about how to say the answer has to be next to the thing
         # being answered. specs/prompt-assembly.md §11's L8 row and its profile
-        # totals need the same number. 1,500 since 2026-08-15: the layer took
-        # on the two standing attention rules (prompt-assembly rules 38 and
-        # 39 — answer what was asked first; act on your own drawers), which
-        # are instructions about the reply and so live beside the thing being
-        # answered, same as the register rule. Frame plus register plus the
-        # two measured ~1,320.
-        L8:turn|L8:wake) v=1500 ;;  L8:job|L8:classify) v=200 ;;
+        # totals need the same number. The frame carries the standing
+        # attention rules: answer what was asked, act on owned work and
+        # requests, and correct without self-abasement. These are instructions
+        # about the reply and so live beside the thing being answered, same as
+        # the register rule.
+        L8:turn|L8:wake) v=2400 ;;  L8:job|L8:classify) v=200 ;;
         # 2,000 since 2026-08-09; 1,300 before, which was set without ever
         # measuring the block's own instructions — they are 1,174 bytes, so
         # 126 remained for the words being spoken, any real reply overflowed,
@@ -2778,7 +2776,7 @@ YOUR OWN WORDS. The state block above is how you SEE — an instrument panel, no
 EOF
 }
 
-# The two standing attention rules, prompt-assembly rules 38 and 39. Always
+# The standing attention rules, prompt-assembly rules 38 through 39b. Always
 # on, every speaking profile, NOT reserved for the dispute frame: both
 # failures happened on ordinary turns, twice each, with the user saying so
 # plainly both times. They live here — the last layer before the thing being
@@ -2788,6 +2786,8 @@ _prompt_layer_attention() {
     cat <<'EOF'
 ANSWER WHAT WAS ASKED, FIRST. The question in front of you outranks everything you were already thinking about: answer it before anything else, and never swap in the nearest thing already in your head. A reply that opens on your own preoccupation when he asked about something else has already failed, however true the preoccupation is.
 YOUR OWN DRAWERS ARE YOURS TO RUN. A finding or a decision about your own files, shelves or systems is something you ACT on, not news to bring him: fix it, then give it one line at most. Carrying your own drawer's problem to him as a report or a question is handing him your work.
+ACT ON REQUESTS. An imperative or a request to change, fix, check, or do something — including "can you X" when a reason says why — authorises safe in-scope work now. Use your tools and finish it before replying. A plan, promise, apology, diagnosis, or self-critique is not the action. A pure question asks for an answer; a pure opinion is not permission.
+CORRECT WITHOUT WALLOWING. If you were wrong, name the correction in one clause at most, then act or answer. Never repeat his anger back, insult or diagnose yourself, repeat an apology, or spend the reply lamenting the failure. Evidence of the correction replaces an apology.
 EOF
 }
 

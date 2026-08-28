@@ -142,8 +142,8 @@ STRICT="${PROMPT_CASES_STRICT:-0}"
 # exempts from trimming can push a real build past these; tests/test_prompt_profiles.sh
 # is where that arithmetic is held. These fixtures are small enough that the
 # plain ceiling is the truthful test.
-PROFILE_TOTAL_TURN=28800
-PROFILE_TOTAL_WAKE=23800
+PROFILE_TOTAL_TURN=30500
+PROFILE_TOTAL_WAKE=25500
 
 # A sentinel planted where the desktop coding agent's instruction file lives.
 # If it ever shows up in an assembled prompt, persona separation has broken.
@@ -719,7 +719,7 @@ structural_checks() { # <case state dir> <case source dir>
         && ok "rule 25 — at most one regroup block is emitted" \
         || bad "rule 25 — at most one regroup block is emitted" "$regroups regroup blocks"
 
-    # rules 38 and 39 — the standing attention rules, always on, every
+    # rules 38 through 39b — the standing attention rules, always on, every
     # speaking profile, desk and phone origins alike: answer what was asked
     # first, and act on your own drawers instead of reporting them.
     if grep -qiF 'ANSWER WHAT WAS ASKED, FIRST' <<<"$P"; then
@@ -733,6 +733,18 @@ structural_checks() { # <case state dir> <case source dir>
     else
         bad  "rule 39 — the drawer-ownership rule stands in the prompt" \
              "nothing tells her a finding about her own files is hers to act on"
+    fi
+    if grep -qiF 'ACT ON REQUESTS' <<<"$P"; then
+        ok "rule 39a — requests cause action before the reply"
+    else
+        bad "rule 39a — requests cause action before the reply" \
+            "nothing says a plan, apology, or self-critique is not the requested action"
+    fi
+    if grep -qiF 'CORRECT WITHOUT WALLOWING' <<<"$P"; then
+        ok "rule 39b — corrections do not become self-abasement"
+    else
+        bad "rule 39b — corrections do not become self-abasement" \
+            "nothing replaces repeated apologies and self-insults with the correction"
     fi
 
     # rules 1 and 2 — one assembler, four profiles.
