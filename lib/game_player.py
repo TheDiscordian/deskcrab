@@ -29,13 +29,15 @@ import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 
 TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
                 "ground_item_visible", "shop_item_visible", "bank_item_visible",
                 "message_contains", "near_tile",
-                "inventory_has", "inventory_lacks")
-ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity",
+                "inventory_has", "inventory_lacks", "inventory_slots_below",
+                "inventory_slots_at_least", "in_combat", "out_of_combat")
+ACTIONS = ("talk-npc", "interact-npc", "walk", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
+    "right_click_menu_open", "right_click_menu_closed",
 )
 WAIT_DEFAULT_S = 15.0
 WAIT_MAX_S = 60.0
@@ -319,9 +321,18 @@ def validate_config(cfg: dict) -> None:
                          "inventory_has", "inventory_lacks"):
                 if not isinstance(val, int) or val < 0:
                     bad(f"{where}: trigger.{key} must be a non-negative type/item id")
+            elif key in ("inventory_slots_below", "inventory_slots_at_least"):
+                if not isinstance(val, int) or not 0 <= val <= 30:
+                    bad(f"{where}: trigger.{key} must be an integer from 0 to 30")
+            elif key in ("in_combat", "out_of_combat"):
+                if val is not True:
+                    bad(f"{where}: trigger.{key} must be true when present")
         if "inventory_has" in trig and "inventory_lacks" in trig \
                 and trig["inventory_has"] == trig["inventory_lacks"]:
             bad(f"{where}: inventory_has and inventory_lacks name the same id")
+        if "inventory_slots_below" in trig and "inventory_slots_at_least" in trig \
+                and trig["inventory_slots_at_least"] >= trig["inventory_slots_below"]:
+            bad(f"{where}: inventory slot range can never match")
 
         action = rule.get("action")
         if not isinstance(action, dict) or action.get("type") not in ACTIONS:
@@ -330,6 +341,12 @@ def validate_config(cfg: dict) -> None:
         if atype == "talk-npc":
             if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
                 bad(f"{where}: talk-npc takes exactly npc=<type id>")
+        elif atype == "interact-npc":
+            if not set(action) <= {"type", "npc", "cmd"} \
+                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
+                bad(f"{where}: interact-npc takes npc=<type id> and optionally cmd")
+            if "cmd" in action and action["cmd"] not in (1, 2):
+                bad(f"{where}: interact-npc cmd must be 1 or 2 (the def's menu commands)")
         elif atype == "walk":
             if not set(action) <= {"type", "x", "z", "arrive"} \
                     or not isinstance(action.get("x"), int) \
@@ -656,6 +673,10 @@ def wait_condition_met(condition: str, snap: dict) -> bool:
         return snap.get("talking_to_npc") is True
     if condition == "not_talking_to_npc":
         return snap.get("talking_to_npc") is False
+    if condition == "right_click_menu_open":
+        return snap.get("right_click_menu_open") is True
+    if condition == "right_click_menu_closed":
+        return snap.get("right_click_menu_open") is False
     return False
 
 
@@ -663,7 +684,8 @@ def wait_state_brief(snap: dict) -> str:
     if not isinstance(snap, dict):
         return "none"
     parts = []
-    for key in ("logged_in", "walking", "in_combat", "talking_to_npc"):
+    for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
+                "right_click_menu_open"):
         value = snap.get(key)
         if isinstance(value, bool):
             value = str(value).lower()
@@ -774,10 +796,21 @@ def make_trigger_fn(objective: str):
             radius = max(t["radius"], NEAR_RADIUS_FLOOR)
             if max(abs(px - t["x"]), abs(pz - t["z"])) > radius:
                 return False
-        inv_ids = {i.get("id") for i in snap.get("inventory") or []}
+        inventory = snap.get("inventory") or []
+        inv_ids = {i.get("id") for i in inventory}
         if "inventory_has" in trig and trig["inventory_has"] not in inv_ids:
             return False
         if "inventory_lacks" in trig and trig["inventory_lacks"] in inv_ids:
+            return False
+        if "inventory_slots_below" in trig \
+                and len(inventory) >= trig["inventory_slots_below"]:
+            return False
+        if "inventory_slots_at_least" in trig \
+                and len(inventory) < trig["inventory_slots_at_least"]:
+            return False
+        if "in_combat" in trig and snap.get("in_combat") is not True:
+            return False
+        if "out_of_combat" in trig and snap.get("in_combat") is not False:
             return False
         return True
     return trigger_true
@@ -790,6 +823,13 @@ def compile_player_action(rule, snap, food, eat_pick):
         for npc in snap.get("npcs") or []:      # already nearest-first (rule 3 there)
             if npc.get("id") == want and isinstance(npc.get("sidx"), int):
                 return {"type": "talk-npc", "sidx": npc["sidx"], "npc": want}, None
+        return None, "npc-not-visible"
+    if action["type"] == "interact-npc":
+        want = action["npc"]
+        for npc in snap.get("npcs") or []:
+            if npc.get("id") == want and isinstance(npc.get("sidx"), int):
+                return {"type": "interact-npc", "sidx": npc["sidx"],
+                        "npc": want, "cmd": action.get("cmd", 1)}, None
         return None, "npc-not-visible"
     if action["type"] == "walk":
         return {"type": "walk", "x": action["x"], "z": action["z"]}, None
@@ -843,8 +883,14 @@ def compile_player_action(rule, snap, food, eat_pick):
         want = action["item"]
         if not snap.get(f"{interface}_open"):
             return None, f"{interface}-closed"
-        if any(entry.get("id") == want
-               for entry in snap.get(f"{interface}_items") or []):
+        visible = any(entry.get("id") == want
+                      for entry in snap.get(f"{interface}_items") or [])
+        if action["type"] == "click-bank":
+            # The bank's selectable grid includes inventory items available
+            # for deposit even when no bank stack exists yet.
+            visible = visible or any(entry.get("id") == want
+                                     for entry in snap.get("inventory") or [])
+        if visible:
             return {"type": action["type"], "item": want,
                     "button": action.get("button", 1)}, None
         return None, f"item-not-in-{interface}"
@@ -874,7 +920,8 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
 # --------------------------------------------------------------------------
 def snap_brief(snap: dict) -> dict:
     brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
-                                      "walking", "in_combat", "talking_to_npc")}
+                                      "walking", "in_combat", "talking_to_npc",
+                                      "right_click_menu_open")}
     brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
     brief["messages"] = (snap.get("messages") or [])[-5:]
     brief["players"] = (snap.get("players") or [])[:24]

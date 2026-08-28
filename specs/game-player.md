@@ -65,11 +65,20 @@ deliberate-play channel.
      radius below 2 evaluates as 2, and rule 17's lint refuses to author one. The trigger names
      the vicinity; rule 7a's verification owns the exact destination.
    - `inventory_has` / `inventory_lacks` (int): an item of that id is / is not in the inventory.
+   - `inventory_slots_below` / `inventory_slots_at_least` (int, 0–30): the number of occupied
+     inventory slots is respectively below / at least the threshold. Acquisition rules use
+     `inventory_slots_below: 30` so a full bag mechanically stops them instead of letting the
+     player notice the problem and continue the same loop.
+   - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
+     polarity. These conditions are mutually exclusive in live state and let global pickup or
+     travel rules stay mechanically quiet during a fight.
 
 5. The action vocabulary is closed: `talk-npc` (`npc`: the type id; the server index is resolved
    from the snapshot at fire time — nearest matching NPC — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
-   click), `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
+   click), `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1), which
+   resolves the same stable NPC identity and performs its definition-backed menu command without
+   any pointer or context-menu reconstruction, `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
    Chebyshev tolerance rule 7a's verification accepts as arrival), `interact-object` (`obj`: the object type id,
@@ -194,7 +203,8 @@ deliberate-play channel.
    actions publish `walking: true` across the dispatch gap, so an action receipt followed by
    `not_walking` cannot accept the pre-action snapshot. Conditions are
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
-   `talking_to_npc`, and `not_talking_to_npc`; dashes are accepted in place of underscores.
+   `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`, and
+   `right_click_menu_closed`; dashes are accepted in place of underscores.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
    false; a pre-reply false snapshot cannot masquerade as the end of the conversation.
    Success reports `condition-met` with the condition and snapshot tick. A wait has a 15-second

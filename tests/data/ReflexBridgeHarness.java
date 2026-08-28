@@ -22,9 +22,12 @@ import orsc.ReflexBridge;
  * (every 12th tick) gives the engine a genuinely new tick to act on.
  *
  * Every host action the bridge executes is printed to stdout, one line each:
- * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
- * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
- * "click x=N y=N button=N", "take x=N z=N id=N".
+	 * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
+	 * "npc sidx=N cmd=N",
+	 * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
+	 * "click x=N y=N button=N", "bank-deposit item=N amount=N",
+	 * "bank-withdraw item=N amount=N", "shop-buy item=N amount=N",
+	 * "shop-sell item=N amount=N", "take x=N z=N id=N".
  */
 public class ReflexBridgeHarness {
 
@@ -35,6 +38,7 @@ public class ReflexBridgeHarness {
 		boolean routeAvailable = true;
 		boolean walking = false;
 		boolean inCombat = false;
+		boolean rightClickMenuOpen = false;
 		boolean npcDialogueOpen = false;
 		boolean shopOpen = true;
 		boolean bankOpen = true;
@@ -78,6 +82,10 @@ public class ReflexBridgeHarness {
 			return inCombat;
 		}
 
+		public boolean isRightClickMenuOpen() {
+			return rightClickMenuOpen;
+		}
+
 		public boolean isNpcDialogueOpen() {
 			return npcDialogueOpen;
 		}
@@ -114,8 +122,8 @@ public class ReflexBridgeHarness {
 			return invIds[slot] == 132;
 		}
 
-		final int[] shopIds = {10, 42, -1};
-		final int[] shopCounts = {50, 3, 0};
+		final int[] shopIds = {10, 42, 81, -1};
+		final int[] shopCounts = {50, 3, 0, 0};
 
 		public boolean isShopOpen() {
 			return shopOpen;
@@ -174,12 +182,33 @@ public class ReflexBridgeHarness {
 		}
 
 		public int[] bankItemScreenPoint(int itemId) {
+			// Item 132 is in inventory but has no existing bank stack. The
+			// bank UI still displays it so it can be selected for deposit.
+			if (itemId == 132) {
+				return projectionsVisible ? new int[]{812, 512} : null;
+			}
 			for (int slot = 0; slot < bankIds.length; slot++) {
 				if (bankIds[slot] == itemId) {
 					return projectionsVisible ? new int[]{810 + slot, 510 + slot} : null;
 				}
 			}
 			return null;
+		}
+
+		public void bankDeposit(int itemId, int amount) {
+			events.add("bank-deposit item=" + itemId + " amount=" + amount);
+		}
+
+		public void bankWithdraw(int itemId, int amount) {
+			events.add("bank-withdraw item=" + itemId + " amount=" + amount);
+		}
+
+		public void shopBuy(int itemId, int amount) {
+			events.add("shop-buy item=" + itemId + " amount=" + amount);
+		}
+
+		public void shopSell(int itemId, int amount) {
+			events.add("shop-sell item=" + itemId + " amount=" + amount);
 		}
 
 		final int[] playerSidx = {22, 0, 11};
@@ -246,6 +275,10 @@ public class ReflexBridgeHarness {
 
 		public void talkToNpc(int serverIndex) {
 			events.add("talk sidx=" + serverIndex);
+		}
+
+		public void interactNpc(int serverIndex, int command) {
+			events.add("npc sidx=" + serverIndex + " cmd=" + command);
 		}
 
 		// Two scripted loaded game objects: a gate (57) two tiles away, a
@@ -392,6 +425,7 @@ public class ReflexBridgeHarness {
 		if ("state-active".equals(mode)) {
 			host.walking = true;
 			host.inCombat = true;
+			host.rightClickMenuOpen = true;
 			host.npcDialogueOpen = true;
 		}
 		if ("state-dialogue".equals(mode)) {

@@ -137,6 +137,19 @@ refute "a reflex-channel action (warn) is refused" \
     python3 "$GP" learn bad2 --priority 1 --trigger npc_visible=478 --action warn --param text=x
 refute "talk-npc without its npc id is refused" \
     python3 "$GP" learn bad3 --priority 1 --trigger npc_visible=478 --action talk-npc
+refute "interact-npc refuses a command outside the NPC definition verbs" \
+    python3 "$GP" learn bad-npc-command --priority 1 --trigger npc_visible=11 \
+        --action interact-npc --param npc=11 --param cmd=3
+refute "out_of_combat is a literal condition, not an arbitrary value" \
+    python3 "$GP" learn bad-combat-trigger --priority 1 --trigger out_of_combat=false \
+        --action walk --param x=1 --param z=1
+refute "inventory capacity thresholds stop at the real 30-slot ceiling" \
+    python3 "$GP" learn bad-inventory-cap --priority 1 --trigger inventory_slots_below=31 \
+        --action walk --param x=1 --param z=1
+refute "an impossible inventory capacity range is refused" \
+    python3 "$GP" learn bad-inventory-range --priority 1 \
+        --trigger inventory_slots_at_least=28 --trigger inventory_slots_below=28 \
+        --action walk --param x=1 --param z=1
 refute "a near_tile radius beyond 50 is refused" \
     python3 "$GP" learn bad4 --priority 1 --trigger 'near_tile={"x":1,"z":1,"radius":99}' --action walk --param x=1 --param z=1
 check "learn persists a valid rule" \
@@ -237,6 +250,20 @@ check_eq "dialogue end succeeds only after dialogue was observed" "$CODE" "0"
 contains "$OUT" "condition-met condition=not_talking_to_npc tick=1045" \
     && ok "the dialogue-end wait reports the grounded ending snapshot" \
     || fail "the dialogue-end wait reports the grounded ending snapshot" "$OUT"
+snap 10451 '[]' '{"right_click_menu_open":false}'
+python3 "$GP" wait-until right-click-menu-open --timeout 1 > "$SANDBOX/wait-menu-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 10452 '[]' '{"right_click_menu_open":true}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+OUT="$(cat "$SANDBOX/wait-menu-out")"
+check_eq "a context-menu wait exits only after the bridge sees the menu" "$CODE" "0"
+contains "$OUT" "condition-met condition=right_click_menu_open tick=10452" \
+    && ok "the context-menu wait reports the grounded snapshot" \
+    || fail "the context-menu wait reports the grounded snapshot" "$OUT"
+snap 10453 '[]' '{"right_click_menu_open":false}'
+OUT="$(python3 "$GP" wait-until right_click_menu_closed --timeout 1)"; CODE=$?
+check_eq "an already closed context menu satisfies the closed condition" "$CODE" "0"
 CODE=0; OUT="$(python3 "$GP" wait-until in_combat --timeout 0.05)" || CODE=$?
 check_eq "a missing transition reaches its hard ceiling: exit 2" "$CODE" "2"
 contains "$OUT" "condition-timeout condition=in_combat" \
@@ -425,6 +452,32 @@ CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "inventory_lacks refuses while the item is held" "$CODE" "4"
 python3 "$GP" remove walk-near >/dev/null
 
+python3 "$GP" learn capacity-gated-walk --priority 2 --cooldown-ms 0 \
+    --trigger inventory_slots_below=30 --trigger npc_visible=478 \
+    --action talk-npc --param npc=478 >/dev/null
+snap 126 '[{"sidx":77,"id":478,"x":121,"z":648}]' \
+    '{"inventory":[{"id":20,"amount":1},{"id":20,"amount":1}]}'
+fake_bridge done
+CODE=0; python3 "$GP" step >/dev/null || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "capacity-gated action fires while slots remain" "$CODE" "0"
+python3 "$GP" remove capacity-gated-walk >/dev/null
+
+python3 "$GP" learn full-bag-walk --priority 2 --cooldown-ms 0 \
+    --trigger inventory_slots_at_least=30 --trigger npc_visible=478 \
+    --action talk-npc --param npc=478 >/dev/null
+FULL_INV="$(python3 - <<'PY'
+import json
+print(json.dumps({"inventory": [{"id": 20, "amount": 1}] * 30}))
+PY
+)"
+snap 127 '[{"sidx":77,"id":478,"x":121,"z":648}]' "$FULL_INV"
+fake_bridge done
+CODE=0; python3 "$GP" step >/dev/null || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a full-bag trigger sees all thirty occupied slots" "$CODE" "0"
+python3 "$GP" remove full-bag-walk >/dev/null
+
 echo
 echo "visible ground items become identity-based learned actions (spec rules 4-5):"
 refute "take-ground without an item id is refused" \
@@ -463,6 +516,23 @@ refute "interact-object without its obj id is refused" \
 refute "a cmd outside 1-2 is refused" \
     python3 "$GP" learn bad6 --priority 1 --trigger object_visible=493 \
         --action interact-object --param obj=493 --param cmd=3
+python3 "$GP" objective train-thieving >/dev/null
+python3 "$GP" learn pickpocket-man --priority 75 --cooldown-ms 0 \
+    --trigger objective_is=train-thieving --trigger npc_visible=11 \
+    --trigger out_of_combat=true --action interact-npc --param npc=11 --param cmd=1 >/dev/null
+snap 1295 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":true}'
+CODE=0; python3 "$GP" step >/dev/null || CODE=$?
+check_eq "an out-of-combat NPC rule stays quiet during a fight" "$CODE" "4"
+snap 1296 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":false}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the direct NPC command fires once combat is clear" "$CODE" "0"
+check_eq "the action is interact-npc" "$(last_action 'type=interact-npc')" "1"
+check_eq "it carries the stable server index" "$(last_action 'sidx=91')" "1"
+check_eq "and the NPC definition command" "$(last_action 'cmd=1')" "1"
+python3 "$GP" remove pickpocket-man >/dev/null
+python3 "$GP" objective --clear >/dev/null
 refute "a non-integer bound_visible is refused" \
     python3 "$GP" learn bad7 --priority 1 --trigger bound_visible=door \
         --action interact-bound --param obj=1
@@ -609,11 +679,23 @@ check_eq "the requested bank pointer button crosses ACTIONS" "$(last_action 'but
 refute "no bank page or slot crosses the action" grep -Eq '^(page|slot)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 refute "no bank pixel crosses the action" grep -Eq '^[xy]=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 python3 "$GP" remove click-bank-bucket >/dev/null
+python3 "$GP" objective deposit-supplies >/dev/null
+python3 "$GP" learn select-inventory-bones-in-bank --priority 80 --cooldown-ms 0 \
+    --trigger objective_is=deposit-supplies --trigger inventory_has=20 \
+    --action click-bank --param item=20 --param button=1 >/dev/null
+snap 1343 '[]' '{"bank_open":true,"bank_items":[],"inventory":[{"id":20,"count":1}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "an inventory item with no bank stack is selectable for deposit" "$CODE" "0"
+check_eq "that selection still crosses as click-bank identity" "$(last_action 'type=click-bank')" "1"
+check_eq "and carries only the inventory item id" "$(last_action 'item=20')" "1"
+python3 "$GP" remove select-inventory-bones-in-bank >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
 echo "the real playing entrypoint invokes this layer (spec rule 12):"
-# The game tree is borrowed READ-ONLY, recovered the same way the bridge
+# The game tree is recovered the same way the bridge
 # suite borrows it: the sandbox moved HOME, the live-data path remembers.
 REAL_HOME="$(cd "$SANDBOX_LIVE_DATA/../../.." 2>/dev/null && pwd)"
 GAME_TREE="${DESKCRAB_OPENRSC_TREE:-$REAL_HOME/Games/OpenRSC}"
@@ -623,6 +705,8 @@ if [ ! -f "$HEADLESS" ]; then
 fi
 check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
+check_eq "the harness carries the definition-backed NPC command door" \
+    "$(sandbox_count_in '^    npc)' "$HEADLESS")" "1"
 check_eq "the harness carries the bounded visual aiming fallback" \
     "$(sandbox_count_in '^    aim)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
@@ -699,6 +783,17 @@ refute "the entity door did not write a screen x coordinate" \
     grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 refute "the entity door did not write a screen y coordinate" \
     grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11701 '[{"sidx":55,"id":11,"x":121,"z":648}]'
+fake_bridge done
+OUT="$(bash "$HEADLESS" npc 11 1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the NPC command door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "npc(11 sidx=55 cmd=1)" \
+    && ok "and reports the stable NPC identity and command" \
+    || fail "and reports the stable NPC identity and command" "$OUT"
+check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
+refute "the NPC command door did not move the pointer" \
+    grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 snap 1172 '[]' '{"inventory":[{"id":145,"count":2}]}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" inventory 145 3)"; CODE=$?
@@ -723,6 +818,18 @@ check_eq "the shop door completes through the shared ACTIONS receipt" "$CODE" "0
 check_eq "the shop door wrote click-shop" "$(last_action 'type=click-shop')" "1"
 refute "the shop door did not write a slot" \
     grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 117211 '[]' '{"shop_open":true,"shop_items":[{"slot":17,"id":42,"name":"Bucket","count":3,"noted":false}],"inventory":[{"id":42,"count":2}]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" shop buy 42 all)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "shop buy bypasses the amount buttons" "$CODE" "0"
+check_eq "shop buy writes the direct transaction" "$(last_action 'type=shop-buy')" "1"
+check_eq "buy all resolves the visible stock" "$(last_action 'amount=3')" "1"
+fake_bridge done
+OUT="$(bash "$HEADLESS" shop sell 42 all)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "shop sell bypasses the amount buttons" "$CODE" "0"
+check_eq "sell all resolves the inventory quantity" "$(last_action 'amount=2')" "1"
 snap 11722 '[]' '{"bank_open":true,"bank_items":[{"slot":117,"id":145,"name":"Bucket","count":1}]}'
 OUT="$(bash "$HEADLESS" bank)"; CODE=$?
 check_eq "the bank listing reads ACTIONS state without a model call" "$CODE" "0"
@@ -735,6 +842,24 @@ check_eq "the bank door completes through the shared ACTIONS receipt" "$CODE" "0
 check_eq "the bank door wrote click-bank" "$(last_action 'type=click-bank')" "1"
 refute "the bank door did not write a page or slot" \
     grep -Eq '^(page|slot)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11723 '[]' '{"bank_open":true,"bank_items":[],"inventory":[{"id":20,"count":1}]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" bank 20 1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the bank door accepts an inventory item available for deposit" "$CODE" "0"
+check_eq "the inventory item still crosses only as bank identity" "$(last_action 'item=20')" "1"
+fake_bridge done
+OUT="$(bash "$HEADLESS" bank deposit 20 all)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "bank deposit bypasses the amount buttons" "$CODE" "0"
+check_eq "bank deposit writes the direct transaction" "$(last_action 'type=bank-deposit')" "1"
+check_eq "deposit all resolves the inventory quantity" "$(last_action 'amount=1')" "1"
+snap 11724 '[]' '{"bank_open":true,"bank_items":[{"slot":117,"id":145,"name":"Bucket","count":7}],"inventory":[]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" bank withdraw 145 all)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "bank withdraw bypasses the amount buttons" "$CODE" "0"
+check_eq "withdraw all resolves the bank quantity" "$(last_action 'amount=7')" "1"
 snap 1173 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}]}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" take 27)"; CODE=$?

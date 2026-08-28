@@ -1,6 +1,6 @@
 #!/bin/bash
 # The bridge<->engine protocol of specs/game-reflex.md, proven cross-language:
-# the REAL orsc.ReflexBridge is compiled read-only out of the local game
+# the REAL orsc.ReflexBridge is compiled directly out of the local game
 # checkout (the same file the client jar carries) and driven against a
 # scripted fake host, while the real Python engine reads the snapshots it
 # writes and writes the actions it consumes. No game, no display, no login —
@@ -12,9 +12,8 @@ set -u
 REPO="$SANDBOX_REPO"
 BG="$REPO/lib/betty-game"
 
-# The game tree is borrowed READ-ONLY, like the chess venv: the sandbox moved
-# HOME, so the real one is recovered from the live-data path the sandbox
-# recorded before the move.
+# The sandbox moved HOME, so recover the game tree from the live-data path
+# recorded before that move.
 REAL_HOME="$(cd "$SANDBOX_LIVE_DATA/../../.." 2>/dev/null && pwd)"
 GAME_TREE="${DESKCRAB_OPENRSC_TREE:-$REAL_HOME/Games/OpenRSC}"
 BRIDGE_SRC="$GAME_TREE/Core-Framework/Client_Base/src/orsc/ReflexBridge.java"
@@ -69,6 +68,7 @@ assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
 assert s["shop_open"] is True and s["shop_items"] == [
     {"slot": 0, "id": 10, "name": "Coins", "count": 50, "noted": False},
     {"slot": 1, "id": 42, "name": 'Test "parcel"', "count": 3, "noted": True},
+    {"slot": 2, "id": 81, "name": 'Test "parcel"', "count": 0, "noted": False},
 ], s.get("shop_items")
 assert s["bank_open"] is True and s["bank_items"] == [
     {"slot": 0, "id": 81, "name": "Lobster", "count": 12},
@@ -98,6 +98,7 @@ python3 - "$S/state.json" <<'PY' && ok "walking, combat, and open NPC dialogue a
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["walking"] is True and s["in_combat"] is True
+assert s["right_click_menu_open"] is True
 assert s["talking_to_npc"] is True
 PY
 OUT="$(harness state-dialogue)"
@@ -258,6 +259,22 @@ wact 62 "$(now_ms)" "type=talk-npc" "sidx=42" "npc=474"
 OUT="$(harness exec)"
 refute "a despawned NPC is not talked to" contains "$OUT" "talk sidx"
 check_eq "the missing NPC is named" "$(rstatus)" "refused-no-such-npc"
+
+echo
+echo "interact-npc executes a definition-backed NPC command (rules 5-7):"
+wact 63 "$(now_ms)" "type=interact-npc" "sidx=7" "npc=474" "cmd=1"
+OUT="$(harness exec)"
+contains "$OUT" "npc sidx=7 cmd=1" \
+    && ok "the NPC's first definition command reached the host" \
+    || fail "the NPC's first definition command reached the host" "$OUT"
+check_eq "and is receipted done" "$(rstatus)" "done"
+wact 64 "$(now_ms)" "type=interact-npc" "sidx=7" "npc=474" "cmd=3"
+harness exec >/dev/null
+check_eq "an unknown NPC command is refused" "$(rstatus)" "refused-bad-command"
+wact 65 "$(now_ms)" "type=interact-npc" "sidx=7" "npc=999" "cmd=1"
+OUT="$(harness exec)"
+refute "a swapped NPC is not commanded" contains "$OUT" "npc sidx="
+check_eq "the NPC command type mismatch is named" "$(rstatus)" "refused-npc-mismatch"
 
 echo
 echo "two simultaneous warnings both reach the player (rules 6-7, 10):"
@@ -467,6 +484,12 @@ check_eq "the bank click is receipted done" "$(rstatus)" "done"
 wact 883 "$(now_ms)" "type=click-bank" "item=999" "button=1"
 harness exec >/dev/null
 check_eq "a missing bank item is refused" "$(rstatus)" "refused-no-such-item"
+wact 8831 "$(now_ms)" "type=click-bank" "item=132" "button=1"
+OUT="$(harness exec)"
+contains "$OUT" "click x=812 y=512 button=1" \
+    && ok "an inventory item with no bank stack is selectable for deposit" \
+    || fail "an inventory item with no bank stack is selectable for deposit" "$OUT"
+check_eq "the inventory item selection is receipted done" "$(rstatus)" "done"
 wact 884 "$(now_ms)" "type=click-shop" "item=10" "button=4"
 harness exec >/dev/null
 check_eq "an unsupported shop button is refused" "$(rstatus)" "refused-bad-button"
@@ -479,6 +502,41 @@ check_eq "a closed bank is refused before resolving a slot" "$(rstatus)" "refuse
 wact 887 "$(now_ms)" "type=click-bank" "item=81" "button=1"
 harness exec-offscreen >/dev/null
 check_eq "an unavailable bank point is refused" "$(rstatus)" "refused-not-on-screen"
+
+echo
+echo "bank and shop transactions bypass amount-button coordinates (rules 5-7):"
+wact 888 "$(now_ms)" "type=bank-deposit" "item=81" "amount=99"
+OUT="$(harness exec)"
+contains "$OUT" "bank-deposit item=81 amount=3" \
+    && ok "deposit is clamped to the live inventory quantity" \
+    || fail "deposit is clamped to the live inventory quantity" "$OUT"
+check_eq "deposit is receipted done" "$(rstatus)" "done"
+wact 889 "$(now_ms)" "type=bank-withdraw" "item=81" "amount=5"
+OUT="$(harness exec)"
+contains "$OUT" "bank-withdraw item=81 amount=5" \
+    && ok "withdraw uses item identity and an explicit amount" \
+    || fail "withdraw uses item identity and an explicit amount" "$OUT"
+wact 890 "$(now_ms)" "type=shop-buy" "item=42" "amount=99"
+OUT="$(harness exec)"
+contains "$OUT" "shop-buy item=42 amount=3" \
+    && ok "buy is clamped to the live shop stock" \
+    || fail "buy is clamped to the live shop stock" "$OUT"
+wact 891 "$(now_ms)" "type=shop-sell" "item=999" "amount=2"
+OUT="$(harness exec)"
+refute "an item the shop does not trade is never sold" contains "$OUT" "shop-sell"
+check_eq "the unavailable shop item is named" "$(rstatus)" "refused-no-such-item"
+wact 8911 "$(now_ms)" "type=shop-sell" "item=81" "amount=2"
+OUT="$(harness exec)"
+contains "$OUT" "shop-sell item=81 amount=2" \
+    && ok "an item at zero shop stock can still be sold back" \
+    || fail "an item at zero shop stock can still be sold back" "$OUT"
+check_eq "zero stock is not mistaken for an untraded item" "$(rstatus)" "done"
+wact 892 "$(now_ms)" "type=shop-sell" "item=42" "amount=0"
+harness exec >/dev/null
+check_eq "a zero transaction amount is refused" "$(rstatus)" "refused-bad-amount"
+wact 893 "$(now_ms)" "type=bank-deposit" "item=81" "amount=1"
+harness exec-closed >/dev/null
+check_eq "a closed bank refuses transactions" "$(rstatus)" "refused-bank-closed"
 
 echo
 echo "take-ground resolves a visible item identity at execution time (rules 3, 5-7):"
