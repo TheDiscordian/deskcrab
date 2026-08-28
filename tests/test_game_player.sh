@@ -52,7 +52,7 @@ PY
 # can await the receipt like the real loop does.
 fake_bridge() {
     python3 - "$DESKCRAB_GAME_STATE_DIR" "${1:-done}" <<'PY' &
-import json, os, sys, time
+import json, os, re, sys, time
 sd, status = sys.argv[1], sys.argv[2]
 ap = os.path.join(sd, "action.json")
 for _ in range(100):
@@ -61,19 +61,24 @@ for _ in range(100):
         open(os.path.join(sd, "last-action"), "w").write(body)
         fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
         os.remove(ap)
-        if status == "done" and fields.get("type") in ("chat-local", "chat-private"):
+        delivered = status in ("done", "done-normalized")
+        if delivered and fields.get("type") in ("chat-local", "chat-private"):
             state_path = os.path.join(sd, "state.json")
             state = json.load(open(state_path))
             messages = state.setdefault("messages", [])
             next_id = max([m.get("id", 0) for m in messages if isinstance(m, dict)] + [0]) + 1
+            echo_text = fields["text"]
+            if status == "done-normalized":
+                echo_text = re.sub(r"[^A-Za-z0-9' ]+", "", echo_text).replace("PM", "Pm")
             messages.append({"id": next_id,
                 "channel": "private" if fields["type"] == "chat-private" else "local",
-                "incoming": False,
-                "sender": fields.get("target", "Player"), "text": fields["text"]})
+                "incoming": False, "sender": fields.get("target", "Player"),
+                "text": echo_text})
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
         tmp = os.path.join(sd, ".receipt.tmp")
-        json.dump({"id": int(fields["id"]), "status": status,
+        json.dump({"id": int(fields["id"]),
+                   "status": "done" if delivered else status,
                    "ts": int(time.time() * 1000)}, open(tmp, "w"))
         os.replace(tmp, os.path.join(sd, "receipt.json"))
         break
@@ -2054,6 +2059,29 @@ wait "$FAKE_BRIDGE_PID"
 check_eq "a receipted private reply exits 0" "$CODE" "0"
 check_eq "the reply used chat-private" "$(last_action 'type=chat-private')" "1"
 check_eq "and addressed the original sender at any distance" "$(last_action 'target=Far Friend')" "1"
+
+snap 14515 '[]' '{"players":[],"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
+    {"id":9002,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"door by the mill"},
+    {"id":9003,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"},
+    {"id":90035,"channel":"private","incoming":true,"sender":"Far Friend","text":"When?"}
+]}'
+python3 "$GP" step --local >/dev/null 2>&1 || true
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s['message_settle_until'] = 0
+json.dump(s, open(sys.argv[1], 'w'))
+PY
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the punctuation-normalized private message becomes actionable" "$CODE" "6"
+fake_bridge done-normalized
+OUT="$(python3 "$GP" reply 90035 'Two minutes ago, by PM.')"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a Classic-normalized outgoing echo confirms without a retry" "$CODE" "0"
+contains "$OUT" "status=done" \
+    && ok "punctuation and capitalization normalization is still grounded in the echo" \
+    || fail "the normalized echo should prove delivery" "$OUT"
 
 snap 1452 '[]' '{"players":[],"messages":[
     {"id":9004,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Are you still there?"}

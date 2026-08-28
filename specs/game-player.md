@@ -221,7 +221,9 @@ deliberate-play channel.
    current visible `players`; if that player has left the nearby list, it becomes `chat-private`
    to the original sender instead. The bridge receipt proves
    dispatch; only the matching outgoing message echo in a later snapshot proves server acceptance
-   and marks the message handled. A refusal, a server error, or an unconfirmed dispatch leaves it
+   and marks the message handled. Matching compares the same case-insensitive word sequence because
+   the Classic chat codec can discard punctuation and normalize capitalization; those transformations
+   do not license a duplicate retry. A refusal, a server error, or an unconfirmed dispatch leaves it
    pending. Handling one message also
    handles older pending messages from the same sender and channel, allowing one concise response
    to cover a burst without producing stale replies. While an incoming message is pending, the

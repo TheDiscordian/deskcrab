@@ -20,6 +20,7 @@ import os
 import select
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -2294,8 +2295,23 @@ def validate_reply_text(text: str) -> None:
         die("reply text exceeds the client's 80-character limit")
 
 
+def canonical_chat_text(text: str) -> str:
+    """Compare the words the Classic client actually carries.
+
+    RSC's chat codec can discard punctuation and normalize capitalization
+    between dispatch and the outgoing snapshot echo (for example `PM` becomes
+    `Pm`). Those are not delivery failures. Keep word/order differences
+    meaningful while making punctuation, case, and Unicode punctuation forms
+    irrelevant to confirmation.
+    """
+    normalized = unicodedata.normalize("NFKC", str(text)).casefold()
+    return " ".join("".join(ch if ch.isalnum() else " "
+                            for ch in normalized).split())
+
+
 def verify_chat_delivery(action: dict, after_id: int, timeout_s: float = 3.0) -> str:
-    """Confirm the server echoed outgoing chat; a bridge receipt is dispatch only."""
+    """Confirm the outgoing chat echo; a bridge receipt is dispatch only."""
+    expected_text = canonical_chat_text(action["text"])
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         snap = game_reflex.read_snapshot() or {}
@@ -2308,7 +2324,7 @@ def verify_chat_delivery(action: dict, after_id: int, timeout_s: float = 3.0) ->
             channel = "private" if action["type"] == "chat-private" else "local"
             if message.get("channel") == channel \
                     and message.get("incoming") is False \
-                    and message.get("text") == action["text"]:
+                    and canonical_chat_text(message.get("text", "")) == expected_text:
                 if channel != "private" \
                         or message.get("sender", "").casefold() == action["target"].casefold():
                     return "done"
