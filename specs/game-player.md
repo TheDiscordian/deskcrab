@@ -25,7 +25,10 @@ deliberate-play channel.
 ### Files and places
 
 1. The durable table is `$DESKCRAB_GAME_DIR/learned-rules.json`; the current objective is
-   `$DESKCRAB_GAME_DIR/objective` (one line, empty or absent meaning none). The engine's own
+   `$DESKCRAB_GAME_DIR/objective`, and the immediate activity is
+   `$DESKCRAB_GAME_DIR/activity` (each one line, empty or absent meaning none). The objective is
+   the longer-lived goal (for example `thieving-to-30`); the activity is what the player is doing
+   now (for example `thieving`, `banking`, or `trading`). The engine's own
    counters live in `$DESKCRAB_GAME_STATE_DIR/player-engine-state.json` and its decisions in
    `$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl` — separate files from the reflex engine's,
    because the two engines are tuned and audited independently. The exchange files
@@ -52,6 +55,9 @@ deliberate-play channel.
    or this layer's own durable objective — nothing here triggers on a screenshot or a guess:
    - `objective_is` (string): the objective file's line equals it exactly. A rule carrying
      `objective_is` can never fire while no objective is set.
+   - `activity_is` (string): the activity file's line equals it exactly. Use it to keep a useful
+     reflex armed for its own mode without letting it interrupt another immediate task. This is
+     opt-in: a rule without `activity_is` remains activity-agnostic.
    - `npc_visible` (int): the snapshot's `npcs` list holds that type id.
    - `object_visible` (int): the snapshot's `objects` list holds that type id.
    - `bound_visible` (int): the snapshot's `bounds` list holds that type id.
@@ -76,9 +82,12 @@ deliberate-play channel.
 5. The action vocabulary is closed: `talk-npc` (`npc`: the type id; the server index is resolved
    from the snapshot at fire time — nearest matching NPC — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
-   click), `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1), which
+   click), `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
+   `within` 0–10 caps the current Chebyshev tile distance), which
    resolves the same stable NPC identity and performs its definition-backed menu command without
-   any pointer or context-menu reconstruction, `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
+   any pointer or context-menu reconstruction. Repeating reflexes use `within` so a wandering
+   target cannot drag the player across the area; deliberate one-off NPC commands may still
+   approach their chosen visible target. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
    Chebyshev tolerance rule 7a's verification accepts as arrival), `interact-object` (`obj`: the object type id,
@@ -204,7 +213,8 @@ deliberate-play channel.
    `not_walking` cannot accept the pre-action snapshot. Conditions are
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`, and
-   `right_click_menu_closed`; dashes are accepted in place of underscores.
+   `right_click_menu_closed`, `trade_open`, and `trade_closed`; dashes are accepted in place of
+   underscores.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
    false; a pre-reply false snapshot cannot masquerade as the end of the conversation.
    Success reports `condition-met` with the condition and snapshot tick. A wait has a 15-second

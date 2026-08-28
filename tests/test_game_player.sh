@@ -140,6 +140,9 @@ refute "talk-npc without its npc id is refused" \
 refute "interact-npc refuses a command outside the NPC definition verbs" \
     python3 "$GP" learn bad-npc-command --priority 1 --trigger npc_visible=11 \
         --action interact-npc --param npc=11 --param cmd=3
+refute "interact-npc refuses a roaming cap beyond ten tiles" \
+    python3 "$GP" learn bad-npc-range --priority 1 --trigger npc_visible=11 \
+        --action interact-npc --param npc=11 --param within=11
 refute "out_of_combat is a literal condition, not an arbitrary value" \
     python3 "$GP" learn bad-combat-trigger --priority 1 --trigger out_of_combat=false \
         --action walk --param x=1 --param z=1
@@ -149,6 +152,9 @@ refute "inventory capacity thresholds stop at the real 30-slot ceiling" \
 refute "an impossible inventory capacity range is refused" \
     python3 "$GP" learn bad-inventory-range --priority 1 \
         --trigger inventory_slots_at_least=28 --trigger inventory_slots_below=28 \
+        --action walk --param x=1 --param z=1
+refute "an empty activity scope is refused" \
+    python3 "$GP" learn bad-activity --priority 1 --trigger activity_is= \
         --action walk --param x=1 --param z=1
 refute "a near_tile radius beyond 50 is refused" \
     python3 "$GP" learn bad4 --priority 1 --trigger 'near_tile={"x":1,"z":1,"radius":99}' --action walk --param x=1 --param z=1
@@ -221,6 +227,46 @@ check_eq "right NPC but no objective set: objective_is can never hold" "$CODE" "
 refute "still no action" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 
 echo
+echo "the immediate activity scopes learned reflexes independently of objectives (spec rules 4, 7):"
+check "the current activity can be selected durably" python3 "$GP" activity trading
+check_eq "the selected activity can be read by a fresh process" \
+    "$(python3 "$GP" activity)" "trading"
+python3 "$GP" learn only-while-banking --priority 99 --cooldown-ms 0 \
+    --trigger activity_is=banking --action walk --param x=121 --param z=648 >/dev/null
+snap 1031 '[]'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "a banking reflex stays quiet during trading" "$CODE" "4"
+contains "$OUT" "activity=trading" \
+    && ok "the fallback verdict exposes the active mode" \
+    || fail "the fallback verdict exposes the active mode" "$OUT"
+python3 "$GP" activity banking >/dev/null
+snap 1032 '[]'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the same reflex fires after selecting banking" "$CODE" "0"
+check_eq "the activity-scoped rule emitted its walk" "$(last_action 'type=walk')" "1"
+python3 "$GP" remove only-while-banking >/dev/null
+python3 "$GP" activity trading >/dev/null
+python3 "$GP" learn activity-agnostic --priority 98 --cooldown-ms 0 \
+    --trigger near_tile='{"x":120,"z":648,"radius":2}' \
+    --action walk --param x=121 --param z=648 >/dev/null
+snap 1033 '[]'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a rule with no activity_is remains live during trading" "$CODE" "0"
+python3 "$GP" activity banking >/dev/null
+snap 1034 '[]'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the same activity-agnostic rule remains live during banking" "$CODE" "0"
+python3 "$GP" remove activity-agnostic >/dev/null
+check "the immediate activity can be cleared" python3 "$GP" activity --clear
+check_eq "a cleared activity reads as none" "$(python3 "$GP" activity)" "(none)"
+
+echo
 echo "state-based waits use the ACTIONS snapshot without polling (spec rule 7d):"
 snap 1040 '[]' '{"walking":false,"talking_to_npc":false}'
 python3 "$GP" wait-until talking-to-npc --timeout 1 > "$SANDBOX/wait-out" &
@@ -264,6 +310,19 @@ contains "$OUT" "condition-met condition=right_click_menu_open tick=10452" \
 snap 10453 '[]' '{"right_click_menu_open":false}'
 OUT="$(python3 "$GP" wait-until right_click_menu_closed --timeout 1)"; CODE=$?
 check_eq "an already closed context menu satisfies the closed condition" "$CODE" "0"
+snap 10454 '[]' '{"trade_open":false}'
+python3 "$GP" wait-until trade_open --timeout 1 > "$SANDBOX/wait-trade-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 10455 '[]' '{"trade_open":true}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+check_eq "a trade wait exits only after the bridge sees the trade UI" "$CODE" "0"
+contains "$(cat "$SANDBOX/wait-trade-out")" "condition-met condition=trade_open" \
+    && ok "the trade wait reports its grounded condition" \
+    || fail "the trade wait reports its grounded condition" "$(cat "$SANDBOX/wait-trade-out")"
+snap 10456 '[]' '{"trade_open":false}'
+CODE=0; OUT="$(python3 "$GP" wait-until trade_closed --timeout 1)" || CODE=$?
+check_eq "an already closed trade UI satisfies trade_closed" "$CODE" "0"
 CODE=0; OUT="$(python3 "$GP" wait-until in_combat --timeout 0.05)" || CODE=$?
 check_eq "a missing transition reaches its hard ceiling: exit 2" "$CODE" "2"
 contains "$OUT" "condition-timeout condition=in_combat" \
@@ -519,10 +578,16 @@ refute "a cmd outside 1-2 is refused" \
 python3 "$GP" objective train-thieving >/dev/null
 python3 "$GP" learn pickpocket-man --priority 75 --cooldown-ms 0 \
     --trigger objective_is=train-thieving --trigger npc_visible=11 \
-    --trigger out_of_combat=true --action interact-npc --param npc=11 --param cmd=1 >/dev/null
+    --trigger out_of_combat=true --action interact-npc --param npc=11 --param cmd=1 \
+    --param within=2 >/dev/null
 snap 1295 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":true}'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "an out-of-combat NPC rule stays quiet during a fight" "$CODE" "4"
+snap 12951 '[{"sidx":91,"id":11,"x":140,"z":660}]' '{"in_combat":false}'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "a repeating NPC reflex will not chase a distant visible target" "$CODE" "4"
+check_eq "the range refusal is recorded for diagnosis" \
+    "$(decided refused)" "2"
 snap 1296 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":false}'
 fake_bridge done
 OUT="$(python3 "$GP" step)"; CODE=$?
@@ -592,7 +657,7 @@ python3 "$GP" learn open-gate --priority 40 --cooldown-ms 0 \
 snap 132 '[]' '{"objects":[],"bounds":[]}'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "a rule whose object is not loaded refuses at compile: exit 4" "$CODE" "4"
-check_eq "and the refusal is logged" "$(decided refused)" "2"
+check_eq "and the refusal is logged" "$(decided refused)" "3"
 python3 "$GP" remove open-farm-door >/dev/null
 python3 "$GP" remove net-fishing-spot >/dev/null
 python3 "$GP" remove open-gate >/dev/null
@@ -707,6 +772,10 @@ check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the definition-backed NPC command door" \
     "$(sandbox_count_in '^    npc)' "$HEADLESS")" "1"
+check_eq "the harness carries the direct player-trade door" \
+    "$(sandbox_count_in '^    trade)' "$HEADLESS")" "1"
+check_eq "the harness carries the unambiguous menu-text door" \
+    "$(sandbox_count_in '^    menu)' "$HEADLESS")" "1"
 check_eq "the harness carries the bounded visual aiming fallback" \
     "$(sandbox_count_in '^    aim)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
@@ -794,6 +863,41 @@ contains "$OUT" "npc(11 sidx=55 cmd=1)" \
 check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
 refute "the NPC command door did not move the pointer" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11702 '[]' '{"players":[{"sidx":55,"name":"Discordian","x":121,"z":648}]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" trade Discordian)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the direct trade door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "trade(Discordian sidx=55)" \
+    && ok "and reports the player identity it targeted" \
+    || fail "and reports the player identity it targeted" "$OUT"
+check_eq "the trade door wrote trade-player" "$(last_action 'type=trade-player')" "1"
+refute "the trade door did not move the pointer" \
+    grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 117021 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Discordian","my_accepted":false,"their_accepted":true,"my_offer":[],"their_offer":[{"id":145,"name":"Tinderbox","count":1}]}}'
+OUT="$(bash "$HEADLESS" trade status)"; CODE=$?
+check_eq "trade status reads the structured trade screen" "$CODE" "0"
+contains "$OUT" "stage=offer partner=Discordian" \
+    && contains "$OUT" "receive: id=145 Tinderbox x1" \
+    && ok "trade status exposes partner, acceptance, and offers" \
+    || fail "trade status exposes partner, acceptance, and offers" "$OUT"
+fake_bridge done
+OUT="$(bash "$HEADLESS" trade accept)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "trade accept completes through ACTIONS" "$CODE" "0"
+check_eq "the accept door wrote trade-accept" "$(last_action 'type=trade-accept')" "1"
+check_eq "the accept door grounds the stage it saw" "$(last_action 'stage=offer')" "1"
+snap 11703 '[]' '{"right_click_menu_open":true,"menu_options":["Trade with Discordian","Follow Discordian"]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" menu 'Trade with Discordian')"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the menu-text door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "menu(Trade with Discordian)" \
+    && ok "and preserves the whole text fragment" \
+    || fail "and preserves the whole text fragment" "$OUT"
+check_eq "the menu door wrote choose-menu" "$(last_action 'type=choose-menu')" "1"
+check_eq "the action carries one intact text field" \
+    "$(last_action 'text=Trade with Discordian')" "1"
 snap 1172 '[]' '{"inventory":[{"id":145,"count":2}]}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" inventory 145 3)"; CODE=$?

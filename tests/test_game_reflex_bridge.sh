@@ -63,6 +63,8 @@ assert s["hits"] == 4 and s["hits_max"] == 10 and s["fatigue"] == 12
 assert s["x"] == 120 and s["z"] == 650
 assert s["walking"] is False and s["in_combat"] is False
 assert s["talking_to_npc"] is False
+assert s["trade_open"] is False
+assert s["trade"] is None
 assert s["opponent"] is None
 assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
 assert s["shop_open"] is True and s["shop_items"] == [
@@ -99,6 +101,21 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["walking"] is True and s["in_combat"] is True
 assert s["right_click_menu_open"] is True
+assert s["menu_options"] == [
+    "Trade with Nearby Friend",
+    "Follow Nearby Friend",
+    "Trade with Distant Player",
+]
+assert s["trade_open"] is True
+assert s["trade"] == {
+    "stage": "offer", "partner": "Nearby Friend",
+    "my_accepted": False, "their_accepted": True,
+    "my_offer": [{"id": 81, "name": "Lobster", "count": 2}],
+    "their_offer": [
+        {"id": 145, "name": "Bucket", "count": 1},
+        {"id": 10, "name": "Coins", "count": 50},
+    ],
+}, s["trade"]
 assert s["talking_to_npc"] is True
 PY
 OUT="$(harness state-dialogue)"
@@ -275,6 +292,58 @@ wact 65 "$(now_ms)" "type=interact-npc" "sidx=7" "npc=999" "cmd=1"
 OUT="$(harness exec)"
 refute "a swapped NPC is not commanded" contains "$OUT" "npc sidx="
 check_eq "the NPC command type mismatch is named" "$(rstatus)" "refused-npc-mismatch"
+
+echo
+echo "player trade and right-click menu selection use live identities (rules 3, 5-7):"
+wact 651 "$(now_ms)" "type=trade-player" "sidx=11"
+OUT="$(harness exec)"
+contains "$OUT" "trade-player sidx=11" \
+    && ok "a visible player's server identity reaches the ordinary trade request" \
+    || fail "a visible player's server identity reaches the ordinary trade request" "$OUT"
+check_eq "the trade request is receipted done" "$(rstatus)" "done"
+wact 652 "$(now_ms)" "type=trade-player" "sidx=99"
+harness exec >/dev/null
+check_eq "a player who is no longer visible is refused" "$(rstatus)" "refused-no-such-player"
+wact 6521 "$(now_ms)" "type=trade-accept" "stage=offer"
+OUT="$(harness exec-trade-offer)"
+contains "$OUT" "trade-accept stage=offer" \
+    && ok "the first trade screen accepts through the ordinary packet path" \
+    || fail "the first trade screen accepts through the ordinary packet path" "$OUT"
+check_eq "the first acceptance is receipted done" "$(rstatus)" "done"
+wact 6522 "$(now_ms)" "type=trade-accept" "stage=confirm"
+OUT="$(harness exec-trade-confirm)"
+contains "$OUT" "trade-accept stage=confirm" \
+    && ok "the confirmation screen accepts through its own ordinary packet path" \
+    || fail "the confirmation screen accepts through its own ordinary packet path" "$OUT"
+check_eq "the final acceptance is receipted done" "$(rstatus)" "done"
+wact 6523 "$(now_ms)" "type=trade-accept" "stage=offer"
+harness exec-trade-confirm >/dev/null
+check_eq "a stage transition is refused instead of accepting a stale screen" \
+    "$(rstatus)" "refused-trade-stage-changed"
+wact 6524 "$(now_ms)" "type=trade-accept" "stage=offer"
+harness exec >/dev/null
+check_eq "accepting with no trade open is refused" "$(rstatus)" "refused-trade-closed"
+wact 653 "$(now_ms)" "type=choose-menu" "text=follow"
+OUT="$(harness exec-menu)"
+contains "$OUT" "menu index=1 text=Follow @whi@Nearby Friend" \
+    && ok "a unique text fragment chooses its live menu entry" \
+    || fail "a unique text fragment chooses its live menu entry" "$OUT"
+check_eq "the menu choice is receipted done" "$(rstatus)" "done"
+wact 654 "$(now_ms)" "type=choose-menu" "text=Trade with Nearby Friend"
+OUT="$(harness exec-menu)"
+contains "$OUT" "menu index=0" \
+    && ok "a full label wins exactly even when another Trade option exists" \
+    || fail "a full label wins exactly even when another Trade option exists" "$OUT"
+wact 655 "$(now_ms)" "type=choose-menu" "text=trade"
+harness exec-menu >/dev/null
+check_eq "an ambiguous fragment is refused, never guessed" \
+    "$(rstatus)" "refused-ambiguous-menu-option"
+wact 656 "$(now_ms)" "type=choose-menu" "text=duel"
+harness exec-menu >/dev/null
+check_eq "a missing menu option is named" "$(rstatus)" "refused-no-such-menu-option"
+wact 657 "$(now_ms)" "type=choose-menu" "text=follow"
+harness exec >/dev/null
+check_eq "a closed context menu is named" "$(rstatus)" "refused-menu-closed"
 
 echo
 echo "two simultaneous warnings both reach the player (rules 6-7, 10):"

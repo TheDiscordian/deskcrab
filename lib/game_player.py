@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 2)
 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
-TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
+TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", "bound_visible",
                 "ground_item_visible", "shop_item_visible", "bank_item_visible",
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
@@ -38,6 +38,7 @@ WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
     "right_click_menu_open", "right_click_menu_closed",
+    "trade_open", "trade_closed",
 )
 WAIT_DEFAULT_S = 15.0
 WAIT_MAX_S = 60.0
@@ -100,6 +101,10 @@ def rules_path() -> Path:
 
 def objective_path() -> Path:
     return game_dir() / "objective"
+
+
+def activity_path() -> Path:
+    return game_dir() / "activity"
 
 
 def route_path() -> Path:
@@ -301,9 +306,9 @@ def validate_config(cfg: dict) -> None:
             if key not in TRIGGER_KEYS:
                 bad(f"{where}: unknown trigger '{key}' "
                     f"(known: {', '.join(TRIGGER_KEYS)})")
-            if key == "objective_is":
+            if key in ("objective_is", "activity_is"):
                 if not isinstance(val, str) or not val.strip() or "\n" in val:
-                    bad(f"{where}: trigger.objective_is must be a non-empty single line")
+                    bad(f"{where}: trigger.{key} must be a non-empty single line")
             elif key == "message_contains":
                 if not isinstance(val, str) or not val.strip() or "\n" in val:
                     bad(f"{where}: trigger.message_contains must be a non-empty single line")
@@ -342,11 +347,14 @@ def validate_config(cfg: dict) -> None:
             if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
                 bad(f"{where}: talk-npc takes exactly npc=<type id>")
         elif atype == "interact-npc":
-            if not set(action) <= {"type", "npc", "cmd"} \
+            if not set(action) <= {"type", "npc", "cmd", "within"} \
                     or not isinstance(action.get("npc"), int) or action["npc"] < 0:
-                bad(f"{where}: interact-npc takes npc=<type id> and optionally cmd")
+                bad(f"{where}: interact-npc takes npc=<type id> and optionally cmd/within")
             if "cmd" in action and action["cmd"] not in (1, 2):
                 bad(f"{where}: interact-npc cmd must be 1 or 2 (the def's menu commands)")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: interact-npc within must be an integer 0..10")
         elif atype == "walk":
             if not set(action) <= {"type", "x", "z", "arrive"} \
                     or not isinstance(action.get("x"), int) \
@@ -415,6 +423,13 @@ def config_defaults(cfg: dict) -> dict:
 def read_objective() -> str:
     try:
         return objective_path().read_text().strip()
+    except OSError:
+        return ""
+
+
+def read_activity() -> str:
+    try:
+        return activity_path().read_text().strip()
     except OSError:
         return ""
 
@@ -677,6 +692,10 @@ def wait_condition_met(condition: str, snap: dict) -> bool:
         return snap.get("right_click_menu_open") is True
     if condition == "right_click_menu_closed":
         return snap.get("right_click_menu_open") is False
+    if condition == "trade_open":
+        return snap.get("trade_open") is True
+    if condition == "trade_closed":
+        return snap.get("trade_open") is False
     return False
 
 
@@ -685,7 +704,7 @@ def wait_state_brief(snap: dict) -> str:
         return "none"
     parts = []
     for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
-                "right_click_menu_open"):
+                "right_click_menu_open", "trade_open"):
         value = snap.get(key)
         if isinstance(value, bool):
             value = str(value).lower()
@@ -751,10 +770,13 @@ def cmd_wait_until(args):
 # A field the snapshot does not carry makes the condition false, never an
 # exception — the same fail-safe rule the reflex triggers follow.
 # --------------------------------------------------------------------------
-def make_trigger_fn(objective: str):
+def make_trigger_fn(objective: str, activity: str = ""):
     def trigger_true(trig, snap, food):
         if "objective_is" in trig:
             if not objective or objective != trig["objective_is"]:
+                return False
+        if "activity_is" in trig:
+            if not activity or activity != trig["activity_is"]:
                 return False
         if "npc_visible" in trig:
             if not any(n.get("id") == trig["npc_visible"]
@@ -826,11 +848,18 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, "npc-not-visible"
     if action["type"] == "interact-npc":
         want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
         for npc in snap.get("npcs") or []:
             if npc.get("id") == want and isinstance(npc.get("sidx"), int):
+                if within is not None:
+                    nx, nz = npc.get("x"), npc.get("z")
+                    if not all(isinstance(v, int) for v in (px, pz, nx, nz)) \
+                            or max(abs(px - nx), abs(pz - nz)) > within:
+                        continue
                 return {"type": "interact-npc", "sidx": npc["sidx"],
                         "npc": want, "cmd": action.get("cmd", 1)}, None
-        return None, "npc-not-visible"
+        return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "walk":
         return {"type": "walk", "x": action["x"], "z": action["z"]}, None
     if action["type"] == "interact-object":
@@ -936,7 +965,7 @@ def snap_brief(snap: dict) -> dict:
     return brief
 
 
-def gap_signature(snap: dict, objective: str) -> str:
+def gap_signature(snap: dict, objective: str, activity: str = "") -> str:
     """Stable author input: game ticks and wandering NPC tiles are not new gaps."""
     game_messages = [
         {"channel": m.get("channel"), "sender": m.get("sender"), "text": m.get("text")}
@@ -945,6 +974,7 @@ def gap_signature(snap: dict, objective: str) -> str:
     ]
     shape = {
         "objective": objective or None,
+        "activity": activity or None,
         "x": snap.get("x"),
         "z": snap.get("z"),
         "inventory": [i.get("id") for i in snap.get("inventory") or []],
@@ -1053,7 +1083,7 @@ def once_key(rule_name: str, objective: str) -> str:
     return f"{rule_name}\t{objective}"
 
 
-def step_once(cfg: dict, objective: str, wait_ms: int):
+def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     """One evaluation. Returns (verdict, exit_code)."""
     defaults = config_defaults(cfg)
     est = load_player_state()
@@ -1185,7 +1215,7 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
     game_reflex.evaluate(
         eval_cfg, {}, snap, est, now,
         emit=emit_player_action, sink=events,
-        trigger_fn=make_trigger_fn(objective),
+        trigger_fn=make_trigger_fn(objective, activity),
         compile_fn=compile_player_action, live=True)
 
     fired = [e for e in events if e.get("kind") == "fired"]
@@ -1211,6 +1241,7 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
                    target_x=route["x"], target_z=route["z"])
             return "route-waiting", EXIT_NOT_READY
         report("no-rule-matched", objective=objective or None,
+               activity=activity or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
                ground_items=",".join(str(i.get("id"))
@@ -1296,7 +1327,8 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
     # Every outcome feeds the background author (spec rule 16).
     outcome = {"ts": now_ms(), "kind": "outcome", "rule": rule_name,
                "id": action_id, "action": action, "status": status,
-               "objective": objective or None, "snap": snap_brief(snap)}
+               "objective": objective or None, "activity": activity or None,
+               "snap": snap_brief(snap)}
     if action["type"] == "walk":
         outcome["intended"] = {"x": action["x"], "z": action["z"]}
         if final_x is not None:
@@ -1354,10 +1386,10 @@ def save_tests(tests: dict) -> None:
     game_reflex.atomic_write(tests_path(), json.dumps(tests, indent=2) + "\n")
 
 
-def predict(cfg: dict, snap: dict, objective: str):
+def predict(cfg: dict, snap: dict, objective: str, activity: str = ""):
     """The rule that would win the slot for this snapshot: the highest
     priority whose trigger holds AND whose action compiles. Pure."""
-    trigger_fn = make_trigger_fn(objective)
+    trigger_fn = make_trigger_fn(objective, activity)
     rules = sorted((r for r in cfg["rules"] if r["enabled"]),
                    key=lambda r: -r["priority"])
     for rule in rules:
@@ -1389,7 +1421,8 @@ def run_suite(cfg: dict):
         want = case.get("expect")
         if want in (None, "", "none"):
             want = None
-        got, _action = predict(cfg, case["snapshot"], case.get("objective") or "")
+        got, _action = predict(cfg, case["snapshot"], case.get("objective") or "",
+                               case.get("activity") or "")
         if got != want:
             failures.append(f"case '{case['name']}': expected "
                             f"{want or 'none'}, got {got or 'none'}")
@@ -1442,6 +1475,8 @@ def cmd_rules(args):
     print("defaults: " + " ".join(f"{k}={v}" for k, v in sorted(d.items())))
     obj = read_objective()
     print(f"objective: {obj if obj else '(none)'}")
+    activity = read_activity()
+    print(f"activity: {activity if activity else '(none)'}")
 
 
 def parse_kv(pairs):
@@ -1563,6 +1598,26 @@ def cmd_objective(args):
     game_dir().mkdir(parents=True, exist_ok=True)
     game_reflex.atomic_write(objective_path(), args.name.strip() + "\n")
     print(f"objective: {args.name.strip()}")
+
+
+def cmd_activity(args):
+    """The immediate mode of play, separate from the longer-lived objective."""
+    if args.clear:
+        try:
+            activity_path().unlink()
+        except FileNotFoundError:
+            pass
+        print("activity cleared")
+        return
+    if args.name is None:
+        activity = read_activity()
+        print(activity if activity else "(none)")
+        return
+    if "\n" in args.name or not args.name.strip():
+        die("the activity is one non-empty line")
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(activity_path(), args.name.strip() + "\n")
+    print(f"activity: {args.name.strip()}")
 
 
 def cmd_session(args):
@@ -1789,6 +1844,7 @@ def cmd_test(args):
             print("no cases yet")
         for case in tests["cases"]:
             print(f"{case['name']}: objective={case.get('objective') or '(none)'} "
+                  f"activity={case.get('activity') or '(none)'} "
                   f"expect={case.get('expect') or 'none'}")
         return
     if args.action == "add":
@@ -1805,12 +1861,13 @@ def cmd_test(args):
         if any(c["name"] == args.name for c in tests["cases"]):
             die(f"a case named '{args.name}' already exists")
         case = {"name": args.name, "objective": args.objective or "",
+                "activity": args.activity or "",
                 "expect": None if args.expect == "none" else args.expect,
                 "snapshot": snapshot}
         # A case must be true the moment it is added — the suite stays green
         # so the gate only trips when a MUTATION breaks something.
         cfg = load_config()
-        got, _ = predict(cfg, snapshot, case["objective"])
+        got, _ = predict(cfg, snapshot, case["objective"], case["activity"])
         want = case["expect"]
         if got != want:
             die(f"case would fail right now: expected {want or 'none'}, "
@@ -1871,13 +1928,14 @@ def cmd_run(args):
                     flush_events([{"ts": now_ms(), "kind": "table-invalid",
                                    "error": str(e)[:300]}])
 
-            verdict, _code = step_once(cfg, read_objective(), wait_ms)
+            verdict, _code = step_once(cfg, read_objective(), read_activity(), wait_ms)
 
             if verdict in ("no-rule-matched", "same-tick") \
                     and (verdict == "no-rule-matched" or gap_candidate_signature is not None):
                 snap = game_reflex.read_snapshot() or {}
                 objective = read_objective()
-                signature = gap_signature(snap, objective)
+                activity = read_activity()
+                signature = gap_signature(snap, objective, activity)
                 now = now_ms()
                 if signature != gap_candidate_signature:
                     gap_candidate_signature = signature
@@ -1886,6 +1944,7 @@ def cmd_run(args):
                         and now - gap_candidate_since >= GAP_STABLE_MS:
                     append_outcome({"ts": now_ms(), "kind": "gap",
                                     "objective": objective or None,
+                                    "activity": activity or None,
                                     "snap": snap_brief(snap)})
                     last_gap_signature = signature
             elif verdict != "same-tick":
@@ -1972,6 +2031,11 @@ def main():
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_objective)
 
+    p = sub.add_parser("activity", help="show, select or clear the current activity")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_activity)
+
     p = sub.add_parser("session", help="the sitting's clock: open, status, end")
     p.add_argument("action", nargs="?", default="status",
                    choices=["open", "status", "end"])
@@ -2032,6 +2096,7 @@ def main():
     p.add_argument("--expect", help="the rule that must win, or 'none'")
     p.add_argument("--snapshot", help="snapshot JSON file, or - for stdin")
     p.add_argument("--objective", help="objective the case runs under")
+    p.add_argument("--activity", help="current activity the case runs under")
     p.set_defaults(fn=cmd_test)
 
     args = parser.parse_args()
@@ -2079,10 +2144,11 @@ def main():
         if args.wait_ms is None:
             args.wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
         objective = read_objective()
+        activity = read_activity()
         fired_count = 0
         verdict, code = "no-rule-matched", EXIT_NO_RULE
         for _ in range(max(1, args.max)):
-            verdict, code = step_once(cfg, objective, args.wait_ms)
+            verdict, code = step_once(cfg, objective, activity, args.wait_ms)
             if verdict != "fired":
                 break
             fired_count += 1

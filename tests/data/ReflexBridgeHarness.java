@@ -39,9 +39,22 @@ public class ReflexBridgeHarness {
 		boolean walking = false;
 		boolean inCombat = false;
 		boolean rightClickMenuOpen = false;
+		boolean tradeOpen = false;
+		boolean tradeConfirmStage = false;
+		boolean tradeSelfAccepted = false;
+		boolean tradeOtherAccepted = true;
+		final int[] tradeMyIds = {81};
+		final int[] tradeMyAmounts = {2};
+		final int[] tradeTheirIds = {145, 10};
+		final int[] tradeTheirAmounts = {1, 50};
 		boolean npcDialogueOpen = false;
 		boolean shopOpen = true;
 		boolean bankOpen = true;
+		final String[] menuOptions = {
+			"Trade with @whi@Nearby Friend",
+			"Follow @whi@Nearby Friend",
+			"Trade with @whi@Distant Player"
+		};
 		int hitsNow = 4;
 		final List<String> events = new ArrayList<String>();
 		final int[] invIds = {132, 81};
@@ -84,6 +97,81 @@ public class ReflexBridgeHarness {
 
 		public boolean isRightClickMenuOpen() {
 			return rightClickMenuOpen;
+		}
+
+		public int rightClickMenuOptionCount() {
+			return rightClickMenuOpen ? menuOptions.length : 0;
+		}
+
+		public String rightClickMenuOptionText(int index) {
+			return menuOptions[index];
+		}
+
+		public void chooseRightClickMenuOption(int index) {
+			events.add("menu index=" + index + " text=" + menuOptions[index]);
+			rightClickMenuOpen = false;
+		}
+
+		public boolean isTradeOpen() {
+			return tradeOpen;
+		}
+
+		public boolean isTradeConfirmStage() {
+			return tradeConfirmStage;
+		}
+
+		public String tradePartnerName() {
+			return "Nearby Friend";
+		}
+
+		public boolean tradeSelfAccepted() {
+			return tradeSelfAccepted;
+		}
+
+		public boolean tradeOtherAccepted() {
+			return tradeOtherAccepted;
+		}
+
+		public int tradeMyItemCount() {
+			return tradeMyIds.length;
+		}
+
+		public int tradeMyItemId(int index) {
+			return tradeMyIds[index];
+		}
+
+		public int tradeMyItemAmount(int index) {
+			return tradeMyAmounts[index];
+		}
+
+		public String tradeMyItemName(int index) {
+			return "Lobster";
+		}
+
+		public int tradeTheirItemCount() {
+			return tradeTheirIds.length;
+		}
+
+		public int tradeTheirItemId(int index) {
+			return tradeTheirIds[index];
+		}
+
+		public int tradeTheirItemAmount(int index) {
+			return tradeTheirAmounts[index];
+		}
+
+		public String tradeTheirItemName(int index) {
+			return index == 0 ? "Bucket" : "Coins";
+		}
+
+		public void acceptTradeOffer() {
+			tradeSelfAccepted = true;
+			events.add("trade-accept stage=offer");
+		}
+
+		public void acceptTradeConfirm() {
+			tradeSelfAccepted = true;
+			events.add("trade-accept stage=confirm");
 		}
 
 		public boolean isNpcDialogueOpen() {
@@ -238,6 +326,10 @@ public class ReflexBridgeHarness {
 
 		public int playerZ(int i) {
 			return playerAbsZ[i];
+		}
+
+		public void tradePlayer(int serverIndex) {
+			events.add("trade-player sidx=" + serverIndex);
 		}
 
 		// Two scripted visible NPCs: server index 7 is type 474 two tiles
@@ -426,7 +518,19 @@ public class ReflexBridgeHarness {
 			host.walking = true;
 			host.inCombat = true;
 			host.rightClickMenuOpen = true;
+			host.tradeOpen = true;
 			host.npcDialogueOpen = true;
+		}
+		if ("exec-menu".equals(mode)) {
+			host.rightClickMenuOpen = true;
+		}
+		if ("exec-trade-offer".equals(mode)) {
+			host.tradeOpen = true;
+		}
+		if ("exec-trade-confirm".equals(mode)) {
+			host.tradeOpen = true;
+			host.tradeConfirmStage = true;
+			host.tradeOtherAccepted = false;
 		}
 		if ("state-dialogue".equals(mode)) {
 			bridge.recordMessage("quest", false, "", "Guide: What can I do for you?");

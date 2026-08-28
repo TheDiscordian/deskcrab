@@ -52,7 +52,9 @@ Three parts:
    `fatigue` (0–100), `x` and `z` (world coordinates), `walking` (the local player still has
    an unconsumed client waypoint, or a movement-capable bridge action was dispatched within the
    last second and may still be waiting for its server path), `in_combat`,
-   `right_click_menu_open` (the ordinary world context menu is visibly open),
+   `right_click_menu_open` (the ordinary world context menu is visibly open), `menu_options`
+   (its live visible entries as colour-free text, otherwise empty), `trade_open` (either ordinary
+   player-trade screen is visible),
    `talking_to_npc` (an NPC choice menu is open or
    the client received NPC-spoken quest dialogue within the last four seconds; NPC speech is the
    quest-channel `Name: words` form with an empty sender, not the local player's named reply), `opponent`
@@ -117,15 +119,19 @@ Three parts:
    inventory items shown for deposit even when no bank stack exists),
    `bank-deposit` / `bank-withdraw` and `shop-buy` / `shop-sell` (send the
    open interface's ordinary transaction by item identity and positive amount,
-   without selecting a row or an amount button), and `take-ground` (walk to and take a
+   without selecting a row or an amount button), `trade-player` (send the ordinary Trade-with
+   request to a currently visible non-local player by server identity), `choose-menu` (choose an
+   option from the context menu that is open now by a case-insensitive text fragment; an absent or
+   ambiguous fragment is refused), and `take-ground` (walk to and take a
    currently visible ground item identified by item id and world tile). `talk-npc`,
    `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `click-shop`,
-   `click-bank`, the four bank/shop transaction actions, `take-ground`,
+   `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `take-ground`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
    (rule 9). The reflex table cannot author speech. Nothing in this layer can log in, create or
-   delete a character, drop, or trade. Spending through `shop-buy` is available
+   delete a character or drop. Trading is available only through a deliberate player action;
+   neither executable rule table can initiate it. Spending through `shop-buy` is available
    only to a deliberate action; it is absent from both executable rule tables.
    The bridge refuses any action type it does not know.
 
@@ -143,7 +149,8 @@ Three parts:
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
    for click-inventory, click-shop, and click-bank; `item` and `amount` for the
-   four transaction actions; `x`, `z`, and `item` for take-ground). The bridge resolves
+   four transaction actions; `sidx` for trade-player; `text` for choose-menu; `x`, `z`, and
+   `item` for take-ground). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
@@ -157,6 +164,10 @@ Three parts:
    positive live quantity in the relevant source (shop stock, bank, or
    inventory), clamps an overlarge request to that quantity, and then sends the
    ordinary client transaction. Amount zero or negative is refused.
+   `trade-player` re-matches the server index against the current visible player list and refuses
+   a vanished player. `choose-menu` strips client colour tags, normalizes case and whitespace,
+   prefers one exact full-label match, and otherwise requires exactly one containing match; it
+   never guesses between two options.
    `take-ground` re-matches the item id at the named tile
    immediately before sending the game's own walk-and-take action; a missing tile or changed item
    is refused rather than taking a replacement. `action.json` is a single slot: one action, and the engine never
