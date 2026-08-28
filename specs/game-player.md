@@ -377,6 +377,10 @@ deliberate-play channel.
     terminal, still dies with the launching service's cgroup. Where no user manager is
     reachable the harness refuses to start rather than pretend durability;
     `ORSC_HEADLESS_DETACH=setsid` is the explicit sandbox opt-down.
+    A client-only maintenance restart retains Xvfb and the spectator and waits for the replacement
+    bridge's first fresh snapshot before returning. The player entrypoint gives a live client the
+    same bounded first-snapshot grace before declaring the stack unhealthy, so ordinary resume
+    cannot turn that expected boot gap into a whole-stack or spectator restart.
 
 14. Playing is one ordinary installed command. `betty-openrsc` is committed in the game
     checkout's repository (`Core-Framework/headless/betty-openrsc`), deployed into the live

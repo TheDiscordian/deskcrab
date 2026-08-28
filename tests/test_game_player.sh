@@ -1463,6 +1463,14 @@ check_eq "which is a transient systemd --user unit, not a child of the caller" \
     "$(grep -c 'systemd-run --user' "$HEADLESS")" "1"
 check_eq "bare setsid survives only as the explicit no-user-manager fallback" \
     "$(grep -c 'setsid nohup' "$HEADLESS")" "1"
+contains "$(sed -n '/^cmd_client()/,/^}/p' "$HEADLESS")" \
+    'client restarted but did not publish bridge state' \
+    && ok "client-only restart waits through the replacement bridge boot gap" \
+    || fail "client-only restart waits through the replacement bridge boot gap"
+BOC_REAL="$(readlink -f "$GAME_TREE/headless/betty-openrsc")"
+contains "$(sed -n '/^stack_up()/,/^}/p' "$BOC_REAL")" 'for i in $(seq 1 40)' \
+    && ok "player resume grants a live client first-snapshot grace" \
+    || fail "player resume grants a live client first-snapshot grace"
 
 # Functional: drive the real engine door with the systemd doors shimmed at
 # the head of PATH, and watch the engine start as the orsc-engine unit.
