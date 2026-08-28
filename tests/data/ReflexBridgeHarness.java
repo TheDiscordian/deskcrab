@@ -32,9 +32,12 @@ public class ReflexBridgeHarness {
 		boolean loggedIn = true;
 		boolean failing = false;
 		boolean projectionsVisible = true;
+		boolean routeAvailable = true;
 		boolean walking = false;
 		boolean inCombat = false;
 		boolean npcDialogueOpen = false;
+		boolean shopOpen = true;
+		boolean bankOpen = true;
 		int hitsNow = 4;
 		final List<String> events = new ArrayList<String>();
 		final int[] invIds = {132, 81};
@@ -109,6 +112,99 @@ public class ReflexBridgeHarness {
 
 		public boolean isConsumable(int slot) {
 			return invIds[slot] == 132;
+		}
+
+		final int[] shopIds = {10, 42, -1};
+		final int[] shopCounts = {50, 3, 0};
+
+		public boolean isShopOpen() {
+			return shopOpen;
+		}
+
+		public int shopSlotCount() {
+			return shopIds.length;
+		}
+
+		public int shopItemId(int slot) {
+			return shopIds[slot];
+		}
+
+		public int shopItemAmount(int slot) {
+			return shopCounts[slot];
+		}
+
+		public boolean shopItemNoted(int slot) {
+			return slot == 1;
+		}
+
+		public String shopItemName(int slot) {
+			return slot == 0 ? "Coins" : "Test \"parcel\"";
+		}
+
+		public int[] shopItemScreenPoint(int itemId) {
+			for (int slot = 0; slot < shopIds.length; slot++) {
+				if (shopIds[slot] == itemId) {
+					return projectionsVisible ? new int[]{710 + slot, 410 + slot} : null;
+				}
+			}
+			return null;
+		}
+
+		final int[] bankIds = {81, 145};
+		final int[] bankCounts = {12, 1};
+
+		public boolean isBankOpen() {
+			return bankOpen;
+		}
+
+		public int bankItemCount() {
+			return bankIds.length;
+		}
+
+		public int bankItemId(int slot) {
+			return bankIds[slot];
+		}
+
+		public int bankItemAmount(int slot) {
+			return bankCounts[slot];
+		}
+
+		public String bankItemName(int slot) {
+			return slot == 0 ? "Lobster" : "Bucket";
+		}
+
+		public int[] bankItemScreenPoint(int itemId) {
+			for (int slot = 0; slot < bankIds.length; slot++) {
+				if (bankIds[slot] == itemId) {
+					return projectionsVisible ? new int[]{810 + slot, 510 + slot} : null;
+				}
+			}
+			return null;
+		}
+
+		final int[] playerSidx = {22, 11};
+		final String[] playerNames = {"Distant Player", "Nearby Friend"};
+		final int[] playerAbsX = {130, 121};
+		final int[] playerAbsZ = {660, 650};
+
+		public int playerCount() {
+			return playerSidx.length;
+		}
+
+		public int playerServerIndex(int i) {
+			return playerSidx[i];
+		}
+
+		public String playerName(int i) {
+			return playerNames[i];
+		}
+
+		public int playerX(int i) {
+			return playerAbsX[i];
+		}
+
+		public int playerZ(int i) {
+			return playerAbsZ[i];
 		}
 
 		// Two scripted visible NPCs: server index 7 is type 474 two tiles
@@ -252,8 +348,12 @@ public class ReflexBridgeHarness {
 			events.add("eat slot=" + slot);
 		}
 
-		public void walkToTile(int absX, int absZ) {
+		public boolean walkTowardTile(int absX, int absZ) {
+			if (!routeAvailable) {
+				return false;
+			}
 			events.add("walk x=" + absX + " z=" + absZ);
+			return true;
 		}
 
 		public void sendLocalChat(String text) {
@@ -301,6 +401,13 @@ public class ReflexBridgeHarness {
 		}
 		if ("exec-offscreen".equals(mode)) {
 			host.projectionsVisible = false;
+		}
+		if ("exec-no-route".equals(mode)) {
+			host.routeAvailable = false;
+		}
+		if ("exec-closed".equals(mode)) {
+			host.shopOpen = false;
+			host.bankOpen = false;
 		}
 		if ("hurt".equals(mode)) {
 			host.hitsNow = 3;

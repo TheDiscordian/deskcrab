@@ -66,6 +66,18 @@ assert s["walking"] is False and s["in_combat"] is False
 assert s["talking_to_npc"] is False
 assert s["opponent"] is None
 assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
+assert s["shop_open"] is True and s["shop_items"] == [
+    {"slot": 0, "id": 10, "name": "Coins", "count": 50, "noted": False},
+    {"slot": 1, "id": 42, "name": 'Test "parcel"', "count": 3, "noted": True},
+], s.get("shop_items")
+assert s["bank_open"] is True and s["bank_items"] == [
+    {"slot": 0, "id": 81, "name": "Lobster", "count": 12},
+    {"slot": 1, "id": 145, "name": "Bucket", "count": 1},
+], s.get("bank_items")
+assert s["players"] == [
+    {"sidx": 11, "name": "Nearby Friend", "x": 121, "z": 650},
+    {"sidx": 22, "name": "Distant Player", "x": 130, "z": 660},
+], s.get("players")
 assert s["ground_items"] == [
     {"id": 27, "x": 121, "z": 650},
     {"id": 10, "x": 130, "z": 650},
@@ -176,6 +188,12 @@ OUT="$(harness exec)"
 contains "$OUT" "walk x=125 z=655" && ok "walk reaches the host with its coordinates" \
     || fail "walk reaches the host with its coordinates" "$OUT"
 check_eq "and is receipted done" "$(rstatus)" "done"
+wact 571 "$(now_ms)" "type=walk" "x=900" "z=900"
+OUT="$(harness exec-no-route)"
+refute "a destination with no progressive collision path sends no walk" \
+    contains "$OUT" "walk x="
+check_eq "and is refused truthfully instead of receipted done" \
+    "$(rstatus)" "refused-no-path"
 wact 570 "$(now_ms)" "type=walk" "x=126" "z=655"
 OUT="$(harness exec 13)"
 python3 - "$S/state.json" <<'PY' && ok "a dispatched walk remains walking until its server path can appear" \
@@ -431,6 +449,36 @@ check_eq "an unsupported inventory button is refused" "$(rstatus)" "refused-bad-
 wact 88 "$(now_ms)" "type=click-inventory" "item=81" "button=1"
 harness exec-offscreen >/dev/null
 check_eq "an inventory point that cannot be rendered is refused" "$(rstatus)" "refused-not-on-screen"
+
+echo
+echo "click-shop and click-bank resolve interface items by identity (rules 3, 5-7):"
+wact 881 "$(now_ms)" "type=click-shop" "item=42" "button=2"
+OUT="$(harness exec)"
+contains "$OUT" "click x=711 y=411 button=2" \
+    && ok "a shop item id resolves to its current live slot" \
+    || fail "a shop item id resolves to its current live slot" "$OUT"
+check_eq "the shop click is receipted done" "$(rstatus)" "done"
+wact 882 "$(now_ms)" "type=click-bank" "item=145" "button=3"
+OUT="$(harness exec)"
+contains "$OUT" "click x=811 y=511 button=3" \
+    && ok "a bank item id resolves to its exposed live slot" \
+    || fail "a bank item id resolves to its exposed live slot" "$OUT"
+check_eq "the bank click is receipted done" "$(rstatus)" "done"
+wact 883 "$(now_ms)" "type=click-bank" "item=999" "button=1"
+harness exec >/dev/null
+check_eq "a missing bank item is refused" "$(rstatus)" "refused-no-such-item"
+wact 884 "$(now_ms)" "type=click-shop" "item=10" "button=4"
+harness exec >/dev/null
+check_eq "an unsupported shop button is refused" "$(rstatus)" "refused-bad-button"
+wact 885 "$(now_ms)" "type=click-shop" "item=10" "button=1"
+harness exec-closed >/dev/null
+check_eq "a closed shop is refused before resolving a slot" "$(rstatus)" "refused-shop-closed"
+wact 886 "$(now_ms)" "type=click-bank" "item=81" "button=1"
+harness exec-closed >/dev/null
+check_eq "a closed bank is refused before resolving a slot" "$(rstatus)" "refused-bank-closed"
+wact 887 "$(now_ms)" "type=click-bank" "item=81" "button=1"
+harness exec-offscreen >/dev/null
+check_eq "an unavailable bank point is refused" "$(rstatus)" "refused-not-on-screen"
 
 echo
 echo "take-ground resolves a visible item identity at execution time (rules 3, 5-7):"

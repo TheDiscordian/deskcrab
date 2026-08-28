@@ -56,6 +56,8 @@ deliberate-play channel.
    - `object_visible` (int): the snapshot's `objects` list holds that type id.
    - `bound_visible` (int): the snapshot's `bounds` list holds that type id.
    - `ground_item_visible` (int): the snapshot's `ground_items` list holds that item id.
+   - `shop_item_visible` / `bank_item_visible` (int): the respective open interface's item list
+     holds that item id.
    - `message_contains` (string, non-empty, single-line): some message in the snapshot's
      `messages` contains it, case-insensitively.
    - `near_tile` (`{"x":…,"z":…,"radius":…}`): Chebyshev distance from the player's tile is at
@@ -85,11 +87,15 @@ deliberate-play channel.
    the item id; optional `button` 1, 2, or 3 defaulting to 1). The compiled inventory action carries
    only that item identity. The bridge finds its current slot, opens the inventory tab, and resolves
    the slot centre immediately before clicking; a missing item is refused instead of allowing a
-   remembered slot to target its replacement), and `take-ground` (`item`: the item id). The
+   remembered slot to target its replacement), `click-shop` and `click-bank` (`item`: the item id;
+   optional `button` 1, 2, or 3 defaulting to 1). The compiled action again carries only item
+   identity. The bridge refuses a closed interface or missing item; otherwise it exposes the
+   current page or scroll row containing the item and resolves that live slot immediately before
+   clicking), and `take-ground` (`item`: the item id). The
    nearest matching `ground_items` entry is compiled to item id and current world tile; the bridge
    re-matches both immediately before sending the game's own walk-and-take action. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
-   that do not name a rendered game entity or current inventory item remain structurally outside the vocabulary — an action
+   that do not name a rendered game entity or current inventory, shop, or bank item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.
 
 6. `unfinished` is the honesty ledger of migration: entries (`name`, `note`) for learned plays
@@ -126,6 +132,8 @@ deliberate-play channel.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.
+   - `player-message-settling` (exit 3): at least one incoming player message is pending, and
+     rule 7b's five-second burst window is still collecting the rest of the message chain.
    - `system-message` (exit 7): rule 7c's idle movement warning is pending; the player must walk
      to a different tile before any non-walk action continues.
    `step --max N` repeats while rules fire cleanly (at most N actions), then reports the
@@ -134,16 +142,25 @@ deliberate-play channel.
 7b. Incoming player chat interrupts ordinary rule selection. Every structured snapshot message
    with `incoming: true` and channel `local` or `private` is copied into the existing
    `player-engine-state.json`, keyed by its bridge message id. Repeated snapshots cannot duplicate
-   it, and it remains pending after it scrolls out of the snapshot. Before rules are evaluated,
-   `step` reports the oldest pending message as
-   `player-message id=… channel=… sender=… text=…` and exits 6, which licenses the Sol player
-   to consider the message immediately. Player information is part of play: the player may change
+   it, and it remains pending after it scrolls out of the snapshot. The first new message opens a
+   five-second settle window, and every additional incoming message extends that window to five
+   seconds after the latest arrival. Pending chat blocks ordinary actions immediately, but `step`
+   reports `player-message-settling` with exit 3 until the window closes; the resident observer
+   measures this deadline without a shell sleep or a model call. Urgent system messages retain
+   priority and are never delayed by this window. Once settled, messages from the oldest pending
+   sender/channel conversation are reported together as one structured burst. Its actionable
+   `id` is the newest message in that burst, so one `reply` handles the whole preceding chain;
+   `step` reports `player-message id=… channel=… sender=… count=… burst=…` and exits 6.
+   Player information is part of play: the player may change
    the current plan when the message supplies help, identifies a problem, or requests
    coordination.
 
    `reply MESSAGE_ID TEXT` answers through the same shared action slot and receipt path as every
-   other deliberate action. A local incoming message compiles to `chat-local`; a private incoming
-   message compiles to `chat-private` with the original sender as target. The bridge receipt proves
+   other deliberate action. A private incoming message compiles to `chat-private` with the
+   original sender as target. A local incoming message compiles at reply time: it remains
+   `chat-local` only while a case-insensitive match for the sender remains in the snapshot's
+   current visible `players`; if that player has left the nearby list, it becomes `chat-private`
+   to the original sender instead. The bridge receipt proves
    dispatch; only the matching outgoing message echo in a later snapshot proves server acceptance
    and marks the message handled. A refusal, a server error, or an unconfirmed dispatch leaves it
    pending. Handling one message also
@@ -185,6 +202,22 @@ deliberate-play channel.
    observed state as `condition-timeout` and exits 2, so a missing transition can never block the
    player permanently. It consumes no action slot, creates no second game-state path, uses no
    model call, and performs no timed polling.
+
+7e. Long-distance walking is a durable route in this same ACTIONS player. `route X Z
+   [--arrive N]` atomically records one absolute destination, the current objective, and an arrival
+   tolerance from 0 through 10 in `$DESKCRAB_GAME_DIR/route.json`; `route` with no coordinates
+   reports it, and `route --clear` cancels it. The resident runner treats an active route as its
+   lowest-priority synthetic walk rule, so every ordinary learned interaction may interrupt it and
+   incoming player or urgent system messages still outrank it. Each `walk` action asks the client
+   for one collision-aware regional leg under game-reflex rule 7. A verified shorter distance is
+   `route-progress` and immediately licenses the next leg without a model call; reaching the
+   destination is `route-complete` and removes the route. A refused leg or a settled tile no closer
+   to the destination marks the route `blocked` at the current position and visible obstacle
+   signature, reports exit 4 to Sol, and emits no further walk until that position or obstacle
+   signature changes. Changing the durable objective cancels the stale route rather than walking
+   toward an old goal. The route survives player and runner process boundaries, owns no second
+   action slot or observer, uses no screenshots or timed polling, and cannot loop forever against
+   an unchanged wall.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule
@@ -228,7 +261,7 @@ deliberate-play channel.
     door `orsc-headless.sh wait-until CONDITION [SECONDS]` delegates to that same module.
     The playing policy the sittings read
     makes rules-first mandatory: reasoning about the next action is licensed only by rule 7's
-    `no-rule-matched` (exit 4), and a newly verified play must become an executable rule — but
+    `no-rule-matched` or rule 7e's `route-blocked` (exit 4), and a newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
     leaves a `note` in the outcome queue and keeps moving. While rule 15's resident runner is
     live, `step` defers to it instead of evaluating — one engine-state writer at a time — and

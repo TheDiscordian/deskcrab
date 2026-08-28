@@ -59,7 +59,9 @@ Three parts:
    in slot order), `messages` (the last 20 messages seen by the client, newest last; each is
    `{"id":…,"channel":…,"incoming":…,"sender":…,"text":…}`, where `id` is unique across
    client restarts, `channel` distinguishes `local`, `private`, and non-player message types, and
-   `incoming` is true only for chat received from another player), `npcs` (the NPCs the
+   `incoming` is true only for chat received from another player), `players` (other players the
+   client currently holds as visible, nearest first, capped at 24: each
+   `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
    client currently holds as visible, nearest to the player first, capped at 12: each
    `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
    its world tile), `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
@@ -67,8 +69,13 @@ Three parts:
    `{"id":…,"x":…,"z":…,"dir":…}` — type id, world tile, facing direction), and `bounds` (the
    wall objects — doors and other boundaries — likewise nearest first, capped at 12, the same
    four fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
-   tile stay distinct), and `ground_items` (items currently visible on the ground, nearest first,
-   capped at 12: each `{"id":…,"x":…,"z":…}` — item id and world tile). Only what the
+   tile stay distinct), `ground_items` (items currently visible on the ground, nearest first,
+   capped at 12: each `{"id":…,"x":…,"z":…}` — item id and world tile), `shop_open` and
+   `bank_open`, plus `shop_items` and `bank_items`. A shop item is
+   `{"slot":…,"id":…,"name":…,"count":…,"noted":…}` from the open shop's 40-slot
+   display. A bank item is `{"slot":…,"id":…,"name":…,"count":…}` from the complete
+   item list the open bank interface has already received; it is empty while the bank is closed.
+   Only what the
    player's own client can see is ever in it; the bridge reads
    no server internals.
 
@@ -86,8 +93,8 @@ Three parts:
 ### Actions
 
 5. The action vocabulary is closed, and grows only by a change to this spec: `eat` (use one
-   inventory food item, by slot), `walk` (walk to an absolute tile; `flee` in a rule compiles to
-   this), `warn` (display a local client-side message to the player — nothing is sent to the
+   inventory food item, by slot), `walk` (walk toward an absolute tile; `flee` in a rule compiles
+   to this), `warn` (display a local client-side message to the player — nothing is sent to the
    server), `chat-local` (send public chat to nearby players), `chat-private` (send a private
    message to a named online player at any distance), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
    same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
@@ -100,9 +107,12 @@ Three parts:
    commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
    game object, or wall object identified by stable game identity, then click button 1, 2, or 3),
    `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
+   current slot centre, and click button 1, 2, or 3), `click-shop` and `click-bank` (find an item
+   by id in the currently open interface, expose its containing page or scroll row, resolve its
    current slot centre, and click button 1, 2, or 3), and `take-ground` (walk to and take a
    currently visible ground item identified by item id and world tile). `talk-npc`,
-   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `take-ground`,
+   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `click-shop`,
+   `click-bank`, `take-ground`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
@@ -122,14 +132,17 @@ Three parts:
    tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
-   for click-inventory; `x`, `z`, and `item` for take-ground). The bridge resolves
+   for click-inventory, click-shop, and click-bank; `x`, `z`, and `item` for take-ground). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
    `refused-not-on-screen`; no screen coordinates cross the action file. For click-inventory it
    finds the first matching current item id, opens the inventory tab, and calculates the slot
    centre from the current client UI; a missing item is `refused-no-such-item`. No slot or screen
-   coordinate crosses the action file. `take-ground` re-matches the item id at the named tile
+   coordinate crosses the action file. `click-shop` and `click-bank` use the same identity-only
+   contract. A closed interface or missing item is refused; for a bank item the bridge switches
+   the live bank to the page or scroll row containing the item before resolving its slot centre.
+   `take-ground` re-matches the item id at the named tile
    immediately before sending the game's own walk-and-take action; a missing tile or changed item
    is refused rather than taking a replacement. `action.json` is a single slot: one action, and the engine never
    writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
@@ -150,9 +163,17 @@ Three parts:
    the bridge consume, bury, or light something else. A check that fails still deletes the file
    and, on the game channel, writes the receipt with status `held`, `stale`, or `refused-<why>` —
    a refused action is never silently dropped. Notices need no receipt; `action.json` always gets
-   one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`. Chat text and
+   one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`. A `walk` uses
+   the client's collision map and pathfinder. If its destination is outside the currently loaded
+   map, the client clips the request to the edge of the current region in the destination's
+   direction, searches that edge for a reachable alternative when the direct crossing is blocked,
+   and dispatches one regional leg. A later action re-plans from the resulting live region; no
+   guessed intermediate coordinates cross the action file. If the destination is already loaded,
+   the walk remains exact. A walk for which no progressive local path exists is
+   `refused-no-path`, never `done`. Chat text and
    private targets must be non-empty single lines; text is capped at the client's 80-character
-   input limit and targets at 40 characters. `click-entity` and `click-inventory` accept only mouse
+   input limit and targets at 40 characters. `click-entity`, `click-inventory`, `click-shop`, and
+   `click-bank` accept only mouse
    buttons 1, 2, and 3, and never fall back to coordinates supplied by the caller. Invalid values
    are refused rather than truncated.
 

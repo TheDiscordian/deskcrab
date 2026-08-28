@@ -27,10 +27,11 @@ import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 
 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
 TRIGGER_KEYS = ("objective_is", "npc_visible", "object_visible", "bound_visible",
-                "ground_item_visible", "message_contains", "near_tile",
+                "ground_item_visible", "shop_item_visible", "bank_item_visible",
+                "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks")
 ACTIONS = ("talk-npc", "walk", "interact-object", "interact-bound", "click-entity",
-           "click-inventory", "take-ground")
+           "click-inventory", "click-shop", "click-bank", "take-ground")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
@@ -55,6 +56,9 @@ RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) mea
                             # runner owns evaluation; wide enough to cover one walk's
                             # verification, and a crashed runner fails the pid check at once
 GAP_STABLE_MS = 750          # moving across tiles is one situation, not one Sol wake per tile
+PLAYER_MESSAGE_SETTLE_MS = 5000  # collect one RuneScape-length chat chain before Sol replies
+ROUTE_RULE_NAME = "active-route"
+ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
 
 DEFAULTS = {
     "stale_ms": 2000,
@@ -90,6 +94,10 @@ def objective_path() -> Path:
     return game_dir() / "objective"
 
 
+def route_path() -> Path:
+    return game_dir() / "route.json"
+
+
 def tests_path() -> Path:
     return game_dir() / "learned-rule-tests.json"
 
@@ -112,6 +120,60 @@ def die(msg: str) -> None:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def load_route():
+    try:
+        route = json.loads(route_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    if not isinstance(route, dict) or route.get("v") != 1 \
+            or not isinstance(route.get("x"), int) \
+            or not isinstance(route.get("z"), int) \
+            or not isinstance(route.get("arrive"), int) \
+            or not 0 <= route["arrive"] <= 10 \
+            or not isinstance(route.get("objective"), str) \
+            or route.get("status") not in ("active", "blocked"):
+        return {"status": "invalid"}
+    return route
+
+
+def save_route(route: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(route_path(), json.dumps(route, indent=2) + "\n")
+
+
+def clear_route() -> None:
+    try:
+        route_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def route_distance(x: int, z: int, route: dict) -> int:
+    return max(abs(x - route["x"]), abs(z - route["z"]))
+
+
+def route_obstacle_signature(snap: dict) -> str:
+    """Facts whose change can make a locally blocked route worth retrying."""
+    shape = {
+        "x": snap.get("x"), "z": snap.get("z"),
+        "objects": sorted((o.get("id"), o.get("x"), o.get("z"), o.get("dir"))
+                          for o in snap.get("objects") or [] if isinstance(o, dict)),
+        "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"))
+                         for b in snap.get("bounds") or [] if isinstance(b, dict)),
+    }
+    return json.dumps(shape, sort_keys=True, separators=(",", ":"))
+
+
+def block_route(route: dict, snap: dict, reason: str) -> None:
+    blocked = dict(route)
+    blocked.update({"status": "blocked", "blocked_reason": reason,
+                    "blocked_signature": route_obstacle_signature(snap),
+                    "blocked_ts": now_ms()})
+    save_route(blocked)
 
 
 # --------------------------------------------------------------------------
@@ -195,7 +257,7 @@ def validate_config(cfg: dict) -> None:
                     bad(f"{where}: trigger.near_tile must be "
                         "{{\"x\":int,\"z\":int,\"radius\":0..50}}")
             elif key in ("npc_visible", "object_visible", "bound_visible",
-                         "ground_item_visible",
+                         "ground_item_visible", "shop_item_visible", "bank_item_visible",
                          "inventory_has", "inventory_lacks"):
                 if not isinstance(val, int) or val < 0:
                     bad(f"{where}: trigger.{key} must be a non-negative type/item id")
@@ -233,14 +295,14 @@ def validate_config(cfg: dict) -> None:
                     "entity=<type id>, with optional button")
             if "button" in action and action["button"] not in (1, 2, 3):
                 bad(f"{where}: click-entity button must be 1, 2, or 3")
-        elif atype == "click-inventory":
+        elif atype in ("click-inventory", "click-shop", "click-bank"):
             if set(action) - {"type", "item", "button"} \
                     or not isinstance(action.get("item"), int) \
                     or action["item"] < 0:
-                bad(f"{where}: click-inventory takes item=<item id>, "
+                bad(f"{where}: {atype} takes item=<item id>, "
                     "with optional button")
             if "button" in action and action["button"] not in (1, 2, 3):
-                bad(f"{where}: click-inventory button must be 1, 2, or 3")
+                bad(f"{where}: {atype} button must be 1, 2, or 3")
         elif atype == "take-ground":
             if set(action) != {"type", "item"} \
                     or not isinstance(action.get("item"), int) \
@@ -308,6 +370,7 @@ def load_player_state() -> dict:
     est.setdefault("objective_fired", {})   # "rule\tobjective" -> epoch ms
     est.setdefault("seen_message_ids", [])
     est.setdefault("pending_messages", [])
+    est.setdefault("message_settle_until", 0)
     est.setdefault("seen_system_message_ids", [])
     est.setdefault("pending_system_messages", [])
     return est
@@ -342,10 +405,12 @@ class player_state_lock:
         self.fh.close()
 
 
-def capture_player_messages(snap: dict, est: dict, events: list) -> None:
+def capture_player_messages(snap: dict, est: dict, events: list) -> int:
     """Copy new incoming local/private messages into the existing engine state."""
     seen = set(est.get("seen_message_ids") or [])
     pending = est.get("pending_messages") or []
+    captured = 0
+    captured_at = now_ms()
     for message in snap.get("messages") or []:
         if not isinstance(message, dict):
             continue
@@ -360,17 +425,42 @@ def capture_player_messages(snap: dict, est: dict, events: list) -> None:
                 or not isinstance(text, str) or not text.strip():
             continue
         item = {"id": message_id, "channel": channel,
-                "sender": sender, "text": text}
+                "sender": sender, "text": text, "captured_ts": captured_at}
         pending.append(item)
         seen.add(message_id)
+        captured += 1
         events.append({"ts": now_ms(), "kind": "player-message-received", **item})
     est["pending_messages"] = sorted(pending, key=lambda m: m["id"])
     est["seen_message_ids"] = sorted(seen)[-500:]
+    if captured:
+        est["message_settle_until"] = captured_at + PLAYER_MESSAGE_SETTLE_MS
+    return captured
+
+
+def pending_message_batch(est: dict) -> list:
+    """The oldest sender/channel conversation, including its full pending chain."""
+    pending = sorted(est.get("pending_messages") or [], key=lambda m: m["id"])
+    if not pending:
+        return []
+    first = pending[0]
+    sender = str(first.get("sender", "")).casefold()
+    channel = first.get("channel")
+    return [m for m in pending
+            if m.get("channel") == channel
+            and str(m.get("sender", "")).casefold() == sender]
+
+
+def pending_message_burst(batch: list) -> str:
+    return json.dumps([
+        {"id": m["id"], "text": m["text"]} for m in batch
+    ], separators=(",", ":"), ensure_ascii=False)
 
 
 def oldest_pending_message(est: dict):
-    pending = est.get("pending_messages") or []
-    return min(pending, key=lambda m: m["id"]) if pending else None
+    batch = pending_message_batch(est)
+    # Replying to the newest id clears every older message in this same
+    # sender/channel chain, while a different player's burst remains pending.
+    return batch[-1] if batch else None
 
 
 def is_idle_movement_warning(message: dict) -> bool:
@@ -602,6 +692,14 @@ def make_trigger_fn(objective: str):
             if not any(i.get("id") == trig["ground_item_visible"]
                        for i in snap.get("ground_items") or []):
                 return False
+        if "shop_item_visible" in trig:
+            if not any(i.get("id") == trig["shop_item_visible"]
+                       for i in snap.get("shop_items") or []):
+                return False
+        if "bank_item_visible" in trig:
+            if not any(i.get("id") == trig["bank_item_visible"]
+                       for i in snap.get("bank_items") or []):
+                return False
         if "message_contains" in trig:
             want = trig["message_contains"].lower()
             texts = [(m.get("text", "") if isinstance(m, dict) else str(m))
@@ -682,6 +780,16 @@ def compile_player_action(rule, snap, food, eat_pick):
             return {"type": "click-inventory", "item": want,
                     "button": action.get("button", 1)}, None
         return None, "item-not-held"
+    if action["type"] in ("click-shop", "click-bank"):
+        interface = action["type"].split("-", 1)[1]
+        want = action["item"]
+        if not snap.get(f"{interface}_open"):
+            return None, f"{interface}-closed"
+        if any(entry.get("id") == want
+               for entry in snap.get(f"{interface}_items") or []):
+            return {"type": action["type"], "item": want,
+                    "button": action.get("button", 1)}, None
+        return None, f"item-not-in-{interface}"
     if action["type"] == "take-ground":
         want = action["item"]
         for item in snap.get("ground_items") or []:  # already nearest-first
@@ -711,10 +819,15 @@ def snap_brief(snap: dict) -> dict:
                                       "walking", "in_combat", "talking_to_npc")}
     brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
     brief["messages"] = (snap.get("messages") or [])[-5:]
+    brief["players"] = (snap.get("players") or [])[:24]
     brief["npcs"] = (snap.get("npcs") or [])[:12]
     brief["objects"] = (snap.get("objects") or [])[:12]
     brief["bounds"] = (snap.get("bounds") or [])[:12]
     brief["ground_items"] = (snap.get("ground_items") or [])[:12]
+    brief["shop_open"] = bool(snap.get("shop_open"))
+    brief["shop_items"] = (snap.get("shop_items") or [])[:40]
+    brief["bank_open"] = bool(snap.get("bank_open"))
+    brief["bank_items"] = snap.get("bank_items") or []
     return brief
 
 
@@ -866,7 +979,9 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         capture_player_messages(snap, est, message_events)
         capture_urgent_system_messages(snap, est, message_events)
         pending_system_message = oldest_pending_system_message(est)
-        pending_message = oldest_pending_message(est)
+        pending_batch = pending_message_batch(est)
+        pending_message = pending_batch[-1] if pending_batch else None
+        settle_until = est.get("message_settle_until", 0)
         save_player_state(est)
         flush_events(message_events)
     if pending_system_message is not None and snap.get("logged_in") \
@@ -877,9 +992,13 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         return "system-message", EXIT_SYSTEM_MESSAGE
     if pending_message is not None and snap.get("logged_in") \
             and now - snap.get("ts", 0) <= defaults["stale_ms"]:
+        if now < settle_until:
+            report("player-message-settling", count=len(pending_batch),
+                   remaining_ms=settle_until - now)
+            return "player-message-settling", EXIT_NOT_READY
         report("player-message", id=pending_message["id"],
                channel=pending_message["channel"], sender=pending_message["sender"],
-               text=pending_message["text"])
+               count=len(pending_batch), burst=pending_message_burst(pending_batch))
         return "player-message", EXIT_PLAYER_MESSAGE
 
     if (state_dir() / "action.json").exists():
@@ -889,6 +1008,39 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
     if snap.get("logged_in") and snap.get("tick", -1) == est["last_tick"]:
         report("same-tick", tick=snap.get("tick"))
         return "same-tick", EXIT_NOT_READY
+
+    # Spec rule 7e: one durable destination, executed by this resident runner
+    # as ordinary lowest-priority walk actions. Messages above and every
+    # learned interaction below retain priority.
+    route = load_route()
+    route_blocked = False
+    if route is not None and route.get("status") == "invalid":
+        report("route-invalid", file=str(route_path()))
+        return "route-blocked", EXIT_NO_RULE
+    if route is not None and route["objective"] != objective:
+        clear_route()
+        flush_events([{"ts": now_ms(), "kind": "route-cancelled",
+                       "reason": "objective-changed", "from": route["objective"],
+                       "to": objective}])
+        route = None
+    if route is not None:
+        px, pz = snap.get("x"), snap.get("z")
+        if isinstance(px, int) and isinstance(pz, int) \
+                and route_distance(px, pz, route) <= route["arrive"]:
+            clear_route()
+            flush_events([{"ts": now_ms(), "kind": "route-complete",
+                           "x": px, "z": pz, "target_x": route["x"],
+                           "target_z": route["z"]}])
+            route = None
+        elif route.get("status") == "blocked":
+            signature = route_obstacle_signature(snap)
+            if signature == route.get("blocked_signature"):
+                route_blocked = True
+            else:
+                route = {k: v for k, v in route.items()
+                         if not k.startswith("blocked_")}
+                route["status"] = "active"
+                save_route(route)
 
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
     # engine sees the table, so the machinery stays vocabulary-blind.
@@ -900,6 +1052,12 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         # Every player rule is game-channel by construction (spec rule 5);
         # the shared engine wants the key spelled out.
         live_rules.append(dict(rule, channel="game"))
+    if route is not None and not route_blocked:
+        live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
+                           "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
+                           "hold_ticks": 1, "channel": "game", "trigger": {},
+                           "action": {"type": "walk", "x": route["x"],
+                                      "z": route["z"], "arrive": route["arrive"]}})
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
@@ -926,6 +1084,16 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
         if now - snap.get("ts", 0) > config_defaults(cfg)["stale_ms"]:
             report("stale", age_ms=now - snap.get("ts", 0))
             return "stale", EXIT_NOT_READY
+        if route_blocked and route is not None:
+            report("route-blocked", x=snap.get("x"), z=snap.get("z"),
+                   target_x=route["x"], target_z=route["z"],
+                   reason=route.get("blocked_reason", "no-progress"),
+                   feedback=latest_system_feedback(snap))
+            return "route-blocked", EXIT_NO_RULE
+        if route is not None:
+            report("route-waiting", x=snap.get("x"), z=snap.get("z"),
+                   target_x=route["x"], target_z=route["z"])
+            return "route-waiting", EXIT_NOT_READY
         report("no-rule-matched", objective=objective or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
@@ -961,7 +1129,7 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
             break
         time.sleep(0.05)
 
-    rule = next((r for r in cfg["rules"] if r["name"] == rule_name), None)
+    rule = next((r for r in live_rules if r["name"] == rule_name), None)
 
     # Spec rule 7a: a walk's `done` receipt is dispatch, not arrival. Verify
     # against the target's coordinates before anything treats it as complete.
@@ -976,6 +1144,32 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
             flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
                            "id": action_id, "intended": {"x": action["x"], "z": action["z"]},
                            "settled": {"x": final_x, "z": final_z}}])
+
+    is_route = rule_name == ROUTE_RULE_NAME and route is not None
+    route_was_blocked = False
+    if is_route:
+        latest = game_reflex.read_snapshot() or snap
+        lx, lz = latest.get("x"), latest.get("z")
+        start_distance = route_distance(snap["x"], snap["z"], route)
+        if status == "done":
+            clear_route()
+            status = "route-complete"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"]}])
+        elif status == "walk-short" and isinstance(lx, int) and isinstance(lz, int) \
+                and route_distance(lx, lz, route) < start_distance:
+            status = "route-progress"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"]}])
+        else:
+            route_was_blocked = True
+            block_route(route, latest, status)
+            flush_events([{"ts": now_ms(), "kind": "route-blocked", "id": action_id,
+                           "reason": status, "x": lx, "z": lz,
+                           "target_x": route["x"], "target_z": route["z"]}])
+            status = "route-blocked"
 
     # The once-per-objective mark is spent only on a VERIFIED done (rule 7a).
     if rule is not None and rule.get("once_per_objective") and status == "done":
@@ -994,12 +1188,23 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
     append_outcome(outcome)
 
     if action["type"] == "walk" and final_x is not None:
-        report("fired", rule=rule_name, id=action_id, type=action["type"],
-               status=status, x=final_x, z=final_z, objective=objective or None)
+        if route_was_blocked:
+            report("route-blocked", id=action_id, x=final_x, z=final_z,
+                   target_x=action["x"], target_z=action["z"])
+        else:
+            report("fired", rule=rule_name, id=action_id, type=action["type"],
+                   status=status, x=final_x, z=final_z, objective=objective or None)
     else:
-        report("fired", rule=rule_name, id=action_id, type=action["type"],
-               status=status, objective=objective or None)
-    return "fired", (EXIT_FIRED if status == "done" else EXIT_NOT_DONE)
+        if route_was_blocked:
+            report("route-blocked", id=action_id, target_x=action["x"],
+                   target_z=action["z"], reason=status)
+        else:
+            report("fired", rule=rule_name, id=action_id, type=action["type"],
+                   status=status, objective=objective or None)
+    if route_was_blocked:
+        return "route-blocked", EXIT_NO_RULE
+    return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete")
+                     else EXIT_NOT_DONE)
 
 
 # --------------------------------------------------------------------------
@@ -1244,6 +1449,36 @@ def cmd_objective(args):
     print(f"objective: {args.name.strip()}")
 
 
+def cmd_route(args):
+    """Spec rule 7e: set, inspect, or clear the runner's durable route."""
+    if args.clear:
+        if args.x is not None or args.z is not None:
+            die("route --clear takes no coordinates")
+        clear_route()
+        print("route cleared")
+        return
+    if args.x is None and args.z is None:
+        route = load_route()
+        if route is None:
+            print("route: (none)")
+        elif route.get("status") == "invalid":
+            print(f"route: invalid ({route_path()})")
+        else:
+            print(f"route: status={route['status']} target=({route['x']},{route['z']}) "
+                  f"arrive={route['arrive']} objective={route['objective'] or '(none)'}"
+                  f"{(' reason=' + route.get('blocked_reason', '')) if route['status'] == 'blocked' else ''}")
+        return
+    if args.x is None or args.z is None:
+        die("route needs both X and Z")
+    if not 0 <= args.arrive <= 10:
+        die("route --arrive must be from 0 through 10")
+    route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
+             "objective": read_objective(), "status": "active", "set_ts": now_ms()}
+    save_route(route)
+    print(f"route-set target=({args.x},{args.z}) arrive={args.arrive} "
+          f"objective={route['objective'] or '(none)'}")
+
+
 def cmd_log(args):
     path = state_dir() / "player-decisions.jsonl"
     try:
@@ -1321,8 +1556,13 @@ def cmd_reply(args):
         pending = next((m for m in est["pending_messages"] if m["id"] == args.message_id), None)
         if pending is None:
             die(f"no pending player message {args.message_id}")
+        nearby_names = {
+            str(player.get("name", "")).casefold()
+            for player in snap.get("players") or [] if isinstance(player, dict)
+        }
         action = {"type": "chat-local", "text": text}
-        if pending["channel"] == "private":
+        if pending["channel"] == "private" \
+                or pending["sender"].casefold() not in nearby_names:
             action = {"type": "chat-private", "target": pending["sender"], "text": text}
         est["action_seq"] += 1
         action_id = est["action_seq"]
@@ -1359,13 +1599,18 @@ def cmd_reply(args):
                     if not (m["channel"] == pending["channel"]
                             and m["sender"].casefold() == pending["sender"].casefold()
                             and m["id"] <= pending["id"])]
+            if not est["pending_messages"]:
+                est["message_settle_until"] = 0
         save_player_state(est)
         flush_events([{"ts": now_ms(), "kind": "player-message-reply",
                        "message_id": pending["id"], "action_id": action_id,
                        "channel": pending["channel"], "sender": pending["sender"],
+                       "reply_channel": "private" if action["type"] == "chat-private" else "local",
                        "status": status}])
     report("replied", message_id=pending["id"], action_id=action_id,
-           channel=pending["channel"], sender=pending["sender"], status=status)
+           channel=pending["channel"], sender=pending["sender"],
+           reply_channel="private" if action["type"] == "chat-private" else "local",
+           status=status)
     if status != "done":
         sys.exit(EXIT_NOT_DONE)
 
@@ -1493,8 +1738,13 @@ def cmd_run(args):
             if verdict != "same-tick":
                 last_verdict = verdict
             latest = game_reflex.read_snapshot() or {}
-            write_heartbeat(last_verdict,
-                            latest_system_feedback(latest) or "",
+            detail = latest_system_feedback(latest) or ""
+            active_route = load_route()
+            if active_route is not None and active_route.get("status") != "invalid":
+                route_detail = (f"route {active_route['status']} to "
+                                f"({active_route['x']},{active_route['z']})")
+                detail = f"{route_detail}; {detail}" if detail else route_detail
+            write_heartbeat(last_verdict, detail,
                             [i.get("id") for i in latest.get("ground_items") or []])
         except SystemExit:
             raise
@@ -1562,6 +1812,13 @@ def main():
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_objective)
 
+    p = sub.add_parser("route", help="set, inspect, or clear the durable ACTIONS route")
+    p.add_argument("x", nargs="?", type=int)
+    p.add_argument("z", nargs="?", type=int)
+    p.add_argument("--arrive", type=int, default=1)
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_route)
+
     p = sub.add_parser("step",
                        help="one rules-first evaluation; exit 4 = model may reason")
     p.add_argument("--max", type=int, default=1,
@@ -1619,11 +1876,13 @@ def main():
             if hb is not None:
                 verdict = hb.get("verdict", "")
                 if verdict == "player-message":
-                    pending = oldest_pending_message(load_player_state())
+                    live_state = load_player_state()
+                    batch = pending_message_batch(live_state)
+                    pending = batch[-1] if batch else None
                     if pending is not None:
                         report("player-message", id=pending["id"],
                                channel=pending["channel"], sender=pending["sender"],
-                               text=pending["text"])
+                               count=len(batch), burst=pending_message_burst(batch))
                     else:
                         report("runner-player-message", age_ms=now_ms() - hb.get("ts", 0),
                                pid=hb.get("pid"))
@@ -1643,6 +1902,7 @@ def main():
                                                  for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
+                          "route-blocked": EXIT_NO_RULE,
                           "held": EXIT_HELD,
                           "fired": EXIT_FIRED,
                           "player-message": EXIT_PLAYER_MESSAGE,

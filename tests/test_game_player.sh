@@ -82,6 +82,38 @@ PY
     FAKE_BRIDGE_PID=$!
 }
 
+# A route leg also updates the authoritative snapshot before answering. The
+# destination can be the final tile or an intermediate regional settlement.
+fake_route_bridge() {  # FINAL-X FINAL-Z [STATUS]
+    python3 - "$DESKCRAB_GAME_STATE_DIR" "$1" "$2" "${3:-done}" <<'PY' &
+import json, os, sys, time
+sd, final_x, final_z, status = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    if os.path.exists(ap):
+        body = open(ap).read()
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        os.remove(ap)
+        if status == "done":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            state.update({"x": final_x, "z": final_z, "walking": False,
+                          "tick": state.get("tick", 0) + 1,
+                          "ts": int(time.time() * 1000)})
+            tmp_state = os.path.join(sd, ".state.tmp")
+            json.dump(state, open(tmp_state, "w"))
+            os.replace(tmp_state, state_path)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": status,
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
 last_action() { sandbox_count_in "^$1" "$DESKCRAB_GAME_STATE_DIR/last-action"; }
 decided() { sandbox_count_in "\"kind\":\"$1\"" "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl"; }
 loosen() {  # pacing must not couple unrelated cases: interval 0, wide cap
@@ -212,6 +244,57 @@ contains "$OUT" "condition-timeout condition=in_combat" \
     || fail "the timeout names the missing condition" "$OUT"
 refute "a wait above the permanent-block ceiling is refused" \
     python3 "$GP" wait-until walking --timeout 61
+
+echo
+echo "durable routes advance through ACTIONS without model turns (spec rule 7e):"
+python3 "$GP" objective cross-region >/dev/null
+check "route records a destination" python3 "$GP" route 160 648 --arrive 1
+contains "$(python3 "$GP" route)" "status=active target=(160,648) arrive=1" \
+    && ok "route status exposes its target and tolerance" \
+    || fail "route status exposes its target and tolerance" "$(python3 "$GP" route)"
+snap 1046 '[]' '{"x":120,"z":648}'
+fake_route_bridge 140 648
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "one regional settlement is successful progress: exit 0" "$CODE" "0"
+contains "$OUT" "status=route-progress x=140 z=648" \
+    && ok "the runner names verified progress rather than a failed walk" \
+    || fail "the runner names verified progress rather than a failed walk" "$OUT"
+check "the destination remains durable for the next runner pass" \
+    test -f "$DESKCRAB_GAME_DIR/route.json"
+check_eq "the synthetic route used the ordinary walk ACTION" \
+    "$(last_action 'type=walk')" "1"
+snap 1048 '[]' '{"x":140,"z":648}'
+fake_route_bridge 160 648
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "arrival completes the route: exit 0" "$CODE" "0"
+contains "$OUT" "status=route-complete" \
+    && ok "completion is explicit" || fail "completion is explicit" "$OUT"
+refute "the completed route cannot fire again" test -f "$DESKCRAB_GAME_DIR/route.json"
+
+check "a second route can be set" python3 "$GP" route 900 900
+snap 1050 '[]' '{"x":140,"z":648}'
+fake_bridge refused-no-path
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a collision refusal licenses Sol to solve the obstacle: exit 4" "$CODE" "4"
+contains "$OUT" "route-blocked" \
+    && ok "the blocker is named" || fail "the blocker is named" "$OUT"
+contains "$(python3 "$GP" route)" "status=blocked" \
+    && ok "the blocked state persists" || fail "the blocked state persists"
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 1051 '[]' '{"x":140,"z":648}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "an unchanged wall cannot cause a walking loop: exit 4" "$CODE" "4"
+refute "and no repeated action was emitted" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+
+python3 "$GP" objective changed-goal >/dev/null
+snap 1052 '[]' '{"x":140,"z":648}'
+CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+refute "changing objective cancels the stale route" test -f "$DESKCRAB_GAME_DIR/route.json"
+check "route clear is idempotent" python3 "$GP" route --clear
+python3 "$GP" objective --clear >/dev/null
 
 echo
 echo "priority and conflict logging (spec rule 8):"
@@ -395,6 +478,15 @@ refute "click-inventory without an item id is refused" \
 refute "click-inventory refuses a mouse button outside 1-3" \
     python3 "$GP" learn bad11 --priority 1 --trigger inventory_has=145 \
         --action click-inventory --param item=145 --param button=4
+refute "click-shop without an item id is refused" \
+    python3 "$GP" learn bad-shop --priority 1 --trigger shop_item_visible=42 \
+        --action click-shop
+refute "click-bank refuses a mouse button outside 1-3" \
+    python3 "$GP" learn bad-bank --priority 1 --trigger bank_item_visible=145 \
+        --action click-bank --param item=145 --param button=4
+refute "a non-integer shop_item_visible is refused" \
+    python3 "$GP" learn bad-shop-trigger --priority 1 --trigger shop_item_visible=bucket \
+        --action click-shop --param item=42
 python3 "$GP" objective seek-fred >/dev/null
 python3 "$GP" learn open-farm-door --priority 70 --cooldown-ms 0 --once-per-objective \
     --trigger objective_is=seek-fred --trigger bound_visible=1 \
@@ -482,6 +574,44 @@ python3 "$GP" remove click-raw-wool >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
+echo "identity-based shop and bank clicks compile without pages, slots, or pixels (spec rule 5):"
+python3 "$GP" objective buy-supplies >/dev/null
+python3 "$GP" learn click-shop-bucket --priority 80 --cooldown-ms 0 --once-per-objective \
+    --trigger objective_is=buy-supplies --trigger shop_item_visible=42 \
+    --action click-shop --param item=42 --param button=1 >/dev/null
+snap 1341 '[]' '{"shop_open":true,"shop_items":[{"slot":17,"id":42,"name":"Bucket","count":3,"noted":false}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the learned shop click receives a done receipt" "$CODE" "0"
+contains "$OUT" "fired rule=click-shop-bucket" && ok "the shop item rule owned the play" \
+    || fail "the shop item rule owned the play" "$OUT"
+check_eq "the action is click-shop" "$(last_action 'type=click-shop')" "1"
+check_eq "only the shop item id crosses ACTIONS" "$(last_action 'item=42')" "1"
+refute "no shop slot crosses the action" grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "no shop pixel crosses the action" grep -Eq '^[xy]=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+python3 "$GP" remove click-shop-bucket >/dev/null
+
+python3 "$GP" objective withdraw-supplies >/dev/null
+python3 "$GP" learn click-bank-bucket --priority 80 --cooldown-ms 0 --once-per-objective \
+    --trigger objective_is=withdraw-supplies --trigger bank_item_visible=145 \
+    --action click-bank --param item=145 --param button=3 >/dev/null
+snap 1342 '[]' '{"bank_open":true,"bank_items":[{"slot":117,"id":145,"name":"Bucket","count":1}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the learned bank click receives a done receipt" "$CODE" "0"
+contains "$OUT" "fired rule=click-bank-bucket" && ok "the bank item rule owned the play" \
+    || fail "the bank item rule owned the play" "$OUT"
+check_eq "the action is click-bank" "$(last_action 'type=click-bank')" "1"
+check_eq "only the bank item id crosses ACTIONS" "$(last_action 'item=145')" "1"
+check_eq "the requested bank pointer button crosses ACTIONS" "$(last_action 'button=3')" "1"
+refute "no bank page or slot crosses the action" grep -Eq '^(page|slot)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "no bank pixel crosses the action" grep -Eq '^[xy]=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+python3 "$GP" remove click-bank-bucket >/dev/null
+python3 "$GP" objective --clear >/dev/null
+
+echo
 echo "the real playing entrypoint invokes this layer (spec rule 12):"
 # The game tree is borrowed READ-ONLY, recovered the same way the bridge
 # suite borrows it: the sandbox moved HOME, the live-data path remembers.
@@ -495,6 +625,10 @@ check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
+check_eq "the harness carries the identity-based shop door" \
+    "$(sandbox_count_in '^    shop)' "$HEADLESS")" "1"
+check_eq "the harness carries the identity-based bank door" \
+    "$(sandbox_count_in '^    bank)' "$HEADLESS")" "1"
 check_eq "the harness carries the visible ground-item listing door" \
     "$(sandbox_count_in '^    items)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based ground-item take door" \
@@ -514,9 +648,11 @@ python3 "$GP" step --local >/dev/null 2>&1 || true
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" walk 130 650 2>&1)" || CODE=$?
 check_eq "an unanswered player message blocks autonomous movement: exit 6" "$CODE" "6"
-contains "$OUT" "reply before any further play" \
-    && ok "the refusal points Sol to the shared reply ACTION" \
-    || fail "the refusal points Sol to the shared reply ACTION" "$OUT"
+refute "the settling gate does not tell Sol to reply before the burst closes" \
+    contains "$OUT" "reply before any further play"
+contains "$OUT" "five-second chat chain" \
+    && ok "the gate blocks play while ACTIONS collects the message burst" \
+    || fail "the gate explains the ACTIONS message-settle window" "$OUT"
 refute "the blocked movement emitted no game action" \
     test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
@@ -546,6 +682,30 @@ check_eq "the door wrote click-inventory" "$(last_action 'type=click-inventory')
 check_eq "the door wrote only the item id" "$(last_action 'item=145')" "1"
 refute "the inventory door did not write a slot" \
     grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11721 '[]' '{"shop_open":true,"shop_items":[{"slot":17,"id":42,"name":"Bucket","count":3,"noted":false}]}'
+OUT="$(bash "$HEADLESS" shop)"; CODE=$?
+check_eq "the shop listing reads ACTIONS state without a model call" "$CODE" "0"
+contains "$OUT" "Bucket" && ok "the shop listing names the located item" \
+    || fail "the shop listing names the located item" "$OUT"
+fake_bridge done
+OUT="$(bash "$HEADLESS" shop 42 2)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the shop door completes through the shared ACTIONS receipt" "$CODE" "0"
+check_eq "the shop door wrote click-shop" "$(last_action 'type=click-shop')" "1"
+refute "the shop door did not write a slot" \
+    grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11722 '[]' '{"bank_open":true,"bank_items":[{"slot":117,"id":145,"name":"Bucket","count":1}]}'
+OUT="$(bash "$HEADLESS" bank)"; CODE=$?
+check_eq "the bank listing reads ACTIONS state without a model call" "$CODE" "0"
+contains "$OUT" "slot=117" && ok "the bank listing locates an item beyond the first page" \
+    || fail "the bank listing locates an item beyond the first page" "$OUT"
+fake_bridge done
+OUT="$(bash "$HEADLESS" bank 145 3)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the bank door completes through the shared ACTIONS receipt" "$CODE" "0"
+check_eq "the bank door wrote click-bank" "$(last_action 'type=click-bank')" "1"
+refute "the bank door did not write a page or slot" \
+    grep -Eq '^(page|slot)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 snap 1173 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}]}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" take 27)"; CODE=$?
@@ -896,40 +1056,92 @@ grep -q 'stop orsc-player-control.service' "$PSD/systemctl-stops" 2>/dev/null \
 fi
 
 echo
-echo "incoming local and private messages interrupt play and reply through its action slot (rule 7b):"
-snap 145 '[]' '{"messages":[
-    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east door"},
-    {"id":9002,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"}
+echo "incoming messages settle into bursts and choose the live reply channel (rule 7b):"
+snap 145 '[]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"}
 ]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-check_eq "the oldest incoming player message is the priority verdict: exit 6" "$CODE" "6"
-contains "$OUT" "channel=local sender=Nearby Friend text=Try the east door" \
-    && ok "the verdict retains the local channel, sender, and text" \
-    || fail "the verdict retains the local channel, sender, and text" "$OUT"
-refute "observing a message emits no action before Sol writes the reply" \
-    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+check_eq "the first message opens the settle window: exit 3" "$CODE" "3"
+contains "$OUT" "player-message-settling count=1" \
+    && ok "ACTIONS blocks play without waking Sol on a partial chain" \
+    || fail "the partial chain is reported as settling" "$OUT"
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s['message_settle_until'] = 1
+json.dump(s, open(sys.argv[1], 'w'))
+PY
+DEADLINE1=1
+snap 1451 '[]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
+    {"id":9002,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"door by the mill"},
+    {"id":9003,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"}
+]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-check_eq "the pending message survives a repeated snapshot and remains urgent" "$CODE" "6"
+check_eq "additional messages remain model-free while the burst settles" "$CODE" "3"
+DEADLINE2="$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_STATE_DIR/player-engine-state.json'))['message_settle_until'])")"
+[ "$DEADLINE2" -gt "$DEADLINE1" ] \
+    && ok "a later message extends the five-second deadline" \
+    || fail "a later message must extend the five-second deadline" "$DEADLINE1 -> $DEADLINE2"
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s['message_settle_until'] = 0
+json.dump(s, open(sys.argv[1], 'w'))
+PY
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the settled oldest conversation becomes the priority verdict: exit 6" "$CODE" "6"
+contains "$OUT" "id=9002 channel=local sender=Nearby Friend count=2" \
+    && contains "$OUT" 'Try the east' && contains "$OUT" 'door by the mill' \
+    && ok "Sol receives the whole local message chain under its newest id" \
+    || fail "the settled verdict must carry the whole local chain" "$OUT"
+refute "observing a message burst emits no action before Sol writes the reply" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 fake_bridge done
-OUT="$(python3 "$GP" reply 9001 Thanks, I will try that)"; CODE=$?
+OUT="$(python3 "$GP" reply 9002 Thanks, I will try that)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "a receipted local reply exits 0" "$CODE" "0"
-check_eq "the reply used the shared chat-local action" "$(last_action 'type=chat-local')" "1"
+check_eq "a receipted nearby reply exits 0" "$CODE" "0"
+check_eq "a still-visible local sender is answered locally" "$(last_action 'type=chat-local')" "1"
 check_eq "and preserved Sol's text" "$(last_action 'text=Thanks, I will try that')" "1"
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-check_eq "the private message is next, still before ordinary rules" "$CODE" "6"
-contains "$OUT" "channel=private sender=Far Friend" \
+check_eq "the private conversation is next, still before ordinary rules" "$CODE" "6"
+contains "$OUT" "id=9003 channel=private sender=Far Friend count=1" \
     && ok "the private sender and channel remain structured" \
     || fail "the private sender and channel remain structured" "$OUT"
 fake_bridge done
-OUT="$(python3 "$GP" reply 9002 I got your private message)"; CODE=$?
+OUT="$(python3 "$GP" reply 9003 I got your private message)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "a receipted private reply exits 0" "$CODE" "0"
 check_eq "the reply used chat-private" "$(last_action 'type=chat-private')" "1"
 check_eq "and addressed the original sender at any distance" "$(last_action 'target=Far Friend')" "1"
+
+snap 1452 '[]' '{"players":[],"messages":[
+    {"id":9004,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Are you still there?"}
+]}'
+python3 "$GP" step --local >/dev/null 2>&1 || true
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s['message_settle_until'] = 0
+json.dump(s, open(sys.argv[1], 'w'))
+PY
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the departed local sender still receives a reply verdict" "$CODE" "6"
+fake_bridge done
+OUT="$(python3 "$GP" reply 9004 Yes, by private message now)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the fallback private reply exits 0" "$CODE" "0"
+check_eq "a local sender no longer visible is answered privately" "$(last_action 'type=chat-private')" "1"
+check_eq "the private fallback retains the original sender" "$(last_action 'target=Nearby Friend')" "1"
+contains "$OUT" "reply_channel=private" \
+    && ok "the reply verdict makes the channel switch explicit" \
+    || fail "the reply verdict should name the private fallback" "$OUT"
+
 snap 146 '[]' '{"messages":[
-    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east door"},
-    {"id":9002,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"}
+    {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
+    {"id":9002,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"door by the mill"},
+    {"id":9003,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"},
+    {"id":9004,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Are you still there?"}
 ]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 check_eq "handled ids are not re-added from later snapshots" "$CODE" "4"
