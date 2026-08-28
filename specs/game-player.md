@@ -486,6 +486,43 @@ deliberate-play channel.
     SAME hook file on both engines, handed to the Claude CLI as a settings document; a player
     that cannot be given that guard does not start, on either engine.
 
+### A sitting has an end
+
+21. Play is a sitting, not a condition. One session runs for a bounded time and then stops, and
+    the assistant opens the next one herself whenever she likes. The durable record is
+    `$DESKCRAB_GAME_DIR/session.json` — `started` (epoch ms), `limit_ms`, `grace_ms`, and `ended`
+    — written when rule 14's `play` finds no session open. `play` on an already-open session
+    leaves the clock alone: it stays the resume door, and a player process restart is not a new
+    sitting. The limit is `OPENRSC_SESSION_LIMIT` in the assistant's config (default `2h`) and
+    the grace after it `OPENRSC_SESSION_GRACE` (default `10m`).
+
+21a. When `started + limit_ms` passes, `step` reports `session-over` (exit 8) with `elapsed_ms`,
+    `limit_ms` and `grace_ms_left`, and NO ordinary evaluation happens: no learned rule fires and
+    no route leg is taken, on either the stepping hand or the resident runner. It sits below
+    rules 7b and 7c — a person who spoke still gets answered, and the idle warning still gets
+    moved for, because being logged out mid-routine helps nothing — and above everything else.
+
+21b. **The wind-down routine is HERS.** Nothing here prescribes what ending a sitting looks like:
+    reaching a safe tile, stowing what she is carrying, saying goodbye to whoever is standing
+    there, logging out. Her ordinary bridge doors stay open the whole time — `session-over`
+    suppresses the RULE TABLE, never her hands — and she declares herself finished with
+    `play session-end`, which closes the session and stops the stack. A sitting that ends early
+    and tidily is the good case; the grace exists for the other one.
+
+21c. The stop does not depend on a model. `play` arms two transient user timers beside the units
+    it starts: one at the limit that marks the session over, and one at limit plus grace that
+    ends it regardless — so a player that is wedged, refused by its engine, or simply gone still
+    stops on time. Ending a session, by her hand or the timer's, stops every layer that ACTS: the
+    player, the author, the runner and the reflex engine. The client and its display stay up,
+    because the next sitting should open in a second rather than a minute. The harness has no
+    mechanical logout door and this does not invent one — with nothing acting, the server's own
+    idle rule takes the character offline, and a deliberate logout is one of the things rule 21b's
+    wind-down may choose to do.
+
+21d. Nothing schedules the next sitting: that is hers to choose, and `play` is the door. The
+    end-of-session report names the elapsed time and says so, so a sitting that ends while she is
+    still there ends with her deciding when to come back rather than with a silence.
+
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery
@@ -498,6 +535,11 @@ deliberate-play channel.
 - The objective is one line set by the deliberate hand; nothing advances it mechanically. A
   stale objective can suppress rules (never fire wrong ones — `once_per_objective` marks and
   triggers still gate) until the next reasoning turn corrects it.
+- Rule 21a suppresses the rule table AND the route together, so a wind-down that needs to cross
+  the map walks by her own hand rather than by a route leg. This is deliberate — "ordinary play
+  has stopped" is easier to hold to than a list of which mechanisms are still allowed to move
+  her — but it means the last minutes of a sitting cost model turns that the middle of one
+  would not.
 - Rule 19's reply-time recall is the playing hand's own step, not a mechanical one: nothing in
   this module may call a model or an embedder inside evaluation (rule 2), so a player that skips
   the lookup answers from the thread alone. Composition-time recall is the floor under that —

@@ -74,6 +74,12 @@ EXIT_NO_RULE = 4
 EXIT_HELD = 5
 EXIT_PLAYER_MESSAGE = 6
 EXIT_SYSTEM_MESSAGE = 7
+EXIT_SESSION_OVER = 8
+
+# Spec rule 21: a sitting is bounded. Defaults in milliseconds; the entrypoint
+# reads the user's own spelling out of the config and hands them down.
+SESSION_LIMIT_MS = 2 * 60 * 60 * 1000
+SESSION_GRACE_MS = 10 * 60 * 1000
 
 EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
 
@@ -96,6 +102,44 @@ def objective_path() -> Path:
 
 def route_path() -> Path:
     return game_dir() / "route.json"
+
+
+def session_path() -> Path:
+    return game_dir() / "session.json"
+
+
+def read_session() -> dict:
+    """The open sitting, or {} when none is (spec rule 21). A file that cannot
+    be read is no session: the clock never invents a deadline out of damage."""
+    try:
+        body = json.loads(session_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(body, dict) or not body.get("started") or body.get("ended"):
+        return {}
+    return body
+
+
+def session_state(now: int = None) -> dict:
+    """Where the open sitting stands: `open`, `over` (past its limit, inside
+    the grace) or `expired` (past the grace too). No session at all reports
+    `none`, which never suppresses play — the limit binds a sitting that was
+    opened, not the act of playing."""
+    s = read_session()
+    if not s:
+        return {"phase": "none"}
+    now = now_ms() if now is None else now
+    limit = int(s.get("limit_ms") or SESSION_LIMIT_MS)
+    grace = int(s.get("grace_ms") or SESSION_GRACE_MS)
+    elapsed = now - int(s["started"])
+    out = {"phase": "open", "started": int(s["started"]), "elapsed_ms": elapsed,
+           "limit_ms": limit, "grace_ms": grace,
+           "grace_ms_left": max(0, limit + grace - elapsed)}
+    if elapsed >= limit + grace:
+        out["phase"] = "expired"
+    elif elapsed >= limit:
+        out["phase"] = "over"
+    return out
 
 
 def tests_path() -> Path:
@@ -1001,6 +1045,18 @@ def step_once(cfg: dict, objective: str, wait_ms: int):
                count=len(pending_batch), burst=pending_message_burst(pending_batch))
         return "player-message", EXIT_PLAYER_MESSAGE
 
+    # Spec rule 21a: past the limit, ordinary evaluation stops — no learned
+    # rule, no route leg, on either hand. It sits BELOW rules 7b-7c above: a
+    # person who spoke still gets an answer, and the idle warning still gets
+    # moved for, because being logged out mid-routine helps nothing. Her own
+    # bridge doors stay open; what stops here is the table, not her hands.
+    sess = session_state(now)
+    if sess["phase"] in ("over", "expired"):
+        report("session-over", elapsed_ms=sess["elapsed_ms"],
+               limit_ms=sess["limit_ms"], grace_ms_left=sess["grace_ms_left"],
+               expired=("yes" if sess["phase"] == "expired" else None))
+        return "session-over", EXIT_SESSION_OVER
+
     if (state_dir() / "action.json").exists():
         report("slot-busy")
         return "slot-busy", EXIT_NOT_READY
@@ -1449,6 +1505,48 @@ def cmd_objective(args):
     print(f"objective: {args.name.strip()}")
 
 
+def cmd_session(args):
+    """Spec rule 21: open, inspect, or close the sitting.
+
+    `open` is the entrypoint's hand and never restarts a clock that is already
+    running — `play` stays the resume door. `end` is HER hand, declaring the
+    wind-down finished; it is also what the grace timer runs when nobody
+    declared anything. `status` is one line either hand can read."""
+    if args.action == "open":
+        existing = read_session()
+        if existing:
+            st = session_state()
+            print(f"session already open: {st['elapsed_ms'] // 60000}m elapsed "
+                  f"of {st['limit_ms'] // 60000}m ({st['phase']})")
+            return
+        game_dir().mkdir(parents=True, exist_ok=True)
+        body = {"started": now_ms(),
+                "limit_ms": int(args.limit_ms or SESSION_LIMIT_MS),
+                "grace_ms": int(args.grace_ms or SESSION_GRACE_MS),
+                "ended": None}
+        game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+        print(f"session open: {body['limit_ms'] // 60000}m to play, "
+              f"{body['grace_ms'] // 60000}m of grace after that")
+        return
+    if args.action == "end":
+        st = session_state()
+        if st["phase"] == "none":
+            print("session: none open")
+            return
+        body = dict(read_session())
+        body["ended"] = now_ms()
+        game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+        print(f"session ended after {st['elapsed_ms'] // 60000}m "
+              f"of a {st['limit_ms'] // 60000}m sitting")
+        return
+    st = session_state()
+    if st["phase"] == "none":
+        print("session: none open")
+        return
+    print(f"session: {st['phase']} — {st['elapsed_ms'] // 60000}m elapsed of "
+          f"{st['limit_ms'] // 60000}m, grace left {st['grace_ms_left'] // 60000}m")
+
+
 def cmd_route(args):
     """Spec rule 7e: set, inspect, or clear the runner's durable route."""
     if args.clear:
@@ -1812,6 +1910,13 @@ def main():
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_objective)
 
+    p = sub.add_parser("session", help="the sitting's clock: open, status, end")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["open", "status", "end"])
+    p.add_argument("--limit-ms", type=int, dest="limit_ms")
+    p.add_argument("--grace-ms", type=int, dest="grace_ms")
+    p.set_defaults(fn=cmd_session)
+
     p = sub.add_parser("route", help="set, inspect, or clear the durable ACTIONS route")
     p.add_argument("x", nargs="?", type=int)
     p.add_argument("z", nargs="?", type=int)
@@ -1906,7 +2011,8 @@ def main():
                           "held": EXIT_HELD,
                           "fired": EXIT_FIRED,
                           "player-message": EXIT_PLAYER_MESSAGE,
-                          "system-message": EXIT_SYSTEM_MESSAGE}.get(verdict, EXIT_NOT_READY))
+                          "system-message": EXIT_SYSTEM_MESSAGE,
+                          "session-over": EXIT_SESSION_OVER}.get(verdict, EXIT_NOT_READY))
         cfg = load_config()
         if args.wait_ms is None:
             args.wait_ms = config_defaults(cfg)["inflight_timeout_ms"]

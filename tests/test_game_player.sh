@@ -827,6 +827,66 @@ check_eq "engine stop tears it down" "$CODE" "0"
 refute "and the engine process is gone" sh -c "kill -0 $EPID 2>/dev/null"
 
 echo
+echo "the sitting's clock (spec rule 21):"
+gp() { python3 "$GP" "$@"; }
+# Play is a sitting, not a condition: it runs a bounded time, ordinary
+# evaluation stops at the limit so she can wind down by her own hand, and the
+# clock is durable so a player restart is not a new sitting.
+rm -f "$DESKCRAB_GAME_DIR/session.json"
+snap 700 '[{"sidx":9,"id":11,"x":120,"z":648}]'
+OUT="$(gp session 2>&1)"; contains "$OUT" "none open" \
+    && ok "no session is open until one is opened" \
+    || fail "no session is open until one is opened" "$OUT"
+# Rule 21: with no session at all the limit binds nothing — it bounds a
+# sitting that was opened, never the act of playing.
+CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
+refute "with no session open, play is not suppressed" test "$CODE" = 8
+gp session open --limit-ms 7200000 --grace-ms 600000 >/dev/null 2>&1
+OUT="$(gp session 2>&1)"; contains "$OUT" "120m" \
+    && ok "opening a sitting records its limit" \
+    || fail "opening a sitting records its limit" "$OUT"
+OUT="$(gp session open --limit-ms 60000 2>&1)"
+contains "$OUT" "already open" \
+    && ok "opening again never restarts a running clock" \
+    || fail "opening again never restarts a running clock" "$OUT"
+contains "$(gp session 2>&1)" "120m" \
+    && ok "so the resume door cannot extend a sitting" \
+    || fail "so the resume door cannot extend a sitting"
+# Rule 21a: past the limit, ordinary evaluation stops on both hands.
+python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+b = json.load(open(p))
+b["started"] = int(time.time() * 1000) - (7200000 + 60000)
+json.dump(b, open(p, "w"))
+PY
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 701 '[{"sidx":9,"id":11,"x":120,"z":648}]'
+CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
+check_eq "past the limit, step reports session-over" "$CODE" "8"
+contains "$OUT" "session-over" && ok "naming the verdict" \
+    || fail "naming the verdict" "$OUT"
+contains "$OUT" "grace_ms_left" && ok "and how much grace is left to wind down in" \
+    || fail "and how much grace is left to wind down in" "$OUT"
+refute "and no rule took the action slot" test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
+# Rule 21b: her hands are not what stops — only the table. And her own
+# declaration closes the sitting.
+OUT="$(gp session end 2>&1)"; contains "$OUT" "ended" \
+    && ok "she can declare the wind-down finished" \
+    || fail "she can declare the wind-down finished" "$OUT"
+contains "$(gp session 2>&1)" "none open" \
+    && ok "which closes the sitting" || fail "which closes the sitting"
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 702 '[{"sidx":9,"id":11,"x":120,"z":648}]'
+CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
+refute "and play is no longer suppressed once it is closed" test "$CODE" = 8
+# A damaged session file is no session: the clock never invents a deadline.
+printf 'not json at all\n' > "$DESKCRAB_GAME_DIR/session.json"
+CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
+refute "an unreadable session file suppresses nothing" test "$CODE" = 8
+rm -f "$DESKCRAB_GAME_DIR/session.json"
+
+echo
 echo "the ordinary player command (spec rule 14):"
 # The ordinary command must be committed bytes, installed on PATH, pinned to
 # the real model, supervised (Restart=always), and every start must recompose
