@@ -483,6 +483,9 @@ deliberate-play channel.
     and refines rules through the rule 11 doors, maintains rule
     17's cases, and never touches the bridge, the screen, or the reflex engine: every action
     that CAN become a reflex SHOULD become one, but rule creation must never block the body.
+    An outcome's activity is context, not a default scope: the author adds `activity_is` only
+    when the action would be wrong outside that activity. Generic loot, survival, and idle
+    movement remain activity-agnostic; interface- and task-specific interactions opt in.
 
 17. Rules are deterministic trigger-to-action data, so they are tested like data.
     `$DESKCRAB_GAME_DIR/learned-rule-tests.json` holds replay cases — `name`, `objective`,

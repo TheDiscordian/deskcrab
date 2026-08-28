@@ -1472,6 +1472,10 @@ check "the author is event-driven by the outcome queue, with no sleep loop" \
     grep -q 'path-property=.*PathModified' "$BOC"
 check "the author is forbidden from touching the game action slot" \
     grep -q 'NEVER play the game, touch action.json' "$BOC"
+check "the author does not turn incidental activity into reflex scope" \
+    grep -q 'Treat the outcome.*activity as context, not an automatic scope' "$BOC"
+check "the author keeps generic loot activity-agnostic" \
+    grep -q 'Generic loot, survival, and idle-movement rules remain activity-agnostic' "$BOC"
 contains "$(sed -n '/cmd_run_player.*what systemd execs/,/compose_prompt/p' "$BOC")" 'stack_up' \
     && ok "every replacement player repairs the stack before Sol starts" \
     || fail "every replacement player repairs the stack before Sol starts"
