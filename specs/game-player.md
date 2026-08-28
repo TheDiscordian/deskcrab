@@ -452,6 +452,40 @@ deliberate-play channel.
     boundary that governs what she says out loud is rule 18's sheet, exactly as at the chess
     table; recall supplies what she knows, never a licence to recite it.
 
+### The engine follows the model name
+
+20. The player and its background author are launch sites like any other, so they consult
+    [model-backends.md](model-backends.md)'s router rather than hardcoding a CLI. `model_backend`
+    decides from the model string alone: a codex name runs the Codex CLI exactly as before, a
+    Claude name runs the Claude CLI. The knobs are unchanged in spelling and gain a family —
+    `BETTY_OPENRSC_MODEL` and `BETTY_OPENRSC_AUTHOR_MODEL`, each falling back to `OPENRSC_MODEL`
+    in the assistant's config and then to `sol` — so moving the player between engines is one
+    word in one place, the same way every other model knob here moves. Effort passes through
+    unchanged on both engines, clamped for the Claude CLI per model-backends rule 4.
+
+20a. The two engines are not interchangeable mid-conversation: a Codex thread id means nothing to
+    the Claude CLI and the reverse. Rule 18a's fingerprint therefore covers the engine and the
+    resolved model as well as the persona sheet, so changing any of them composes a fresh thread
+    instead of offering a saved id to a CLI that cannot answer for it. Nothing else about
+    continuity changes: the durable objective, snapshot, decision log and handoff are what a new
+    thread derives current state from, and they are engine-neutral.
+
+20b. A Claude-engine player is the ordinary Claude walk, not a second one. It runs the account
+    list of [account-fallback.md](account-fallback.md) rule 3 — account 1 is the primary config
+    dir, accounts 2..N the configured chain — beginning at the account the shared state file says
+    answers now, and skipping any account whose recorded cooldown is unexpired and scoped `all`
+    or to this model's family. It READS that state and never writes it: two writers would race
+    the conversation lane's own bookkeeping, and a player refused on every account exits so its
+    supervisor restarts it, which is the same shape as every other refusal here.
+
+20c. The Claude engine carries the same isolation the codex one does (model-backends rules 5-6
+    and 10). Her player session loads none of the user's own Claude configuration — no user,
+    project or local settings source, an empty MCP config under `--strict-mcp-config`, and
+    auto-memory off — so nothing belonging to the desktop coding agent reaches the world she is
+    playing in (prompt-assembly.md rule 16). Rule 14's no-sleep and screenshot-loop guard is the
+    SAME hook file on both engines, handed to the Claude CLI as a settings document; a player
+    that cannot be given that guard does not start, on either engine.
+
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery

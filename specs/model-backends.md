@@ -33,8 +33,9 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 3. Every launch site consults the router; none hardcodes an engine. The sites: the interactive
    turn (`claude_generate`), the wake chain (`wake_claude_run_chain`), the dispute escalation
    (through the turn), the detached builder (`lib/job-runner`), the chess mover and self-play
-   (`lib/chess_mover.py`), and the classifier (`claude_classify`). A Claude name on any of them
-   MUST take exactly the path it took before this spec existed.
+   (`lib/chess_mover.py`), the classifier (`claude_classify`), and the game player and its
+   background rule author ([game-player.md](game-player.md) rule 20). A Claude name on any of
+   them MUST take exactly the path it took before this spec existed.
 4. Effort passes through unchanged: `low|medium|high|xhigh|max` mean the same word on both
    engines, and Codex additionally accepts `ultra`. On the codex side the value is handed to
    `model_reasoning_effort`. When a codex run falls back to the Claude walk (rule 12),

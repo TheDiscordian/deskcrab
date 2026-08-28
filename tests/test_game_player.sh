@@ -850,8 +850,14 @@ check_eq "and the installed door is the same committed bytes" \
     "$(readlink -f "$PATHDOOR" 2>/dev/null)" "$BOCR"
 check "the player model is pinned to a real GPT Sol" grep -q 'gpt-5.6-sol' "$BOC"
 check "the player reasoning effort is pinned medium" grep -q 'EFFORT=.*medium' "$BOC"
-check "the background author is pinned to GPT Sol" \
-    grep -q 'AUTHOR_MODEL:-gpt-5.6-sol' "$BOC"
+# Rule 20: the knob's default is the model NAME and the router resolves it, so
+# the shipped default is still a real GPT Sol — named once, in committed bytes.
+check "the shipped default model is the codex Sol name" \
+    grep -qE 'BETTY_OPENRSC_MODEL:-.*OPENRSC_MODEL.*sol' "$BOC"
+check "which resolves to a real GPT Sol slug" \
+    grep -q 'CODEX_MODEL_SOL:-gpt-5.6-sol' "$BOC"
+check "the background author follows the player's model by default" \
+    grep -q 'AUTHOR_MODEL="${BETTY_OPENRSC_AUTHOR_MODEL:-$MODEL}"' "$BOC"
 check "the background author reasoning effort is pinned medium" \
     grep -q 'AUTHOR_EFFORT=.*medium' "$BOC"
 check "the author runs Sol through Codex" \
@@ -1123,8 +1129,10 @@ check_eq "and stamps the durable player log" \
 # Rule 18a: the sheet is versioned into the thread. A conversation opened
 # before the current voice existed is the wrong one to continue, so an edited
 # sheet composes fresh instead of resuming a player who never heard it.
-check_eq "the thread records the persona it was opened with" \
-    "$(cat "$PH/player-persona-id" 2>/dev/null | wc -c)" "65"
+contains "$(cat "$PH/player-persona-id" 2>/dev/null)" "codex/" \
+    && ok "the thread records the voice, engine and model it was opened with" \
+    || fail "the thread records the voice, engine and model it was opened with" \
+            "$(cat "$PH/player-persona-id" 2>/dev/null)"
 printf '## Persona: EDITED-SHEET-MARKER\n\nShe sounds like herself, revised.\n' > "$SHEET"
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "EDITED-SHEET-MARKER" \
@@ -1140,6 +1148,61 @@ check_eq "and no second resume was attempted against the stale thread" \
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 check_eq "an unchanged sheet resumes the same conversation as before" \
     "$(grep -c '^resume$' "$PSD/codex-capture" 2>/dev/null)" "2"
+
+# Rule 20: the engine follows the model name, so moving the player between
+# engines is one word — and the same word moves it back. A fake Claude CLI
+# records its invocation the way the fake codex does.
+# Rule 20c makes the guard a start condition on BOTH engines, so the sandbox
+# harness dir must carry it exactly as the real one does.
+cp "$GAME_TREE/headless/no-sleep-hook.py" "$OH2/no-sleep-hook.py"
+CODEX_RUNS_BEFORE="$(grep -c -- '----8<----' "$PSD/codex-capture" 2>/dev/null || echo 0)"
+cat > "$PSD/fakeclaude" <<'SH'
+#!/bin/bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+printf '%s\n' "$@" >> "$dir/claude-capture"
+printf -- '----8<----\n' >> "$dir/claude-capture"
+cat > "$dir/claude-stdin"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}'
+exit 0
+SH
+chmod +x "$PSD/fakeclaude"
+CLENV=("${POCENV[@]}" BETTY_OPENRSC_MODEL=opus BETTY_OPENRSC_CLAUDE="$PSD/fakeclaude" \
+       BETTY_OPENRSC_DESKCRAB_LIB="$REPO/lib" BETTY_OPENRSC_DESKCRAB_DATA="$SANDBOX/dcdata")
+mkdir -p "$SANDBOX/dcdata"
+env "${CLENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+CLCAP="$(cat "$PSD/claude-capture" 2>/dev/null)"
+contains "$CLCAP" "--model" && contains "$CLCAP" "opus" \
+    && ok "a Claude model name routes the player to the Claude CLI" \
+    || fail "a Claude model name routes the player to the Claude CLI" "$CLCAP"
+refute "and never hands that name to the codex door" \
+    grep -q '^opus$' "$PSD/codex-capture"
+# Rule 20a: a codex thread id means nothing here, so the engine change opens a
+# fresh conversation instead of offering an id the CLI cannot answer for.
+refute "an engine change does not try to resume the other engine's thread" \
+    grep -q -- '--resume' <<<"$CLCAP"
+contains "$(cat "$PSD/claude-stdin" 2>/dev/null)" "BASE-PROMPT-MARKER" \
+    && ok "the engine change composes a whole fresh prompt" \
+    || fail "the engine change composes a whole fresh prompt"
+check_eq "and the new engine's own session id becomes the durable thread" \
+    "$(cat "$PH/player-thread" 2>/dev/null)" "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+# Rule 20c: none of the user's own Claude configuration, and rule 14's guard
+# carried as a settings document rather than dropped on the way across.
+contains "$CLCAP" "--setting-sources" \
+    && ok "her session loads none of the user's own Claude settings sources" \
+    || fail "her session loads none of the user's own Claude settings sources" "$CLCAP"
+contains "$CLCAP" "--strict-mcp-config" \
+    && ok "and no MCP servers beyond the empty config" \
+    || fail "and no MCP servers beyond the empty config"
+contains "$CLCAP" "no-sleep-hook.py" \
+    && ok "rule 14's no-sleep guard rides the Claude engine too" \
+    || fail "rule 14's no-sleep guard rides the Claude engine too" "$CLCAP"
+# And back again: the same word returns her to the engine she came from.
+env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+check_eq "naming the codex model again returns the player to that engine" \
+    "$(grep -c -- '----8<----' "$PSD/codex-capture" 2>/dev/null)" \
+    "$((CODEX_RUNS_BEFORE + 1))"
+refute "without resuming the Claude session id it cannot answer for" \
+    grep -q 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' "$PH/run-prompt.txt"
 rm -f "$PSD/systemctl-stops"
 CODE=0; OUT="$(env "${POCENV[@]}" DESKCRAB_TURN_ORIGIN=phone bash "$BOC" stop player 2>&1)" || CODE=$?
 [ "$CODE" -ne 0 ] && ok "a phone turn cannot stop the playing arm" \
