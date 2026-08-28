@@ -171,10 +171,11 @@ deliberate-play channel.
    missing requirement without another subsystem or another model turn.
 
 7d. State-based waiting is part of this ACTIONS player, not a shell delay. `wait-until CONDITION`
-   observes the same atomically replaced `state.json` as rule evaluation and blocks on filesystem
-   change notifications until a snapshot newer than the one seen at invocation satisfies the
-   named condition. This prevents an action receipt followed immediately by `not_walking` from
-   accepting the pre-action snapshot. Conditions are
+   observes the same atomically replaced `state.json` as rule evaluation. A fresh current snapshot
+   that already satisfies the named condition succeeds immediately; otherwise it blocks on
+   filesystem change notifications until a newer snapshot satisfies it. Movement-capable bridge
+   actions publish `walking: true` across the dispatch gap, so an action receipt followed by
+   `not_walking` cannot accept the pre-action snapshot. Conditions are
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, and `not_talking_to_npc`; dashes are accepted in place of underscores.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then

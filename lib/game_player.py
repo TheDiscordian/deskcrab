@@ -542,6 +542,15 @@ def cmd_wait_until(args):
             and isinstance(baseline, dict)
             and baseline.get("talking_to_npc") is True
         )
+        # `wait until` is level-triggered: if the fresh current state already
+        # holds, the transition may have completed while this process was
+        # starting. The dialogue-end condition is the one deliberate edge:
+        # false before an NPC reply is the dispatch gap, not proof of ending.
+        if condition != "not_talking_to_npc" \
+                and wait_condition_met(condition, baseline):
+            report("condition-met", condition=condition,
+                   tick=baseline.get("tick"), x=baseline.get("x"), z=baseline.get("z"))
+            return
         while True:
             latest = game_reflex.read_snapshot()
             newer = isinstance(latest, dict) and (
