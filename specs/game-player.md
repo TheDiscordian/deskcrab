@@ -109,9 +109,12 @@ deliberate-play channel.
    optional `button` 1, 2, or 3 defaulting to 1). The compiled action again carries only item
    identity. The bridge refuses a closed interface or missing item; otherwise it exposes the
    current page or scroll row containing the item and resolves that live slot immediately before
-   clicking), and `take-ground` (`item`: the item id). The
+   clicking), and `take-ground` (`item`: the item id; optional `within` 0–10 caps its current
+   Chebyshev distance). The
    nearest matching `ground_items` entry is compiled to item id and current world tile; the bridge
-   re-matches both immediately before sending the game's own walk-and-take action. Everything the bridge refuses stays refused;
+   re-matches both immediately before sending the game's own walk-and-take action. Global
+   kill-tile loot reflexes use `within` so they may remain activity-agnostic without chasing a
+   distant or unreachable pile. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
    that do not name a rendered game entity or current inventory, shop, or bank item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.

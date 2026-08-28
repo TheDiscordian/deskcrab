@@ -542,6 +542,9 @@ echo "visible ground items become identity-based learned actions (spec rules 4-5
 refute "take-ground without an item id is refused" \
     python3 "$GP" learn bad-ground --priority 1 --trigger ground_item_visible=27 \
         --action take-ground
+refute "take-ground refuses a roaming cap beyond ten tiles" \
+    python3 "$GP" learn bad-ground-range --priority 1 --trigger ground_item_visible=27 \
+        --action take-ground --param item=27 --param within=11
 refute "a non-integer ground_item_visible is refused" \
     python3 "$GP" learn bad-ground2 --priority 1 --trigger ground_item_visible=skull \
         --action take-ground --param item=27
@@ -566,6 +569,18 @@ contains "$OUT" "ground_items=27" \
     && ok "the fallback verdict makes the visible pickup explicit" \
     || fail "the fallback verdict makes the visible pickup explicit" "$OUT"
 python3 "$GP" remove take-quest-skull >/dev/null
+python3 "$GP" learn take-nearby-skull --priority 90 --cooldown-ms 0 \
+    --trigger ground_item_visible=27 --action take-ground --param item=27 --param within=2 >/dev/null
+snap 1292 '[]' '{"x":120,"z":648,"ground_items":[{"id":27,"x":124,"z":648}]}'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "a local loot reflex will not chase a distant visible pile" "$CODE" "4"
+snap 1293 '[]' '{"x":120,"z":648,"ground_items":[{"id":27,"x":122,"z":649}]}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the same loot reflex fires when the pile is genuinely nearby" "$CODE" "0"
+check_eq "the nearby pile still compiles to its exact live tile" "$(last_action 'x=122')" "1"
+python3 "$GP" remove take-nearby-skull >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
@@ -587,7 +602,7 @@ snap 12951 '[{"sidx":91,"id":11,"x":140,"z":660}]' '{"in_combat":false}'
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 check_eq "a repeating NPC reflex will not chase a distant visible target" "$CODE" "4"
 check_eq "the range refusal is recorded for diagnosis" \
-    "$(decided refused)" "2"
+    "$(decided refused)" "3"
 snap 1296 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":false}'
 fake_bridge done
 OUT="$(python3 "$GP" step)"; CODE=$?
@@ -657,7 +672,7 @@ python3 "$GP" learn open-gate --priority 40 --cooldown-ms 0 \
 snap 132 '[]' '{"objects":[],"bounds":[]}'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "a rule whose object is not loaded refuses at compile: exit 4" "$CODE" "4"
-check_eq "and the refusal is logged" "$(decided refused)" "3"
+check_eq "and the refusal is logged" "$(decided refused)" "4"
 python3 "$GP" remove open-farm-door >/dev/null
 python3 "$GP" remove net-fishing-spot >/dev/null
 python3 "$GP" remove open-gate >/dev/null

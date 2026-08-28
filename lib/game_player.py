@@ -387,10 +387,13 @@ def validate_config(cfg: dict) -> None:
             if "button" in action and action["button"] not in (1, 2, 3):
                 bad(f"{where}: {atype} button must be 1, 2, or 3")
         elif atype == "take-ground":
-            if set(action) != {"type", "item"} \
+            if not set(action) <= {"type", "item", "within"} \
                     or not isinstance(action.get("item"), int) \
                     or action["item"] < 0:
-                bad(f"{where}: take-ground takes exactly item=<item id>")
+                bad(f"{where}: take-ground takes item=<item id> and optionally within")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: take-ground within must be an integer 0..10")
 
 
 def load_config() -> dict:
@@ -925,12 +928,19 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, f"item-not-in-{interface}"
     if action["type"] == "take-ground":
         want = action["item"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
         for item in snap.get("ground_items") or []:  # already nearest-first
             if item.get("id") == want and isinstance(item.get("x"), int) \
                     and isinstance(item.get("z"), int):
+                if within is not None and (
+                        not isinstance(px, int) or not isinstance(pz, int)
+                        or max(abs(px - item["x"]), abs(pz - item["z"])) > within):
+                    continue
                 return {"type": "take-ground", "x": item["x"], "z": item["z"],
                         "item": want}, None
-        return None, "ground-item-not-visible"
+        return None, "ground-item-not-within-range" if within is not None \
+            else "ground-item-not-visible"
     return None, f"unknown-action-{action['type']}"
 
 
