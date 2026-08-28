@@ -25,7 +25,8 @@ import orsc.ReflexBridge;
 	 * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
 	 * "npc sidx=N cmd=N",
 	 * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
-	 * "click x=N y=N button=N", "bank-deposit item=N amount=N",
+	 * "click x=N y=N button=N", "equip|unequip slot=N item=N",
+	 * "item-command slot=N item=N command=TEXT amount=N", "bank-deposit item=N amount=N",
 	 * "bank-withdraw item=N amount=N", "shop-buy item=N amount=N",
 	 * "shop-sell item=N amount=N", "take x=N z=N id=N".
  */
@@ -38,6 +39,9 @@ public class ReflexBridgeHarness {
 		boolean routeAvailable = true;
 		boolean walking = false;
 		boolean inCombat = false;
+		boolean sleeping = false;
+		int sleepingFatigue = 0;
+		String sleepingStatus = "";
 		boolean rightClickMenuOpen = false;
 		boolean tradeOpen = false;
 		boolean tradeConfirmStage = false;
@@ -55,10 +59,19 @@ public class ReflexBridgeHarness {
 			"Follow @whi@Nearby Friend",
 			"Trade with @whi@Distant Player"
 		};
+		final String[] dialogueOptions = {
+			"I'm looking for a quest",
+			"Can you tell me about this place?",
+			"Goodbye"
+		};
 		int hitsNow = 4;
 		final List<String> events = new ArrayList<String>();
 		final int[] invIds = {132, 81};
 		final int[] invCounts = {1, 3};
+		final String[] invNames = {"Trout", "Test \"helm\""};
+		final boolean[] invEquipped = {false, true};
+		final boolean[] invWearable = {false, true};
+		final String[][] invCommands = {{"Eat"}, {"Polish", "Inspect"}};
 
 		public boolean isLoggedIn() {
 			if (failing) {
@@ -77,6 +90,18 @@ public class ReflexBridgeHarness {
 
 		public int fatigue() {
 			return 12;
+		}
+
+		public boolean isSleeping() {
+			return sleeping;
+		}
+
+		public int sleepingFatigue() {
+			return sleepingFatigue;
+		}
+
+		public String sleepingStatus() {
+			return sleepingStatus;
 		}
 
 		public int skillCount() {
@@ -194,6 +219,19 @@ public class ReflexBridgeHarness {
 			return npcDialogueOpen;
 		}
 
+		public int npcDialogueOptionCount() {
+			return npcDialogueOpen ? dialogueOptions.length : 0;
+		}
+
+		public String npcDialogueOptionText(int index) {
+			return dialogueOptions[index];
+		}
+
+		public void chooseNpcDialogueOption(int index) {
+			events.add("dialogue index=" + index + " text=" + dialogueOptions[index]);
+			npcDialogueOpen = false;
+		}
+
 		public boolean hasOpponent() {
 			return false;
 		}
@@ -216,6 +254,49 @@ public class ReflexBridgeHarness {
 
 		public int inventoryAmount(int slot) {
 			return invCounts[slot];
+		}
+
+		public String inventoryName(int slot) {
+			return invNames[slot];
+		}
+
+		public boolean inventoryEquipped(int slot) {
+			return invEquipped[slot];
+		}
+
+		public boolean inventoryWearable(int slot) {
+			return invWearable[slot];
+		}
+
+		public int inventoryCommandCount(int slot) {
+			return invCommands[slot].length;
+		}
+
+		public String inventoryCommand(int slot, int command) {
+			return invCommands[slot][command];
+		}
+
+		public void setInventoryEquipped(int slot, boolean equipped) {
+			invEquipped[slot] = equipped;
+			events.add((equipped ? "equip" : "unequip") + " slot=" + slot
+					+ " item=" + invIds[slot]);
+		}
+
+		public void commandInventoryItem(int slot, int command, int amount) {
+			events.add("item-command slot=" + slot + " item=" + invIds[slot]
+					+ " command=" + invCommands[slot][command] + " amount=" + amount);
+		}
+
+		public int equipmentStatCount() {
+			return 2;
+		}
+
+		public String equipmentStatName(int index) {
+			return index == 0 ? "Armour" : "WeaponAim";
+		}
+
+		public int equipmentStatValue(int index) {
+			return index == 0 ? 7 : 0;
 		}
 
 		public int[] inventoryScreenPoint(int slot) {
@@ -348,13 +429,13 @@ public class ReflexBridgeHarness {
 			events.add("trade-player sidx=" + serverIndex);
 		}
 
-		// Two scripted visible NPCs: server index 7 is type 474 two tiles
-		// away, server index 9 is type 485 five tiles away. Deliberately
-		// listed FAR one first, so the snapshot's nearest-first sort is
-		// observable, not an accident of input order.
+		// Two scripted visible NPCs: server index 7 is diagonally adjacent
+		// (one walking step), server index 9 is two cardinal steps away.
+		// They tie under Manhattan distance and are deliberately listed FAR
+		// first, so the snapshot proves it uses real walking distance.
 		final int[] npcSidx = {9, 7};
 		final int[] npcType = {485, 474};
-		final int[] npcAbsX = {125, 121};
+		final int[] npcAbsX = {122, 121};
 		final int[] npcAbsZ = {650, 651};
 
 		public int npcCount() {
@@ -537,11 +618,19 @@ public class ReflexBridgeHarness {
 			host.tradeOpen = true;
 			host.npcDialogueOpen = true;
 		}
+		if ("state-sleeping".equals(mode)) {
+			host.sleeping = true;
+			host.sleepingFatigue = 12;
+			host.sleepingStatus = "Please wait...";
+		}
 		if ("exec-combat".equals(mode) || "exec-combat-no-route".equals(mode)) {
 			host.inCombat = true;
 		}
 		if ("exec-menu".equals(mode)) {
 			host.rightClickMenuOpen = true;
+		}
+		if ("exec-dialogue".equals(mode)) {
+			host.npcDialogueOpen = true;
 		}
 		if ("exec-trade-offer".equals(mode)) {
 			host.tradeOpen = true;
@@ -569,6 +658,15 @@ public class ReflexBridgeHarness {
 		if ("exec-closed".equals(mode)) {
 			host.shopOpen = false;
 			host.bankOpen = false;
+		}
+		if ("exec-nearer-npc".equals(mode)) {
+			// The pending action names sidx 7, but an equivalent NPC became
+			// strictly nearer before the bridge consumed it.
+			host.npcType[0] = host.npcType[1];
+			host.npcAbsX[0] = 120;
+			host.npcAbsZ[0] = 651;
+			host.npcAbsX[1] = 124;
+			host.npcAbsZ[1] = 650;
 		}
 		if ("hurt".equals(mode)) {
 			host.hitsNow = 3;

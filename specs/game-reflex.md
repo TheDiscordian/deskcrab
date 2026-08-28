@@ -58,26 +58,34 @@ Three parts:
    player-trade screen is visible),
    `talking_to_npc` (an NPC choice menu is open or
    the client received NPC-spoken quest dialogue within the last four seconds; NPC speech is the
-   quest-channel `Name: words` form with an empty sender, not the local player's named reply), `opponent`
+   quest-channel `Name: words` form with an empty sender, not the local player's named reply),
+   `dialogue_open` (the server is currently asking for an NPC reply), `dialogue_options` (the
+   live reply texts as a colour-free array, otherwise empty), `opponent`
    (`{"x":…,"z":…}`
-   while a fighting opponent is visible, else `null`), `inventory` (array of `{"id":…,"count":…}`
-   in slot order), `messages` (the last 20 messages seen by the client, newest last; each is
+   while a fighting opponent is visible, else `null`), `sleeping` (whether the sleep-word screen
+   owns input), `sleep_fatigue` (the fatigue shown on that screen), and `sleep_status` (its current
+   status text), alongside ordinary `fatigue`; `inventory` (slot-order array of
+   `{"id":…,"name":…,"count":…,"equipped":…,"wearable":…,"commands":[…]}`; commands are the item's
+   current definition-backed verbs), `equipment` (the equipped subset as named id/count entries),
+   `equipment_stats` (the client's resulting named Armour/aim/power/magic/prayer bonuses),
+   `messages` (the last 20 messages seen by the client, newest last; each is
    `{"id":…,"channel":…,"incoming":…,"sender":…,"text":…}`, where `id` is unique across
    client restarts, `channel` distinguishes `local`, `private`, and non-player message types, and
    `incoming` is true only for chat received from another player), `players` (other players the
-   client currently holds as visible, nearest first, capped at 24: each
+   client currently holds as visible, nearest by ordinary walking steps first, capped at 24: each
    `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
-   client currently holds as loaded, nearest to the player first, capped at 64: each
+   client currently holds as loaded, nearest by ordinary walking steps to the player first,
+   capped at 64: each
    `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
    its world tile), plus `npc_count` (the complete loaded count) and `npcs_truncated` (whether the
    64-entry safety cap omitted anything). Scenery does not occlude this list: an absent NPC is
    outside the client's loaded set or, when explicitly marked, beyond the cap; the snapshot never
    establishes a fence as the cause. `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
-   the client currently holds as loaded, nearest first, capped at 12: each
+   the client currently holds as loaded, nearest by walking steps first, capped at 12: each
    `{"id":…,"x":…,"z":…,"dir":…}` — type id, world tile, facing direction), and `bounds` (the
-   wall objects — doors and other boundaries — likewise nearest first, capped at 12, the same
+   wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at 12, the same
    four fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
-   tile stay distinct), `ground_items` (items currently visible on the ground, nearest first,
+   tile stay distinct), `ground_items` (items currently visible on the ground, nearest by walking steps first,
    capped at 12: each `{"id":…,"x":…,"z":…}` — item id and world tile), `shop_open` and
    `bank_open`, plus `shop_items` and `bank_items`. A shop item is
    `{"slot":…,"id":…,"name":…,"count":…,"noted":…}` from the open shop's 40-slot
@@ -117,7 +125,11 @@ Three parts:
    commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
    game object, or wall object identified by stable game identity, then click button 1, 2, or 3),
    `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
-   current slot centre, and click button 1, 2, or 3), `click-shop` and `click-bank` (find an item
+   current slot centre, and click button 1, 2, or 3), `equip-inventory` / `unequip-inventory`
+   (idempotently request the named held item's equipped state, returning `already-equipped` or
+   `already-unequipped` without sending a second toggle), `command-inventory` (run one of the
+   held item's published definition-backed commands by one-based command number and positive
+   amount), `click-shop` and `click-bank` (find an item
    by id in the currently open interface, expose its containing page or scroll row, resolve its
    current slot centre, and click button 1, 2, or 3; bank identity covers
    inventory items shown for deposit even when no bank stack exists),
@@ -126,13 +138,15 @@ Three parts:
    without selecting a row or an amount button), `trade-player` (send the ordinary Trade-with
    request to a currently visible non-local player by server identity), `choose-menu` (choose an
    option from the context menu that is open now by a case-insensitive text fragment; an absent or
-   ambiguous fragment is refused), `take-ground` (walk to and take a
+   ambiguous fragment is refused), `choose-dialogue` (choose one currently open NPC reply by the
+   same exact-then-unambiguous text discipline), `take-ground` (walk to and take a
    currently visible ground item identified by item id and world tile), and `retreat` (while in
    combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
    fallback direction, trying alternate directions and nearer tiles without sending failed path
    probes). `talk-npc`,
-   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `click-shop`,
-   `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `take-ground`, `retreat`,
+   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`,
+   `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
+   `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
@@ -147,16 +161,23 @@ Three parts:
    parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`
    for walk; `text` for warn and chat-local; `target` and `text` for chat-private; `sidx` and `npc` — the server index and the type id the emitter saw
    there, the latter deliberately NOT named `id` so it can never collide with the action id line —
-   for talk-npc and interact-npc (the latter also carries `cmd` 1 or 2), so a despawned or swapped NPC is refused as `refused-no-such-npc` or
-   `refused-npc-mismatch`, never talked to blind; `x`, `z`, `obj` — the object type id, NOT named
+   for talk-npc and interact-npc (the latter also carries `cmd` 1 or 2 and may carry `within`
+   0–10), so a despawned or swapped NPC is refused as `refused-no-such-npc` or
+   `refused-npc-mismatch`, never talked to blind. Immediately before dispatch the bridge also
+   refuses `refused-nearer-equivalent` when another currently loaded NPC of that type is strictly
+   fewer walking steps away; `interact-npc` rechecks `within` against the NPC's current tile and
+   refuses `refused-npc-out-of-range` if it roamed beyond the cap. `x`, `z`, `obj` — the object type id, NOT named
    `id` for the same collision reason — and `cmd` for interact-object, so an unloaded or swapped
    object is refused as `refused-no-such-object` or `refused-object-mismatch` and a `cmd` outside
    1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on
    tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
-   for click-inventory, click-shop, and click-bank; `item` and `amount` for the
-   four transaction actions; `sidx` for trade-player; `text` for choose-menu; `x`, `z`, and
+   for click-inventory, click-shop, and click-bank; `item` for equip-inventory and
+   unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
+   `item` and `amount` for the
+   four transaction actions; `sidx` for trade-player; `text` for choose-menu and
+   choose-dialogue; `x`, `z`, and
    `item` for take-ground; `distance` 1–10 and fallback `dx`/`dz` for retreat). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
@@ -164,7 +185,10 @@ Three parts:
    `refused-not-on-screen`; no screen coordinates cross the action file. For click-inventory it
    finds the first matching current item id, opens the inventory tab, and calculates the slot
    centre from the current client UI; a missing item is `refused-no-such-item`. No slot or screen
-   coordinate crosses the action file. `click-shop` and `click-bank` use the same identity-only
+   coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a
+   non-wearable item, and never invert an item already in the requested state. Inventory commands
+   recheck that the requested definition command still exists on that item before sending the
+   ordinary item-command packet. `click-shop` and `click-bank` use the same identity-only
    contract. A closed interface or missing item is refused; for a bank item the bridge switches
    the live bank to the page or scroll row containing the item before resolving its slot centre.
    A transaction rechecks that its interface is open and that its item has a
@@ -175,6 +199,11 @@ Three parts:
    a vanished player. `choose-menu` strips client colour tags, normalizes case and whitespace,
    prefers one exact full-label match, and otherwise requires exactly one containing match; it
    never guesses between two options.
+   `choose-dialogue` applies that same matching contract to the current server-authored NPC reply
+   menu and sends its ordinary option packet. A closed menu, absent choice, or ambiguous fragment
+   is refused. The snapshot exposes `dialogue_open` and colour-free `dialogue_options` separately
+   from the ordinary context menu, while `talking_to_npc` remains true across the short NPC-speech
+   gaps between reply menus.
    `take-ground` re-matches the item id at the named tile
    immediately before sending the game's own walk-and-take action; a missing tile or changed item
    is refused rather than taking a replacement. `action.json` is a single slot: one action, and the engine never

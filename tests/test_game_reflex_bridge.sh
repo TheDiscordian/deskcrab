@@ -60,6 +60,8 @@ import json, sys, time
 s = json.load(open(sys.argv[1]))
 assert s["v"] == 1 and s["logged_in"] is True
 assert s["hits"] == 4 and s["hits_max"] == 10 and s["fatigue"] == 12
+assert s["sleeping"] is False and s["sleep_fatigue"] == 0
+assert s["sleep_status"] == ""
 assert s["skills"] == [
     {"id": 0, "name": "Attack", "level": 12, "xp": 1540},
     {"id": 1, "name": "Defense", "level": 10, "xp": 1000},
@@ -68,10 +70,20 @@ assert s["skills"] == [
 assert s["x"] == 120 and s["z"] == 650
 assert s["walking"] is False and s["in_combat"] is False
 assert s["talking_to_npc"] is False
+assert s["dialogue_open"] is False and s["dialogue_options"] == []
 assert s["trade_open"] is False
 assert s["trade"] is None
 assert s["opponent"] is None
-assert s["inventory"] == [{"id": 132, "count": 1}, {"id": 81, "count": 3}]
+assert s["inventory"] == [
+    {"id": 132, "name": "Trout", "count": 1, "equipped": False, "wearable": False,
+     "commands": ["Eat"]},
+    {"id": 81, "name": 'Test "helm"', "count": 3, "equipped": True, "wearable": True,
+     "commands": ["Polish", "Inspect"]},
+]
+assert s["equipment"] == [
+    {"id": 81, "name": 'Test "helm"', "count": 3},
+]
+assert s["equipment_stats"] == {"Armour": 7, "WeaponAim": 0}
 assert s["shop_open"] is True and s["shop_items"] == [
     {"slot": 0, "id": 10, "name": "Coins", "count": 50, "noted": False},
     {"slot": 1, "id": 42, "name": 'Test "parcel"', "count": 3, "noted": True},
@@ -123,6 +135,21 @@ assert s["trade"] == {
     ],
 }, s["trade"]
 assert s["talking_to_npc"] is True
+assert s["dialogue_open"] is True
+assert s["dialogue_options"] == [
+    "I'm looking for a quest",
+    "Can you tell me about this place?",
+    "Goodbye",
+]
+PY
+OUT="$(harness state-sleeping)"
+python3 - "$S/state.json" <<'PY' && ok "sleep state is semantic, not screenshot-only" \
+    || fail "sleep state is semantic, not screenshot-only"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["sleeping"] is True
+assert s["sleep_fatigue"] == 12
+assert s["sleep_status"] == "Please wait..."
 PY
 OUT="$(harness state-dialogue)"
 python3 - "$S/state.json" <<'PY' && ok "NPC-spoken quest dialogue lingers long enough for a waiter" \
@@ -273,13 +300,13 @@ check_eq "chat beyond the client limit is refused, not truncated" "$(rstatus)" "
 
 echo
 echo "talk-npc and the npcs snapshot field (rules 3, 5-7):"
-python3 - "$S/state.json" <<'PY' && ok "the snapshot lists visible NPCs nearest first" \
+python3 - "$S/state.json" <<'PY' && ok "the snapshot lists NPCs by walking steps, nearest first" \
     || fail "the snapshot lists visible NPCs nearest first"
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["npcs"] == [
     {"sidx": 7, "id": 474, "x": 121, "z": 651},
-    {"sidx": 9, "id": 485, "x": 125, "z": 650},
+    {"sidx": 9, "id": 485, "x": 122, "z": 650},
 ], s["npcs"]
 PY
 wact 60 "$(now_ms)" "type=talk-npc" "sidx=7" "npc=474"
@@ -298,6 +325,12 @@ wact 62 "$(now_ms)" "type=talk-npc" "sidx=42" "npc=474"
 OUT="$(harness exec)"
 refute "a despawned NPC is not talked to" contains "$OUT" "talk sidx"
 check_eq "the missing NPC is named" "$(rstatus)" "refused-no-such-npc"
+wact 621 "$(now_ms)" "type=talk-npc" "sidx=7" "npc=474"
+OUT="$(harness exec-nearer-npc)"
+refute "a stale farther target is not talked to when an equivalent is nearer" \
+    contains "$OUT" "talk sidx"
+check_eq "the nearer-equivalent refusal is explicit" "$(rstatus)" \
+    "refused-nearer-equivalent"
 
 echo
 echo "interact-npc executes a definition-backed NPC command (rules 5-7):"
@@ -314,6 +347,12 @@ wact 65 "$(now_ms)" "type=interact-npc" "sidx=7" "npc=999" "cmd=1"
 OUT="$(harness exec)"
 refute "a swapped NPC is not commanded" contains "$OUT" "npc sidx="
 check_eq "the NPC command type mismatch is named" "$(rstatus)" "refused-npc-mismatch"
+wact 66 "$(now_ms)" "type=interact-npc" "sidx=9" "npc=485" "cmd=1" "within=1"
+OUT="$(harness exec)"
+refute "an NPC that roamed beyond the compiled range is not chased" \
+    contains "$OUT" "npc sidx="
+check_eq "the live range refusal is explicit" "$(rstatus)" \
+    "refused-npc-out-of-range"
 
 echo
 echo "player trade and right-click menu selection use live identities (rules 3, 5-7):"
@@ -366,6 +405,24 @@ check_eq "a missing menu option is named" "$(rstatus)" "refused-no-such-menu-opt
 wact 657 "$(now_ms)" "type=choose-menu" "text=follow"
 harness exec >/dev/null
 check_eq "a closed context menu is named" "$(rstatus)" "refused-menu-closed"
+wact 658 "$(now_ms)" "type=choose-dialogue" "text=looking for"
+OUT="$(harness exec-dialogue)"
+contains "$OUT" "dialogue index=0 text=I'm looking for a quest" \
+    && ok "a unique text fragment chooses its live NPC reply" \
+    || fail "a unique text fragment chooses its live NPC reply" "$OUT"
+check_eq "the NPC reply is receipted done" "$(rstatus)" "done"
+wact 659 "$(now_ms)" "type=choose-dialogue" "text=can"
+OUT="$(harness exec-dialogue)"
+contains "$OUT" "dialogue index=1" \
+    && ok "NPC replies are selected semantically, not by screen row" \
+    || fail "NPC replies are selected semantically, not by screen row" "$OUT"
+wact 660 "$(now_ms)" "type=choose-dialogue" "text=o"
+harness exec-dialogue >/dev/null
+check_eq "an ambiguous NPC reply fragment is refused" \
+    "$(rstatus)" "refused-ambiguous-dialogue-option"
+wact 661 "$(now_ms)" "type=choose-dialogue" "text=quest"
+harness exec >/dev/null
+check_eq "a closed NPC reply menu is named" "$(rstatus)" "refused-dialogue-closed"
 
 echo
 echo "two simultaneous warnings both reach the player (rules 6-7, 10):"
@@ -557,6 +614,37 @@ check_eq "an unsupported inventory button is refused" "$(rstatus)" "refused-bad-
 wact 88 "$(now_ms)" "type=click-inventory" "item=81" "button=1"
 harness exec-offscreen >/dev/null
 check_eq "an inventory point that cannot be rendered is refused" "$(rstatus)" "refused-not-on-screen"
+
+echo
+echo "equipment and item commands are semantic and idempotent (rules 3, 5-7):"
+wact 89 "$(now_ms)" "type=equip-inventory" "item=81"
+OUT="$(harness exec)"
+check_eq "equipping an already-equipped item is harmless" "$(rstatus)" "already-equipped"
+refute "an idempotent equip sends no second toggle" contains "$OUT" "equip slot="
+wact 90 "$(now_ms)" "type=unequip-inventory" "item=81"
+OUT="$(harness exec)"
+contains "$OUT" "unequip slot=1 item=81" \
+    && ok "unequip resolves item identity to the equipped slot" \
+    || fail "unequip resolves item identity to the equipped slot" "$OUT"
+check_eq "unequip is receipted done" "$(rstatus)" "done"
+wact 91 "$(now_ms)" "type=equip-inventory" "item=132"
+harness exec >/dev/null
+check_eq "a non-wearable item cannot be equipped" "$(rstatus)" "refused-not-wearable"
+wact 92 "$(now_ms)" "type=unequip-inventory" "item=999"
+harness exec >/dev/null
+check_eq "equipment actions refuse an absent item" "$(rstatus)" "refused-no-such-item"
+wact 93 "$(now_ms)" "type=command-inventory" "item=81" "cmd=1" "amount=2"
+OUT="$(harness exec)"
+contains "$OUT" 'item-command slot=1 item=81 command=Polish amount=2' \
+    && ok "a definition-backed item command resolves by identity" \
+    || fail "a definition-backed item command resolves by identity" "$OUT"
+check_eq "the item command is receipted done" "$(rstatus)" "done"
+wact 94 "$(now_ms)" "type=command-inventory" "item=81" "cmd=3" "amount=1"
+harness exec >/dev/null
+check_eq "an unavailable item command is refused" "$(rstatus)" "refused-bad-command"
+wact 95 "$(now_ms)" "type=command-inventory" "item=81" "cmd=1" "amount=0"
+harness exec >/dev/null
+check_eq "an item command refuses a non-positive amount" "$(rstatus)" "refused-bad-amount"
 
 echo
 echo "click-shop and click-bank resolve interface items by identity (rules 3, 5-7):"

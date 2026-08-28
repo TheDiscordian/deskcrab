@@ -39,7 +39,7 @@ WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
     "right_click_menu_open", "right_click_menu_closed",
-    "trade_open", "trade_closed",
+    "trade_open", "trade_closed", "sleeping", "not_sleeping", "fatigue_zero",
 )
 WAIT_DEFAULT_S = 15.0
 WAIT_MAX_S = 60.0
@@ -64,6 +64,8 @@ RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) mea
                             # verification, and a crashed runner fails the pid check at once
 GAP_STABLE_MS = 750          # moving across tiles is one situation, not one Sol wake per tile
 PLAYER_MESSAGE_SETTLE_MS = 5000  # collect one RuneScape-length chat chain before Sol replies
+REPETITION_WINDOW_MS = 3 * 60 * 1000
+REPETITION_THRESHOLD = 3
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
 MANUAL_RETREAT_RULE_NAME = "manual-retreat-request"
@@ -676,6 +678,8 @@ def load_player_state() -> dict:
     est.setdefault("message_settle_until", 0)
     est.setdefault("seen_system_message_ids", [])
     est.setdefault("pending_system_messages", [])
+    est.setdefault("recent_repetitions", [])
+    est.setdefault("reported_repetitions", {})
     return est
 
 
@@ -931,6 +935,12 @@ def wait_condition_met(condition: str, snap: dict) -> bool:
         return snap.get("trade_open") is True
     if condition == "trade_closed":
         return snap.get("trade_open") is False
+    if condition == "sleeping":
+        return snap.get("sleeping") is True
+    if condition == "not_sleeping":
+        return snap.get("sleeping") is False
+    if condition == "fatigue_zero":
+        return snap.get("fatigue") == 0
     return False
 
 
@@ -939,7 +949,7 @@ def wait_state_brief(snap: dict) -> str:
         return "none"
     parts = []
     for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
-                "right_click_menu_open", "trade_open"):
+                "right_click_menu_open", "trade_open", "sleeping", "fatigue"):
         value = snap.get(key)
         if isinstance(value, bool):
             value = str(value).lower()
@@ -1245,27 +1255,48 @@ def make_trigger_fn(objective: str, activity: str = ""):
     return trigger_true
 
 
+def nearest_npc(snap: dict, wanted: int):
+    """Choose by actual walking steps, independently of snapshot list order."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    candidates = [npc for npc in snap.get("npcs") or []
+                  if npc.get("id") == wanted
+                  and all(isinstance(npc.get(key), int)
+                          for key in ("sidx", "x", "z"))]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda npc: (
+        max(abs(npc["x"] - px), abs(npc["z"] - pz)),
+        abs(npc["x"] - px) + abs(npc["z"] - pz), npc["sidx"]))
+
+
+def compiled_npc_action(action_type: str, npc: dict, wanted: int, **extra):
+    return {"type": action_type, "sidx": npc["sidx"], "npc": wanted,
+            "target_x": npc["x"], "target_z": npc["z"], **extra}
+
+
 def compile_player_action(rule, snap, food, eat_pick):
     action = rule["action"]
     if action["type"] == "talk-npc":
         want = action["npc"]
-        for npc in snap.get("npcs") or []:      # already nearest-first (rule 3 there)
-            if npc.get("id") == want and isinstance(npc.get("sidx"), int):
-                return {"type": "talk-npc", "sidx": npc["sidx"], "npc": want}, None
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            return compiled_npc_action("talk-npc", npc, want), None
         return None, "npc-not-visible"
     if action["type"] == "interact-npc":
         want = action["npc"]
         within = action.get("within")
         px, pz = snap.get("x"), snap.get("z")
-        for npc in snap.get("npcs") or []:
-            if npc.get("id") == want and isinstance(npc.get("sidx"), int):
-                if within is not None:
-                    nx, nz = npc.get("x"), npc.get("z")
-                    if not all(isinstance(v, int) for v in (px, pz, nx, nz)) \
-                            or max(abs(px - nx), abs(pz - nz)) > within:
-                        continue
-                return {"type": "interact-npc", "sidx": npc["sidx"],
-                        "npc": want, "cmd": action.get("cmd", 1)}, None
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+            if within is not None and distance > within:
+                return None, "npc-not-within-range"
+            extra = {"cmd": action.get("cmd", 1), "target_distance": distance}
+            if within is not None:
+                extra["within"] = within
+            return compiled_npc_action("interact-npc", npc, want, **extra), None
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "walk":
         return {"type": "walk", "x": action["x"], "z": action["z"]}, None
@@ -1296,11 +1327,10 @@ def compile_player_action(rule, snap, food, eat_pick):
         want = action["entity"]
         button = action.get("button", 1)
         if kind == "npc":
-            for npc in snap.get("npcs") or []:
-                if npc.get("id") == want and isinstance(npc.get("sidx"), int):
-                    return {"type": "click-entity", "kind": "npc",
-                            "sidx": npc["sidx"], "npc": want,
-                            "button": button}, None
+            npc = nearest_npc(snap, want)
+            if npc is not None:
+                return compiled_npc_action("click-entity", npc, want,
+                                           kind="npc", button=button), None
             return None, "npc-not-visible"
         source = snap.get("objects" if kind == "object" else "bounds") or []
         for entity in source:
@@ -1355,7 +1385,8 @@ def compile_player_action(rule, snap, food, eat_pick):
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "item", "button",
+    for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "within",
+                "item", "button",
                 "distance", "dx", "dz",
                 "target", "text"):
         if key in action:
@@ -1369,6 +1400,7 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
 # --------------------------------------------------------------------------
 def snap_brief(snap: dict) -> dict:
     brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
+                                      "fatigue", "sleeping", "sleep_fatigue", "sleep_status",
                                       "walking", "in_combat", "talking_to_npc",
                                       "right_click_menu_open")}
     brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
@@ -1419,6 +1451,55 @@ def append_outcome(record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as fh:
         fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | None:
+    """Aggregate exact repeated plays for the event-driven Sol author.
+
+    One outcome at a time is normally enough to author a rule, but it cannot
+    reveal a time-spanning loop to an ephemeral author turn. Keep a compact
+    three-minute history and emit one self-contained candidate after the same
+    rule targets the same thing three times in the same objective/activity.
+    This is diagnostic, not a blanket loot cap: the author must distinguish a
+    productive routine or valuable finite drops from a fixed-spawn diversion.
+    """
+    action = outcome.get("action") or {}
+    if rule is None or action.get("type") == "retreat" \
+            or outcome.get("rule") in (ROUTE_RULE_NAME, MANUAL_RETREAT_RULE_NAME):
+        return None
+    now = int(outcome.get("ts") or now_ms())
+    identity = {key: action.get(key) for key in (
+        "type", "npc", "obj", "item", "x", "z", "dir", "cmd", "button")
+        if key in action}
+    key = json.dumps({"rule": outcome.get("rule"),
+                      "objective": outcome.get("objective"),
+                      "activity": outcome.get("activity"),
+                      "action": identity}, sort_keys=True, separators=(",", ":"))
+    recent = [item for item in est.get("recent_repetitions") or []
+              if isinstance(item, dict) and isinstance(item.get("ts"), int)
+              and now - item["ts"] <= REPETITION_WINDOW_MS]
+    snap = outcome.get("snap") or {}
+    recent.append({"ts": now, "key": key, "status": outcome.get("status"),
+                   "x": snap.get("x"), "z": snap.get("z"),
+                   "inventory": snap.get("inventory") or []})
+    est["recent_repetitions"] = recent[-48:]
+    reported = {k: v for k, v in (est.get("reported_repetitions") or {}).items()
+                if isinstance(v, int) and now - v <= REPETITION_WINDOW_MS}
+    est["reported_repetitions"] = reported
+    matches = [item for item in recent if item.get("key") == key]
+    if len(matches) < REPETITION_THRESHOLD or key in reported:
+        return None
+    reported[key] = now
+    return {"ts": now, "kind": "loop-candidate", "rule": outcome.get("rule"),
+            "objective": outcome.get("objective"), "activity": outcome.get("activity"),
+            "action": identity, "count": len(matches),
+            "span_ms": now - matches[0]["ts"],
+            "activity_scoped": "activity_is" in (rule.get("trigger") or {}),
+            "recent": [{k: v for k, v in item.items() if k != "key"}
+                       for item in matches[-REPETITION_THRESHOLD:]],
+            "note": "Exact repetition needs review: preserve productive routines and valuable "
+                    "finite loot; prevent fixed low-value respawns or stale interactions from "
+                    "starving the current commitment."}
 
 
 # --------------------------------------------------------------------------
@@ -1612,6 +1693,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
     xp_text = activity_xp_text(snap, activity)
+    # The sleep screen owns keyboard input and blocks ordinary play. Never let
+    # an old objective, route, reflex, or queued reply pretend it can proceed
+    # until the current word has been solved and live state says awake.
+    if snap.get("logged_in") is True and snap.get("sleeping") is True:
+        report("sleeping-needs-wake", fatigue=snap.get("fatigue"),
+               sleep_fatigue=snap.get("sleep_fatigue"),
+               status=snap.get("sleep_status") or None,
+               next="solve-current-word-then-wait-until-not_sleeping")
+        return "sleeping-needs-wake", EXIT_NO_RULE
     source_rules = list(cfg["rules"])
     retreat_request = load_retreat_request()
     if retreat_request is not None and snap.get("in_combat") is False:
@@ -1692,6 +1782,27 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if snap.get("logged_in") and snap.get("tick", -1) == est["last_tick"]:
         report("same-tick", tick=snap.get("tick"))
         return "same-tick", EXIT_NOT_READY
+
+    # A direct hand may have committed to an NPC outside this resident
+    # runner. Ordinary learned rules must not cancel that approach or abandon
+    # a live conversation for incidental work (notably respawning loot).
+    # An applicable retreat remains the one exception: survival can interrupt
+    # either state, and the still-open commitment is reconsidered once safe.
+    if not urgent_retreat_names and snap.get("logged_in") \
+            and snap.get("walking") is True:
+        report("movement-in-progress", x=snap.get("x"), z=snap.get("z"),
+               next="wait-until-not_walking")
+        return "movement-in-progress", EXIT_NOT_READY
+    if not urgent_retreat_names and snap.get("logged_in") \
+            and snap.get("talking_to_npc") is True:
+        choices = snap.get("dialogue_options") or []
+        if snap.get("dialogue_open") is True and choices:
+            report("npc-dialogue-choice",
+                   choices=json.dumps(choices, separators=(",", ":")),
+                   next="choose-dialogue-by-text")
+            return "npc-dialogue-choice", EXIT_NO_RULE
+        report("npc-dialogue-in-progress", next="wait-for-next-dialogue-state")
+        return "npc-dialogue-in-progress", EXIT_NOT_READY
 
     # Spec rule 7e: one durable destination, executed by this resident runner
     # as ordinary lowest-priority walk actions. Messages above and every
@@ -1899,6 +2010,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         outcome["settled"] = {"x": final_x, "z": final_z}
         outcome["gained"] = gained
     append_outcome(outcome)
+    est = load_player_state()
+    candidate = repetition_candidate(est, rule, outcome)
+    save_player_state(est)
+    if candidate is not None:
+        append_outcome(candidate)
+        flush_events([candidate])
 
     if action["type"] in ("walk", "take-ground") and final_x is not None:
         if route_was_blocked:

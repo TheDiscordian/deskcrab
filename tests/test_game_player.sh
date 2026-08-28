@@ -76,6 +76,33 @@ for _ in range(100):
                 "text": echo_text})
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") in (
+                "equip-inventory", "unequip-inventory", "command-inventory"):
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            item_id = int(fields["item"])
+            if fields["type"] in ("equip-inventory", "unequip-inventory"):
+                desired = fields["type"] == "equip-inventory"
+                for item in state.get("inventory") or []:
+                    if item.get("id") == item_id:
+                        item["equipped"] = desired
+                        break
+                state["equipment"] = [
+                    {"id": item["id"], "name": item.get("name", ""),
+                     "count": item.get("count", 0)}
+                    for item in state.get("inventory") or [] if item.get("equipped")]
+            else:
+                remaining = int(fields.get("amount", "1"))
+                for item in list(state.get("inventory") or []):
+                    if item.get("id") != item_id or remaining <= 0:
+                        continue
+                    taken = min(remaining, int(item.get("count", 0)))
+                    item["count"] = int(item.get("count", 0)) - taken
+                    remaining -= taken
+                state["inventory"] = [item for item in state.get("inventory") or []
+                                      if int(item.get("count", 0)) > 0]
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         tmp = os.path.join(sd, ".receipt.tmp")
         json.dump({"id": int(fields["id"]),
                    "status": "done" if delivered else status,
@@ -274,8 +301,10 @@ contains "$(python3 "$GP" rules)" "[UNFINISHED] open-advisor-door" \
 echo
 echo "matching bridge input fires with no model call (spec rules 2, 5, 7):"
 python3 "$GP" objective tut-cooking >/dev/null
-# Two NPCs of the wanted type, nearest first: the emitted sidx must be the near one.
-snap 100 '[{"sidx":77,"id":478,"x":121,"z":648},{"sidx":88,"id":478,"x":140,"z":660}]'
+# The two NPCs tie under Manhattan distance and arrive farther-first. A
+# diagonal neighbour is one real walking step, so it must win over the NPC
+# two cardinal steps away without trusting list order.
+snap 100 '[{"sidx":88,"id":478,"x":122,"z":648},{"sidx":77,"id":478,"x":121,"z":649}]'
 fake_bridge done
 OUT="$(python3 "$GP" step)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -347,6 +376,30 @@ python3 "$GP" activity trading >/dev/null
 python3 "$GP" learn activity-agnostic --priority 98 --cooldown-ms 0 \
     --trigger near_tile='{"x":120,"z":648,"radius":2}' \
     --action walk --param x=121 --param z=648 >/dev/null
+snap 10321 '[]' '{"walking":true}'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "ordinary reflexes cannot cancel a movement already in progress" "$CODE" "3"
+contains "$OUT" "movement-in-progress" \
+    && ok "the movement commitment is named instead of firing ambient work" \
+    || fail "the movement commitment is named instead of firing ambient work" "$OUT"
+refute "walking toward an NPC emits no competing learned action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 10322 '[]' '{"talking_to_npc":true,"dialogue_open":false,"dialogue_options":[]}'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "ordinary reflexes cannot interrupt NPC speech" "$CODE" "3"
+contains "$OUT" "npc-dialogue-in-progress" \
+    && ok "an exchange between choices stays committed" \
+    || fail "an exchange between choices stays committed" "$OUT"
+refute "NPC speech emits no competing learned action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 10323 '[]' '{"talking_to_npc":true,"dialogue_open":true,"dialogue_options":["Ask about the quest","Goodbye"]}'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "an NPC reply menu licenses only the grounded dialogue choice" "$CODE" "4"
+contains "$OUT" "npc-dialogue-choice" && contains "$OUT" "Ask about the quest" \
+    && ok "the exact semantic choices ride the dialogue verdict" \
+    || fail "the exact semantic choices ride the dialogue verdict" "$OUT"
+refute "an open NPC reply menu emits no ambient learned action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 1033 '[]'
 fake_bridge done
 OUT="$(python3 "$GP" step)"; CODE=$?
@@ -361,6 +414,32 @@ check_eq "the same activity-agnostic rule remains live during banking" "$CODE" "
 python3 "$GP" remove activity-agnostic >/dev/null
 check "the immediate activity can be cleared" python3 "$GP" activity --clear
 check_eq "a cleared activity reads as none" "$(python3 "$GP" activity)" "(none)"
+
+echo
+echo "exact repetition becomes a self-review event, not a silent loop (spec rule 16):"
+python3 "$GP" activity loop-review >/dev/null
+python3 "$GP" learn loop-review-probe --priority 97 --cooldown-ms 0 \
+    --trigger near_tile='{"x":120,"z":648,"radius":2}' \
+    --action walk --param x=121 --param z=648 >/dev/null
+for tick in 10331 10332 10333; do
+    snap "$tick" '[]'
+    fake_bridge done
+    CODE=0; python3 "$GP" step >/dev/null || CODE=$?
+    wait "$FAKE_BRIDGE_PID"
+    check_eq "repetition probe $tick still executes normally" "$CODE" "0"
+done
+python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
+    && ok "the third exact play queues one self-contained loop candidate" \
+    || fail "the third exact play queues one self-contained loop candidate"
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1])]
+matches = [e for e in events if e.get("kind") == "loop-candidate"
+           and e.get("rule") == "loop-review-probe"]
+assert len(matches) == 1, matches
+assert matches[0]["count"] == 3 and len(matches[0]["recent"]) == 3, matches[0]
+PY
+python3 "$GP" remove loop-review-probe >/dev/null
+python3 "$GP" activity --clear >/dev/null
 
 echo
 echo "an activity measures grounded action XP and elapsed rate (spec rules 1, 7):"
@@ -470,6 +549,28 @@ contains "$(cat "$SANDBOX/wait-trade-out")" "condition-met condition=trade_open"
 snap 10456 '[]' '{"trade_open":false}'
 CODE=0; OUT="$(python3 "$GP" wait-until trade_closed --timeout 1)" || CODE=$?
 check_eq "an already closed trade UI satisfies trade_closed" "$CODE" "0"
+snap 104561 '[]' '{"sleeping":false,"fatigue":52}'
+python3 "$GP" wait-until sleeping --timeout 1 > "$SANDBOX/wait-sleep-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 104562 '[]' '{"sleeping":true,"sleep_fatigue":52,"sleep_status":"Please wait...","fatigue":52}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+check_eq "a sleep wait exits only after semantic state sees the sleep screen" "$CODE" "0"
+contains "$(cat "$SANDBOX/wait-sleep-out")" "condition-met condition=sleeping" \
+    && ok "the sleep wait reports its grounded condition" \
+    || fail "the sleep wait reports its grounded condition" "$(cat "$SANDBOX/wait-sleep-out")"
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "sleep blocks every stale objective and reflex until wake-up" "$CODE" "4"
+contains "$OUT" "sleeping-needs-wake" && contains "$OUT" "next=solve-current-word" \
+    && ok "the player verdict makes wake-up the sole prerequisite" \
+    || fail "the player verdict makes wake-up the sole prerequisite" "$OUT"
+refute "the sleeping prerequisite emits no game action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 104563 '[]' '{"sleeping":false,"fatigue":0}'
+CODE=0; OUT="$(python3 "$GP" wait-until not_sleeping --timeout 1)" || CODE=$?
+check_eq "an awake snapshot satisfies not_sleeping" "$CODE" "0"
+CODE=0; OUT="$(python3 "$GP" wait-until fatigue_zero --timeout 1)" || CODE=$?
+check_eq "zero fatigue is directly waitable" "$CODE" "0"
 CODE=0; OUT="$(python3 "$GP" wait-until in_combat --timeout 0.05)" || CODE=$?
 check_eq "a missing transition reaches its hard ceiling: exit 2" "$CODE" "2"
 contains "$OUT" "condition-timeout condition=in_combat" \
@@ -821,6 +922,8 @@ check_eq "the direct NPC command fires once combat is clear" "$CODE" "0"
 check_eq "the action is interact-npc" "$(last_action 'type=interact-npc')" "1"
 check_eq "it carries the stable server index" "$(last_action 'sidx=91')" "1"
 check_eq "and the NPC definition command" "$(last_action 'cmd=1')" "1"
+check_eq "the range cap crosses ACTIONS for a live dispatch recheck" \
+    "$(last_action 'within=2')" "1"
 python3 "$GP" remove pickpocket-man >/dev/null
 python3 "$GP" objective --clear >/dev/null
 refute "a non-integer bound_visible is refused" \
@@ -1001,10 +1104,18 @@ check_eq "the harness carries the direct player-trade door" \
     "$(sandbox_count_in '^    trade)' "$HEADLESS")" "1"
 check_eq "the harness carries the unambiguous menu-text door" \
     "$(sandbox_count_in '^    menu)' "$HEADLESS")" "1"
+check_eq "the harness carries the semantic NPC-dialogue door" \
+    "$(sandbox_count_in '^    dialogue)' "$HEADLESS")" "1"
 check_eq "the harness carries the bounded visual aiming fallback" \
     "$(sandbox_count_in '^    aim)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
+check_eq "the harness carries the semantic equipment listing door" \
+    "$(sandbox_count_in '^    equipment)' "$HEADLESS")" "1"
+check_eq "the harness carries idempotent equip and unequip doors" \
+    "$(sandbox_count_in '^    equip|unequip)' "$HEADLESS")" "1"
+check_eq "the harness carries the named item-command door" \
+    "$(sandbox_count_in '^    item)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based shop door" \
     "$(sandbox_count_in '^    shop)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based bank door" \
@@ -1125,6 +1236,23 @@ contains "$OUT" "menu(Trade with Discordian)" \
 check_eq "the menu door wrote choose-menu" "$(last_action 'type=choose-menu')" "1"
 check_eq "the action carries one intact text field" \
     "$(last_action 'text=Trade with Discordian')" "1"
+snap 117031 '[]' '{"talking_to_npc":true,"dialogue_open":true,"dialogue_options":["Ask about the quest","Goodbye"]}'
+OUT="$(bash "$HEADLESS" dialogue)"; CODE=$?
+check_eq "the dialogue door lists semantic NPC replies" "$CODE" "0"
+contains "$OUT" "1: Ask about the quest" && contains "$OUT" "2: Goodbye" \
+    && ok "the reply list exposes exact live text" \
+    || fail "the reply list exposes exact live text" "$OUT"
+fake_bridge done
+OUT="$(bash "$HEADLESS" dialogue 'Ask about')"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the dialogue-text door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "dialogue(Ask about)" \
+    && ok "the dialogue door preserves the text fragment" \
+    || fail "the dialogue door preserves the text fragment" "$OUT"
+check_eq "the dialogue door wrote choose-dialogue" \
+    "$(last_action 'type=choose-dialogue')" "1"
+check_eq "the dialogue action carries one intact text field" \
+    "$(last_action 'text=Ask about')" "1"
 snap 1172 '[]' '{"inventory":[{"id":145,"count":2}]}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" inventory 145 3)"; CODE=$?
@@ -1137,6 +1265,65 @@ check_eq "the door wrote click-inventory" "$(last_action 'type=click-inventory')
 check_eq "the door wrote only the item id" "$(last_action 'item=145')" "1"
 refute "the inventory door did not write a slot" \
     grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11720 '[]' '{"inventory":[{"id":71,"name":"Iron Long Sword","count":1,"equipped":true,"commands":["Remove"]},{"id":104,"name":"Medium Bronze Helmet","count":1,"equipped":false,"commands":["Wear"]},{"id":20,"name":"Bones","count":3,"equipped":false,"commands":["Bury"]}],"equipment":[{"id":71,"name":"Iron Long Sword","count":1}],"equipment_stats":{"Armour":0,"WeaponAim":8}}'
+OUT="$(bash "$HEADLESS" inventory)"; CODE=$?
+check_eq "the inventory listing reads semantic state" "$CODE" "0"
+contains "$OUT" "Medium Bronze Helmet" && contains "$OUT" "commands=[Bury]" \
+    && ok "the inventory listing exposes names, equipped state, and commands" \
+    || fail "the inventory listing exposes names, equipped state, and commands" "$OUT"
+OUT="$(bash "$HEADLESS" inventory 104 2>&1)"; CODE=$?
+check_eq "a wearable cannot be toggled through the ambiguous inventory door" "$CODE" "2"
+contains "$OUT" "use '" && contains "$OUT" "equip 104" \
+    && ok "the refusal points to the idempotent final-state doors" \
+    || fail "the refusal points to the idempotent final-state doors" "$OUT"
+refute "the refused wearable toggle emits no ACTIONS packet" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+OUT="$(bash "$HEADLESS" equipment)"; CODE=$?
+check_eq "the equipment listing reads semantic state" "$CODE" "0"
+contains "$OUT" "Iron Long Sword" && contains "$OUT" "WeaponAim=8" \
+    && ok "the equipment listing exposes the final set and bonuses" \
+    || fail "the equipment listing exposes the final set and bonuses" "$OUT"
+fake_bridge done
+OUT="$(bash "$HEADLESS" equip 104)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "equip waits for the requested final state" "$CODE" "0"
+contains "$OUT" "equipment-verified item=104 equipped=true" \
+    && ok "equip reports grounded completion" \
+    || fail "equip reports grounded completion" "$OUT"
+check_eq "equip uses the idempotent bridge action" \
+    "$(last_action 'type=equip-inventory')" "1"
+fake_bridge done
+OUT="$(bash "$HEADLESS" unequip 71)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "unequip waits for the requested final state" "$CODE" "0"
+check_eq "unequip uses the idempotent bridge action" \
+    "$(last_action 'type=unequip-inventory')" "1"
+fake_bridge done
+OUT="$(bash "$HEADLESS" item 20 bury all)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a named consumptive item command verifies inventory change" "$CODE" "0"
+contains "$OUT" "item-command-verified command=Bury item=20 before=3 after=0" \
+    && ok "bury all cannot confuse a hover with progress" \
+    || fail "bury all cannot confuse a hover with progress" "$OUT"
+check_eq "the item door uses the definition-backed bridge action" \
+    "$(last_action 'type=command-inventory')" "1"
+check_eq "bury all resolves the held quantity" "$(last_action 'amount=3')" "1"
+snap 117201 '[]' '{"fatigue":0,"sleeping":false,"inventory":[{"id":1263,"name":"Sleeping Bag","count":1,"equipped":false,"wearable":false,"commands":["Sleep"]}]}'
+OUT="$(bash "$HEADLESS" item 1263 sleep)"; CODE=$?
+check_eq "sleep at zero fatigue is an idempotent success" "$CODE" "0"
+contains "$OUT" "already-satisfied" && contains "$OUT" "no sleep action emitted" \
+    && ok "the rested result explains why no retry was sent" \
+    || fail "the rested result explains why no retry was sent" "$OUT"
+refute "zero-fatigue sleep emits no ACTIONS packet" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 117202 '[]' '{"fatigue":52,"sleeping":true,"sleep_fatigue":52,"inventory":[{"id":1263,"name":"Sleeping Bag","count":1,"equipped":false,"wearable":false,"commands":["Sleep"]}]}'
+CODE=0; OUT="$(bash "$HEADLESS" item 1263 sleep)" || CODE=$?
+check_eq "retrying the bag while already asleep is blocked" "$CODE" "2"
+contains "$OUT" "already-sleeping" && contains "$OUT" "wake-and-verify" \
+    && ok "the blocked retry preserves the wake-up prerequisite" \
+    || fail "the blocked retry preserves the wake-up prerequisite" "$OUT"
+refute "already-sleeping retry emits no ACTIONS packet" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 11721 '[]' '{"shop_open":true,"shop_items":[{"slot":17,"id":42,"name":"Bucket","count":3,"noted":false}]}'
 OUT="$(bash "$HEADLESS" shop)"; CODE=$?
 check_eq "the shop listing reads ACTIONS state without a model call" "$CODE" "0"

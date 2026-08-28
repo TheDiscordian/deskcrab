@@ -92,14 +92,18 @@ deliberate-play channel.
      travel rules stay mechanically quiet during a fight.
 
 5. The action vocabulary is closed: `talk-npc` (`npc`: the type id; the server index is resolved
-   from the snapshot at fire time — nearest matching NPC — and both ride the action file exactly
+   from the snapshot at fire time — nearest matching NPC by real walking steps, independently of
+   input list order — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
    click), `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
-   `within` 0–10 caps the current Chebyshev tile distance), which
+   `within` 0–10 caps the current Chebyshev tile distance and rides the action file for one final
+   dispatch-time recheck), which
    resolves the same stable NPC identity and performs its definition-backed menu command without
    any pointer or context-menu reconstruction. Repeating reflexes use `within` so a wandering
    target cannot drag the player across the area; deliberate one-off NPC commands may still
-   approach their chosen visible target. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
+   approach their chosen visible target. Every NPC action records the selected target's snapshot
+   tile in its decision event, and the bridge refuses it if a strictly nearer equivalent exists by
+   dispatch time. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
    Chebyshev tolerance rule 7a's verification accepts as arrival), `retreat` (optional `distance`
@@ -179,13 +183,27 @@ deliberate-play channel.
    the pickup legal, and the wanted pile remains visible for the next pass.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
-   - `no-rule-matched` (exit 4): the fallback signal — **only this verdict licenses model
-     reasoning about the next action**. Fields include `cooldown_holds`, so a temporarily
+   - `no-rule-matched` (exit 4): the open-ended fallback signal. Other exit-4 prerequisites below
+     license only their named correction; this verdict licenses model reasoning about the next
+     ordinary action. Fields include `cooldown_holds`, so a temporarily
      suppressed rule is visible to the falling-back mind, and `ground_items` names every visible
      ground-item id so a newly entered room cannot hide an actionable pickup behind another query.
      The current `activity` and any positive `activity_xp` measurements ride the ordinary verdict;
      the resident-runner heartbeat preserves them when a separate player process asks through
      `play`, so performance feedback is ambient rather than a special inspection ritual.
+   - `sleeping-needs-wake` (exit 4): the sleep-word screen currently owns input. No objective,
+     route, reflex, or reply action is emitted; solving the current word and verifying awake state
+     is the sole licensed reasoning task. Invoking the sleeping bag again is never a wake-up action.
+   - `movement-in-progress` (exit 3): a directly dispatched movement commitment still owns the
+     body. Ordinary learned rules emit nothing until `walking` becomes false, so incidental loot
+     cannot cancel an approach to an NPC or another deliberate destination. A currently applicable
+     combat-retreat rule remains the safety exception.
+   - `npc-dialogue-in-progress` (exit 3): an NPC exchange is between speech/choice states. Ordinary
+     learned rules emit nothing; in particular, visible or respawning loot cannot walk the player
+     out of the conversation.
+   - `npc-dialogue-choice` (exit 4): the NPC reply menu is open. `choices` contains its exact
+     semantic text and the sole licensed reasoning task is choosing one with the dialogue command.
+     The conversation continues to own the body across as many speech/choice stages as it needs.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.
@@ -263,8 +281,8 @@ deliberate-play channel.
    `not_walking` cannot accept the pre-action snapshot. Conditions are
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`, and
-   `right_click_menu_closed`, `trade_open`, and `trade_closed`; dashes are accepted in place of
-   underscores.
+   `right_click_menu_closed`, `trade_open`, `trade_closed`, `sleeping`, `not_sleeping`, and
+   `fatigue_zero`; dashes are accepted in place of underscores.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
    false; a pre-reply false snapshot cannot masquerade as the end of the conversation.
    Success reports `condition-met` with the condition and snapshot tick. A wait has a 15-second
@@ -339,13 +357,14 @@ deliberate-play channel.
     exists), retries through the server lock, and returns only after observed safety or its hard
     ceiling.
     The playing policy the sittings read
-    makes rules-first mandatory: reasoning about the next action is licensed only by rule 7's
-    `no-rule-matched` or rule 7e's `route-blocked` (exit 4), and a newly verified play must become an executable rule — but
+    makes rules-first mandatory: open-ended reasoning about the next action is licensed by rule
+    7's `no-rule-matched` or rule 7e's `route-blocked`; other exit-4 prerequisites license only
+    their named correction. A newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
     leaves a `note` in the outcome queue and keeps moving. While rule 15's resident runner is
     live, `step` defers to it instead of evaluating — one engine-state writer at a time — and
     reports the runner's own latest verdict with the same exit mapping, so exit 4 keeps its
-    meaning as the one licence to reason.
+    meaning as a licence to reason, either openly for a gap or narrowly for a prerequisite.
 
 13. The harness is itself versioned bytes, and its processes outlive their launcher. The
     entrypoint and its helpers are committed in the game checkout's repository
@@ -475,8 +494,14 @@ deliberate-play channel.
     tick churn and NPC wandering). Movement therefore produces one gap after the body settles,
     not one gap for every crossed tile. `note <text…>` is the playing
     hand's one-line door for lessons the queue cannot see (it stamps the current position,
-    objective and inventory alongside the text). The queue is the inbox of the background
-    author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
+    objective and inventory alongside the text). Because separate author turns cannot infer a
+    time-spanning loop from isolated outcomes, the player retains a compact three-minute
+    repetition history. Three exact firings of the same non-retreat rule against the same target
+    in one objective/activity emit one self-contained `loop-candidate` record with their span and
+    recent states. This is diagnosis, not a generic action cap: productive skilling and valuable
+    finite loot stay repeatable, while a fixed low-value respawn, stale dialogue, or other
+    diversion must be bounded without starving the active commitment. Safety retreat is exempt.
+    The queue is the inbox of the background author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
     durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at medium
     effort under the same no-sleep command hook as the playing hand, reads new outcomes, writes
