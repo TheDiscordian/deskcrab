@@ -1641,6 +1641,12 @@ class Handler(BaseHTTPRequestHandler):
                 return True
         return False
 
+    def _request_is_https(self):
+        """True for direct TLS or the HTTPS reverse proxy in front of us."""
+        forwarded = (self.headers.get("X-Forwarded-Proto") or "") \
+            .split(",", 1)[0].strip().lower()
+        return forwarded == "https" or isinstance(self.connection, ssl.SSLSocket)
+
     def _serve_openrsc(self, path, query, extra):
         """The complete spectator surface. There is intentionally no POST."""
         if path in ("/openrsc", "/openrsc/"):
@@ -1702,9 +1708,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif spectator_key and OPENRSC_SECRET \
                     and hmac.compare_digest(spectator_key, OPENRSC_SECRET):
+                secure = "; Secure" if self._request_is_https() else ""
                 extra["Set-Cookie"] = (
                     f"openrsckey={spectator_key}; Path=/openrsc; "
-                    "Max-Age=31536000; SameSite=Strict; HttpOnly; Secure"
+                    f"Max-Age=31536000; SameSite=Strict; HttpOnly{secure}"
                 )
             return self._serve_openrsc(path, query, extra)
 

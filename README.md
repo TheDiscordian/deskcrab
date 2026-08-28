@@ -296,6 +296,11 @@ already authenticated phone can open `/openrsc` directly. To let another Tailsca
 without giving them access to the assistant or chat, run `crab openrsc-link` and send them the
 spectator-only URL it prints.
 
+For access limited to the local network, set `SERVE_BIND="0.0.0.0"`, restart the service, and
+scope the host firewall rule to the LAN interface/subnet. Generate a LAN share link with `crab
+openrsc-link http://<laptop-lan-address>:8723`; plain HTTP is sufficient for this read-only page
+(the microphone-based phone assistant still requires HTTPS).
+
 **Reaching it from a phone.** Browsers only grant microphone access in a secure context, so the server must be behind TLS. It binds loopback by default; publishing it is a separate, deliberate act:
 
 ```bash

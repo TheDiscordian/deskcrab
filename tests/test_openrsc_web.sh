@@ -101,9 +101,15 @@ check "the ordinary phone page links to the spectator" \
 
 curl -fsS -D "$T/watch.hdr" -c "$T/watch.cookies" \
     "$BASE/openrsc?g=$WATCH_SECRET" -o "$T/watch.html"
-grep -qi '^set-cookie: openrsckey=.*Path=/openrsc;.*HttpOnly; Secure' "$T/watch.hdr" \
-    && ok "the share key becomes a secure path-scoped HttpOnly cookie" \
-    || fail "the share key becomes a secure path-scoped HttpOnly cookie" "$(grep -i '^set-cookie' "$T/watch.hdr")"
+grep -qi '^set-cookie: openrsckey=.*Path=/openrsc;.*HttpOnly' "$T/watch.hdr" \
+    && ! grep -qi '^set-cookie:.*; Secure' "$T/watch.hdr" \
+    && ok "plain LAN HTTP gets a usable path-scoped HttpOnly cookie" \
+    || fail "plain LAN HTTP gets a usable path-scoped HttpOnly cookie" "$(grep -i '^set-cookie' "$T/watch.hdr")"
+curl -fsS -H 'X-Forwarded-Proto: https' -D "$T/watch-https.hdr" \
+    "$BASE/openrsc?g=$WATCH_SECRET" -o /dev/null
+grep -qi '^set-cookie: openrsckey=.*Path=/openrsc;.*HttpOnly; Secure' "$T/watch-https.hdr" \
+    && ok "proxied HTTPS marks the spectator cookie Secure" \
+    || fail "proxied HTTPS marks the spectator cookie Secure" "$(grep -i '^set-cookie' "$T/watch-https.hdr")"
 check "the page removes the share key from its visible URL" \
     grep -q 'history.replaceState' "$T/watch.html"
 check_eq "the spectator cookie can reopen the game page" \

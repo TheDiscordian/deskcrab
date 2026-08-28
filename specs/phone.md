@@ -439,9 +439,11 @@ against the shipped CLI before this rule was written.
     `GET /openrsc/frame.jpg` is its current frame, and `GET /openrsc/state` is its compact HUD.
     All three accept the ordinary phone credential OR a durable spectator-only credential; that
     narrower credential is accepted by no other route. Both remain inside the same listener and
-    TLS/Tailscale boundary, and an unauthenticated caller receives the same flat 404. `crab
-    openrsc-link` creates the narrow key when needed and prints its shareable HTTPS URL without
-    exposing the assistant's phone credential.
+    authentication boundary, whether that listener is reached through Tailscale HTTPS or an
+    explicitly configured trusted-LAN bind, and an unauthenticated caller receives the same flat
+    404. The path-scoped spectator cookie is `Secure` behind HTTPS and remains usable on explicit
+    LAN HTTP. `crab openrsc-link` creates the narrow key when needed and prints its shareable URL
+    without exposing the assistant's phone credential.
 54. Observation has no control half. The server reads the private Xvfb socket, discovers the same
     largest mapped client rectangle as the desktop spectator through their shared stdlib X11
     helper, and runs one capped ffmpeg JPEG producer shared by every viewer. It keeps only the
