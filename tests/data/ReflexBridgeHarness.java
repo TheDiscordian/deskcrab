@@ -182,10 +182,14 @@ public class ReflexBridgeHarness {
 			return null;
 		}
 
-		final int[] playerSidx = {22, 11};
-		final String[] playerNames = {"Distant Player", "Nearby Friend"};
-		final int[] playerAbsX = {130, 121};
-		final int[] playerAbsZ = {660, 650};
+		final int[] playerSidx = {22, 0, 11};
+		final String[] playerNames = {"Distant Player", "Beatrice", "Nearby Friend"};
+		final int[] playerAbsX = {130, 120, 121};
+		final int[] playerAbsZ = {660, 650, 650};
+
+		public int localPlayerServerIndex() {
+			return 0;
+		}
 
 		public int playerCount() {
 			return playerSidx.length;
