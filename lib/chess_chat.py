@@ -360,7 +360,7 @@ class ChessChat:
         except OSError:
             instr = ""
         # Read-only sandbox, never the bypass flag (specs/chessweb.md rule
-        # 24f, model-backends.md rule 9): this call is not cocoon-wrapped,
+        # 24f, model-backends.md rule 9): this call carries untrusted table input,
         # and its prompt carries an unauthenticated sitter's text.
         cmd = [codex, "exec", "--ignore-user-config", "--skip-git-repo-check",
                "--sandbox", "read-only",

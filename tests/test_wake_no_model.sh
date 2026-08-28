@@ -4,7 +4,7 @@
 # rule 4a. Run: bash tests/test_wake_no_model.sh
 #
 # The 2026-08-11 shape this pins: a wake whose CLI died before the model wrote
-# anything (bwrap unable to nest the cocoon, a loader crash) left a stream with
+# anything (for example, a loader crash) left a stream with
 # no error event, so the outage branch never fired — the journal kept a bare
 # "claude exit 1" and the agenda was silently lost. And the pathological end of
 # the same road, a walk that makes NO attempt at all, exits 0 with an empty
@@ -80,18 +80,18 @@ check "and the agenda is re-booked, not lost" \
 
 echo
 echo "the launcher's last words reach the journal line (rule 24a):"
-AGENDA2="the agenda behind the bwrap death"
+AGENDA2="the agenda behind the launcher death"
 sandbox_stub claude <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${SANDBOX_CLAUDE_LOG:-/dev/null}"
 cat > /dev/null
-echo "bwrap: setting up uid map: Read-only file system"
+echo "launcher: could not load the model runtime"
 exit 1
 EOF
 wake "$AGENDA2"
 LINE="$(grep "produced no output" "$SESSIONS_LOG" | tail -n1)"
 check "the journal carries the launcher's own complaint" \
-    contains "$LINE" "bwrap: setting up uid map"
+    contains "$LINE" "launcher: could not load"
 check "this agenda survives too" grep -rq "$AGENDA2" "$WAKES_DIR"
 
 echo

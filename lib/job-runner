@@ -171,9 +171,9 @@ PREV_ACCT=""
 # The engine follows the model name (specs/model-backends.md rule 14): a
 # codex-model build runs the one codex login, and refused it is BLOCKED,
 # never downgraded — jobs.md rule 5a holds across engines. The builder keeps
-# full hands on either engine (cocoon.md rule 2): codex's own sandbox and
-# approvals are off exactly as --dangerously-skip-permissions is the Claude
-# builder's shape. The brief rides as a preface on the task rather than
+# full hands on either engine: codex's own sandbox and approvals are off
+# exactly as --dangerously-skip-permissions is the Claude builder's shape.
+# The brief rides as a preface on the task rather than
 # replacing codex's base instructions — a builder is a coding agent, and
 # codex's own coding instructions are the ones it should keep.
 JOB_BACKEND="$(model_backend "$JOB_MODEL")"

@@ -50,7 +50,7 @@ flowchart TD
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
   INT["conditional INTERRUPT<br/>he spoke over a turn — the cut context, turn-pipeline rule 15f"]
-  DSP["conditional DISPUTE<br/>he is pushing back — specs/cocoon.md"]
+  DSP["conditional DISPUTE<br/>he is pushing back — specs/dispute-turn.md"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
   L8["L8 TURN FRAME<br/>names the message below as the subject"]
   MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
@@ -166,7 +166,7 @@ two standing attention rules (rules 38 and 39 below), measured ~1,320 with frame
 `tests/test_prompt_profiles.sh` state the same totals on purpose.
 
 The dispute row read 1,800 until 2026-08-10 evening, sized for the first cut of the frame. The
-frame then took on two things the adversarial reviews demanded ([cocoon.md](cocoon.md) rules 8 and
+frame then took on two things the adversarial reviews demanded ([dispute-turn.md](dispute-turn.md) rules 8 and
 8a): the voice demand restated as an observable — the register named, the pre-speech mirror
 pointed at — in place of the unfalsifiable "in your own voice", and the conditional sentence that
 reconciles regroup's "carry it forward" with dispute's "the theory is dead" when both layers fire.
@@ -361,7 +361,7 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     prompt, and when it outgrows its budget, say so to her instead of deciding for her.
 
 36b. **The dispute layer.** A turn whose message pushes back on her previous reply (the detector and
-    the whole discipline live in [cocoon.md](cocoon.md)) carries one more conditional layer, between
+    the whole discipline live in [dispute-turn.md](dispute-turn.md)) carries one more conditional layer, between
     regroup and L7, stating the dispute rules at strength. It is turn-only — a wake has no message
     to be pushed back on — and its deliberate overlap with L7's ranking rule is the regroup
     bargain again: under pushback the ranking rule is the one being broken, so it is restated
@@ -369,7 +369,7 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     is the contract. When the regroup layer is present in the same prompt, the dispute layer
     carries one extra sentence reconciling the two — regroup's "carry it forward" yields to
     dispute's "the rejected theory is dead", because the words being folded in can BE the dead
-    theory (cocoon rule 8a). The sentence is emitted only when regroup actually fired: rule 29
+    theory (dispute-turn rule 8a). The sentence is emitted only when regroup actually fired: rule 29
     forbids pointing at a block that is not there.
 
 36c. **The interrupt layer.** A turn whose message CUT the turn in flight

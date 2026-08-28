@@ -196,15 +196,15 @@ check_eq "an idle send writes no spool entry — there is nobody to surface it t
 
 echo "== the wiring: the per-run settings carry the hook, id and all =="
 
-COCOON_OUT="$(sandbox_bash 'export DESKCRAB_TURN_ID=tid42; claude_profile_flags turn; cat "${STATE_PREFIX}-cocoon.json"')"
+HOOKS_OUT="$(sandbox_bash 'export DESKCRAB_TURN_ID=tid42; claude_profile_flags turn; cat "${STATE_PREFIX}-hooks.json"')"
 check "the generated settings file carries a PostToolUse hook" \
-    contains "$COCOON_OUT" '"PostToolUse"'
-check "pointed at the mail reader" contains "$COCOON_OUT" "lib/midturn-mail"
+    contains "$HOOKS_OUT" '"PostToolUse"'
+check "pointed at the mail reader" contains "$HOOKS_OUT" "lib/midturn-mail"
 check "with the run's own turn id baked in for the never-echo skip" \
-    contains "$COCOON_OUT" "DESKCRAB_TURN_ID=tid42"
-printf '%s' "$COCOON_OUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
+    contains "$HOOKS_OUT" "DESKCRAB_TURN_ID=tid42"
+printf '%s' "$HOOKS_OUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
     && ok "and the whole settings file is still valid JSON" \
-    || fail "and the whole settings file is still valid JSON" "$COCOON_OUT"
+    || fail "and the whole settings file is still valid JSON" "$HOOKS_OUT"
 
 # The runner's own-entry delete is a live-path behaviour (crab remote under a
 # real lock); pinned here by the exact line so a refactor cannot drop it

@@ -2,8 +2,8 @@
 # The mid-turn mail reader — specs/phone.md rules 51-52.
 #
 # Runs as a PostToolUse hook inside a live turn or wake (wired by
-# claude_profile_flags into the same per-run settings file as the cocoon
-# signpost), which means it runs between one tool call and the next — the
+# claude_profile_flags into a per-run hooks settings file), which means it
+# runs between one tool call and the next — the
 # closest thing to a mid-turn user message the CLI can deliver, verified live
 # against claude 2.1.226 before the rule was written. A message the phone
 # accepted while this run was already working (serve.py's spool write, rule

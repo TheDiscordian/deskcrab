@@ -3046,7 +3046,7 @@ $WANTS_TITLES"
 
     # ---- dispute ----------------------------------------------------------
     # Conditional, like regroup: rendered only when the caller that took the
-    # message ran dispute_detect and set PROMPT_DISPUTE. specs/cocoon.md.
+    # message ran dispute_detect and set PROMPT_DISPUTE. specs/dispute-turn.md.
     # When the regroup layer fired in the same prompt, the frame carries the
     # sentence reconciling the two (rule 8a) — regroup's "carry it forward"
     # yields to dispute's "the theory is dead" — and only then, so the frame
@@ -3057,7 +3057,7 @@ $WANTS_TITLES"
             turn) DISPUTE="$(_dispute_context ${REGROUP:+with-regroup})" ;;
         esac
     fi
-    _prompt_layer dispute "specs/cocoon.md" "$DISPUTE"
+    _prompt_layer dispute "specs/dispute-turn.md" "$DISPUTE"
 
     # ---- L7 RANKING, L8 FRAME --------------------------------------------
     local RANKING=""
@@ -3432,7 +3432,7 @@ interactive_turn_in_flight() {
 # question answers no on every production turn. Measured twice: the 12:31:46
 # pushback superseded nothing because a turn in flight had appended above it,
 # and the dispute layer itself never fired on a single live turn until the
-# guard moved here (specs/cocoon.md rule 6).
+# guard moved here (specs/dispute-turn.md rule 6).
 _convo_last_assistant_anywhere() {
     [ -f "$CONVOFILE" ] || return 0
     awk -v bre="$CONVO_BLOCK_RE" -v are="$CONVO_ASSISTANT_RE" '
@@ -3447,7 +3447,7 @@ _convo_last_assistant_anywhere() {
 }
 
 # Is this message pushback that CLOSES the turns in flight behind it? The
-# detector's own answer, restricted to its STRONG class (specs/cocoon.md rule
+# detector's own answer, restricted to its STRONG class (specs/dispute-turn.md rule
 # 6b, turn-pipeline rule 15c): the dispute frame is cheap to over-apply — a
 # stronger turn — but superseding silently kills a reply he may still want,
 # so nothing that could be benign may ever do it. The one-block-transcript
@@ -3995,7 +3995,7 @@ regroup_context() {
 }
 
 # Is this message pushback on her previous reply, rather than a new subject?
-# specs/cocoon.md rules 6-6b. Deterministic, no model call: the phrases are
+# specs/dispute-turn.md rules 6-6b. Deterministic, no model call: the phrases are
 # taken from the measured record of 2026-08-10, where five wrong theories in
 # eight turns met "stop assuming I'm wrong", "do not gaslight or lie", "I'm
 # reporting a bug", "I never said", and "one more time" — and nothing in the
@@ -4101,7 +4101,7 @@ dispute_detect() {  # <the user's message>
 # was the first cut's wording and it covered his most-repeated demand with
 # nothing she could check. The register IS checkable — her claudism list
 # catches it and her pre-speech mirror reads every reply against it — so the
-# frame points there (specs/cocoon.md rule 8).
+# frame points there (specs/dispute-turn.md rule 8).
 #
 # The optional argument marks that the regroup layer is in the same prompt,
 # and buys the reconciliation sentence (rule 8a): regroup says carry the
@@ -5058,9 +5058,8 @@ PY
 }
 
 # The launcher's own last words, for a stream the model never reached
-# (specs/wake-queue.md rule 24a). A CLI that dies before the model — bubblewrap
-# unable to build the cocoon inside another namespace, the cocoon-refused note,
-# a loader crash — leaves its complaint as the only non-event text in the
+# (specs/wake-queue.md rule 24a). A CLI or loader that dies before the model
+# leaves its complaint as the only non-event text in the
 # stream log, and a journal line reading "claude exit 1" alone sends whoever
 # reads it digging through archived streams for a reason the log already held.
 # Deskcrab's own note lines count (rendered note: detail); the
@@ -5147,24 +5146,13 @@ claude_profile_flags() {  # <turn|wake|job|classify>
         esac
     fi
 
-    # The cocoon signpost, specs/cocoon.md rule 4a: in a live turn or wake,
-    # what constitutes her is read-only — the WALL is the bubblewrap mount
-    # namespace the run functions apply (cocoon_wrap_build), and this hook is
-    # the deny that names the road out, worth more to her than the kernel's
-    # bare EROFS. Builders (job profile) and classifiers carry neither the
-    # hook nor the wrap, and that asymmetry is the whole design. The settings
-    # file is generated here so the hook's absolute path is this checkout's,
-    # not a path baked into the repo. PROMPT_DISPUTE reaches here through
-    # bash dynamic scoping from claude_generate: in a dispute turn the deny
-    # must not tell her to dispatch a builder — the dispute frame forbids
-    # exactly that — so the hook is told which turn this is (rule 4a).
+    # The mid-turn mail reader needs a generated settings file whose command
+    # points at this checkout rather than a path baked into the repository.
+    # It is the only per-run hook here; live turns and wakes do not carry a
+    # special write gate or mount policy.
     case "${1:-turn}" in
         turn|wake)
-            local COCOON="${STATE_PREFIX}-cocoon.json" HOOKS=""
-            if [ -x "$SCRIPT_DIR/lib/cocoon-gate" ]; then
-                HOOKS="$(printf '"PreToolUse":[{"matcher":"Edit|Write|MultiEdit|NotebookEdit|Bash","hooks":[{"type":"command","command":"DESKCRAB_REPO=%s DESKCRAB_DISPUTE=%s DESKCRAB_PROJECT_DIR=%s %s"}]}]' \
-                    "$SCRIPT_DIR" "${PROMPT_DISPUTE:+1}" "$PROJECT_DIR" "$SCRIPT_DIR/lib/cocoon-gate")"
-            fi
+            local SETTINGS="${STATE_PREFIX}-hooks.json" HOOKS=""
             # The mid-turn mail reader (specs/phone.md rules 51-52): between
             # one tool call and the next, a live run reads the messages the
             # phone accepted while it was already working, so a course
@@ -5174,101 +5162,21 @@ claude_profile_flags() {  # <turn|wake|job|classify>
             # this run's own message, the second belt behind the runner's
             # own-entry delete in _run_claude_remote_locked.
             if [ -x "$SCRIPT_DIR/lib/midturn-mail" ]; then
-                [ -n "$HOOKS" ] && HOOKS="$HOOKS,"
                 HOOKS="$HOOKS$(printf '"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"DESKCRAB_STATE_PREFIX=%s DESKCRAB_TURN_ID=%s %s"}]}]' \
                     "$STATE_PREFIX" "${DESKCRAB_TURN_ID:-}" "$SCRIPT_DIR/lib/midturn-mail")"
             fi
             if [ -n "$HOOKS" ]; then
                 if printf '{"hooks":{%s}}\n' "$HOOKS" \
-                        > "$COCOON.tmp.$$" 2>/dev/null; then
-                    mv "$COCOON.tmp.$$" "$COCOON" 2>/dev/null || rm -f "$COCOON.tmp.$$"
+                        > "$SETTINGS.tmp.$$" 2>/dev/null; then
+                    mv "$SETTINGS.tmp.$$" "$SETTINGS" 2>/dev/null || rm -f "$SETTINGS.tmp.$$"
                 else
-                    rm -f "$COCOON.tmp.$$"
+                    rm -f "$SETTINGS.tmp.$$"
                 fi
-                [ -r "$COCOON" ] && CLAUDE_PROFILE_FLAGS+=(--settings "$COCOON")
+                [ -r "$SETTINGS" ] && CLAUDE_PROFILE_FLAGS+=(--settings "$SETTINGS")
             fi ;;
     esac
 
     [ "$CLAUDE_SKILLS" = "1" ] || CLAUDE_PROFILE_FLAGS+=(--disable-slash-commands)
-    return 0
-}
-
-# --- The cocoon wall: the OS half of specs/cocoon.md rules 1, 4, 4b ---------
-# In a live turn or wake, what constitutes her is read-only — and the thing
-# that makes it so is a bubblewrap mount namespace, not a rule anything reads.
-# The whole filesystem is bind-mounted read-only and only her drawers are
-# re-bound writable; a constituent write then dies in the kernel with EROFS
-# whatever spelling produced it, because a mount namespace does not parse
-# commands. The predecessor — the regex hook alone — was reviewed with about
-# ten verified bypasses (newline-anchored redirections, interpreter
-# one-liners, pathless git in a constituent cwd, $HOME spellings, relative
-# paths, a settings write that killed the hooks); the hook survives as the
-# signpost that names the road out, and the kernel holds the wall.
-#
-# The writable set, and why each entry is there:
-#   * the deskcrab data dir      — her drawers (rule 3): wants, journal,
-#                                  memory, jobs, wakes, chess, metrics
-#   * the deskcrab state dir     — the self-change watcher's records
-#   * the project dir's library  — her own writing (rule 3): lines, moments,
-#                                  music, pretty, voice. The life, not the
-#                                  machinery — a wake that cannot leave a
-#                                  dated thought there is a wake sealed
-#                                  against its own instructions
-#   * dirname(STATE_PREFIX),     — the turn's own machinery: convo, tickets,
-#     /tmp and TMPDIR              stream logs, live-speech markers
-#   * XDG_RUNTIME_DIR            — the session bus, so `crab job` can still
-#                                  reach the user manager; the unit it starts
-#                                  is born OUTSIDE the namespace, which is
-#                                  the builder asymmetry of rule 2
-#   * ~/.claude, ~/.claude.json, — the CLI's own state: history, sessions,
-#     and CLAUDE_CONFIG_DIR        projects, session-env. A turn breaks
-#                                  without it (measured: the Bash tool dies
-#                                  on an EROFS session-env mkdir), and the
-#                                  other accounts symlink their shared
-#                                  surfaces into account 1's ~/.claude, so
-#                                  that dir is bound whichever account has
-#                                  the turn
-#   * the user cache             — the CLI's own logging
-# Everything else on the machine — the repo, ~/.local/lib/deskcrab, the
-# ~/.local/bin entry points, ~/.config/deskcrab, the systemd units, the
-# project dir's CLAUDE.md — is read-only by construction, with no list to
-# keep current.
-#
-# Fail CLOSED (rule 4b): no bubblewrap, no turn. The callers refuse with a
-# cocoon-refused stream note rather than running unwrapped — an unwrapped
-# session is the 2026-08-10 session. COCOON_BWRAP exists so a test can point
-# at a missing binary and prove the refusal; it is not a disable knob.
-COCOON_BWRAP="${COCOON_BWRAP:-bwrap}"
-
-cocoon_wrap_build() {  # fills COCOON_WRAP_ARGV, or COCOON_WRAP_ERR and rc 1
-    COCOON_WRAP_ARGV=()
-    COCOON_WRAP_ERR=""
-    local BW
-    if ! BW="$(command -v "$COCOON_BWRAP" 2>/dev/null)"; then
-        COCOON_WRAP_ERR="bubblewrap ($COCOON_BWRAP) is not available — the cocoon cannot be built, and a live session never runs unwrapped (specs/cocoon.md rule 4b)"
-        return 1
-    fi
-    local DATA="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
-    mkdir -p "$DATA" 2>/dev/null
-    local -a rw=()
-    local d
-    for d in \
-        "$DATA" \
-        "${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab" \
-        "${PROJECT_DIR:+$PROJECT_DIR/Library}" \
-        "$(dirname "$STATE_PREFIX")" \
-        /tmp \
-        "${TMPDIR:-}" \
-        "${XDG_RUNTIME_DIR:-}" \
-        "$HOME/.claude" \
-        "$HOME/.claude.json" \
-        "${CLAUDE_CONFIG_DIR:-}" \
-        "${CODEX_HOME:-}" \
-        "${XDG_CACHE_HOME:-$HOME/.cache}" \
-    ; do
-        [ -n "$d" ] && [ -e "$d" ] && rw+=(--bind "$d" "$d")
-    done
-    COCOON_WRAP_ARGV=("$BW" --die-with-parent --ro-bind / / --dev-bind /dev /dev ${rw[@]+"${rw[@]}"})
     return 0
 }
 
@@ -6016,8 +5924,8 @@ PY
 }
 
 # One codex CLI run for a turn or a wake, appending TRANSLATED events to
-# $DEBUGLOG through lib/codex-stream (rule 11), inside the same cocoon wall
-# and under the same watchdog as its Claude counterpart (rule 9). The
+# $DEBUGLOG through lib/codex-stream (rule 11), under the same watchdog as its
+# Claude counterpart (rule 9). The
 # assembled prompt becomes the session's base instructions whole (rule 7);
 # CODEX_PROMPT_MODE=preface is the escape hatch (rule 8). Reads
 # SYSTEM_PROMPT and (for a turn) TURN_DEADLINE from the caller's scope, like
@@ -6029,13 +5937,6 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
     INSTR="${STATE_PREFIX}-codex-instructions-$$.md"
     (
         cd "$PROJECT_DIR" || exit 1
-        if ! cocoon_wrap_build; then
-            claude_stream_note "cocoon-refused" "$COCOON_WRAP_ERR"
-            [ "$PROFILE" = "turn" ] && notify-send -t 8000 \
-                -h string:x-dunst-stack-tag:deskcrab "${NOTIFY_NAME:-deskcrab}" \
-                "this turn was refused: $COCOON_WRAP_ERR" 2>/dev/null
-            exit 79
-        fi
         PROMPT="$RTEXT"
         if [ "$CODEX_PROMPT_MODE" = "preface" ]; then
             PROMPT="$(printf '%s\n\n--- the message to answer ---\n\n%s' \
@@ -6064,7 +5965,7 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
                 CODEX_APP_INSTRUCTIONS="$INSTR" \
                 CODEX_STREAM_MODEL="$SLUG" \
                 "$LIB_DIR/codex-app-stream" -- \
-                "${COCOON_WRAP_ARGV[@]}" "$CODEX_BIN" app-server \
+                "$CODEX_BIN" app-server \
                 -c 'mcp_servers={}' -c 'plugins={}' \
                 >> "$DEBUGLOG" 2>> "$DEBUGLOG"
             APP_RC=$?
@@ -6080,8 +5981,8 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
         # The subscription, never a stray key (rule 5); stdin closed because
         # an open stdin is an invitation codex accepts (rule 10). Codex's own
         # stderr appends raw — the refusal detector reads it as codex-owned.
-        env -u OPENAI_API_KEY "${COCOON_WRAP_ARGV[@]}" \
-            "$CODEX_BIN" "${ARGS[@]}" "$PROMPT" </dev/null 2>> "$DEBUGLOG" \
+        env -u OPENAI_API_KEY "$CODEX_BIN" "${ARGS[@]}" "$PROMPT" \
+            </dev/null 2>> "$DEBUGLOG" \
             | CODEX_STREAM_MODEL="$SLUG" "$LIB_DIR/codex-stream" >> "$DEBUGLOG"
         exit "${PIPESTATUS[0]}"
     ) &
@@ -6094,8 +5995,8 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
     rm -f "$INSTR" 2>/dev/null
 }
 
-# One question, one text answer, on the codex engine (rule 16). No cocoon —
-# classifiers never had one — and no fallback: refused or failed it returns
+# One question, one text answer, on the codex engine (rule 16). No fallback:
+# refused or failed it returns
 # non-zero exactly as a failed Claude classify does, and every caller already
 # survives that. Honours CLAUDE_CLASSIFY_STREAM by emitting the translated
 # event stream instead of the bare answer, and CLAUDE_CLASSIFY_TIMEOUT as the
@@ -6332,16 +6233,7 @@ _wake_claude_run() {
         export CLAUDE_CONFIG_DIR="$CONFDIR"
         export "${CLAUDE_NO_AUTO_MEMORY?}"
         claude_profile_flags wake
-        # The cocoon wall (specs/cocoon.md rules 1, 4, 4b): the wake's CLI
-        # runs inside the read-only mount namespace, and if the wrap cannot
-        # be built the wake refuses rather than running unwrapped. The note
-        # lands in this wake's own stream log, where wake_stream_failed and
-        # the journal will read the run as the failure it is.
-        if ! cocoon_wrap_build; then
-            claude_stream_note "cocoon-refused" "$COCOON_WRAP_ERR"
-            exit 79
-        fi
-        exec "${COCOON_WRAP_ARGV[@]}" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "$WAKE_MODEL" --effort "$WAKE_EFFORT" \
             --verbose --output-format stream-json \
             "${CLAUDE_PROFILE_FLAGS[@]}" \
@@ -6864,10 +6756,8 @@ run_claude_wake() {
     token_ledger_record "$DEBUGLOG" wake "$WAKE_MODEL" "$WAKE_EFFORT" \
         "${WAKE_CHAIN_ACCT:-}" "$(( $(date +%s) - WAKE_T0 ))"
 
-    # A wake edits its drawers freely (wants, conduct, the journal) — the
-    # repo and the rest of what constitutes her are read-only under the
-    # cocoon wall now — so declare the drawer writes before the self-change
-    # watcher judges the burst it saw.
+    # Declare a wake's writes before the self-change watcher judges the burst
+    # it saw.
     notice_own_writes
 
     local RESPONSE
@@ -6947,8 +6837,8 @@ run_claude_wake() {
         else
             # Rule 24a (specs/wake-queue.md): this is the outage branch above
             # in different clothes. The CLI died before it could write its own
-            # error shape — bwrap refusing to nest, the cocoon-refused note, a
-            # crash, a stall reap — so wake_stream_failed saw no error event
+            # error shape — a launcher crash or stall reap — so
+            # wake_stream_failed saw no error event
             # and fell through to here, which used to journal the death and
             # silently lose the agenda. The launcher's last words go into the
             # journal line (a bare exit code explains nothing), and the wake
@@ -7464,21 +7354,7 @@ _generate_claude_run() {
         # by whatever the environment happened to arrive holding.
         export CLAUDE_CONFIG_DIR="$CONFDIR"
         claude_profile_flags turn
-        # The cocoon wall (specs/cocoon.md rules 1, 4, 4b): the turn's CLI
-        # runs inside the read-only mount namespace — everything constituting
-        # her is read-only, her drawers stay hers, and a builder dispatched
-        # through the user manager is born outside with full hands. Fail
-        # CLOSED: no bubblewrap means no turn, never an unwrapped one. The
-        # note explains the empty reply in the stream log, and the caller's
-        # ordinary no-reply reporting names the outage to him.
-        if ! cocoon_wrap_build; then
-            claude_stream_note "cocoon-refused" "$COCOON_WRAP_ERR"
-            notify-send -t 8000 -h string:x-dunst-stack-tag:deskcrab \
-                "${NOTIFY_NAME:-deskcrab}" \
-                "this turn was refused: $COCOON_WRAP_ERR" 2>/dev/null
-            exit 79
-        fi
-        exec "${COCOON_WRAP_ARGV[@]}" "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+        exec "$CLAUDE_BIN" -p --dangerously-skip-permissions \
             --model "${MODEL:-$CLAUDE_MODEL}" --effort "$EFFORT" \
             --verbose --output-format stream-json --include-partial-messages \
             "${CLAUDE_PROFILE_FLAGS[@]}" \
@@ -7565,7 +7441,7 @@ _generate_claude_walk() {
 # started beforehand speaks in parallel exactly as it always did.
 claude_generate() {
     local TEXT="$1" EFFORT="${2:-$CLAUDE_EFFORT}"
-    # Pushback turns get her best attention, not her cheapest. specs/cocoon.md
+    # Pushback turns get her best attention, not her cheapest. specs/dispute-turn.md
     # rules 10-13: on 2026-08-10 the argue-gaslight spiral ran entirely on the
     # voice loop's economy settings; the turns where being wrong costs the
     # most were the ones bought at the lowest price. The dispute frame joins

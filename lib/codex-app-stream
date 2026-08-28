@@ -13,8 +13,8 @@ assistant event, whose close-out voices only what the deltas did not.
 
 One JSON-RPC session per run, stdio transport, four calls deep:
 initialize -> initialized -> thread/start (the assembled prompt as
-baseInstructions, ephemeral, approvals never, sandbox open — the cocoon the
-caller wrapped us in is the wall) -> turn/start (prompt on stdin as the one
+baseInstructions, ephemeral, approvals never, sandbox open) -> turn/start
+(prompt on stdin as the one
 input). Notifications translate as they arrive; thread/tokenUsage/updated
 carries what the result event's usage maps from; turn/completed decides the
 exit. Any server REQUEST (an approval this configuration should never ask
@@ -22,9 +22,8 @@ for) is answered with an error immediately — a driver that sits on a
 request is a turn that hangs.
 
 The contract with the caller (_codex_stream_run):
-  * argv after `--` is the exact command to spawn — the cocoon wrap argv,
-    the codex binary, `app-server`, and its config flags — built by the
-    caller exactly as the exec pipeline's argv is;
+  * argv after `--` is the exact codex app-server command to spawn, built by
+    the caller exactly as the exec pipeline's argv is;
   * the prompt arrives whole on stdin; CODEX_APP_MODEL / CODEX_APP_EFFORT /
     CODEX_APP_CWD / CODEX_APP_INSTRUCTIONS carry the rest;
   * translated events leave on stdout, diagnostics on stderr;

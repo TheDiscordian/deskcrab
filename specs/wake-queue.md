@@ -226,9 +226,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 24a. A wake whose CLI exited **non-zero** with no genuine model output is rule 23's outage in
     different clothes, and MUST be treated the same way: journal the failure and re-book the kinded
     wake so the agenda survives. Rule 23 cannot catch it, because its judgement reads the CLI's own
-    error events — and this launcher died before the CLI could write any: bubblewrap unable to
-    build the cocoon (it cannot nest inside another namespace), the cocoon-refused note, a loader
-    crash, a stall reap. The stream then holds no `is_error` event at all, only the launcher's own
+    error events — and this launcher died before the CLI could write any: a loader crash or a stall
+    reap. The stream then holds no `is_error` event at all, only the launcher's own
     complaint in plain text. The journal line MUST therefore carry the exit code **and the
     launcher's last words** from the stream — its non-event lines and deskcrab's own notes, never
     the session-registration note — because "claude exit 1" alone sends whoever reads it digging
@@ -872,7 +871,7 @@ ordinary wake model and the wants agenda exactly),
 `tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own
-last words — a bwrap complaint in the stream — reach the journal line; a clean silent wake books
+last words reach the journal line; a clean silent wake books
 no failure retry).
 
 **To be written:**

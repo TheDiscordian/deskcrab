@@ -65,11 +65,6 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
     # which copies the stream into ~/.local/state/deskcrab/streams and PRUNES
     # that directory to NOTICE_STREAM_KEEP — a test run would delete real
     # forensic streams and append to her live declaration log.
-    # COCOON_BWRAP is pinned to the pass-through wrap (test-harness rule 3a):
-    # the wake-walk cases below launch the stub CLI through the real cocoon
-    # otherwise, and from inside an already-cocooned session nested bwrap dies
-    # before it can exec — the stub is never called and every walk case fails
-    # for a reason that is the invoking environment's, not the accounts'.
     # DESKCRAB_METRICS_DIR is pinned for the same reason as the rest: the
     # turn stamps and the token ledger both hang off it, and this file does
     # not run under the sandbox helper (worded so, not by its path: the
@@ -81,7 +76,6 @@ run() { # [ENV=val ...] <shell body> — sources common.sh in a scratch instance
         DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         DESKCRAB_STREAMLOG="${DESKCRAB_STREAMLOG:-$T/state-debug.log}" \
         ACCOUNT_STATE_FILE="$T/account-state" \
-        COCOON_BWRAP="$REPO_DIR/tests/lib/cocoon-passthru" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
         DESKCRAB_METRICS_DIR="$T/metrics" \
         JOBS_DIR="$T/jobs" DAY_JOURNAL_DIR="$T/journal" DESKCRAB_NO_DISPATCH=1 \

@@ -413,8 +413,8 @@ a long turn sat unseen until that turn's last tool call finished, so a mid-task 
 logs" — or "stop, wrong branch" short of the brake — reached her only after the work it should
 have steered was done. Reported by the user 2026-08-11: a mind that cannot hear until it stops
 working feels blocking even when nothing blocks. The CLI offers no way to append a true user turn
-to a run already in flight, so the delivery rides the per-run hooks settings the cocoon signpost
-already generates: a PostToolUse hook surfaces the queue to the model between one tool call and
+to a run already in flight, so the delivery rides a per-run hooks settings file: a PostToolUse
+hook surfaces the queue to the model between one tool call and
 the next — the closest thing to a mid-turn user message the runner can carry, verified live
 against the shipped CLI before this rule was written.
 

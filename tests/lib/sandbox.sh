@@ -240,7 +240,6 @@ CONF
         CLAUDE_BIN="$_sb_root/bin/claude" \
         CODEX_BIN="$_sb_root/bin/codex" \
         DESKCRAB_CODEX_STATE="$_sb_root/data/deskcrab/codex-state" \
-        COCOON_BWRAP="$_sb_lib/cocoon-passthru" \
         DESKCRAB_ALLOW_SCRATCH_BOOKING=1 \
         MEMORY_PYTHON="$_sb_venv" \
         SANDBOX_CODEX_LOG="$_sb_root/witness/codex.log" \

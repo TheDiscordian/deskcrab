@@ -110,7 +110,7 @@ it is ten minutes of silence with nothing on screen explaining it.
     callers that are not about to boot any particular model.
 10a. **A conversation turn MUST NEVER die because the premium model is dry while the ordinary
     one works.** When the dispute machinery raised the turn's model above `CLAUDE_MODEL`
-    ([cocoon.md](cocoon.md) rule 7) and the walk exhausts with every offered account refusing at
+    ([dispute-turn.md](dispute-turn.md) rule 7) and the walk exhausts with every offered account refusing at
     the dispute model, the turn re-runs the walk ONCE at `CLAUDE_MODEL` / `CLAUDE_EFFORT`, with
     the dispute frame still in the prompt. The swap is announced like any other: a marker in the
     stream names it ("dispute at the ordinary model — the premium one is dry everywhere") and

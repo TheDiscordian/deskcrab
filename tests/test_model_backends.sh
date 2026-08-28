@@ -8,7 +8,6 @@
 set -o pipefail
 
 REPO="$SANDBOX_REPO"
-PASSTHRU="$REPO/tests/lib/cocoon-passthru"
 CODEX_LOG="$SANDBOX/witness-codex.log"
 CODEX_STATE="$SANDBOX/codex-state"
 mkdir -p "$SANDBOX/codexhome"
@@ -103,14 +102,12 @@ CLAUDE_MODEL="opus"
 CLAUDE_EFFORT="low"
 EOF
 
-# Every sourced instance below needs the same pins: the pass-through wrap
-# (test-harness rule 3a — nested bwrap dies before it can exec) and a scratch
-# codex cooldown file, because a stub's refusal must never bench the LIVE
+# Every sourced instance below needs a scratch codex cooldown file, because a
+# stub's refusal must never bench the LIVE
 # codex login for every real session (the same trap test_job_block.sh names
 # for the jobs blocked-marker).
 sb() {
-    COCOON_BWRAP="$PASSTHRU" DESKCRAB_CODEX_STATE="$CODEX_STATE" \
-        sandbox_bash "$@"
+    DESKCRAB_CODEX_STATE="$CODEX_STATE" sandbox_bash "$@"
 }
 
 echo "the router — the engine follows the model name (rules 1-2, 4):"
@@ -352,12 +349,6 @@ check_eq "CODEX_STREAM_MODE=exec pins the old road — no app-server boot" \
     "$(sandbox_count_in 'INVOKED app-server' "$CODEX_LOG")" "0"
 check "…which still answers" \
     contains "$(cat "$SANDBOX/wake-debug.log")" "codex stub reply."
-
-echo
-echo "the cocoon wall carries the codex state dir (rule 9):"
-WRAP="$(sb "CODEX_HOME='$SANDBOX/codexhome' cocoon_wrap_build && printf '%s\n' \"\${COCOON_WRAP_ARGV[@]}\"")"
-check "CODEX_HOME is re-bound writable in the wrap" \
-    contains "$WRAP" "$SANDBOX/codexhome"
 
 echo
 echo "the classifier routes by the same rule (rule 16):"

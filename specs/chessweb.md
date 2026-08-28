@@ -720,9 +720,8 @@ cannot be changed.
        - *Roles are the server's.* `POST /chat` writes role `player` whatever else the body
          carries, and `append_chat` refuses any role but `player`/`assistant` — impersonating
          her on the record is not a request the wire can express.
-       - *Her replies carry no authority to lose.* The chat call and the mover's call are NOT
-         cocoon-wrapped turns — [model-backends.md](model-backends.md) rule 9's "the cocoon is
-         the wall" bargain does not hold at the chess table — so the argv is the only wall: the
+       - *Her replies carry no authority to lose.* The chat call and the mover's call carry an
+         unauthenticated sitter's input, so their argv enforces a narrower trust boundary: the
          Claude spelling always disarms tools, and REFUSES TO RUN AT ALL when the empty MCP
          config it needs for that is missing (fail closed, a silent chat over a tool-armed
          one); the codex spelling runs under codex's own read-only sandbox, never the bypass
@@ -748,8 +747,8 @@ cannot be changed.
          landing in it would hand the sitter a read on the user's own conversation. The game
          record stays the chat's entire memory (this rule's head), and no reader of the
          conversation store ever shows a table line.
-       - *The turn machinery is the phone's alone.* An ordinary turn runs tool-armed inside
-         the cocoon at phone trust; the chat call runs disarmed (rule 24f) precisely because
+       - *The turn machinery is the phone's alone.* An ordinary turn runs tool-armed at phone
+         trust; the chat call runs disarmed (rule 24f) precisely because
          its prompt carries an unauthenticated keyboard's text. There is no flag that makes
          an ordinary turn safe for that text — the minimal call IS the design, not a stopgap.
        - *Phone trust is never extended to the table.* The bridge holds no phone secret,

@@ -93,7 +93,7 @@ slot is the loudest statement this machine can make that it was not listening.
      it went out of order. A reply held forever is the failure this rule exists to prevent, not an
      acceptable price for preventing it.
 15c. A message from him that is **pushback at the detector's STRONG class** (`dispute_detect`,
-     [cocoon.md](cocoon.md) rules 6-6b) SUPERSEDES every turn still in flight behind it. STRONG
+     [dispute-turn.md](dispute-turn.md) rules 6-6b) SUPERSEDES every turn still in flight behind it. STRONG
      only: the dispute frame may ride on a softer signal, where a false positive costs a stronger
      turn, but a superseded reply is silently never spoken — so nothing that could be a benign
      message ("no worries", "run it one more time") may ever close one. A superseded reply answers a question he has

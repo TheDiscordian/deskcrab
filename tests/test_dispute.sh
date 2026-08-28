@@ -1,5 +1,5 @@
 #!/bin/bash
-# The dispute turn — specs/cocoon.md rules 6-10, prompt-assembly.md rule 36b.
+# The dispute turn — specs/dispute-turn.md rules 6-10, prompt-assembly.md rule 36b.
 # Run: bash tests/test_dispute.sh
 #
 # The detector is judged on the sentences that were actually said on

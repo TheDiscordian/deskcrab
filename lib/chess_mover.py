@@ -1070,7 +1070,7 @@ class Mover:
         except OSError:
             instr = ""
         # Read-only sandbox, never the bypass flag (specs/chessweb.md rule
-        # 24f, model-backends.md rule 9): the mover is not a cocoon-wrapped
+        # 24f, model-backends.md rule 9): the mover carries untrusted table input,
         # turn, and its prompt carries the sitter's typed name. A chess
         # move needs no hands at all.
         cmd = [codex, "exec", "--ignore-user-config", "--skip-git-repo-check",

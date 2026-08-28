@@ -64,16 +64,13 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 
 ### The run
 
-9. Codex turns and wakes run inside the same cocoon wall as Claude ones (specs/cocoon.md rules 1,
-   4, 4b), fail closed identically, and sit under the same stall watchdog and wall clock.
-   `CODEX_HOME` joins the wrap's writable set — the CLI's own state (auth refresh, sessions),
-   the same clause that binds `~/.claude`. Codex's own sandbox and approvals are OFF
-   (`--dangerously-bypass-approvals-and-sandbox`): the cocoon is the wall on live sessions, and a
-   builder keeps full hands by design (cocoon.md rule 2). That bypass is licensed by the cocoon
-   and ONLY by the cocoon: the chess-table calls (the mover and the table chat,
-   [chessweb.md](chessweb.md) rule 24f) run codex bare and carry an unauthenticated sitter's
-   text in their prompts, so they run `--sandbox read-only` instead — the bypass flag never
-   appears outside a cocoon-wrapped lane.
+9. Codex turns and wakes sit under the same stall watchdog and wall clock as their Claude
+   counterparts. They carry no DeskCrab-specific read-only mount or write gate. Codex's sandbox
+   and approvals are off (`--dangerously-bypass-approvals-and-sandbox`) for these trusted live
+   sessions, while `CODEX_HOME` remains the selected profile's normal CLI state. The chess-table
+   calls (the mover and table chat, [chessweb.md](chessweb.md) rule 24f) are a separate trust
+   boundary: they carry an unauthenticated sitter's text and therefore use Codex's ordinary
+   `--sandbox read-only` mode.
 10. A codex run reads stdin from `/dev/null` (an open stdin is an invitation Codex accepts), runs
     with `-C` at the same cwd its Claude counterpart uses, and `--skip-git-repo-check` (the
     project directory is not a repository).
@@ -101,8 +98,8 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     while the reply is still being written, on either engine. The assembled prompt rides as
     `thread/start`'s `baseInstructions` (rule 7's file is still written and named, for the
     driver to read); approvals are `never` and any server request is answered with an error at
-    once, because the cocoon is the wall and a driver that sits on a request is a turn that
-    hangs; the user's own MCP and plugin tables are overridden empty on the spawn argv, since
+    once, because a driver that sits on a request is a turn that hangs; the user's own MCP and
+    plugin tables are overridden empty on the spawn argv, since
     app-server has no `--ignore-user-config`. Exit 75 — the protocol refused BEFORE any turn
     began — is the only shape that falls through to the exec pipeline of rule 11, and only when
     `CODEX_STREAM_MODE` is `auto` (the default; `app` and `exec` pin one road for tests and
@@ -133,7 +130,7 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 15. The chess mover on a codex model tries codex first and, refused or cooling, falls through to
     its own Claude account walk unchanged — a game in flight must not stall on a dry engine.
 16. The classifier path routes by the same rule: a codex-named classifier model runs one
-    `codex exec` in the sterile cwd (no cocoon — classifiers never had one) and prints the
+    `codex exec` in the sterile cwd and prints the
     answer text; refused or failed, it returns non-zero exactly as a failed Claude classify does.
 
 ### The ledger

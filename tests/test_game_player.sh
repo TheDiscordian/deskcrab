@@ -823,7 +823,8 @@ cat > "$SDFAKE/systemctl" <<'SH'
 #!/bin/bash
 dir="$(cd "$(dirname "$0")" && pwd)"
 case "$*" in
-    *MainPID*) cat "$dir/systemd-run-pid" 2>/dev/null || echo 0 ;;
+    *MainPID*orsc-engine.service*) cat "$dir/systemd-run-pid" 2>/dev/null || echo 0 ;;
+    *MainPID*) echo 0 ;;
     *stop*)    echo "$*" >> "$dir/systemctl-stops" ;;
 esac
 exit 0
@@ -851,6 +852,25 @@ grep -q -- '--user' "$SDFAKE/systemd-run-args" 2>/dev/null \
             "$(cat "$SDFAKE/systemd-run-args" 2>/dev/null)"
 contains "$(env "${ENGENV[@]}" bash "$HEADLESS" engine status 2>&1)" "alive" \
     && ok "engine status sees it" || fail "engine status sees it"
+# Reproduce the live failure: systemd owns a healthy service, but the launcher
+# was interrupted before its pid redirection landed. Status must trust the
+# manager, and start must repair the record without launching a second unit.
+RUN_CALLS="$(wc -l < "$SDFAKE/systemd-run-args")"
+rm -f "$SANDBOX/orschome/run/engine.pid"
+contains "$(env "${ENGENV[@]}" bash "$HEADLESS" engine status 2>&1)" "pid $EPID (alive)" \
+    && ok "engine status recovers a live unit with no process file" \
+    || fail "engine status recovers a live unit with no process file"
+CODE=0; OUT="$(env "${ENGENV[@]}" bash "$HEADLESS" engine start 2>&1)" || CODE=$?
+check_eq "engine start repairs an interrupted process file" "$CODE" "0"
+contains "$OUT" "restored its process file" \
+    && ok "and names the recovery" || fail "and names the recovery" "$OUT"
+check_eq "the recovered pid is recorded" \
+    "$(cat "$SANDBOX/orschome/run/engine.pid")" "$EPID"
+check_eq "and no duplicate systemd unit was launched" \
+    "$(wc -l < "$SDFAKE/systemd-run-args")" "$RUN_CALLS"
+contains "$(env "${ENGENV[@]}" bash "$HEADLESS" runner status 2>&1)" "runner  : stopped" \
+    && ok "a missing unit's MainPID=0 is never mistaken for a live runner" \
+    || fail "a missing unit's MainPID=0 is never mistaken for a live runner"
 CODE=0; OUT="$(env "${ENGENV[@]}" bash "$HEADLESS" engine stop 2>&1)" || CODE=$?
 check_eq "engine stop tears it down" "$CODE" "0"
 refute "and the engine process is gone" sh -c "kill -0 $EPID 2>/dev/null"
