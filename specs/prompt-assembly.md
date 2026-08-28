@@ -402,14 +402,10 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
 
 ### The standing attention rules
 
-Two conduct failures the user has corrected twice each, in plain words both times, and which the
-dispute frame alone cannot fix because both happen on ordinary turns with nobody pushing back. On
-2026-08-15: a plain question was answered with an unrelated preoccupation until he said so
-outright; and a wake that found a problem in her own wants drawer filed it with him as news
-instead of fixing it, so he had to tell her to act on her own files. They are ALWAYS ON — every
-turn and every wake, both emitted in the frame layer beside the register rule, because an
-instruction about the reply belongs beside the thing being answered (the same argument that put
-the register rule in L8).
+These rules are ALWAYS ON for every turn and every wake. They govern ordinary turns, not only a
+dispute: answer the actual message, act on owned work and requests, and correct without turning the
+reply into self-abasement. All are emitted in the frame layer beside the register rule, because an
+instruction about the reply belongs beside the thing being answered.
 
 38. **The frame layer MUST carry the answer-first rule, on every speaking profile:** answer the
     question that was asked before anything else — never the nearest thing already in your head —

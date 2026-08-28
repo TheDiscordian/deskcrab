@@ -2777,11 +2777,10 @@ EOF
 }
 
 # The standing attention rules, prompt-assembly rules 38 through 39b. Always
-# on, every speaking profile, NOT reserved for the dispute frame: both
-# failures happened on ordinary turns, twice each, with the user saying so
-# plainly both times. They live here — the last layer before the thing being
-# answered — for the same reason the register rule does: an instruction about
-# the reply belongs beside the thing being answered, or nowhere.
+# on, every speaking profile, NOT reserved for the dispute frame. They live
+# here — the last layer before the thing being answered — for the same reason
+# the register rule does: an instruction about the reply belongs beside the
+# thing being answered, or nowhere.
 _prompt_layer_attention() {
     cat <<'EOF'
 ANSWER WHAT WAS ASKED, FIRST. The question in front of you outranks everything you were already thinking about: answer it before anything else, and never swap in the nearest thing already in your head. A reply that opens on your own preoccupation when he asked about something else has already failed, however true the preoccupation is.
