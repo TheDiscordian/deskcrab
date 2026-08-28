@@ -433,6 +433,26 @@ against the shipped CLI before this rule was written.
     turns' entries with it, and an entry nobody consumed MUST expire by age at the reader rather
     than wait to be mis-delivered into some later, unrelated turn.
 
+### OpenRSC spectator
+
+53. The live OpenRSC view rides this EXISTING authenticated server: `GET /openrsc` is the page,
+    `GET /openrsc/frame.jpg` is its current frame, and `GET /openrsc/state` is its compact HUD.
+    All three accept the ordinary phone credential OR a durable spectator-only credential; that
+    narrower credential is accepted by no other route. Both remain inside the same listener and
+    TLS/Tailscale boundary, and an unauthenticated caller receives the same flat 404. `crab
+    openrsc-link` creates the narrow key when needed and prints its shareable HTTPS URL without
+    exposing the assistant's phone credential.
+54. Observation has no control half. The server reads the private Xvfb socket, discovers the same
+    largest mapped client rectangle as the desktop spectator through their shared stdlib X11
+    helper, and runs one capped ffmpeg JPEG producer shared by every viewer. It keeps only the
+    newest frame, draws no mouse, starts on the first frame request, and stops after the viewers go
+    idle. No HTTP method or route may send mouse, keyboard, bridge actions, or game commands.
+55. `/openrsc/state` is an allowlist, not a mirror of `state.json`: login/freshness, tile, HP,
+    fatigue, movement/combat/sleep, objective, activity, and positive activity XP/hour only.
+    Inventory, chat, credentials, routes, memory, and engine internals never leave the machine.
+    The self-contained page is mobile-first, reconnects after game/server transitions, pauses when
+    hidden, offers fullscreen and an explicit spectator pause, and labels the view read-only.
+
 ## DATA
 
 | Path | Role |

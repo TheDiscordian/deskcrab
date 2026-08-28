@@ -37,6 +37,8 @@
   #bell { background: none; border: none; font: inherit; font-size: 16px;
           padding: 0 2px; cursor: pointer; filter: grayscale(1); opacity: .55; }
   #bell.on { filter: none; opacity: 1; }
+  #game { color: inherit; text-decoration: none; font-size: 16px; padding: 0 2px;
+          filter: grayscale(.35); opacity: .72; }
   /* The public-pocket switch. Unmuted it sits as quietly as the bell; muted it
      wears the page's danger colours, because a glance must settle whether this
      phone can make a sound. */
@@ -154,7 +156,7 @@
 </style>
 </head>
 <body>
-<header><h1 id="name">DeskCrab</h1><span id="status">ready</span><button id="mute">🔊</button><button id="bell" hidden>🔔</button></header>
+<header><h1 id="name">DeskCrab</h1><span id="status">ready</span><a id="game" href="/openrsc" title="Watch OpenRSC" aria-label="Watch OpenRSC">🎮</a><button id="mute">🔊</button><button id="bell" hidden>🔔</button></header>
 <main>
   <div id="log"></div>
 </main>

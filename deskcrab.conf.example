@@ -373,6 +373,15 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # being written. Off by default while it beds in.
 # PHONE_SENTENCE_STREAM=1
 #
+# Optional OpenRSC spectator tuning. The authenticated /openrsc page discovers
+# the ordinary private-display harness and shares one on-demand frame producer.
+# OPENRSC_FPS=4                 # 1..8; modest by design for phones/Tailscale
+# OPENRSC_IDLE_SECONDS=15       # stop capture after the last viewer disappears
+# OPENRSC_HEADLESS="$HOME/Games/OpenRSC/headless"
+# OPENRSC_STATE_DIR="/tmp/deskcrab-game"
+# OPENRSC_GAME_DIR="$HOME/.local/share/deskcrab/game"
+# OPENRSC_SECRET=""             # blank generates a durable spectator-only key
+#
 # Optional: where the user is. Each phone message may carry the phone's own
 # geolocation fix (the browser asks its permission once); a fresh fix on the
 # post that creates a turn puts one line — "he is near <place>" — into that

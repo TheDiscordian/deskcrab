@@ -288,6 +288,14 @@ crab serve            # listens on 127.0.0.1:8723
 
 Open `http://127.0.0.1:8723/?k=<secret>`. The key is stored in a cookie on first load, so the app can be installed to a home screen and opened with no querystring afterwards. Requests without the key get a flat `404` — an unauthenticated caller is told nothing about what is running here.
 
+When Beatrice is playing OpenRSC, `/openrsc` on that same authenticated origin is a
+mobile/fullscreen read-only spectator. It shows the cropped live game, current activity, HP,
+fatigue, tile, movement state, and positive XP/hour. One low-rate frame producer is shared by all
+viewers and shuts down when nobody is watching; the page exposes no game-control endpoint. An
+already authenticated phone can open `/openrsc` directly. To let another Tailscale user watch
+without giving them access to the assistant or chat, run `crab openrsc-link` and send them the
+spectator-only URL it prints.
+
 **Reaching it from a phone.** Browsers only grant microphone access in a secure context, so the server must be behind TLS. It binds loopback by default; publishing it is a separate, deliberate act:
 
 ```bash

@@ -287,6 +287,15 @@ SERVE_TIMEOUT="${SERVE_TIMEOUT:-600}"
 # chunker, so the first clip lands seconds into the turn instead of at the
 # first block's end.
 PHONE_SENTENCE_STREAM="${PHONE_SENTENCE_STREAM:-0}"
+# Read-only OpenRSC spectator (phone.md rules 53-55). These tune observation
+# only; no corresponding control surface exists in the phone server.
+OPENRSC_FPS="${OPENRSC_FPS:-4}"
+OPENRSC_IDLE_SECONDS="${OPENRSC_IDLE_SECONDS:-15}"
+OPENRSC_HEADLESS="${OPENRSC_HEADLESS:-$HOME/Games/OpenRSC/headless}"
+OPENRSC_STATE_DIR="${OPENRSC_STATE_DIR:-/tmp/deskcrab-game}"
+OPENRSC_GAME_DIR="${OPENRSC_GAME_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/game}"
+OPENRSC_SECRET="${OPENRSC_SECRET:-}"
+OPENRSC_SECRET_FILE="${OPENRSC_SECRET_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/openrsc-secret}"
 # Where he is (specs/phone.md rule 3a). A phone message may carry the phone's
 # own fix; a fresh, well-formed one on the post that creates a turn becomes
 # exactly one line of that turn's context — "he is near <place>" — and

@@ -53,6 +53,7 @@ WEBAPP_DIR = LIB_DIR / "webapp"
 # server's no-dependencies promise holds.
 sys.path.insert(0, str(LIB_DIR))
 import sentence_stream
+import openrsc_spectator
 # The token ledger's aggregation (specs/metrics.md rules 21-22): the metrics
 # page rides this server rather than getting one of its own. Stdlib-only, so
 # the no-dependencies promise holds here too.
@@ -68,6 +69,7 @@ SENTENCE_STREAM = os.environ.get("DESKCRAB_PHONE_SENTENCE_STREAM", "") == "1"
 PORT = int(os.environ.get("DESKCRAB_SERVE_PORT", "8723"))
 BIND = os.environ.get("DESKCRAB_SERVE_BIND", "127.0.0.1")
 SECRET = os.environ.get("DESKCRAB_SERVE_SECRET", "")
+OPENRSC_SECRET = os.environ.get("DESKCRAB_OPENRSC_SECRET", "")
 WHISPER_MODEL = os.environ.get("DESKCRAB_WHISPER_MODEL", "")
 WHISPER_FIXES = os.environ.get("DESKCRAB_WHISPER_FIXES", "")
 CRAB_BIN = os.environ.get("DESKCRAB_CRAB_BIN", "crab")
@@ -221,13 +223,15 @@ def _turn_place(loc):
 # is still a credential somebody typed); the literal replacement catches it
 # anywhere else a line can carry it — a header echo, a cookie, an exception
 # rendering a URL.
-_QUERY_KEY_RE = re.compile(r"([?&]k=)[^&\s\"']*")
+_QUERY_KEY_RE = re.compile(r"([?&](?:k|g)=)[^&\s\"']*")
 
 
 def redact_secret(line):
     line = _QUERY_KEY_RE.sub(r"\1<redacted>", line)
     if SECRET:
         line = line.replace(SECRET, "<redacted>")
+    if OPENRSC_SECRET:
+        line = line.replace(OPENRSC_SECRET, "<redacted>")
     return line
 
 # The header opening a block in the conversation file, with the local-time
@@ -1553,7 +1557,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, ValueError, OSError):
+                # Mobile viewers routinely disappear between a long-poll and
+                # its answer. The request is over; a traceback adds no truth.
+                pass
 
     def _json(self, code, obj, extra=None):
         self._send(code, json.dumps(obj), "application/json; charset=utf-8", extra)
@@ -1601,11 +1610,64 @@ class Handler(BaseHTTPRequestHandler):
                 return jar["crabkey"].value
         return None
 
+    def _presented_openrsc_key(self):
+        header = self.headers.get("X-OpenRSC-Key")
+        if header:
+            return header
+        raw = self.headers.get("Cookie")
+        if raw:
+            jar = http.cookies.SimpleCookie()
+            try:
+                jar.load(raw)
+            except http.cookies.CookieError:
+                return None
+            if "openrsckey" in jar:
+                return jar["openrsckey"].value
+        return None
+
     def _authed(self, query_key=None):
         for candidate in (query_key, self._presented_key()):
             if candidate and hmac.compare_digest(candidate, SECRET):
                 return True
         return False
+
+    def _openrsc_authed(self, query_key=None, spectator_key=None):
+        if self._authed(query_key):
+            return True
+        if not OPENRSC_SECRET:
+            return False
+        for candidate in (spectator_key, self._presented_openrsc_key()):
+            if candidate and hmac.compare_digest(candidate, OPENRSC_SECRET):
+                return True
+        return False
+
+    def _serve_openrsc(self, path, query, extra):
+        """The complete spectator surface. There is intentionally no POST."""
+        if path in ("/openrsc", "/openrsc/"):
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, (WEBAPP_DIR / "openrsc.html").read_bytes(),
+                              "text/html; charset=utf-8", headers)
+        if path == "/openrsc/state":
+            doc = openrsc_spectator.spectator_state()
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._json(200, doc, headers)
+        if path == "/openrsc/frame.jpg":
+            raw = (query.get("after") or ["0"])[0]
+            try:
+                after = max(0, int(raw))
+            except ValueError:
+                after = 0
+            frame, generation, error = openrsc_spectator.FRAMES.get(after)
+            headers = dict(extra)
+            headers.update({"Cache-Control": "no-store, max-age=0",
+                            "X-Frame-Generation": str(generation)})
+            if frame is None:
+                return self._json(503, {"error": error or "frame unavailable"},
+                                  headers)
+            return self._send(200, frame, "image/jpeg", headers)
+        return self._send(404, "not found")
 
     # --- routes ---
 
@@ -1624,6 +1686,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "name": NAME,
                                     "busy": turns_in_flight(),
                                     "draining": _DRAINING.is_set()})
+
+        openrsc_route = path in (
+            "/openrsc", "/openrsc/", "/openrsc/state",
+            "/openrsc/frame.jpg")
+        if openrsc_route:
+            spectator_key = (query.get("g") or [None])[0]
+            if not self._openrsc_authed(query_key, spectator_key):
+                return self._send(404, "not found")
+            extra = {}
+            if query_key and self._authed(query_key):
+                extra["Set-Cookie"] = (
+                    f"crabkey={query_key}; Path=/; Max-Age=31536000; "
+                    "SameSite=Strict; HttpOnly"
+                )
+            elif spectator_key and OPENRSC_SECRET \
+                    and hmac.compare_digest(spectator_key, OPENRSC_SECRET):
+                extra["Set-Cookie"] = (
+                    f"openrsckey={spectator_key}; Path=/openrsc; "
+                    "Max-Age=31536000; SameSite=Strict; HttpOnly; Secure"
+                )
+            return self._serve_openrsc(path, query, extra)
 
         if not self._authed(query_key):
             # No hint about what is running here for an unauthenticated caller.
@@ -2064,9 +2147,14 @@ def main():
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
-        return
-    # serve_forever only returns when the drain worker called shutdown().
-    print("drained, exiting", flush=True)
+    finally:
+        # A viewer disconnect leaves no ffmpeg behind. This is also the final
+        # belt under the producer's ordinary idle shutdown.
+        openrsc_spectator.FRAMES.close()
+        httpd.server_close()
+    if _DRAINING.is_set():
+        # serve_forever returns normally when the drain worker calls shutdown.
+        print("drained, exiting", flush=True)
 
 
 if __name__ == "__main__":
