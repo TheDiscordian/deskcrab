@@ -1873,11 +1873,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                action="move-required", text=pending_system_message["text"])
         return "system-message", EXIT_SYSTEM_MESSAGE
     if not urgent_retreat_names and pending_message is not None and snap.get("logged_in") \
-            and now - snap.get("ts", 0) <= defaults["stale_ms"]:
-        if now < settle_until:
-            report("player-message-settling", count=len(pending_batch),
-                   remaining_ms=settle_until - now)
-            return "player-message-settling", EXIT_NOT_READY
+            and now - snap.get("ts", 0) <= defaults["stale_ms"] \
+            and now >= settle_until:
+        # Collecting a short multi-line chat burst is background observation,
+        # not a reason to freeze play. Learned activity and direct model play
+        # remain available until the burst is complete; only the settled
+        # conversation becomes the priority verdict below.
         report("player-message", id=pending_message["id"],
                channel=pending_message["channel"], sender=pending_message["sender"],
                count=len(pending_batch), burst=pending_message_burst(pending_batch))

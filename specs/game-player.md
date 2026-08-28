@@ -207,25 +207,26 @@ deliberate-play channel.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.
-   - `player-message-settling` (exit 3): at least one incoming player message is pending, and
-     rule 7b's five-second burst window is still collecting the rest of the message chain.
+   - A player message whose five-second burst window is still settling is background observation,
+     not a stopping verdict: ordinary current-activity play continues until the burst is complete.
    - `system-message` (exit 7): rule 7c's idle movement warning is pending; the player must walk
      to a different tile before any non-walk action continues.
    `step --max N` repeats while rules fire cleanly (at most N actions), then reports the
    stopping verdict; the exit code is 0 if anything fired.
 
-7b. Incoming player chat interrupts ordinary rule selection, except that an applicable `retreat`
-   takes temporary precedence. A direct retreat retains that precedence through its post-combat
+7b. A settled incoming player-chat burst interrupts ordinary rule selection, except that an
+   applicable `retreat` takes temporary precedence. A direct retreat retains that precedence through its post-combat
    clearance walk: escaping a fight or pack cannot wait for conversation, and the pending message
    remains queued for the first spatially safe pass. Every structured snapshot message
    with `incoming: true` and channel `local` or `private` is copied into the existing
    `player-engine-state.json`, keyed by its bridge message id. Repeated snapshots cannot duplicate
    it, and it remains pending after it scrolls out of the snapshot. The first new message opens a
    five-second settle window, and every additional incoming message extends that window to five
-   seconds after the latest arrival. Pending chat blocks ordinary actions immediately, but `step`
-   reports `player-message-settling` with exit 3 until the window closes; the resident observer
-   measures this deadline without a shell sleep or a model call. Urgent system messages retain
-   priority and are never delayed by this window. Once settled, messages from the oldest pending
+   seconds after the latest arrival. During that short collection window, the resident runner and
+   the model's ordinary action doors remain available so the selected activity does not stall.
+   The resident observer measures the deadline without a shell sleep or an extra model call.
+   Urgent system messages retain priority and are never delayed by this window. Once settled,
+   the message interrupts ordinary play and messages from the oldest pending
    sender/channel conversation are reported together as one structured burst. Its actionable
    `id` is the newest message in that burst, so one `reply` handles the whole preceding chain;
    `step` reports `player-message id=… channel=… sender=… count=… burst=…` and exits 6.
@@ -245,9 +246,9 @@ deliberate-play channel.
    do not license a duplicate retry. A refusal, a server error, or an unconfirmed dispatch leaves it
    pending. Handling one message also
    handles older pending messages from the same sender and channel, allowing one concise response
-   to cover a burst without producing stale replies. While an incoming message is pending, the
-   autonomous player's direct movement, interaction, and screen-input doors exit 6 and point to
-   `play reply`; inspection remains available. This is enforced only for the model player's
+   to cover a burst without producing stale replies. Once an incoming message's settle window has
+   closed, the autonomous player's direct movement, interaction, and screen-input doors exit 6 and
+   point to `play reply`; inspection remains available. This is enforced only for the model player's
    inherited `BETTY_OPENRSC_AUTONOMOUS=1` environment, so mechanical login and manual controls are
    not caught behind chat state. The model therefore cannot acknowledge the verdict and continue
    clicking without answering. There is no chat daemon, side queue, or second controller:

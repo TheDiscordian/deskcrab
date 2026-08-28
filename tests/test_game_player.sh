@@ -1231,15 +1231,11 @@ snap 1170 '[]' '{"messages":[
 ]}'
 python3 "$GP" step --local >/dev/null 2>&1 || true
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+fake_bridge done
 CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" walk 130 650 2>&1)" || CODE=$?
-check_eq "an unanswered player message blocks autonomous movement: exit 6" "$CODE" "6"
-refute "the settling gate does not tell Sol to reply before the burst closes" \
-    contains "$OUT" "reply before any further play"
-contains "$OUT" "five-second chat chain" \
-    && ok "the gate blocks play while ACTIONS collects the message burst" \
-    || fail "the gate explains the ACTIONS message-settle window" "$OUT"
-refute "the blocked movement emitted no game action" \
-    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+wait "$FAKE_BRIDGE_PID"
+check_eq "autonomous movement remains available while a message burst settles" "$CODE" "0"
+check_eq "settling play still uses the shared action door" "$(last_action 'type=walk')" "1"
 rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
 snap 1171 '[{"sidx":55,"id":2,"x":121,"z":648},{"sidx":66,"id":2,"x":130,"z":655}]'
 fake_bridge done
@@ -2245,14 +2241,20 @@ fi
 
 echo
 echo "incoming messages settle into bursts and choose the live reply channel (rule 7b):"
-snap 145 '[]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
+python3 "$GP" activity chat-window-activity >/dev/null
+python3 "$GP" learn settle-activity-probe --priority 500000 --cooldown-ms 0 \
+    --trigger activity_is=chat-window-activity --trigger npc_visible=777 \
+    --action interact-npc --param npc=777 >/dev/null
+snap 145 '[{"sidx":77,"id":777,"x":121,"z":648}]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
     {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"}
 ]}'
+fake_bridge done
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-check_eq "the first message opens the settle window: exit 3" "$CODE" "3"
-contains "$OUT" "player-message-settling count=1" \
-    && ok "ACTIONS blocks play without waking Sol on a partial chain" \
-    || fail "the partial chain is reported as settling" "$OUT"
+wait "$FAKE_BRIDGE_PID"
+check_eq "the first message opens its settle window without stopping activity" "$CODE" "0"
+contains "$OUT" "fired rule=settle-activity-probe" \
+    && ok "the selected activity keeps working while the partial chain collects" \
+    || fail "message collection must not replace the current activity" "$OUT"
 python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -2260,17 +2262,24 @@ s['message_settle_until'] = 1
 json.dump(s, open(sys.argv[1], 'w'))
 PY
 DEADLINE1=1
-snap 1451 '[]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
+snap 1451 '[{"sidx":77,"id":777,"x":121,"z":648}]' '{"players":[{"sidx":11,"name":"Nearby Friend","x":121,"z":648}],"messages":[
     {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
     {"id":9002,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"door by the mill"},
     {"id":9003,"channel":"private","incoming":true,"sender":"Far Friend","text":"I can help from here"}
 ]}'
+fake_bridge done
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-check_eq "additional messages remain model-free while the burst settles" "$CODE" "3"
+wait "$FAKE_BRIDGE_PID"
+check_eq "additional messages extend collection without stopping activity" "$CODE" "0"
+contains "$OUT" "fired rule=settle-activity-probe" \
+    && ok "activity continues across an extended chat burst" \
+    || fail "the extended burst must remain background observation" "$OUT"
 DEADLINE2="$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_STATE_DIR/player-engine-state.json'))['message_settle_until'])")"
 [ "$DEADLINE2" -gt "$DEADLINE1" ] \
     && ok "a later message extends the five-second deadline" \
     || fail "a later message must extend the five-second deadline" "$DEADLINE1 -> $DEADLINE2"
+python3 "$GP" remove settle-activity-probe >/dev/null
+python3 "$GP" activity --clear >/dev/null
 python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -2284,6 +2293,13 @@ contains "$OUT" "id=9002 channel=local sender=Nearby Friend count=2" \
     && ok "Sol receives the whole local message chain under its newest id" \
     || fail "the settled verdict must carry the whole local chain" "$OUT"
 refute "observing a message burst emits no action before Sol writes the reply" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=1 bash "$HEADLESS" walk 130 650 2>&1)" || CODE=$?
+check_eq "the completed unanswered burst now blocks autonomous movement" "$CODE" "6"
+contains "$OUT" "reply before any further play" \
+    && ok "the settled gate points Sol to the complete reply" \
+    || fail "a complete burst must become conversation priority" "$OUT"
+refute "the settled gate emitted no movement action" \
     test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 1452 '[]' '{"logged_in":false}'
 CODE=0; OUT="$(python3 "$GP" reply 9002 premature)" || CODE=$?
