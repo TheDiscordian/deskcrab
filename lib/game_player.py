@@ -1074,6 +1074,10 @@ def cmd_take(args):
     if (state_dir() / "hold").exists():
         report("take-held", item=args.item, reason="maintenance-hold")
         sys.exit(EXIT_HELD)
+    if snap.get("in_combat") is True:
+        report("take-needs-retreat", item=args.item,
+               reason="combat-blocks-pickup", next="retreat")
+        sys.exit(EXIT_NOT_DONE)
     matches = [entry for entry in snap.get("ground_items") or []
                if isinstance(entry, dict) and entry.get("id") == args.item
                and isinstance(entry.get("x"), int) and isinstance(entry.get("z"), int)]

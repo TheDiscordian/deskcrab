@@ -171,6 +171,9 @@ deliberate-play channel.
    `take-short`. Routine activity cannot fire midway through this verification and cancel the
    approach. The direct `take ITEM-ID` door uses this same verifier and publishes a short-lived
    in-progress record so the resident runner also stays out of its way.
+   A direct take attempted during combat emits nothing and reports
+   `take-needs-retreat ... next=retreat`; retreat is the action that can make
+   the pickup legal, and the wanted pile remains visible for the next pass.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the fallback signal — **only this verdict licenses model

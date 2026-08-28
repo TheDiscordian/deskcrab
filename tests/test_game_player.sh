@@ -1186,6 +1186,15 @@ contains "$OUT" "taken" && contains "$OUT" "item=27" && contains "$OUT" "gained=
     || fail "and reports the verified item and inventory gain" "$OUT"
 check_eq "the door wrote take-ground" "$(last_action 'type=take-ground')" "1"
 check_eq "the door wrote the current item tile" "$(last_action 'x=121')" "1"
+snap 11731 '[]' '{"in_combat":true,"ground_items":[{"id":27,"x":121,"z":649}]}'
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" take 27)" || CODE=$?
+check_eq "a direct pickup during combat requires the causal escape first" "$CODE" "2"
+contains "$OUT" "take-needs-retreat item=27" && contains "$OUT" "next=retreat" \
+    && ok "the pickup door points to retreat instead of sending a doomed take" \
+    || fail "the pickup door points to retreat instead of sending a doomed take" "$OUT"
+refute "the combat-blocked pickup emits no ACTIONS packet" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 python3 "$GP" enable walk-high >/dev/null
 python3 "$GP" set walk-high action.x 120 >/dev/null
 python3 "$GP" set walk-high action.z 649 >/dev/null
