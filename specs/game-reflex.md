@@ -109,8 +109,8 @@ Three parts:
 ### Actions
 
 5. The action vocabulary is closed, and grows only by a change to this spec: `eat` (use one
-   inventory food item, by slot), `walk` (walk toward an absolute tile; `flee` in a rule compiles
-   to this), `warn` (display a local client-side message to the player — nothing is sent to the
+   inventory food item, by slot), `walk` (walk toward an absolute tile), `retreat` (the bridge's
+   combat-lock-aware escape walk; an in-combat `flee` rule compiles to this), `warn` (display a local client-side message to the player — nothing is sent to the
    server), `chat-local` (send public chat to nearby players), `chat-private` (send a private
    message to a named online player at any distance), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
    same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
@@ -284,10 +284,13 @@ Three parts:
     to start while any **enabled** rule needs the food table and the table is missing or empty —
     an eat rule that can never find food must not sit there looking like protection.
 
-13. `flee` compiles to `walk`: when the snapshot shows a fighting opponent, the destination is
-    `distance` tiles (default 5, clamped to 15) directly away from it, per-axis; otherwise
-    `distance` tiles along the rule's configured `dx`/`dz` unit direction (default south).
-    The engine clamps every walk to at most 15 tiles from the player's position.
+13. `flee` compiles according to combat state. While `in_combat: true`, it emits the bridge's
+    `retreat` action with the rule's `distance` and fallback `dx`/`dz`, so the server's first-three-
+    round lock, live opponent direction, collision-map alternatives, and no-path refusals are
+    handled as combat rather than mistaken for an ordinary walk. Once out of combat, it compiles
+    to a `distance`-tile walk along the configured `dx`/`dz` direction (default south), allowing
+    low-health/no-food survival to keep creating separation. The engine clamps ordinary walks to
+    at most 15 tiles from the player's position.
 
 14. The shipped default table carries exactly three rules: `warn-low-health` (notice channel,
     enabled, `hp_below` 0.5), `eat-low-health` (game, **disabled**, `hp_below` 0.5 +
@@ -340,13 +343,10 @@ Three parts:
 - The bridge sees exactly what the client renders for the player. Poison, prayer, quest state and
   other players' actions are invisible to version 1 snapshots; rules cannot trigger on what is not
   in rule 3.
-- The version 1 bridge only resolves `opponent` when the client can name the fighter cheaply (the
-  character the player is attacking); in most fights it is `null`, and combat in this engine stands
-  both fighters on one tile anyway — so `flee` in practice takes the rule's `dx`/`dz` direction.
-  The opponent-away arithmetic is engine-tested and waiting for a bridge that resolves more.
-- `flee` is a walk request. The game's own rules decide whether walking out of combat is possible
-  at that moment; the layer does not model catch mechanics, it just asks, and the receipt says only
-  that the request was sent.
+- The version 1 bridge resolves `opponent` only when the client can name the fighter cheaply. The
+  combat-aware `retreat` action rechecks that live identity inside the client and otherwise uses
+  the flee rule's `dx`/`dz`, trying collision-map alternatives. The server remains authoritative
+  over whether the first-three-round lock permits escape; the receipt proves only dispatch.
 - The engine's latency floor is `poll_ms` plus the bridge's write cadence — about 150–400 ms in
   practice. That is sub-second, not sub-tick; a rule cannot outrun the game's own 640 ms combat
   round anyway.

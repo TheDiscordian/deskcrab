@@ -340,14 +340,16 @@ rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/act
 "$BG" disable eat-low-health >/dev/null
 "$BG" enable flee-starved >/dev/null
 "$BG" set flee-starved hold_ticks 1 >/dev/null
-snap 50 3 '[]' '{"opponent":{"x":123,"z":650}}'
+snap 50 3 '[]' '{"in_combat":true,"opponent":{"x":123,"z":650}}'
 "$BG" run --once
-check_eq "flee walked directly away from the opponent" "$(action_field 'x=115')" "1"
-check_eq "on the unchanged axis it stayed" "$(action_field 'z=650')" "1"
+check_eq "combat flee uses the bridge's combat-aware retreat action" \
+    "$(action_field 'type=retreat')" "1"
+check_eq "combat flee carries its bounded distance" "$(action_field 'distance=5')" "1"
+check_eq "combat flee carries its fallback direction" "$(action_field 'dz=1')" "1"
 rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 51 3 '[]'
 "$BG" run --once
-check_eq "with no opponent flee takes the configured direction (south, z+5)" \
+check_eq "outside combat flee becomes a clearance walk (south, z+5)" \
     "$(action_field 'z=655')" "1"
 "$BG" disable flee-starved >/dev/null
 "$BG" enable panic-walk >/dev/null

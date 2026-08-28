@@ -166,6 +166,10 @@ for _ in range(100):
         if outcome == "done":
             state["in_combat"] = False
             state["walking"] = True
+            # The simple success fixture represents a complete, hard escape,
+            # not merely the first false combat frame. Direct retreat tests
+            # must prove clearance from their starting tile.
+            state["z"] = state.get("z", 0) + 12
         else:
             state["in_combat"] = True
             state["walking"] = False
@@ -181,6 +185,53 @@ for _ in range(100):
         os.replace(tmp, os.path.join(sd, "receipt.json"))
         break
     time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
+# A real pack escape has two phases: the first retreat packet breaks combat
+# after only five tiles, then the still-exclusive retreat commitment sends a
+# clearance walk to twelve tiles from the origin before ordinary play resumes.
+fake_hard_retreat_bridge() {
+    python3 - "$DESKCRAB_GAME_STATE_DIR" <<'PY' &
+import json, os, sys, time
+sd = sys.argv[1]
+ap = os.path.join(sd, "action.json")
+seen = []
+bodies = []
+for phase in range(2):
+    for _ in range(200):
+        if os.path.exists(ap):
+            body = open(ap).read()
+            fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+            os.remove(ap)
+            seen.append(fields.get("type"))
+            bodies.append(body)
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            state["tick"] = state.get("tick", 0) + 1
+            state["ts"] = int(time.time() * 1000)
+            state["in_combat"] = False
+            if phase == 0:
+                state["z"] = state.get("z", 0) + 5
+                state["walking"] = False
+            else:
+                state["x"] = int(fields["x"])
+                state["z"] = int(fields["z"])
+                state["walking"] = False
+            tmp_state = os.path.join(sd, ".state.tmp")
+            json.dump(state, open(tmp_state, "w"))
+            os.replace(tmp_state, state_path)
+            tmp = os.path.join(sd, ".receipt.tmp")
+            json.dump({"id": int(fields["id"]), "status": "done",
+                       "ts": int(time.time() * 1000)}, open(tmp, "w"))
+            os.replace(tmp, os.path.join(sd, "receipt.json"))
+            break
+        time.sleep(0.05)
+with open(os.path.join(sd, "retreat-actions"), "w") as fh:
+    fh.write("\n".join(seen) + "\n")
+with open(os.path.join(sd, "retreat-action-bodies"), "w") as fh:
+    fh.write("\n---\n".join(bodies))
 PY
     FAKE_BRIDGE_PID=$!
 }
@@ -581,6 +632,20 @@ refute "a wait above the permanent-block ceiling is refused" \
 
 echo
 echo "retreat breaks the three-round causal deadlock and remembers it (spec rules 7, 7d):"
+DIR="$(python3 - "$GP" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('game_player_under_test', sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+snap = {'x': 360, 'z': 614,
+        'npcs': [{'id': 67, 'x': 360, 'z': 610},
+                 {'id': 67, 'x': 365, 'z': 609},
+                 {'id': 67, 'x': 364, 'z': 614}],
+        'opponent': {'x': 364, 'z': 614}}
+print(','.join(map(str, gp.choose_retreat_direction(snap, 0, 1))))
+PY
+)"
+check_eq "a hobgoblin pack chooses the safest group-escape direction" "$DIR" "-1,1"
 snap 10457 '[]' '{"in_combat":true,"messages":[{"id":10457000,"channel":"game","incoming":false,"sender":"","text":"You can\u0027t retreat during the first 3 rounds of combat"}]}'
 CODE=0; OUT="$(python3 "$GP" wait-until out_of_combat --timeout 5)" || CODE=$?
 check_eq "waiting cannot pretend it will cause a locked retreat: exit 2" "$CODE" "2"
@@ -1427,15 +1492,19 @@ contains "$OUT" "condition-met condition=not_walking" \
     && ok "and accepts the underscore spelling used in play commands" \
     || fail "and accepts the underscore spelling used in play commands" "$OUT"
 snap 1193 '[]' '{"in_combat":true,"opponent":{"x":120,"z":648}}'
-fake_retreat_bridge done
+fake_hard_retreat_bridge
 CODE=0; OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" retreat 2)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "the direct retreat door exits only after observed safety" "$CODE" "0"
-contains "$OUT" "retreated status=done" \
-    && ok "and reports the verified combat transition" \
-    || fail "and reports the verified combat transition" "$OUT"
-check_eq "the direct retreat door still uses the shared ACTIONS slot" \
-    "$(last_action 'type=retreat')" "1"
+check_eq "the direct retreat door exits only after hard clearance" "$CODE" "0"
+contains "$OUT" "retreated status=clear" && contains "$OUT" "clearance=12" \
+    && ok "and reports spatial safety, not one false combat frame" \
+    || fail "and reports spatial safety, not one false combat frame" "$OUT"
+check_eq "the bounded retreat first broke combat, then kept moving" \
+    "$(paste -sd, "$DESKCRAB_GAME_STATE_DIR/retreat-actions")" "retreat,walk"
+contains "$(cat "$DESKCRAB_GAME_STATE_DIR/retreat-action-bodies")" \
+    "committed_direction=1" \
+    && ok "the first packet keeps the whole-pack escape direction" \
+    || fail "the first packet keeps the whole-pack escape direction"
 refute "the bounded request is cleared after safety" \
     test -f "$DESKCRAB_GAME_STATE_DIR/retreat-request.json"
 

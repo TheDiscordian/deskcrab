@@ -59,6 +59,8 @@ WALK_TIMEOUT_S = 25.0       # hard ceiling on one walk's verification
 TAKE_TIMEOUT_S = 25.0       # a pickup can include the same bounded pathing delay
 TAKE_MISSING_GRACE_S = 0.75 # let inventory follow a just-removed ground entry
 RETREAT_VERIFY_S = 1.25     # one server-round-sized observation before a retry
+RETREAT_CLEARANCE_TILES = 12  # leaving one combat flag is not clearing a pack
+RETREAT_SAFE_NPC_RADIUS = 8   # Classic aggression is local; leave visible threats behind
 RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) means the
                             # runner owns evaluation; wide enough to cover one walk's
                             # verification, and a crashed runner fails the pid check at once
@@ -149,11 +151,15 @@ def load_retreat_request():
         request = json.loads(retreat_request_path().read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(request, dict) or request.get("v") != 1 \
+    if not isinstance(request, dict) or request.get("v") != 2 \
             or not isinstance(request.get("expires"), int) \
             or request["expires"] <= now_ms() \
             or not isinstance(request.get("distance"), int) \
             or not 1 <= request["distance"] <= 10 \
+            or not isinstance(request.get("origin_x"), int) \
+            or not isinstance(request.get("origin_z"), int) \
+            or not isinstance(request.get("clearance"), int) \
+            or not 1 <= request["clearance"] <= 30 \
             or request.get("dx") not in (-1, 0, 1) \
             or request.get("dz") not in (-1, 0, 1) \
             or (request.get("dx") == 0 and request.get("dz") == 0):
@@ -167,6 +173,97 @@ def clear_retreat_request() -> None:
         retreat_request_path().unlink()
     except FileNotFoundError:
         pass
+
+
+_aggressive_npc_ids_cache = None
+
+
+def aggressive_npc_ids() -> set[int]:
+    """Server-defined aggressive NPC identities, when this OpenRSC install
+    exposes its ordinary definition file. Missing definitions fail open for
+    movement but the origin-clearance proof still applies."""
+    global _aggressive_npc_ids_cache
+    if _aggressive_npc_ids_cache is not None:
+        return _aggressive_npc_ids_cache
+    candidates = []
+    configured = os.environ.get("DESKCRAB_GAME_NPC_DEFS")
+    if configured:
+        candidates.append(Path(configured))
+    candidates.append(Path.home() / "Games/OpenRSC/Core-Framework/server/conf/server/defs/NpcDefs.json")
+    result = set()
+    for path in candidates:
+        try:
+            raw = json.loads(path.read_text())
+            result = {
+                item["id"] for item in raw.get("npcs", [])
+                if isinstance(item, dict) and isinstance(item.get("id"), int)
+                and item.get("aggressive") in (1, True)
+            }
+            break
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+    _aggressive_npc_ids_cache = result
+    return result
+
+
+def visible_aggressive_npcs(snap: dict) -> list[dict]:
+    ids = aggressive_npc_ids()
+    return [npc for npc in snap.get("npcs") or []
+            if isinstance(npc, dict) and npc.get("id") in ids
+            and isinstance(npc.get("x"), int) and isinstance(npc.get("z"), int)]
+
+
+def choose_retreat_direction(snap: dict, fallback_x: int, fallback_z: int,
+                             distance: int = RETREAT_CLEARANCE_TILES) -> tuple[int, int]:
+    """Choose one stable outward direction for the entire escape. Scoring the
+    projected clearance tile against every visible aggressive NPC prevents a
+    five-tile dodge away from one member of a pack from running into another."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return fallback_x, fallback_z
+    hazards = visible_aggressive_npcs(snap)
+    opponent = snap.get("opponent") or {}
+    if not hazards and isinstance(opponent.get("x"), int) \
+            and isinstance(opponent.get("z"), int):
+        hazards = [{"x": opponent["x"], "z": opponent["z"]}]
+    if not hazards:
+        return fallback_x, fallback_z
+    directions = [(dx, dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1)
+                  if dx != 0 or dz != 0]
+
+    def score(direction):
+        dx, dz = direction
+        tx, tz = px + dx * distance, pz + dz * distance
+        distances = [max(abs(tx - npc["x"]), abs(tz - npc["z"]))
+                     for npc in hazards]
+        # Stable tie-breaks: maximize nearest safety, then total separation,
+        # then respect the caller's fallback rather than changing direction.
+        return (min(distances), sum(distances),
+                int(direction == (fallback_x, fallback_z)), dx, dz)
+
+    return max(directions, key=score)
+
+
+def retreat_has_clearance(snap: dict, request: dict) -> bool:
+    if snap.get("in_combat") is not False:
+        return False
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return False
+    moved = max(abs(px - request["origin_x"]), abs(pz - request["origin_z"]))
+    if moved < request["clearance"]:
+        return False
+    return all(max(abs(px - npc["x"]), abs(pz - npc["z"]))
+               >= RETREAT_SAFE_NPC_RADIUS
+               for npc in visible_aggressive_npcs(snap))
+
+
+def retreat_clearance_target(snap: dict, request: dict) -> tuple[int, int]:
+    """An absolute target anchored at the combat origin. Repeated runner
+    passes therefore complete one escape instead of walking another leg on
+    every tick."""
+    return (request["origin_x"] + request["dx"] * request["clearance"],
+            request["origin_z"] + request["dz"] * request["clearance"])
 
 
 def route_path() -> Path:
@@ -1027,9 +1124,10 @@ def cmd_wait_until(args):
 
 
 def cmd_retreat(args):
-    """One bounded intent, not a wait-for-the-impossible loop. The resident
-    runner owns it when present; otherwise this process uses the identical
-    rules-first step path until the server verifies combat has ended."""
+    """One bounded escape commitment. The resident runner owns it when
+    present; otherwise this process uses the identical rules-first step path.
+    A momentary out-of-combat snapshot is only the midpoint: completion also
+    requires verified distance from the combat origin and nearby aggressors."""
     if not 0 < args.timeout <= 30:
         die("retreat timeout must be greater than 0 and no more than 30 seconds")
     if not 1 <= args.distance <= 10:
@@ -1042,7 +1140,9 @@ def cmd_retreat(args):
         sys.exit(EXIT_HELD)
     snap = game_reflex.read_snapshot()
     if not isinstance(snap, dict) or snap.get("logged_in") is not True \
-            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS \
+            or not isinstance(snap.get("x"), int) \
+            or not isinstance(snap.get("z"), int):
         report("retreat-not-ready", state=wait_state_brief(snap))
         sys.exit(EXIT_NOT_READY)
     if snap.get("in_combat") is False:
@@ -1050,9 +1150,12 @@ def cmd_retreat(args):
         report("retreated", status="already-safe", x=snap.get("x"), z=snap.get("z"))
         return
 
+    dx, dz = choose_retreat_direction(snap, args.dx, args.dz)
     expires = now_ms() + int(args.timeout * 1000)
-    request = {"v": 1, "requested": now_ms(), "expires": expires,
-               "distance": args.distance, "dx": args.dx, "dz": args.dz}
+    request = {"v": 2, "requested": now_ms(), "expires": expires,
+               "distance": args.distance, "dx": dx, "dz": dz,
+               "origin_x": snap["x"], "origin_z": snap["z"],
+               "clearance": RETREAT_CLEARANCE_TILES}
     game_reflex.atomic_write(retreat_request_path(), json.dumps(request) + "\n")
     cfg = load_config()
     wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
@@ -1065,17 +1168,24 @@ def cmd_retreat(args):
                 clear_retreat_request()
                 report("retreat-unverified", reason="logged-out")
                 sys.exit(EXIT_NOT_READY)
-            if latest.get("in_combat") is False:
+            if retreat_has_clearance(latest, request):
                 clear_retreat_request()
-                report("retreated", status="done", tick=latest.get("tick"),
-                       x=latest.get("x"), z=latest.get("z"))
+                report("retreated", status="clear", tick=latest.get("tick"),
+                       x=latest.get("x"), z=latest.get("z"),
+                       origin=f"({request['origin_x']},{request['origin_z']})",
+                       clearance=request["clearance"])
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 clear_retreat_request()
                 record_wait_failure("out_of_combat", "retreat-timeout", latest,
                                     args.timeout)
+                lx, lz = latest.get("x"), latest.get("z")
+                moved = max(abs(lx - request["origin_x"]),
+                            abs(lz - request["origin_z"])) \
+                    if isinstance(lx, int) and isinstance(lz, int) else "unknown"
                 report("retreat-timeout", timeout=f"{args.timeout:g}",
+                       moved=moved,
                        feedback=latest_system_feedback(latest),
                        state=wait_state_brief(latest))
                 sys.exit(EXIT_NOT_DONE)
@@ -1303,8 +1413,11 @@ def compile_player_action(rule, snap, food, eat_pick):
     if action["type"] == "retreat":
         if snap.get("in_combat") is not True:
             return None, "already-out-of-combat"
-        return {"type": "retreat", "distance": action.get("distance", 5),
-                "dx": action.get("dx", 0), "dz": action.get("dz", 1)}, None
+        compiled = {"type": "retreat", "distance": action.get("distance", 5),
+                    "dx": action.get("dx", 0), "dz": action.get("dz", 1)}
+        if action.get("committed_direction") == 1:
+            compiled["committed_direction"] = 1
+        return compiled, None
     if action["type"] == "interact-object":
         want = action["obj"]
         for obj in snap.get("objects") or []:    # already nearest-first (rule 3 there)
@@ -1387,7 +1500,7 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
     for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "within",
                 "item", "button",
-                "distance", "dx", "dz",
+                "distance", "dx", "dz", "committed_direction",
                 "target", "text"):
         if key in action:
             lines.append(f"{key}={action[key]}")
@@ -1704,26 +1817,38 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         return "sleeping-needs-wake", EXIT_NO_RULE
     source_rules = list(cfg["rules"])
     retreat_request = load_retreat_request()
-    if retreat_request is not None and snap.get("in_combat") is False:
+    if retreat_request is not None and retreat_has_clearance(snap, retreat_request):
         clear_retreat_request()
         retreat_request = None
     if retreat_request is not None:
+        if snap.get("in_combat") is True:
+            retreat_action = {"type": "retreat",
+                              "distance": retreat_request["distance"],
+                              "dx": retreat_request["dx"],
+                              "dz": retreat_request["dz"],
+                              "committed_direction": 1}
+            retreat_trigger = {"in_combat": True}
+            retreat_note = "bounded escape: break the current combat lock"
+        else:
+            target_x, target_z = retreat_clearance_target(snap, retreat_request)
+            retreat_action = {"type": "walk", "x": target_x, "z": target_z,
+                              "arrive": 0}
+            retreat_trigger = {"out_of_combat": True}
+            retreat_note = "bounded escape: clear the whole aggressive pack"
         source_rules.append({
             "name": MANUAL_RETREAT_RULE_NAME, "enabled": True,
             "priority": MANUAL_RETREAT_PRIORITY, "cooldown_ms": 0,
             "hold_ticks": 1, "once_per_objective": False,
-            "note": "one bounded explicit retreat request",
-            "trigger": {"in_combat": True},
-            "action": {"type": "retreat",
-                       "distance": retreat_request["distance"],
-                       "dx": retreat_request["dx"], "dz": retreat_request["dz"]},
+            "note": retreat_note, "trigger": retreat_trigger,
+            "action": retreat_action,
         })
     trigger_true = make_trigger_fn(objective, activity)
     urgent_retreat_names = {
         rule["name"] for rule in source_rules
         if rule.get("enabled")
-        and (rule.get("action") or {}).get("type") == "retreat"
-        and snap.get("in_combat") is True
+        and ((rule.get("action") or {}).get("type") == "retreat"
+             and snap.get("in_combat") is True
+             or rule.get("name") == MANUAL_RETREAT_RULE_NAME)
         and trigger_true(rule.get("trigger") or {}, snap, {})
     }
 

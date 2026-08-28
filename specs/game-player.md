@@ -214,9 +214,10 @@ deliberate-play channel.
    `step --max N` repeats while rules fire cleanly (at most N actions), then reports the
    stopping verdict; the exit code is 0 if anything fired.
 
-7b. Incoming player chat interrupts ordinary rule selection, except that a matching `retreat`
-   rule while `in_combat` takes temporary precedence: avoiding an unwanted kill cannot wait for
-   conversation, and the pending message remains queued for the first safe pass. Every structured snapshot message
+7b. Incoming player chat interrupts ordinary rule selection, except that an applicable `retreat`
+   takes temporary precedence. A direct retreat retains that precedence through its post-combat
+   clearance walk: escaping a fight or pack cannot wait for conversation, and the pending message
+   remains queued for the first spatially safe pass. Every structured snapshot message
    with `incoming: true` and channel `local` or `private` is copied into the existing
    `player-engine-state.json`, keyed by its bridge message id. Repeated snapshots cannot duplicate
    it, and it remains pending after it scrolls out of the snapshot. The first new message opens a
@@ -354,8 +355,12 @@ deliberate-play channel.
     doors `orsc-headless.sh wait-until CONDITION [SECONDS]` and `orsc-headless.sh retreat
     [SECONDS]` delegate to that same module. `retreat` creates one bounded request which the
     resident runner owns (or the caller evaluates through the identical step path if no runner
-    exists), retries through the server lock, and returns only after observed safety or its hard
-    ceiling.
+    exists), retries through the server lock, and does not release the action slot at the first
+    `in_combat: false` snapshot. It chooses a stable direction maximizing distance from all visible
+    server-defined aggressive NPCs, continues to a point twelve tiles from the combat origin, and
+    returns only after live state verifies both that clearance and at least eight tiles from every
+    still-visible aggressor (or its hard ceiling). Ordinary routing, reflexes, and conversation stay
+    queued for the whole escape.
     The playing policy the sittings read
     makes rules-first mandatory: open-ended reasoning about the next action is licensed by rule
     7's `no-rule-matched` or rule 7e's `route-blocked`; other exit-4 prerequisites license only

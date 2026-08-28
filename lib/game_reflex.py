@@ -450,6 +450,14 @@ def compile_action(rule: dict, snap: dict, food: dict, eat_pick: str):
             tx, tz = clamp_walk(px, pz, action["x"], action["z"])
             return {"type": "walk", "x": tx, "z": tz}, None
         dist = action.get("distance", 5)
+        # In combat, an ordinary walk packet is not a retreat: the server may
+        # reject it during the first three rounds, and a blocked destination
+        # has no directional fallbacks. Use the bridge's combat-aware action.
+        # Once combat has ended, the same survival rule remains an ordinary
+        # outward walk so low-health/no-food state can create more separation.
+        if snap.get("in_combat") is True:
+            return {"type": "retreat", "distance": dist,
+                    "dx": action.get("dx", 0), "dz": action.get("dz", 1)}, None
         opp = snap.get("opponent")
         if isinstance(opp, dict) and isinstance(opp.get("x"), int) \
                 and isinstance(opp.get("z"), int):
@@ -477,7 +485,7 @@ def compile_action(rule: dict, snap: dict, food: dict, eat_pick: str):
 
 def emit_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("slot", "item", "x", "z", "text"):
+    for key in ("slot", "item", "x", "z", "distance", "dx", "dz", "text"):
         if key in action:
             lines.append(f"{key}={action[key]}")
     atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")
