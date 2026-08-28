@@ -1476,6 +1476,8 @@ check "the author does not turn incidental activity into reflex scope" \
     grep -q 'Treat the outcome.*activity as context, not an automatic scope' "$BOC"
 check "the author keeps generic loot activity-agnostic" \
     grep -q 'Generic loot, survival, and idle-movement rules remain activity-agnostic' "$BOC"
+check "the game author excludes unrelated Notion and task machinery" \
+    grep -q 'Do not query Notion or task' "$BOC"
 contains "$(sed -n '/cmd_run_player.*what systemd execs/,/compose_prompt/p' "$BOC")" 'stack_up' \
     && ok "every replacement player repairs the stack before Sol starts" \
     || fail "every replacement player repairs the stack before Sol starts"
