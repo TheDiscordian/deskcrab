@@ -1124,6 +1124,12 @@ contains "$OUT" "## OpenRSC play knowledge" \
 contains "$OUT" "## People nearby in OpenRSC" \
     && ok "social recall has an explicit prompt section" \
     || fail "social recall has an explicit prompt section" "$OUT"
+contains "$OUT" "## Writing what you learn about playing" \
+    && ok "the player is explicitly taught that play memories are writable" \
+    || fail "the player is explicitly taught that play memories are writable" "$OUT"
+contains "$OUT" "betty-openrsc remember" \
+    && ok "the composed prompt names the sanctioned memory-write door" \
+    || fail "the composed prompt names the sanctioned memory-write door" "$OUT"
 refute "irrelevant desk-life recall is not carried into a play prompt" \
     grep -q 'IRRELEVANT-DESK-LIFE-MARKER' <<<"$OUT"
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "recall-block" \
@@ -1166,6 +1172,29 @@ contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "Neighbour One said hell
     || fail "asking exactly what the player was told"
 refute "and it emits no action into the shared slot" \
     test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
+
+# The narrow write door creates a tagged, deduplicated game note through the
+# store's own command. It never writes the game action slot.
+rm -f "$MEMFAKE/recall-capture"
+OUT="$(env "${BOCENV[@]}" bash "$BOC" remember \
+    "Captain Rovin is upstairs in Varrock Castle for Demon Slayer." 2>&1)"
+CAPTURED="$(cat "$MEMFAKE/recall-capture" 2>/dev/null)"
+contains "$CAPTURED" $'CALL\tadd\t--kind\tnote' \
+    && ok "the remember door writes a note through memory.py" \
+    || fail "the remember door writes a note through memory.py" "$CAPTURED"
+contains "$CAPTURED" $'--source\topenrsc-player' \
+    && ok "the durable lesson carries its OpenRSC player source" \
+    || fail "the durable lesson carries its OpenRSC player source" "$CAPTURED"
+contains "$CAPTURED" $'--topics\tRuneScape, OpenRSC, cooks-two' \
+    && ok "the durable lesson is tagged to play and the current objective" \
+    || fail "the durable lesson is tagged to play and the current objective" "$CAPTURED"
+contains "$CAPTURED" "Captain Rovin is upstairs" \
+    && ok "the verified lesson crosses the write door whole" \
+    || fail "the verified lesson crosses the write door whole" "$CAPTURED"
+refute "remembering consumes no game action slot" \
+    test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; env "${BOCENV[@]}" bash "$BOC" remember >/dev/null 2>&1 || CODE=$?
+check_eq "an empty play memory is refused" "$CODE" "1"
 
 # An empty room still recalls play knowledge; it simply does not spend a
 # second retrieval on absent relationships.

@@ -435,8 +435,8 @@ deliberate-play channel.
     lands without anyone hand-restarting the stack.
 
 19. Playing draws on things she learned about the world as well as the people in it. Her durable
-    store is reachable from the game through memory-recall.md's retrieval, through two doors and
-    no third:
+    store is reachable from the game through memory-recall.md's retrieval, through two read doors
+    and one narrow write door:
     - **At composition.** A new thread carries two explicit, independently bounded views. The
       play-knowledge view always runs, including in an empty room: its semantic query names the
       durable objective and asks for RuneScape/OpenRSC quest facts, learned habits, executable
@@ -456,6 +456,14 @@ deliberate-play channel.
       reply, so a person who walks up mid-thread is met by someone who remembers them rather than
       by a first meeting. This door reads only; it consumes no action slot, writes no record, and
       cannot speak.
+    - **When play verifies a durable lesson.** `betty-openrsc remember <text…>` writes one
+      self-contained note, deduplicated through memory.py and stamped `source=openrsc-player` with
+      topics `RuneScape`, `OpenRSC`, and the current objective when one exists. The player prompt
+      names the door on both fresh composition and resume, and separates its purpose from learned
+      rules: verified quest/route facts, habits, safety lessons and prior mistakes are memories;
+      a repeated mechanical response still goes through `play learn`. Empty or over-1200-byte
+      lessons are refused. Guesses, transient coordinates/state, secrets and ordinary chat do not
+      belong in the store. The write consumes no game action slot and speaks to nobody.
     Retrieval is fail-safe by memory-recall.md's own contract — an empty store, an absent module
     or a dead embedder adds nothing and never breaks a prompt build or a reply. What comes back
     is for HER reading. The world's chat channels are read by whoever is standing there, so the
