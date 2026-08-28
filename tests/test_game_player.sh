@@ -944,8 +944,28 @@ echo 55 > "$OH2/run/display"
 printf 'BASE-PROMPT-MARKER\n' > "$PH/prompt.md"
 printf 'goal: fetch flour; step 7 of 9; next: walk to the mill\n' > "$PH/handoff.md"
 printf 'cooks-two\n' > "$DESKCRAB_GAME_DIR/objective"
-snap 140 '[{"sidx":9,"id":11,"x":121,"z":649}]'
+# Rules 18-19: her voice comes from a sheet, and what she knows about the
+# people standing there comes from her own store. Both are shimmed so the
+# suite reads a fixture instead of the installed user's files, and so no real
+# embedder is ever asked anything.
+SHEET="$SANDBOX/openrsc-persona.md"
+printf '## Persona: PERSONA-SHEET-MARKER\n\nShe sounds like herself.\n' > "$SHEET"
+MEMFAKE="$SANDBOX/memfake"; mkdir -p "$MEMFAKE"
+cat > "$MEMFAKE/memory.py" <<'SH'
+#!/bin/bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+printf '%s\n' "$@" >> "$dir/recall-capture"
+printf 'RECALL-BLOCK-MARKER\n'
+SH
+chmod +x "$MEMFAKE/memory.py"
+# Nearby players ride the composed recall query: the people standing there are
+# the people she is about to have to answer.
+snap 140 '[{"sidx":9,"id":11,"x":121,"z":649}]' \
+     '{"players":[{"name":"Neighbour One"},{"name":"Neighbour Two"}]}'
 BOCENV=(BETTY_OPENRSC_HOME="$PH" BETTY_OPENRSC_HEADLESS="$OH2" \
+        BETTY_OPENRSC_PERSONA_SHEET="$SHEET" \
+        BETTY_OPENRSC_MEMORY="$MEMFAKE/memory.py" \
+        CUSTOM_PROMPT="" DESKCRAB_CONF="$SANDBOX/no-such.conf" \
         DESKCRAB_GAME_STATE_DIR="$DESKCRAB_GAME_STATE_DIR" \
         DESKCRAB_GAME_DIR="$DESKCRAB_GAME_DIR")
 OUT="$(env "${BOCENV[@]}" bash "$BOC" prompt 2>&1)"
@@ -959,6 +979,62 @@ contains "$OUT" "step 7 of 9" && ok "so does the handoff's exact state" \
     || fail "so does the handoff's exact state" "$OUT"
 contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
     || fail "and a fresh snapshot summary" "$OUT"
+
+# Rule 18: the player is her, playing. A prompt of pure game mechanics makes a
+# stranger wearing her name, which is what shipped before this.
+contains "$OUT" "PERSONA-SHEET-MARKER" \
+    && ok "her voice rides the composition from the game persona sheet" \
+    || fail "her voice rides the composition from the game persona sheet" "$OUT"
+# Rule 19: and so does what she already knows about whoever is standing there.
+contains "$OUT" "RECALL-BLOCK-MARKER" \
+    && ok "so does a recall block from her own durable store" \
+    || fail "so does a recall block from her own durable store" "$OUT"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "recall-block" \
+    && ok "composed through the store's own fail-safe recall door" \
+    || fail "composed through the store's own fail-safe recall door" \
+            "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "Neighbour One, Neighbour Two" \
+    && ok "and asked about the players actually standing nearby" \
+    || fail "and asked about the players actually standing nearby" \
+            "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "cooks-two" \
+    && ok "and about the goal she is actually pursuing" \
+    || fail "and about the goal she is actually pursuing"
+# What recall hands back is hers to read, never a script: the world hears
+# whatever reaches local chat.
+contains "$OUT" "not something to recite" \
+    && ok "the composition marks recalled knowledge as read-only, not a script" \
+    || fail "the composition marks recalled knowledge as read-only, not a script" "$OUT"
+
+# The reply-time door (rule 19): a query in, her own memory out. It touches no
+# action slot and speaks to nobody.
+rm -f "$MEMFAKE/recall-capture"
+OUT="$(env "${BOCENV[@]}" bash "$BOC" recall "Neighbour One said hello" 2>&1)"
+contains "$OUT" "RECALL-BLOCK-MARKER" && ok "the recall door answers with her store" \
+    || fail "the recall door answers with her store" "$OUT"
+contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "Neighbour One said hello" \
+    && ok "asking exactly what the player was told" \
+    || fail "asking exactly what the player was told"
+refute "and it emits no action into the shared slot" \
+    test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
+
+# Fail-safe by memory-recall.md's contract, and rule 18's bound: a missing
+# store or an oversized sheet degrades the prompt, never breaks it.
+OUT="$(env "${BOCENV[@]}" BETTY_OPENRSC_MEMORY="$SANDBOX/no-such-memory.py" \
+       bash "$BOC" prompt 2>&1)"
+contains "$OUT" "BASE-PROMPT-MARKER" \
+    && ok "an unreachable store still composes a whole prompt" \
+    || fail "an unreachable store still composes a whole prompt" "$OUT"
+refute "with no recall block invented in its place" \
+    grep -q 'RECALL-BLOCK-MARKER' <<<"$OUT"
+BIGSHEET="$SANDBOX/oversized-persona.md"
+head -c 70000 /dev/zero | tr '\0' 'x' > "$BIGSHEET"
+OUT="$(env "${BOCENV[@]}" BETTY_OPENRSC_PERSONA_SHEET="$BIGSHEET" \
+       bash "$BOC" prompt 2>&1)"
+contains "$OUT" "BASE-PROMPT-MARKER" \
+    && ok "an oversized sheet is treated as absent rather than failing the start" \
+    || fail "an oversized sheet is treated as absent rather than failing the start" "$OUT"
+refute "and none of its bytes reach the prompt" grep -q 'xxxxxxxxxx' <<<"$OUT"
 
 # Functional: the unit contract and same-thread continuation, through the
 # same shimmed systemd doors as the engine test above. The fake codex
@@ -1043,6 +1119,27 @@ check "every start leaves the exact composed prompt on file" \
     test -s "$PH/run-prompt.txt"
 check_eq "and stamps the durable player log" \
     "$(grep -c 'player start' "$PH/player.log" 2>/dev/null)" "2"
+
+# Rule 18a: the sheet is versioned into the thread. A conversation opened
+# before the current voice existed is the wrong one to continue, so an edited
+# sheet composes fresh instead of resuming a player who never heard it.
+check_eq "the thread records the persona it was opened with" \
+    "$(cat "$PH/player-persona-id" 2>/dev/null | wc -c)" "65"
+printf '## Persona: EDITED-SHEET-MARKER\n\nShe sounds like herself, revised.\n' > "$SHEET"
+env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "EDITED-SHEET-MARKER" \
+    && ok "an edited sheet composes a fresh player carrying the new voice" \
+    || fail "an edited sheet composes a fresh player carrying the new voice" \
+            "$(cat "$PH/run-prompt.txt" 2>/dev/null)"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "BASE-PROMPT-MARKER" \
+    && ok "which is a whole new thread, standing prompt included" \
+    || fail "which is a whole new thread, standing prompt included"
+check_eq "and no second resume was attempted against the stale thread" \
+    "$(grep -c '^resume$' "$PSD/codex-capture" 2>/dev/null)" "1"
+# An unchanged sheet must NOT churn the thread — only a real edit does.
+env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+check_eq "an unchanged sheet resumes the same conversation as before" \
+    "$(grep -c '^resume$' "$PSD/codex-capture" 2>/dev/null)" "2"
 rm -f "$PSD/systemctl-stops"
 CODE=0; OUT="$(env "${POCENV[@]}" DESKCRAB_TURN_ORIGIN=phone bash "$BOC" stop player 2>&1)" || CODE=$?
 [ "$CODE" -ne 0 ] && ok "a phone turn cannot stop the playing arm" \

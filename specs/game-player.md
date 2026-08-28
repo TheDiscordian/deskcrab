@@ -409,6 +409,49 @@ deliberate-play channel.
     rule is caught before it is armed, and a new rule that would steal an existing case's
     trigger state is caught the moment it is proposed.
 
+### Her voice, and who she is playing with
+
+18. The player is HER, playing, and a prompt that carries only game mechanics produces a
+    stranger wearing her character's name. The composed prompt of a new thread therefore carries
+    her conversational voice from ONE sheet, the first readable of: the sheet
+    `$BETTY_OPENRSC_PERSONA` names, the dedicated GAME sheet at
+    `~/.local/share/deskcrab/openrsc-persona.md`, and the persona sheet `$CUSTOM_PROMPT` points
+    at (the value is read from the assistant's config when it is absent from the environment, so
+    `~` and `$HOME` are expanded here; a sheet that is unreadable, empty, or over 65536 bytes —
+    the prompt assembler's own bound — is treated as absent, and with no sheet at all the prompt
+    is the game contract alone rather than a failed start). The game sheet exists for the same
+    reason the chess table's does (chessweb.md rule 24d): the conversation lane's sheet names the
+    user, their bond, and the calibration of a private conversation, while the game world seats
+    whoever is standing nearby. The game sheet is the same person in the same voice with her
+    household left at home; the conversation sheet stays in the chain as fallback only, because
+    for an install without a game sheet her whole voice beats her absence.
+
+18a. The sheet is versioned into the thread, not merely into the first prompt. `compose_prompt`
+    records the sheet's content fingerprint beside the thread id; rule 14's supervised start
+    resumes the saved thread only while that fingerprint still matches. An edited or newly
+    introduced sheet is a different voice from the one the running conversation was opened with,
+    so the next start composes a FRESH thread instead of resuming one that never heard it. This
+    is the game's equivalent of the chess chat re-reading its sheet per call: an edited sheet
+    lands without anyone hand-restarting the stack.
+
+19. Playing is a social act, and the people in the world are people she already knows. Her
+    durable store is reachable from the game by the same retrieval every other prompt of hers
+    uses (memory-recall.md), through two doors and no third:
+    - **At composition.** A new thread's prompt carries a recall block whose query is composed
+      from the live snapshot's nearby `players` and the durable objective. With nobody nearby the
+      query is the objective alone, and a recall that returns nothing adds nothing.
+    - **At reply time.** `betty-openrsc recall <text…>` prints the block for a query given on the
+      command line. Rule 7b's `player-message` verdict makes it part of answering: the playing
+      hand recalls against the sender's name and what they actually said BEFORE composing a
+      reply, so a person who walks up mid-thread is met by someone who remembers them rather than
+      by a first meeting. This door reads only; it consumes no action slot, writes no record, and
+      cannot speak.
+    Retrieval is fail-safe by memory-recall.md's own contract — an empty store, an absent module
+    or a dead embedder adds nothing and never breaks a prompt build or a reply. What comes back
+    is for HER reading. The world's chat channels are read by whoever is standing there, so the
+    boundary that governs what she says out loud is rule 18's sheet, exactly as at the chess
+    table; recall supplies what she knows, never a licence to recite it.
+
 ## KNOWN LIMITS
 
 - The trigger vocabulary sees what the snapshot carries (game-reflex rule 3). Doors and scenery
@@ -421,6 +464,11 @@ deliberate-play channel.
 - The objective is one line set by the deliberate hand; nothing advances it mechanically. A
   stale objective can suppress rules (never fire wrong ones — `once_per_objective` marks and
   triggers still gate) until the next reasoning turn corrects it.
+- Rule 19's reply-time recall is the playing hand's own step, not a mechanical one: nothing in
+  this module may call a model or an embedder inside evaluation (rule 2), so a player that skips
+  the lookup answers from the thread alone. Composition-time recall is the floor under that —
+  whoever was standing nearby when the thread opened is remembered whether or not the door is
+  used.
 - Two engines share one action slot by design (one bridge, one body). `slot-busy` refusal is
   the guard; a reflex-engine daemon and a player stepping at the same moment contend politely
   but the reflex engine's emission is not priority-merged with this table's — the reflex
