@@ -285,8 +285,9 @@ deliberate-play channel.
    `route-progress` and immediately licenses the next leg without a model call; reaching the
    destination is `route-complete` and removes the route. A refused leg or a settled tile no closer
    to the destination marks the route `blocked` at the current position and visible obstacle
-   signature, reports exit 4 to Sol, and emits no further walk until that position or obstacle
-   signature changes. Changing the durable objective cancels the stale route rather than walking
+   signature, reports exit 4 to Sol, and emits no further walk merely because the dispatched leg
+   settles another tile. A changed visible obstacle signature may make the path viable; otherwise
+   Sol must change strategy and explicitly set a corrected route. Changing the durable objective cancels the stale route rather than walking
    toward an old goal. The route survives player and runner process boundaries, owns no second
    action slot or observer, uses no screenshots or timed polling, and cannot loop forever against
    an unchanged wall.
@@ -413,6 +414,11 @@ deliberate-play channel.
       deliberate exit. Ordinary receipted actions rely on the durable objective, snapshot, and
       decision log. A resumed thread continues directly; a new thread derives current state from
       those facts and the latest checkpoint without rechecking healthy stack layers.
+      A concrete in-game action the player has acknowledged but not yet verified is active work,
+      not an optional warning: it is carried in the handoff's plan and exact next action and stays
+      ahead of routine training after safety and conversation prerequisites. A repeated reminder
+      must cause the routine loop to stop and the acknowledged action to be attempted; another
+      promise is not progress. Completion is grounded in the live state or action receipt.
     - `play` also raises rule 15's resident runner (`orsc-runner.service`, through the
       harness's `runner` door) and rule 16's background author (`orsc-author.service`,
       `run-author`), so the standing stack has five runtime processes: client, reflex engine,

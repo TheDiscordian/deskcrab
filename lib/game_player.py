@@ -283,7 +283,12 @@ def route_distance(x: int, z: int, route: dict) -> int:
 def route_obstacle_signature(snap: dict) -> str:
     """Facts whose change can make a locally blocked route worth retrying."""
     shape = {
-        "x": snap.get("x"), "z": snap.get("z"),
+        # Do not include the body tile. A dispatched route leg can continue
+        # settling for one tile after verification classifies it as blocked;
+        # treating that late step as a new obstacle state immediately retries
+        # the same failed strategy and can walk farther away. A changed local
+        # collision scene may make the route viable; otherwise Sol must choose
+        # a correction and explicitly set a new route.
         "objects": sorted((o.get("id"), o.get("x"), o.get("z"), o.get("dir"))
                           for o in snap.get("objects") or [] if isinstance(o, dict)),
         "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"))

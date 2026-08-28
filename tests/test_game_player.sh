@@ -554,6 +554,11 @@ snap 1051 '[]' '{"x":140,"z":648}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 check_eq "an unchanged wall cannot cause a walking loop: exit 4" "$CODE" "4"
 refute "and no repeated action was emitted" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 10511 '[]' '{"x":141,"z":648}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "a late settling tile cannot revive the same failed route: exit 4" "$CODE" "4"
+refute "and the failed route still emits no repeated action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 
 python3 "$GP" objective changed-goal >/dev/null
 snap 1052 '[]' '{"x":140,"z":648}'
@@ -1619,6 +1624,9 @@ contains "$OUT" "cooks-two" && ok "the durable objective rides the composition" 
     || fail "the durable objective rides the composition" "$OUT"
 contains "$OUT" "step 7 of 9" && ok "so does the handoff's exact state" \
     || fail "so does the handoff's exact state" "$OUT"
+contains "$OUT" "unresolved handoff statement" \
+    && ok "the continuation makes acknowledged unfinished actions outrank routine play" \
+    || fail "the continuation makes acknowledged unfinished actions outrank routine play" "$OUT"
 contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
     || fail "and a fresh snapshot summary" "$OUT"
 
