@@ -1649,7 +1649,7 @@ def compile_player_action(rule, snap, food, eat_pick):
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd", "within",
+    for key in ("kind", "sidx", "npc", "x", "z", "arrive", "dir", "obj", "cmd", "within",
                 "item", "button",
                 "distance", "dx", "dz", "committed_direction",
                 "target", "text"):
