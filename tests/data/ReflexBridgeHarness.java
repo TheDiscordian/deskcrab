@@ -215,6 +215,16 @@ public class ReflexBridgeHarness {
 			events.add("trade-accept stage=confirm");
 		}
 
+		public void offerTradeItem(int inventorySlot, int amount) {
+			events.add("trade-offer slot=" + inventorySlot + " amount=" + amount
+					+ " item=" + invIds[inventorySlot]);
+		}
+
+		public void removeTradeItem(int offerSlot, int amount) {
+			events.add("trade-remove slot=" + offerSlot + " amount=" + amount
+					+ " item=" + tradeMyIds[offerSlot]);
+		}
+
 		public boolean isNpcDialogueOpen() {
 			return npcDialogueOpen;
 		}

@@ -314,6 +314,23 @@ deliberate-play channel.
    action slot or observer, uses no screenshots or timed polling, and cannot loop forever against
    an unchanged wall.
 
+7f. Actual movement is also recovery evidence. Every distinct logged-in tile observed by the
+   resident runner is appended with its timestamp to
+   `$DESKCRAB_GAME_DIR/movement-trail.json`; the settled end of a synchronous ACTIONS walk is
+   recorded explicitly, so model-owned and runner-owned movement both survive process boundaries.
+   An unexplained transition greater than twelve tiles marks a portal boundary rather than
+   inventing a walkable edge. `backtrack [POINTS|all]` atomically replaces an ordinary route with
+   the reverse of the current boundary-bounded trail in `$DESKCRAB_GAME_DIR/backtrack.json`.
+   Those exact observed tiles become high-priority synthetic walks: urgent retreat and messages
+   still outrank recovery, but routine interactions cannot interrupt it. Every verified reverse
+   step truncates the abandoned branch from the movement trail, completion removes the request,
+   and an unchanged obstruction records `backtrack-blocked` and licenses Sol rather than retrying
+   or falling through to incidental work. A new explicit route replaces recovery; an objective
+   change cancels it. `backtrack history`, `status`, and `clear` expose the evidence and request.
+   The trail is compact transient operational memory, not a claim that every coordinate is a
+   reusable route fact. Once play verifies the correct landmark sequence or exit interaction,
+   rule 19's memory door preserves that durable lesson.
+
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule
    `cooldown_ms` with `cooldown-hold` logged once per blocked episode, `hold_ticks` debounce,
@@ -508,9 +525,12 @@ deliberate-play channel.
     time-spanning loop from isolated outcomes, the player retains a compact three-minute
     repetition history. Three exact firings of the same non-retreat rule against the same target
     in one objective/activity emit one self-contained `loop-candidate` record with their span and
-    recent states. This is diagnosis, not a generic action cap: productive skilling and valuable
-    finite loot stay repeatable, while a fixed low-value respawn, stale dialogue, or other
-    diversion must be bounded without starving the active commitment. Safety retreat is exempt.
+    recent states. The exact unchanged rule is held for 30 seconds in that objective/activity
+    while the author reviews it; changing the rule, objective, or activity releases the hold, and
+    an unchanged productive routine resumes after the bounded pause. This is not a permanent
+    generic action cap: productive skilling and valuable finite loot stay repeatable, while a
+    fixed low-value respawn, stale dialogue, or other diversion cannot keep firing during its own
+    correction. Safety retreat is exempt.
     The queue is the inbox of the background author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
     durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at medium

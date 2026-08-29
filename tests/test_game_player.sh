@@ -477,7 +477,7 @@ for tick in 10331 10332 10333; do
     fake_bridge done
     CODE=0; python3 "$GP" step >/dev/null || CODE=$?
     wait "$FAKE_BRIDGE_PID"
-    check_eq "repetition probe $tick still executes normally" "$CODE" "0"
+    check_eq "repetition probe $tick executes before review" "$CODE" "0"
 done
 python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
     && ok "the third exact play queues one self-contained loop candidate" \
@@ -488,7 +488,17 @@ matches = [e for e in events if e.get("kind") == "loop-candidate"
            and e.get("rule") == "loop-review-probe"]
 assert len(matches) == 1, matches
 assert matches[0]["count"] == 3 and len(matches[0]["recent"]) == 3, matches[0]
+assert matches[0]["review_hold_ms"] == 30000, matches[0]
 PY
+snap 10334 '[]'
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+check_eq "the exact loop pauses while its candidate is reviewed" "$CODE" "4"
+contains "$OUT" "repetition-review-hold" \
+    && contains "$OUT" "loop-review-probe" \
+    && ok "the pause names the held reflex instead of silently stalling" \
+    || fail "the pause names the held reflex instead of silently stalling" "$OUT"
+refute "the review hold emits no fourth action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 python3 "$GP" remove loop-review-probe >/dev/null
 python3 "$GP" activity --clear >/dev/null
 
@@ -736,6 +746,123 @@ snap 1052 '[]' '{"x":140,"z":648}'
 CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
 refute "changing objective cancels the stale route" test -f "$DESKCRAB_GAME_DIR/route.json"
 check "route clear is idempotent" python3 "$GP" route --clear
+python3 "$GP" objective --clear >/dev/null
+
+echo
+echo "observed movement is timestamped and reversibly backtracked (spec rule 7f):"
+rm -f "$DESKCRAB_GAME_DIR/movement-trail.json" \
+      "$DESKCRAB_GAME_DIR/backtrack.json" \
+      "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" \
+      "$DESKCRAB_GAME_STATE_DIR/action.json" \
+      "$DESKCRAB_GAME_STATE_DIR/receipt.json"
+python3 "$GP" objective retrace-test >/dev/null
+for sample in '10521 120 648' '10522 121 648' '10523 122 648'; do
+    set -- $sample
+    snap "$1" '[]' "{\"x\":$2,\"z\":$3}"
+    CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+    check_eq "observed tile $2,$3 remains a reasoning-only pass" "$CODE" "4"
+done
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY' \
+    && ok "the compact trail records distinct actual tiles with timestamps" \
+    || fail "the compact trail records distinct actual tiles with timestamps"
+import json, sys
+points = json.load(open(sys.argv[1]))["points"]
+assert [(p["x"], p["z"]) for p in points] == [(120, 648), (121, 648), (122, 648)], points
+assert all(isinstance(p["ts"], int) and p["ts"] > 0 for p in points), points
+assert not any(p.get("break") for p in points), points
+PY
+contains "$(python3 "$GP" backtrack history)" "tile=(122,648)" \
+    && ok "where-and-when history is available to the playing hand" \
+    || fail "where-and-when history is available to the playing hand"
+check "a bounded reverse recovery can be requested" python3 "$GP" backtrack 2
+contains "$(python3 "$GP" backtrack status)" "status=active remaining=2 next=(121,648)" \
+    && ok "recovery begins at the immediately prior observed tile" \
+    || fail "recovery begins at the immediately prior observed tile"
+# The command was set after tick 10523 had already been evaluated. A real
+# server advances continuously; advance this fixture too so the once-per-tick
+# invariant does not correctly suppress the new action.
+snap 105230 '[]' '{"x":122,"z":648}'
+fake_route_bridge 121 648
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the first exact reverse step is productive: exit 0" "$CODE" "0"
+contains "$OUT" "status=backtrack-progress" \
+    && ok "reverse progress is named" || fail "reverse progress is named" "$OUT"
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY' \
+    && ok "a successful reverse step removes the abandoned branch" \
+    || fail "a successful reverse step removes the abandoned branch"
+import json, sys
+points = json.load(open(sys.argv[1]))["points"]
+assert [(p["x"], p["z"]) for p in points] == [(120, 648), (121, 648)], points
+PY
+fake_route_bridge 120 648
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the final reverse step completes: exit 0" "$CODE" "0"
+contains "$OUT" "status=backtrack-complete" \
+    && ok "recovery completion is explicit" || fail "recovery completion is explicit" "$OUT"
+refute "a completed recovery leaves no stale request" \
+    test -f "$DESKCRAB_GAME_DIR/backtrack.json"
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY' \
+    && ok "the recovered position is the durable end of history" \
+    || fail "the recovered position is the durable end of history"
+import json, sys
+points = json.load(open(sys.argv[1]))["points"]
+assert [(p["x"], p["z"]) for p in points] == [(120, 648)], points
+PY
+
+# A discontinuity is evidence for a semantic stair/ladder/portal interaction,
+# never permission to issue one impossible walk across coordinate layers.
+rm -f "$DESKCRAB_GAME_DIR/movement-trail.json" \
+      "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
+for sample in '10524 120 648' '10525 121 648' '10526 300 300' '10527 301 300'; do
+    set -- $sample
+    snap "$1" '[]' "{\"x\":$2,\"z\":$3}"
+    python3 "$GP" step --local >/dev/null 2>&1 || true
+done
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY' \
+    && ok "a large unexplained transition is marked as a portal boundary" \
+    || fail "a large unexplained transition is marked as a portal boundary"
+import json, sys
+points = json.load(open(sys.argv[1]))["points"]
+assert points[2]["x"] == 300 and points[2]["break"] is True, points
+PY
+python3 "$GP" backtrack all >/dev/null
+python3 - "$DESKCRAB_GAME_DIR/backtrack.json" <<'PY' \
+    && ok "backtracking stops on the current side of that boundary" \
+    || fail "backtracking stops on the current side of that boundary"
+import json, sys
+request = json.load(open(sys.argv[1]))
+assert request["points"] == [[300, 300]], request
+PY
+CODE=0; OUT="$(python3 "$GP" backtrack all 2>&1)" || CODE=$?
+check_eq "an active recovery cannot be silently replaced" "$CODE" "1"
+contains "$OUT" "already active" \
+    && ok "replacement requires an explicit clear or route" \
+    || fail "replacement requires an explicit clear or route" "$OUT"
+python3 "$GP" learn recovery-distraction --priority 950000 --cooldown-ms 0 \
+    --trigger message_contains=welcome --action walk --param x=999 --param z=999 >/dev/null
+snap 105271 '[]' '{"x":301,"z":300}'
+fake_bridge refused-no-path
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "an obstructed reverse step asks for a correction: exit 4" "$CODE" "4"
+contains "$OUT" "backtrack-blocked" \
+    && ok "the obstructed recovery is explicit" \
+    || fail "the obstructed recovery is explicit" "$OUT"
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 10528 '[]' '{"x":301,"z":300}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "unchanged blocked recovery remains a decision point: exit 4" "$CODE" "4"
+contains "$OUT" "backtrack-blocked" \
+    && ok "blocked recovery remains visible" || fail "blocked recovery remains visible" "$OUT"
+refute "even a higher-priority routine cannot interrupt recovery" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+python3 "$GP" remove recovery-distraction >/dev/null
+python3 "$GP" route 305 300 >/dev/null
+refute "a new explicit route replaces old recovery" \
+    test -f "$DESKCRAB_GAME_DIR/backtrack.json"
+python3 "$GP" route --clear >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo
@@ -1193,6 +1320,8 @@ check_eq "the harness carries the event-driven state wait door" \
     "$(sandbox_count_in '^    wait-until|wait_until)' "$HEADLESS")" "1"
 check_eq "the harness carries the bounded verified retreat door" \
     "$(sandbox_count_in '^    retreat)' "$HEADLESS")" "1"
+check_eq "the harness carries the timestamped path-recovery door" \
+    "$(sandbox_count_in '^    backtrack)' "$HEADLESS")" "1"
 check_eq "the harness carries a play door" \
     "$(sandbox_count_in '^    play' "$HEADLESS")" "1"
 check_eq "wired to game_player.py, not merely present in lib" \
@@ -1280,6 +1409,24 @@ contains "$OUT" "stage=offer partner=Discordian" \
     && contains "$OUT" "receive: id=145 Tinderbox x1" \
     && ok "trade status exposes partner, acceptance, and offers" \
     || fail "trade status exposes partner, acceptance, and offers" "$OUT"
+fake_bridge done
+OUT="$(bash "$HEADLESS" trade offer 376 1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "trade offer completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "trade-offer(item=376 amount=1)" \
+    && ok "the trade offer reports the inventory identity it selected" \
+    || fail "the trade offer reports the inventory identity it selected" "$OUT"
+check_eq "the offer door wrote trade-offer" "$(last_action 'type=trade-offer')" "1"
+check_eq "the offer door carries the requested item identity" "$(last_action 'item=376')" "1"
+snap 117022 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Discordian","my_accepted":false,"their_accepted":false,"my_offer":[{"id":81,"name":"Lobster","count":2}],"their_offer":[]}}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" trade remove 81 all)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "trade remove completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "trade-remove(item=81 amount=2)" \
+    && ok "all resolves from the grounded offer quantity" \
+    || fail "all resolves from the grounded offer quantity" "$OUT"
+check_eq "the removal door wrote trade-remove" "$(last_action 'type=trade-remove')" "1"
 fake_bridge done
 OUT="$(bash "$HEADLESS" trade accept)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -1926,6 +2073,9 @@ contains "$OUT" "## Writing what you learn about playing" \
 contains "$OUT" "betty-openrsc remember" \
     && ok "the composed prompt names the sanctioned memory-write door" \
     || fail "the composed prompt names the sanctioned memory-write door" "$OUT"
+contains "$OUT" "backtrack history" \
+    && ok "the composed player knows its timestamped movement memory" \
+    || fail "the composed player knows its timestamped movement memory" "$OUT"
 refute "irrelevant desk-life recall is not carried into a play prompt" \
     grep -q 'IRRELEVANT-DESK-LIFE-MARKER' <<<"$OUT"
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "recall-block" \
@@ -2102,6 +2252,9 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh retreat onc
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "failed command sequence is evidence" \
     && ok "the resumed thread must resolve and retain failed strategies" \
     || fail "the resumed thread must resolve and retain failed strategies"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh backtrack" \
+    && ok "the resumed thread receives observed-path recovery" \
+    || fail "the resumed thread receives observed-path recovery"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \

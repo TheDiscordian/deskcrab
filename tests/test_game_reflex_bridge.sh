@@ -365,6 +365,26 @@ check_eq "the trade request is receipted done" "$(rstatus)" "done"
 wact 652 "$(now_ms)" "type=trade-player" "sidx=99"
 harness exec >/dev/null
 check_eq "a player who is no longer visible is refused" "$(rstatus)" "refused-no-such-player"
+wact 65201 "$(now_ms)" "type=trade-offer" "item=132" "amount=1"
+OUT="$(harness exec-trade-offer)"
+contains "$OUT" "trade-offer slot=0 amount=1 item=132" \
+    && ok "a trade offer selects the requested live inventory identity" \
+    || fail "a trade offer selects the requested live inventory identity" "$OUT"
+check_eq "the identity-backed offer is receipted done" "$(rstatus)" "done"
+wact 65202 "$(now_ms)" "type=trade-remove" "item=81" "amount=1"
+OUT="$(harness exec-trade-offer)"
+contains "$OUT" "trade-remove slot=0 amount=1 item=81" \
+    && ok "a trade removal selects the requested live offer identity" \
+    || fail "a trade removal selects the requested live offer identity" "$OUT"
+check_eq "the identity-backed removal is receipted done" "$(rstatus)" "done"
+wact 65203 "$(now_ms)" "type=trade-offer" "item=132" "amount=1"
+harness exec-trade-confirm >/dev/null
+check_eq "an offer cannot mutate the confirmation stage" "$(rstatus)" \
+    "refused-trade-stage-changed"
+wact 65204 "$(now_ms)" "type=trade-remove" "item=999" "amount=1"
+harness exec-trade-offer >/dev/null
+check_eq "removing an absent offer identity is refused" "$(rstatus)" \
+    "refused-no-such-item"
 wact 6521 "$(now_ms)" "type=trade-accept" "stage=offer"
 OUT="$(harness exec-trade-offer)"
 contains "$OUT" "trade-accept stage=offer" \

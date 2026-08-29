@@ -68,8 +68,13 @@ GAP_STABLE_MS = 750          # moving across tiles is one situation, not one Sol
 PLAYER_MESSAGE_SETTLE_MS = 5000  # collect one RuneScape-length chat chain before Sol replies
 REPETITION_WINDOW_MS = 3 * 60 * 1000
 REPETITION_THRESHOLD = 3
+REPETITION_REVIEW_HOLD_MS = 30 * 1000
+MOVEMENT_TRAIL_MAX_POINTS = 1024
+MOVEMENT_TRAIL_BREAK_DISTANCE = 12
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
+BACKTRACK_RULE_NAME = "active-backtrack"
+BACKTRACK_PRIORITY = 900_000  # deliberate recovery beats routine work; retreat still wins
 MANUAL_RETREAT_RULE_NAME = "manual-retreat-request"
 MANUAL_RETREAT_PRIORITY = 1_000_000
 
@@ -270,6 +275,14 @@ def route_path() -> Path:
     return game_dir() / "route.json"
 
 
+def movement_trail_path() -> Path:
+    return game_dir() / "movement-trail.json"
+
+
+def backtrack_path() -> Path:
+    return game_dir() / "backtrack.json"
+
+
 def session_path() -> Path:
     return game_dir() / "session.json"
 
@@ -374,6 +387,140 @@ def clear_route() -> None:
         route_path().unlink()
     except FileNotFoundError:
         pass
+
+
+def load_movement_trail() -> dict:
+    try:
+        trail = json.loads(movement_trail_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"v": 1, "points": []}
+    points = trail.get("points") if isinstance(trail, dict) else None
+    if not isinstance(trail, dict) or trail.get("v") != 1 \
+            or not isinstance(points, list):
+        return {"v": 1, "points": []}
+    valid = []
+    for point in points[-MOVEMENT_TRAIL_MAX_POINTS:]:
+        if not isinstance(point, dict) \
+                or not isinstance(point.get("x"), int) \
+                or not isinstance(point.get("z"), int) \
+                or not isinstance(point.get("ts"), int):
+            continue
+        valid.append({"x": point["x"], "z": point["z"], "ts": point["ts"],
+                      "break": point.get("break") is True})
+    return {"v": 1, "points": valid}
+
+
+def record_movement_trail(snap: dict, connected: bool = False) -> None:
+    """Remember actual settled/observed tiles, including direct Sol movement.
+
+    Large jumps are portal boundaries, not walkable edges. Backtracking stops
+    at the near side so a ladder, stair, or door can be handled semantically.
+    """
+    if snap.get("logged_in") is not True:
+        return
+    active_backtrack = load_backtrack()
+    if active_backtrack is not None and active_backtrack.get("status") in ("active", "blocked"):
+        return
+    x, z = snap.get("x"), snap.get("z")
+    if not isinstance(x, int) or not isinstance(z, int):
+        return
+    trail = load_movement_trail()
+    points = trail["points"]
+    if points and points[-1]["x"] == x and points[-1]["z"] == z:
+        return
+    is_break = False
+    if points:
+        distance = max(abs(x - points[-1]["x"]), abs(z - points[-1]["z"]))
+        # A verified ACTIONS walk may cover more than twelve tiles while this
+        # runner is synchronously observing its receipt. That is still a
+        # reversible, connected edge. Unexplained jumps are stair/ladder/
+        # portal boundaries and must never be guessed across as a walk.
+        is_break = not connected and distance > MOVEMENT_TRAIL_BREAK_DISTANCE
+    points.append({"x": x, "z": z, "ts": int(snap.get("ts") or now_ms()),
+                   "break": is_break})
+    trail["points"] = points[-MOVEMENT_TRAIL_MAX_POINTS:]
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(movement_trail_path(), json.dumps(trail) + "\n")
+
+
+def rewind_movement_trail(x: int, z: int) -> None:
+    """Make a successful reverse step the new end of known history.
+
+    Without truncation, the next ordinary poll would append the recovered
+    position after the abandoned branch and a later backtrack could walk the
+    same wrong turn forward again.
+    """
+    trail = load_movement_trail()
+    points = trail["points"]
+    match = next((index for index in range(len(points) - 1, -1, -1)
+                  if points[index]["x"] == x and points[index]["z"] == z), None)
+    if match is None:
+        return
+    trail["points"] = points[:match + 1]
+    game_reflex.atomic_write(movement_trail_path(), json.dumps(trail) + "\n")
+
+
+def load_backtrack():
+    try:
+        request = json.loads(backtrack_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    points = request.get("points") if isinstance(request, dict) else None
+    if not isinstance(request, dict) or request.get("v") != 1 \
+            or not isinstance(request.get("objective"), str) \
+            or request.get("status") not in ("active", "blocked") \
+            or not isinstance(request.get("index"), int) \
+            or not isinstance(points, list) or not points:
+        return {"status": "invalid"}
+    if not 0 <= request["index"] <= len(points):
+        return {"status": "invalid"}
+    if any(not isinstance(point, list) or len(point) != 2
+           or not all(isinstance(value, int) for value in point)
+           for point in points):
+        return {"status": "invalid"}
+    return request
+
+
+def save_backtrack(request: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(backtrack_path(), json.dumps(request, indent=2) + "\n")
+
+
+def clear_backtrack() -> None:
+    try:
+        backtrack_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def prepare_backtrack(snap: dict, objective: str):
+    request = load_backtrack()
+    if request is None or request.get("status") == "invalid":
+        return request
+    if request["objective"] != objective:
+        clear_backtrack()
+        flush_events([{"ts": now_ms(), "kind": "backtrack-cancelled",
+                       "reason": "objective-changed", "from": request["objective"],
+                       "to": objective}])
+        return None
+    x, z = snap.get("x"), snap.get("z")
+    changed = False
+    while request["index"] < len(request["points"]) \
+            and request["points"][request["index"]] == [x, z]:
+        rewind_movement_trail(x, z)
+        request["index"] += 1
+        request["status"] = "active"
+        changed = True
+    if request["index"] >= len(request["points"]):
+        clear_backtrack()
+        flush_events([{"ts": now_ms(), "kind": "backtrack-complete",
+                       "x": x, "z": z, "steps": len(request["points"])}])
+        return None
+    if changed:
+        save_backtrack(request)
+    return request
 
 
 def route_distance(x: int, z: int, route: dict) -> int:
@@ -777,6 +924,7 @@ def load_player_state() -> dict:
     est.setdefault("pending_system_messages", [])
     est.setdefault("recent_repetitions", [])
     est.setdefault("reported_repetitions", {})
+    est.setdefault("repetition_holds", [])
     return est
 
 
@@ -1566,6 +1714,12 @@ def append_outcome(record: dict) -> None:
         fh.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
+def rule_fingerprint(rule: dict) -> str:
+    """Stable authored-rule identity; evaluator-only fields do not count."""
+    return json.dumps({key: value for key, value in rule.items() if key != "channel"},
+                      sort_keys=True, separators=(",", ":"))
+
+
 def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | None:
     """Aggregate exact repeated plays for the event-driven Sol author.
 
@@ -1578,7 +1732,8 @@ def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | 
     """
     action = outcome.get("action") or {}
     if rule is None or action.get("type") == "retreat" \
-            or outcome.get("rule") in (ROUTE_RULE_NAME, MANUAL_RETREAT_RULE_NAME):
+            or outcome.get("rule") in (
+                ROUTE_RULE_NAME, BACKTRACK_RULE_NAME, MANUAL_RETREAT_RULE_NAME):
         return None
     now = int(outcome.get("ts") or now_ms())
     identity = {key: action.get(key) for key in (
@@ -1603,11 +1758,25 @@ def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | 
     if len(matches) < REPETITION_THRESHOLD or key in reported:
         return None
     reported[key] = now
+    fingerprint = rule_fingerprint(rule)
+    holds = [hold for hold in est.get("repetition_holds") or []
+             if isinstance(hold, dict) and isinstance(hold.get("until"), int)
+             and hold["until"] > now
+             and not (hold.get("rule") == outcome.get("rule")
+                      and hold.get("objective") == outcome.get("objective")
+                      and hold.get("activity") == outcome.get("activity"))]
+    holds.append({"rule": outcome.get("rule"),
+                  "objective": outcome.get("objective"),
+                  "activity": outcome.get("activity"),
+                  "fingerprint": fingerprint,
+                  "until": now + REPETITION_REVIEW_HOLD_MS})
+    est["repetition_holds"] = holds[-16:]
     return {"ts": now, "kind": "loop-candidate", "rule": outcome.get("rule"),
             "objective": outcome.get("objective"), "activity": outcome.get("activity"),
             "action": identity, "count": len(matches),
             "span_ms": now - matches[0]["ts"],
             "activity_scoped": "activity_is" in (rule.get("trigger") or {}),
+            "review_hold_ms": REPETITION_REVIEW_HOLD_MS,
             "recent": [{k: v for k, v in item.items() if k != "key"}
                        for item in matches[-REPETITION_THRESHOLD:]],
             "note": "Exact repetition needs review: preserve productive routines and valuable "
@@ -1805,6 +1974,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if snap is None:
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
+    record_movement_trail(snap)
     xp_text = activity_xp_text(snap, activity)
     # The sleep screen owns keyboard input and blocks ordinary play. Never let
     # an old objective, route, reflex, or queued reply pretend it can proceed
@@ -1841,6 +2011,28 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "hold_ticks": 1, "once_per_objective": False,
             "note": retreat_note, "trigger": retreat_trigger,
             "action": retreat_action,
+        })
+    backtrack = prepare_backtrack(snap, objective)
+    backtrack_blocked = False
+    if backtrack is not None and backtrack.get("status") == "blocked":
+        signature = route_obstacle_signature(snap)
+        if signature == backtrack.get("blocked_signature"):
+            backtrack_blocked = True
+        else:
+            backtrack = {key: value for key, value in backtrack.items()
+                         if not key.startswith("blocked_")}
+            backtrack["status"] = "active"
+            save_backtrack(backtrack)
+    if backtrack is not None and backtrack.get("status") == "active":
+        target_x, target_z = backtrack["points"][backtrack["index"]]
+        source_rules.append({
+            "name": BACKTRACK_RULE_NAME, "enabled": True,
+            "priority": BACKTRACK_PRIORITY, "cooldown_ms": 0,
+            "hold_ticks": 1, "once_per_objective": False,
+            "note": "retrace the body's observed successful tile trail",
+            "trigger": {},
+            "action": {"type": "walk", "x": target_x, "z": target_z,
+                       "arrive": 0},
         })
     trigger_true = make_trigger_fn(objective, activity)
     urgent_retreat_names = {
@@ -1933,7 +2125,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # Spec rule 7e: one durable destination, executed by this resident runner
     # as ordinary lowest-priority walk actions. Messages above and every
     # learned interaction below retain priority.
-    route = load_route()
+    route = None if backtrack is not None else load_route()
     route_blocked = False
     if route is not None and route.get("status") == "invalid":
         report("route-invalid", file=str(route_path()))
@@ -1966,11 +2158,32 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
     # engine sees the table, so the machinery stays vocabulary-blind.
     live_rules = []
+    active_repetition_holds = []
+    est["repetition_holds"] = [
+        hold for hold in est.get("repetition_holds") or []
+        if isinstance(hold, dict) and isinstance(hold.get("until"), int)
+        and hold["until"] > now
+    ]
     for rule in source_rules:
         if urgent_retreat_names and rule["name"] not in urgent_retreat_names:
             continue
+        # Retracing is a deliberate recovery commitment. Incidental learned
+        # work must neither cut it off nor become a fallback when one reverse
+        # leg is obstructed; urgent escape remains the sole exception.
+        if backtrack is not None and rule["name"] != BACKTRACK_RULE_NAME \
+                and rule["name"] not in urgent_retreat_names:
+            continue
         if rule.get("once_per_objective") and rule["enabled"] \
                 and once_key(rule["name"], objective) in est["objective_fired"]:
+            continue
+        fingerprint = rule_fingerprint(rule)
+        review_hold = next((hold for hold in est["repetition_holds"]
+                            if hold.get("rule") == rule["name"]
+                            and hold.get("objective") == (objective or None)
+                            and hold.get("activity") == (activity or None)
+                            and hold.get("fingerprint") == fingerprint), None)
+        if review_hold is not None and rule["name"] not in urgent_retreat_names:
+            active_repetition_holds.append(review_hold)
             continue
         # Every player rule is game-channel by construction (spec rule 5);
         # the shared engine wants the key spelled out.
@@ -2011,12 +2224,31 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             report("route-blocked", x=snap.get("x"), z=snap.get("z"),
                    target_x=route["x"], target_z=route["z"],
                    reason=route.get("blocked_reason", "no-progress"),
-                   feedback=latest_system_feedback(snap))
+                   feedback=latest_system_feedback(snap),
+                   next="inspect-obstacle-or-backtrack-before-guessing")
             return "route-blocked", EXIT_NO_RULE
+        if backtrack is not None and backtrack.get("status") == "invalid":
+            report("backtrack-invalid", file=str(backtrack_path()))
+            return "backtrack-blocked", EXIT_NO_RULE
+        if backtrack_blocked and backtrack is not None:
+            target_x, target_z = backtrack["points"][backtrack["index"]]
+            report("backtrack-blocked", x=snap.get("x"), z=snap.get("z"),
+                   target_x=target_x, target_z=target_z,
+                   reason=backtrack.get("blocked_reason", "no-progress"),
+                   feedback=latest_system_feedback(snap))
+            return "backtrack-blocked", EXIT_NO_RULE
         if route is not None:
             report("route-waiting", x=snap.get("x"), z=snap.get("z"),
                    target_x=route["x"], target_z=route["z"])
             return "route-waiting", EXIT_NOT_READY
+        if active_repetition_holds:
+            held_names = ",".join(sorted({str(hold.get("rule"))
+                                          for hold in active_repetition_holds}))
+            left = max(0, max(int(hold["until"]) for hold in active_repetition_holds) - now)
+            report("repetition-review-hold", rules=held_names,
+                   hold_ms_left=left, objective=objective or None,
+                   activity=activity or None)
+            return "repetition-review-hold", EXIT_NO_RULE
         report("no-rule-matched", objective=objective or None,
                activity=activity or None,
                activity_xp=xp_text or None,
@@ -2090,6 +2322,13 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "id": action_id, "item": action["item"],
                            "x": final_x, "z": final_z, "gained": gained}])
 
+    if action["type"] == "walk" and final_x is not None and final_z is not None \
+            and rule_name != BACKTRACK_RULE_NAME:
+        # Preserve the settled end of a verified player-owned walk even while
+        # this synchronous pass prevented ordinary snapshot polling.
+        latest_walk = game_reflex.read_snapshot() or dict(snap, x=final_x, z=final_z)
+        record_movement_trail(latest_walk, connected=status in ("done", "walk-short"))
+
     is_route = rule_name == ROUTE_RULE_NAME and route is not None
     route_was_blocked = False
     if is_route:
@@ -2115,6 +2354,39 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "reason": status, "x": lx, "z": lz,
                            "target_x": route["x"], "target_z": route["z"]}])
             status = "route-blocked"
+
+    is_backtrack = rule_name == BACKTRACK_RULE_NAME and backtrack is not None
+    backtrack_was_blocked = False
+    if is_backtrack:
+        latest = game_reflex.read_snapshot() or snap
+        lx, lz = latest.get("x"), latest.get("z")
+        target_x, target_z = backtrack["points"][backtrack["index"]]
+        if status == "done" and [lx, lz] == [target_x, target_z]:
+            rewind_movement_trail(lx, lz)
+            backtrack["index"] += 1
+            backtrack["status"] = "active"
+            if backtrack["index"] >= len(backtrack["points"]):
+                clear_backtrack()
+                status = "backtrack-complete"
+                flush_events([{"ts": now_ms(), "kind": "backtrack-complete",
+                               "id": action_id, "x": lx, "z": lz,
+                               "steps": len(backtrack["points"])}])
+            else:
+                save_backtrack(backtrack)
+                status = "backtrack-progress"
+                flush_events([{"ts": now_ms(), "kind": "backtrack-progress",
+                               "id": action_id, "x": lx, "z": lz,
+                               "remaining": len(backtrack["points"]) - backtrack["index"]}])
+        else:
+            backtrack_was_blocked = True
+            blocked = dict(backtrack)
+            blocked.update({"status": "blocked", "blocked_reason": status,
+                            "blocked_signature": route_obstacle_signature(latest),
+                            "blocked_ts": now_ms()})
+            save_backtrack(blocked)
+            flush_events([{"ts": now_ms(), "kind": "backtrack-blocked",
+                           "id": action_id, "reason": status, "x": lx, "z": lz,
+                           "target_x": target_x, "target_z": target_z}])
 
     # The once-per-objective mark is spent only on a VERIFIED done (rule 7a).
     if rule is not None and rule.get("once_per_objective") and status == "done":
@@ -2144,7 +2416,10 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         flush_events([candidate])
 
     if action["type"] in ("walk", "take-ground") and final_x is not None:
-        if route_was_blocked:
+        if backtrack_was_blocked:
+            report("backtrack-blocked", id=action_id, x=final_x, z=final_z,
+                   target_x=action["x"], target_z=action["z"])
+        elif route_was_blocked:
             report("route-blocked", id=action_id, x=final_x, z=final_z,
                    target_x=action["x"], target_z=action["z"])
         else:
@@ -2152,16 +2427,22 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    status=status, x=final_x, z=final_z, objective=objective or None,
                    activity=activity or None, activity_xp=xp_text or None)
     else:
-        if route_was_blocked:
+        if backtrack_was_blocked:
+            report("backtrack-blocked", id=action_id, target_x=action["x"],
+                   target_z=action["z"], reason=status)
+        elif route_was_blocked:
             report("route-blocked", id=action_id, target_x=action["x"],
                    target_z=action["z"], reason=status)
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, objective=objective or None,
                    activity=activity or None, activity_xp=xp_text or None)
+    if backtrack_was_blocked:
+        return "backtrack-blocked", EXIT_NO_RULE
     if route_was_blocked:
         return "route-blocked", EXIT_NO_RULE
-    return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete")
+    return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
+                                               "backtrack-progress", "backtrack-complete")
                      else EXIT_NOT_DONE)
 
 
@@ -2505,9 +2786,88 @@ def cmd_route(args):
         die("route --arrive must be from 0 through 10")
     route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
              "objective": read_objective(), "status": "active", "set_ts": now_ms()}
+    # A newly chosen destination is an explicit replacement strategy, not a
+    # second movement commitment to race an old recovery.
+    clear_backtrack()
     save_route(route)
     print(f"route-set target=({args.x},{args.z}) arrive={args.arrive} "
           f"objective={route['objective'] or '(none)'}")
+
+
+def cmd_backtrack(args):
+    """Retrace observed successful movement instead of guessing a reverse route."""
+    if args.action == "clear":
+        clear_backtrack()
+        print("backtrack cleared")
+        return
+    if args.action == "status":
+        request = load_backtrack()
+        if request is None:
+            print("backtrack: (none)")
+        elif request.get("status") == "invalid":
+            print(f"backtrack: invalid ({backtrack_path()})")
+        else:
+            remaining = len(request["points"]) - request["index"]
+            next_x, next_z = request["points"][request["index"]] \
+                if remaining else (None, None)
+            print(f"backtrack: status={request['status']} remaining={remaining} "
+                  f"next=({next_x},{next_z}) objective={request['objective'] or '(none)'}")
+        return
+    if args.action == "history":
+        points = load_movement_trail()["points"]
+        if not points:
+            print("movement trail: (none)")
+            return
+        print(f"movement trail: {len(points)} observed tile(s); newest last")
+        for point in points[-20:]:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(point["ts"] / 1000.0))
+            boundary = " portal-boundary" if point.get("break") else ""
+            print(f"{stamp} tile=({point['x']},{point['z']}){boundary}")
+        return
+
+    existing = load_backtrack()
+    if existing is not None and existing.get("status") in ("active", "blocked"):
+        remaining = len(existing["points"]) - existing["index"]
+        die(f"backtrack is already {existing['status']} with {remaining} point(s) "
+            "remaining; use status or clear before replacing it")
+
+    snap = game_reflex.read_snapshot() or {}
+    if snap.get("logged_in") is not True:
+        die("backtrack needs a logged-in movement snapshot")
+    record_movement_trail(snap)
+    trail = load_movement_trail()["points"]
+    if not trail:
+        die("no observed movement trail is available")
+    segment_start = 0
+    for index, point in enumerate(trail):
+        if point.get("break") is True:
+            segment_start = index
+    segment = trail[segment_start:]
+    current = [snap.get("x"), snap.get("z")]
+    while segment and [segment[-1]["x"], segment[-1]["z"]] == current:
+        segment = segment[:-1]
+    targets = []
+    for point in reversed(segment):
+        target = [point["x"], point["z"]]
+        if not targets or targets[-1] != target:
+            targets.append(target)
+    if not targets:
+        die("the current portal-bounded trail has no earlier tile to retrace")
+    if args.action != "all":
+        try:
+            limit = int(args.action)
+        except ValueError:
+            die("backtrack takes a positive point count, all, history, status, or clear")
+        if limit <= 0:
+            die("backtrack point count must be positive")
+        targets = targets[:limit]
+    request = {"v": 1, "objective": read_objective(), "status": "active",
+               "index": 0, "points": targets, "set_ts": now_ms()}
+    clear_route()
+    save_backtrack(request)
+    print(f"backtrack-set points={len(targets)} next=({targets[0][0]},{targets[0][1]}) "
+          f"objective={request['objective'] or '(none)'}")
 
 
 def cmd_log(args):
@@ -2816,6 +3176,13 @@ def cmd_run(args):
                 route_detail = (f"route {active_route['status']} to "
                                 f"({active_route['x']},{active_route['z']})")
                 detail = f"{route_detail}; {detail}" if detail else route_detail
+            active_backtrack = load_backtrack()
+            if active_backtrack is not None \
+                    and active_backtrack.get("status") != "invalid":
+                remaining = len(active_backtrack["points"]) - active_backtrack["index"]
+                recovery_detail = (f"backtrack {active_backtrack['status']} "
+                                   f"with {remaining} point(s) remaining")
+                detail = f"{recovery_detail}; {detail}" if detail else recovery_detail
             live_activity = read_activity()
             live_xp = activity_xp_text(latest, live_activity)
             write_heartbeat(last_verdict, detail,
@@ -2907,6 +3274,12 @@ def main():
     p.add_argument("--arrive", type=int, default=1)
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_route)
+
+    p = sub.add_parser("backtrack",
+                       help="retrace observed successful tiles to the current portal boundary")
+    p.add_argument("action", nargs="?", default="all",
+                   help="point count, all, history, status, or clear")
+    p.set_defaults(fn=cmd_backtrack)
 
     p = sub.add_parser("step",
                        help="one rules-first evaluation; exit 4 = model may reason")
