@@ -95,6 +95,15 @@ check "the page identifies itself as read-only" contains "$PAGE" "Read-only spec
 check "the page has a fullscreen affordance" contains "$PAGE" "Fullscreen"
 check "the page overlays the private game pointer" \
     bash -c 'grep -q "id=\"game-pointer\"" <<<"$1" && grep -q "X-Pointer-X" <<<"$1"' _ "$PAGE"
+check "a backgrounded mobile viewer retires its cancelled loop before resuming" \
+    bash -c 'grep -q "!controller.signal.aborted" <<<"$1" \
+        && grep -q "if (err.name === \"AbortError\") break" <<<"$1" \
+        && grep -q "if (frameAbort === controller) frameAbort = null" <<<"$1" \
+        && grep -q "startFrameLoop" <<<"$1"' _ "$PAGE"
+check "the page decodes each frame before replacing it with the next one" \
+    bash -c 'grep -q "function paintFrame" <<<"$1" \
+        && grep -q "await paintFrame" <<<"$1" \
+        && grep -q "URL.revokeObjectURL(old)" <<<"$1"' _ "$PAGE"
 check "the page consumes only the spectator frame and state routes" \
     bash -c '! grep -qE "fetch\\([^\n]*(walk|click|key|action|press|trade)" <<<"$1"' _ "$PAGE"
 check "the page contains no external assets or fetches" \

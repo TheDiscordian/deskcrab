@@ -92,6 +92,7 @@ const pause = document.getElementById("pause");
 const screen = document.getElementById("screen");
 const gamePointer = document.getElementById("game-pointer");
 let running = true, generation = 0, frameAbort = null, objectUrl = "";
+let frameStartPending = false;
 let pointerPosition = null;
 
 const esc = value => String(value).replace(/[&<>"']/g, ch =>
@@ -99,6 +100,18 @@ const esc = value => String(value).replace(/[&<>"']/g, ch =>
 const chip = (label, value, cls="") =>
   `<span class="chip ${cls}">${esc(label)} <strong>${esc(value)}</strong></span>`;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function startFrameLoop() {
+  // A visibility change can race the cancelled fetch's catch/finally path.
+  // Defer and coalesce starts so that finally can release the old controller;
+  // whichever start wins then owns the one live loop.
+  if (frameStartPending) return;
+  frameStartPending = true;
+  setTimeout(() => {
+    frameStartPending = false;
+    if (running && !document.hidden && !frameAbort) frameLoop();
+  }, 0);
+}
 
 function updatePointer() {
   if (!pointerPosition || !frame.naturalWidth || !frame.naturalHeight) {
@@ -125,53 +138,95 @@ function updatePointer() {
   gamePointer.classList.add("visible");
 }
 
+function paintFrame(blob, nextPointer, signal) {
+  // Wait for this frame to be decoded before requesting the next one. Merely
+  // replacing img.src at capture speed can outrun a throttled mobile browser,
+  // overwrite load handlers, and leak the displaced object URLs.
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const old = objectUrl;
+    let settled = false;
+    let timer = null;
+
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      frame.onload = null;
+      frame.onerror = null;
+      if (error) {
+        URL.revokeObjectURL(url);
+        reject(error);
+        return;
+      }
+      objectUrl = url;
+      if (old) URL.revokeObjectURL(old);
+      resolve();
+    };
+    const onAbort = () => {
+      const error = new Error("frame request cancelled");
+      error.name = "AbortError";
+      finish(error);
+    };
+
+    frame.onload = () => {
+      pointerPosition = nextPointer;
+      updatePointer();
+      finish();
+    };
+    frame.onerror = () => finish(new Error("frame decode failed"));
+    timer = setTimeout(() => finish(new Error("frame decode timed out")), 3000);
+    signal.addEventListener("abort", onAbort, {once: true});
+    if (signal.aborted) onAbort();
+    else frame.src = url;
+  });
+}
+
 async function frameLoop() {
   if (!running || document.hidden || frameAbort) return;
-  frameAbort = new AbortController();
-  while (running && !document.hidden) {
-    try {
-      const res = await fetch(`/openrsc/frame.jpg?after=${generation}`, {
-        cache: "no-store", credentials: "same-origin", signal: frameAbort.signal,
-      });
-      if (!res.ok) {
-        let msg = "Her game is not available right now.";
-        try { msg = (await res.json()).error || msg; } catch (_) {}
-        notice.textContent = msg;
-        notice.classList.remove("hidden");
-        dot.classList.remove("live");
-        await sleep(1000);
-        continue;
-      }
-      const next = Number(res.headers.get("X-Frame-Generation") || generation + 1);
-      const pointerX = Number(res.headers.get("X-Pointer-X"));
-      const pointerY = Number(res.headers.get("X-Pointer-Y"));
-      const nextPointer = Number.isFinite(pointerX) && Number.isFinite(pointerY)
-        && pointerX >= 0 && pointerY >= 0 ? {x: pointerX, y: pointerY} : null;
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const old = objectUrl;
-      objectUrl = url;
-      frame.onload = () => {
-        if (frame.src === url) {
-          pointerPosition = nextPointer;
-          updatePointer();
+  const controller = new AbortController();
+  frameAbort = controller;
+  try {
+    while (running && !document.hidden && !controller.signal.aborted) {
+      try {
+        const res = await fetch(`/openrsc/frame.jpg?after=${generation}`, {
+          cache: "no-store", credentials: "same-origin", signal: controller.signal,
+        });
+        if (!res.ok) {
+          let msg = "Her game is not available right now.";
+          try { msg = (await res.json()).error || msg; } catch (_) {}
+          notice.textContent = msg;
+          notice.classList.remove("hidden");
+          dot.classList.remove("live");
+          await sleep(1000);
+          continue;
         }
-        if (old) URL.revokeObjectURL(old);
-      };
-      frame.src = url;
-      generation = next;
-      notice.classList.add("hidden");
-      dot.classList.add("live");
-    } catch (err) {
-      if (err.name !== "AbortError") {
+        const next = Number(res.headers.get("X-Frame-Generation")
+                            || generation + 1);
+        const pointerX = Number(res.headers.get("X-Pointer-X"));
+        const pointerY = Number(res.headers.get("X-Pointer-Y"));
+        const nextPointer = Number.isFinite(pointerX) && Number.isFinite(pointerY)
+          && pointerX >= 0 && pointerY >= 0 ? {x: pointerX, y: pointerY} : null;
+        const blob = await res.blob();
+        await paintFrame(blob, nextPointer, controller.signal);
+        generation = next;
+        notice.classList.add("hidden");
+        dot.classList.add("live");
+      } catch (err) {
+        // Abort ends this controller's loop. Reusing its permanently-aborted
+        // signal after a quick hide/show transition was the mobile freeze.
+        if (err.name === "AbortError") break;
         notice.textContent = "Connection lost; retrying…";
         notice.classList.remove("hidden");
         dot.classList.remove("live");
         await sleep(1000);
       }
     }
+  } finally {
+    if (frameAbort === controller) frameAbort = null;
+    if (running && !document.hidden) startFrameLoop();
   }
-  frameAbort = null;
 }
 
 async function refreshState() {
@@ -208,7 +263,7 @@ pause.addEventListener("click", () => {
     notice.textContent = "Spectator paused";
     notice.classList.remove("hidden");
   } else {
-    frameLoop();
+    startFrameLoop();
   }
 });
 document.getElementById("fullscreen").addEventListener("click", () => {
@@ -218,13 +273,13 @@ document.getElementById("fullscreen").addEventListener("click", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (frameAbort) frameAbort.abort();
-  } else if (running) frameLoop();
+  } else if (running) startFrameLoop();
 });
 window.addEventListener("resize", updatePointer);
 document.addEventListener("fullscreenchange", updatePointer);
 setInterval(() => { if (!document.hidden) refreshState(); }, 1000);
 refreshState();
-frameLoop();
+startFrameLoop();
 </script>
 </body>
 </html>
