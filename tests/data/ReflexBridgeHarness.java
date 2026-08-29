@@ -584,11 +584,11 @@ public class ReflexBridgeHarness {
 			events.add("eat slot=" + slot);
 		}
 
-		public boolean walkTowardTile(int absX, int absZ) {
+		public boolean walkTowardTile(int absX, int absZ, int arrive) {
 			if (!routeAvailable) {
 				return false;
 			}
-			events.add("walk x=" + absX + " z=" + absZ);
+			events.add("walk x=" + absX + " z=" + absZ + " arrive=" + arrive);
 			return true;
 		}
 

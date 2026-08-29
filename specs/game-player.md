@@ -306,7 +306,10 @@ deliberate-play channel.
    reports it, and `route --clear` cancels it. The resident runner treats an active route as its
    lowest-priority synthetic walk rule, so every ordinary learned interaction may interrupt it and
    incoming player or urgent system messages still outrank it. Each `walk` action asks the client
-   for one collision-aware regional leg under game-reflex rule 7. A verified shorter distance is
+   for one collision-aware regional leg under game-reflex rule 7. Its `arrive` tolerance is passed
+   into the client's collision pathfinder as the destination area as well as used for verification;
+   an occupied landmark tile can therefore settle on reachable adjacent floor without making Sol
+   guess successive neighbouring coordinates. A verified shorter distance is
    `route-progress` and immediately licenses the next leg without a model call; reaching the
    destination is `route-complete` and removes the route. A refused leg or a settled tile no closer
    to the destination marks the route `blocked` at the current position and visible obstacle

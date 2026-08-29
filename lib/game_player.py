@@ -1557,7 +1557,10 @@ def compile_player_action(rule, snap, food, eat_pick):
             return compiled_npc_action("interact-npc", npc, want, **extra), None
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "walk":
-        return {"type": "walk", "x": action["x"], "z": action["z"]}, None
+        compiled = {"type": "walk", "x": action["x"], "z": action["z"]}
+        if isinstance(action.get("arrive"), int):
+            compiled["arrive"] = action["arrive"]
+        return compiled, None
     if action["type"] == "retreat":
         if snap.get("in_combat") is not True:
             return None, "already-out-of-combat"

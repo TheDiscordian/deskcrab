@@ -715,6 +715,8 @@ check "the destination remains durable for the next runner pass" \
     test -f "$DESKCRAB_GAME_DIR/route.json"
 check_eq "the synthetic route used the ordinary walk ACTION" \
     "$(last_action 'type=walk')" "1"
+check_eq "the route gives collision pathfinding its grounded arrival area" \
+    "$(last_action 'arrive=1')" "1"
 snap 1048 '[]' '{"x":140,"z":648}'
 fake_route_bridge 160 648
 OUT="$(python3 "$GP" step --local)"; CODE=$?

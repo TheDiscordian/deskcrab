@@ -239,6 +239,15 @@ OUT="$(harness exec)"
 contains "$OUT" "walk x=125 z=655" && ok "walk reaches the host with its coordinates" \
     || fail "walk reaches the host with its coordinates" "$OUT"
 check_eq "and is receipted done" "$(rstatus)" "done"
+wact 5701 "$(now_ms)" "type=walk" "x=125" "z=655" "arrive=2"
+OUT="$(harness exec)"
+contains "$OUT" "walk x=125 z=655 arrive=2" \
+    && ok "a route's grounded arrival area reaches collision pathfinding" \
+    || fail "the walk arrival tolerance must reach the host" "$OUT"
+check_eq "the arrival-area walk is receipted done" "$(rstatus)" "done"
+wact 5702 "$(now_ms)" "type=walk" "x=125" "z=655" "arrive=11"
+harness exec >/dev/null
+check_eq "a walk arrival area is bounded" "$(rstatus)" "refused-bad-coordinates"
 wact 571 "$(now_ms)" "type=walk" "x=900" "z=900"
 OUT="$(harness exec-no-route)"
 refute "a destination with no progressive collision path sends no walk" \
