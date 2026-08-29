@@ -133,23 +133,51 @@ def _source_override():
     return x, y, width, height
 
 
-def _discover_source(display):
-    override = _source_override()
-    if override is not None:
-        return override
+def _pointer_override():
+    """Test-only absolute pointer position, absent in normal service."""
+    raw = os.environ.get("DESKCRAB_OPENRSC_POINTER", "")
+    if not raw:
+        return None
+    try:
+        x, y = (int(part) for part in raw.split(","))
+    except (TypeError, ValueError):
+        raise RuntimeError("invalid OpenRSC pointer override") from None
+    if min(x, y) < 0 or max(x, y) > 32767:
+        raise RuntimeError("invalid OpenRSC pointer override")
+    return x, y
+
+
+def _open_x11_source(display):
+    """Open the shared read-only X11 observer used by both spectators."""
     module_path = HEADLESS_DIR / "x11_source.py"
     try:
         spec = importlib.util.spec_from_file_location(
             "openrsc_x11_source", module_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        x11 = module.X11Source(display)
+        return module.X11Source(display)
     except (OSError, AttributeError, ImportError) as exc:
         raise RuntimeError(f"OpenRSC source discovery failed: {exc}") from None
+
+
+def _discover_source(display):
+    override = _source_override()
+    if override is not None:
+        return override
+    x11 = _open_x11_source(display)
     try:
         return x11.discover_source()[:4]
     finally:
         x11.close()
+
+
+def _crop_pointer(absolute, source):
+    """Map a root pointer into the captured rectangle, or hide it outside."""
+    if absolute is None:
+        return None
+    x, y, width, height = source
+    px, py = absolute[0] - x, absolute[1] - y
+    return (px, py) if 0 <= px < width and 0 <= py < height else None
 
 
 class FrameSource:
@@ -166,6 +194,7 @@ class FrameSource:
         self.error = ""
         self.source = None
         self.display = None
+        self.pointer = None
 
     def get(self, after=0, timeout=FRAME_WAIT_SECONDS):
         """Return ``(jpeg, generation, error)`` after a newer frame arrives."""
@@ -190,8 +219,9 @@ class FrameSource:
                     break
                 self.cond.wait(remaining)
             if self.frame is not None and self.generation > after:
-                return self.frame, self.generation, ""
-            return None, self.generation, self.error or "frame timed out"
+                return self.frame, self.generation, self.pointer, ""
+            return (None, self.generation, self.pointer,
+                    self.error or "frame timed out")
 
     def status(self):
         with self.cond:
@@ -203,16 +233,22 @@ class FrameSource:
                 "source": ({"x": self.source[0], "y": self.source[1],
                             "width": self.source[2], "height": self.source[3]}
                            if self.source else None),
+                "pointer": ({"x": self.pointer[0], "y": self.pointer[1]}
+                            if self.pointer else None),
                 "fps": FPS,
             }
 
     def _run(self):
         proc = None
+        pointer_source = None
         reason = ""
         try:
             display = _display_number()
             source = _discover_source(display)
             x, y, width, height = source
+            pointer_override = _pointer_override()
+            if pointer_override is None:
+                pointer_source = _open_x11_source(display)
             env = {key: value for key, value in os.environ.items()
                    if key not in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY")}
             cmd = [
@@ -254,8 +290,18 @@ class FrameSource:
                         break
                     jpeg = bytes(buf[start:end + 2])
                     del buf[:end + 2]
+                    absolute_pointer = pointer_override
+                    if pointer_source is not None:
+                        try:
+                            absolute_pointer = pointer_source.query()
+                        except (OSError, RuntimeError):
+                            # Losing this observational signal must never take
+                            # the game picture down with it.
+                            absolute_pointer = None
+                    pointer = _crop_pointer(absolute_pointer, source)
                     with self.cond:
                         self.frame = jpeg
+                        self.pointer = pointer
                         self.generation += 1
                         idle = time.monotonic() - self.last_request
                         stop = self.stop_requested or idle > IDLE_SECONDS
@@ -266,6 +312,8 @@ class FrameSource:
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             reason = str(exc)[:200]
         finally:
+            if pointer_source is not None:
+                pointer_source.close()
             if proc is not None and proc.poll() is None:
                 proc.terminate()
                 try:

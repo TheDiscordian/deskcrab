@@ -1665,10 +1665,13 @@ class Handler(BaseHTTPRequestHandler):
                 after = max(0, int(raw))
             except ValueError:
                 after = 0
-            frame, generation, error = openrsc_spectator.FRAMES.get(after)
+            frame, generation, pointer, error = \
+                openrsc_spectator.FRAMES.get(after)
             headers = dict(extra)
             headers.update({"Cache-Control": "no-store, max-age=0",
-                            "X-Frame-Generation": str(generation)})
+                            "X-Frame-Generation": str(generation),
+                            "X-Pointer-X": str(pointer[0] if pointer else -1),
+                            "X-Pointer-Y": str(pointer[1] if pointer else -1)})
             if frame is None:
                 return self._json(503, {"error": error or "frame unavailable"},
                                   headers)

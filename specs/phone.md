@@ -447,8 +447,11 @@ against the shipped CLI before this rule was written.
 54. Observation has no control half. The server reads the private Xvfb socket, discovers the same
     largest mapped client rectangle as the desktop spectator through their shared stdlib X11
     helper, and runs one capped ffmpeg JPEG producer shared by every viewer. It keeps only the
-    newest frame, draws no mouse, starts on the first frame request, and stops after the viewers go
-    idle. No HTTP method or route may send mouse, keyboard, bridge actions, or game commands.
+    newest frame, pairs it with a read-only query of the private virtual pointer, starts on the
+    first frame request, and stops after the viewers go idle. ffmpeg draws no platform cursor; the
+    page maps the paired crop-local position onto its scaled/letterboxed image as the desktop
+    spectator's magenta ring and crosshair. No HTTP method or route may send mouse, keyboard,
+    bridge actions, or game commands.
 55. `/openrsc/state` is an allowlist, not a mirror of `state.json`: login/freshness, tile, HP,
     fatigue, movement/combat/sleep, objective, activity, and positive activity XP/hour only.
     Inventory, chat, credentials, routes, memory, and engine internals never leave the machine.

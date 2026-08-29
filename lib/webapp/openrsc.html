@@ -32,6 +32,15 @@
     display: grid; place-items: center; }
   .screen img { display: block; width: 100%; height: auto; max-height: calc(100vh - 160px);
     object-fit: contain; image-rendering: pixelated; user-select: none; -webkit-user-drag: none; }
+  .game-pointer { display: none; position: absolute; z-index: 2; width: 25px; height: 25px;
+    border: 3px solid #f0f; border-radius: 50%; transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 2px #fff; pointer-events: none; }
+  .game-pointer.visible { display: block; }
+  .game-pointer::before, .game-pointer::after { content: ""; position: absolute;
+    left: 50%; top: 50%; background: #f0f; transform: translate(-50%, -50%);
+    filter: drop-shadow(0 0 1px #fff); }
+  .game-pointer::before { width: 45px; height: 2px; }
+  .game-pointer::after { width: 2px; height: 45px; }
   .notice { position: absolute; inset: 0; display: grid; place-items: center;
     padding: 24px; text-align: center; color: var(--dim); background: #000c; }
   .notice.hidden { display: none; }
@@ -62,6 +71,7 @@
 <main>
   <div class="screen" id="screen">
     <img id="frame" alt="Live read-only view of Beatrice playing OpenRSC">
+    <div class="game-pointer" id="game-pointer" aria-hidden="true"></div>
     <div class="notice" id="notice">Connecting to her game…</div>
   </div>
   <div class="hud" id="hud"></div>
@@ -80,13 +90,40 @@ const dot = document.getElementById("dot");
 const hud = document.getElementById("hud");
 const pause = document.getElementById("pause");
 const screen = document.getElementById("screen");
+const gamePointer = document.getElementById("game-pointer");
 let running = true, generation = 0, frameAbort = null, objectUrl = "";
+let pointerPosition = null;
 
 const esc = value => String(value).replace(/[&<>"']/g, ch =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]);
 const chip = (label, value, cls="") =>
   `<span class="chip ${cls}">${esc(label)} <strong>${esc(value)}</strong></span>`;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function updatePointer() {
+  if (!pointerPosition || !frame.naturalWidth || !frame.naturalHeight) {
+    gamePointer.classList.remove("visible");
+    return;
+  }
+  const imageRect = frame.getBoundingClientRect();
+  const screenRect = screen.getBoundingClientRect();
+  const scale = Math.min(imageRect.width / frame.naturalWidth,
+                         imageRect.height / frame.naturalHeight);
+  const shownWidth = frame.naturalWidth * scale;
+  const shownHeight = frame.naturalHeight * scale;
+  const contentLeft = imageRect.left - screenRect.left - screen.clientLeft
+    + (imageRect.width - shownWidth) / 2;
+  const contentTop = imageRect.top - screenRect.top - screen.clientTop
+    + (imageRect.height - shownHeight) / 2;
+  const {x, y} = pointerPosition;
+  if (x < 0 || y < 0 || x >= frame.naturalWidth || y >= frame.naturalHeight) {
+    gamePointer.classList.remove("visible");
+    return;
+  }
+  gamePointer.style.left = `${contentLeft + (x + .5) * scale}px`;
+  gamePointer.style.top = `${contentTop + (y + .5) * scale}px`;
+  gamePointer.classList.add("visible");
+}
 
 async function frameLoop() {
   if (!running || document.hidden || frameAbort) return;
@@ -106,11 +143,21 @@ async function frameLoop() {
         continue;
       }
       const next = Number(res.headers.get("X-Frame-Generation") || generation + 1);
+      const pointerX = Number(res.headers.get("X-Pointer-X"));
+      const pointerY = Number(res.headers.get("X-Pointer-Y"));
+      const nextPointer = Number.isFinite(pointerX) && Number.isFinite(pointerY)
+        && pointerX >= 0 && pointerY >= 0 ? {x: pointerX, y: pointerY} : null;
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const old = objectUrl;
       objectUrl = url;
-      frame.onload = () => { if (old) URL.revokeObjectURL(old); };
+      frame.onload = () => {
+        if (frame.src === url) {
+          pointerPosition = nextPointer;
+          updatePointer();
+        }
+        if (old) URL.revokeObjectURL(old);
+      };
       frame.src = url;
       generation = next;
       notice.classList.add("hidden");
@@ -173,6 +220,8 @@ document.addEventListener("visibilitychange", () => {
     if (frameAbort) frameAbort.abort();
   } else if (running) frameLoop();
 });
+window.addEventListener("resize", updatePointer);
+document.addEventListener("fullscreenchange", updatePointer);
 setInterval(() => { if (!document.hidden) refreshState(); }, 1000);
 refreshState();
 frameLoop();

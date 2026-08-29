@@ -67,7 +67,8 @@ DESKCRAB_SERVE_BIND=127.0.0.1 DESKCRAB_SERVE_TIMEOUT=30 \
 DESKCRAB_CRAB_BIN="$T/crab-absent" DESKCRAB_STATE_PREFIX="$T/deskcrab" \
 DESKCRAB_OPENRSC_HEADLESS="$HEADLESS" \
 DESKCRAB_OPENRSC_STATE_DIR="$GSTATE" DESKCRAB_OPENRSC_GAME_DIR="$GDATA" \
-DESKCRAB_OPENRSC_SOURCE=0,0,512,346 \
+DESKCRAB_OPENRSC_SOURCE=10,20,512,346 \
+DESKCRAB_OPENRSC_POINTER=133,65 \
 DESKCRAB_OPENRSC_FFMPEG="$T/fake-ffmpeg" \
 DESKCRAB_OPENRSC_IDLE_SECONDS=3 \
     python3 "$REPO_DIR/lib/serve.py" > "$T/server.log" 2>&1 &
@@ -92,6 +93,8 @@ check "the authenticated mobile spectator page is served" \
     contains "$PAGE" "Beatrice · OpenRSC"
 check "the page identifies itself as read-only" contains "$PAGE" "Read-only spectator"
 check "the page has a fullscreen affordance" contains "$PAGE" "Fullscreen"
+check "the page overlays the private game pointer" \
+    bash -c 'grep -q "id=\"game-pointer\"" <<<"$1" && grep -q "X-Pointer-X" <<<"$1"' _ "$PAGE"
 check "the page consumes only the spectator frame and state routes" \
     bash -c '! grep -qE "fetch\\([^\n]*(walk|click|key|action|press|trade)" <<<"$1"' _ "$PAGE"
 check "the page contains no external assets or fetches" \
@@ -141,6 +144,10 @@ grep -qi '^content-type: image/jpeg' "$T/frame1.hdr" \
 grep -qi '^cache-control: no-store' "$T/frame1.hdr" \
     && ok "live pixels are never cached" \
     || fail "live pixels are never cached" "$(cat "$T/frame1.hdr")"
+check_eq "the frame carries the crop-local virtual pointer x" \
+    "$(sed -n 's/^X-Pointer-X: *//Ip' "$T/frame1.hdr" | tr -d '\r')" "123"
+check_eq "the frame carries the crop-local virtual pointer y" \
+    "$(sed -n 's/^X-Pointer-Y: *//Ip' "$T/frame1.hdr" | tr -d '\r')" "45"
 python3 - "$T/frame1.jpg" <<'PY' \
     && ok "the complete JPEG frame crosses the route" \
     || fail "the complete JPEG frame crosses the route" "bad JPEG framing"
