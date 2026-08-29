@@ -40,6 +40,7 @@ WAIT_CONDITIONS = (
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
     "right_click_menu_open", "right_click_menu_closed",
     "trade_open", "trade_closed", "sleeping", "not_sleeping", "fatigue_zero",
+    "action_done",
 )
 WAIT_DEFAULT_S = 15.0
 WAIT_MAX_S = 60.0
@@ -132,6 +133,10 @@ def retreat_request_path() -> Path:
 
 def take_progress_path() -> Path:
     return state_dir() / "take-in-progress.json"
+
+
+def action_observation_path() -> Path:
+    return state_dir() / "last-action-observation.json"
 
 
 def foreign_take_in_progress() -> dict | None:
@@ -1202,10 +1207,210 @@ def wait_state_brief(snap: dict) -> str:
     return ",".join(parts)
 
 
+def _inventory_totals(snap: dict) -> dict:
+    totals = {}
+    for entry in snap.get("inventory") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), int):
+            continue
+        count = entry.get("count", entry.get("amount", 1))
+        if not isinstance(count, int):
+            continue
+        key = str(entry["id"])
+        current = totals.setdefault(key, {"count": 0, "name": ""})
+        current["count"] += count
+        if entry.get("name"):
+            current["name"] = " ".join(str(entry["name"]).split())[:80]
+    return totals
+
+
+def _skill_totals(snap: dict) -> dict:
+    totals = {}
+    for skill in snap.get("skills") or []:
+        if not isinstance(skill, dict) or not isinstance(skill.get("id"), int) \
+                or not isinstance(skill.get("xp"), int):
+            continue
+        totals[str(skill["id"])] = {
+            "xp": skill["xp"],
+            "name": " ".join(str(skill.get("name") or f"skill-{skill['id']}").split())[:80],
+        }
+    return totals
+
+
+def _message_ids(snap: dict) -> list:
+    return [message["id"] for message in snap.get("messages") or []
+            if isinstance(message, dict) and isinstance(message.get("id"), int)]
+
+
+def cmd_action_arm(args):
+    """Remember the state immediately before a direct bridge action.
+
+    This is an internal door used by orsc-headless.sh. It gives a later
+    `wait-until action_done` the causal baseline that an after-the-fact wait
+    cannot reconstruct.
+    """
+    snap = game_reflex.read_snapshot() or {}
+    observation = {
+        "v": 1, "id": args.id, "type": args.type, "sent_ts": now_ms(),
+        "fields": list(args.fields),
+        "baseline": {
+            "ts": snap.get("ts"), "tick": snap.get("tick"),
+            "x": snap.get("x"), "z": snap.get("z"),
+            "walking": snap.get("walking"),
+            "talking_to_npc": snap.get("talking_to_npc"),
+            "right_click_menu_open": snap.get("right_click_menu_open"),
+            "trade_open": snap.get("trade_open"),
+            "bank_open": snap.get("bank_open"),
+            "shop_open": snap.get("shop_open"),
+            "sleeping": snap.get("sleeping"),
+            "inventory": _inventory_totals(snap),
+            "skills": _skill_totals(snap),
+            "message_ids": _message_ids(snap),
+        },
+    }
+    state_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(action_observation_path(), json.dumps(observation) + "\n")
+    report("action-armed", id=args.id, type=args.type)
+
+
+def load_action_observation():
+    try:
+        observation = json.loads(action_observation_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(observation, dict) or observation.get("v") != 1 \
+            or not isinstance(observation.get("id"), int) \
+            or not isinstance(observation.get("type"), str) \
+            or not isinstance(observation.get("sent_ts"), int) \
+            or not isinstance(observation.get("baseline"), dict):
+        return None
+    return observation
+
+
+def action_completion(observation: dict, snap: dict):
+    """Return grounded postcondition details, or None while still unresolved."""
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or not isinstance(snap.get("ts"), int) \
+            or now_ms() - snap["ts"] > WAIT_SNAPSHOT_FRESH_MS:
+        return None
+    before = observation["baseline"]
+    newer = snap.get("tick") != before.get("tick") \
+        or (isinstance(before.get("ts"), int) and snap["ts"] > before["ts"])
+    if not newer:
+        return None
+
+    inventory_changes = []
+    changed_item_ids = set()
+    current_inventory = _inventory_totals(snap)
+    old_inventory = before.get("inventory") or {}
+    for item in sorted(set(old_inventory) | set(current_inventory), key=int):
+        old = (old_inventory.get(item) or {}).get("count", 0)
+        new = (current_inventory.get(item) or {}).get("count", 0)
+        if new == old:
+            continue
+        name = (current_inventory.get(item) or old_inventory.get(item) or {}).get("name") or item
+        inventory_changes.append(f"{name}({item}):{new - old:+d}")
+        changed_item_ids.add(item)
+
+    xp_changes = []
+    current_skills = _skill_totals(snap)
+    old_skills = before.get("skills") or {}
+    for skill in sorted(set(old_skills) & set(current_skills), key=int):
+        old = (old_skills.get(skill) or {}).get("xp")
+        new = (current_skills.get(skill) or {}).get("xp")
+        if not isinstance(old, int) or not isinstance(new, int) or new == old:
+            continue
+        name = (current_skills.get(skill) or {}).get("name") or skill
+        xp_changes.append(f"{name}:{new - old:+d}")
+
+    old_message_ids = set(before.get("message_ids") or [])
+    new_messages = [message for message in snap.get("messages") or []
+                    if isinstance(message, dict)
+                    and isinstance(message.get("id"), int)
+                    and message["id"] not in old_message_ids
+                    and message.get("channel") in SYSTEM_FEEDBACK_CHANNELS
+                    and str(message.get("text", "")).strip()]
+    message = " ".join(str(new_messages[-1].get("text", "")).split())[:240] \
+        if new_messages else ""
+
+    ui_changes = []
+    for key in ("talking_to_npc", "right_click_menu_open", "trade_open",
+                "bank_open", "shop_open", "sleeping"):
+        if isinstance(snap.get(key), bool) and snap.get(key) != before.get(key):
+            ui_changes.append(f"{key}:{str(snap[key]).lower()}")
+    moved = isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int) \
+        and (snap.get("x"), snap.get("z")) != (before.get("x"), before.get("z"))
+    movement_done = observation["type"] in ("walk", "retreat") \
+        and moved and snap.get("walking") is False
+
+    failure = bool(message) and any(needle in message.casefold() for needle in (
+        "nothing interesting happens", "you can't", "you cannot", "unable to",
+        "not enough", "you need", "can't reach", "cannot reach",
+    ))
+    completed = bool(inventory_changes or xp_changes or message
+                     or ui_changes or movement_done)
+    if observation["type"] == "use-item-object":
+        # Pane/menu changes were the old two-click race, not evidence that the
+        # server used the selected item. A furnace's start line also precedes
+        # the bar. Ground success in its input changing or XP; only explicit
+        # failure feedback may terminate it without either delta.
+        fields = dict(field.split("=", 1) for field in observation.get("fields", [])
+                      if isinstance(field, str) and "=" in field)
+        completed = bool(fields.get("item") in changed_item_ids
+                         or xp_changes or failure)
+    if not completed:
+        return None
+    return {
+        "result": "failed" if failure else "done",
+        "inventory": ",".join(inventory_changes) or None,
+        "xp": ",".join(xp_changes) or None,
+        "message": message or None,
+        "state": ",".join(ui_changes) or ("movement-settled" if movement_done else None),
+    }
+
+
+def cmd_wait_action_done(args):
+    observation = load_action_observation()
+    if observation is None:
+        report("action-unarmed", next="perform-one-bridge-action-first")
+        sys.exit(EXIT_NOT_READY)
+    if now_ms() - observation["sent_ts"] > WAIT_MAX_S * 1000:
+        try:
+            action_observation_path().unlink()
+        except FileNotFoundError:
+            pass
+        report("action-unarmed", reason="expired",
+               next="perform-one-bridge-action-first")
+        sys.exit(EXIT_NOT_READY)
+    deadline = time.monotonic() + args.timeout
+    latest = None
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot()
+            completion = action_completion(observation, latest)
+            if completion is not None:
+                try:
+                    action_observation_path().unlink()
+                except FileNotFoundError:
+                    pass
+                report("action-done", id=observation["id"], type=observation["type"],
+                       **completion)
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                record_wait_failure("action_done", "timeout", latest or {}, args.timeout)
+                report("action-timeout", id=observation["id"],
+                       type=observation["type"], timeout=f"{args.timeout:g}",
+                       state=wait_state_brief(latest))
+                sys.exit(EXIT_NOT_DONE)
+            watch.wait(remaining)
+
+
 def cmd_wait_until(args):
     condition = normalise_wait_condition(args.condition)
     if not 0 < args.timeout <= WAIT_MAX_S:
         die(f"wait timeout must be greater than 0 and no more than {WAIT_MAX_S:g} seconds")
+    if condition == "action_done":
+        return cmd_wait_action_done(args)
     deadline = time.monotonic() + args.timeout
     latest = None
     with SnapshotChangeWatch() as watch:
@@ -3331,6 +3536,12 @@ def main():
     p.add_argument("--timeout", type=float, default=WAIT_DEFAULT_S,
                    help=f"hard ceiling in seconds (default {WAIT_DEFAULT_S:g}, max {WAIT_MAX_S:g})")
     p.set_defaults(fn=cmd_wait_until)
+
+    p = sub.add_parser("action-arm", help=argparse.SUPPRESS)
+    p.add_argument("id", type=int)
+    p.add_argument("type")
+    p.add_argument("fields", nargs="*")
+    p.set_defaults(fn=cmd_action_arm)
 
     p = sub.add_parser("retreat",
                        help="keep sending reachable escape walks until combat really ends")

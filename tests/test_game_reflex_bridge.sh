@@ -580,6 +580,21 @@ harness exec >/dev/null
 check_eq "a command outside the menu is refused, never guessed" "$(rstatus)" "refused-bad-command"
 
 echo
+echo "use-item-object resolves both identities and bypasses pointer timing (rules 5-7):"
+wact 741 "$(now_ms)" "type=use-item-object" "item=81" "x=121" "z=649" "obj=57"
+OUT="$(harness exec)"
+contains "$OUT" "use-item-object slot=1 item=81 x=121 z=649 obj=57" \
+    && ok "one semantic action carries the current item slot and loaded object" \
+    || fail "one semantic action carries the current item slot and loaded object" "$OUT"
+check_eq "the item-on-object action is receipted done" "$(rstatus)" "done"
+wact 742 "$(now_ms)" "type=use-item-object" "item=999" "x=121" "z=649" "obj=57"
+harness exec >/dev/null
+check_eq "an item no longer held is refused before object use" "$(rstatus)" "refused-no-such-item"
+wact 743 "$(now_ms)" "type=use-item-object" "item=81" "x=121" "z=649" "obj=999"
+harness exec >/dev/null
+check_eq "a changed object identity is refused before item use" "$(rstatus)" "refused-object-mismatch"
+
+echo
 echo "interact-bound opens the door, matched on tile AND wall (rules 5-7):"
 wact 75 "$(now_ms)" "type=interact-bound" "x=121" "z=650" "dir=0" "obj=1" "cmd=1"
 OUT="$(harness exec)"

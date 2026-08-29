@@ -297,6 +297,12 @@ public class ReflexBridgeHarness {
 					+ " command=" + invCommands[slot][command] + " amount=" + amount);
 		}
 
+		public void useInventoryItemOnObject(int slot, int objectIndex) {
+			events.add("use-item-object slot=" + slot + " item=" + invIds[slot]
+					+ " x=" + objAbsX[objectIndex] + " z=" + objAbsZ[objectIndex]
+					+ " obj=" + objId[objectIndex]);
+		}
+
 		public int equipmentStatCount() {
 			return 2;
 		}

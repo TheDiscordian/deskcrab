@@ -129,7 +129,9 @@ Three parts:
    (idempotently request the named held item's equipped state, returning `already-equipped` or
    `already-unequipped` without sending a second toggle), `command-inventory` (run one of the
    held item's published definition-backed commands by one-based command number and positive
-   amount), `click-shop` and `click-bank` (find an item
+   amount), `use-item-object` (resolve a held item id and loaded object identity together, walk to
+   that object, and send the ordinary item-on-object packet as one operation, without opening the
+   inventory pane or staging pointer clicks), `click-shop` and `click-bank` (find an item
    by id in the currently open interface, expose its containing page or scroll row, resolve its
    current slot centre, and click button 1, 2, or 3; bank identity covers
    inventory items shown for deposit even when no bank stack exists),
@@ -144,7 +146,7 @@ Three parts:
    combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
    fallback direction, trying alternate directions and nearer tiles without sending failed path
    probes). `talk-npc`,
-   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`,
+   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `use-item-object`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
    `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
@@ -173,7 +175,8 @@ Three parts:
    tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
-   for click-inventory, click-shop, and click-bank; `item` for equip-inventory and
+   for click-inventory, click-shop, and click-bank; `item`, `x`, `z`, and `obj` for
+   use-item-object; `item` for equip-inventory and
    unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
    `item` and `amount` for the
    four transaction actions; `sidx` for trade-player; `text` for choose-menu and
@@ -188,7 +191,10 @@ Three parts:
    coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a
    non-wearable item, and never invert an item already in the requested state. Inventory commands
    recheck that the requested definition command still exists on that item before sending the
-   ordinary item-command packet. `click-shop` and `click-bank` use the same identity-only
+   ordinary item-command packet. `use-item-object` rechecks both the item's current slot and the
+   object's exact tile/type before sending the same walk-and-use packet as the client's ordinary
+   menu action; a missing item or changed object is refused rather than becoming a stale second
+   click. `click-shop` and `click-bank` use the same identity-only
    contract. A closed interface or missing item is refused; for a bank item the bridge switches
    the live bank to the page or scroll row containing the item before resolving its slot centre.
    A transaction rechecks that its interface is open and that its item has a

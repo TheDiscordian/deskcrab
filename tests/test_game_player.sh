@@ -118,6 +118,46 @@ PY
     FAKE_BRIDGE_PID=$!
 }
 
+# A semantic item-on-furnace action updates the same grounded fields the live
+# bridge exposes before returning its dispatch receipt.
+fake_smelt_bridge() {
+    python3 - "$DESKCRAB_GAME_STATE_DIR" <<'PY' &
+import json, os, sys, time
+sd = sys.argv[1]
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    if os.path.exists(ap):
+        body = open(ap).read()
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        os.remove(ap)
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        for item_id in (150, 202):
+            for entry in state.get("inventory") or []:
+                if entry.get("id") == item_id:
+                    entry["count"] -= 1
+        state["inventory"] = [entry for entry in state.get("inventory") or []
+                              if entry.get("count", 0) > 0]
+        state["inventory"].append({"id": 169, "name": "bronze bar", "count": 1})
+        state["skills"][0]["xp"] += 6
+        state["messages"].append({"id": 117211001, "channel": "quest",
+                                   "text": "You retrieve a bar of bronze"})
+        state["tick"] += 1
+        state["ts"] = int(time.time() * 1000)
+        tmp = os.path.join(sd, ".state.tmp")
+        json.dump(state, open(tmp, "w"))
+        os.replace(tmp, state_path)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
 # A route leg also updates the authoritative snapshot before answering. The
 # destination can be the final tile or an intermediate regional settlement.
 fake_route_bridge() {  # FINAL-X FINAL-Z [STATUS]
@@ -643,6 +683,63 @@ contains "$OUT" "condition-timeout condition=in_combat" \
     || fail "the timeout names the missing condition" "$OUT"
 refute "a wait above the permanent-block ceiling is refused" \
     python3 "$GP" wait-until walking --timeout 61
+
+snap 104564 '[]' '{"inventory":[{"id":150,"name":"copper ore","count":1},{"id":202,"name":"tin ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":104564000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 900 use-item-object item=202 x=310 z=546 obj=118 >/dev/null
+snap 104565 '[]' '{"inventory":[{"id":169,"name":"bronze bar","count":1}],"skills":[{"id":13,"name":"Smithing","xp":6}],"messages":[{"id":104564000,"channel":"game","text":"Ready"},{"id":104565000,"channel":"quest","text":"You retrieve a bar of bronze"}]}'
+CODE=0; OUT="$(python3 "$GP" wait_until action_done --timeout 1)" || CODE=$?
+check_eq "action_done recognizes a completed smelt from grounded postconditions" "$CODE" "0"
+contains "$OUT" "action-done id=900 type=use-item-object result=done" \
+    && contains "$OUT" "bronze bar(169):+1" \
+    && contains "$OUT" "xp=Smithing:+6" \
+    && contains "$OUT" "message=You retrieve a bar of bronze" \
+    && ok "the completed action reports inventory, XP, and server evidence" \
+    || fail "the completed action reports inventory, XP, and server evidence" "$OUT"
+
+snap 104566 '[]' '{"messages":[{"id":104566000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 901 click-entity item=202 obj=118 >/dev/null
+snap 104567 '[]' '{"messages":[{"id":104566000,"channel":"game","text":"Ready"},{"id":104567000,"channel":"game","text":"Nothing interesting happens"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "a grounded failed action is still done waiting" "$CODE" "0"
+contains "$OUT" "result=failed" && contains "$OUT" "message=Nothing interesting happens" \
+    && ok "the completion verdict distinguishes server refusal from success" \
+    || fail "the completion verdict distinguishes server refusal from success" "$OUT"
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "a consumed action result cannot be mistaken for the next action" "$CODE" "3"
+contains "$OUT" "action-unarmed" \
+    && ok "the next wait requires a freshly armed action" \
+    || fail "the next wait requires a freshly armed action" "$OUT"
+python3 "$GP" action-arm 902 interact-object x=120 z=648 obj=118 >/dev/null
+python3 - "$DESKCRAB_GAME_STATE_DIR/last-action-observation.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+doc["sent_ts"] = 0
+json.dump(doc, open(path, "w"))
+PY
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "an old action baseline cannot claim a later session's change" "$CODE" "3"
+contains "$OUT" "reason=expired" \
+    && ok "an expired action asks for a fresh causal dispatch" \
+    || fail "an expired action asks for a fresh causal dispatch" "$OUT"
+refute "the expired causal baseline is removed" \
+    test -e "$DESKCRAB_GAME_STATE_DIR/last-action-observation.json"
+
+snap 104568 '[]' '{"right_click_menu_open":true,"inventory":[{"id":150,"name":"copper ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":104568000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 903 use-item-object item=150 x=120 z=648 obj=118 >/dev/null
+snap 104569 '[]' '{"right_click_menu_open":false,"inventory":[{"id":150,"name":"copper ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":104568000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" wait-until action_done --timeout 1 > "$SANDBOX/use-wait-out" &
+WAIT_PID=$!
+sleep .1
+snap 104570 '[]' '{"right_click_menu_open":false,"inventory":[{"id":150,"name":"copper ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":104568000,"channel":"game","text":"Ready"},{"id":104570000,"channel":"game","text":"You smelt the copper and tin together in the furnace"}]}'
+sleep .1
+snap 104571 '[]' '{"right_click_menu_open":false,"inventory":[],"skills":[{"id":13,"name":"Smithing","xp":6}],"messages":[{"id":104568000,"channel":"game","text":"Ready"},{"id":104570000,"channel":"game","text":"You smelt the copper and tin together in the furnace"},{"id":104571000,"channel":"quest","text":"You retrieve a bar of bronze"}]}'
+wait "$WAIT_PID"; CODE=$?; OUT="$(cat "$SANDBOX/use-wait-out")"
+check_eq "an item-on-object wait ignores pane and start-message races" "$CODE" "0"
+contains "$OUT" "inventory=copper ore(150):-1" && contains "$OUT" "xp=Smithing:+6" \
+    && contains "$OUT" "message=You retrieve a bar of bronze" \
+    && ok "item-on-object completes only when the selected input really changes" \
+    || fail "item-on-object completes only when the selected input really changes" "$OUT"
 
 echo
 echo "retreat breaks the three-round causal deadlock and remembers it (spec rules 7, 7d):"
@@ -1294,6 +1391,9 @@ HEADLESS="$GAME_TREE/headless/orsc-headless.sh"
 if [ ! -f "$HEADLESS" ]; then
     sandbox_skip "no local OpenRSC headless harness at $HEADLESS"
 fi
+# Every direct harness action now records its pre-dispatch causal baseline.
+# Keep that observer in this test's sandbox instead of the relocated HOME.
+export DESKCRAB_GAME_PLAYER="$GP"
 check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the definition-backed NPC command door" \
@@ -1308,6 +1408,8 @@ check_eq "the harness carries the bounded visual aiming fallback" \
     "$(sandbox_count_in '^    aim)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
+check_eq "the harness carries the atomic item-on-object door" \
+    "$(sandbox_count_in '^    use)' "$HEADLESS")" "1"
 check_eq "the harness carries the semantic equipment listing door" \
     "$(sandbox_count_in '^    equipment)' "$HEADLESS")" "1"
 check_eq "the harness carries idempotent equip and unequip doors" \
@@ -1479,6 +1581,19 @@ check_eq "the door wrote click-inventory" "$(last_action 'type=click-inventory')
 check_eq "the door wrote only the item id" "$(last_action 'item=145')" "1"
 refute "the inventory door did not write a slot" \
     grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 117211 '[]' '{"objects":[{"id":118,"x":121,"z":648}],"inventory":[{"id":150,"name":"copper ore","count":1},{"id":202,"name":"tin ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":117211000,"channel":"game","text":"Ready"}]}'
+fake_smelt_bridge
+OUT="$(bash "$HEADLESS" use 150 object 118 1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the item-on-object door waits for grounded smelting completion" "$CODE" "0"
+contains "$OUT" "action-done" && contains "$OUT" "bronze bar(169):+1" \
+    && contains "$OUT" "xp=Smithing:+6" \
+    && ok "the item-on-object door reports bar and XP evidence" \
+    || fail "the item-on-object door reports bar and XP evidence" "$OUT"
+check_eq "item-on-object crosses as one semantic action" \
+    "$(last_action 'type=use-item-object')" "1"
+check_eq "the action carries the held item identity" "$(last_action 'item=150')" "1"
+check_eq "the action carries the furnace identity" "$(last_action 'obj=118')" "1"
 snap 11720 '[]' '{"inventory":[{"id":71,"name":"Iron Long Sword","count":1,"equipped":true,"commands":["Remove"]},{"id":104,"name":"Medium Bronze Helmet","count":1,"equipped":false,"commands":["Wear"]},{"id":20,"name":"Bones","count":3,"equipped":false,"commands":["Bury"]}],"equipment":[{"id":71,"name":"Iron Long Sword","count":1}],"equipment_stats":{"Armour":0,"WeaponAim":8}}'
 OUT="$(bash "$HEADLESS" inventory)"; CODE=$?
 check_eq "the inventory listing reads semantic state" "$CODE" "0"
@@ -2252,6 +2367,13 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=m
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until with exactly one named state" \
     && ok "the resumed thread receives the state-based wait replacement" \
     || fail "the resumed thread receives the state-based wait replacement"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "fatigue_zero, or action_done" \
+    && ok "the resumed thread receives causal action completion awareness" \
+    || fail "the resumed thread receives causal action completion awareness"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "use ITEM-ID object OBJECT-ID" \
+    && ok "the resumed thread receives atomic item-on-object use" \
+    || fail "the resumed thread receives atomic item-on-object use"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait for not_walking directly" \
     && ok "the resumed thread avoids a redundant walking transition wait" \
     || fail "the resumed thread avoids a redundant walking transition wait"

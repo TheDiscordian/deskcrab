@@ -181,6 +181,17 @@ deliberate-play channel.
    A direct take attempted during combat emits nothing and reports
    `take-needs-retreat ... next=retreat`; retreat is the action that can make
    the pickup legal, and the wanted pile remains visible for the next pass.
+   Direct bridge actions are causally armed from the fresh pre-dispatch snapshot. A later
+   `wait-until action_done` accepts only a newer grounded consequence attributable to that action:
+   inventory or XP deltas, new game/quest/inventory feedback, a relevant interface transition, or
+   settled movement for a movement action. It reports the evidence and labels known refusal
+   feedback `result=failed`; the receipt alone is never completion. The one-step
+   `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]` door uses this verifier after resolving
+   and dispatching both live identities atomically, so inventory-pane timing cannot separate item
+   selection from the object use. For that action specifically, the selected input changing or XP
+   is required for success; explicit server failure may end it unsuccessfully. A pane/menu
+   transition or a furnace's early “smelt together” line is ignored rather than accepted before
+   the resulting bar exists.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the open-ended fallback signal. Other exit-4 prerequisites below
@@ -287,7 +298,9 @@ deliberate-play channel.
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`, and
    `right_click_menu_closed`, `trade_open`, `trade_closed`, `sleeping`, `not_sleeping`, and
-   `fatigue_zero`; dashes are accepted in place of underscores.
+   `fatigue_zero`, and `action_done`; dashes are accepted in place of underscores. Unlike the
+   level-triggered state names, `action_done` requires the causal baseline armed immediately before
+   the most recent direct bridge action and consumes it after observing a result.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
    false; a pre-reply false snapshot cannot masquerade as the end of the conversation.
    Success reports `condition-met` with the condition and snapshot tick. A wait has a 15-second
@@ -376,8 +389,10 @@ deliberate-play channel.
     `~/.local/lib/deskcrab/game_player.py` (`DESKCRAB_GAME_PLAYER` overrides, which is how the
     test sandbox pins its own copy), and passes any other subcommand through, so the sitting
     has one door for stepping, state-based waiting, learning and objectives. The direct harness
-    doors `orsc-headless.sh wait-until CONDITION [SECONDS]` and `orsc-headless.sh retreat
-    [SECONDS]` delegate to that same module. `retreat` creates one bounded request which the
+    doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh use ITEM-ID object
+    OBJECT-ID [SECONDS]`, and `orsc-headless.sh retreat [SECONDS]` delegate to that same module.
+    `use` sends one identity-checked item-on-object action and waits for rule 7a's causal outcome.
+    `retreat` creates one bounded request which the
     resident runner owns (or the caller evaluates through the identical step path if no runner
     exists), retries through the server lock, and does not release the action slot at the first
     `in_combat: false` snapshot. It chooses a stable direction maximizing distance from all visible
