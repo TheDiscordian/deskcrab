@@ -54,10 +54,14 @@ during the very investigation that produced these specs.
        attempt — every live hand's calls land there for as long as the machine is awake
        (`DESKCRAB_METRICS_DIR` is pinned, and the metrics suite reads through the pin);
      - the live chess games directory, selfplay directory, and reflex store
-       (`reflex.db` with its sqlite `-journal`/`-wal` siblings), which the resident chess
-       bridge and any running bench write move by move and game by game (the chess code
-       resolves its home through the pinned `HOME`/XDG homes and `DESKCRAB_CHESS_DIR`, and the
-       chess suites read their games and reflex rows back through those pins);
+       (`reflex.db` with its sqlite `-journal`/`-wal`/`-shm` siblings), which the resident
+       chess bridge and any running bench write move by move and game by game, plus the chess
+       directory's own mtime line — sqlite mints and collects the journal beside the store,
+       moving the directory with it, and with the store excluded the children can no longer
+       testify for the parent (the chess code resolves its home through the pinned `HOME`/XDG
+       homes and `DESKCRAB_CHESS_DIR`, the chess suites read their games and reflex rows back
+       through those pins, and every FILE under the chess directory beyond these stays
+       photographed);
      - the live wake queue's `ledger.log` only — one line per live booking, firing and tidy;
        the booking RECORDS stay photographed, because a booking landing in the live directory
        is precisely the quarry;

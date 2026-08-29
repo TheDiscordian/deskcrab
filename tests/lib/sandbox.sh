@@ -97,15 +97,23 @@
 #                               suite reads through the pin.
 #   <live data>/chess/games/
 #   <live data>/chess/selfplay/
-#   <live data>/chess/reflex.db (+ -journal/-wal)
+#   <live data>/chess/reflex.db (+ -journal/-wal/-shm)
 #                               the resident chess bridge and any running
 #                               bench write these move by move and game by
 #                               game, with model-call pauses between strokes.
 #                               Chess code resolves its home through the
 #                               pinned HOME/XDG homes and DESKCRAB_CHESS_DIR;
 #                               the chess suites read their games and reflex
-#                               rows back through those pins. The rest of the
-#                               live chess directory stays photographed.
+#                               rows back through those pins.
+#   <live data>/chess           the directory's own mtime line: sqlite mints
+#                               and collects reflex.db's journal beside the
+#                               store, which moves the directory with it —
+#                               and with the store itself excluded above, the
+#                               children can no longer testify for the parent
+#                               (a determinism round on 2026-08-29 caught
+#                               exactly this line settling). The FILES under
+#                               it stay photographed, beyond the ones named
+#                               above.
 #   <live data>/wakes/ledger.log
 #                               the live queue's own ledger: one line per
 #                               live booking, firing and tidy (lib/wake-queue
@@ -172,7 +180,8 @@ _sandbox_drop_external() {  # <live prefix> <live data dir> [<live state dir>]:
                             # a path filter ($3 defaults to the exported knob)
     awk -F'\t' -v seen="$1-phone-seen" -v push="$2/webpush" \
         -v plog="$1-prefix.log" -v game="$1-game" \
-        -v metrics="$2/metrics" -v cgames="$2/chess/games" \
+        -v metrics="$2/metrics" -v chessdir="$2/chess" \
+        -v cgames="$2/chess/games" \
         -v cself="$2/chess/selfplay" -v creflex="$2/chess/reflex.db" \
         -v wledger="$2/wakes/ledger.log" -v jobsdir="$2/jobs" \
         -v state="${3:-${SANDBOX_LIVE_STATE:-}}" '
@@ -189,9 +198,11 @@ _sandbox_drop_external() {  # <live prefix> <live data dir> [<live state dir>]:
         $1 == plog { next }
         $1 == game || index($1, game "/") == 1 { next }
         $1 == metrics || index($1, metrics "/") == 1 { next }
+        $1 == chessdir { next }
         $1 == cgames || index($1, cgames "/") == 1 { next }
         $1 == cself || index($1, cself "/") == 1 { next }
-        $1 == creflex || $1 == creflex "-journal" || $1 == creflex "-wal" { next }
+        $1 == creflex || $1 == creflex "-journal" || $1 == creflex "-wal" \
+            || $1 == creflex "-shm" { next }
         $1 == wledger { next }
         $1 == jobsdir { next }
         $1 in watcher { next }

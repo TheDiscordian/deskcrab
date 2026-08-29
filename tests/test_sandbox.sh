@@ -171,7 +171,8 @@ for gone in "$SANDBOX_LIVE_DATA/metrics" \
     check "dropped, because the token ledger records every live attempt: ${gone##*/}" \
         bash -c '! printf "%s\n" "$1" | grep -qxF "$2"' _ "$photo" "$gone"
 done
-for gone in "$SANDBOX_LIVE_DATA/chess/games" \
+for gone in "$SANDBOX_LIVE_DATA/chess" \
+            "$SANDBOX_LIVE_DATA/chess/games" \
             "$SANDBOX_LIVE_DATA/chess/games/some-game.json" \
             "$SANDBOX_LIVE_DATA/chess/selfplay/night.log" \
             "$SANDBOX_LIVE_DATA/chess/reflex.db" \
