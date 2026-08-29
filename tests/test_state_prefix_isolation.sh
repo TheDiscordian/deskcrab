@@ -43,16 +43,36 @@ mkdir -p "$COPY_A" "$COPY_B"
 cp -R "$REPO/lib" "$COPY_A/lib"; cp "$REPO/crab" "$COPY_A/crab"
 cp -R "$REPO/lib" "$COPY_B/lib"; cp "$REPO/crab" "$COPY_B/crab"
 
-# The live-prefix photograph, in exactly the harness's shape: name, size,
-# mtime, the external movers dropped, so what this test accuses is what the
-# harness would accuse.
+# The live-prefix photograph, in exactly the harness's shape: the moment
+# stamped first, then name, size, mtime, the external movers dropped, so what
+# this test accuses is what the harness would accuse.
 live_photo() { # <out>
+    date +%s.%N > "$1.at"
     find "$(dirname "$SANDBOX_LIVE_PREFIX")" -maxdepth 1 \
         -name "$(basename "$SANDBOX_LIVE_PREFIX")*" \
         ! -path "$SANDBOX*" \
         -printf '%p\t%s\t%T@\n' 2>/dev/null \
         | _sandbox_drop_external "$SANDBOX_LIVE_PREFIX" "$SANDBOX_LIVE_DATA" \
         | LC_ALL=C sort > "$1"
+}
+
+# The probes run beside a live instance whose hands keep writing — the game
+# harness alone rewrites its /tmp state every two seconds all night — so the
+# pair is held to the harness's own standard (specs/test-harness.md rule 9's
+# second look): a difference convicts only when the path had no foreign
+# evidence by a third photograph. What the probes could have written settles
+# and stays accused; the other hand's churn is excused by name.
+settled() { # <before> <after> — 0 when nothing of this run's own moved
+    diff -q "$1" "$2" >/dev/null 2>&1 && return 0
+    local settle="${DESKCRAB_SANDBOX_SETTLE:-5}" rounds round
+    rounds="$(awk -v v="${DESKCRAB_SANDBOX_VIGIL:-60}" -v s="$settle" \
+        'BEGIN { r = (s + 0 > 0) ? int(v / s) : 1; print (r < 1) ? 1 : r }')"
+    for (( round = 1; round <= rounds; round++ )); do
+        sleep "$settle"
+        live_photo "$2.settle"
+        sandbox_second_look "$1" "$2" "$2.settle" "$2.look" && return 0
+    done
+    return 1
 }
 
 # probe <common.sh path> — source the real library with NO override in hand,
@@ -106,7 +126,7 @@ check "the second copy does not choose the live prefix either" \
 check_eq "a child of the run inherits the resolved prefix, exported" \
     "$CHILD_A" "$PFX_A"
 check "no live-prefix file was created or touched by the isolated runs" \
-    diff -q "$T/live.before" "$T/live.after"
+    settled "$T/live.before" "$T/live.after"
 
 PREFIX_LOG="${DESKCRAB_PREFIX_LOG:-}"
 check "the sandbox pins the prefix-choice log" [ -n "$PREFIX_LOG" ]
@@ -139,7 +159,7 @@ check_eq "the canonical claim records WHY as canonical" "$WHY_C" "canonical"
 check_eq "entering the same layout directly resolves the same claim" \
     "$PFX_C2" "/tmp/deskcrab"
 check "the canonical-shaped run still wrote nothing under the live prefix" \
-    diff -q "$T/live.canon.before" "$T/live.canon.after"
+    settled "$T/live.canon.before" "$T/live.canon.after"
 check "the canonical choice was recorded with its reason" \
     grep -q "	/tmp/deskcrab	canonical\$" "$PREFIX_LOG"
 

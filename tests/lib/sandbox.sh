@@ -61,6 +61,81 @@
 #                               takes the lock and replaces subscriptions.json
 #                               atomically, which moves the directory's own
 #                               mtime with it.
+#   <live prefix>-prefix.log    rule 13b's witness: EVERY live run that loads
+#                               the library appends its one prefix-choice
+#                               line here — wakes, job steps, the bridge, the
+#                               entry script — so it moves whenever the live
+#                               instance breathes. The code-under-test side
+#                               is held elsewhere: the sandbox pins
+#                               DESKCRAB_PREFIX_LOG (rule 2), and
+#                               test_state_prefix_isolation greps its choice
+#                               lines out of the PINNED log, so a regression
+#                               that ignored the pin goes red there.
+#   <live prefix>-game/         the resident game session's state: its engine
+#                               rewrites engine-state.json, state.json,
+#                               player-engine-state.json and player-runner.json
+#                               about every TWO SECONDS for as long as it plays
+#                               — hours — pausing only for the length of its
+#                               model calls. That cadence defeats the second
+#                               look deterministically: quiet at the before
+#                               photograph (mid-call), one burst mid-test,
+#                               quiet again through any settle window (the
+#                               next call) — which is exactly how one
+#                               acceptance run on 2026-08-29 accused it
+#                               settled while the immediate retry excused it
+#                               still-moving. The code-under-test side is
+#                               held by the pins: the sandbox exports
+#                               DESKCRAB_GAME_STATE_DIR, OPENRSC_STATE_DIR
+#                               and DESKCRAB_OPENRSC_STATE_DIR into its own
+#                               root, and the game suites read their fixtures
+#                               and actions back through the pin.
+#   <live data>/metrics/        the token ledger (lib/token_ledger.py): one
+#                               record appended per live model attempt, from
+#                               EVERY live hand — wakes, builders, the chess
+#                               movers — for as long as the machine is awake.
+#                               DESKCRAB_METRICS_DIR is pinned; the metrics
+#                               suite reads through the pin.
+#   <live data>/chess/games/
+#   <live data>/chess/selfplay/
+#   <live data>/chess/reflex.db (+ -journal/-wal)
+#                               the resident chess bridge and any running
+#                               bench write these move by move and game by
+#                               game, with model-call pauses between strokes.
+#                               Chess code resolves its home through the
+#                               pinned HOME/XDG homes and DESKCRAB_CHESS_DIR;
+#                               the chess suites read their games and reflex
+#                               rows back through those pins. The rest of the
+#                               live chess directory stays photographed.
+#   <live data>/wakes/ledger.log
+#                               the live queue's own ledger: one line per
+#                               live booking, firing and tidy (lib/wake-queue
+#                               .sh). ONLY the ledger — booking records stay
+#                               photographed, because a booking landing in
+#                               the live directory is precisely the quarry.
+#   <live data>/jobs            the directory's own mtime line: every sidecar
+#                               update is a tmp-and-rename inside it
+#                               (lib/job-status), so it moves whenever any
+#                               live builder breathes. The FILES under it
+#                               stay photographed, except the triplets below.
+#   $SANDBOX_RUNNING_JOBS       the stream triplet — <id>.log, <id>.json,
+#                               <id>.lock — of each live builder whose
+#                               sidecar said "running" with a live pid when
+#                               the sandbox was built (enumerated once, like
+#                               the foreign logs). A sandboxed test cannot
+#                               start a REAL builder: the dispatch gates
+#                               refuse a scratch jobs directory and
+#                               systemd-run is stubbed. Finished and dead
+#                               jobs' files stay photographed.
+#   <live state>/notice-self.{heartbeat,pending,log,snap,judged,reported}
+#                               the self-change watcher's own cycle files
+#                               (lib/notice-selfchange), rewritten on every
+#                               trigger of its path unit — and the path unit
+#                               triggers on ANY write to the watched
+#                               directories, so during live activity they
+#                               move about once a minute all day
+#                               (lib/canary-selfchange polls exactly this).
+#                               No cadence of theirs fits the second look's
+#                               windows, and no test causes any of them.
 #   $SANDBOX_FOREIGN_LOGS       the debug logs of the sessions that were
 #                               ALREADY AWAKE when this sandbox was built.
 #                               Every session streams to its own
@@ -89,17 +164,55 @@
 # NOTHING ELSE goes in here. Every other live path that moves during a test is
 # either the code under test writing where it should not, or another hand
 # writing at the same moment, and both are things the suite must keep shouting
-# about.
-_sandbox_drop_external() {  # <live prefix> <live data dir>: a path filter
-    awk -F'\t' -v seen="$1-phone-seen" -v push="$2/webpush" '
+# about. The leak check's SECOND LOOK (further down) is what keeps this list
+# this short: it tells the two authors apart by time where time can tell them
+# apart, excusing BY NAME what is still moving after a test has finished
+# instead of growing this list one quietened failure at a time.
+_sandbox_drop_external() {  # <live prefix> <live data dir> [<live state dir>]:
+                            # a path filter ($3 defaults to the exported knob)
+    awk -F'\t' -v seen="$1-phone-seen" -v push="$2/webpush" \
+        -v plog="$1-prefix.log" -v game="$1-game" \
+        -v metrics="$2/metrics" -v cgames="$2/chess/games" \
+        -v cself="$2/chess/selfplay" -v creflex="$2/chess/reflex.db" \
+        -v wledger="$2/wakes/ledger.log" -v jobsdir="$2/jobs" \
+        -v state="${3:-${SANDBOX_LIVE_STATE:-}}" '
         BEGIN {
             n = split(ENVIRON["SANDBOX_FOREIGN_LOGS"], _f, "\n")
             for (i = 1; i <= n; i++) if (_f[i] != "") foreign[_f[i]] = 1
+            n = split(ENVIRON["SANDBOX_RUNNING_JOBS"], _j, "\n")
+            for (i = 1; i <= n; i++) if (_j[i] != "") foreign[_j[i]] = 1
+            n = split("heartbeat pending log snap judged reported", _w, " ")
+            for (i = 1; i <= n; i++) watcher[state "/notice-self." _w[i]] = 1
         }
         $1 == seen { next }
         $1 == push || index($1, push "/") == 1 { next }
+        $1 == plog { next }
+        $1 == game || index($1, game "/") == 1 { next }
+        $1 == metrics || index($1, metrics "/") == 1 { next }
+        $1 == cgames || index($1, cgames "/") == 1 { next }
+        $1 == cself || index($1, cself "/") == 1 { next }
+        $1 == creflex || $1 == creflex "-journal" || $1 == creflex "-wal" { next }
+        $1 == wledger { next }
+        $1 == jobsdir { next }
+        $1 in watcher { next }
         $1 in foreign { next }
         { print }'
+}
+
+# The running builders' stream triplets, for the list above. Read from the
+# sidecars the way lib/job-status writes them: a "state": "running" line and a
+# "pid" that is alive right now. Unit-held by tests/test_sandbox.sh against a
+# crafted jobs directory, so no live sidecar has to exist to prove it.
+_sandbox_running_jobs() {  # <live jobs dir> — triplet paths, one per line
+    local _rj_sc _rj_pid
+    for _rj_sc in "$1"/*.json; do
+        [ -e "$_rj_sc" ] || continue
+        grep -q '"state": *"running"' "$_rj_sc" 2>/dev/null || continue
+        _rj_pid="$(sed -n 's/^ *"pid": *\([0-9][0-9]*\).*/\1/p' "$_rj_sc" \
+            | head -1)"
+        [ -n "$_rj_pid" ] && kill -0 "$_rj_pid" 2>/dev/null || continue
+        printf '%s\n' "${_rj_sc%.json}.log" "$_rj_sc" "${_rj_sc%.json}.lock"
+    done
 }
 
 # The live timers, photographed so that only what a TEST could change shows up
@@ -159,7 +272,8 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
 
     mkdir -p \
         "$_sb_root/home" "$_sb_root/tmp" "$_sb_root/bin" "$_sb_root/conf" \
-        "$_sb_root/state" "$_sb_root/run" "$_sb_root/cache" "$_sb_root/config" \
+        "$_sb_root/state" "$_sb_root/state/game" \
+        "$_sb_root/run" "$_sb_root/cache" "$_sb_root/config" \
         "$_sb_root/data/deskcrab/jobs" "$_sb_root/data/deskcrab/wakes" \
         "$_sb_root/data/deskcrab/journal" "$_sb_root/data/deskcrab/memory" \
         "$_sb_root/data/deskcrab/archive" "$_sb_root/data/deskcrab/tls" \
@@ -177,6 +291,9 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
     # size, mtime — a rewrite that keeps the size still moves the mtime, and
     # the account state file is exactly that shape.
     _sb_photo() { # <out>
+        # The moment first, in the photograph's own clock: the second look's
+        # hot-before evidence measures a live path's mtime against it.
+        date +%s.%N > "$1.at"
         {
             find "$_sb_live_data" "$_sb_live_state" "$_sb_live_conf" \
                 -printf '%p\t%s\t%T@\n' 2>/dev/null
@@ -185,6 +302,7 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
                 ! -path "$_sb_root*" \
                 -printf '%p\t%s\t%T@\n' 2>/dev/null
         } | _sandbox_drop_external "$_sb_live_prefix" "$_sb_live_data" \
+                                   "$_sb_live_state" \
           | LC_ALL=C sort > "$1"
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
             2>/dev/null | LC_ALL=C sort > "$1.units"
@@ -201,6 +319,12 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
         SANDBOX_FOREIGN_LOGS="$SANDBOX_FOREIGN_LOGS$_sb_foreign"$'\n'
     done
     export SANDBOX_FOREIGN_LOGS
+
+    # The running builders' stream triplets, enumerated the same way, at the
+    # same moment, for the same reason: both photographs must drop exactly the
+    # same paths. The comment above _sandbox_drop_external carries the why.
+    SANDBOX_RUNNING_JOBS="$(_sandbox_running_jobs "$_sb_live_data/jobs")"
+    export SANDBOX_RUNNING_JOBS
 
     _sb_photo "$_sb_root/leak/before"
 
@@ -241,6 +365,7 @@ CONF
         SANDBOX_LIVE_CONF="$_sb_live_conf" \
         SANDBOX_LIVE_PREFIX="$_sb_live_prefix" \
         SANDBOX_FOREIGN_LOGS="$SANDBOX_FOREIGN_LOGS" \
+        SANDBOX_RUNNING_JOBS="$SANDBOX_RUNNING_JOBS" \
         SANDBOX_REAL_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
         SANDBOX_REAL_DBUS="${DBUS_SESSION_BUS_ADDRESS:-}" \
         HOME="$_sb_root/home" \
@@ -268,6 +393,11 @@ CONF
         CODEX_BIN="$_sb_root/bin/codex" \
         DESKCRAB_CODEX_STATE="$_sb_root/data/deskcrab/codex-state" \
         DESKCRAB_ALLOW_SCRATCH_BOOKING=1 \
+        DESKCRAB_SANDBOX_SETTLE="${DESKCRAB_SANDBOX_SETTLE:-}" \
+        DESKCRAB_SANDBOX_VIGIL="${DESKCRAB_SANDBOX_VIGIL:-}" \
+        DESKCRAB_GAME_STATE_DIR="$_sb_root/state/game" \
+        OPENRSC_STATE_DIR="$_sb_root/state/game" \
+        DESKCRAB_OPENRSC_STATE_DIR="$_sb_root/state/game" \
         MEMORY_PYTHON="$_sb_venv" \
         SANDBOX_CODEX_LOG="$_sb_root/witness/codex.log" \
         SANDBOX_SYSTEMD_LOG="$_sb_root/witness/systemd-run.log" \
@@ -380,7 +510,10 @@ sandbox_systemd_rc() { printf '%s' "$1" > "$SANDBOX/witness/systemd-run.rc"; }
 # Photographed with the real session bus, which the test itself cannot see: the
 # stub systemctl is first on PATH and DBUS_SESSION_BUS_ADDRESS is not set
 # inside the sandbox at all.
-_sandbox_photo_after() {
+_sandbox_photo_after() {  # [<out basename>], default $SANDBOX/leak/after —
+                          # the second look photographs a third time, elsewhere
+    local _pa_out="${1:-$SANDBOX/leak/after}"
+    date +%s.%N > "$_pa_out.at"
     {
         find "$SANDBOX_LIVE_DATA" "$SANDBOX_LIVE_STATE" "$SANDBOX_LIVE_CONF" \
             -printf '%p\t%s\t%T@\n' 2>/dev/null
@@ -389,7 +522,7 @@ _sandbox_photo_after() {
             ! -path "$SANDBOX*" \
             -printf '%p\t%s\t%T@\n' 2>/dev/null
     } | _sandbox_drop_external "$SANDBOX_LIVE_PREFIX" "$SANDBOX_LIVE_DATA" \
-      | LC_ALL=C sort > "$SANDBOX/leak/after.raw"
+      | LC_ALL=C sort > "$_pa_out.raw"
     # A NEW path under the live prefix is a leak like any other. This used to
     # drop them — an edit to a live file counted, an addition beside it did
     # not — on the reasoning that a new /tmp file might belong to another test
@@ -405,14 +538,151 @@ _sandbox_photo_after() {
     # rather than editing one, so the gate was blind to precisely the shape it
     # exists to catch. Under the live data, state and config directories
     # nothing was ever dropped; the prefix is now read the same way.
-    cp "$SANDBOX/leak/after.raw" "$SANDBOX/leak/after"
+    cp "$_pa_out.raw" "$_pa_out"
     env XDG_RUNTIME_DIR="$SANDBOX_REAL_RUNTIME_DIR" \
         DBUS_SESSION_BUS_ADDRESS="$SANDBOX_REAL_DBUS" \
         /usr/bin/systemctl --user list-units 'deskcrab-*' --all --no-legend \
-        2>/dev/null | LC_ALL=C sort > "$SANDBOX/leak/after.units"
+        2>/dev/null | LC_ALL=C sort > "$_pa_out.units"
     XDG_RUNTIME_DIR="$SANDBOX_REAL_RUNTIME_DIR" \
         DBUS_SESSION_BUS_ADDRESS="$SANDBOX_REAL_DBUS" \
-        _sandbox_timers_photo "$SANDBOX/leak/after.timers"
+        _sandbox_timers_photo "$_pa_out.timers"
+}
+
+# --- the second look -------------------------------------------------------
+# The photograph can prove THAT a live path moved, never WHOSE hand moved it,
+# and rule 9 of specs/test-harness.md says the harness may only accuse. For
+# weeks the accusation fell on whichever test was running when ANY live hand
+# wrote: the night the exec-bit record was being proven, the game harness was
+# rewriting its /tmp state every two seconds until dawn and the selfplay
+# bench kept the live games directory moving, so every run of every suite
+# wore the LEAK verdict, exit 2, whatever its assertions had found. A
+# sentinel that fires on every run is not a sentinel — the genuine red that
+# motivated all this sat on screen dressed in the same verdict as the
+# weather, and was dismissed with it.
+#
+# What tells the two hands apart is TIME. When the photographs differ, the
+# harness waits a settle interval (DESKCRAB_SANDBOX_SETTLE seconds, default
+# five — longer than the fastest known live writer's cadence) and photographs
+# a THIRD time. The test is finished by then — its at-exit hooks have run,
+# its assertions are counted — so a path still moving between the second and
+# third photographs is being written by something that is not this test.
+# Those paths are excused from the verdict and NAMED, one per line, because a
+# silent exclusion is how gates go blind. Motion evidence flows one level
+# between a directory and its direct children — a directory's mtime IS a
+# function of them — so a settled game file under a still-moving live games
+# directory is that live writer's earlier stroke, excused with it, while a
+# settled SIBLING (the planted-leak shape) never is: siblings are separate
+# writers. Everything else that moved during the run and then fell quiet
+# stays accused, exactly as before.
+#
+# The residual ambiguity is owned, not hidden: a cold burst writer that
+# landed one stroke mid-test and went quiet inside the settle window is still
+# accused (a hand reads the verdict), and a background FILE writer LEAKED by
+# the code under test would excuse itself here — the witness logs and the
+# persistent units hold that shape, and the excused list prints either way so
+# a reader can see what was forgiven.
+
+# The identity of a photograph line: the path for the path photograph (its
+# first tab field), the unit name for the units and timers photographs (the
+# first whitespace token that says deskcrab — list-units may lead with a
+# marker glyph, list-timers with the absolute times). `-` for a line with no
+# identity; such a line is never excused.
+_sandbox_photo_keys() {  # <photo> — one key per line, aligned with the file
+    awk -F'\t' '{
+        key = "-"
+        if (NF >= 2) key = $1
+        else {
+            n = split($0, w, /[[:space:]]+/)
+            for (i = 1; i <= n; i++)
+                if (w[i] ~ /deskcrab/) { key = w[i]; break }
+        }
+        print key
+    }' "$1"
+}
+
+_sandbox_drop_keys() {  # <keys file> <photo> — the photo minus those keys' lines
+    paste <(_sandbox_photo_keys "$2") "$2" | awk -F'\t' -v keys="$1" '
+        BEGIN { while ((getline k < keys) > 0)
+                    if (k != "" && k != "-") drop[k] = 1 }
+        { key = $1; sub(/^[^\t]*\t/, ""); if (!(key in drop)) print }'
+}
+
+# sandbox_second_look <before> <after> <settle> <out prefix> — 0 when every
+# difference between <before> and <after> is confined to keys with foreign
+# evidence, or one directory level from one that has it. Three kinds of
+# evidence, each causally clean:
+#
+#   still moving   the key changed again between <after> and <settle>. The
+#                  test was finished; this cannot be its writing.
+#   hot before     the key's mtime in <before> sits within the settle
+#                  interval of the moment that photograph was taken (read
+#                  from "<before>.at" when the photograph left one). The
+#                  test had not run yet; whoever wrote it then is real and
+#                  active, and the bench's burst writers — quiet longer than
+#                  any settle interval mid-model-call — are exactly this
+#                  shape. A photograph without a stamp gets no hot excuses.
+#   transient unit the key is a -<moment>-<pid> stamped unit, the shape
+#                  systemd-run mints for wakes, jobs and the watchers. Inside
+#                  the sandbox the user manager is unreachable by
+#                  construction — no session bus, a pinned runtime dir,
+#                  stubbed tools — so no test can put one in the REAL
+#                  manager, and the self-change watcher's two-minute defer
+#                  cycle was handing a settled flap to whichever test
+#                  spanned it. A persistent unit's change stays accused.
+#
+# Evidence flows one directory level, parent to child and child to parent —
+# a directory's mtime IS a function of its direct children — so a settled
+# game file under a hot or still-moving live games directory is that live
+# writer's earlier stroke. A settled SIBLING (the planted-leak shape) is
+# never excused: siblings are separate writers.
+#
+# Writes <out>.excused (the keys forgiven, one per line) and <out>.diff
+# (what remains accused; empty when clean). Public: the state-prefix
+# isolation test holds its own photograph pair to the same standard.
+sandbox_second_look() {
+    local before="$1" after="$2" settle="$3" out="$4"
+    local t0=""
+    [ -f "$before.at" ] && t0="$(cat "$before.at")"
+    LC_ALL=C comm -3 "$after" "$settle" 2>/dev/null \
+        | sed 's/^\t//' > "$out.changed"
+    _sandbox_photo_keys "$out.changed" | grep -v '^-$' \
+        | LC_ALL=C sort -u > "$out.stillmoving"
+    if [ -n "$t0" ]; then
+        awk -F'\t' -v t0="$t0" -v hot="${DESKCRAB_SANDBOX_SETTLE:-5}" \
+            'NF >= 3 && (t0 - $3) <= hot { print $1 }' "$before" \
+            | LC_ALL=C sort -u > "$out.hot"
+    else
+        : > "$out.hot"
+    fi
+    diff "$before" "$after" 2>/dev/null \
+        | sed -n 's/^[<>] //p' > "$out.disputed"
+    _sandbox_photo_keys "$out.disputed" | grep -v '^-$' \
+        | LC_ALL=C sort -u > "$out.disputedkeys"
+    awk -v still="$out.stillmoving" -v hotf="$out.hot" '
+        function dirof(p) { sub(/\/[^\/]*$/, "", p); return p }
+        function transient_unit(k) {
+            if (k ~ /^\//) return 0
+            return (k ~ /-1[0-9]{9}-[0-9]+/ ||
+                    k ~ /-20[0-9]{6}-[0-9]{6}-[0-9]+/)
+        }
+        BEGIN {
+            while ((getline k < still) > 0) if (k != "") ev[k] = 1
+            while ((getline k < hotf) > 0) if (k != "") ev[k] = 1
+        }
+        { keys[NR] = $0 }
+        END {
+            for (i = 1; i <= NR; i++)
+                if (transient_unit(keys[i])) ev[keys[i]] = 1
+            for (k in ev) evdir[dirof(k)] = 1
+            for (i = 1; i <= NR; i++) {
+                k = keys[i]
+                if (k in ev || dirof(k) in ev || k in evdir) print k
+            }
+        }
+    ' "$out.disputedkeys" > "$out.excused"
+    _sandbox_drop_keys "$out.excused" "$before" > "$out.before"
+    _sandbox_drop_keys "$out.excused" "$after" > "$out.after"
+    diff "$out.before" "$out.after" > "$out.diff" 2>/dev/null
 }
 
 # There used to be a sweep here that DELETED any /tmp/deskcrab-remote-*.opus
@@ -430,19 +700,65 @@ _sandbox_photo_after() {
 # hourly sweep. Held by tests/test_sandbox_live_clips.sh.
 
 _sandbox_leak_check() {  # -> 0 clean, 1 leaked
-    _sandbox_photo_after
-    local leaked=0 what
+    _sandbox_photo_after "$SANDBOX/leak/after"
+    local what moved=0 leaked=0 churned=0
     for what in "" ".units" ".timers"; do
-        if ! diff -q "$SANDBOX/leak/before$what" "$SANDBOX/leak/after$what" \
-                >/dev/null 2>&1; then
-            [ "$leaked" = 0 ] && {
+        diff -q "$SANDBOX/leak/before$what" "$SANDBOX/leak/after$what" \
+            >/dev/null 2>&1 || moved=1
+    done
+    [ "$moved" = 0 ] && return 0
+
+    # Something moved: the second look, held open as a VIGIL. Only a run that
+    # already differs pays for it; a clean run never sleeps. A live writer's
+    # quiet stretch can outlast any single settle interval — the game engine
+    # and the bench movers go silent for the length of a model call, which is
+    # how one acceptance run accused a path settled that its immediate retry
+    # excused still-moving — so while anything is still accused the harness
+    # keeps waiting one settle interval and photographing again, up to
+    # DESKCRAB_SANDBOX_VIGIL seconds in total. The comparison is against the
+    # LATEST photograph, so a stroke in any round is evidence in every later
+    # one. The vigil ends the moment nothing is left accused; a path still
+    # silent when it runs out has had the whole window to show a foreign
+    # hand, and keeps the accusation.
+    local settle="${DESKCRAB_SANDBOX_SETTLE:-5}"
+    local rounds round
+    rounds="$(awk -v v="${DESKCRAB_SANDBOX_VIGIL:-60}" -v s="$settle" \
+        'BEGIN { r = (s + 0 > 0) ? int(v / s) : 1; print (r < 1) ? 1 : r }')"
+    for (( round = 1; round <= rounds; round++ )); do
+        sleep "$settle"
+        _sandbox_photo_after "$SANDBOX/leak/settle"
+        leaked=0
+        for what in "" ".units" ".timers"; do
+            diff -q "$SANDBOX/leak/before$what" "$SANDBOX/leak/after$what" \
+                >/dev/null 2>&1 && continue
+            sandbox_second_look \
+                "$SANDBOX/leak/before$what" "$SANDBOX/leak/after$what" \
+                "$SANDBOX/leak/settle$what" "$SANDBOX/leak/look$what" \
+                || leaked=1
+        done
+        [ "$leaked" = 0 ] && break
+    done
+    for what in "" ".units" ".timers"; do
+        diff -q "$SANDBOX/leak/before$what" "$SANDBOX/leak/after$what" \
+            >/dev/null 2>&1 && continue
+        if [ -s "$SANDBOX/leak/look$what.diff" ]; then
+            [ "$leaked" = 1 ] && [ "$moved" = 1 ] && {
                 echo
                 echo "  LEAK: live state moved while this test ran. What moved:"
+                moved=2
             }
-            leaked=1
-            diff "$SANDBOX/leak/before$what" "$SANDBOX/leak/after$what" \
-                2>/dev/null | sed 's/^/    /' | head -40
+            sed 's/^/    /' "$SANDBOX/leak/look$what.diff" | head -40
         fi
+        [ -s "$SANDBOX/leak/look$what.excused" ] && {
+            [ "$churned" = 0 ] && {
+                echo
+                echo "  churn: these moved while the test ran and were STILL moving"
+                echo "  after it finished — another hand's writing, not this test's;"
+                echo "  excused from the verdict, named so nothing is silent:"
+            }
+            churned=1
+            sed 's/^/    /' "$SANDBOX/leak/look$what.excused"
+        }
     done
     return "$leaked"
 }
@@ -473,11 +789,13 @@ _sandbox_finish() {
         exit 77
     fi
     if [ "$leaked" = 1 ]; then
-        echo "  Every path this test writes is under its own root, so a live"
-        echo "  path that moved is either a hardcoded path in the code under"
-        echo "  test or another hand writing at the same moment — an unsandboxed"
-        echo "  run in another shell, or the live instance itself. The paths"
-        echo "  above say which."
+        echo "  Every path this test writes is under its own root, and whatever"
+        echo "  kept moving after the test finished has been excused above as"
+        echo "  another hand's churn — so a path accused here moved while this"
+        echo "  test ran and then FELL SILENT. That is either a hardcoded live"
+        echo "  path in the code under test or a concurrent hand's one-shot"
+        echo "  write — an unsandboxed run in another shell, or the live"
+        echo "  instance between strokes. The paths above say which to chase."
         echo "$SANDBOX_NAME: LEAKED into live state — $PASS passed, $FAIL failed"
         rc=2
     elif [ "$FAIL" -gt 0 ]; then

@@ -36,19 +36,52 @@ during the very investigation that produced these specs.
    temporary root.
    - The proof is a photograph of live state before and after, and anything that moved fails the
      test. A path may be excluded from that photograph only when a LIVE INSTANCE writes it on its
-     own schedule while the suite runs — today the phone server's seen-file and its webpush store,
-     which a phone polling from outside the house moves every few seconds, and the debug logs of
-     the sessions that were already awake when the sandbox was built, which each live session
-     appends to for as long as it runs. Each exclusion is named individually, in the harness, with
-     the writer that moves it. A pattern, a directory swept wholesale, or an exclusion added to
+     own schedule while the suite runs, AND the code-under-test side of that path is held
+     somewhere the exclusion cannot blind — a sandbox pin plus a test that reads back through the
+     pin, so a regression that ignored the pin still goes red. Today's list, each entry named
+     individually in the harness with the writer that moves it:
+     - the phone server's seen-file and its webpush store, which a phone polling from outside
+       the house moves every few seconds;
+     - the live prefix-choice log, to which every live run that loads the library appends its
+       rule-13b line (the sandbox pins `DESKCRAB_PREFIX_LOG`, and the isolation test greps the
+       pinned log);
+     - the live game-state directory (`<live prefix>-game`), which the resident game session's
+       engine rewrites about every two seconds for as long as it plays — hours — pausing only
+       for the length of its model calls (the sandbox pins `DESKCRAB_GAME_STATE_DIR`,
+       `OPENRSC_STATE_DIR` and `DESKCRAB_OPENRSC_STATE_DIR`, and the game suites read their
+       fixtures and actions back through the pin);
+     - the live metrics directory, to which the token ledger appends one record per live model
+       attempt — every live hand's calls land there for as long as the machine is awake
+       (`DESKCRAB_METRICS_DIR` is pinned, and the metrics suite reads through the pin);
+     - the live chess games directory, selfplay directory, and reflex store
+       (`reflex.db` with its sqlite `-journal`/`-wal` siblings), which the resident chess
+       bridge and any running bench write move by move and game by game (the chess code
+       resolves its home through the pinned `HOME`/XDG homes and `DESKCRAB_CHESS_DIR`, and the
+       chess suites read their games and reflex rows back through those pins);
+     - the live wake queue's `ledger.log` only — one line per live booking, firing and tidy;
+       the booking RECORDS stay photographed, because a booking landing in the live directory
+       is precisely the quarry;
+     - the self-change watcher's own cycle files (`notice-self.heartbeat`, `.pending`, `.log`,
+       `.snap`, `.judged`, `.reported`), which its path unit rewrites on every trigger for as
+       long as anything writes the watched directories;
+     - the live jobs directory's own mtime line (every sidecar update is a rename inside it)
+       and the stream triplet — `<id>.log`, `<id>.json`, `<id>.lock` — of each builder whose
+       sidecar says `running` with a live pid, enumerated once when the sandbox is built: a
+       sandboxed test cannot start a REAL builder (the dispatch gates refuse a scratch jobs
+       directory and `systemd-run` is stubbed), so a builder streaming out there is never the
+       test's doing. Files of finished or foreign-dead jobs stay photographed;
+     - and the debug logs of the sessions that were already awake when the sandbox was built,
+       which each live session appends to for as long as it runs.
+     A pattern, a directory swept wholesale without a named writer, or an exclusion added to
      quieten a failure is forbidden: the accusation is the point, and everything else that moves
      is either the code under test writing where it should not or another hand writing at the
      same moment.
    - The debug-log exclusion is a list of exact paths, enumerated ONCE when the sandbox is built
      and dropped identically from both photographs — a path dropped from only one side would read
-     as a deletion. It is never a name pattern: a debug log that APPEARS while the test runs still
-     fails it, because a live path minted during the run is the hardcoded-path shape this gate
-     exists to catch.
+     as a deletion. It is never a name pattern: a debug log that APPEARS while the test runs is
+     still photographed — one that settles is accused as the hardcoded-path shape this gate exists
+     to catch, and one still growing at the second look below is a live session's, excused there
+     and named.
    - A path that APPEARED counts as much as one that changed. The photograph dropped new paths
      beside the live prefix until 2026-08-08, on the reasoning that a new file there might belong to
      somebody else — and a state file re-hardcoded to a live path, the defect the harness's own
@@ -64,6 +97,50 @@ during the very investigation that produced these specs.
      destroyed. A real leak surfaces through the diff and is cleaned by a hand that read it; a
      stray clip is collected by the live instance's own hourly sweep. Held by
      `tests/test_sandbox_live_clips.sh`.
+   - The photograph can prove THAT a live path moved, never WHOSE hand moved it — and a live
+     evening is busy: the game harness rewrites its `/tmp` state every two seconds for hours, the
+     selfplay bench keeps the live games directory moving, a live session appends its logs. On
+     2026-08-28/29 that traffic handed the LEAK verdict, exit 2, to every run of every suite,
+     whatever its assertions found — and a genuine red inside a verdict that fires on every run is
+     a red dressed as the weather. So an accusation gets a SECOND LOOK before it becomes a
+     verdict: when the before and after photographs differ, the harness waits a settle interval
+     (`DESKCRAB_SANDBOX_SETTLE` seconds, default five — longer than the fastest known live
+     writer's cadence) and photographs a third time, then excuses a disputed path only on
+     causally clean foreign evidence. And because a live writer's quiet stretch can outlast any
+     single settle interval — the game engine and the bench movers go silent for the length of a
+     model call, which is how one acceptance run on 2026-08-29 accused a path settled that its
+     immediate retry excused still-moving — the second look is held open as a VIGIL: while
+     anything is still accused, the harness keeps waiting one settle interval and photographing
+     again, up to `DESKCRAB_SANDBOX_VIGIL` seconds in total (default sixty), and ends the vigil
+     the moment nothing is left accused. A clean run never sleeps at all; only a run already in
+     dispute pays, and a path still silent when the vigil runs out has had the whole window to
+     show a foreign hand. Three kinds of evidence. STILL MOVING: the path changed again between
+     the second photograph and any later one — the test was finished, its at-exit hooks run and
+     its assertions counted, so this cannot be its writing. HOT BEFORE: the path's mtime in the
+     before photograph sits within the settle interval of the moment that photograph was taken —
+     the test had not run yet, and the bench's burst writers, quiet longer than any settle
+     interval mid-model-call, are exactly this shape. TRANSIENT UNIT: a `-<moment>-<pid>` stamped
+     unit in the units or timers photograph, the shape `systemd-run` mints for wakes, jobs and
+     the watchers — inside the sandbox the user manager is unreachable by construction (no
+     session bus, a pinned runtime directory, stubbed tools), so no test can put one in the REAL
+     manager, while the self-change watcher's two-minute defer cycle mints and collects them
+     under whichever test spans it; a persistent unit's change stays accused. Excused paths are
+     NAMED, one line each, because a silent exclusion is how gates go blind. Motion evidence
+     flows one level between a directory and its direct children — a directory's mtime IS a
+     function of them — so a settled game file under a hot or still-moving live games directory
+     is that live writer's earlier stroke, excused with it; a settled SIBLING (the planted-leak
+     shape) never is. Everything else that moved during the run and then fell quiet stays
+     accused, exactly as this rule demands — including a concurrent hand's one-shot cold write,
+     which the harness cannot tell from a leak and does not pretend to. A background FILE writer
+     leaked by the code under test would excuse itself here; the witness logs and the persistent
+     units hold that shape, and the excused list prints either way so a reader sees what was
+     forgiven. A LEAK verdict
+     never drowns a failing assertion: the counted failures keep their FAIL lines and their exit
+     status, a leak beside them is reported beside them, and the runner quotes the first FAIL next
+     to the leak notice rather than replacing it. Held by `tests/test_sandbox.sh` — the mechanics
+     against crafted photographs, then a planted red and a planted leak each proven under a
+     live-shaped churn writer — and by `tests/test_state_prefix_isolation.sh`, whose own
+     photograph pair takes the same second look.
 10. **Spend.** A test MUST NOT start a real model session — on EITHER engine. The stub must be
     asserted as the **first** check of any test that dispatches work, so a configuration that
     overwrites the CLI path is caught before the money is spent. The codex CLI is stubbed from the
@@ -222,11 +299,20 @@ The harness tests itself:
 
 - `tests/test_sandbox.sh` — the helper pins every knob in the list; a test that tries to write a
   live path fails; a test that tries to book a real wake fails; a test that tries to start a real
-  model session fails.
+  model session fails; the photograph's named exclusions drop exactly the listed paths and
+  nothing beside them (a lookalike name, a finished job's log, a booking record all stay in);
+  the running-builder enumeration takes a live pid on a `running` sidecar and nothing less; the
+  leak check's second look excuses only what kept moving after the run (and its one-level
+  directory relatives), names it, and keeps a settled red accused — proven against crafted
+  photographs and then live, under a churn writer, where a planted assertion failure exits 1
+  with its FAIL line and a planted leak still exits 2 through the whole vigil, while a burst
+  writer whose next stroke misses the first settle window is still excused by a later round.
 - `tests/test_state_prefix_isolation.sh` — rules 13a-13b: a copy of the repo run with no override
   derives its own stable prefix, never the live one, and creates nothing under the live prefix; a
   canonical-install-shaped layout still resolves the live prefix; an explicit
-  `DESKCRAB_STATE_PREFIX` beats both; the choice, and the reason it was made, are recorded.
+  `DESKCRAB_STATE_PREFIX` beats both; the choice, and the reason it was made, are recorded. Its
+  own photograph pair takes the harness's second look, so a concurrent live writer no longer
+  flips its no-touch assertions.
 - `tests/test_exec_bits.sh` — rule 19's committed half: the tracked roll call from the index is
   non-empty and includes this file itself, no tracked `tests/test_*.sh` is committed mode 100644,
   and every one carries the bit on disk. Scope is deliberately the TRACKED list, so an untracked

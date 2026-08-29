@@ -146,7 +146,11 @@ run_one() { # <name> <log> <rc> <secs>
         124) FAILED=$(( FAILED + 1 )); FAILED_NAMES+=("$name")
             report FAIL "$name" "$secs" "timed out after ${TIMEOUT}s" ;;
         2)  FAILED=$(( FAILED + 1 )); FAILED_NAMES+=("$name")
-            report FAIL "$name" "$secs" "LEAKED INTO LIVE STATE" ;;
+            # The leak never drowns a red: a failing assertion is quoted
+            # beside the verdict rather than replaced by it.
+            detail="$(grep -m1 '^ *FAIL' "$log" | sed 's/^ *//')"
+            report FAIL "$name" "$secs" \
+                "LEAKED INTO LIVE STATE${detail:+ — and: $detail}" ;;
         *)  FAILED=$(( FAILED + 1 )); FAILED_NAMES+=("$name")
             detail="$(grep -m1 '^ *FAIL' "$log" | sed 's/^ *//')"
             report FAIL "$name" "$secs" "${detail:-exit $rc}" ;;
