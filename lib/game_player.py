@@ -3019,10 +3019,11 @@ def cmd_reply(args):
     if status == "done":
         status = verify_chat_delivery(action, baseline_message_id)
 
+    undeliverable = status == "refused-server" and action["type"] == "chat-private"
     with player_state_lock():
         est = load_player_state()
         est["inflight"] = None
-        if status == "done":
+        if status == "done" or undeliverable:
             est["pending_messages"] = [m for m in est["pending_messages"]
                     if not (m["channel"] == pending["channel"]
                             and m["sender"].casefold() == pending["sender"].casefold()
@@ -3035,11 +3036,20 @@ def cmd_reply(args):
                        "channel": pending["channel"], "sender": pending["sender"],
                        "reply_channel": "private" if action["type"] == "chat-private" else "local",
                        "status": status}])
-    report("replied", message_id=pending["id"], action_id=action_id,
-           channel=pending["channel"], sender=pending["sender"],
-           reply_channel="private" if action["type"] == "chat-private" else "local",
-           status=status)
-    if status != "done":
+    if undeliverable:
+        flush_events([{"ts": now_ms(), "kind": "player-message-undeliverable",
+                       "message_id": pending["id"], "sender": pending["sender"],
+                       "reply": text, "reason": status,
+                       "next": "resume-play-and-answer-when-the-player-returns"}])
+        report("reply-undeliverable", message_id=pending["id"], action_id=action_id,
+               sender=pending["sender"], reason=status, pending="cleared",
+               next="resume-play")
+    else:
+        report("replied", message_id=pending["id"], action_id=action_id,
+               channel=pending["channel"], sender=pending["sender"],
+               reply_channel="private" if action["type"] == "chat-private" else "local",
+               status=status)
+    if status != "done" and not undeliverable:
         sys.exit(EXIT_NOT_DONE)
 
 

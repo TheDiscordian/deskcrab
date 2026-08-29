@@ -243,8 +243,11 @@ deliberate-play channel.
    dispatch; only the matching outgoing message echo in a later snapshot proves server acceptance
    and marks the message handled. Matching compares the same case-insensitive word sequence because
    the Classic chat codec can discard punctuation and normalize capitalization; those transformations
-   do not license a duplicate retry. A refusal, a server error, or an unconfirmed dispatch leaves it
-   pending. Handling one message also
+   do not license a duplicate retry. An unconfirmed dispatch or ordinary action refusal leaves it
+   pending. One grounded server `Unable to send message` response to a private fallback proves the
+   absent target cannot currently be answered: it records `player-message-undeliverable`, clears that
+   settled burst, and resumes play instead of retrying forever. The attempted reply stays in the
+   decision log so it can be answered naturally when the player returns. Handling one message also
    handles older pending messages from the same sender and channel, allowing one concise response
    to cover a burst without producing stale replies. Once an incoming message's settle window has
    closed, the autonomous player's direct movement, interaction, and screen-input doors exit 6 and

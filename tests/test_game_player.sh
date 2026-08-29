@@ -61,19 +61,23 @@ for _ in range(100):
         open(os.path.join(sd, "last-action"), "w").write(body)
         fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
         os.remove(ap)
-        delivered = status in ("done", "done-normalized")
+        delivered = status in ("done", "done-normalized", "done-server-refused")
         if delivered and fields.get("type") in ("chat-local", "chat-private"):
             state_path = os.path.join(sd, "state.json")
             state = json.load(open(state_path))
             messages = state.setdefault("messages", [])
             next_id = max([m.get("id", 0) for m in messages if isinstance(m, dict)] + [0]) + 1
-            echo_text = fields["text"]
-            if status == "done-normalized":
-                echo_text = re.sub(r"[^A-Za-z0-9' ]+", "", echo_text).replace("PM", "Pm")
-            messages.append({"id": next_id,
-                "channel": "private" if fields["type"] == "chat-private" else "local",
-                "incoming": False, "sender": fields.get("target", "Player"),
-                "text": echo_text})
+            if status == "done-server-refused":
+                messages.append({"id": next_id, "channel": "game", "incoming": False,
+                    "sender": "", "text": "Unable to send message - player unavailable"})
+            else:
+                echo_text = fields["text"]
+                if status == "done-normalized":
+                    echo_text = re.sub(r"[^A-Za-z0-9' ]+", "", echo_text).replace("PM", "Pm")
+                messages.append({"id": next_id,
+                    "channel": "private" if fields["type"] == "chat-private" else "local",
+                    "incoming": False, "sender": fields.get("target", "Player"),
+                    "text": echo_text})
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
         if delivered and fields.get("type") in (
@@ -2076,6 +2080,9 @@ contains "$OUT" "betty-openrsc remember" \
 contains "$OUT" "backtrack history" \
     && ok "the composed player knows its timestamped movement memory" \
     || fail "the composed player knows its timestamped movement memory" "$OUT"
+contains "$OUT" "reply-undeliverable" \
+    && ok "the composed player cannot loop on an unavailable reply target" \
+    || fail "the composed player needs the unavailable-reply release" "$OUT"
 refute "irrelevant desk-life recall is not carried into a play prompt" \
     grep -q 'IRRELEVANT-DESK-LIFE-MARKER' <<<"$OUT"
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "recall-block" \
@@ -2255,6 +2262,9 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "failed command sequence is e
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh backtrack" \
     && ok "the resumed thread receives observed-path recovery" \
     || fail "the resumed thread receives observed-path recovery"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "reply-undeliverable" \
+    && ok "the resumed thread receives unavailable-reply recovery" \
+    || fail "the resumed thread receives unavailable-reply recovery"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \
@@ -2543,6 +2553,33 @@ check_eq "the private fallback retains the original sender" "$(last_action 'targ
 contains "$OUT" "reply_channel=private" \
     && ok "the reply verdict makes the channel switch explicit" \
     || fail "the reply verdict should name the private fallback" "$OUT"
+
+snap 14525 '[]' '{"players":[],"messages":[
+    {"id":9005,"channel":"local","incoming":true,"sender":"Gone Friend","text":"See you later"}
+]}'
+python3 "$GP" step --local >/dev/null 2>&1 || true
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s['message_settle_until'] = 0
+json.dump(s, open(sys.argv[1], 'w'))
+PY
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "a departed sender's settled message still gets one reply attempt" "$CODE" "6"
+fake_bridge done-server-refused
+CODE=0; OUT="$(python3 "$GP" reply 9005 'See you next time')" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "an unavailable private target releases play after one grounded refusal" "$CODE" "0"
+contains "$OUT" "reply-undeliverable" \
+    && contains "$OUT" "pending=cleared" \
+    && ok "the verdict names the missed reply without pretending it was delivered" \
+    || fail "the unavailable-player verdict must be explicit" "$OUT"
+check_eq "the undeliverable conversation cannot block every later action" \
+    "$(sandbox_count_in '"id":[[:space:]]*9005' "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json")" "0"
+grep -q '"kind":"player-message-undeliverable"' \
+        "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl" \
+    && ok "the missed response is retained for when that player returns" \
+    || fail "the missed response must remain durable evidence"
 
 snap 146 '[]' '{"messages":[
     {"id":9001,"channel":"local","incoming":true,"sender":"Nearby Friend","text":"Try the east"},
