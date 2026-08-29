@@ -300,6 +300,33 @@ which fails silently is worse than one that does not exist.
     (`journal/2026-08-23.jsonl` was reported at 03:26 although the journaller is the only writer
     on the machine). A deletion there still surfaces — a vanished day of the journal is exactly
     the kind of news rule 28 exists for.
+25e. The private shadow diff. `deskcrab.conf` is not git-tracked, so an outside edit to the file
+    that sets her model, effort, voice and accounts woke her with "no diff available" and nothing
+    else (2026-08-28 10:15, and again blind at 12:31 — the record
+    `the-watcher-cannot-diff-the-file-that-configures`). For every watched constituent that is a
+    TEXT file no git repository tracks — the live conf, the persona sheet, anything
+    `SELF_WATCH_EXTRA` names outside a repo, an untracked file inside the code repo — the watcher
+    keeps a persistent private shadow copy under the data dir
+    (`~/.local/share/deskcrab/self-shadows/<absolute path>`, override
+    `NOTICE_SELF_SHADOW_DIR`), and the report renders a unified diff from the shadow when such a
+    file surfaces. The shadow is refreshed ONLY after the report has landed at its final name, so
+    a burst of edits between reports shows the whole distance travelled, and a report that could
+    not be written leaves the old shadow — and the unshown distance — intact for the next
+    attempt; a change judged her own advances the shadow at judgement, with no report, so her own
+    hand is never billed to the next outside diff. Bounded and explicit, never silently partial:
+    a file over the cap (`NOTICE_SELF_SHADOW_MAX`, default 1 MiB) is named too large with its
+    size, and never copied; a binary file is named binary; an unreadable one unreadable; a file
+    already gone again says so; a deletion names the retained shadow — kept, never dropped, so
+    the last-seen content stays recoverable — and never inlines it; a diff past
+    `NOTICE_SELF_SHADOW_DIFF_LINES` (default 400) is cut with the cut named. The conf holds
+    secrets (`SERVE_SECRET`), so the shadow tree is 0700, its copies and every report 0600, and a
+    diff reaches the report file and nowhere else — never the wake text, the log, stdout, or a
+    notification. Git-tracked files in the code repo keep their git diffs exactly as before, and
+    a file tracked by a git repository of its own (a conduct file) keeps its commits as the
+    record and gets no shadow. The manual baselines the 2026-08-28 stopgap left under
+    `self-baselines/` are incorporated, never silently discarded: the first shadow of a conf-dir
+    file with a same-named manual baseline seeds FROM the baseline, so the first report after
+    this rule lands still diffs from the last state a hand recorded.
 26. Write declarations come in two tiers. A **strong** declaration means the path was in a provable
     write position and excuses anything, including a subtree. A **weak** declaration means the path
     merely appeared in a command she ran, and excuses exact paths only, never a deletion.
@@ -716,6 +743,8 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/state/deskcrab/notice-self.declared.log` | the watcher | one line per harvest |
 | `~/.local/state/deskcrab/streams/<epoch>-<pid>.jsonl` | the watcher | archived stream, evidence only |
 | `~/.local/state/deskcrab/notice-self.heartbeat` | the emitter | the number the canary watches |
+| `~/.local/share/deskcrab/self-shadows/` | the watcher | rule 25e: private (0700 tree, 0600 copies) shadows of the non-git text constituents, mirrored by absolute path; refreshed only after a report lands, or at judgement for her own quiet writes |
+| `~/.local/share/deskcrab/self-baselines/` | her, by hand | the 2026-08-28 manual stopgap copies; rule 25e seeds a conf-dir file's first shadow from its same-named baseline, and the drawer stays as history |
 | `~/.local/state/deskcrab/canary-self.log` | the canary | one line per check |
 | `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
 | `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
@@ -775,12 +804,20 @@ reaches her through an event wake or through a record she reads.
 
 ## TESTS
 
-**Existing:** `tests/test_notice_selfchange.sh` — 50 assertions in the most hermetic sandbox in the
+**Existing:** `tests/test_notice_selfchange.sh` — 90 assertions in the most hermetic sandbox in the
 suite, and the model for every other test; among them, `.git` internals under a watched drawer and
 under an extra watch directory fire nothing (rule 25a), and the run window both ways (rule 25b): a
 write whose mtime sits inside her own window — a live registration, a finished session's log line,
 a reaped `?`-duration line, or the grace just past the end — stays quiet, while the same write with
-no session running still fires exactly one wake, and a deletion inside a live window still surfaces.
+no session running still fires exactly one wake, and a deletion inside a live window still surfaces;
+and the shadow diffs (rule 25e) end to end: a one-line outside edit to the non-git conf reports its
+own unified hunk, seeded from the manual baseline so the pre-shadow drift shows too, with the shadow
+tree 0700, the copies and the report 0600, and not a byte of diff in the wake text, the log, or on
+stdout; a report that cannot land keeps the old shadow, logs the failure, and the next report shows
+the whole distance across both edits; a quiet write of her own advances the shadow with no report; a
+deletion names the retained shadow and keeps it; an over-cap file is named too large and never
+copied; a binary file and an unreadable one are each named for what they are, the prior shadow
+retained.
 `tests/test_notice_jobclaim.sh` — rules 25c and 25d both ways, against a fabricated jobs ledger and
 a scratch tree: a running job's save, three successive saves, a committed change, and two concurrent
 jobs' writes all stay quiet with the job id on the quiet line; a deletion under a live claim still

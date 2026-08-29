@@ -106,12 +106,107 @@ JOBWIN_GRACE="${NOTICE_SELF_JOBWIN_GRACE:-600}"
 # ledger has ever recorded is 3.2 hours, so a day cuts no real builder short,
 # while a sidecar orphaned by a crashed runner cannot hold a tree indefinitely.
 JOBWIN_CEILING="${NOTICE_SELF_JOBWIN_CEILING:-86400}"
+# Private shadows of the non-git constituents (spec rule 25e). deskcrab.conf
+# is not git-tracked, so an outside edit to the file that configures her used
+# to report blind (2026-08-28, twice in one day). Every watched TEXT file no
+# git repository tracks keeps a copy under the data dir, mirrored by absolute
+# path; the report diffs against it, and the copy advances only after the
+# report has landed — so a burst of edits between reports shows the whole
+# distance. The conf holds secrets, so the tree is 0700, every copy and every
+# report 0600, and a diff reaches the report file and nowhere else.
+SHADOW_DIR="${NOTICE_SELF_SHADOW_DIR:-$DATA_DIR/self-shadows}"
+BASELINES_DIR="$DATA_DIR/self-baselines"   # the 2026-08-28 manual stopgap drawer
+SHADOW_MAX="${NOTICE_SELF_SHADOW_MAX:-1048576}"            # bytes; larger files are named, never copied
+SHADOW_DIFF_LINES="${NOTICE_SELF_SHADOW_DIFF_LINES:-400}"  # report diff bound
 
 TAB=$'\t'
 NOW=$(date +%s)
 mkdir -p "$STATE_DIR"
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOGFILE"; }
+
+# --- the shadow drawer: private baselines for what git cannot diff -----------
+# (spec rule 25e). Nothing in here ever writes a byte of file content to the
+# log, to stdout, or into a wake — the report file is the only place a diff
+# lands, and it is 0600. Defined above the snapshot flow because the seed and
+# no-change paths call ensure_shadows before the judgement machinery exists.
+declare -A _GITDIR_CACHE
+git_covered() {  # <path> — tracked by whatever git repository contains it.
+    # The per-directory cache keeps the extra watch set (thousands of files,
+    # no repo anywhere near them) at one failed rev-parse per directory.
+    local d c; d="$(dirname "$1")"
+    c="${_GITDIR_CACHE[$d]:-}"
+    if [ -z "$c" ]; then
+        if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then c=repo; else c=norepo; fi
+        _GITDIR_CACHE[$d]="$c"
+    fi
+    [ "$c" = repo ] || return 1
+    git -C "$d" ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+is_text() {  # <path> — empty counts as text; grep -I decides the rest
+    [ ! -s "$1" ] || grep -qI '' -- "$1" 2>/dev/null
+}
+
+shadow_eligible() {  # <path> — a readable non-git text file inside the cap
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    local sz; sz="$(stat -c %s -- "$1" 2>/dev/null)" || return 1
+    case "$sz" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$sz" -le "$SHADOW_MAX" ] || return 1
+    is_text "$1" || return 1
+    ! git_covered "$1"
+}
+
+shadow_install() {  # <src> <shadow path> — 0600 under a 0700 tree, atomically
+    ( umask 077; mkdir -p "$(dirname "$2")" ) 2>/dev/null || return 1
+    cp -- "$1" "$2.new.$$" 2>/dev/null || { rm -f -- "$2.new.$$"; return 1; }
+    chmod 600 "$2.new.$$" 2>/dev/null
+    mv -f -T -- "$2.new.$$" "$2" 2>/dev/null
+}
+
+refresh_shadow() {  # <path> — record the file as it stands right now
+    shadow_install "$1" "$SHADOW_DIR$1"
+}
+
+seed_shadow() {  # <path> — first sighting. A conf-dir file with a same-named
+    # manual baseline seeds FROM the baseline (the 2026-08-28 stopgap drawer,
+    # incorporated rather than discarded), so the first report after this
+    # feature lands still diffs from the last state a hand recorded.
+    local sp b; sp="$SHADOW_DIR$1"
+    [ -e "$sp" ] && return 0
+    b="$BASELINES_DIR/$(basename "$1")"
+    if [ "$(dirname "$1")" = "$CONF_DIR" ] && [ -f "$b" ] \
+        && [ "$(basename "$1")" != "README.md" ]; then
+        shadow_install "$b" "$sp"
+    else
+        shadow_install "$1" "$sp"
+    fi
+}
+
+ensure_shadows() {  # <snapshot file> — the one-time full seed. After it, the
+    # marker makes this a single stat on every trigger; new files are seeded
+    # as they surface through judgement.
+    [ -f "$SHADOW_DIR/.seeded" ] && return 0
+    ( umask 077; mkdir -p "$SHADOW_DIR" ) 2>/dev/null || return 1
+    chmod 700 "$SHADOW_DIR" 2>/dev/null
+    # One git call covers the whole code repo; everything else is judged per
+    # file, the per-directory cache doing the heavy lifting.
+    local tracked n=0 p
+    tracked="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-trk.XXXXXX")"
+    git -C "$SCRIPT_DIR" ls-files --cached 2>/dev/null \
+        | awk -v r="$SCRIPT_DIR/" '{print r $0}' > "$tracked"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        [ -e "$SHADOW_DIR$p" ] && continue
+        shadow_eligible "$p" || continue
+        seed_shadow "$p" && n=$(( n + 1 ))
+    done < <(awk -F'\t' -v tf="$tracked" '
+        BEGIN { while ((getline line < tf) > 0) t[line] = 1 }
+        !($2 in t) { print $2 }' "$1")
+    rm -f -- "$tracked"
+    : > "$SHADOW_DIR/.seeded"
+    log "shadows seeded ($n files)"
+}
 
 # Proof of life, stamped before any early exit: a watcher that has quietly
 # stopped being triggered is indistinguishable from a world where nothing
@@ -168,6 +263,7 @@ if [ ! -f "$SNAP" ]; then
     mv "$CUR" "$SNAP"
     printf '%s\n' "$NOW" > "$JUDGED"
     log "seeded ($(wc -l < "$SNAP") files)"
+    ensure_shadows "$SNAP"
     exit 0
 fi
 
@@ -181,6 +277,7 @@ CHANGES="$(awk -F'\t' '
     }' "$SNAP" "$CUR" | sort)"
 
 if [ -z "$CHANGES" ]; then
+    ensure_shadows "$CUR"
     rm -f "$CUR"
     printf '%s\n' "$NOW" > "$JUDGED"
     exit 0
@@ -502,7 +599,7 @@ recent_activity() {
     return 1
 }
 
-FIRE_KIND=() FIRE_PATH=()
+FIRE_KIND=() FIRE_PATH=() QUIET_FRESH=()
 while IFS="$TAB" read -r kind path; do
     [ -n "$path" ] || continue
     why=""
@@ -533,6 +630,7 @@ while IFS="$TAB" read -r kind path; do
     fi
     if [ -n "$why" ]; then
         log "quiet: $kind $path ($why)"
+        [ "$kind" != "deleted" ] && QUIET_FRESH+=("$path")
     else
         FIRE_KIND+=("$kind"); FIRE_PATH+=("$path")
     fi
@@ -544,13 +642,115 @@ mv "$CUR" "$SNAP"
 printf '%s\n' "$NOW" > "$JUDGED"
 rm -f "$ACTIVE" "$RUNWINS"
 
+# A suppressed change was hers: its state is judged and known, so the shadow
+# advances with it now, with no report — otherwise her own edits would be
+# billed to the next outside hand's diff (spec rule 25e).
+for p in ${QUIET_FRESH[@]+"${QUIET_FRESH[@]}"}; do
+    shadow_eligible "$p" && refresh_shadow "$p"
+done
+
 if [ "${#FIRE_PATH[@]}" -eq 0 ]; then
+    ensure_shadows "$SNAP"
     exit 0
 fi
 
 # --- the report: what changed, when, and the diff where git knows it ---------
+# Written to a private temp first (mktemp's 0600 survives the mv), the shadow
+# staging beside it: the shadows advance ONLY once the report holding their
+# diffs is safely on disk at its final name, so a report that could not land
+# leaves the old shadow — and the unshown distance — intact for the next
+# attempt (spec rule 25e).
 REPORT="$STATE_DIR/notice-self-report-$NOW.md"
-{
+STAGE_PATH=() STAGE_FILE=()
+
+# Report lines for a path the code repo cannot diff. Prints to the report
+# ONLY — the diff may carry secrets, so not a line of it goes to the log, the
+# wake text, or stdout. Stages the refreshed shadow beside the real one; the
+# caller installs the stage only after the report lands.
+shadow_report() {  # <kind> <path>
+    local kind="$1" p="$2" sp stage base label dtmp rc lines size
+    sp="$SHADOW_DIR$p"
+    if [ "$kind" = "deleted" ]; then
+        if [ -f "$sp" ]; then
+            echo "- the last content this watcher saw is held privately at: $sp"
+        else
+            echo "- no shadow was kept (tracked elsewhere, binary, oversize, or never seen); the content is not recoverable here"
+        fi
+        return 0
+    fi
+    if [ ! -e "$p" ]; then
+        echo "- already gone again; nothing to diff"
+        return 0
+    fi
+    if [ ! -r "$p" ]; then
+        echo "- unreadable (permissions); no diff"
+        [ -f "$sp" ] && echo "- the last readable state stands at: $sp"
+        return 0
+    fi
+    if git_covered "$p"; then
+        echo "- tracked by a git repository of its own; the commits there are the record, no shadow kept"
+        return 0
+    fi
+    size="$(stat -c %s -- "$p" 2>/dev/null || echo 0)"
+    if [ "$size" -gt "$SHADOW_MAX" ]; then
+        echo "- too large for a shadow diff ($size bytes; cap $SHADOW_MAX)"
+        [ -f "$sp" ] && echo "- the prior shadow stands, stale, at: $sp"
+        return 0
+    fi
+    if ! is_text "$p"; then
+        echo "- not a text file; no diff"
+        [ -f "$sp" ] && echo "- the last text state stands at: $sp"
+        return 0
+    fi
+    # Stage the exact bytes this report describes: the diff below and the
+    # shadow that replaces the old one after the report lands are one copy.
+    ( umask 077; mkdir -p "$(dirname "$sp")" ) 2>/dev/null
+    stage="$sp.stage.$$"
+    if ! cp -- "$p" "$stage" 2>/dev/null; then
+        rm -f -- "$stage"
+        echo "- could not copy the file for a shadow; no diff"
+        return 0
+    fi
+    chmod 600 "$stage" 2>/dev/null
+    base="$sp" label="the last shadow"
+    if [ ! -f "$sp" ]; then
+        base="" label=""
+        # First sighting. A conf-dir file may have a manual baseline from the
+        # 2026-08-28 stopgap drawer — incorporated, never silently discarded.
+        if [ "$(dirname "$p")" = "$CONF_DIR" ] \
+            && [ "$(basename "$p")" != "README.md" ] \
+            && [ -f "$BASELINES_DIR/$(basename "$p")" ]; then
+            base="$BASELINES_DIR/$(basename "$p")"
+            label="the manual baseline (self-baselines)"
+        fi
+    fi
+    if [ -z "$base" ]; then
+        echo "- first sighting: no prior shadow; one is kept privately from now on"
+    else
+        dtmp="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-diff.XXXXXX")"
+        diff -u --label "$p ($label)" --label "$p (now)" -- "$base" "$stage" > "$dtmp" 2>/dev/null
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "- content identical to $label (metadata-only change)"
+        elif [ "$rc" -eq 1 ]; then
+            lines="$(wc -l < "$dtmp")"
+            echo "- private diff from $label:"
+            echo '```diff'
+            head -n "$SHADOW_DIFF_LINES" "$dtmp"
+            [ "$lines" -gt "$SHADOW_DIFF_LINES" ] \
+                && echo "[diff truncated at $SHADOW_DIFF_LINES of $lines lines]"
+            echo '```'
+        else
+            echo "- diff against $label failed; the shadow is refreshed without one"
+        fi
+        rm -f -- "$dtmp"
+    fi
+    STAGE_PATH+=("$p"); STAGE_FILE+=("$stage")
+    return 0
+}
+
+RTMP="$(mktemp "$STATE_DIR/notice-self-report-tmp.XXXXXX" 2>/dev/null)" || RTMP=""
+[ -n "$RTMP" ] && {
     echo "# Outside changes to your own files — $(date '+%F %T')"
     echo
     echo "These paths are part of you and changed on disk without a touching"
@@ -599,16 +799,30 @@ REPORT="$STATE_DIR/notice-self-report-$NOW.md"
                             fi
                         fi
                     else
-                        echo "- in the repo but not git-tracked; no diff available"
+                        echo "- in the repo but not git-tracked"
+                        shadow_report "$want_kind" "$path"
                     fi
                     ;;
                 *)
-                    echo "- not git-tracked; no diff available"
+                    shadow_report "$want_kind" "$path"
                     ;;
             esac
         done
     done
-} > "$REPORT"
+} > "$RTMP" 2>/dev/null
+if [ -n "$RTMP" ] && mv -T -- "$RTMP" "$REPORT" 2>/dev/null; then
+    # The report is on disk under its final name: NOW the shadows may advance.
+    for i in "${!STAGE_PATH[@]}"; do
+        mv -f -T -- "${STAGE_FILE[$i]}" "$SHADOW_DIR${STAGE_PATH[$i]}" 2>/dev/null \
+            || rm -f -- "${STAGE_FILE[$i]}"
+    done
+else
+    # The report never landed. The old shadows — and the distance they still
+    # hold — stay exactly as they were, for the next attempt to show whole.
+    rm -f -- ${RTMP:+"$RTMP"} ${STAGE_FILE[@]+"${STAGE_FILE[@]}"}
+    log "report write FAILED ($REPORT); shadows left as they were"
+fi
+ensure_shadows "$SNAP"
 ls -1t "$STATE_DIR"/notice-self-report-*.md 2>/dev/null \
     | tail -n +"$(( KEEP_REPORTS + 1 ))" | xargs -r rm -f
 

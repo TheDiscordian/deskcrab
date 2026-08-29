@@ -32,6 +32,14 @@ git -C "$T/repo" -c user.email=t@t -c user.name=t commit -qm seed
 : > "$DESKCRAB_CONF"
 echo "SELF_WATCH_EXTRA=$T/library" >> "$DESKCRAB_CONF"
 
+# The manual-baseline drawer of the 2026-08-28 stopgap (rule 25e): a conf-dir
+# file with a same-named baseline gets IT as its first shadow, so the first
+# report still diffs from the last state a hand recorded. Planted before the
+# seed run on purpose — the seeding is what must pick it up.
+mkdir -p "$T/data/deskcrab/self-baselines"
+printf 'OLD_KNOB=1\nSELF_WATCH_EXTRA=%s\n' "$T/library" \
+    > "$T/data/deskcrab/self-baselines/deskcrab.conf"
+
 # A deferral must FAIL here: a real one would book a transient timer on the
 # live user manager that re-runs the emitter without the sandbox environment.
 # The emitter treats a failed deferral as "judge now" — which is also exactly
@@ -306,3 +314,122 @@ echo "an outside hand entirely" >> "$T/data/deskcrab/conduct/new-rule.md"
 run
 check "outside write with no session running fires exactly one wake" [ "$(wakes)" = 15 ]
 check "the outside write is named" contains "$(last_wake)" "modified: new-rule.md"
+
+echo "== rule 25e: a one-line outside edit to the non-git conf reports its own hunk =="
+# The 2026-08-28 incident: deskcrab.conf is not git-tracked, so the report
+# could only say "no diff available". The shadow drawer fixes that, and the
+# first shadow of a conf-dir file comes from the manual-baseline stopgap
+# drawer, so even pre-shadow drift shows in the first report.
+SHADOWS="$T/data/deskcrab/self-shadows"
+check "shadow drawer was seeded on the first run" test -f "$SHADOWS/.seeded"
+check "the conf's first shadow came from the manual baseline" \
+    grep -q "OLD_KNOB=1" "$SHADOWS$DESKCRAB_CONF"
+echo "# marker-line-from-an-outside-hand" >> "$DESKCRAB_CONF"
+OUT="$(run 2>/dev/null)"
+check "conf edit fires a wake" [ "$(wakes)" = 16 ]
+check "the emitter put nothing on stdout" [ -z "$OUT" ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+check "report carries a private shadow diff" \
+    grep -q "private diff from the last shadow" "$REPORT"
+check "the added line is in the hunk" \
+    grep -q "^+# marker-line-from-an-outside-hand" "$REPORT"
+check "the baseline drift shows too — the whole distance, not the last save" \
+    grep -q "^-OLD_KNOB=1" "$REPORT"
+check "not a byte of diff in the wake text" \
+    bash -c "! grep -q 'OLD_KNOB\|marker-line' '$T/wake-calls'"
+check "not a byte of diff in the watcher log" \
+    bash -c "! grep -q 'OLD_KNOB\|marker-line' '$STATE/notice-self.log'"
+
+echo "== and every copy of it is private to the user =="
+check "the shadow tree is 0700" [ "$(stat -c %a "$SHADOWS")" = 700 ]
+check "the conf shadow is 0600" [ "$(stat -c %a "$SHADOWS$DESKCRAB_CONF")" = 600 ]
+check "the report is 0600" [ "$(stat -c %a "$REPORT")" = 600 ]
+check "the shadow advanced to the reported state once the report landed" \
+    cmp -s "$SHADOWS$DESKCRAB_CONF" "$DESKCRAB_CONF"
+
+echo "== a report that cannot land leaves the shadow — and the distance — intact =="
+# Clear the report drawer first: sections run fast enough that an earlier
+# report can share this second's epoch, and mkdir -p quietly loses to a FILE
+# already wearing the name the blockade needs.
+rm -f "$STATE"/notice-self-report-*.md
+NOW=$(date +%s)
+for i in $(seq "$NOW" $(( NOW + 20 ))); do mkdir -p "$STATE/notice-self-report-$i.md"; done
+echo "EDIT_ONE=yes" >> "$DESKCRAB_CONF"
+run
+check "the wake still fires when the report cannot land" [ "$(wakes)" = 17 ]
+check "the failure is named in the log" grep -q "report write FAILED" "$STATE/notice-self.log"
+check "the old shadow is untouched" \
+    bash -c "! grep -q EDIT_ONE '$SHADOWS$DESKCRAB_CONF'"
+check "no stage file was left behind" \
+    bash -c "! ls '$SHADOWS$DESKCRAB_CONF'.stage.* >/dev/null 2>&1"
+for d in "$STATE"/notice-self-report-*.md; do [ -d "$d" ] && rmdir "$d"; done
+
+echo "== the next report then shows the whole distance across both edits =="
+echo "EDIT_TWO=yes" >> "$DESKCRAB_CONF"
+run
+check "fires again for the second edit" [ "$(wakes)" = 18 ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+check "the first edit is in the hunk though its own report never landed" \
+    grep -q "^+EDIT_ONE=yes" "$REPORT"
+check "the second edit is beside it" grep -q "^+EDIT_TWO=yes" "$REPORT"
+check "the shadow now advances past both" grep -q "EDIT_TWO" "$SHADOWS$DESKCRAB_CONF"
+
+echo "== a quiet write of her own advances the shadow with no report =="
+NOW=$(date +%s)
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+echo "precious cargo" > "$T/library/precious.md"
+run
+check "her own creation stays quiet" [ "$(wakes)" = 18 ]
+check "the quiet creation still grew a shadow" test -f "$SHADOWS$T/library/precious.md"
+check "the shadow holds the content" grep -q "precious cargo" "$SHADOWS$T/library/precious.md"
+
+echo "== a deletion names the retained shadow and keeps it =="
+rm "$T/library/precious.md"
+run
+check "the deletion fires" [ "$(wakes)" = 19 ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+check "the report names the retained shadow" \
+    grep -qF "held privately at: $SHADOWS$T/library/precious.md" "$REPORT"
+check "the shadow survives the deletion" test -f "$SHADOWS$T/library/precious.md"
+check "its content is still recoverable" grep -q "precious cargo" "$SHADOWS$T/library/precious.md"
+
+echo "== a file over the cap is named too large and never copied =="
+NOW=$(date +%s)
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+seq 1 200 > "$T/library/big.md"          # ~700 bytes against a 512-byte cap
+NOTICE_SELF_SHADOW_MAX=512 run           # creation: quiet; the refresh must skip it
+check "over-cap quiet creation takes no shadow" test ! -e "$SHADOWS$T/library/big.md"
+echo "201" >> "$T/library/big.md"
+NOTICE_SELF_SHADOW_MAX=512 run           # modification: fires
+check "over-cap modification fires" [ "$(wakes)" = 20 ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+check "named too large, size and cap stated" grep -q "too large for a shadow diff" "$REPORT"
+check "still no shadow copy of it" test ! -e "$SHADOWS$T/library/big.md"
+
+echo "== a binary file is named binary — no diff, no shadow =="
+NOW=$(date +%s)
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+printf 'BLOB\x00\x01\x02' > "$T/library/blob.dat"
+run   # creation: quiet; the refresh must skip a non-text file
+check "no shadow of the binary from the quiet pass" test ! -e "$SHADOWS$T/library/blob.dat"
+printf '\x03\x04' >> "$T/library/blob.dat"
+run
+check "binary modification fires" [ "$(wakes)" = 21 ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+check "named not a text file" grep -q "not a text file; no diff" "$REPORT"
+check "still no shadow of it" test ! -e "$SHADOWS$T/library/blob.dat"
+
+echo "== an unreadable file is named unreadable, the old shadow retained =="
+NOW=$(date +%s)
+printf '%s\t%s\tweak\n' "$(( NOW + 600 ))" "$T/library" >> "$STATE/notice-self.suppress"
+echo "readable era" > "$T/library/dark.md"
+run   # quiet creation; the shadow is taken while it can be
+check "shadow taken while readable" grep -q "readable era" "$SHADOWS$T/library/dark.md"
+chmod 000 "$T/library/dark.md"
+touch "$T/library/dark.md"
+run
+check "unreadable modification fires" [ "$(wakes)" = 22 ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+check "named unreadable" grep -q "unreadable (permissions); no diff" "$REPORT"
+check "the readable-era shadow is retained" grep -q "readable era" "$SHADOWS$T/library/dark.md"
+chmod 644 "$T/library/dark.md"
