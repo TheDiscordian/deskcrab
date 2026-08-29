@@ -62,3 +62,59 @@ else
 $BAD_DISK
 EOF
 fi
+
+# ---------------------------------------------------------------------------
+# The door. Everything above names a fault a commit already created — and
+# three days after this file landed, tests/test_wake_idle_return.sh landed
+# 100644 anyway, because a report is not a gate. The gate lives where every
+# new test must walk (rule 18: red before the fix, so its author RUNS it):
+# the sandbox's phase 1 refuses a test file that is missing the bit, before
+# it builds anything. Driven the way test_sandbox_live_clips.sh drives its
+# child — a scratch test through the real sandbox, phase 1 fresh.
+
+echo
+echo "the sandbox door refuses a test that is missing the bit on disk:"
+FIXTURE="$SANDBOX/tmp/test_gate_fixture.sh"
+cat > "$FIXTURE" <<FIXTURE
+#!/bin/bash
+. "$SANDBOX_REPO/tests/lib/sandbox.sh"
+ok "the gate let an executable test run"
+FIXTURE
+# Deliberately no chmod: mode 644 is exactly the shape a fresh Write lands.
+OUT="$(env -u DESKCRAB_SANDBOX_ROOT -u DESKCRAB_SANDBOX_REPO \
+        -u DESKCRAB_SANDBOX_LIB -u DESKCRAB_SANDBOX_NAME \
+        bash "$FIXTURE" 2>&1)" && RC=0 || RC=$?
+check "the run is refused, not passed" [ "$RC" -ne 0 ]
+check "the refusal names the one-chmod fix" contains "$OUT" "chmod +x"
+check "the refusal is at the door — the test body never ran" \
+    bash -c 'case "$1" in *"the gate let an executable test run"*) exit 1;; *) exit 0;; esac' _ "$OUT"
+
+echo
+echo "and refuses one staged 100644 even when the disk carries the bit:"
+MODEREPO="$SANDBOX/tmp/modes-repo"
+mkdir -p "$MODEREPO/tests"
+git -C "$MODEREPO" -c init.defaultBranch=main init -q 2>/dev/null
+FIXTURE2="$MODEREPO/tests/test_gate_fixture2.sh"
+cat > "$FIXTURE2" <<FIXTURE
+#!/bin/bash
+. "$SANDBOX_REPO/tests/lib/sandbox.sh"
+ok "the gate let an executable test run"
+FIXTURE
+git -C "$MODEREPO" add -- tests/test_gate_fixture2.sh   # stages 100644
+chmod +x "$FIXTURE2"                                    # the bit arrives late
+OUT2="$(env -u DESKCRAB_SANDBOX_ROOT -u DESKCRAB_SANDBOX_REPO \
+        -u DESKCRAB_SANDBOX_LIB -u DESKCRAB_SANDBOX_NAME \
+        bash "$FIXTURE2" 2>&1)" && RC2=0 || RC2=$?
+check "the chmod-after-add run is refused" [ "$RC2" -ne 0 ]
+check "the refusal names the staged mode" contains "$OUT2" "100644"
+
+echo
+echo "and the same fixture with the bit walks through:"
+chmod +x "$FIXTURE"
+OUT3="$(env -u DESKCRAB_SANDBOX_ROOT -u DESKCRAB_SANDBOX_REPO \
+        -u DESKCRAB_SANDBOX_LIB -u DESKCRAB_SANDBOX_NAME \
+        bash "$FIXTURE" 2>&1)" || true
+check "the gate let the executable fixture into its run" \
+    contains "$OUT3" "the gate let an executable test run"
+check "no refusal printed for a file that carries the bit" \
+    bash -c 'case "$1" in *"chmod +x"*) exit 1;; *) exit 0;; esac' _ "$OUT3"

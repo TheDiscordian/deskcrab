@@ -125,6 +125,17 @@ during the very investigation that produced these specs.
     the offending builder's own suite run, at creation, not read off a roll call nobody consults.
     A mass mode fix is one mode-only commit, staged by explicit path, zero insertions and zero
     deletions.
+    Resolved AGAIN 2026-08-29, after `tests/test_wake_idle_return.sh` landed 100644 three days
+    into the rule's life: both checks above run after the fact, naming a fault some commit has
+    already created, and nothing obliged that commit's author to run the full suite between the
+    add and the commit. So the gate stands at the one door every new test must walk while its
+    author still holds the pen — rule 18 obliges the author to RUN the new test, and running it
+    is now what enforces the bit. Phase 1 of `tests/lib/sandbox.sh` MUST refuse, before it
+    builds anything, a test file that is not executable on disk, or that the repository holding
+    it carries staged or committed mode 100644 (the chmod-after-add shape, which the disk no
+    longer shows). The refusal names the file, the offending mode, and the one-chmod fix, and
+    exits non-zero, so the creation run that proves a test red proves its mode too. A test file
+    outside any repository is judged on its disk bit alone.
 20. A test framework invocation MUST NOT fail silently. An interpreter re-execution inside a test
     framework's own process swallows the traceback and produces a bare non-zero exit with no output.
 
@@ -220,7 +231,10 @@ The harness tests itself:
   non-empty and includes this file itself, no tracked `tests/test_*.sh` is committed mode 100644,
   and every one carries the bit on disk. Scope is deliberately the TRACKED list, so an untracked
   draft in `tests/` fails nobody's run but its author's `--list`. Each offender is named with the
-  one-chmod fix.
+  one-chmod fix. The same file holds rule 19's door: a deliberately non-executable fixture driven
+  through a fresh phase 1 is refused with the one-chmod fix and its body never runs; a fixture
+  staged 100644 whose bit arrived only after the add is refused for its staged mode; and the same
+  fixture carrying the bit walks through to its own run.
 - `tests/run.sh --list` — every test file is executable, is listed, and either sources the sandbox
   helper or is one of the named exceptions. The roll call also runs before the suite does, so a file
   that skips the helper stops the run rather than passing quietly inside it. Four files predate the

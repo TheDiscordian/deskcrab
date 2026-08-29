@@ -128,6 +128,33 @@ if [ -z "${DESKCRAB_SANDBOX_ROOT:-}" ]; then
     _sb_repo="$(cd "$_sb_lib/../.." && pwd)"
     _sb_self="$(readlink -f "$0")"
     _sb_name="$(basename "$_sb_self" .sh)"
+
+    # Rule 19's door (specs/test-harness.md). The after-the-fact checks —
+    # tests/test_exec_bits.sh and `run.sh --list` — name a fault some commit
+    # already created, and three days after they landed a new test landed
+    # 100644 anyway, because nothing obliged its author to run them between
+    # the add and the commit. What every author IS obliged to run is the new
+    # test itself (rule 18: red before the fix), and every test walks through
+    # here first — so this is where a bad mode stops. Refuse before building
+    # anything: a test file missing the bit on disk, or one its repository
+    # holds staged or committed 100644 (the chmod-after-add shape, which the
+    # disk no longer shows). `git ls-files` is a read of the index, nothing
+    # more; a file outside any repository is judged on its disk bit alone.
+    if [ ! -x "$_sb_self" ]; then
+        echo "  FAIL: $_sb_name is not executable — chmod +x '$_sb_self'" \
+             "and commit the mode change (specs/test-harness.md rule 19)"
+        exit 1
+    fi
+    _sb_mode="$(cd "$(dirname "$_sb_self")" 2>/dev/null && \
+        git ls-files -s -- "$_sb_self" 2>/dev/null | awk '{ print $1; exit }')"
+    if [ "$_sb_mode" = "100644" ]; then
+        echo "  FAIL: $_sb_name is staged or committed mode 100644 —" \
+             "chmod +x '$_sb_self' and \`git add\` it again, so the" \
+             "committed mode is 100755 (specs/test-harness.md rule 19)"
+        exit 1
+    fi
+    unset _sb_mode
+
     _sb_root="$(mktemp -d "${TMPDIR:-/tmp}/crabtest-$_sb_name-XXXXXX")"
 
     mkdir -p \
