@@ -339,3 +339,168 @@ print("  ok:", g["id"], "created timed by the store")
 PY
 [ $? -eq 0 ] && ok "Store.create deals the configured clock" \
     || fail "the bridge's created game carries no control"
+
+echo
+echo "the clock bounds the call (rule 16g): budget arithmetic:"
+pyrun <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess_mover as cm
+assert cm.call_budget(None) is None            # no clock: fixed ceiling stands
+# the browser-047 board: 98.5s left, fixed 90 — the budget halves the usable
+assert abs(cm.call_budget(98.5) - 46.75) < 1e-9, cm.call_budget(98.5)
+assert abs(cm.call_budget(30) - 12.5) < 1e-9   # fraction rules a mid clock
+assert abs(cm.call_budget(12) - 7.0) < 1e-9    # usable caps below the floor
+assert cm.call_budget(4) == 0.0                # inside the reserve: nothing
+assert cm.call_budget(-3) == 0.0               # a fallen flag never negative
+assert abs(cm.call_budget(300) - 90.0) < 1e-9  # a fat clock: fixed ceiling
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_RESERVE"] = "10"
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_FRACTION"] = "0.25"
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_FLOOR"] = "3"
+assert abs(cm.call_budget(50) - 10.0) < 1e-9, cm.call_budget(50)
+for k in ("DESKCRAB_CHESS_MOVER_CLOCK_RESERVE",
+          "DESKCRAB_CHESS_MOVER_CLOCK_FRACTION",
+          "DESKCRAB_CHESS_MOVER_CLOCK_FLOOR"):
+    del os.environ[k]
+print("  ok: call_budget derives every documented case")
+PY
+[ $? -eq 0 ] && ok "call_budget: fraction, floor, reserve, fixed ceiling (rule 16g)" \
+    || fail "call_budget arithmetic"
+
+echo "a slow call is killed at the budget and a fallback move plays before the flag:"
+pyrun <<'PY'
+import os, sys, time
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+import chess_mover as cm
+os.environ["DESKCRAB_CHESS_MOVER_CMD"] = "sleep 30"
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_RESERVE"] = "1"
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_FLOOR"] = "1"
+played = []
+alerts = []
+m = cm.Mover(lambda j, mv: played.append((j, mv)) or True,
+             log=lambda *a: None, alert=lambda s: alerts.append(s))
+board = chess.Board()
+t0 = time.time()
+m.submit({"key": "t1", "gid": "t-001", "ply": 0, "fen": board.fen(),
+          "side": "white", "opponent": "guest", "history": "",
+          "clock": {"white_ms": 8000, "black_ms": 8000, "running": "white"},
+          "effort": "low", "t0": t0})
+assert m.wait_idle(timeout=20), "mover never went idle"
+took = time.time() - t0
+# budget: usable 7 -> max(1, 3.5) = 3.5s attempt, killed; the retry is not
+# affordable, so the fallback plays with clock still in hand.
+assert played, "no fallback was played: " + repr(alerts)
+job, mv = played[0]
+assert mv in board.legal_moves, mv
+assert job.get("fallback"), "the job was not marked as a fallback"
+assert took < 8, "the answer took the whole clock: %.1fs" % took
+assert any("clock-budget" in a for a in alerts), alerts
+assert any("fallback" in a for a in alerts), alerts
+print("  ok: fallback %s after %.1fs, marked and loud" % (mv.uci(), took))
+PY
+[ $? -eq 0 ] && ok "the budget kills the call and the fallback lands before the flag" \
+    || fail "clock-budget fallback"
+
+echo "no attempt affordable inside the reserve: fallback at once, no call at all:"
+pyrun <<'PY'
+import os, sys, time
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+import chess_mover as cm
+marker = os.path.join(os.environ["DESKCRAB_CHESS_DIR"], "stub-ran")
+os.environ["DESKCRAB_CHESS_MOVER_CMD"] = "touch " + marker
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_RESERVE"] = "2"
+played = []
+m = cm.Mover(lambda j, mv: played.append((j, mv)) or True,
+             log=lambda *a: None, alert=lambda *a: None)
+board = chess.Board()
+t0 = time.time()
+m.submit({"key": "t2", "gid": "t-002", "ply": 0, "fen": board.fen(),
+          "side": "white", "opponent": "guest", "history": "",
+          "clock": {"white_ms": 2500, "black_ms": 9000, "running": "white"},
+          "effort": "low", "t0": t0})
+assert m.wait_idle(timeout=15)
+assert played and played[0][1] in board.legal_moves
+assert played[0][0].get("fallback")
+assert not os.path.exists(marker), "a call ran inside the reserve"
+print("  ok: no call spawned, fallback", played[0][1].uci())
+PY
+[ $? -eq 0 ] && ok "inside the reserve no call is made — straight to the fallback" \
+    || fail "reserve short-circuit"
+
+echo "an untimed job keeps the fixed ceiling and fails without a fallback:"
+pyrun <<'PY'
+import os, sys, time
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+import chess_mover as cm
+os.environ["DESKCRAB_CHESS_MOVER_CMD"] = "sleep 30"
+os.environ["DESKCRAB_CHESS_MOVER_TIMEOUT"] = "1"
+os.environ["DESKCRAB_CHESS_MOVER_RETRY"] = "600"
+played = []
+m = cm.Mover(lambda j, mv: played.append(mv) or True,
+             log=lambda *a: None, alert=lambda *a: None)
+board = chess.Board()
+m.submit({"key": "t3", "gid": "t-003", "ply": 0, "fen": board.fen(),
+          "side": "white", "opponent": "guest", "history": "",
+          "effort": "low", "t0": time.time()})
+assert m.wait_idle(timeout=15)
+n, stalled, why = m.failure_state("t3")
+assert not played, "an untimed job played a fallback: %r" % played
+assert n == 1 and "timeout-1s" in why, (n, why)
+del os.environ["DESKCRAB_CHESS_MOVER_TIMEOUT"]
+del os.environ["DESKCRAB_CHESS_MOVER_RETRY"]
+print("  ok: failed round, cause", why)
+PY
+[ $? -eq 0 ] && ok "no clock, no budget: the fixed ceiling and the retry rounds stand" \
+    || fail "untimed unaffected"
+
+echo "DESKCRAB_CHESS_MOVER_CLOCK_BUDGET=0 restores the fixed ceiling wholesale:"
+pyrun <<'PY'
+import os, sys, time
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+import chess_mover as cm
+os.environ["DESKCRAB_CHESS_MOVER_CMD"] = "sleep 30"
+os.environ["DESKCRAB_CHESS_MOVER_TIMEOUT"] = "1"
+os.environ["DESKCRAB_CHESS_MOVER_CLOCK_BUDGET"] = "0"
+os.environ["DESKCRAB_CHESS_MOVER_RETRY"] = "600"
+played = []
+m = cm.Mover(lambda j, mv: played.append(mv) or True,
+             log=lambda *a: None, alert=lambda *a: None)
+board = chess.Board()
+m.submit({"key": "t4", "gid": "t-004", "ply": 0, "fen": board.fen(),
+          "side": "white", "opponent": "guest", "history": "",
+          "clock": {"white_ms": 8000, "black_ms": 8000, "running": "white"},
+          "effort": "low", "t0": time.time()})
+assert m.wait_idle(timeout=15)
+n, stalled, why = m.failure_state("t4")
+assert not played and n == 1 and "timeout-1s" in why, (played, n, why)
+for k in ("DESKCRAB_CHESS_MOVER_TIMEOUT", "DESKCRAB_CHESS_MOVER_CLOCK_BUDGET",
+          "DESKCRAB_CHESS_MOVER_RETRY"):
+    del os.environ[k]
+print("  ok: knob off, old behaviour exactly")
+PY
+[ $? -eq 0 ] && ok "the budget knob off means the old fixed-ceiling world" \
+    || fail "budget knob"
+
+echo "the fallback chooser never hangs a piece the arithmetic can see:"
+pyrun <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+import chess_mover as cm
+# White to move; Qd5 is attacked by the c6 pawn: taking nothing and standing
+# still both exist, and every move the chooser picks must survive the count.
+b = chess.Board("r1bqkbnr/pp1ppppp/2p5/3Q4/8/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3")
+mv = cm.fallback_move(b)
+assert mv in b.legal_moves
+assert cm.material_loss(b, mv) == 0, (mv, cm.material_loss(b, mv))
+assert cm.worst_reply(b, mv)[0] < 300, (mv, cm.worst_reply(b, mv))
+empty = chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")  # stalemate: no moves
+assert not list(empty.legal_moves) and cm.fallback_move(empty) is None
+print("  ok: fallback", mv.uci(), "loses nothing by the count")
+PY
+[ $? -eq 0 ] && ok "the fallback move survives the exchange count; no-move boards say None" \
+    || fail "fallback chooser"

@@ -128,16 +128,47 @@ the finished games feed the pattern store exactly as every self-play game does.
     the normal path resumes: reflex first, the mover otherwise.
 19. **The record.** Each benchmark game carries a `bench` object — the control, each side's
     configuration, and one row per move `[ply, side, source, effort, seconds]` (source `book`,
-    `reflex`, or `model`) — written with the game as it plays, so nothing about the run needs
-    reconstructing from logs. A finished game appends one JSON line to the run's ledger
-    (`$DESKCRAB_CHESS_DIR/selfplay/bench-<run>.jsonl`), exactly once across resumes. Probe
+    `reflex`, `model`, or `fallback` — a clock-budget fallback move, chessweb.md rule 16g, is
+    recorded under its own source because it is a move the model FAILED to answer) — written
+    with the game as it plays, so nothing about the run needs reconstructing from logs. A
+    finished game appends one JSON line to the run's ledger
+    (`$DESKCRAB_CHESS_DIR/selfplay/bench-<run>.jsonl`), exactly once across resumes, and the
+    line carries the whole verdict a selection needs: the result, the termination state and
+    description, the flagged side if any, the FINAL remaining clock of both sides, per-side
+    move counts split by source (fallback moves included), per-side model-call latency
+    summaries, and per-side counted model ATTEMPTS mined from rule 4's counter files — so
+    retries and failed rounds are on the ledger, not only in night logs. Probe
     mode (`--bench-probe`) measures bare per-call latency for the plan's probe configurations
     over fixed positions — each call a self-play mover call, budget-counted, allowlist-bound —
     and appends `probe` lines to the same ledger; it exists so a model too dear to grind (the
     real-game model among them) can still have its latency measured for a few counted calls.
+    A probe is never selection evidence: a route is chosen from complete games alone
+    (rule 20), and 2026-08-28 — a verdict built on probes for the model real games actually
+    use, rejected by the user — is why this sentence exists.
     `--bench-report` renders the ledger and game records into the results table — per control:
     each configuration's score, flags, failures, and latency split by source — and recommends
     nothing by itself: choosing is the reader's job.
+20. **The corrective matrix** (adopted 2026-08-28, on the user's rejection of the probe-based
+    verdict). `--bench-init-matrix` writes a full-matrix plan: every supported live mover
+    model (`sonnet`, `haiku`, `opus`, `fable` — the Claude families the account walk serves)
+    at every effort the CLI accepts (`low`, `medium`, `high`, `xhigh`, `max`), each as a
+    UNIFORM configuration (quiet == sharp == the effort, so a cell measures exactly one
+    model-and-effort pair playing whole games), against ONE common reference configuration
+    (`sonnet-low`, the measured steadiest), colours rotated within every cell, across every
+    concrete standard timed control, fastest first. The reference's own cell is its mirror
+    game. Selection discipline, for the reader the report serves: a cell RELIABLY FINISHES a
+    control only when its games complete without flags, stalls, fallback rescues, retry
+    storms, or account-limit deaths — those are failures to finish, never noise; among
+    reliable finishers the strongest measured result wins, tie-broken by head-to-head where
+    played, then fewer failure events, then the lower latency tail, then the cheaper pair
+    (lower effort, then cheaper model). A cell interrupted by capacity limits is RESUMED,
+    never excluded — the plan file plus the game files are the resumable state, exactly rule
+    16. The untimed route is a second, smaller round scheduled from the timed evidence —
+    candidate pairs at `untimed` in the same plan shape, complete games only — because the
+    untimed game routes too and probes may not choose for it either. The verdict lands as
+    `chess_effort.SPEED_PAIRS` and `chess_effort.SPEED_MODELS` values
+    (chessweb.md rule 16b), with the full matrix, the exclusion and uncertainty statements,
+    and the raw ledger locations written into the run's report in `docs/`.
 
 ## DATA
 
@@ -177,4 +208,7 @@ and evening, small-hours, and just-past-the-wall starts keep their old walls); t
 every codex-family name; a bench plan plays with real clocks and per-side pairs, rotates
 colours, resumes without replaying, appends its ledger exactly once per game; a benchmark game
 whose clock has run out is a recorded flag, no model call; probe lines carry per-call seconds;
-the report renders per-control tables).
+the report renders per-control tables); the matrix plan (every matrix model × effort present
+exactly once as a uniform pair, every timed control covered with colours split evenly against
+the reference, the reference mirrored) and the extended ledger line (final remaining clock,
+per-side attempts mined from the counter, fallback move counts).

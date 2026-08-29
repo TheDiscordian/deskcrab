@@ -1,5 +1,12 @@
 # Self-play benchmark, 2026-08-27: model and effort pairings by time control
 
+> **Superseded 2026-08-28.** The user rejected this run's verdict as a basis for choosing a
+> model per clock: fable played no full games here (probes only), and the matrix covered five
+> of the supported model-and-effort pairs. The corrective full-game matrix is
+> specs/chess-selfplay.md rule 20, run `bench-matrix-20260828`; its report replaces the
+> verdict below when it completes. The measured tables here remain honest for what they
+> measured.
+
 The measured results behind `chess_effort.SPEED_PAIRS` (specs/chessweb.md rule 16b) and the
 run the benchmark mechanism (specs/chess-selfplay.md rules 14-19, landed 5aa7754) was built
 for. The user's ask, the night of 2026-08-27: batches of self-play across the standard time

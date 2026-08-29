@@ -470,3 +470,82 @@ contains "$REPORT" "## 1+0" \
 contains "$REPORT" "| haiku | low |" \
     && ok "the probe table prices the probed configuration" \
     || fail "report: $REPORT"
+
+echo
+echo "the corrective matrix plan (rule 20):"
+MDIR="$SANDBOX/chessm"
+mkdir -p "$MDIR/selfplay"
+MOUT="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
+        --bench-init-matrix --run mtx --reps 2 2>&1)"
+contains "$MOUT" "bench-mtx.json" \
+    && ok "--bench-init-matrix writes the plan and prints its path" \
+    || fail "matrix init: $MOUT"
+MP="$("$PY" - "$MDIR/selfplay/bench-mtx.json" <<'PYEOF'
+import json, sys
+from collections import Counter
+p = json.load(open(sys.argv[1]))
+models = ["sonnet", "haiku", "opus", "fable"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+controls = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
+cfgs = p["configs"]
+print("configs:", len(cfgs) == 20
+      and all("%s-%s" % (m, e) in cfgs for m in models for e in efforts))
+print("uniform:", all(c["quiet"] == c["sharp"] for c in cfgs.values()))
+print("games:", len(p["games"]) == 240)
+print("controls:", sorted(Counter(g["control"]
+                                  for g in p["games"]).items()) ==
+      sorted((c, 40) for c in controls))
+print("ids:", all(g["id"].startswith("selfplay-benchmtx-")
+                  for g in p["games"]))
+cells = {}
+for g in p["games"]:
+    cfg = g["white"] if g["black"] == "sonnet-low" else g["black"]
+    cells.setdefault((cfg, g["control"]), []).append(g["white"] == cfg)
+split = all(sorted(v) == [False, True] for (c, _), v in cells.items()
+            if c != "sonnet-low")
+mirror = all(v == [True, True] for (c, _), v in cells.items()
+             if c == "sonnet-low")
+print("colours:", split, "mirror:", mirror)
+print("noprobe:", "probe" not in p)
+PYEOF
+)"
+contains "$MP" "configs: True" && contains "$MP" "uniform: True" \
+    && ok "every model at every effort, each a uniform pair" \
+    || fail "matrix plan: $MP"
+contains "$MP" "games: True" && contains "$MP" "controls: True" \
+    && contains "$MP" "ids: True" \
+    && ok "240 games: 40 per control, every id inside the selfplay prefix" \
+    || fail "matrix plan: $MP"
+contains "$MP" "colours: True mirror: True" \
+    && ok "every cell colour-rotated against the reference; the reference mirrored" \
+    || fail "matrix plan: $MP"
+contains "$MP" "noprobe: True" \
+    && ok "no probe section: a route is chosen from complete games (rule 19)" \
+    || fail "matrix plan: $MP"
+
+echo
+echo "the extended ledger line (rule 19): remaining clock, attempts, fallbacks:"
+LX="$("$PY" - "$BDIR" <<'PYEOF'
+import json, sys
+d = sys.argv[1]
+led = [json.loads(x) for x in open(d + "/selfplay/bench-t1.jsonl")]
+games = [e for e in led if "game" in e]
+print("clock:", all(isinstance(e.get("clock_remaining"), dict)
+                    and "white_ms" in e["clock_remaining"] for e in games))
+ok_side = True
+for e in games:
+    for s in ("white", "black"):
+        side = e["sides"][s]
+        if "fallback_moves" not in side or "attempts" not in side:
+            ok_side = False
+        elif side["attempts"] < side["model_moves"]:
+            ok_side = False  # every landed model move was a counted attempt
+print("sides:", ok_side)
+PYEOF
+)"
+contains "$LX" "clock: True" \
+    && ok "the ledger line carries the final remaining clock of both sides" \
+    || fail "ledger extras: $LX"
+contains "$LX" "sides: True" \
+    && ok "per-side attempts (mined from the counter) and fallback counts ride the line" \
+    || fail "ledger extras: $LX"

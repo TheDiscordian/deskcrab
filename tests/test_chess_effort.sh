@@ -438,3 +438,41 @@ contains "$MM" "set: haiku" \
 contains "$MM" "untimed: None" && contains "$MM" "none-game: None" \
     && ok "an untimed game and a missing game read as no offer" \
     || fail "mover_model_for: $MM"
+
+echo
+echo "the benchmark-chosen per-speed model default (rule 16b, 2026-08-28):"
+RT="$("$PY" -B - <<EOF
+import sys, os; sys.path.insert(0, "$REPO/lib")
+import chess_effort, chessweb
+timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
+print("empty:", chess_effort.model_for("bullet"))
+chess_effort.SPEED_MODELS["bullet"] = "sonnet"
+chess_effort.SPEED_MODELS["untimed"] = "haiku"
+# The table outranks the global mover-model knob for a routed speed: the
+# global knob never enters model_for at all, and the bridge puts the routed
+# name on the job, where the mover prefers it over its environment chain.
+os.environ["DESKCRAB_CHESS_MOVER_MODEL"] = "fable"
+print("routed:", chessweb.mover_model_for(timed))
+print("untimed-routed:", chessweb.mover_model_for({}))
+os.environ["DESKCRAB_CHESS_MOVER_MODEL_BULLET"] = "opus"
+print("knob-beats-table:", chessweb.mover_model_for(timed))
+del os.environ["DESKCRAB_CHESS_MOVER_MODEL_BULLET"]
+chess_effort.SPEED_MODELS.clear()
+print("cleared:", chessweb.mover_model_for(timed))
+EOF
+)"
+contains "$RT" "empty: None" \
+    && ok "an unfilled table changes nothing — no offer, the chain stands" \
+    || fail "SPEED_MODELS: $RT"
+contains "$RT" "routed: sonnet" \
+    && ok "a routed speed's default rides the job over the global knob" \
+    || fail "SPEED_MODELS: $RT"
+contains "$RT" "untimed-routed: haiku" \
+    && ok "untimed is a routable speed of its own" \
+    || fail "SPEED_MODELS: $RT"
+contains "$RT" "knob-beats-table: opus" \
+    && ok "the per-speed env knob outranks the table" \
+    || fail "SPEED_MODELS: $RT"
+contains "$RT" "cleared: None" \
+    && ok "and clearing the table restores the old behaviour exactly" \
+    || fail "SPEED_MODELS: $RT"

@@ -171,17 +171,21 @@ def make_play(side):
         # The same clock charge as every other recording path (rule 17); an
         # untimed game — every ordinary self-play game — is untouched by it.
         chess_cli.clock_move(g)
+        # A clock-budget fallback (chessweb.md rule 16g) is recorded under
+        # its own source: a move the model FAILED to answer, and the
+        # benchmark counts it against the configuration that needed it.
+        source = "fallback" if job.get("fallback") else "model"
         if "bench" in g:
-            g["bench"]["rows"].append([job["ply"], side, "model",
+            g["bench"]["rows"].append([job["ply"], side, source,
                                        job.get("effort") or "default",
                                        round(took, 2)])
         chess_cli.save_game(g)
         chess_cli.metric("move-played", f"{job['gid']} ply {job['ply']} "
-                         f"{san} model")
+                         f"{san} {source}")
         chess_cli.metric("move-latency", f"{job['gid']} ply {job['ply']} "
-                         f"{took:.1f}s model")
+                         f"{took:.1f}s {source}")
         log(f"{job['gid']} ply {job['ply']}: {side} played {san} "
-            f"(model, effort {job['effort'] or 'default'}, {took:.1f}s)")
+            f"({source}, effort {job['effort'] or 'default'}, {took:.1f}s)")
         return True
     return play
 
@@ -281,7 +285,12 @@ def play_one_move(g, movers, bench=None):
     # rule 14); no note is computed here.
     job = {"key": key, "gid": g["id"], "ply": ply, "fen": board.fen(),
            "side": side, "opponent": g["opponent"],
-           "history": chess_cli.history(g["moves"]), "t0": t0}
+           "history": chess_cli.history(g["moves"]), "t0": t0,
+           # The live clock rides the job for a TIMED game (benchmark games
+           # are the timed self-play), so rule 16g's clock budget binds the
+           # grind's calls exactly as it binds a live game's; None for the
+           # ordinary untimed grind, which is untouched by it.
+           "clock": chess_cli.clock_remaining(g, board)}
     if bench:
         plan, spec = bench
         cfg = plan["configs"][spec[side]]
@@ -440,8 +449,35 @@ def bench_new_game(spec, plan):
     return g
 
 
+def bench_attempts(gid):
+    """Per-side counted model ATTEMPTS for a game, mined from rule 4's
+    counter files (one line per attempt, detail `<gid> ply <n> <label>`) —
+    every night's file, because a resumed cell spans nights. Attempts in
+    excess of landed model moves are the retries and failed rounds the
+    ledger owes the record (rule 19). Best-effort: an unreadable counter
+    is zeros, never a lost recording."""
+    counts = {"white": 0, "black": 0}
+    try:
+        for p in sorted(SP_DIR.glob("model-calls-*.log")):
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    d = line.rstrip("\n").split("\t")[-1].split()
+                    if len(d) >= 3 and d[0] == gid and d[1] == "ply":
+                        try:
+                            ply = int(d[2])
+                        except ValueError:
+                            continue
+                        counts["white" if ply % 2 == 0 else "black"] += 1
+    except OSError:
+        pass
+    return counts
+
+
 def bench_record_game(plan, spec, g):
-    """One ledger line per finished game. A live-judged flag is recorded
+    """One ledger line per finished game, carrying the whole verdict a
+    selection needs (rule 19): result, termination, flags, final remaining
+    clock, per-side move counts by source (fallback rescues included),
+    latency summaries, and counted attempts. A live-judged flag is recorded
     onto the game first, so the file reads finished forever without a wall
     clock in hand."""
     board = chess_cli.build_board(g)
@@ -451,6 +487,7 @@ def bench_record_game(plan, spec, g):
         chess_cli.save_game(g)
     state, desc, result = chess_cli.compute_state(g, board)
     rows = (g.get("bench") or {}).get("rows", [])
+    attempts = bench_attempts(g["id"])
 
     def side_summary(side):
         mine = [r for r in rows if r[1] == side]
@@ -458,15 +495,22 @@ def bench_record_game(plan, spec, g):
         return {"model_moves": len(model),
                 "reflex_moves": sum(1 for r in mine if r[2] == "reflex"),
                 "book_moves": sum(1 for r in mine if r[2] == "book"),
+                "fallback_moves": sum(1 for r in mine
+                                      if r[2] == "fallback"),
+                "attempts": attempts.get(side, 0),
                 "model_secs_median": (round(statistics.median(model), 2)
                                       if model else None),
                 "model_secs_max": max(model) if model else None}
 
+    ck = g.get("clock") or {}
     bench_ledger_append(plan, {
         "game": g["id"], "control": spec["control"],
         "white": spec["white"], "black": spec["black"],
         "result": result, "state": state, "desc": desc,
         "plies": len(g["moves"]), "flagged": g.get("flag_fell"),
+        "clock_remaining": ({"white_ms": ck.get("white_ms"),
+                             "black_ms": ck.get("black_ms")}
+                            if ck else None),
         "sides": {"white": side_summary("white"),
                   "black": side_summary("black")},
         "finished": chess_cli.now()})
@@ -647,6 +691,42 @@ def bench_default_plan(run):
             "configs": configs, "games": games}
 
 
+# The corrective matrix (specs/chess-selfplay.md rule 20, adopted 2026-08-28
+# on the user's rejection of the probe-based verdict): every supported live
+# mover model at every effort the CLI accepts, each as a UNIFORM pair so a
+# cell measures exactly one model-and-effort pair playing whole games,
+# against one common reference, colours rotated, every timed control,
+# fastest first. Probes are never selection evidence; these games are.
+MATRIX_MODELS = ["sonnet", "haiku", "opus", "fable"]
+MATRIX_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+MATRIX_REFERENCE = "sonnet-low"
+MATRIX_CONTROLS = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
+
+
+def bench_matrix_plan(run, reps=2):
+    """The rule-20 plan: reps colour-rotated games per (configuration,
+    control) cell against the reference; the reference's own cell is its
+    mirror. No probe section — a route is chosen from complete games."""
+    configs = {}
+    for model in MATRIX_MODELS:
+        for effort in MATRIX_EFFORTS:
+            configs["%s-%s" % (model, effort)] = {
+                "model": model, "quiet": effort, "sharp": effort}
+    games, n = [], 0
+    for control in MATRIX_CONTROLS:
+        for effort in MATRIX_EFFORTS:
+            for model in MATRIX_MODELS:
+                cfg = "%s-%s" % (model, effort)
+                for r in range(reps):
+                    white, black = ((cfg, MATRIX_REFERENCE) if r % 2 == 0
+                                    else (MATRIX_REFERENCE, cfg))
+                    n += 1
+                    games.append({"id": "selfplay-bench%s-%03d" % (run, n),
+                                  "control": control,
+                                  "white": white, "black": black})
+    return {"run": run, "configs": configs, "games": games}
+
+
 def bench_report(plan):
     """Rule 19's report: the measured tables, no recommendation — choosing
     is the reader's job. Markdown to stdout."""
@@ -694,6 +774,7 @@ def bench_report(plan):
                 cfg = e[side]
                 t = tally.setdefault(cfg, {"games": 0, "wins": 0, "draws": 0,
                                            "losses": 0, "flags": 0,
+                                           "fallbacks": 0, "attempts": 0,
                                            "model_moves": 0, "secs": []})
                 t["games"] += 1
                 won = {"1-0": "white", "0-1": "black"}.get(e["result"])
@@ -707,11 +788,13 @@ def bench_report(plan):
                     t["flags"] += 1
                 s = e.get("sides", {}).get(side, {})
                 t["model_moves"] += s.get("model_moves") or 0
+                t["fallbacks"] += s.get("fallback_moves") or 0
+                t["attempts"] += s.get("attempts") or 0
                 if s.get("model_secs_median") is not None:
                     t["secs"].append(s["model_secs_median"])
-        print("| config | games | W-D-L | points | flag losses "
-              "| model moves | median model secs |")
-        print("|---|---|---|---|---|---|---|")
+        print("| config | games | W-D-L | points | flag losses | fallbacks "
+              "| model moves | attempts | median model secs |")
+        print("|---|---|---|---|---|---|---|---|---|")
         for cfg, t in sorted(tally.items(),
                              key=lambda kv: -(kv[1]["wins"]
                                               + 0.5 * kv[1]["draws"])):
@@ -720,8 +803,8 @@ def bench_report(plan):
                    if t["secs"] else "-")
             print(f"| {cfg} | {t['games']} "
                   f"| {t['wins']}-{t['draws']}-{t['losses']} "
-                  f"| {pts:g} | {t['flags']} | {t['model_moves']} "
-                  f"| {med} |")
+                  f"| {pts:g} | {t['flags']} | {t['fallbacks']} "
+                  f"| {t['model_moves']} | {t['attempts']} | {med} |")
         print()
         for e in cg:
             flag = f", {e['flagged']} flagged" if e.get("flagged") else ""
@@ -768,6 +851,11 @@ def main():
                     help="play the benchmark plan (JSON) for this chunk")
     ap.add_argument("--bench-init", action="store_true",
                     help="write the default benchmark plan and exit")
+    ap.add_argument("--bench-init-matrix", action="store_true",
+                    help="write the full model-and-effort matrix plan "
+                         "(specs/chess-selfplay.md rule 20) and exit")
+    ap.add_argument("--reps", type=int, default=2,
+                    help="colour-rotated games per matrix cell")
     ap.add_argument("--bench-probe", metavar="PLAN",
                     help="run the plan's latency probes and exit")
     ap.add_argument("--bench-report", metavar="PLAN",
@@ -776,14 +864,16 @@ def main():
                     help="benchmark run name for --bench-init")
     args = ap.parse_args()
 
-    if args.bench_init:
+    if args.bench_init or args.bench_init_matrix:
         SP_DIR.mkdir(parents=True, exist_ok=True)
         path = SP_DIR / ("bench-%s.json" % args.run)
         if path.exists():
             print(f"refusing: {path} already exists", file=sys.stderr)
             sys.exit(1)
+        plan = (bench_matrix_plan(args.run, reps=args.reps)
+                if args.bench_init_matrix else bench_default_plan(args.run))
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(bench_default_plan(args.run), fh, indent=1)
+            json.dump(plan, fh, indent=1)
             fh.write("\n")
         print(path)
         return

@@ -318,6 +318,32 @@ cannot be changed.
        limit" on stdout in every logged detail.
     f. `$DESKCRAB_CHESS_MOVER_CMD` replaces the model invocation wholesale for tests — the
        prompt arrives on stdin, the reply is its stdout — so no test thinks with a real model.
+    g. **The clock bounds the call** (adopted 2026-08-28; the browser-047 death: 98.5s on the
+       clock in a won 10+0 game, one call ran to the fixed 90s ceiling, the flag fell nine
+       seconds later with no move ever returned). For a TIMED game — a job carrying the live
+       `clock` of rule 22f, which this rule is what finally consults — every model attempt's
+       ceiling is derived from the moving side's remaining clock, never the fixed knob alone:
+       with `usable = remaining − reserve` (reserve `$DESKCRAB_CHESS_MOVER_CLOCK_RESERVE`,
+       default 5s — the time held back to validate, record and broadcast whatever answer
+       lands, and to play the fallback below), one attempt may run at most
+       `min($DESKCRAB_CHESS_MOVER_TIMEOUT, max(floor, usable × fraction), usable)` seconds
+       (fraction `$DESKCRAB_CHESS_MOVER_CLOCK_FRACTION`, default 0.5; floor
+       `$DESKCRAB_CHESS_MOVER_CLOCK_FLOOR`, default 10s — a healthy clock must not starve a
+       working model down to nothing), remaining re-read before EVERY attempt so a retry walk
+       cannot spend what the first attempt already burned. When no attempt worth making fits
+       (under 2s of budget), no call is made at all. And when the budget is spent without an
+       answer — the attempt killed at its derived ceiling, or none affordable — the mover
+       plays a **fallback move** itself, chosen with no model by the same arithmetic the
+       prompt is built from (destination-square exchange, the one-ply reply scan, captured
+       material as compensation; the least-punished candidate wins, any failure falls back to
+       the first legal move): recorded, broadcast and clock-charged exactly like any move of
+       hers, stamped and logged loudly as a fallback with the seconds it had left, because a
+       legal move she did not choose is strictly better than a flag she did not deserve — and
+       it is a recorded FAILURE of the model to answer, never a success (the benchmark counts
+       every fallback against the configuration that needed it). An untimed game is untouched:
+       the fixed ceiling and rule 16e's retry rounds stand exactly as before.
+       `DESKCRAB_CHESS_MOVER_CLOCK_BUDGET=0` restores the fixed ceiling wholesale, fallback
+       included.
 16b. When rule 16a has missed and the model call is about to be made, the bridge asks the effort
     pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
     arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
@@ -348,12 +374,21 @@ cannot be changed.
     of increment cannot cover it; rapid keeps `medium` because the pair never flagged in
     six rapid games and 10+0/15+10 clocks absorb the tail — and an untimed game keeps the
     uniform pair above, exactly as adjudicated.
-    The game's speed may pick the model the same way: `answer_position` puts
-    `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` on the job as its `model` when that knob is set,
-    and the mover prefers a real-game job's `model` over its environment chain; unset knobs
-    change nothing — the mover-model knob stands for every speed, so the per-speed knobs are
-    an offer, never a new default. Self-play jobs never read these knobs; their model is
-    chess-selfplay.md's business (rules 2 and 15). The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
+    The game's speed picks the model the same way (`chess_effort.model_for`, read by
+    `answer_position` onto the job's `model`; the mover prefers a real-game job's `model`
+    over its environment chain): the explicit `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` knob
+    first — `UNTIMED` is a routable speed here, because the untimed route is selected from
+    complete games too — then the benchmark-chosen per-speed default in
+    `chess_effort.SPEED_MODELS`. That table is filled ONLY from the corrective full-game
+    matrix benchmark (chess-selfplay.md rule 20, the user's 2026-08-28 directive: the prior
+    probe-only run could not choose a model per clock, and a global model selection must not
+    survive a control merely because it predates the measurement); while a speed has no
+    entry, nothing changes — the mover-model knob stands for that speed exactly as before.
+    Once a speed HAS an entry, that entry outranks the global mover-model knob for games of
+    that speed: the global knob remains the whole answer for any unrouted speed, and the
+    per-speed env knob outranks everything, so the next adjudication is a config line here
+    too. Self-play jobs never read any of this; their model is chess-selfplay.md's business
+    (rules 2 and 15). The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
     prise by a simple attackers-versus-defenders count; a capture worth a rook or more available
     to either side; a pawn on its seventh rank, either side; her king's pawn shield broken or an
@@ -510,9 +545,9 @@ cannot be changed.
        current think already deducted; a flagged side reads zero), the shipped client draws
        both clocks counting down for the side to move and shows the flag result in words when
        one falls, and `betty-chess status` prints the control and both remaining times. The
-       mover's job dict carries the same live clock — VISIBLE to it, not yet consulted: reading
-       remaining time into the per-move effort budget is a separate, unadjudicated piece of
-       work, and the effort dials (rule 16b) are unchanged by this rule.
+       mover's job dict carries the same live clock — and rule 16g is what consults it: the
+       per-attempt ceiling and the fallback are derived from this figure. The effort dials
+       (rule 16b) remain unchanged by this rule.
     g. `undo` on a flagged game clears `flag_fell` exactly as it clears a resignation, and any
        undo in a timed game restarts `turn_started` at the undo itself. Remaining time is NOT
        replayed — no per-move time history is kept, so the sides resume with the balances they

@@ -54,6 +54,30 @@ SPEED_PAIRS = {
     "rapid": ("low", "medium"),
 }
 
+# The clock picks the MODEL too (specs/chessweb.md rule 16b, adopted
+# 2026-08-28): once the corrective full-game matrix benchmark
+# (specs/chess-selfplay.md rule 20) has chosen a model for a routed class,
+# its name lives here — and for that speed it OUTRANKS the global
+# DESKCRAB_CHESS_MOVER_MODEL knob, because the user's directive that night
+# was exactly that a global model selection must not survive a control
+# merely because it predates the measurement. Until the matrix completes
+# the table stays EMPTY, and an empty entry changes nothing: the mover's
+# own environment chain stands for that speed exactly as before. "untimed"
+# is a routable speed here — the untimed route is selected from complete
+# games too. The per-speed env knob (DESKCRAB_CHESS_MOVER_MODEL_<SPEED>)
+# outranks the table, so the next adjudication is a config line.
+SPEED_MODELS = {}
+
+
+def model_for(speed):
+    """The model a game of `speed` should think with, or None for the
+    mover's own environment chain: the explicit per-speed knob first, then
+    the benchmark-chosen default in SPEED_MODELS. No speed reads as
+    "untimed" — an untimed game is a routed class of its own."""
+    speed = speed or "untimed"
+    return (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL_" + speed.upper())
+            or SPEED_MODELS.get(speed) or None)
+
 
 def pair_for(speed):
     """(quiet, sharp) for a game of `speed` — the per-speed knobs first,

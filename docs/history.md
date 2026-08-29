@@ -697,6 +697,25 @@ Contract: [`specs/phone.md`](../specs/phone.md).
 
 ## The chess bridge
 
+### 2026-08-28 — the probe-based verdict rejected, and one call ate a won game's clock
+
+The user rejected the settled 2026-08-27 benchmark the night after its review was accepted, on
+two grounds that were both true: fable — the model his own knob points every real game at —
+received only counted probe calls, never a full game, and the matrix sampled five of the
+supported model-and-effort pairs rather than all of them. A verdict built on probes for the
+model real games actually use cannot choose a model per clock; the corrective rule is
+chess-selfplay.md rule 20 (the full matrix, complete games only, probes never selection
+evidence), and the per-speed model table it feeds is `chess_effort.SPEED_MODELS`
+(chessweb.md rule 16b) — which, for a routed speed, deliberately outranks the global
+mover-model knob, because the second directive of that night was that a global model
+selection must not survive a control merely because it predates the measurement. The same
+evening produced the budget rule's motivating death: browser-047, a won 10+0 position with
+98.5 seconds on her clock, one model call run to the fixed 90-second ceiling, the flag down
+nine seconds after the timeout with no move ever returned. Rule 16g is the answer — the
+per-attempt ceiling derived from the live remaining clock, and a no-model fallback move
+played from the prompt's own arithmetic when the budget is spent, recorded loudly as the
+model's failure to answer, never as a success.
+
 ### 2026-08-27 — the benchmark played, and the clock picked the pairs
 
 The self-play benchmark the mechanism commit (5aa7754) was built for ran to completion the same

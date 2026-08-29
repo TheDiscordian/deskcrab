@@ -384,15 +384,22 @@ class WSConn:
 # ------------------------------------------------------------- the store
 
 def mover_model_for(g):
-    """The per-speed model offer (rule 16b, 2026-08-27): the value of
-    DESKCRAB_CHESS_MOVER_MODEL_<SPEED> for a timed game whose speed has one
-    set, else None — and None means no `model` rides the job, so the mover's
-    own environment chain stands exactly as before the knobs existed."""
+    """The per-speed model (rule 16b): the explicit
+    DESKCRAB_CHESS_MOVER_MODEL_<SPEED> knob first, then the
+    benchmark-chosen chess_effort.SPEED_MODELS default — which, for a speed
+    the corrective matrix has routed, outranks the global mover-model knob
+    (the user's 2026-08-28 directive). None means no `model` rides the job
+    and the mover's own environment chain stands exactly as before the
+    routing existed; an untimed game reads the "untimed" route."""
     speed = ((g or {}).get("time_control") or {}).get("speed")
-    if not speed:
-        return None
-    return os.environ.get("DESKCRAB_CHESS_MOVER_MODEL_"
-                          + speed.upper()) or None
+    try:
+        import chess_effort
+        return chess_effort.model_for(speed)
+    except Exception:
+        if not speed:
+            return None
+        return os.environ.get("DESKCRAB_CHESS_MOVER_MODEL_"
+                              + speed.upper()) or None
 
 
 class Store:
@@ -788,10 +795,13 @@ class Hub:
             chess_cli.clock_move(g)
             chess_cli.save_game(g)
             took = time.time() - job["t0"]
+            # A clock-budget fallback (rule 16g) is recorded under its own
+            # source: a move the model failed to answer, never a success.
+            source = "fallback" if job.get("fallback") else "model"
             chess_cli.metric("move-played",
-                             f"{gid} ply {job['ply']} {san} model")
+                             f"{gid} ply {job['ply']} {san} {source}")
             chess_cli.metric("move-latency",
-                             f"{gid} ply {job['ply']} {took:.1f}s model")
+                             f"{gid} ply {job['ply']} {took:.1f}s {source}")
             self.synced = list(g["moves"])
             for m in msgs:
                 self.broadcast(m)
@@ -799,7 +809,9 @@ class Hub:
                                  played_at=time.time(), san=san)
             key, desc, result = chess_cli.compute_state(g, board)
             log(f"{gid}: mover played {san} at ply {job['ply']} "
-                f"({took:.1f}s from detection)")
+                f"({took:.1f}s from detection)"
+                + (f" — CLOCK-BUDGET FALLBACK ({job['fallback']})"
+                   if job.get("fallback") else ""))
             if key != "active":
                 self.over_announced = True
                 self.broadcast(self.result_msg(key, result))
