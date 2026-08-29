@@ -1,5 +1,5 @@
 #!/bin/bash
-# The sixteen intent cases from specs/prompt-assembly.md, as a runnable suite.
+# The seventeen intent cases from specs/prompt-assembly.md, as a runnable suite.
 # Run: bash tests/test_prompt_cases.sh
 #
 # WHAT THIS IS
@@ -719,7 +719,7 @@ structural_checks() { # <case state dir> <case source dir>
         && ok "rule 25 — at most one regroup block is emitted" \
         || bad "rule 25 — at most one regroup block is emitted" "$regroups regroup blocks"
 
-    # rules 38 through 39b — the standing attention rules, always on, every
+    # rules 38 through 39c — the standing attention rules, always on, every
     # speaking profile, desk and phone origins alike: answer what was asked
     # first, and act on your own drawers instead of reporting them.
     if grep -qiF 'ANSWER WHAT WAS ASKED, FIRST' <<<"$P"; then
@@ -745,6 +745,12 @@ structural_checks() { # <case state dir> <case source dir>
     else
         bad "rule 39b — corrections do not become self-abasement" \
             "nothing replaces repeated apologies and self-insults with the correction"
+    fi
+    if grep -qiF 'ACCEPTED INVITATIONS ARE ACTIONS' <<<"$P"; then
+        ok "rule 39c — accepting a present invitation performs it"
+    else
+        bad "rule 39c — accepting a present invitation performs it" \
+            "nothing distinguishes answering an invitation from accepting and joining it"
     fi
 
     # rules 1 and 2 — one assembler, four profiles.

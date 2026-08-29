@@ -1,0 +1,12 @@
+# The frame carries the accepted-invitation rule beside the message.
+prompt require ACCEPTED INVITATIONS ARE ACTIONS
+# An acceptance has an immediate action receipt; a clear refusal remains valid.
+reply require-regex (started|opened|joined|running).*(round|game)|(round|game).*(started|opened|joined|running)|(^|[.!?] )[[:space:]]*(no|not tonight|i do not|i don.t)
+# MUST NOT invite him into an activity that is still unstarted.
+reply forbid-regex come play|come join|join me
+# MUST NOT substitute a claim of waiting for actually starting.
+reply forbid-regex i('|’)ve been waiting|i have been waiting
+# MUST NOT defer an accepted invitation.
+reply forbid-regex i('|’)ll start|i will start|later|in a moment
+# SHOULD stay conversationally brief.
+should reply max-sentences 2

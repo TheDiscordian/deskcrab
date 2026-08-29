@@ -15,6 +15,20 @@ where the original journal gave a date.
 
 ## Prompt and context
 
+### 2026-08-29 — she accepted an invitation without joining it
+
+A phone turn answered a present-tense invitation to play RuneScape with an enthusiastic yes, but
+ran no tools and left the game unstarted. The next turn, after the user challenged the mismatch,
+did invoke the player and verify the session. This was not a transport or game-engine failure: the
+standing frame said that a pure question only asks for an answer, while its action rule covered
+imperatives and explicit requests. An invitation phrased as a question fell cleanly through that
+gap.
+
+The frame now keeps the choice intact but makes acceptance consequential: she may say no, but if
+she says yes to a safe present-tense activity she can perform, she starts or joins it and verifies
+that it is underway before replying. The OpenRSC drawer also names the idempotent play command, so
+an accepted game invitation does not spend a turn discovering the launcher before acting.
+
 ### The prompt used to have no per-path shape
 
 There was one prompt for every path, so a shelf-check wake paid the same prompt as a spoken turn.

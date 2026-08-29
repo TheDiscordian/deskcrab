@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+: > round.started
+printf '%s\n' 'practice round started'

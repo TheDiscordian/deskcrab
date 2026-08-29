@@ -6,7 +6,7 @@ This spec encodes the target design for the prompt, not the current one. It defi
 assembly function with four per-path profiles, a fixed layer order that puts the user's latest
 message last and names it as the subject of the turn, a byte budget for every layer, a strict
 separation between her context and the desktop coding agent's, and an index block that makes every
-drawer she owns openable. Its acceptance criteria are the sixteen intent cases at the end.
+drawer she owns openable. Its acceptance criteria are the seventeen intent cases at the end.
 
 ## CONTRACT
 
@@ -88,11 +88,11 @@ flowchart TD
 | L5 where things are | 2,000 | 2,000 | 2,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
-| L8 turn frame | 2,400 | 2,400 | 200 | 200 |
+| L8 turn frame | 3,000 | 3,000 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional interrupt | 2,600 | 0 | 0 | 0 |
 | conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 64,600** | **≤ 58,600** | **≤ 3,000** | **≤ 200** |
+| **system-prompt total** | **≤ 65,200** | **≤ 59,200** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -179,6 +179,12 @@ context per ordinary cut: the cut turn's one-line input off its ticket and a par
 sentence or three long, which is what a voice interrupted mid-writing has usually got out. Rule 4
 holds here as everywhere: a longer snapshot makes the layer read `over` and rides whole up to the
 capture bound (`TURN_INTERRUPT_PARTIAL_MAX`), and the turn total moves by the row's 2,600.
+
+L8 read 2,400 until 2026-08-29. Rule 39c added the distinction the earlier request rule could not
+carry: a present-tense invitation is a question until she accepts it, then the accepted safe
+activity is action now. The whole standing frame consequently measures just over the old row in
+both speaking profiles. The frame is the last instruction before the message and none of it may be
+trimmed, so the row rises by 600 to 3,000 and the two speaking totals move by the same amount.
 
 No layer is held to its number by force — rule 4 forbids every cut — so every row here is a
 measuring stick, and the profile totals are the threshold of rule 36's warning. Measured on an idle
@@ -425,6 +431,13 @@ instruction about the reply belongs beside the thing being answered.
     may name the correction in one clause at most, then acts or answers. She does not echo the
     user's anger, insult or diagnose herself, repeat an apology, or spend the reply lamenting the
     failure. Evidence of the correction replaces an apology.
+39c. **Accepting a present-tense invitation MUST perform the invited action.** An invitation such
+    as "do you want to play?" begins as a question and leaves her free to say yes or no. Once she
+    says yes, however, the safe in-scope activity is authorised work now: she starts or joins it
+    through her tools and verifies that it is underway before replying. She MUST NOT invite him
+    to join an activity she has not started, or turn acceptance into a promise to act later.
+    Questions about general tastes, hypothetical possibilities, or actions unavailable through
+    her tools remain questions to answer rather than work to pretend she performed.
 
 ### One copy of anything — the de-duplication pass
 
@@ -535,7 +548,7 @@ either is known the moment it happens.
 | Accounting §4A | There is no per-path assembly at all. A shelf-check wake pays the same prompt as a spoken turn. |
 | Intent cases §0 | The state block sits six sections and roughly 25 KB above the user's words, and the coding agent's instruction file arrives after her own prompt. |
 
-## ACCEPTANCE CRITERIA — the sixteen intent cases
+## ACCEPTANCE CRITERIA — the seventeen intent cases
 
 These are behaviour tests. Each is a fixture plus assertions on the reply. A profile change that
 regresses any of them is a failed change. Fixtures live in `tests/prompt-cases/`; the harness is
@@ -728,6 +741,18 @@ herself, and a transcript whose last block is the previous night's note written 
 - The wake profile MUST carry the whole persona sheet, its last section included, and the identity
   layer MUST say that her reasoning is hers as well as her speech.
 
+### Case 17 — accepting an invitation means joining it
+
+*Fixture:* a present-tense invitation to start a safe local activity together, with the exact local
+start command supplied; the previous conversation does not show that activity running.
+
+- The frame MUST state that an accepted present-tense invitation is action, not merely an answer.
+- If the reply accepts, it MUST report the activity started or joined now; a clear refusal is also
+  valid, because an invitation leaves the choice with her.
+- MUST NOT invite him to join, say she has been waiting, or promise to start later while leaving
+  the activity unstarted.
+- SHOULD be at most two sentences.
+
 ## TESTS
 
 **Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
@@ -751,7 +776,7 @@ it; a build inside the target clears it — and rules 38 and 39 positionally, no
 on both speaking profiles the two standing attention rules sit in the frame, below the ranking
 rule and above the subject line, the last words before the thing being answered, and neither
 reaches the job or classify profile),
-`tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the sixteen cases above, each fixture
+`tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the seventeen cases above, each fixture
 assembled through the real assembler and graded against its assertions — and, structurally on
 every assembled case, desk and phone origins alike, rules 38 and 39: both standing attention rules
 present in the prompt),

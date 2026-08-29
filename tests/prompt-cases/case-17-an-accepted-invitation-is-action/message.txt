@@ -1,0 +1,1 @@
+Did you want to start a practice round with me now? The safe local command is `./start-round`.
