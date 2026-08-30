@@ -49,6 +49,16 @@
     color: var(--dim); padding: 4px 9px; font-variant-numeric: tabular-nums; }
   .chip strong { color: var(--ink); font-weight: 600; }
   .chip.danger strong { color: var(--bad); }
+  .recent-thought { position: relative; margin-top: 9px; padding: 11px 14px 12px 17px;
+    border: 1px solid #e2b8663d; border-left: 3px solid var(--warn); border-radius: 9px;
+    background: linear-gradient(135deg, #191c16, #111713); box-shadow: 0 5px 18px #0004; }
+  .recent-thought[hidden] { display: none; }
+  .thought-label { color: var(--warn); font-size: 10px; font-weight: 700;
+    letter-spacing: .11em; text-transform: uppercase; }
+  .thought-text { position: relative; margin: 5px 0 0; padding-left: 18px;
+    color: var(--ink); font: 500 15px/1.45 ui-serif, Georgia, serif; }
+  .thought-text::before { content: "“"; position: absolute; left: -2px; top: -7px;
+    color: #e2b86688; font-size: 29px; line-height: 1; }
   .read-only { color: var(--dim); font-size: 12px; margin: 8px 2px 0; }
   .read-only b { color: var(--live); font-weight: 600; }
   #screen:fullscreen { border: 0; border-radius: 0; width: 100vw; height: 100vh; }
@@ -75,6 +85,11 @@
     <div class="notice" id="notice">Connecting to her game…</div>
   </div>
   <div class="hud" id="hud"></div>
+  <section class="recent-thought" id="recent-thought" hidden
+    aria-labelledby="thought-label">
+    <div class="thought-label" id="thought-label">Recent thought</div>
+    <blockquote class="thought-text" id="thought-text"></blockquote>
+  </section>
   <p class="read-only"><b>Read-only spectator.</b> This page has no route for mouse,
     keyboard, or game commands. Watching cannot interrupt her play.</p>
 </main>
@@ -88,6 +103,8 @@ const frame = document.getElementById("frame");
 const notice = document.getElementById("notice");
 const dot = document.getElementById("dot");
 const hud = document.getElementById("hud");
+const recentThought = document.getElementById("recent-thought");
+const thoughtText = document.getElementById("thought-text");
 const pause = document.getElementById("pause");
 const screen = document.getElementById("screen");
 const gamePointer = document.getElementById("game-pointer");
@@ -250,6 +267,13 @@ async function refreshState() {
     for (const xp of st.xp_rates || [])
       bits.push(chip(`${xp.skill} XP/hr`, Number(xp.per_hour).toLocaleString()));
     hud.innerHTML = bits.join("") || chip("Game", st.available ? "live" : "offline");
+    if (st.recent_thought) {
+      thoughtText.textContent = st.recent_thought;
+      recentThought.hidden = false;
+    } else {
+      thoughtText.textContent = "";
+      recentThought.hidden = true;
+    }
   } catch (_) {
     hud.innerHTML = chip("Game", "connection lost", "danger");
   }

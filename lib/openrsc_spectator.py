@@ -18,7 +18,13 @@ STATE_DIR = Path(os.environ.get(
 GAME_DIR = Path(os.environ.get(
     "DESKCRAB_OPENRSC_GAME_DIR",
     "~/.local/share/deskcrab/game")).expanduser()
+PLAYER_LOG = Path(os.environ.get(
+    "DESKCRAB_OPENRSC_PLAYER_LOG",
+    "~/Beatrice/OpenRSC/player.log")).expanduser()
 FFMPEG = os.environ.get("DESKCRAB_OPENRSC_FFMPEG", "ffmpeg")
+THOUGHT_SCAN_BYTES = 512 * 1024
+THOUGHT_MAX_CHARS = 700
+_thought_cache = {"key": None, "text": None}
 
 
 def _bounded_int(name, default, low, high):
@@ -43,11 +49,71 @@ def _read_json(path):
     return value if isinstance(value, dict) else {}
 
 
+def _explicit_assistant_text(event):
+    """One public/player-facing assistant text block, never hidden thinking."""
+    if not isinstance(event, dict):
+        return ""
+    if event.get("type") == "assistant":
+        message = event.get("message") or {}
+        blocks = message.get("content") or [] if isinstance(message, dict) else []
+        for block in reversed(blocks):
+            if isinstance(block, dict) and block.get("type") == "text" \
+                    and isinstance(block.get("text"), str):
+                return block["text"]
+    if event.get("type") == "item.completed":
+        item = event.get("item") or {}
+        if isinstance(item, dict) and item.get("type") == "agent_message" \
+                and isinstance(item.get("text"), str):
+            return item["text"]
+    return ""
+
+
+def latest_player_thought(path=None):
+    """Read the latest explicit play narration from a bounded log tail.
+
+    Player logs can live for months, while useful narration is normally only
+    a handful of tool events behind the end. Cache by inode/size/mtime so the
+    one-second spectator poll does no work until the player writes again.
+    """
+    path = Path(path or PLAYER_LOG).expanduser()
+    try:
+        st = path.stat()
+        key = (str(path), st.st_ino, st.st_size, st.st_mtime_ns)
+        if _thought_cache["key"] == key:
+            return _thought_cache["text"]
+        with path.open("rb") as fh:
+            offset = max(0, st.st_size - THOUGHT_SCAN_BYTES)
+            fh.seek(offset)
+            data = fh.read(THOUGHT_SCAN_BYTES)
+        lines = data.splitlines()
+        if offset and lines:
+            lines = lines[1:]  # the bounded read may begin inside one record
+    except OSError:
+        return None
+
+    thought = None
+    for raw in reversed(lines):
+        try:
+            event = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            continue
+        text = " ".join(_explicit_assistant_text(event).split())
+        if text:
+            thought = text[:THOUGHT_MAX_CHARS]
+            if len(text) > THOUGHT_MAX_CHARS:
+                thought = thought.rstrip() + "…"
+            break
+    _thought_cache.update(key=key, text=thought)
+    return thought
+
+
 def spectator_state(now_ms=None):
     """Return only the small set of game facts useful to a spectator.
 
-    Inventory, chat, credentials, routes, memory, and engine internals are
-    deliberately absent. This endpoint is a view, not a second state API.
+    Inventory, chat, credentials, routes, memory, hidden reasoning, and engine
+    internals are deliberately absent. The latest explicit player narration
+    is the one intentional exception. This endpoint remains a view, not a
+    second state API.
     """
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     state = _read_json(STATE_DIR / "state.json")
@@ -93,6 +159,7 @@ def spectator_state(now_ms=None):
         "snapshot_age_ms": max(0, now - ts) if isinstance(ts, int) else None,
         "activity": activity,
         "objective": objective,
+        "recent_thought": latest_player_thought(),
         "tile": ({"x": state.get("x"), "z": state.get("z")}
                  if fresh and isinstance(state.get("x"), int)
                  and isinstance(state.get("z"), int) else None),
