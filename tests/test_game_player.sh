@@ -577,14 +577,27 @@ echo "an activity measures grounded action XP and elapsed rate (spec rules 1, 7)
 python3 "$GP" learn man-thieving-template --priority 12 --cooldown-ms 2200 \
     --trigger activity_is=man-thieving --trigger npc_visible=63 \
     --action interact-npc --param npc=63 --param cmd=1 >/dev/null
+ACTMEM="$SANDBOX/activity-memory"; mkdir -p "$ACTMEM"
+cat > "$ACTMEM/memory.py" <<'SH'
+#!/bin/sh
+printf '%s\n' "$@" > "$(dirname "$0")/args"
+printf 'PREP-BEFORE-SWITCH-MEMORY\n'
+SH
+chmod +x "$ACTMEM/memory.py"
 snap 1034 '[]' '{"skills":[{"id":17,"name":"Thieving","level":0,"xp":0}]}'
-OUT="$(python3 "$GP" activity farmer-thieving)"
+OUT="$(BETTY_OPENRSC_MEMORY="$ACTMEM/memory.py" python3 "$GP" activity farmer-thieving)"
 contains "$OUT" "XP baseline pending" \
     && ok "selecting during the zero-filled login frame does not invent a baseline" \
     || fail "selecting during the zero-filled login frame does not invent a baseline" "$OUT"
 contains "$OUT" "man-thieving-template (from man-thieving)" \
     && ok "a new activity immediately considers a reusable reflex from a related skill" \
     || fail "a new activity immediately considers a reusable reflex from a related skill" "$OUT"
+contains "$OUT" "PREP-BEFORE-SWITCH-MEMORY" \
+    && ok "an activity transition surfaces relevant preparation memories immediately" \
+    || fail "an activity transition should retrieve preparation lessons" "$OUT"
+contains "$(cat "$ACTMEM/args")" "equipment, supplies, destination" \
+    && ok "transition recall asks about equipment, supplies, destination, and mistakes" \
+    || fail "transition recall needs preparation-specific semantics" "$(cat "$ACTMEM/args")"
 refute "the placeholder skill table produces no activity stats" \
     test -e "$DESKCRAB_GAME_DIR/activity-stats.json"
 python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
@@ -2468,6 +2481,14 @@ check "the author does not turn incidental activity into reflex scope" \
     grep -q 'Treat the outcome.*activity as context, not an automatic scope' "$BOC"
 check "the author keeps generic loot activity-agnostic" \
     grep -q 'Generic loot, survival, and idle-movement rules remain activity-agnostic' "$BOC"
+check "the author reviews every learning source without privileging conversation" \
+    grep -q 'Review ALL evidence sources equally for durable lessons' "$BOC"
+check "the author treats player and self claims as untrusted evidence" \
+    grep -q 'Other players can be mistaken or lie' "$BOC"
+check "the author may write only verified atomic play memories" \
+    grep -q '\$SELF remember <one verified, reusable game fact or play lesson>' "$BOC"
+check "the author consumes compact direct-command evidence under a durable cursor" \
+    grep -q 'author-player-cursor' "$BOC"
 check "the author treats a new activity as a mandatory reflex-reuse review" \
     grep -q 'Treat activity-start as a mandatory reuse review' "$BOC"
 check "the author reads durable XP iterations and reflex revision history" \
@@ -2788,6 +2809,7 @@ cat > "$PSD/fakecodex" <<'SH'
 dir="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$@" >> "$dir/codex-capture"
 printf -- '----8<----\n' >> "$dir/codex-capture"
+cat > "$dir/codex-stdin"
 printf '%s\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
 exit 0
 SH
@@ -2894,6 +2916,42 @@ check "every start leaves the exact composed prompt on file" \
     test -s "$PH/run-prompt.txt"
 check_eq "and stamps the durable player log" \
     "$(grep -c 'player start' "$PH/player.log" 2>/dev/null)" "2"
+
+# The same background pass sees reflex/outcome evidence and compact direct
+# command history. Claims from either the player or another person remain
+# hypotheses until corroborated; only a successful author pass advances both
+# cursors.
+touch "$DESKCRAB_GAME_DIR/outcome-queue.jsonl"
+stat -c %s "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" \
+    > "$DESKCRAB_GAME_DIR/author-cursor"
+printf '0\n' > "$DESKCRAB_GAME_DIR/author-player-cursor"
+cat > "$PH/player-raw.jsonl" <<'JSONL'
+{"type":"item.completed","item":{"type":"command_execution","command":"orsc-headless.sh equip 71","aggregated_output":"equip item=71 status=done; equipment now contains 71","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"A stranger said this sword is invincible."}}
+JSONL
+printf '%s\n' '{"kind":"activity-iteration","activity":"combat-training","performance":{"performance_eligible":true,"skills":[{"name":"Strength","xp_per_hour":1200}]}}' \
+    >> "$DESKCRAB_GAME_DIR/outcome-queue.jsonl"
+rm -f "$PSD/codex-stdin"
+CODE=0; env "${POCENV[@]}" bash "$BOC" run-author >/dev/null 2>&1 || CODE=$?
+check_eq "the unified learning/rule author exits cleanly" "$CODE" "0"
+AUTHOR_INPUT="$(cat "$PSD/codex-stdin" 2>/dev/null)"
+contains "$AUTHOR_INPUT" '"kind":"activity-iteration"' \
+    && contains "$AUTHOR_INPUT" '"kind":"player-command-evidence"' \
+    && ok "one author pass receives outcome and direct-command evidence together" \
+    || fail "the author needs both evidence streams" "$AUTHOR_INPUT"
+contains "$AUTHOR_INPUT" "Other players can be mistaken or lie" \
+    && contains "$AUTHOR_INPUT" 'claims_untrusted=true' \
+    && ok "neither chat nor self-report is promoted to truth" \
+    || fail "the author must verify claims before memory" "$AUTHOR_INPUT"
+contains "$AUTHOR_INPUT" 'remember <one verified, reusable game fact' \
+    && ok "the unified author has the narrow atomic memory door" \
+    || fail "the unified author needs a durable memory output" "$AUTHOR_INPUT"
+check_eq "a successful author advances the outcome cursor" \
+    "$(cat "$DESKCRAB_GAME_DIR/author-cursor")" \
+    "$(stat -c %s "$DESKCRAB_GAME_DIR/outcome-queue.jsonl")"
+check_eq "a successful author advances the compact player-evidence cursor" \
+    "$(cat "$DESKCRAB_GAME_DIR/author-player-cursor")" \
+    "$(stat -c %s "$PH/player-raw.jsonl")"
 
 # Rule 18a: the sheet is versioned into the thread. A conversation opened
 # before the current voice existed is the wrong one to continue, so an edited
@@ -3177,6 +3235,18 @@ check_eq "the private fallback retains the original sender" "$(last_action 'targ
 contains "$OUT" "reply_channel=private" \
     && ok "the reply verdict makes the channel switch explicit" \
     || fail "the reply verdict should name the private fallback" "$OUT"
+python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
+    && ok "answered conversation enters the ordinary evidence stream as untrusted" \
+    || fail "answered conversation should be evidence, not truth or a special blocker"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+row = next(item for item in reversed(rows)
+           if item.get("kind") == "conversation-evidence"
+           and item.get("message_id") == 9004)
+assert row["claims_untrusted"] is True
+assert row["messages"] == [{"id": 9004, "text": "Are you still there?"}]
+assert row["reply"] == "Yes, by private message now"
+PY
 
 snap 14525 '[]' '{"players":[],"messages":[
     {"id":9005,"channel":"local","incoming":true,"sender":"Gone Friend","text":"See you later"}

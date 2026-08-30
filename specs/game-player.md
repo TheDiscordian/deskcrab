@@ -614,8 +614,18 @@ deliberate-play channel.
     (objective, position, inventory, game messages, visible ground items, and visible entity types/objects, excluding
     tick churn and NPC wandering). Movement therefore produces one gap after the body settles,
     not one gap for every crossed tile. `note <text…>` is the playing
-    hand's one-line door for lessons the queue cannot see (it stamps the current position,
-    objective and inventory alongside the text). Because separate author turns cannot infer a
+    hand's one-line door for candidate lessons the queue cannot see (it stamps the current position,
+    objective and inventory alongside the text). It enters the same evidence review as action
+    outcomes rather than bypassing verification merely because the player called it a lesson.
+    A completed player reply appends `conversation-evidence` containing the exact settled burst,
+    reply, live context, and `claims_untrusted=true`; it does not interrupt play again or outrank
+    another evidence source. The author also advances a separate durable cursor through the Sol
+    player's completed-command stream. That stream is compacted to command, bounded output, exit
+    status, and bounded self-reports, so direct semantic actions and a failed approach followed by
+    its correction remain visible even when no learned rule fired. Screenshots, protocol chatter,
+    and giant listings cannot consume the batch. Command strings and self-reports remain
+    explicitly untrusted.
+    Because separate author turns cannot infer a
     time-spanning loop from isolated outcomes, the player retains a compact three-minute
     repetition history. Three exact firings of the same non-retreat rule against the same target
     in one objective/activity emit one self-contained `loop-candidate` record with their span and
@@ -631,11 +641,13 @@ deliberate-play channel.
     reflex fingerprint, XP/hour, and comparison with the prior best. Ending or revising the
     activity adds an `activity-iteration` review. Thus optimization does not wait for a player to
     complain or for the sitting to end, while the bounded cadence avoids an XP-trigger loop.
-    The queue is the inbox of the background author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
+    The queue is the wake source for the background author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
-    durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at medium
-    effort under the same no-sleep command hook as the playing hand, reads new outcomes, writes
-    and refines rules through the rule 11 doors, maintains rule
+    durable outcome and completed-command cursors, and then exits; there is no sleep or polling
+    loop. Either cursor advances only after a successful author turn, so a model/capacity failure
+    loses neither kind of evidence. It runs on Sol at medium effort under the same no-sleep command
+    hook as the playing hand, reads new evidence, writes and refines rules through the rule 11
+    doors, maintains rule
     17's cases, and never touches the bridge, the screen, or the reflex engine: every action
     that CAN become a reflex SHOULD become one, but rule creation must never block the body.
     An outcome's activity is context, not a default scope: the author adds `activity_is` only
@@ -647,6 +659,14 @@ deliberate-play channel.
     changes a rule only when grounded outcomes explain the performance difference. Every relevant
     executable change automatically begins the next measurable iteration, so a later review can
     tell whether the refinement helped rather than remembering only the newest version.
+    Memory review spans ALL of those sources equally. A player statement, agreeable reply, play
+    note, command text, or Beatrice self-report never verifies itself: other players can lie and
+    she can misread an outcome. A memory requires corroborating state deltas, observed action
+    completion (not dispatch alone), repeated outcomes, definitions from this OpenRSC tree, or a
+    reliable RuneScape Classic source. Once grounded, the author calls rule 19's narrow memory
+    door promptly and liberally, one atomic reusable fact or habit at a time—including small
+    failure/correction lessons that would prevent repetition. Unsupported claims, transient state,
+    and narration remain unstored until later evidence settles them.
 
 17. Rules are deterministic trigger-to-action data, so they are tested like data.
     `$DESKCRAB_GAME_DIR/learned-rule-tests.json` holds replay cases — `name`, `objective`,
@@ -715,6 +735,12 @@ deliberate-play channel.
       a repeated mechanical response still goes through `play learn`. Empty or over-1200-byte
       lessons are refused. Guesses, transient coordinates/state, secrets and ordinary chat do not
       belong in the store. The write consumes no game action slot and speaks to nobody.
+      The background author uses this same write path after rule 16's unified evidence review.
+      When an activity changes, `activity` performs a
+      bounded play-scoped retrieval specifically about preparation, equipment, supplies,
+      destination, safety, commitments, and prior mistakes for the new activity, and prints the
+      whole selected records before play begins. This transition lookup has its own short timeout
+      and fails open, so a slow memory service cannot hold the playing hand still.
     Retrieval is fail-safe by memory-recall.md's own contract — an empty store, an absent module
     or a dead embedder adds nothing and never breaks a prompt build or a reply. What comes back
     is for HER reading. The world's chat channels are read by whoever is standing there, so the

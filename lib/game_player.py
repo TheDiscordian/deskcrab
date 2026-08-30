@@ -20,6 +20,7 @@ import json
 import os
 import re
 import select
+import subprocess
 import sys
 import time
 import unicodedata
@@ -399,6 +400,53 @@ def die(msg: str) -> None:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def memory_program() -> Path:
+    """The same durable store door used by betty-openrsc.
+
+    Tests and alternate installs may replace it explicitly; ordinary play
+    resolves the sibling memory.py from this installed DeskCrab tree.
+    """
+    return Path(os.environ.get("BETTY_OPENRSC_MEMORY")
+                or os.environ.get("DESKCRAB_PLAYER_MEMORY")
+                or Path(__file__).with_name("memory.py"))
+
+
+def memory_environment() -> dict:
+    env = os.environ.copy()
+    # Keep hermetic game-player roots hermetic. In the live topology the game
+    # directory is .../deskcrab/game, so this is the established shared store.
+    env.setdefault("DESKCRAB_MEMORY_DIR", str(game_dir().parent / "memory"))
+    return env
+
+
+def recall_activity_memories(activity: str) -> str:
+    """Retrieve preparation/transition lessons at the moment they matter."""
+    program = memory_program()
+    if not program.is_file() or not os.access(program, os.X_OK):
+        return ""
+    objective = read_objective() or "none"
+    query = (
+        f"OpenRSC RuneScape preparation before switching to activity {activity}. "
+        f"Current objective: {objective}. What equipment, supplies, destination, "
+        "route, safety checks, unfinished commitments, prior mistakes, and useful "
+        "habits should I apply before beginning?"
+    )
+    argv = [str(program), "recall-block", "--query", query,
+            "--scope", "OpenRSC", "--scope", "RuneScape"]
+    if objective != "none":
+        argv += ["--scope", objective]
+    argv += ["--notes", "8", "--directives", "4", "--episodes", "2",
+             "--max-chars", "5000"]
+    try:
+        result = subprocess.run(
+            argv, text=True, capture_output=True, check=False,
+            timeout=float(os.environ.get("BETTY_OPENRSC_ACTIVITY_RECALL_TIMEOUT", "8")),
+            env=memory_environment())
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def load_route():
@@ -2967,7 +3015,6 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                channel=pending_message["channel"], sender=pending_message["sender"],
                count=len(pending_batch), burst=pending_message_burst(pending_batch))
         return "player-message", EXIT_PLAYER_MESSAGE
-
     # Spec rule 21a: past the limit, ordinary evaluation stops — no learned
     # rule, no route leg, on either hand. It sits BELOW rules 7b-7c above: a
     # person who spoke still gets an answer, and the idle warning still gets
@@ -3827,6 +3874,11 @@ def cmd_activity(args):
         print("prior best: " + ", ".join(
             f"{skill.get('name')} {skill.get('xp_per_hour')}/hr "
             f"(iteration {skill.get('iteration')})" for skill in best))
+    if changed:
+        recalled = recall_activity_memories(selected)
+        if recalled:
+            print("relevant play memories for this transition:")
+            print(recalled)
 
 
 def cmd_session(args):
@@ -4032,12 +4084,12 @@ def cmd_log(args):
 
 def cmd_note(args):
     """Spec rule 16: the playing hand's one-line door for lessons — stamped
-    with the live context and queued for the background author."""
+    with the live context and queued for the unified rule/memory author."""
     snap = game_reflex.read_snapshot() or {}
     append_outcome({"ts": now_ms(), "kind": "lesson", "text": " ".join(args.text),
                     "objective": read_objective() or None,
                     "snap": snap_brief(snap)})
-    print("noted for the background author")
+    print("noted for the unified rule/memory author")
 
 
 def validate_reply_text(text: str) -> None:
@@ -4169,10 +4221,15 @@ def cmd_reply(args):
         status = verify_chat_delivery(action, baseline_message_id)
 
     undeliverable = status == "refused-server" and action["type"] == "chat-private"
+    replied_batch = []
     with player_state_lock():
         est = load_player_state()
         est["inflight"] = None
         if status == "done" or undeliverable:
+            replied_batch = [m for m in est["pending_messages"]
+                    if m["channel"] == pending["channel"]
+                    and m["sender"].casefold() == pending["sender"].casefold()
+                    and m["id"] <= pending["id"]]
             est["pending_messages"] = [m for m in est["pending_messages"]
                     if not (m["channel"] == pending["channel"]
                             and m["sender"].casefold() == pending["sender"].casefold()
@@ -4185,6 +4242,19 @@ def cmd_reply(args):
                        "channel": pending["channel"], "sender": pending["sender"],
                        "reply_channel": "private" if action["type"] == "chat-private" else "local",
                        "status": status}])
+    if status == "done" or undeliverable:
+        append_outcome({
+            "ts": now_ms(), "kind": "conversation-evidence",
+            "message_id": pending["id"], "channel": pending["channel"],
+            "sender": pending["sender"],
+            "messages": [{"id": item["id"], "text": item["text"]}
+                         for item in replied_batch],
+            "reply": text, "delivery_status": status,
+            "claims_untrusted": True,
+            "objective": read_objective() or None,
+            "activity": read_activity() or None,
+            "snap": snap_brief(game_reflex.read_snapshot() or snap),
+        })
     if undeliverable:
         flush_events([{"ts": now_ms(), "kind": "player-message-undeliverable",
                        "message_id": pending["id"], "sender": pending["sender"],
@@ -4470,8 +4540,8 @@ def main():
     p.add_argument("--poll-ms", type=int)
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("note", help="queue a lesson for the background author "
-                                    "(spec rule 16)")
+    p = sub.add_parser("note", help="queue a lesson for the unified rule/memory "
+                                    "author (spec rules 16, 19)")
     p.add_argument("text", nargs="+")
     p.set_defaults(fn=cmd_note)
 
