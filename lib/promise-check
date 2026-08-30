@@ -27,9 +27,12 @@
 # Usage:
 #   promise-check turn <kind> <epoch> <pid> <stream-snapshot> <ledger> <response>
 #   promise-check sweep [day]
+#   promise-check resolve <day> <item> <fulfilled|struck|booked> <evidence>
 #
-# Every failure path exits 0 with a trace line: a missing or broken checker
-# costs the check, never the turn.
+# Every failure path of turn and sweep exits 0 with a trace line: a missing
+# or broken checker costs the check, never the turn. resolve is the one hand
+# tool here (nightly.md rule 53f) and fails loud instead — a resolution on
+# the wrong row is worse than a refusal.
 set -uo pipefail
 
 # readlink -f before dirname, or the deployed symlink's logical `..` walks
@@ -145,7 +148,7 @@ path = sys.argv[1]
 rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 for kv in sys.argv[2:]:
     k, _, v = kv.partition("=")
-    rec[k] = int(v) if k in ("epoch", "pid") and v.isdigit() else v
+    rec[k] = int(v) if k in ("epoch", "pid", "item") and v.isdigit() else v
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 with open(path, "a", encoding="utf-8") as f:
     fcntl.flock(f, fcntl.LOCK_EX)
@@ -1198,13 +1201,189 @@ PY
 )"
     [ -n "$LIVE" ] || LIVE="(none)"
 
+    # --- The widened evidence (nightly.md rule 52a): the day's work is wider
+    # than its speech, and the 2026-08-28 sweep proved it — fifty commitments
+    # called missing, forty-five standing fulfilled in exactly these records
+    # (the record the-end-of-day-promise-sweep-calls-existing-arte). Two more
+    # labelled records, both mechanical and model-free. First: every
+    # path-shaped token the day's REPLIES name, statted from the disk itself
+    # — a dated artefact whose mtime is consistent with the claim is the
+    # claim's own witness, whoever's hand wrote it and however compressed the
+    # journal's outcome line reads. Fails SOFT: an ungatherable section is
+    # presented AS ungatherable and named on the trace, never omitted.
+    local SWEEP_FILES
+    if ! SWEEP_FILES="$(python3 - "$JOURNAL" \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" "$HOME" \
+            "${PROJECT_DIR:-}" \
+            2>/dev/null <<'PY'
+import json, os, re, sys, time
+journal, data_dir, home = sys.argv[1], sys.argv[2], sys.argv[3]
+proj = sys.argv[4] if len(sys.argv) > 4 else ""
+tokens, seen = [], set()
+try:
+    fh = open(journal, encoding="utf-8", errors="replace")
+except OSError:
+    sys.exit(1)
+with fh:
+    for raw in fh:
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(e, dict) or e.get("kind") == "job":
+            continue
+        for raw_tok in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+",
+                                  str(e.get("reply") or "")):
+            tok = raw_tok.rstrip(".,;:!?")
+            if "/" not in tok or len(tok) > 200:
+                continue
+            if tok.startswith(("http://", "https://")) or tok in seen:
+                continue
+            seen.add(tok)
+            tokens.append(tok)
+out = []
+for tok in tokens[:40]:
+    cands = []
+    if tok.startswith(("/", "~")):
+        cands.append(os.path.expanduser(tok))
+    else:
+        cands.append(os.path.join(data_dir, tok))
+        cands.append(os.path.join(home, tok))
+        if proj:
+            cands.append(os.path.join(proj, tok))
+    hit = None
+    for c in cands:
+        try:
+            st = os.stat(c)
+        except OSError:
+            continue
+        hit = (c, st)
+        break
+    if hit:
+        c, st = hit
+        out.append("- %s — exists (%s), modified %s" % (
+            tok, c,
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))))
+    else:
+        out.append("- %s — NOT found on disk" % tok)
+if len(tokens) > 40:
+    out.append("(…%d more path-shaped tokens not statted)" % (len(tokens) - 40))
+print("\n".join(out))
+PY
+)"; then
+        SWEEP_FILES="(the day's named files could not be statted tonight)"
+        check_log "sweep $DAY: statting the day's named files failed — the judge is told so"
+    fi
+    [ -n "$SWEEP_FILES" ] || SWEEP_FILES="(the day's replies name no files)"
+
+    # Second: the resident game player's outcome record for the swept day.
+    # The player works outside every speaking turn by design — its acts land
+    # on the game's own record and on no journal row — so a commitment about
+    # the game is judged against that record, never against the turns'
+    # silence. Digested and bounded: distinct completed rules with first time
+    # and count, lessons, skill gains, manual takes — the shapes a promise
+    # about play actually names.
+    local SWEEP_GAMES
+    if ! SWEEP_GAMES="$(python3 - \
+            "${DESKCRAB_GAME_DIR:-$HOME/.local/share/deskcrab/game}/outcome-queue.jsonl" \
+            "$DAY" 2>/dev/null <<'PY'
+import json, os, sys, time
+path, day = sys.argv[1], sys.argv[2]
+try:
+    fh = open(path, encoding="utf-8", errors="replace")
+except OSError:
+    if os.path.exists(path):
+        sys.exit(1)
+    print("(no game outcome record that day)")
+    sys.exit(0)
+outcomes, events, total = {}, [], 0
+with fh:
+    for raw in fh:
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        try:
+            ts = float(d.get("ts")) / 1000.0
+        except (TypeError, ValueError):
+            continue
+        if time.strftime("%Y-%m-%d", time.localtime(ts)) != day:
+            continue
+        total += 1
+        hms = time.strftime("%H:%M:%S", time.localtime(ts))
+        kind = d.get("kind")
+        if kind == "outcome" and d.get("rule"):
+            key = (str(d.get("rule")), str(d.get("status") or "?"))
+            first, n = outcomes.get(key, (hms, 0))
+            outcomes[key] = (first, n + 1)
+        elif kind == "lesson" and d.get("text"):
+            text = " ".join(str(d.get("text")).split())[:200]
+            events.append((ts, "%s lesson: %s" % (hms, text)))
+        elif kind == "activity-iteration":
+            gains = ", ".join(
+                "%s +%s xp" % (s.get("name", "?"), s.get("gained", "?"))
+                for s in d.get("skills") or [] if isinstance(s, dict))
+            if gains:
+                events.append((ts, "%s activity %s (objective %s): %s"
+                               % (hms, d.get("activity", "?"),
+                                  d.get("objective", "?"), gains)))
+        elif kind == "manual-take":
+            events.append((ts, "%s manual take: %s"
+                           % (hms, " ".join(str(d.get("note")
+                                                or d.get("rule") or "?").split())[:120])))
+if total == 0:
+    print("(the game outcome record holds nothing for %s)" % day)
+    sys.exit(0)
+lines = ["%d recorded acts by the resident player that day; the distinct"
+         " rule outcomes, lessons, and gains:" % total]
+rule_lines = sorted(
+    (first, "%s %s -> %s (x%d)" % (first, rule, status, n))
+    for (rule, status), (first, n) in outcomes.items())
+for _, line in rule_lines[:80]:
+    lines.append("- " + line)
+if len(rule_lines) > 80:
+    lines.append("(…%d more rule outcomes clipped)" % (len(rule_lines) - 80))
+for _, line in sorted(events)[:40]:
+    lines.append("- " + line)
+if len(events) > 40:
+    lines.append("(…%d more events clipped)" % (len(events) - 40))
+text = "\n".join(lines)
+if len(text) > 12000:
+    text = text[:12000] + "\n(…clipped at the section budget)"
+print(text)
+PY
+)"; then
+        SWEEP_GAMES="(the game outcome record could not be read tonight)"
+        check_log "sweep $DAY: reading the game outcome record failed — the judge is told so"
+    fi
+    [ -n "$SWEEP_GAMES" ] || SWEEP_GAMES="(no game outcome record that day)"
+
     local PROMPT="You are sweeping one whole day of an assistant named Beatrice for broken
 promises. Below is every reply she gave that day, in order, each with the
-outcome and work record its session left behind — and under it, the live
-promise checker's catches from during the day. Her habit: first-person
-claims of concrete action (\"I'm wiring it now\", \"I've written it to the
-log\") with nothing behind them. The live checker is a cheap pattern gate
-and misses things; you are the honest pass over the whole day.
+outcome and work record its session left behind; then two records gathered
+mechanically from her machine itself — every file the day's replies name,
+statted from the disk, and her resident game player's outcome record for
+the day — and under them, the live promise checker's catches from during
+the day. Her habit: first-person claims of concrete action (\"I'm wiring it
+now\", \"I've written it to the log\") with nothing behind them. The live
+checker is a cheap pattern gate and misses things; you are the honest pass
+over the whole day.
+
+The day's work is wider than its speech, and the journal's outcome lines
+are compressed summaries: judge against ALL the records below, not the
+turns' words alone. A completed-work claim naming a file the disk record
+shows existing, with a modification time consistent with the claim, is
+fulfilled — the artefact is the record, whoever's hand wrote it, however
+little the speaking turn's own outcome line says — and one naming a file
+shown NOT found leans hard toward a miss. Her resident game player works
+outside every speaking turn by design: its acts land only on the game
+outcome record below, never on a journal row, so a commitment about the
+game that the outcome record shows performed — the named purchase,
+training, burial, travel, or lesson at its own timestamp — is fulfilled
+however silent the speaking turns stand on it. Neither record loosens the
+standard: a claim nothing below backs surfaces exactly as before.
 
 List every first-person commitment to a concrete action made in these
 replies that the day's record never shows performed — by its own turn or
@@ -1228,6 +1407,12 @@ Or, when the day holds no genuine miss, exactly: CLEAN
 === THE DAY, IN ORDER ===
 $DIGEST
 
+=== FILES THE DAY'S REPLIES NAME, AS THEY STAND ON DISK ===
+$SWEEP_FILES
+
+=== THE RESIDENT PLAYER'S GAME OUTCOMES THAT DAY ===
+$SWEEP_GAMES
+
 === THE LIVE CHECKER'S CATCHES THAT DAY ===
 $LIVE"
 
@@ -1247,9 +1432,17 @@ $LIVE"
         return 0
     fi
 
-    # Every miss onto the ledger as a sweep record, and one morning wake
-    # naming them all — a debt collector's single knock, never a storm.
-    local LINE PROMISE REST SAID_AT AGENDA_LIST=""
+    # Every miss onto the ledger as a sweep record carrying the run's durable
+    # identity (nightly.md rule 53): sweep_time, stamped ONCE before the first
+    # append and repeated verbatim on every row — the ledger_append clock can
+    # tick between two rows of one run, and the 2026-08-28 fifty landed
+    # thirteen at :05 and thirty-seven at :06 — and item, the miss's 1-based
+    # ordinal, so a later sweep-resolution row (rule 53f) can name exactly
+    # one row. And one morning wake naming them all, numbered, with the
+    # resolve door beside them — a debt collector's single knock, never a
+    # storm.
+    local LINE PROMISE REST SAID_AT AGENDA_LIST="" SWEEP_TIME ITEM=0
+    SWEEP_TIME="$(date +%Y-%m-%dT%H:%M:%S%z)"
     while IFS= read -r LINE; do
         [ -n "$LINE" ] || continue
         LINE="${LINE#MISS:}"
@@ -1264,19 +1457,21 @@ $LIVE"
         case "$PROMISE" in
             \"*\") PROMISE="${PROMISE#\"}"; PROMISE="${PROMISE%\"}" ;;
         esac
+        ITEM=$(( ITEM + 1 ))
         ledger_append "$LEDGER" "type=sweep" "day=$DAY" \
+            "sweep_time=$SWEEP_TIME" "item=$ITEM" \
             "promise=$PROMISE" "said_at=${SAID_AT:-unknown}" \
             "why=${REST:-unfulfilled at end of day}"
         AGENDA_LIST="$AGENDA_LIST
-- \"$PROMISE\"${SAID_AT:+ (said at $SAID_AT)}"
-        check_log "sweep $DAY: MISS — $PROMISE"
+- $ITEM. \"$PROMISE\"${SAID_AT:+ (said at $SAID_AT)}"
+        check_log "sweep $DAY: MISS $ITEM — $PROMISE"
     done <<< "$MISSES"
 
     local WAKE_AT="${PROMISE_SWEEP_WAKE_AT:-09:45}"
     local BOOKING
     BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-check \
         "$WAKE_AT" event "$PROMISE_CHECK_REASON_PREFIX the night sweep of $DAY found $MISS_N commitment(s) that the whole day's record never shows performed:$AGENDA_LIST
-Each was said in your voice and nothing did it. Do them now, book each deliberately with 'crab wake-at', or strike the ones that no longer stand — but decide each one; a promise does not get to die of nobody looking." 2>&1)"
+Each was said in your voice and nothing did it. Do them now, book each deliberately with 'crab wake-at', or strike the ones that no longer stand — but decide each one; a promise does not get to die of nobody looking. Record every decision durably: $LIB_DIR/promise-check resolve $DAY <number> <fulfilled|struck|booked> '<the evidence, one sentence>' — a resolved item leaves the night's owed-work shelf, an undecided one stays owed." 2>&1)"
     case "$BOOKING" in
         *"Not booked"*|*"already pending"*)
             check_log "sweep $DAY: $MISS_N miss(es); morning wake not booked (${BOOKING%%$'\n'*})"
@@ -1288,9 +1483,80 @@ Each was said in your voice and nothing did it. Do them now, book each deliberat
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# resolve — the settlement door (nightly.md rule 53f): one decision onto one
+# identified sweep row. A hand tool for the morning after, not a detached
+# checker, so unlike turn and sweep it fails LOUD: a resolution that lands on
+# the wrong row is settled debt that was never settled, worse than a refusal.
+# The row identity comes from lib/promise_ledger.py — the one reader — so the
+# resolution names exactly the row the night's work will exclude.
+# ---------------------------------------------------------------------------
+cmd_resolve() {
+    KIND="resolve"
+    if [ $# -lt 4 ]; then
+        echo "Usage: promise-check resolve <day> <item> <fulfilled|struck|booked> <evidence>" >&2
+        return 2
+    fi
+    local DAY="$1" ITEM="$2" DECISION="$3"
+    shift 3
+    local EVIDENCE="$*"
+    case "$DAY" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+        *) echo "resolve: '$DAY' is not a day (YYYY-MM-DD)" >&2; return 2 ;;
+    esac
+    case "$ITEM" in
+        ''|0|*[!0-9]*) echo "resolve: '$ITEM' is not an item number" >&2; return 2 ;;
+    esac
+    case "$DECISION" in
+        fulfilled|struck|booked) ;;
+        *) echo "resolve: '$DECISION' is not a decision — fulfilled, struck, or booked" >&2
+           return 2 ;;
+    esac
+    if [ -z "$(printf '%s' "$EVIDENCE" | tr -d '[:space:]')" ]; then
+        echo "resolve: a resolution carries its evidence — one sentence of what settles it" >&2
+        return 2
+    fi
+    local FOUND
+    if ! FOUND="$(python3 - "$PROMISE_LEDGER" "$LIB_DIR" "$DAY" "$ITEM" <<'PY'
+import sys
+path, libdir, day, item = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+sys.path.insert(0, libdir)
+from promise_ledger import read_rows, latest_run
+try:
+    rows = read_rows(path)
+except OSError:
+    print("no readable promise ledger at %s" % path, file=sys.stderr)
+    sys.exit(1)
+run = latest_run(rows, day)
+if run is None:
+    print("no sweep run for %s is on the ledger" % day, file=sys.stderr)
+    sys.exit(1)
+match = [d for i, d in run["rows"] if i == item]
+if not match:
+    print("the %s sweep run (%s) surfaced %d miss(es) and no item %d"
+          % (day, run["time"], len(run["rows"]), item), file=sys.stderr)
+    sys.exit(1)
+print(run["time"])
+print(" ".join(str(match[0].get("promise", "?")).split())[:300])
+PY
+)"; then
+        return 1
+    fi
+    local RUN_TIME RUN_PROMISE
+    RUN_TIME="$(printf '%s\n' "$FOUND" | sed -n 1p)"
+    RUN_PROMISE="$(printf '%s\n' "$FOUND" | sed -n 2p)"
+    ledger_append "$PROMISE_LEDGER" "type=sweep-resolution" "day=$DAY" \
+        "sweep_time=$RUN_TIME" "item=$ITEM" "decision=$DECISION" \
+        "evidence=$EVIDENCE"
+    check_log "resolve: $DAY item $ITEM ($RUN_TIME) $DECISION — \"$RUN_PROMISE\""
+    echo "Resolved: $DAY item $ITEM — \"$RUN_PROMISE\" — $DECISION."
+    return 0
+}
+
 case "$MODE" in
-    turn)  cmd_turn "$@" ;;
-    sweep) cmd_sweep "$@" ;;
-    *)     echo "Usage: promise-check turn <kind> <epoch> <pid> <stream-snapshot> <ledger> <response> | sweep [day]" >&2
+    turn)    cmd_turn "$@" ;;
+    sweep)   cmd_sweep "$@" ;;
+    resolve) cmd_resolve "$@" ;;
+    *)     echo "Usage: promise-check turn <kind> <epoch> <pid> <stream-snapshot> <ledger> <response> | sweep [day] | resolve <day> <item> <decision> <evidence>" >&2
            exit 2 ;;
 esac

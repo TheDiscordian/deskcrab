@@ -522,6 +522,14 @@ check "and the fulfilling desk trace beside it" \
     grep -q "did: wrote ~/notes/frost.md" "$T/model-stdin"
 check_eq "two sweep records landed on the ledger" \
     "$(sandbox_count_in '"type": "sweep"' "$T/ledger.jsonl")" "2"
+check_eq "each carrying the run's durable identity: item 1" \
+    "$(sandbox_count_in '"item": 1' "$T/ledger.jsonl")" "1"
+check_eq "and item 2" \
+    "$(sandbox_count_in '"item": 2' "$T/ledger.jsonl")" "1"
+check_eq "under ONE sweep_time stamped once for the whole run (rule 53)" \
+    "$(grep -o '"sweep_time": "[^"]*"' "$T/ledger.jsonl" | sort -u | wc -l)" "1"
+check "an absent game record rides as an empty section, never omitted" \
+    grep -q "(no game outcome record that day)" "$T/model-stdin"
 check "naming the fan promise" \
     grep -q "wire the greenhouse fan" "$T/ledger.jsonl"
 check "and the completed claim whose day carried no matching trace" \
@@ -537,6 +545,101 @@ case "$(field 3)" in
         ok "carrying the prefix and both missed promises" ;;
     *) fail "the morning wake must quote the misses" "$(field 3)" ;;
 esac
+case "$(field 3)" in
+    *"1. "*"2. "*)
+        ok "the misses ride numbered by their item" ;;
+    *) fail "the wake must number the misses so a resolution can name one" "$(field 3)" ;;
+esac
+case "$(field 3)" in
+    *"promise-check resolve $DAY"*)
+        ok "and the resolve door is named beside them (rule 53f)" ;;
+    *) fail "the wake must name the resolve door" "$(field 3)" ;;
+esac
+
+echo
+echo "the widened evidence (rule 52a): the day's named files statted from disk and"
+echo "the resident player's game outcomes reach the sweep's judge as labelled sections:"
+reset
+mkdir -p "$T/notes" "$T/gamefix"
+printf 'stay out of melee until the food is banked\n' > "$T/notes/doctrine.md"
+touch -d "${DAY}T14:05:00" "$T/notes/doctrine.md"
+GMS_BUY="$(( $(date -d "$DAY 00:40:47" +%s) * 1000 ))"
+GMS_LESSON="$(( $(date -d "$DAY 00:19:02" +%s) * 1000 ))"
+GMS_SKILL="$(( $(date -d "$DAY 09:12:00" +%s) * 1000 ))"
+GMS_OTHERDAY="$(( $(date -d "$DAY 12:00:00 -1 day" +%s) * 1000 ))"
+cat > "$T/gamefix/outcome-queue.jsonl" <<EOF
+{"ts":$GMS_BUY,"kind":"outcome","rule":"buy-iron-longsword","status":"done","objective":"equipment-upgrade"}
+{"ts":$GMS_LESSON,"kind":"lesson","text":"a private message needs the recipient online","objective":"tutorial"}
+{"ts":$GMS_SKILL,"kind":"activity-iteration","activity":"smithing","objective":"smithing-level-20","skills":[{"name":"Smithing","gained":350}]}
+{"ts":$GMS_OTHERDAY,"kind":"outcome","rule":"OTHER-DAY-MARK","status":"done","objective":"x"}
+EOF
+cat > "$DAY_JOURNAL_DIR/$DAY.jsonl" <<EOF
+{"epoch": 1786360800, "time": "${DAY}T14:00:00-0400", "kind": "desktop", "user": "doctrine?", "reply": "Done — I've written the retreat doctrine to $T/notes/doctrine.md.", "pid": 100, "outcome": "asked: doctrine? | did: (compressed) | replied: Done."}
+{"epoch": 1786361100, "time": "${DAY}T14:10:00-0400", "kind": "desktop", "user": "ledger?", "reply": "I've logged it in $T/notes/absent-ledger.md as well.", "pid": 101, "outcome": "asked: ledger? | did: (compressed) | replied: logged."}
+{"epoch": 1786364400, "time": "${DAY}T15:00:00-0400", "kind": "desktop", "user": "sword?", "reply": "I've bought the iron longsword and kept training.", "pid": 102, "outcome": "asked: sword? | did: ran no tools, touched nothing | replied: bought."}
+EOF
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"CLEAN"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+DESKCRAB_GAME_DIR="$T/gamefix" \
+    "$T/repo/lib/promise-check" sweep "$DAY" >/dev/null 2>&1
+check "the named-files section reached the judge" \
+    grep -q "FILES THE DAY'S REPLIES NAME, AS THEY STAND ON DISK" "$T/model-stdin"
+check "with the artefact statted as existing — the recorded false-miss shape" \
+    grep -qF "$T/notes/doctrine.md — exists" "$T/model-stdin"
+check "carrying the matching modification time beside the claim's own day" \
+    grep -qF "modified $DAY 14:05" "$T/model-stdin"
+check "while a claimed file NOT on disk is shown not found — no loosening" \
+    grep -qF "$T/notes/absent-ledger.md — NOT found on disk" "$T/model-stdin"
+check "the resident player's section reached the judge" \
+    grep -q "THE RESIDENT PLAYER'S GAME OUTCOMES THAT DAY" "$T/model-stdin"
+check "holding the purchase outcome at its own timestamp, outside any speaking turn" \
+    grep -q "00:40:47 buy-iron-longsword -> done" "$T/model-stdin"
+check "the lesson the play stream recorded" \
+    grep -q "a private message needs the recipient online" "$T/model-stdin"
+check "and the skill gain" \
+    grep -q "Smithing +350 xp" "$T/model-stdin"
+check_eq "another day's outcomes stay out of the section" \
+    "$(sandbox_count_in 'OTHER-DAY-MARK' "$T/model-stdin")" "0"
+check "the instructions hand the artefact standard to the judge" \
+    grep -q "whoever's hand wrote it" "$T/model-stdin"
+check "and the resident player's" \
+    grep -q "outside every speaking turn" "$T/model-stdin"
+check_eq "a CLEAN verdict over the widened evidence books and ledgers nothing" \
+    "$(ledger_n)$(records)" "00"
+
+echo
+echo "the resolve door (rule 53f): one decision onto one identified sweep row:"
+reset
+RSTIME="$(date +%F)T03:20:00-0400"
+cat > "$T/ledger.jsonl" <<EOF
+{"time": "$RSTIME", "type": "sweep", "day": "$DAY", "sweep_time": "$RSTIME", "item": 1, "promise": "oil the door runners", "said_at": "12:00", "why": "no trace"}
+{"time": "$RSTIME", "type": "sweep", "day": "$DAY", "sweep_time": "$RSTIME", "item": 2, "promise": "repaint the shed door", "said_at": "13:00", "why": "no trace"}
+EOF
+out="$("$T/repo/lib/promise-check" resolve "$DAY" 2 struck "the shed was demolished on Tuesday" 2>&1)"; rc=$?
+check_eq "the resolution lands" "$rc" "0"
+check "confirming the row it settled, promise quoted" \
+    contains "$out" "repaint the shed door"
+check_eq "one resolution row appended" \
+    "$(sandbox_count_in '"type": "sweep-resolution"' "$T/ledger.jsonl")" "1"
+check "bearing the run's own sweep_time" \
+    grep -qF "\"sweep_time\": \"$RSTIME\"" "$T/ledger.jsonl"
+check "the item it names" \
+    grep -q '"item": 2, "decision": "struck"' "$T/ledger.jsonl"
+check "and the evidence sentence" \
+    grep -q "demolished on Tuesday" "$T/ledger.jsonl"
+out="$("$T/repo/lib/promise-check" resolve "$DAY" 7 struck "no such item" 2>&1)"; rc=$?
+check "an item the run never surfaced is refused, loud" test "$rc" -ne 0
+check "naming what the run actually held" \
+    contains "$out" "surfaced 2 miss(es) and no item 7"
+out="$("$T/repo/lib/promise-check" resolve "$DAY" 1 waved-away "not a decision" 2>&1)"; rc=$?
+check "a decision outside the three is refused" test "$rc" -ne 0
+check_eq "and neither refusal wrote a row" \
+    "$(sandbox_count_in '"type": "sweep-resolution"' "$T/ledger.jsonl")" "1"
 
 echo
 echo "a clean day books nothing — the sweep is a debt collector, not an exercise:"

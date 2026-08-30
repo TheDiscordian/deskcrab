@@ -77,13 +77,29 @@ printf '# Threads\nFROZEN-INDEX-MARK\n' > "$T/eng/INDEX.md"
 printf '# Open\n- FROZEN-OPEN-MARK the archive open list\n' > "$T/eng/OPEN.md"
 
 # The rest of the owed-work shelf (rule 58b): a promise ledger holding one
-# sweep miss (owed) and one raw live catch (never material — the live
-# checker runs heavily false), and one pending wake whose reason is
-# builder-shaped work.
+# legacy sweep miss (owed), one raw live catch (never material — the live
+# checker runs heavily false), and rule 53f's two resolution shapes: an
+# identified run whose item 1 a resolution row has settled while item 2
+# stays owed, and a legacy run whose two rows straddle a ledger clock tick
+# (the 2026-08-28 incident's exact shape — thirteen rows at :05, thirty-seven
+# at :06, the resolutions all naming :05) resolved by run-and-ordinal.
+# And one pending wake whose reason is builder-shaped work.
 PLEDGER="$T/promise-ledger.jsonl"
+STODAY="$(date +%F)"
+STIME="${STODAY}T03:20:00-0400"
+LTIME_A="${STODAY}T03:23:05-0400"
+LTIME_B="${STODAY}T03:23:06-0400"
 cat > "$PLEDGER" <<EOF
-{"time": "$(date +%Y-%m-%dT03:15:00)", "type": "sweep", "day": "$(date +%F)", "promise": "I'll oil the greenhouse door runners tonight", "said_at": "12:00", "why": "no later record touches the runners"}
+{"time": "$(date +%Y-%m-%dT03:15:00)", "type": "sweep", "day": "$STODAY", "promise": "I'll oil the greenhouse door runners tonight", "said_at": "12:00", "why": "no later record touches the runners"}
 {"time": "$(date +%Y-%m-%dT03:16:00)", "kind": "desktop", "promise": "a raw live catch that must never reach the selector", "wake": "booked 3m out"}
+{"time": "$STIME", "type": "sweep", "day": "$STODAY", "sweep_time": "$STIME", "item": 1, "promise": "RESOLVED-EXPLICIT-MARK repaint the shed door", "said_at": "13:00", "why": "no trace"}
+{"time": "$STIME", "type": "sweep", "day": "$STODAY", "sweep_time": "$STIME", "item": 2, "promise": "replace the cracked pane in the cold frame", "said_at": "13:05", "why": "no trace"}
+{"time": "$LTIME_A", "type": "sweep", "day": "$(date -d yesterday +%F)", "promise": "RESOLVED-LEGACY-MARK bag the leaf mould", "said_at": "09:00", "why": "no trace"}
+{"time": "$LTIME_B", "type": "sweep", "day": "$(date -d yesterday +%F)", "promise": "turn the compost heap before the frost", "said_at": "09:10", "why": "no trace"}
+{"time": "$(date +%Y-%m-%dT09:00:00)", "type": "sweep-resolution", "day": "$STODAY", "sweep_time": "$STIME", "item": 1, "decision": "fulfilled", "evidence": "the shed door stands repainted"}
+{"time": "$(date +%Y-%m-%dT09:00:00)", "type": "sweep-resolution", "day": "$STODAY", "sweep_time": "${STODAY}T03:21:00-0400", "item": 2, "decision": "fulfilled", "evidence": "a near timestamp must not name an explicitly stamped run"}
+{"time": "$(date +%Y-%m-%dT09:00:00)", "type": "sweep-resolution", "day": "$STODAY", "sweep_time": "$STIME", "item": 2, "decision": "pending", "evidence": "an invalid decision settles nothing"}
+{"time": "$(date +%Y-%m-%dT09:00:01)", "type": "sweep-resolution", "day": "$(date -d yesterday +%F)", "sweep_time": "$LTIME_A", "item": 1, "decision": "struck", "evidence": "the leaf mould was never hers to bag"}
 EOF
 DWAKES="$T/dwakes"
 mkdir -p "$DWAKES"
@@ -190,10 +206,20 @@ check "the prompt carried the ledger of already-dispatched threads" \
     grep -q "already-ledgered" "$T/model-stdin"
 check "the prompt carried the sweep's missed promises (rule 58b)" \
     grep -q "PROMISES THE NIGHT SWEEP FOUND MISSED" "$T/model-stdin"
-check "with the miss quoted" \
+check "with the honest unresolved miss quoted — still eligible" \
     grep -q "oil the greenhouse door runners" "$T/model-stdin"
 check_eq "and the live checker's raw catch kept OUT of the material" \
     "$(sandbox_count_in 'raw live catch' "$T/model-stdin")" "0"
+check_eq "a resolved sweep row never reaches the selector (rule 53f)" \
+    "$(sandbox_count_in 'RESOLVED-EXPLICIT-MARK' "$T/model-stdin")" "0"
+check "while its unresolved neighbour from the same run still does" \
+    grep -q "replace the cracked pane in the cold frame" "$T/model-stdin"
+check_eq "a legacy row resolved by run-and-ordinal across the clock tick is out too" \
+    "$(sandbox_count_in 'RESOLVED-LEGACY-MARK' "$T/model-stdin")" "0"
+check "while the tick-straddling run's second, unresolved row survives" \
+    grep -q "turn the compost heap before the frost" "$T/model-stdin"
+check "and the resolved rows' exclusion is stated, never silent (rule 58b)" \
+    grep -q "2 swept miss(es) from these nights already resolved" "$T/model-stdin"
 check "the prompt carried the pending wakes (rule 58b)" \
     grep -q "WAKES ALREADY ON THE BOOKS" "$T/model-stdin"
 check "with the parked builder-shaped reason" \

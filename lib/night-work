@@ -407,46 +407,46 @@ $(utf8_head "$TAKE" "$RF" 2>/dev/null)
 
         # The rest of the owed-work shelf (rule 58b). The sweep's genuine
         # end-of-day misses — its `type: sweep` records, never the live
-        # checker's raw catches, which run heavily false — and the pending
-        # wake reasons, where owed work sits waiting for a live turn that
-        # cannot commit to the repository anyway. Either section failing to
-        # read is presented AS unreadable and named on the night log, never
-        # silently omitted: the selector must know it judges from less than
-        # the whole shelf.
+        # checker's raw catches, which run heavily false — and among them
+        # only the UNRESOLVED: a row a `sweep-resolution` row has answered
+        # (rule 53f — fulfilled, struck, or booked alike) is settled debt,
+        # and before this exclusion every recent raw row stayed eligible for
+        # redispatch until it aged out, fifty reconciled misses among them
+        # (the record the-end-of-day-promise-sweep-calls-existing-arte). The
+        # identity walk is lib/promise_ledger.py's, the one reader; the count
+        # of resolved rows excluded is stated in the section itself, never
+        # silently dropped. And the pending wake reasons, where owed work
+        # sits waiting for a live turn that cannot commit to the repository
+        # anyway. Either section failing to read is presented AS unreadable
+        # and named on the night log, never silently omitted: the selector
+        # must know it judges from less than the whole shelf.
         local OWED PENDING
-        if ! OWED="$(python3 - "$PROMISE_LEDGER" 2>/dev/null <<'PY'
-import json, os, sys, time
-path = sys.argv[1]
+        if ! OWED="$(python3 - "$PROMISE_LEDGER" "$LIB_DIR" 2>/dev/null <<'PY'
+import os, sys, time
+path, libdir = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libdir)
+from promise_ledger import read_rows, owed
 cut = time.time() - 3 * 86400
-rows = []
 try:
-    fh = open(path, encoding="utf-8", errors="replace")
+    ledger_rows = read_rows(path)
 except OSError:
     if os.path.exists(path):
         print("(the promise ledger could not be read tonight — judging from less than the whole shelf)")
     else:
         print("(no promise ledger yet)")
     sys.exit(0)
-with fh:
-    for raw in fh:
-        try:
-            d = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(d, dict) or d.get("type") != "sweep":
-            continue
-        ts = str(d.get("time", ""))
-        try:
-            when = time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            when = time.time()
-        if when < cut:
-            continue
-        promise = " ".join(str(d.get("promise", "?")).split())[:300]
-        why = " ".join(str(d.get("why", "")).split())[:200]
-        rows.append("- [%s, said at %s] \"%s\" — %s"
-                    % (d.get("day", "?"), d.get("said_at", "?"), promise, why))
-print("\n".join(rows[-20:]) if rows else "(no swept misses on the ledger)")
+owed_rows, resolved_n = owed(ledger_rows, cut)
+rows = []
+for d in owed_rows:
+    promise = " ".join(str(d.get("promise", "?")).split())[:300]
+    why = " ".join(str(d.get("why", "")).split())[:200]
+    rows.append("- [%s, said at %s] \"%s\" — %s"
+                % (d.get("day", "?"), d.get("said_at", "?"), promise, why))
+rows = rows[-20:]
+if resolved_n:
+    rows.append("(%d swept miss(es) from these nights already resolved — "
+                "fulfilled, struck, or booked — and off the shelf)" % resolved_n)
+print("\n".join(rows) if rows else "(no swept misses on the ledger)")
 PY
 )"; then
             OWED="(the promise ledger could not be read tonight — judging from less than the whole shelf)"

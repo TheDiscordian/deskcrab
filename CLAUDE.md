@@ -48,6 +48,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/job-log-stream` | turns a builder's live stream into the human job log as it is written |
 | `lib/promise-audit` | did the reply state a want that is not on the shelf? |
 | `lib/promise-check` | did the reply promise an action the turn's tool record never performed? |
+| `lib/promise_ledger.py` | the one reader of sweep-row identity: runs, ordinals, and which rows a resolution has settled |
 | `lib/chore-scan` | the one detector of work handed to the user: the delivery chore gate and the record ending gate both read it |
 | `lib/notice-newfiles` | emitter: files landing in a watched directory become a wake |
 | `lib/notice-selfchange` | emitter: another hand changed the files that constitute her |

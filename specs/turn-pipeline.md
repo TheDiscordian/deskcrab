@@ -453,7 +453,7 @@ file rather than re-instrumented every time the question comes up.
 | `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines ([nightly.md](nightly.md) rule 46, [speech-output.md](speech-output.md) rule 50) |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
-| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's records ([nightly.md](nightly.md) rule 53) |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's identified records and their later resolutions ([nightly.md](nightly.md) rules 53, 53f) |
 | `${STATE_PREFIX}-promise-check.log` | `fire_promise_check`, `lib/promise-check` | one line per run: the pre-check's verdict, the model's verdicts, or why nothing was judged |
 | `${STATE_PREFIX}-chore-gate.log` | `chore_gate_pass` (rule 16c) | one line per scanned display half: clean, fired with the job id, or why the conversion failed open |
 | `${STATE_PREFIX}-promise-evidence-*` | `fire_promise_check` (rule 32a) | the turn's stream log, snapshotted for the detached checker, removed by it |
@@ -597,8 +597,10 @@ promise quoted verbatim; a commitment the tool record shows performed books noth
 no commitment never reaches the model (the pre-check's gate is proven from the CLI witness log); a
 missing stream snapshot judges nothing; the auditor's deferred wake and the per-promise rebook
 bound each stop a duplicate booking; the sweep hands the model the whole day and its reconciling
-evidence, surfaces an end-of-day miss as a ledger record and one morning wake, and a clean day
-books nothing. Rule 32e by observation: a real desk turn and a real phone turn each journal an
+evidence — the day's named files statted from disk and the resident player's game outcomes riding
+as labelled sections ([nightly.md](nightly.md) rule 52a) — surfaces an end-of-day miss as an
+identified ledger record ([nightly.md](nightly.md) rules 53, 53f) and one morning wake, and a
+clean day books nothing. Rule 32e by observation: a real desk turn and a real phone turn each journal an
 outcome carrying the turn's own tool trace (or the explicit no-tools record), and the sweep is
 handed a desk claim's refuting trace and a desk claim's fulfilling trace alike — the traceless
 claim surfaces, the traced one is dropped.

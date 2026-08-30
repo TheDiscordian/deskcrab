@@ -491,9 +491,30 @@ night is where the day's promises are settled honestly, from the whole record at
     the keeping of it, so an abstention has no fulfilment the record could ever show; the
     sweep's judge classifies each commitment's polarity before fulfilment and drops the
     negative unjudged.
-53. Every miss lands as a sweep record on the durable ledger, and the day's misses are
-    surfaced together as ONE morning event wake through the queue's one door, in the checker's
-    own identity (`promise-check`), quoting the missed promises. A clean day books nothing —
+52a. The sweep's judge reads more than the day's own turns, because the day's work is wider
+    than its speech. Two further records ride the sweep's prompt as their own labelled
+    sections, both gathered mechanically and model-free: every path-shaped token the day's
+    replies name, statted from the disk itself — exists, with its modification time, or NOT
+    found — because a dated artefact whose mtime is consistent with the claim is the claim's
+    own witness, whoever's hand wrote it and however compressed the speaking turn's outcome
+    line reads; and the resident game player's outcome record for the swept day (the outcome
+    stream `outcome-queue.jsonl` under the game dir, `~/.local/share/deskcrab/game`, override
+    `DESKCRAB_GAME_DIR`), digested and bounded, because the resident player works outside
+    every speaking turn by design — its acts land on the game's own record and on no journal
+    row, so a commitment about the game is judged against that record, never against the
+    turns' silence. The 2026-08-28 sweep called fifty commitments missing and direct
+    verification found forty-five fulfilled in exactly these records (the record
+    `the-end-of-day-promise-sweep-calls-existing-arte`): a blank instrument was promoted into
+    a fact about the world. Either section failing to gather is presented AS unreadable and
+    named on the run trace, never silently omitted — and neither section loosens rule 52: a
+    claim no artefact, game record, or journal trace backs surfaces exactly as before.
+53. Every miss lands as a sweep record on the durable ledger — each row carrying the run's
+    durable identity beside its content: `sweep_time`, one timestamp the run stamps once
+    before its first append and repeats verbatim on every row however the wall clock ticks
+    between them, and `item`, the miss's 1-based ordinal within the run — and the day's misses
+    are surfaced together as ONE morning event wake through the queue's one door, in the
+    checker's own identity (`promise-check`), quoting the missed promises numbered by their
+    `item` and naming rule 53f's resolution door beside them. A clean day books nothing —
     the sweep is a debt collector, not an exercise, and its run-trace line is its record. The
     sweep's failure MUST NOT unstamp or fail the night: the stamp and the exit stay the
     ingest's own (rules 8 and 10), exactly as the claudism review's failure must not.
@@ -503,6 +524,27 @@ night is where the day's promises are settled honestly, from the whole record at
     night log shows the sweep reached its own end and rule 14b's detector can tell a sweep that
     ran from one that never started. The guards ahead of the mode dispatch (no CLI, no python)
     still exit silently on purpose: a sweep that cannot start is exactly what rule 14b flags.
+53f. A sweep record is debt, and debt has a settlement shape. A later `type: sweep-resolution`
+    row on the same ledger — `day`, `sweep_time` and `item` naming exactly one sweep row, a
+    `decision` of `fulfilled`, `struck` or `booked`, and the `evidence` in a sentence —
+    resolves that row durably: the night's work MUST NOT redispatch a resolved miss (rule
+    58b), whatever the miss's age. Before this rule the drain read every recent raw
+    `type: sweep` row forever, so reconciled debt stayed eligible for redispatch until it aged
+    out (the record `the-end-of-day-promise-sweep-calls-existing-arte`).
+    `lib/promise_ledger.py` is the ONE reader of this identity — the grouping of raw sweep
+    rows into runs and the matching of resolutions against them live there and nowhere else. A
+    stamped run matches its `sweep_time` exactly, never by nearness, and a resolution carrying
+    any decision outside the three named above settles nothing. A sweep row from before the
+    identity landed (no `sweep_time`, no `item`) is identified by
+    its run — same day, write times within moments of each other, in ledger order — and by
+    its ordinal within that run, the resolution's `sweep_time` matched to the run's first
+    write within slack: the fifty reconciliation rows of 2026-08-29 name `03:23:05` while the
+    run's later rows landed at `03:23:06`, and they MUST resolve.
+    `lib/promise-check resolve <day> <item> <decision> <evidence>` is the writing door: it
+    finds the day's newest sweep run on the ledger, refuses an item the run never surfaced,
+    and appends the resolution row. Resolution is per item and evidence-bearing, never a
+    blanket: a decision settles the one row it names, and an unresolved miss stays owed
+    however many of its neighbours resolved.
 
 ### The twin-merge pass — part of sleep, before the night's work
 
@@ -673,7 +715,11 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     log, the open list and the index, the selector MUST be handed, each as its own labelled and
     bounded section: the promise sweep's genuine end-of-day misses from the recent nights (the
     `type: sweep` records of the durable ledger — the honest pass's verdicts, never the live
-    checker's raw catches, which run heavily false), and the wake queue's pending bookings (fire
+    checker's raw catches, which run heavily false — and among them only the UNRESOLVED: a
+    sweep row a `sweep-resolution` row has answered, fulfilled, struck, or booked alike (rule
+    53f), is settled debt and MUST NOT ride the shelf, while the count of resolved rows so
+    excluded is stated in the section itself, never silently dropped — rule 58a's discipline
+    at the row's scale), and the wake queue's pending bookings (fire
     time, booker, reason — the reasons are where owed work waits for a live turn, and a live
     turn cannot commit to the repository at all, so builder-shaped work parked on a wake is work
     the night should hand to a builder that can). A pick from any source lands on the same
@@ -750,7 +796,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
 | `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase, uses only |
 | `~/.local/share/deskcrab/claudisms/functions.tsv` | the claudism review | one line per night and function: uses, mentions, spoken words |
-| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) | live catches and end-of-day misses ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the sweep records back as owed-work material (rule 58b) |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
 | `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
@@ -838,9 +884,17 @@ its clean-night headline with no warning attached. `tests/test_claudism_agenda_c
 40a's morning half: with one uncompilable entry and no catches the wake's agenda never says a
 clean night and names the entry that never ran; a caught night's agenda carries the same fact;
 and an all-compiling no-catch night keeps its clean agenda word for word.
-`tests/test_promise_check.sh` — rules 51-53: the sweep
+`tests/test_promise_check.sh` — rules 51-53c: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
-as a ledger record and one morning wake in the checker's name, and books nothing on a clean day.
+as a ledger record and one morning wake in the checker's name, and books nothing on a clean day;
+the widened evidence (rule 52a) — the day's named files statted from disk, an existing artefact
+with its modification time and a claimed one shown NOT found alike, and the resident player's
+game outcomes at their own timestamps — reaches the judge as labelled sections, with an absent
+game record presented as an empty section rather than omitted; every sweep row lands carrying
+`sweep_time` and `item` (rule 53), the misses ride the morning wake numbered with the resolve
+door named beside them; and the resolve door itself (rule 53f) appends a resolution row bearing
+the run's own `sweep_time` while refusing an item the run never surfaced and a decision outside
+the three.
 `tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every
 dispatched-or-running job; the live shelf (rule 58c) — a record standing `state: open` under the
 records drawer reaches the selector's prompt whole, front matter and body, newest-touched first,
@@ -851,7 +905,11 @@ NOTHING verdict with nothing of tonight's running ends the night's work early; a
 for the night; the cutoff stops dispatch; the owed-work material (rule 58b) — the sweep's ledger
 misses and the pending wake reasons reach the selector as labelled sections, the live checker's
 raw catches do not, and an unreadable ledger is presented as unreadable, never silently omitted;
-the sweep runs before the night's work inside `sleep-nightly run`; and a run that cannot even parse its
+the sweep runs before the night's work inside `sleep-nightly run`; a resolved sweep row —
+explicit `sweep_time`/`item` identity and the legacy shape resolved by run-and-ordinal across a
+ledger clock tick alike (rule 53f) — never reaches the selector while the unresolved neighbour
+still does and the count of excluded resolved rows is stated in the section; and a run that
+cannot even parse its
 cutoff never unstamps the night (exercised through `sleep-nightly run`).
 `tests/test_night_work_queue.sh` — rules 56 and 56a: the queued backlog dispatched oldest first
 through `crab job dispatch` before any selection, under the cap, with `DESKCRAB_JOB_NIGHT` set on
