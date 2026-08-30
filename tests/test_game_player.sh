@@ -2418,6 +2418,16 @@ TOPPED_LIMIT="$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_DI
 gp step --local >/dev/null 2>&1 || true
 check_eq "a repeated snapshot of that message cannot add another twenty minutes" \
     "$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_DIR/session.json'))['limit_ms'])")" "$TOPPED_LIMIT"
+# Those earlier synthetic conversations served their timer assertions. Treat
+# them as answered before constructing the separate wind-down renewal case.
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+b = json.load(open(p))
+b["pending_messages"] = []
+b["message_settle_until"] = 0
+json.dump(b, open(p, "w"))
+PY
 python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY'
 import json, sys, time
 p = sys.argv[1]
@@ -2428,7 +2438,21 @@ PY
 snap 7003 '[]' '{"messages":[
     {"id":8702,"channel":"local","incoming":true,"sender":"Winddown Friend","text":"Wait, one thing"}
 ]}'
+# The first pass captures the burst and credits its timer without stopping
+# ordinary play. Mark the synthetic burst settled so the next pass exercises
+# the model-facing verdict without sleeping in the suite.
 gp step --local >/dev/null 2>&1 || true
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+b = json.load(open(p))
+b["message_settle_until"] = 0
+json.dump(b, open(p, "w"))
+PY
+CODE=0; OUT="$(gp step --local 2>&1)" || CODE=$?
+contains "$OUT" "session_renewed=20m-cancel-wind-down" \
+    && ok "the player-message verdict explicitly cancels the stale wind-down" \
+    || fail "an automatic renewal must be visible to the player" "$OUT"
 python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY' \
     && ok "player chat during wind-down returns the sitting to open with twenty minutes" \
     || fail "wind-down conversation must revive the playable clock"
@@ -2440,6 +2464,12 @@ PY
 contains "$(gp session cutoff)" "wait_ms=" \
     && ok "an obsolete hard-stop claim sees the moved deadline instead of ending it" \
     || fail "the cutoff must recheck the durable deadline after chat"
+CODE=0; OUT="$(gp session end 2>&1)" || CODE=$?
+[ "$CODE" -ne 0 ] && contains "$OUT" "session-end refused phase=open" \
+    && ok "a stale wind-down cannot end the automatically renewed session" \
+    || fail "session end must atomically honor the renewed deadline" "$OUT"
+refute "the refused stale wind-down records no end" \
+    grep -Eq '"ended"[[:space:]]*:[[:space:]]*[1-9]' "$DESKCRAB_GAME_DIR/session.json"
 # Leave the surrounding sitting tests on their original two-hour fixture and
 # remove the synthetic conversations so they cannot become later priorities.
 python3 - "$DESKCRAB_GAME_DIR/session.json" \
@@ -2497,7 +2527,6 @@ refute "opening the next sitting lifts the suppression" test "$CODE" = 8
 contains "$(gp session open --limit-ms 60000 2>&1)" "already open" \
     && ok "while a live sitting still refuses to be reopened" \
     || fail "while a live sitting still refuses to be reopened"
-gp session end >/dev/null 2>&1
 # A damaged session file is no session: the clock never invents a deadline.
 printf 'not json at all\n' > "$DESKCRAB_GAME_DIR/session.json"
 CODE=0; OUT="$(gp step --max 1 2>&1)" || CODE=$?
@@ -3085,6 +3114,14 @@ contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'play session cutoff' \
 contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'stop orsc-client.service' \
     && ok "which disconnects her rather than leaving her unguarded" \
     || fail "which disconnects her rather than leaving her unguarded"
+contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'session-end refused phase=open' \
+    && contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'ensure_login' \
+    && ok "a renewed sitting refuses stale closure and restores login if needed" \
+    || fail "automatic chat renewal must cancel a stale completed logout"
+contains "$(env "${BOCENV[@]}" bash "$BOC" prompt 2>&1)" \
+    'session_renewed=20m-cancel-wind-down' \
+    && ok "the player prompt treats automatic renewal as wind-down cancellation" \
+    || fail "the player needs the automatic renewal race spelled out"
 # Rule 21c: the player goes down FIRST and is confirmed down, because its
 # supervisor block raises the engine and runner on every start.
 SEBODY="$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")"

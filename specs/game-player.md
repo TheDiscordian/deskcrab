@@ -829,6 +829,13 @@ deliberate-play channel.
     logged in, and says why — the refusal is the teaching, not an obstacle. Documentation that
     implies the stack, the stop, or the server's idle rule handles the logout is a defect: it was
     read exactly that way once, and the sitting ended with the character still in the world.
+    A player-message top-up during wind-down automatically returns the session to `open` and
+    invalidates the whole earlier expiry decision; nobody manually resets anything. The settled
+    player-message verdict names that renewal as `session_renewed=20m-cancel-wind-down`.
+    `session end` atomically rechecks the current durable deadline and REFUSES while it is open,
+    so a stale model plan cannot close a session that conversation already renewed. The ordinary
+    wrapper preserves every playing layer on that refusal and, if the stale sequence already
+    clicked Log out, mechanically restores the login for the renewed sitting.
 
 21c. The stop does not depend on a model. `play` arms two transient user timers beside the units
     it starts: one at the limit that marks the session over, and one at limit plus grace that

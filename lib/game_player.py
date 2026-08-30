@@ -362,7 +362,10 @@ def session_state(now: int = None) -> dict:
     now = now_ms() if now is None else now
     limit = int(s.get("limit_ms") or SESSION_LIMIT_MS)
     grace = int(s.get("grace_ms") or SESSION_GRACE_MS)
-    elapsed = now - int(s["started"])
+    # A closed sitting is historical state. Its elapsed counter must stop at
+    # the close rather than continuing to grow every time status is read.
+    clock_now = min(now, int(s["ended"])) if s.get("ended") else now
+    elapsed = clock_now - int(s["started"])
     deadline = int(s["started"]) + limit
     hard_deadline = deadline + grace
     out = {"phase": "open", "started": int(s["started"]), "elapsed_ms": elapsed,
@@ -372,6 +375,7 @@ def session_state(now: int = None) -> dict:
            "grace_ms_left": max(0, hard_deadline - now)}
     if s.get("ended"):
         out["phase"] = "ended"
+        out["remaining_ms"] = 0
         out["grace_ms_left"] = 0
     elif elapsed >= limit + grace:
         out["phase"] = "expired"
@@ -1500,6 +1504,24 @@ def top_up_session_from_player_messages(snap: dict, est: dict,
     events.append(event)
     est["last_session_top_up"] = event
     return event
+
+
+def message_batch_session_renewal(est: dict, batch: list) -> str:
+    """Name an automatic renewal belonging to the pending chat verdict.
+
+    The resident runner usually credits the message before the model-facing
+    `play` call reads its heartbeat, so the immediate return value from the
+    top-up function is not a reliable notification channel. The durable
+    engine-state event is. Tie it to message ids so an old renewal is never
+    presented alongside an unrelated later conversation.
+    """
+    renewal = est.get("last_session_top_up") or {}
+    renewed_ids = set(renewal.get("message_ids") or [])
+    batch_ids = {item.get("id") for item in batch if isinstance(item, dict)}
+    if not renewed_ids.intersection(batch_ids):
+        return ""
+    minutes = renewal.get("play_minutes") or SESSION_MESSAGE_TOP_UP_MS // 60000
+    return f"{minutes}m-cancel-wind-down"
 
 
 def capture_friend_status(snap: dict, est: dict, events: list) -> int:
@@ -3081,7 +3103,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         # conversation becomes the priority verdict below.
         report("player-message", id=pending_message["id"],
                channel=pending_message["channel"], sender=pending_message["sender"],
-               count=len(pending_batch), burst=pending_message_burst(pending_batch))
+               count=len(pending_batch), burst=pending_message_burst(pending_batch),
+               session_renewed=message_batch_session_renewal(est, pending_batch) or None)
         return "player-message", EXIT_PLAYER_MESSAGE
     # Spec rule 21a: past the limit, ordinary evaluation stops — no learned
     # rule, no route leg, on either hand. It sits BELOW rules 7b-7c above: a
@@ -3982,6 +4005,13 @@ def cmd_session(args):
             if st["phase"] == "none":
                 print("session: none open")
                 return
+            if st["phase"] == "open":
+                die("session-end refused phase=open: the automatic deadline is still "
+                    f"open for {st['remaining_ms'] // 1000}s; cancel any stale "
+                    "wind-down and continue playing")
+            if st["phase"] == "ended":
+                print("session: already ended")
+                return
             body = dict(read_session())
             body["ended"] = now_ms()
             game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
@@ -4693,6 +4723,8 @@ def main():
                         report("player-message", id=pending["id"],
                                channel=pending["channel"], sender=pending["sender"],
                                count=len(batch), burst=pending_message_burst(batch),
+                               session_renewed=(
+                                   message_batch_session_renewal(live_state, batch) or None),
                                friend_updates=friend_updates_field)
                     else:
                         report("runner-player-message", age_ms=now_ms() - hb.get("ts", 0),
