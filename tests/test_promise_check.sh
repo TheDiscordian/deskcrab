@@ -201,8 +201,10 @@ check "the pending later wake reaches the timing judgement" \
     grep -qF "inspect the active builder viseme correction" "$T/model-stdin"
 check "an invented later wake is explicitly insufficient for active-work feedback" \
     grep -qF "a later wake time Beatrice chose herself does NOT keep" "$T/model-stdin"
-check "the checker recognises the immediate wake handoff" \
-    grep -qF "crab wake-now" "$T/model-stdin"
+check "the checker refuses to mistake a separate wake for builder steering" \
+    grep -qF "running builder was corrected" "$T/model-stdin"
+check "the checker names the real builder correction channel" \
+    grep -qF "crab job steer" "$T/model-stdin"
 rm -f "$W/deskcrab-wake-invented-delay.wake"
 check_eq "inspection does not ledger or book post-delivery work" \
     "$(ledger_n)$(records)" "00"
@@ -281,7 +283,7 @@ cat > "$OTHER_LOG" <<'EOF'
 EOF
 NOW_E="$(date +%s)"
 cat > "$JOBS_DIR/20990101-000000-2.json" <<EOF
-{"id": "20990101-000000-2", "description": "sort the drip-line valve wiring", "started_epoch": $(( NOW_E - 1200 )), "state": "running", "unit": "x"}
+{"id": "20990101-000000-2", "description": "sort the drip-line valve wiring", "started_epoch": $(( NOW_E - 1200 )), "state": "running", "unit": "x", "steering": ["2026-08-30 16:40:00 queued 1.pending: move both mouths left", "2026-08-30 16:40:01 delivered 1.delivered: move both mouths left"]}
 EOF
 sandbox_stub claude <<STUB
 #!/bin/bash
@@ -303,6 +305,8 @@ check "the jobs section reached the judge" \
     grep -q "JOBS DISPATCHED OR FINISHED RECENTLY" "$T/model-stdin"
 check "carrying the builder's brief" \
     grep -q "sort the drip-line valve wiring" "$T/model-stdin"
+check "carrying the builder's delivered steering receipt" \
+    grep -q "delivered 1.delivered: move both mouths left" "$T/model-stdin"
 check_eq "and the kept verdict books nothing" "$(ledger_n)$(records)" "00"
 check "the trace counts what was gathered" \
     grep -q "evidence: own record, 1 other session(s), 1 job(s)" "$CHECK_LOG"

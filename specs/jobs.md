@@ -5,7 +5,8 @@
 A job is work that must outlive the turn that asked for it. It runs as its own headless session owned
 by systemd, not by the conversation, so the user can keep talking while it builds. This spec owns
 dispatch, the state sidecar, the blocked-versus-failed distinction, the queue and the dispatch
-policy, collection of a finished builder's work, and the single channel a job has back to her.
+policy, collection of a finished builder's work, the correction channel into a running builder,
+and the completion channel a job has back to her.
 
 ## CONTRACT
 
@@ -73,6 +74,26 @@ policy, collection of a finished builder's work, and the single channel a job ha
    be refused before any sidecar or unit exists; a known one is recorded in the sidecar as
    `record`. Requeue and the automatic block retry carry the record along off the sidecar, so a
    re-dispatched brief keeps the obligation its original carried.
+7d. `crab job steer <id> <correction>` is the only command that sends new instructions to a
+    detached builder already in flight. It MUST target that job's durable inbox and MUST NOT book
+    a wake, start a second builder, stop the builder, or alter another job. A job accepts steering
+    only when its sidecar says it is `dispatched` or `running`, its model uses the Claude backend,
+    and the worker marked the run `steerable`; a job launched before the steering hook existed, a
+    Codex job, an ended job, a missing id, or an empty correction is refused in plain words.
+7e. A steerable builder MUST receive only its own inbox through a per-run `PostToolUse` hook. The
+    command writes the correction atomically as `pending`; the hook atomically claims it, injects
+    it as a correction that supersedes conflicting earlier instructions, and records it as
+    `delivered`. A repeated command with the same correction while that correction is still
+    pending MUST coalesce rather than create duplicate instructions. The hook's empty path is
+    silent and MUST NOT read the interactive mid-turn mailbox.
+7f. Queued, delivered, and applied are different claims. `crab job steer` proves that a correction
+    is queued for the named builder. The delivery receipt proves that the builder received it at
+    a tool boundary. Neither proves that the builder applied it or that the resulting work is
+    correct; those claims require the resulting artefact or later builder evidence. A
+    `crab wake-now` booking is a separate assistant wake and NEVER counts as steering a builder.
+7g. A builder MUST NOT finish successfully while its inbox still contains a pending correction.
+    The runner records each such message as undelivered and fails the job in plain words, so the
+    completion path cannot present an off-course result as though the correction reached it.
 
 ### State
 
@@ -85,6 +106,9 @@ policy, collection of a finished builder's work, and the single channel a job ha
    moment between the dispatch call and the worker's first write, reaped exactly as `running` is
    when the worker never appears; `collected` is a finished job whose work has been located and
    recorded (rule 38).
+9a. The sidecar's `steerable` field records whether this run started with the per-job correction
+    hook. Its `steering` history records queued and delivered receipts. These fields describe the
+    correction channel; they never replace or imply the job's `state`.
 10. Writes to the sidecar MUST be atomic, so a concurrent reader or reaper never sees a half-written
     file.
 11. Any read-modify-write of the sidecar MUST hold the job's lock. The stop path currently races the
@@ -171,6 +195,11 @@ policy, collection of a finished builder's work, and the single channel a job ha
     [self-awareness.md](self-awareness.md) rules 31 and 32.
 25. `crab jobs` MUST list running, finished, and failed jobs. `crab job log <id>` MUST show a job's
     output.
+25a. `crab job activity <id>` MUST read the job's raw stream and print its newest tool actions in
+     chronological order, including each tool's own description or target when available. It is
+     the evidence door for a question about what a running builder is doing now; the original
+     brief and an older human-log slice cannot answer that question. No matching recent action is
+     an absence of evidence, not proof that a later correction did not reach the work.
 26. The human log MUST fill as the builder writes, never only at completion. It used to be
     assembled from the stream after each attempt ended, so `crab job log` on a running or stopped
     job read as empty, and "the job produced nothing" was the natural — and wrong — reading of work

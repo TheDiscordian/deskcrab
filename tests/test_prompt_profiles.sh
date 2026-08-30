@@ -272,7 +272,7 @@ TURN="$(run 'build_system_prompt --profile turn')"
 check "the immediate handoff names wake-now" \
     contains "$TURN" 'crab wake-now "<specific agenda>"'
 check "future wakes are reserved for a real later reason" \
-    contains "$TURN" 'the work genuinely depends on one'
+    contains "$TURN" 'real later dependency'
 check "a want title is in the prompt" contains "$TURN" "Learn to read a score"
 refute "a want body is not" contains "$TURN" "WANT_BODY_MARKER"
 check "the binding test is verbatim" \

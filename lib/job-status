@@ -3,7 +3,7 @@
 
 Each job is one small JSON file <id>.json beside its log <id>.log:
     {id, description, workdir, record, want, queued, queued_epoch, started,
-     started_epoch, model, effort, unit, state, pid, pidstart, attempts,
+     started_epoch, model, effort, unit, state, pid, pidstart, attempts, steering,
      history, finished, finished_epoch, exit, retry, retry_of, branch,
      commits, unpushed, dirty, tests, collection, collected_at}
 state: queued | dispatched | running | finished | collected | failed |
@@ -19,6 +19,7 @@ history: every state transition, appended here by cmd_set — [{at, state}, …]
        — so the sidecar answers "when did it queue, when did it run" without
        anyone reading logs (rule 36).
 attempts: one line per account attempt, appended by the worker (rule 37).
+steering: queued and delivered correction receipts (rules 7d-7f).
 retry / retry_of: the one automatic re-dispatch of a blocked job (specs/jobs.md
        rules 18a-18f). retry on the origin's sidecar is the spent shot — the
        new job's id, or "fired"/"abandoned" when nothing dispatched — and
@@ -484,6 +485,7 @@ def cmd_show(argv):
             continue
         print("  %-14s %s" % (label + ":", v))
     for key, label in (("commits", "commits"), ("attempts", "attempts"),
+                       ("steering", "steering"),
                        ("history", "history")):
         entries = job.get(key)
         if not isinstance(entries, list) or not entries:

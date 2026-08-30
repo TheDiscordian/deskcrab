@@ -142,7 +142,7 @@ check_eq "the refusal leaves no booking" \
 
 BEFORE="$(date +%s)"
 out="$(book_now --effort medium --model sol \
-    "fix the active builder from the user's live visual feedback")"
+    "inspect the corrected portrait myself and record the visual result")"
 check_eq "one immediate booking is recorded" \
     "$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)" "1"
 check_eq "it is an event wake, so work-shaped feedback is not refused" \
@@ -151,7 +151,7 @@ check_eq "it is explicitly booked by herself" \
     "$(cut -f5 "$T"/wakes/*.wake)" "herself"
 check_eq "its complete agenda survives" \
     "$(cut -f3 "$T"/wakes/*.wake)" \
-    "fix the active builder from the user's live visual feedback"
+    "inspect the corrected portrait myself and record the visual result"
 check_eq "its effort override survives" "$(cut -f6 "$T"/wakes/*.wake)" "medium"
 check_eq "its model override survives" "$(cut -f7 "$T"/wakes/*.wake)" "sol"
 FIRE="$(cut -f1 "$T"/wakes/*.wake)"

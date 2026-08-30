@@ -2795,7 +2795,9 @@ _prompt_layer_attention() {
 ANSWER WHAT WAS ASKED, FIRST. The question in front of you outranks everything you were already thinking about: answer it before anything else, and never swap in the nearest thing already in your head. A reply that opens on your own preoccupation when he asked about something else has already failed, however true the preoccupation is.
 YOUR OWN DRAWERS ARE YOURS TO RUN. A finding or a decision about your own files, shelves or systems is something you ACT on, not news to bring him: fix it, then give it one line at most. Carrying your own drawer's problem to him as a report or a question is handing him your work.
 ACT ON REQUESTS. An imperative or a request to change, fix, check, or do something — including "can you X" when a reason says why — authorises safe in-scope work now. Use your tools and finish it before replying. A plan, promise, apology, diagnosis, or self-critique is not the action. A pure question asks for an answer; a pure opinion is not permission.
-BACKGROUND WORK STARTS NOW. When moving current safe authorised work or feedback about active work out of the conversation, use 'crab wake-now "<specific agenda>"' before replying. Use 'crab wake-at <when> ...' when he names a later time or the work genuinely depends on one; never invent a five-, ten-, or sixty-minute delay.
+BACKGROUND WORK STARTS NOW. Use 'crab wake-now "<agenda>"' for your own current work. Active-builder feedback uses 'crab job steer <id> "<correction>"'; wake-now does not steer the builder. Use wake-at only for a named time or real later dependency.
+RETRACTIONS ARE ACTIONS. Cancel or correct effects before saying "ignored"; otherwise say what remains.
+ACTIVE WORK NEEDS CURRENT EVIDENCE. Run 'crab job activity <id>'; his visible report outranks an old brief or log absent newer contrary evidence.
 ACCEPTED INVITATIONS ARE ACTIONS. A present-tense invitation such as "do you want to play?" leaves you free to say yes or no. If you say yes, start or join the safe in-scope activity with your tools and verify it is underway before replying. Never invite him to join an activity you have not started, say you have been waiting while leaving it unstarted, or turn acceptance into a promise for later. Questions about general tastes, hypotheticals, or things your tools cannot do remain questions to answer.
 CORRECT WITHOUT WALLOWING. If you were wrong, name the correction in one clause at most, then act or answer. Never repeat his anger back, insult or diagnose yourself, repeat an apology, or spend the reply lamenting the failure. Evidence of the correction replaces an apology.
 EOF
@@ -2880,7 +2882,7 @@ DISPLAY — to show code, a list, a configuration, an image or a long explanatio
 Markdown below it, emojis welcome. Never for a simple answer, the weather, the time, a greeting, or anything brief.
 IMAGES — embed them in the display half as ![](/absolute/path.png); a path written in prose shows him nothing. The viewer scales large images down, and a grid is built with thumbnail(), never resize(). The fetch recipes (Wikipedia, Commons search, the verify step) are in $SCRIPT_DIR/lib/image-recipes.md — open it before hunting for pictures.
 SCREEN — to see what is on his screen yourself: grim -o \"\$(hyprctl -j activeworkspace | jq -r .monitor)\" /tmp/screen.png, then read the file.
-WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what is done, what is next>' as it goes: if this is cut off, that checkpoint is the only account the next you gets of edits left on disk. Before you DELETE or move anything that constitutes you, or write it from a command the stream cannot follow (git checkout, git pull, a script), run 'crab touching <paths>' first, or your own hand is reported to you as an intruder's. Work that must outlive this turn is a detached job and never a subagent — a subagent dies when the turn ends and holds the turn open while it lives, so he cannot speak to you: 'crab job \"<full, self-contained description>\"' (with -C <workdir> to place it) runs under systemd, silently, and wakes you when it is done. To move current authorised work out of the conversation now: 'crab wake-now \"<specific agenda>\"'. To return at a genuinely later time: 'crab wake-at <when> [kind] [reason]' — 'crab wake-at 2h', 'crab wake-at \"09:30\" scheduled \"finish the arrangement\"' — and whatever you write as the reason is the agenda that wake arrives holding, so write it as a brief to yourself."
+WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what is done, what is next>' as it goes: if this is cut off, that checkpoint is the only account the next you gets of edits left on disk. Before you DELETE or move anything that constitutes you, or write it from a command the stream cannot follow (git checkout, git pull, a script), run 'crab touching <paths>' first, or your own hand is reported to you as an intruder's. Work that must outlive this turn is a detached job and never a subagent — a subagent dies when the turn ends and holds the turn open while it lives, so he cannot speak to you: 'crab job \"<full, self-contained description>\"' (with -C <workdir> to place it) runs under systemd, silently, and wakes you when it is done. To correct a running builder: 'crab job steer <job-id> \"<exact correction>\"'. To move your own current authorised work out of the conversation now: 'crab wake-now \"<specific agenda>\"'. A wake is a separate hand and never proves the builder was steered. To return at a genuinely later time: 'crab wake-at <when> [kind] [reason]' — 'crab wake-at 2h', 'crab wake-at \"09:30\" scheduled \"finish the arrangement\"' — and whatever you write as the reason is the agenda that wake arrives holding, so write it as a brief to yourself."
     case "$PROMPT_PROFILE" in
         job|classify) IDENT="" ;;
     esac
@@ -4462,7 +4464,7 @@ PROMISE_LEDGER="${PROMISE_LEDGER:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/
 # are cost only — the sonnet judge does not accuse a reply with no matching tool
 # call — so this errs loose. The adverb-anchored "I already/just/also VERBed"
 # catches completions without matching bare chat ("I asked", "I tried").
-PROMISE_COMMIT_RE="\bI('|’)ll\b|\bI will\b|\bI('|’)m ((now|just|already) )?[a-z]+ing\b|\bI am ((now|just|already) )?[a-z]+ing\b|\bI('|’)ve\b|\bI have (just |now |already )?[a-z]+(ed|en|wn|ne|t)\b|\blet me\b|\bI('|’)m (going|about) to\b|\bI am (going|about) to\b|\bgonna\b|\bI (just|already|also|then) [a-z]+(ed|t|d)\b|\bI (booked|wrote|sent|set|ran|made|did|fixed|wired|built|committed|pushed|logged|filed|noted|saved|moved|added|removed|updated|restarted|recorded|scheduled|dispatched|deployed|installed|started|stopped|created|cancelled|cleared|patched|rebooted|merged|killed|put|turned|switched|told|took|swept|queued|emailed|reverted|disabled|renamed|bumped|checked|handled|sorted|flagged|synced|reset|tuned)\b|\bdone\b|\bon it\b|\bconsider it( done)?\b|\b(it|that|this)('|’)?s (done|wired|set|in|live|running|up|fixed|written|logged|booked|scheduled|sorted|handled)\b|\bis (wired|set|going in|running|live|up|in the log)\b"
+PROMISE_COMMIT_RE="\bI('|’)ll\b|\bI will\b|\bI('|’)m ((now|just|already) )?[a-z]+ing\b|\bI am ((now|just|already) )?[a-z]+ing\b|\bI('|’)ve\b|\bI have (just |now |already )?[a-z]+(ed|en|wn|ne|t)\b|\blet me\b|\bI('|’)m (going|about) to\b|\bI am (going|about) to\b|\bgonna\b|\bI (just|already|also|then) [a-z]+(ed|t|d)\b|\bI (booked|wrote|sent|set|ran|made|did|fixed|wired|built|committed|pushed|logged|filed|noted|saved|moved|added|removed|updated|restarted|recorded|scheduled|dispatched|deployed|installed|started|stopped|created|cancelled|cleared|patched|rebooted|merged|killed|put|turned|switched|told|took|swept|queued|emailed|reverted|disabled|renamed|bumped|checked|handled|sorted|flagged|synced|reset|tuned)\b|\bdone\b|\bon it\b|\bconsider it( done)?\b|\bignored\b|\bcancelled\b|\bretracted\b|\b(it|that|this)('|’)?s (done|wired|set|in|live|running|up|fixed|written|logged|booked|scheduled|sorted|handled)\b|\bis (wired|set|going in|running|live|up|in the log)\b"
 
 # Does this reply plausibly contain a first-person commitment to a concrete
 # action? A pattern match and nothing else — no model call on any path.
@@ -4532,7 +4534,12 @@ claim true, report only the action the resulting tool record proves. If the
 action is not authorised, cannot be performed, or cannot be verified, replace
 the claim with a plain account of what is actually true. Do not answer with
 another promise to act later. If an immediate background wake is the right
-handoff, book it now with 'crab wake-now \"<specific agenda>\"'. Use 'wake-at'
+handoff, book it now with 'crab wake-now \"<specific agenda>\"'. A wake is a
+separate hand: it never repairs a claim that an active builder was corrected.
+For that, use 'crab job steer <job-id> \"<exact correction>\"' or rewrite the
+claim to what is true. If the user retracted an instruction, cancel the
+matching pending action before saying it was ignored; if it is already
+running, correct its real target or state what remains underway. Use 'wake-at'
 only when the user named a later time or the work genuinely depends on one;
 never invent a later clock time. Return one complete replacement reply and no
 commentary about this correction pass.
@@ -5288,10 +5295,8 @@ claude_profile_flags() {  # <turn|wake|job|classify>
         esac
     fi
 
-    # The mid-turn mail reader needs a generated settings file whose command
-    # points at this checkout rather than a path baked into the repository.
-    # It is the only per-run hook here; live turns and wakes do not carry a
-    # special write gate or mount policy.
+    # The mail readers need generated settings files whose commands point at
+    # this checkout rather than paths baked into the repository.
     case "${1:-turn}" in
         turn|wake)
             local SETTINGS="${STATE_PREFIX}-hooks.json" HOOKS=""
@@ -5310,6 +5315,20 @@ claude_profile_flags() {  # <turn|wake|job|classify>
             if [ -n "$HOOKS" ]; then
                 if printf '{"hooks":{%s}}\n' "$HOOKS" \
                         > "$SETTINGS.tmp.$$" 2>/dev/null; then
+                    mv "$SETTINGS.tmp.$$" "$SETTINGS" 2>/dev/null || rm -f "$SETTINGS.tmp.$$"
+                else
+                    rm -f "$SETTINGS.tmp.$$"
+                fi
+                [ -r "$SETTINGS" ] && CLAUDE_PROFILE_FLAGS+=(--settings "$SETTINGS")
+            fi ;;
+        job)
+            # A detached Claude builder has a private durable correction
+            # inbox (specs/jobs.md rules 7d-7f). Unlike interactive mid-turn
+            # mail, it can never consume another turn's message.
+            local SETTINGS="${STATE_PREFIX}-hooks-job-${DESKCRAB_JOB_ID:-$$}.json"
+            if [ -n "${DESKCRAB_JOB_ID:-}" ] && [ -x "$SCRIPT_DIR/lib/job-steer-mail" ]; then
+                if printf '{"hooks":{"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"%s"}]}]}}\n' \
+                        "$SCRIPT_DIR/lib/job-steer-mail" > "$SETTINGS.tmp.$$" 2>/dev/null; then
                     mv "$SETTINGS.tmp.$$" "$SETTINGS" 2>/dev/null || rm -f "$SETTINGS.tmp.$$"
                 else
                     rm -f "$SETTINGS.tmp.$$"
@@ -8951,6 +8970,59 @@ job_stop() {
     # job-status itself, which takes the job's lock around every write.
     "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" state=stopped finished=now
     echo "Job $id stopped."
+}
+
+# Queue a correction for the named builder's own PostToolUse hook. This is a
+# control channel into the existing job, not another wake or another builder.
+job_steer() {  # <id> <correction>
+    local id="${1:-}" sidecar state model steerable correction inbox stamp tmp pending
+    [ $# -gt 0 ] && shift
+    correction="$*"
+    case "$id" in
+        ''|*[!A-Za-z0-9._-]*)
+            echo "Usage: crab job steer <id> <correction>   (ids: crab jobs)"
+            return 1 ;;
+    esac
+    sidecar="$JOBS_DIR/$id.json"
+    [ -e "$sidecar" ] || { echo "No such job: $id   (ids: crab jobs)"; return 1; }
+    [ -n "$(printf '%s' "$correction" | tr -d '[:space:]')" ] || {
+        echo "Usage: crab job steer <id> <correction>"
+        return 1
+    }
+    state="$("$LIB_DIR/job-status" get "$sidecar" state 2>/dev/null)"
+    case "$state" in
+        dispatched|running) ;;
+        *) echo "Job $id is '$state', not active — no correction was queued."; return 1 ;;
+    esac
+    model="$("$LIB_DIR/job-status" get "$sidecar" model 2>/dev/null)"
+    [ "$(model_backend "${model:-$JOB_MODEL}")" = claude ] || {
+        echo "Job $id uses the Codex backend, which cannot accept a mid-run correction. No correction was queued."
+        return 1
+    }
+    steerable="$("$LIB_DIR/job-status" get "$sidecar" steerable 2>/dev/null)"
+    [ "$steerable" = 1 ] || {
+        echo "Job $id started without the live steering hook, so it cannot accept a correction safely. No correction was queued."
+        return 1
+    }
+
+    inbox="$JOBS_DIR/$id.steer"
+    mkdir -p "$inbox" || return 1
+    # One outstanding copy is enough. A repair pass repeating the same call
+    # must not make the builder hear the correction twice.
+    for pending in "$inbox"/*.pending; do
+        [ -e "$pending" ] || continue
+        if printf '%s\n' "$correction" | cmp -s - "$pending"; then
+            echo "The same correction is already queued directly for active job $id."
+            return 0
+        fi
+    done
+    stamp="$(date +%s%N)"
+    tmp="$inbox/.$stamp.$$"
+    (umask 077; printf '%s\n' "$correction" > "$tmp") || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$inbox/$stamp.pending" || { rm -f "$tmp"; return 1; }
+    "$LIB_DIR/job-status" append "$sidecar" steering \
+        "$(date '+%F %T') queued $stamp.pending: $(utf8_trim "$correction" 300)" 2>/dev/null || true
+    echo "Correction queued directly for active job $id. Its builder will receive it at the next tool boundary."
 }
 
 job_start() {

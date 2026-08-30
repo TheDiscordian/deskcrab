@@ -79,6 +79,12 @@ check_eq "the user's request reaches both inspections" \
     "$(sort -u "$T/request-calls")" "put portraits into both viewers"
 check "the repair pass names the immediate wake handoff" \
     grep -qF 'crab wake-now "<specific agenda>"' "$T/repair-prompt"
+check "the repair pass uses the real builder correction channel" \
+    grep -qF 'crab job steer <job-id> "<exact correction>"' "$T/repair-prompt"
+check "the repair pass does not equate a wake with builder steering" \
+    grep -qF 'never repairs a claim that an active builder was corrected' "$T/repair-prompt"
+check "the repair pass treats an ignored instruction as cancellation work" \
+    grep -qF 'matching pending action before saying it was ignored' "$T/repair-prompt"
 check "the repair pass forbids an invented later clock" \
     grep -qF 'never invent a later clock time' "$T/repair-prompt"
 check "the combined turn record proves the dispatch" \
@@ -88,6 +94,15 @@ if printf '%s' "$OUT" | grep -q 'I took you up on it immediately'; then
 else
     ok "the fabricated draft never reached the result"
 fi
+
+echo
+echo "== elliptical retractions reach the checker =="
+sandbox_bash 'promise_precheck "Ignored. Go on."' \
+    && ok "bare Ignored is an action claim" \
+    || fail "bare Ignored must be checked before delivery" "promise_precheck returned false"
+sandbox_bash 'promise_precheck "Cancelled."' \
+    && ok "bare Cancelled is an action claim" \
+    || fail "bare Cancelled must be checked before delivery" "promise_precheck returned false"
 
 echo
 echo "== an honest rewrite needs no invented action =="

@@ -319,7 +319,8 @@ ledger.
 32aa. A held candidate goes through another tool-capable pass on the same turn model. That
       pass receives the user's request, the unsent candidate, and the checker's verdict. It
       MUST perform or durably dispatch every safe, authorised action needed to make the claim
-      true, using `crab wake-now` when an immediate background wake is the right handoff, then
+      true, using `crab wake-now` when an immediate background wake is the right handoff and
+      `crab job steer <id> <correction>` when the claim concerns an active builder, then
       write a complete replacement reply supported by the resulting record. It MUST NOT replace
       current action with an invented later `wake-at`. When
       the action cannot be performed within the user's authority or the available tools, the
@@ -367,7 +368,11 @@ ledger.
      current action or reports a defect in active work, a later wake time Beatrice invented does
      not keep the claim. Direct work, an immediate job, or `crab wake-now` does. A later
      `wake-at` keeps it when the user named that time or the work genuinely depends on a later
-     condition. Post-delivery checks keep deliberate future commitments exactly as before.
+     condition. A `wake-now` call never keeps a claim that a running builder was corrected: it
+     starts a different assistant wake. Only a matching `job steer` record keeps the claim that
+     the correction was queued for that builder, and its delivery receipt is required to claim
+     that the builder received it. Post-delivery checks keep deliberate future commitments
+     exactly as before.
      Anything in any of them
      that plausibly performed, embodies, or durably schedules the commitment makes it KEPT. A
      commitment nothing anywhere

@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Print the newest concrete tool actions from one detached job stream."""
+
+import json
+import os
+import sys
+
+
+def die(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+if len(sys.argv) not in (2, 3):
+    die("Usage: job-activity <job-sidecar.json> [count]")
+
+sidecar = sys.argv[1]
+try:
+    limit = max(1, min(int(sys.argv[2]) if len(sys.argv) == 3 else 12, 50))
+except ValueError:
+    die("job-activity: count must be a number")
+
+try:
+    with open(sidecar, encoding="utf-8") as fh:
+        job = json.load(fh)
+except (OSError, ValueError) as exc:
+    die("job-activity: cannot read %s: %s" % (sidecar, exc))
+
+stream = job.get("stream") or ""
+if not stream or not os.path.isfile(stream):
+    die("Job %s has no readable activity stream." % (job.get("id") or "?"))
+
+rows = []
+with open(stream, encoding="utf-8", errors="replace") as fh:
+    for line in fh:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = event.get("message") or {}
+        for block in message.get("content") or []:
+            if block.get("type") != "tool_use":
+                continue
+            tool = block.get("name") or "tool"
+            args = block.get("input") or {}
+            detail = (args.get("description") or args.get("file_path")
+                      or args.get("path") or args.get("command")
+                      or args.get("prompt") or "")
+            detail = " ".join(str(detail).split())[:360]
+            rows.append((event.get("timestamp") or "time unknown", tool, detail))
+
+if not rows:
+    print("Job %s has no recorded tool actions yet." % (job.get("id") or "?"))
+    raise SystemExit(0)
+
+for timestamp, tool, detail in rows[-limit:]:
+    print("%s  %s%s" % (timestamp, tool, " — " + detail if detail else ""))

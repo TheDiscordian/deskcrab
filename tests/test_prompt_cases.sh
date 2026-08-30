@@ -747,6 +747,25 @@ structural_checks() { # <case state dir> <case source dir>
         bad "rule 39d — current work can move out of the conversation without delay" \
             "nothing makes an immediate wake distinct from a sensible future wake"
     fi
+    if grep -qF 'crab job steer' <<<"$P" \
+            && grep -qF 'does not steer the builder' <<<"$P"; then
+        ok "rule 39e — active builder feedback uses the builder's own channel"
+    else
+        bad "rule 39e — active builder feedback uses the builder's own channel" \
+            "the prompt can still mistake a separate wake for builder steering"
+    fi
+    if grep -qiF 'RETRACTIONS ARE ACTIONS' <<<"$P"; then
+        ok "rule 39f — ignored work is cancelled or corrected before the claim"
+    else
+        bad "rule 39f — ignored work is cancelled or corrected before the claim" \
+            "the prompt still permits a conversational Ignored while work remains queued"
+    fi
+    if grep -qiF 'ACTIVE WORK NEEDS CURRENT EVIDENCE' <<<"$P"; then
+        ok "rule 39g — live builder answers use current activity and artefacts"
+    else
+        bad "rule 39g — live builder answers use current activity and artefacts" \
+            "the prompt can infer current work from an original brief or stale log slice"
+    fi
     if grep -qiF 'CORRECT WITHOUT WALLOWING' <<<"$P"; then
         ok "rule 39b — corrections do not become self-abasement"
     else

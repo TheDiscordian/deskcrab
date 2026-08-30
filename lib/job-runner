@@ -72,6 +72,15 @@ done
 unset _s _sid
 TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 [ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
+JOB_BACKEND="$(model_backend "$JOB_MODEL")"
+# The per-job correction hook reads these from the builder process. The
+# sidecar stamp lets `crab job steer` refuse older jobs that began without
+# this channel instead of pretending a queued file can reach them.
+JOB_STEERABLE=0
+if [ "$JOB_BACKEND" = claude ] && [ -x "$LIB_DIR/job-steer-mail" ]; then
+    JOB_STEERABLE=1
+    export DESKCRAB_JOB_ID="$ID" JOBS_DIR
+fi
 # The engineering record this build was dispatched against, if any (jobs.md
 # rules 7b and 27-29, specs/engineering-records.md). Success is gated below on
 # the record having been touched after dispatch — the sidecar's started_epoch
@@ -84,7 +93,8 @@ ENG_DIR="$(deskcrab_home)/engineering/records"
 # running one — a SIGKILLed worker never gets to write its own outcome. The
 # same write moves the sidecar off `dispatched`: the worker exists now, and
 # state=running is its first word (specs/jobs.md rule 9).
-"$LIB_DIR/job-status" set "$STATUS" state=running pid=$$ pidstart="$(_proc_starttime $$)" stream="$STREAMLOG"
+"$LIB_DIR/job-status" set "$STATUS" state=running pid=$$ pidstart="$(_proc_starttime $$)" \
+    stream="$STREAMLOG" steerable="$JOB_STEERABLE"
 # systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
 # Without it a deliberately stopped job would look identical to a crashed one.
 # The day journal gets the stop too, with whatever log the job managed to write.
@@ -176,7 +186,6 @@ PREV_ACCT=""
 # The brief rides as a preface on the task rather than
 # replacing codex's base instructions — a builder is a coding agent, and
 # codex's own coding instructions are the ones it should keep.
-JOB_BACKEND="$(model_backend "$JOB_MODEL")"
 CODEX_PRE_BLOCKED=""
 if [ "$JOB_BACKEND" = "codex" ]; then
     ATTEMPT=1
@@ -321,6 +330,25 @@ token_ledger_record "$STREAMLOG" job "$JOB_MODEL" "$JOB_EFFORT" \
 # all still touch her files after a run that may have outlived the first
 # declaration's window.
 touch_suppress -w 900 "$WORKDIR" "$JOBS_DIR" 2>/dev/null
+
+# A correction queued after the builder's final tool call had no boundary at
+# which the hook could deliver it. Never bless that off-course result as a
+# clean finish (specs/jobs.md rule 7g); preserve the correction as an explicit
+# undelivered receipt for the completion wake and the next reader.
+STEER_INBOX="$JOBS_DIR/$ID.steer"
+shopt -s nullglob
+PENDING_STEER=("$STEER_INBOX"/*.pending)
+shopt -u nullglob
+if [ "${#PENDING_STEER[@]}" -gt 0 ]; then
+    RC=1
+    for _pending in "${PENDING_STEER[@]}"; do
+        _undelivered="${_pending%.pending}.undelivered"
+        mv "$_pending" "$_undelivered" 2>/dev/null || continue
+        "$LIB_DIR/job-status" append "$STATUS" steering \
+            "$(date '+%F %T') undelivered $(basename "$_undelivered")" 2>/dev/null || true
+    done
+    echo "job-runner: a live correction arrived after the builder's last tool boundary and was not delivered. The result is not accepted as current; read $STEER_INBOX/*.undelivered before continuing." >> "$LOG"
+fi
 
 STATE=finished
 [ "$RC" -eq 0 ] || STATE=failed
