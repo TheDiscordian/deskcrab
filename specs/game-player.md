@@ -364,10 +364,14 @@ deliberate-play channel.
    reports it, and `route --clear` cancels it. The resident runner treats an active route as its
    lowest-priority synthetic walk rule, so every ordinary learned interaction may interrupt it and
    incoming player or urgent system messages still outrank it. Each `walk` action asks the client
-   for one collision-aware regional leg under game-reflex rule 7. Its `arrive` tolerance is passed
-   into the client's collision pathfinder as the destination area as well as used for verification;
-   an occupied landmark tile can therefore settle on reachable adjacent floor without making Sol
-   guess successive neighbouring coordinates. A verified shorter distance is
+   for one collision-aware local leg under game-reflex rule 7. The player derives a leg no more
+   than eight Chebyshev tiles from the current body, so autonomous routing never hands the client's
+   finite collision map a remote edge target. Its `arrive` tolerance is passed into the client's
+   collision pathfinder for the final destination area as well as used for verification; an
+   occupied landmark tile can therefore settle on reachable adjacent floor without making Sol
+   guess successive neighbouring coordinates. Progress is a strictly smaller squared Euclidean
+   distance, so an apparent advance on one axis cannot conceal a much larger sideways detour or
+   reversal. A verified shorter distance is
    `route-progress` and immediately licenses the next leg without a model call; reaching the
    destination is `route-complete` and removes the route. A refused leg or a settled tile no closer
    to the destination marks the route `blocked` at the current position and visible obstacle
@@ -384,8 +388,11 @@ deliberate-play channel.
    recorded explicitly, so model-owned and runner-owned movement both survive process boundaries.
    An unexplained transition greater than twelve tiles marks a portal boundary rather than
    inventing a walkable edge. `backtrack [POINTS|all]` atomically replaces an ordinary route with
-   the reverse of the current boundary-bounded trail in `$DESKCRAB_GAME_DIR/backtrack.json`.
-   Those exact observed tiles become high-priority synthetic walks: urgent retreat and messages
+   the reverse of the recent boundary-bounded trail in `$DESKCRAB_GAME_DIR/backtrack.json`.
+   With no count it selects at most eight checkpoints; replaying the whole segment requires the
+   deliberate `all` argument. Those exact observed tiles become high-priority recovery targets,
+   but a target farther than eight tiles is approached through separately verified local legs:
+   urgent retreat and messages
    still outrank recovery, but routine interactions cannot interrupt it. Every verified reverse
    step truncates the abandoned branch from the movement trail, completion removes the request,
    and an unchanged obstruction records `backtrack-blocked` and licenses Sol rather than retrying

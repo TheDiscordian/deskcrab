@@ -881,6 +881,24 @@ Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 3, 10 and 14.
 
 ## The OpenRSC player
 
+### 2026-08-30 — A remote destination could reverse into wandering
+
+The durable route handed a far absolute destination directly to a client whose collision map holds
+only the current region. Its edge fallback could dispatch a long regional leg; during the live
+Falador-to-Varrock attempt, a westbound destination repeatedly settled east or far to the south.
+The runner correctly noticed that the final body was not closer, but only after the bad leg had
+carried Beatrice away. Recovery then treated bare `backtrack` as “replay every point,” which could
+turn a wrong-turn correction into hundreds of exact historical walks.
+
+Autonomous routes and recovery now derive at most one eight-tile local leg at a time. The runner
+accepts only a smaller squared distance to the true destination, records the last verified progress
+point, and blocks immediately on reversal, lateral wandering, or local collision. A distant
+backtrack checkpoint uses the same bounded legs and is not consumed until actually reached; bare
+`backtrack` selects eight recent checkpoints, while `all` is explicit. Remote direct walks remain
+available to the deliberate hand, but the durable navigator no longer uses them.
+
+Contract: [`specs/game-player.md`](../specs/game-player.md), rules 7e–7f.
+
 ### 2026-08-30 — Magic and the top-left action hint existed only as pixels
 
 The player could see a Magic tab in screenshots but the ACTIONS state carried no spellbook,

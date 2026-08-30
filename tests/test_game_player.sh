@@ -944,6 +944,9 @@ contains "$(python3 "$GP" route)" "status=active target=(160,648) arrive=1" \
     && ok "route status exposes its target and tolerance" \
     || fail "route status exposes its target and tolerance" "$(python3 "$GP" route)"
 snap 1046 '[]' '{"x":120,"z":648}'
+contains "$(python3 "$GP" route)" "current=(120,648) distance=40" \
+    && ok "route status exposes current distance instead of a bare destination" \
+    || fail "route status exposes current distance instead of a bare destination"
 fake_route_bridge 140 648
 OUT="$(python3 "$GP" step --local)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -955,8 +958,13 @@ check "the destination remains durable for the next runner pass" \
     test -f "$DESKCRAB_GAME_DIR/route.json"
 check_eq "the synthetic route used the ordinary walk ACTION" \
     "$(last_action 'type=walk')" "1"
+check_eq "a distant route emits only one eight-tile local leg" \
+    "$(last_action 'x=128')" "1"
 check_eq "the route gives collision pathfinding its grounded arrival area" \
-    "$(last_action 'arrive=1')" "1"
+    "$(last_action 'arrive=0')" "1"
+contains "$(python3 "$GP" route)" "last_progress=(140,648)" \
+    && ok "the route remembers its last verified progress point" \
+    || fail "the route remembers its last verified progress point"
 snap 1048 '[]' '{"x":140,"z":648}'
 fake_route_bridge 160 648
 OUT="$(python3 "$GP" step --local)"; CODE=$?
@@ -965,6 +973,22 @@ check_eq "arrival completes the route: exit 0" "$CODE" "0"
 contains "$OUT" "status=route-complete" \
     && ok "completion is explicit" || fail "completion is explicit" "$OUT"
 refute "the completed route cannot fire again" test -f "$DESKCRAB_GAME_DIR/route.json"
+
+# This is the live failure shape: one coordinate looks closer while the body
+# has actually wandered much farther sideways. Chebyshev-only progress used to
+# bless it; squared-distance progress must block it.
+check "a directionality probe route can be set" python3 "$GP" route 200 648
+snap 1049 '[]' '{"x":120,"z":648}'
+fake_route_bridge 130 700
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a large sideways detour blocks instead of becoming route progress" "$CODE" "4"
+contains "$OUT" "route-blocked" \
+    && ok "the navigator names the directional failure" \
+    || fail "the navigator names the directional failure" "$OUT"
+refute "the sideways detour is never recorded as verified progress" \
+    grep -q '"last_x": 130' "$DESKCRAB_GAME_DIR/route.json"
+python3 "$GP" route --clear >/dev/null
 
 check "a second route can be set" python3 "$GP" route 900 900
 snap 1050 '[]' '{"x":140,"z":648}'
@@ -1056,6 +1080,53 @@ import json, sys
 points = json.load(open(sys.argv[1]))["points"]
 assert [(p["x"], p["z"]) for p in points] == [(120, 648)], points
 PY
+
+# Historical checkpoints can predate bounded navigation and be much farther
+# away than one safe local walk. They remain one truthful target while the
+# recovery approaches them in local legs.
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY'
+import json, sys, time
+now = int(time.time() * 1000)
+json.dump({"v": 1, "points": [
+    {"x": 100, "z": 100, "ts": now - 1000, "break": False},
+    {"x": 120, "z": 100, "ts": now, "break": False},
+]}, open(sys.argv[1], "w"))
+PY
+snap 105233 '[]' '{"x":120,"z":100}'
+check "a distant recovery checkpoint can be requested" python3 "$GP" backtrack 1
+fake_route_bridge 112 100
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a bounded partial recovery remains productive" "$CODE" "0"
+contains "$OUT" "status=backtrack-progress" \
+    && ok "the partial reverse leg is named as progress" \
+    || fail "the partial reverse leg is named as progress" "$OUT"
+check_eq "the distant checkpoint emitted only an eight-tile reverse leg" \
+    "$(last_action 'x=112')" "1"
+contains "$(python3 "$GP" backtrack status)" "remaining=1 next=(100,100)" \
+    && ok "partial recovery does not consume an unreached checkpoint" \
+    || fail "partial recovery does not consume an unreached checkpoint"
+python3 "$GP" backtrack clear >/dev/null
+
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY'
+import json, sys, time
+now = int(time.time() * 1000)
+json.dump({"v": 1, "points": [
+    {"x": x, "z": 100, "ts": now + x, "break": False}
+    for x in range(100, 111)
+]}, open(sys.argv[1], "w"))
+PY
+snap 105234 '[]' '{"x":110,"z":100}'
+check "bare backtrack requests a bounded recent recovery" python3 "$GP" backtrack
+python3 - "$DESKCRAB_GAME_DIR/backtrack.json" <<'PY' \
+    && ok "bare backtrack selects eight checkpoints, not the whole trail" \
+    || fail "bare backtrack selects eight checkpoints, not the whole trail"
+import json, sys
+request = json.load(open(sys.argv[1]))
+assert len(request["points"]) == 8, request
+assert request["points"][0] == [109, 100], request
+PY
+python3 "$GP" backtrack clear >/dev/null
 
 # A discontinuity is evidence for a semantic stair/ladder/portal interaction,
 # never permission to issue one impossible walk across coordinate layers.

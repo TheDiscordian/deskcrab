@@ -77,6 +77,8 @@ ACTIVITY_PERFORMANCE_MIN_MS = 60 * 1000
 ACTIVITY_REVIEW_INTERVAL_MS = 3 * 60 * 1000
 MOVEMENT_TRAIL_MAX_POINTS = 1024
 MOVEMENT_TRAIL_BREAK_DISTANCE = 12
+NAVIGATION_LEG_MAX_TILES = 8  # stay inside the collision map a person can currently see
+BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
 BACKTRACK_RULE_NAME = "active-backtrack"
@@ -565,6 +567,36 @@ def prepare_backtrack(snap: dict, objective: str):
 
 def route_distance(x: int, z: int, route: dict) -> int:
     return max(abs(x - route["x"]), abs(z - route["z"]))
+
+
+def navigation_distance_sq(x: int, z: int, target_x: int, target_z: int) -> int:
+    """Directional progress measure that cannot hide a huge sideways detour."""
+    return (x - target_x) ** 2 + (z - target_z) ** 2
+
+
+def bounded_navigation_leg(x: int, z: int, target_x: int, target_z: int,
+                           limit: int = NAVIGATION_LEG_MAX_TILES) -> tuple:
+    """Return one human-sized step toward a potentially distant destination.
+
+    The OpenRSC client only owns the currently loaded collision region. Sending
+    the far destination directly makes its edge fallback choose and dispatch a
+    regional endpoint before the runner can verify whether that endpoint still
+    represents the intended direction. Keep every autonomous leg local; a wall,
+    river, building, or mountain then becomes an explicit decision point.
+    """
+    dx, dz = target_x - x, target_z - z
+    distance = max(abs(dx), abs(dz))
+    if distance <= limit:
+        return target_x, target_z
+    scale = limit / float(distance)
+    leg_x = x + int(round(dx * scale))
+    leg_z = z + int(round(dz * scale))
+    if leg_x == x and leg_z == z:
+        # Defensive only: distance > limit guarantees one dominant component,
+        # but never let rounding turn a navigation commitment into an idle tick.
+        leg_x += 1 if dx > 0 else -1 if dx < 0 else 0
+        leg_z += 1 if dz > 0 else -1 if dz < 0 else 0
+    return leg_x, leg_z
 
 
 def route_obstacle_signature(snap: dict) -> str:
@@ -2809,13 +2841,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             save_backtrack(backtrack)
     if backtrack is not None and backtrack.get("status") == "active":
         target_x, target_z = backtrack["points"][backtrack["index"]]
+        leg_x, leg_z = bounded_navigation_leg(
+            snap["x"], snap["z"], target_x, target_z)
         source_rules.append({
             "name": BACKTRACK_RULE_NAME, "enabled": True,
             "priority": BACKTRACK_PRIORITY, "cooldown_ms": 0,
             "hold_ticks": 1, "once_per_objective": False,
             "note": "retrace the body's observed successful tile trail",
             "trigger": {},
-            "action": {"type": "walk", "x": target_x, "z": target_z,
+            "action": {"type": "walk", "x": leg_x, "z": leg_z,
                        "arrive": 0},
         })
     trigger_true = make_trigger_fn(objective, activity)
@@ -2975,11 +3009,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         # the shared engine wants the key spelled out.
         live_rules.append(dict(rule, channel="game"))
     if route is not None and not route_blocked and not urgent_retreat_names:
+        leg_x, leg_z = bounded_navigation_leg(
+            snap["x"], snap["z"], route["x"], route["z"])
+        final_leg = (leg_x, leg_z) == (route["x"], route["z"])
         live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
                            "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
                            "hold_ticks": 1, "channel": "game", "trigger": {},
-                           "action": {"type": "walk", "x": route["x"],
-                                      "z": route["z"], "arrive": route["arrive"]}})
+                           "action": {"type": "walk", "x": leg_x,
+                                      "z": leg_z,
+                                      "arrive": route["arrive"] if final_leg else 0}})
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
@@ -3138,19 +3176,31 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if is_route:
         latest = game_reflex.read_snapshot() or snap
         lx, lz = latest.get("x"), latest.get("z")
-        start_distance = route_distance(snap["x"], snap["z"], route)
-        if status == "done":
+        start_distance = navigation_distance_sq(
+            snap["x"], snap["z"], route["x"], route["z"])
+        reached_destination = isinstance(lx, int) and isinstance(lz, int) \
+            and route_distance(lx, lz, route) <= route["arrive"]
+        made_progress = isinstance(lx, int) and isinstance(lz, int) \
+            and navigation_distance_sq(lx, lz, route["x"], route["z"]) \
+            < start_distance
+        if reached_destination:
             clear_route()
             status = "route-complete"
             flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"]}])
-        elif status == "walk-short" and isinstance(lx, int) and isinstance(lz, int) \
-                and route_distance(lx, lz, route) < start_distance:
+        elif status in ("done", "walk-short") and made_progress:
             status = "route-progress"
+            progressed = dict(route)
+            progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                               "last_distance_sq": navigation_distance_sq(
+                                   lx, lz, route["x"], route["z"]),
+                               "last_ts": now_ms()})
+            save_route(progressed)
             flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
                            "x": lx, "z": lz, "target_x": route["x"],
-                           "target_z": route["z"]}])
+                           "target_z": route["z"], "leg_x": action["x"],
+                           "leg_z": action["z"]}])
         else:
             route_was_blocked = True
             block_route(route, latest, status)
@@ -3165,6 +3215,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         latest = game_reflex.read_snapshot() or snap
         lx, lz = latest.get("x"), latest.get("z")
         target_x, target_z = backtrack["points"][backtrack["index"]]
+        start_distance = navigation_distance_sq(
+            snap["x"], snap["z"], target_x, target_z)
         if status == "done" and [lx, lz] == [target_x, target_z]:
             rewind_movement_trail(lx, lz)
             backtrack["index"] += 1
@@ -3181,6 +3233,20 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                 flush_events([{"ts": now_ms(), "kind": "backtrack-progress",
                                "id": action_id, "x": lx, "z": lz,
                                "remaining": len(backtrack["points"]) - backtrack["index"]}])
+        elif status in ("done", "walk-short") \
+                and isinstance(lx, int) and isinstance(lz, int) \
+                and navigation_distance_sq(lx, lz, target_x, target_z) < start_distance:
+            # A historical checkpoint can be farther away than one safe local
+            # leg. Keep approaching it without pretending the checkpoint was
+            # reached or consuming it from the recovery request.
+            backtrack["status"] = "active"
+            save_backtrack(backtrack)
+            status = "backtrack-progress"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz,
+                           "remaining": len(backtrack["points"]) - backtrack["index"],
+                           "target_x": target_x, "target_z": target_z,
+                           "leg_x": action["x"], "leg_z": action["z"]}])
         else:
             backtrack_was_blocked = True
             blocked = dict(backtrack)
@@ -3723,16 +3789,29 @@ def cmd_route(args):
         elif route.get("status") == "invalid":
             print(f"route: invalid ({route_path()})")
         else:
+            snap = game_reflex.read_snapshot() or {}
+            px, pz = snap.get("x"), snap.get("z")
+            current = f" current=({px},{pz}) distance={route_distance(px, pz, route)}" \
+                if isinstance(px, int) and isinstance(pz, int) else ""
+            last = f" last_progress=({route['last_x']},{route['last_z']})" \
+                if isinstance(route.get("last_x"), int) \
+                and isinstance(route.get("last_z"), int) else ""
             print(f"route: status={route['status']} target=({route['x']},{route['z']}) "
                   f"arrive={route['arrive']} objective={route['objective'] or '(none)'}"
+                  f"{current}{last}"
                   f"{(' reason=' + route.get('blocked_reason', '')) if route['status'] == 'blocked' else ''}")
         return
     if args.x is None or args.z is None:
         die("route needs both X and Z")
     if not 0 <= args.arrive <= 10:
         die("route --arrive must be from 0 through 10")
+    snap = game_reflex.read_snapshot() or {}
     route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
              "objective": read_objective(), "status": "active", "set_ts": now_ms()}
+    if isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int):
+        route.update({"origin_x": snap["x"], "origin_z": snap["z"],
+                      "origin_distance_sq": navigation_distance_sq(
+                          snap["x"], snap["z"], args.x, args.z)})
     # A newly chosen destination is an explicit replacement strategy, not a
     # second movement commitment to race an old recovery.
     clear_backtrack()
@@ -4244,7 +4323,7 @@ def main():
 
     p = sub.add_parser("backtrack",
                        help="retrace observed successful tiles to the current portal boundary")
-    p.add_argument("action", nargs="?", default="all",
+    p.add_argument("action", nargs="?", default=str(BACKTRACK_DEFAULT_POINTS),
                    help="point count, all, history, status, or clear")
     p.set_defaults(fn=cmd_backtrack)
 
