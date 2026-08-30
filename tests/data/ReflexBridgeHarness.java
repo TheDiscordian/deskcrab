@@ -37,6 +37,7 @@ public class ReflexBridgeHarness {
 		boolean failing = false;
 		boolean projectionsVisible = true;
 		boolean routeAvailable = true;
+		int walkPathDistance = 8;
 		boolean groundRouteAvailable = true;
 		boolean groundDoorAvailable = false;
 		boolean boundRouteAvailable = true;
@@ -755,6 +756,10 @@ public class ReflexBridgeHarness {
 			return true;
 		}
 
+		public int walkPathDistance(int absX, int absZ, int arrive) {
+			return routeAvailable ? walkPathDistance : -1;
+		}
+
 		public void sendLocalChat(String text) {
 			events.add("chat-local text=" + text);
 		}
@@ -831,6 +836,9 @@ public class ReflexBridgeHarness {
 		}
 		if ("exec-no-route".equals(mode) || "exec-combat-no-route".equals(mode)) {
 			host.routeAvailable = false;
+		}
+		if ("exec-long-detour".equals(mode)) {
+			host.walkPathDistance = 40;
 		}
 		if ("exec-unreachable-ground".equals(mode)) {
 			host.groundRouteAvailable = false;

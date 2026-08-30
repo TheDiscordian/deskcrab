@@ -80,6 +80,7 @@ ACTIVITY_REVIEW_INTERVAL_MS = 3 * 60 * 1000
 MOVEMENT_TRAIL_MAX_POINTS = 1024
 MOVEMENT_TRAIL_BREAK_DISTANCE = 12
 NAVIGATION_LEG_MAX_TILES = 8  # stay inside the collision map a person can currently see
+NAVIGATION_LEG_MAX_PATH_TILES = 16  # reject a nearby waypoint whose real route is a huge loop
 BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
@@ -2448,6 +2449,11 @@ def compile_player_action(rule, snap, food, eat_pick):
         compiled = {"type": "walk", "x": action["x"], "z": action["z"]}
         if isinstance(action.get("arrive"), int):
             compiled["arrive"] = action["arrive"]
+        # Internal durable-route legs carry a collision-path budget. It does
+        # not limit the distant destination: it prevents one nearby waypoint
+        # from silently expanding into a long walk in the opposite direction.
+        if isinstance(action.get("max_path"), int):
+            compiled["max_path"] = action["max_path"]
         return compiled, None
     if action["type"] == "retreat":
         if snap.get("in_combat") is not True:
@@ -2561,7 +2567,7 @@ def compile_player_action(rule, snap, food, eat_pick):
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "dir", "obj", "cmd", "within",
+    for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "dir", "obj", "cmd", "within",
                 "stationary", "require_clear_shot", "require_melee_unreachable",
                 "item", "button",
                 "distance", "dx", "dz", "committed_direction",
@@ -3197,6 +3203,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "hold_ticks": 1, "channel": "game", "trigger": {},
                            "action": {"type": "walk", "x": leg_x,
                                       "z": leg_z,
+                                      "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
                                       # A generated intermediate point is
                                       # directional, not a sacred exact tile.
                                       "arrive": route["arrive"] if final_leg else 1}})
@@ -3392,7 +3399,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"], "leg_x": action["x"],
                            "leg_z": action["z"]}])
-        elif status == "refused-no-path":
+        elif status in ("refused-no-path", "refused-waypoint-detour"):
             candidates = navigation_leg_candidates(
                 snap["x"], snap["z"], route["x"], route["z"])
             failed = list(route.get("detour_failed_legs") or []) \

@@ -384,7 +384,12 @@ deliberate-play channel.
    for one collision-aware local leg under game-reflex rule 7. The player derives a leg no more
    than eight Chebyshev tiles from the current body, so autonomous routing never hands the client's
    finite collision map a remote edge target. Its `arrive` tolerance is passed into the client's
-   collision pathfinder for the final destination area as well as used for verification; every
+   collision pathfinder for the final destination area as well as used for verification. Each
+   generated waypoint also carries a 16-step actual-path budget: a waypoint eight tiles away that
+   would expand into a huge collision detour is refused as `refused-waypoint-detour` before any
+   movement is sent, then treated like an unpathable candidate while the bounded side-leg fan is
+   tried. The budget constrains only the generated local waypoint, never the durable distant
+   destination. Every
    non-final directional leg uses an arrival radius of one because its exact generated tile has no
    landmark meaning. An
    occupied landmark tile can therefore settle on reachable adjacent floor without making Sol

@@ -999,6 +999,8 @@ check_eq "a distant route emits only one eight-tile local leg" \
     "$(last_action 'x=128')" "1"
 check_eq "the route gives collision pathfinding its grounded arrival area" \
     "$(last_action 'arrive=1')" "1"
+check_eq "the local waypoint carries a bounded actual-path budget" \
+    "$(last_action 'max_path=16')" "1"
 contains "$(python3 "$GP" route)" "last_progress=(140,648)" \
     && ok "the route remembers its last verified progress point" \
     || fail "the route remembers its last verified progress point"
@@ -1029,13 +1031,13 @@ python3 "$GP" route --clear >/dev/null
 
 check "a local detour recovery route can be set" python3 "$GP" route 200 648
 snap 10491 '[]' '{"x":120,"z":648}'
-fake_bridge refused-no-path
+fake_bridge refused-waypoint-detour
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "a refused primary leg retains the destination for another candidate" "$CODE" "0"
+check_eq "a disproportionate primary leg retains the destination for another candidate" "$CODE" "0"
 contains "$(python3 "$GP" route)" "local_detour_attempts=1" \
-    && ok "the failed local candidate is remembered" \
-    || fail "the route must remember which local leg already failed"
+    && ok "the overlong local candidate is remembered" \
+    || fail "the route must remember which local leg expanded into a detour"
 snap 10492 '[]' '{"x":120,"z":648}'
 fake_route_bridge 128 652
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?

@@ -275,6 +275,12 @@ check_eq "the arrival-area walk is receipted done" "$(rstatus)" "done"
 wact 5702 "$(now_ms)" "type=walk" "x=125" "z=655" "arrive=11"
 harness exec >/dev/null
 check_eq "a walk arrival area is bounded" "$(rstatus)" "refused-bad-coordinates"
+wact 5703 "$(now_ms)" "type=walk" "x=125" "z=655" "arrive=1" "max_path=16"
+OUT="$(harness exec-long-detour)"
+refute "a nearby waypoint whose real path is a huge loop sends no walk" \
+    contains "$OUT" "walk x="
+check_eq "the collision detour is named distinctly from an unreachable tile" \
+    "$(rstatus)" "refused-waypoint-detour"
 wact 571 "$(now_ms)" "type=walk" "x=900" "z=900"
 OUT="$(harness exec-no-route)"
 refute "a destination with no progressive collision path sends no walk" \
