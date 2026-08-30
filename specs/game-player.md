@@ -223,7 +223,8 @@ deliberate-play channel.
    interface, or message transition cannot make a cast successful, and routine work cannot resume
    while its result is unresolved. The direct `terrain [RADIUS]` door renders the snapshot's local
    blocked cells/edges, projectile permeability, and per-NPC clear-shot/melee-reach relations; the
-   direct cast door's `--stationary` option arms the same no-approach action and reports those live
+   direct cast door's `--stationary` option chooses a target currently satisfying both terrain
+   relations, arms the same no-approach action with both live dispatch guards, and reports those
    relations with its grounded result.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.

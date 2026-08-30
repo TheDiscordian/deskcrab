@@ -912,8 +912,10 @@ rules those shapes produced.
 The bridge now publishes a compact local topology plus, for each loaded NPC, the current clear-shot
 result and whether the loaded terrain gives it a route into melee range. A stationary cast is a
 bounded experiment: it omits approach, checks Magic range and optional live terrain relations on
-the same NPC at dispatch, and fails if Beatrice's tile changes. The direct terrain and cast doors
-show the evidence; the prompt asks her to verify position, XP/runes, HP, and repeated outcomes,
+the same NPC at dispatch, and fails if Beatrice's tile changes. The direct stationary-cast door
+selects a target satisfying both relations and carries both guards into that dispatch rather than
+merely reporting an earlier snapshot. The direct terrain and cast doors show the evidence; the
+prompt asks her to verify position, XP/runes, HP, and repeated outcomes,
 then retain the resulting terrain lesson. Learned activity reflexes can recheck those relations on
 every firing, so a changed target or topology stops the rule instead of silently turning it into a
 chase. A server clear-shot refusal is terminal failure feedback, not a wait that hangs until timeout.

@@ -1825,8 +1825,26 @@ check_eq "the action carries the resolved spell id" "$(last_action 'spell=0')" "
 check_eq "the action carries the stable NPC server id" "$(last_action 'sidx=55')" "1"
 check_eq "the direct stationary cast cannot emit an approach walk" \
     "$(last_action 'stationary=1')" "1"
+check_eq "the direct stationary cast rechecks its projectile line at dispatch" \
+    "$(last_action 'require_clear_shot=1')" "1"
+check_eq "the direct stationary cast rechecks melee reachability at dispatch" \
+    "$(last_action 'require_melee_unreachable=1')" "1"
 refute "the semantic cast did not move the pointer or select a spell-panel coordinate" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 1170111 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":false,"terrain_melee_reachable":false}]' '{
+  "magic_level":3,"selected_spell":null,
+  "spells":[{"id":0,"name":"Wind Strike","level":1,"target":"npc/player","ready":true,
+    "runes":[{"id":33,"name":"Air-Rune","held":11,"required":1,"available":true},
+             {"id":35,"name":"Mind-Rune","held":11,"required":1,"available":true}]}],
+  "inventory":[{"id":33,"name":"Air-Rune","count":11},{"id":35,"name":"Mind-Rune","count":11}],
+  "skills":[{"id":6,"name":"Magic","level":3,"xp":280}],
+  "messages":[{"id":1170111000,"channel":"game","text":"Ready"}]
+}'
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+refute "a direct stationary cast refuses a target whose shot is currently blocked" \
+    bash "$HEADLESS" cast wind npc 11 1 --stationary
+refute "the refused stationary cast emits no packet action" \
+    test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
 
 python3 "$GP" learn cast-wind-test --priority 900 --cooldown-ms 1000 \
     --trigger objective_is=magic-reflex-test --trigger npc_visible=11 \
