@@ -350,9 +350,10 @@ deliberate-play channel.
    actions publish `walking: true` across the dispatch gap, so an action receipt followed by
    `not_walking` cannot accept the pre-action snapshot. Conditions are
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
-   `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`, and
-   `right_click_menu_closed`, `trade_open`, `trade_closed`, `sleeping`, `not_sleeping`, and
-   `fatigue_zero`, and `action_done`; dashes are accepted in place of underscores. Unlike the
+   `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`,
+   `right_click_menu_closed`, `ui_panel_open`, `ui_panel_closed`, `trade_open`, `trade_closed`,
+   `sleeping`, `not_sleeping`, `fatigue_zero`, and `action_done`; dashes are accepted in place of
+   underscores. Unlike the
    level-triggered state names, `action_done` requires the causal baseline armed immediately before
    the most recent direct bridge action and consumes it after observing a result.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
@@ -462,8 +463,12 @@ deliberate-play channel.
     `~/.local/lib/deskcrab/game_player.py` (`DESKCRAB_GAME_PLAYER` overrides, which is how the
     test sandbox pins its own copy), and passes any other subcommand through, so the sitting
     has one door for stepping, state-based waiting, learning and objectives. The direct harness
-    doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh use ITEM-ID object
-    OBJECT-ID [SECONDS]`, and `orsc-headless.sh retreat [SECONDS]` delegate to that same module.
+    doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh panel [close]`,
+    `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]`, and
+    `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. `panel` names the hover-open
+    side panel; `panel close` deliberately moves the private pointer outside it and accepts success
+    only after `ui_panel_closed` is observed. A world `entity` click never hides the mistake: the
+    bridge returns `refused-ui-panel-open` until the player notices and performs that correction.
     `use` sends one identity-checked item-on-object action and waits for rule 7a's causal outcome.
     `retreat` creates one bounded request which the
     resident runner owns (or the caller evaluates through the identical step path if no runner

@@ -144,6 +144,7 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["walking"] is True and s["in_combat"] is True
 assert s["right_click_menu_open"] is True
+assert s["ui_panel_open"] is True and s["ui_panel"] == "inventory"
 assert s["hover_text"] == ""
 assert s["menu_options"] == [
     "Trade with Nearby Friend",
@@ -727,6 +728,15 @@ check_eq "an entity no longer on-screen is refused" "$(rstatus)" "refused-not-on
 wact 84 "$(now_ms)" "type=click-entity" "kind=widget" "x=1" "z=1" "obj=1" "button=1"
 harness exec >/dev/null
 check_eq "an unknown entity kind is refused" "$(rstatus)" "refused-bad-entity-kind"
+wact 841 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=474" "button=1"
+OUT="$(harness exec-ui-panel)"
+refute "an open hover panel never receives a hidden world click" contains "$OUT" "click x="
+check_eq "the refusal names the visible obstruction" "$(rstatus)" "refused-ui-panel-open"
+wact 842 "$(now_ms)" "type=click-inventory" "item=81" "button=1"
+OUT="$(harness exec-ui-panel)"
+contains "$OUT" "click x=611 y=311 button=1" \
+    && ok "the hover-panel guard does not block an intentional interface click" \
+    || fail "the hover-panel guard does not block an intentional interface click" "$OUT"
 
 echo
 echo "click-inventory resolves an item id to its current slot (rules 5-7):"

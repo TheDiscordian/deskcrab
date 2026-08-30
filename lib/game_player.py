@@ -43,6 +43,7 @@ WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
     "right_click_menu_open", "right_click_menu_closed",
+    "ui_panel_open", "ui_panel_closed",
     "trade_open", "trade_closed", "sleeping", "not_sleeping", "fatigue_zero",
     "action_done",
 )
@@ -1754,6 +1755,10 @@ def wait_condition_met(condition: str, snap: dict) -> bool:
         return snap.get("right_click_menu_open") is True
     if condition == "right_click_menu_closed":
         return snap.get("right_click_menu_open") is False
+    if condition == "ui_panel_open":
+        return snap.get("ui_panel_open") is True
+    if condition == "ui_panel_closed":
+        return snap.get("ui_panel_open") is False
     if condition == "trade_open":
         return snap.get("trade_open") is True
     if condition == "trade_closed":
@@ -1772,7 +1777,8 @@ def wait_state_brief(snap: dict) -> str:
         return "none"
     parts = []
     for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
-                "right_click_menu_open", "trade_open", "sleeping", "fatigue"):
+                "right_click_menu_open", "ui_panel_open", "ui_panel",
+                "trade_open", "sleeping", "fatigue"):
         value = snap.get(key)
         if isinstance(value, bool):
             value = str(value).lower()
@@ -1841,6 +1847,8 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "walking": snap.get("walking"),
             "talking_to_npc": snap.get("talking_to_npc"),
             "right_click_menu_open": snap.get("right_click_menu_open"),
+            "ui_panel_open": snap.get("ui_panel_open"),
+            "ui_panel": snap.get("ui_panel"),
             "trade_open": snap.get("trade_open"),
             "bank_open": snap.get("bank_open"),
             "shop_open": snap.get("shop_open"),
@@ -2524,7 +2532,8 @@ def snap_brief(snap: dict) -> dict:
     brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
                                       "fatigue", "sleeping", "sleep_fatigue", "sleep_status",
                                       "walking", "in_combat", "talking_to_npc",
-                                      "right_click_menu_open", "hover_text",
+                                      "right_click_menu_open", "ui_panel_open", "ui_panel",
+                                      "hover_text",
                                       "magic_level", "selected_spell")}
     brief["ready_spells"] = [
         {key: spell.get(key) for key in ("id", "name", "target")}
@@ -2562,6 +2571,7 @@ def gap_signature(snap: dict, objective: str, activity: str = "") -> str:
         "activity": activity or None,
         "x": snap.get("x"),
         "z": snap.get("z"),
+        "ui_panel": snap.get("ui_panel"),
         "inventory": [i.get("id") for i in snap.get("inventory") or []],
         "messages": game_messages,
         "npcs": sorted(n.get("id") for n in snap.get("npcs") or []

@@ -43,6 +43,7 @@ public class ReflexBridgeHarness {
 		int sleepingFatigue = 0;
 		String sleepingStatus = "";
 		boolean rightClickMenuOpen = false;
+		String uiPanel = "";
 		boolean tradeOpen = false;
 		boolean tradeConfirmStage = false;
 		boolean tradeSelfAccepted = false;
@@ -212,6 +213,10 @@ public class ReflexBridgeHarness {
 
 		public boolean isRightClickMenuOpen() {
 			return rightClickMenuOpen;
+		}
+
+		public String uiPanelName() {
+			return uiPanel;
 		}
 
 		public String hoverText() {
@@ -758,6 +763,7 @@ public class ReflexBridgeHarness {
 			host.walking = true;
 			host.inCombat = true;
 			host.rightClickMenuOpen = true;
+			host.uiPanel = "inventory";
 			host.tradeOpen = true;
 			host.npcDialogueOpen = true;
 		}
@@ -771,6 +777,9 @@ public class ReflexBridgeHarness {
 		}
 		if ("exec-menu".equals(mode)) {
 			host.rightClickMenuOpen = true;
+		}
+		if ("exec-ui-panel".equals(mode)) {
+			host.uiPanel = "magic_prayer";
 		}
 		if ("exec-dialogue".equals(mode)) {
 			host.npcDialogueOpen = true;

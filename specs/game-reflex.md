@@ -60,7 +60,10 @@ Three parts:
    colour-free action hint actually rendered at the top-left for the current pointer; empty when
    no hint or while the full context menu is open),
    `right_click_menu_open` (the ordinary world context menu is visibly open), `menu_options`
-   (its live visible entries as colour-free text, otherwise empty), `trade_open` (either ordinary
+   (its live visible entries as colour-free text, otherwise empty), `ui_panel_open` and `ui_panel`
+   (whether a hover-open side panel currently covers the world and its semantic name—inventory,
+   minimap, skills/quests, magic/prayer, friends, or options—otherwise false and `null`),
+   `trade_open` (either ordinary
    player-trade screen is visible),
    `talking_to_npc` (an NPC choice menu is open or
    the client received NPC-spoken quest dialogue within the last four seconds; NPC speech is the
@@ -212,7 +215,10 @@ Three parts:
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
-   `refused-not-on-screen`; no screen coordinates cross the action file. For click-inventory it
+   `refused-not-on-screen`; a world pointer click while `ui_panel_open` is true is refused as
+   `refused-ui-panel-open`, leaving the panel visible so the player must notice, dismiss, verify,
+   and retry deliberately. Interface-targeting actions are not blocked by this guard. No screen
+   coordinates cross the action file. For click-inventory it
    finds the first matching current item id, opens the inventory tab, and calculates the slot
    centre from the current client UI; a missing item is `refused-no-such-item`. No slot or screen
    coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a

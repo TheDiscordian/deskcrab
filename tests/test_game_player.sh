@@ -779,17 +779,30 @@ contains "$OUT" "condition-met condition=right_click_menu_open tick=10452" \
 snap 10453 '[]' '{"right_click_menu_open":false}'
 OUT="$(python3 "$GP" wait-until right_click_menu_closed --timeout 1)"; CODE=$?
 check_eq "an already closed context menu satisfies the closed condition" "$CODE" "0"
-snap 10454 '[]' '{"trade_open":false}'
+snap 10454 '[]' '{"ui_panel_open":false,"ui_panel":null}'
+python3 "$GP" wait-until ui-panel-open --timeout 1 > "$SANDBOX/wait-panel-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 10455 '[]' '{"ui_panel_open":true,"ui_panel":"inventory"}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+check_eq "a hover-open side panel is directly waitable" "$CODE" "0"
+contains "$(cat "$SANDBOX/wait-panel-out")" "condition=ui_panel_open" \
+    && ok "the panel wait reports its semantic condition" \
+    || fail "the panel wait reports its semantic condition" "$(cat "$SANDBOX/wait-panel-out")"
+snap 10456 '[]' '{"ui_panel_open":false,"ui_panel":null}'
+OUT="$(python3 "$GP" wait-until ui_panel_closed --timeout 1)"; CODE=$?
+check_eq "an already closed side panel satisfies its negative state" "$CODE" "0"
+snap 10457 '[]' '{"trade_open":false}'
 python3 "$GP" wait-until trade_open --timeout 1 > "$SANDBOX/wait-trade-out" &
 WAIT_PID=$!
 sleep 0.05
-snap 10455 '[]' '{"trade_open":true}'
+snap 10458 '[]' '{"trade_open":true}'
 CODE=0; wait "$WAIT_PID" || CODE=$?
 check_eq "a trade wait exits only after the bridge sees the trade UI" "$CODE" "0"
 contains "$(cat "$SANDBOX/wait-trade-out")" "condition-met condition=trade_open" \
     && ok "the trade wait reports its grounded condition" \
     || fail "the trade wait reports its grounded condition" "$(cat "$SANDBOX/wait-trade-out")"
-snap 10456 '[]' '{"trade_open":false}'
+snap 10459 '[]' '{"trade_open":false}'
 CODE=0; OUT="$(python3 "$GP" wait-until trade_closed --timeout 1)" || CODE=$?
 check_eq "an already closed trade UI satisfies trade_closed" "$CODE" "0"
 snap 104561 '[]' '{"sleeping":false,"fatigue":52}'
@@ -1683,6 +1696,8 @@ check_eq "the harness carries the semantic NPC spell-cast door" \
     "$(sandbox_count_in '^    cast)' "$HEADLESS")" "1"
 check_eq "the harness carries the top-left hover-text door" \
     "$(sandbox_count_in '^    hover)' "$HEADLESS")" "1"
+check_eq "the harness carries the explicit hover-panel awareness door" \
+    "$(sandbox_count_in '^    panel)' "$HEADLESS")" "1"
 check_eq "the harness carries the direct player-trade door" \
     "$(sandbox_count_in '^    trade)' "$HEADLESS")" "1"
 check_eq "the harness carries the unambiguous menu-text door" \
@@ -1773,6 +1788,31 @@ refute "the entity door did not write a screen x coordinate" \
     grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 refute "the entity door did not write a screen y coordinate" \
     grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11700 '[]' '{"ui_panel_open":true,"ui_panel":"inventory"}'
+OUT="$(bash "$HEADLESS" panel)"; CODE=$?
+check_eq "the panel door reads hover-open UI state without acting" "$CODE" "0"
+contains "$OUT" "ui-panel-open name=inventory" \
+    && ok "and names the panel obstructing world pointer clicks" \
+    || fail "and names the panel obstructing world pointer clicks" "$OUT"
+PANELBIN="$SANDBOX/panel-bin"; mkdir -p "$PANELBIN"
+cat > "$PANELBIN/xte" <<'SH'
+#!/bin/bash
+python3 - "$DESKCRAB_GAME_STATE_DIR/state.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+s = json.load(open(path))
+s.update(ui_panel_open=False, ui_panel=None, tick=s.get('tick', 0) + 1,
+         ts=int(time.time() * 1000))
+open(path, 'w').write(json.dumps(s))
+PY
+SH
+chmod +x "$PANELBIN/xte"
+OUT="$(PATH="$PANELBIN:$PATH" ORSC_HEADLESS_HOME="$AIMHOME" \
+       bash "$HEADLESS" panel close)"; CODE=$?
+check_eq "panel close deliberately moves away and verifies live closure" "$CODE" "0"
+contains "$OUT" "method=mouse-away verified=true" \
+    && ok "the correction reports its method and proof" \
+    || fail "the correction reports its method and proof" "$OUT"
 snap 11701 '[{"sidx":55,"id":11,"x":121,"z":648}]'
 fake_bridge done
 OUT="$(bash "$HEADLESS" npc 11 1)"; CODE=$?
@@ -2887,6 +2927,11 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until with exactly one 
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "fatigue_zero, or action_done" \
     && ok "the resumed thread receives causal action completion awareness" \
     || fail "the resumed thread receives causal action completion awareness"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "ui_panel_open and ui_panel" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        "panel close" \
+    && ok "the resumed thread can notice and deliberately correct a covered world click" \
+    || fail "the resumed thread needs semantic hover-panel awareness and correction"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
     "use ITEM-ID object OBJECT-ID" \
     && ok "the resumed thread receives atomic item-on-object use" \
@@ -2946,6 +2991,9 @@ contains "$AUTHOR_INPUT" "Other players can be mistaken or lie" \
 contains "$AUTHOR_INPUT" 'remember <one verified, reusable game fact' \
     && ok "the unified author has the narrow atomic memory door" \
     || fail "the unified author needs a durable memory output" "$AUTHOR_INPUT"
+contains "$AUTHOR_INPUT" 'refused-ui-panel-open followed by a verified panel-close command' \
+    && ok "the author recognizes the grounded panel failure-and-correction sequence" \
+    || fail "the author must turn a corrected covered click into reusable learning" "$AUTHOR_INPUT"
 check_eq "a successful author advances the outcome cursor" \
     "$(cat "$DESKCRAB_GAME_DIR/author-cursor")" \
     "$(stat -c %s "$DESKCRAB_GAME_DIR/outcome-queue.jsonl")"
