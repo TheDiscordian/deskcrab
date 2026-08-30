@@ -34,7 +34,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "in_combat", "out_of_combat")
-ACTIONS = ("talk-npc", "interact-npc", "walk", "retreat", "interact-object", "interact-bound", "click-entity",
+ACTIONS = ("talk-npc", "interact-npc", "cast-npc", "walk", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 FRIEND_STATUS_RE = re.compile(r"^(.+?)\s+has logged\s+(in|out)\s*$", re.IGNORECASE)
@@ -706,6 +706,15 @@ def validate_config(cfg: dict) -> None:
             if "within" in action and (not isinstance(action["within"], int)
                                         or not 0 <= action["within"] <= 10):
                 bad(f"{where}: interact-npc within must be an integer 0..10")
+        elif atype == "cast-npc":
+            if not set(action) <= {"type", "spell", "npc", "within"} \
+                    or not isinstance(action.get("spell"), int) or action["spell"] < 0 \
+                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
+                bad(f"{where}: cast-npc takes spell=<spell id>, npc=<type id>, "
+                    "and optionally within")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: cast-npc within must be an integer 0..10")
         elif atype == "walk":
             if not set(action) <= {"type", "x", "z", "arrive"} \
                     or not isinstance(action.get("x"), int) \
@@ -1674,17 +1683,27 @@ def _message_ids(snap: dict) -> list:
             if isinstance(message, dict) and isinstance(message.get("id"), int)]
 
 
-def cmd_action_arm(args):
-    """Remember the state immediately before a direct bridge action.
+def _spell_rune_ids(snap: dict, spell_id: int) -> list:
+    spell = next((entry for entry in snap.get("spells") or []
+                  if isinstance(entry, dict) and entry.get("id") == spell_id), None)
+    if spell is None:
+        return []
+    return [rune["id"] for rune in spell.get("runes") or []
+            if isinstance(rune, dict) and isinstance(rune.get("id"), int)]
 
-    This is an internal door used by orsc-headless.sh. It gives a later
-    `wait-until action_done` the causal baseline that an after-the-fact wait
-    cannot reconstruct.
-    """
-    snap = game_reflex.read_snapshot() or {}
-    observation = {
-        "v": 1, "id": args.id, "type": args.type, "sent_ts": now_ms(),
-        "fields": list(args.fields),
+
+def make_action_observation(action_id: int, action_type: str, fields: list,
+                            snap: dict, sent_ts: int = None) -> dict:
+    parsed = dict(field.split("=", 1) for field in fields
+                  if isinstance(field, str) and "=" in field)
+    try:
+        spell_id = int(parsed.get("spell", ""))
+    except ValueError:
+        spell_id = -1
+    return {
+        "v": 1, "id": action_id, "type": action_type,
+        "sent_ts": sent_ts if isinstance(sent_ts, int) else now_ms(),
+        "fields": list(fields),
         "baseline": {
             "ts": snap.get("ts"), "tick": snap.get("tick"),
             "x": snap.get("x"), "z": snap.get("z"),
@@ -1698,8 +1717,20 @@ def cmd_action_arm(args):
             "inventory": _inventory_totals(snap),
             "skills": _skill_totals(snap),
             "message_ids": _message_ids(snap),
+            "spell_runes": _spell_rune_ids(snap, spell_id),
         },
     }
+
+
+def cmd_action_arm(args):
+    """Remember the state immediately before a direct bridge action.
+
+    This is an internal door used by orsc-headless.sh. It gives a later
+    `wait-until action_done` the causal baseline that an after-the-fact wait
+    cannot reconstruct.
+    """
+    snap = game_reflex.read_snapshot() or {}
+    observation = make_action_observation(args.id, args.type, list(args.fields), snap)
     state_dir().mkdir(parents=True, exist_ok=True)
     game_reflex.atomic_write(action_observation_path(), json.dumps(observation) + "\n")
     report("action-armed", id=args.id, type=args.type)
@@ -1745,6 +1776,7 @@ def action_completion(observation: dict, snap: dict):
         changed_item_ids.add(item)
 
     xp_changes = []
+    changed_skill_ids = set()
     current_skills = _skill_totals(snap)
     old_skills = before.get("skills") or {}
     for skill in sorted(set(old_skills) & set(current_skills), key=int):
@@ -1754,6 +1786,7 @@ def action_completion(observation: dict, snap: dict):
             continue
         name = (current_skills.get(skill) or {}).get("name") or skill
         xp_changes.append(f"{name}:{new - old:+d}")
+        changed_skill_ids.add(skill)
 
     old_message_ids = set(before.get("message_ids") or [])
     new_messages = [message for message in snap.get("messages") or []
@@ -1777,7 +1810,8 @@ def action_completion(observation: dict, snap: dict):
 
     failure = bool(message) and any(needle in message.casefold() for needle in (
         "nothing interesting happens", "you can't", "you cannot", "unable to",
-        "not enough", "you need", "can't reach", "cannot reach",
+        "not enough", "not high enough", "you need", "reagents", "spell fails",
+        "can't reach", "cannot reach",
     ))
     completed = bool(inventory_changes or xp_changes or message
                      or ui_changes or movement_done)
@@ -1790,6 +1824,16 @@ def action_completion(observation: dict, snap: dict):
                       if isinstance(field, str) and "=" in field)
         completed = bool(fields.get("item") in changed_item_ids
                          or xp_changes or failure)
+    if observation["type"] == "cast-npc":
+        rune_ids = {str(item) for item in before.get("spell_runes") or []}
+        magic_ids = {skill_id for skill_id, skill in current_skills.items()
+                     if str(skill.get("name", "")).casefold() == "magic"}
+        spell_message = bool(message) and any(needle in message.casefold() for needle in (
+            "spell", "reagent", "magic ability", "you need to wait",
+        ))
+        completed = bool(changed_item_ids & rune_ids
+                         or changed_skill_ids & magic_ids
+                         or spell_message or failure)
     if not completed:
         return None
     return {
@@ -1799,6 +1843,21 @@ def action_completion(observation: dict, snap: dict):
         "message": message or None,
         "state": ",".join(ui_changes) or ("movement-settled" if movement_done else None),
     }
+
+
+def await_action_completion(observation: dict, timeout: float):
+    deadline = time.monotonic() + timeout
+    latest = None
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot()
+            completion = action_completion(observation, latest)
+            if completion is not None:
+                return completion, latest
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, latest
+            watch.wait(remaining)
 
 
 def cmd_wait_action_done(args):
@@ -1814,28 +1873,20 @@ def cmd_wait_action_done(args):
         report("action-unarmed", reason="expired",
                next="perform-one-bridge-action-first")
         sys.exit(EXIT_NOT_READY)
-    deadline = time.monotonic() + args.timeout
-    latest = None
-    with SnapshotChangeWatch() as watch:
-        while True:
-            latest = game_reflex.read_snapshot()
-            completion = action_completion(observation, latest)
-            if completion is not None:
-                try:
-                    action_observation_path().unlink()
-                except FileNotFoundError:
-                    pass
-                report("action-done", id=observation["id"], type=observation["type"],
-                       **completion)
-                return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                record_wait_failure("action_done", "timeout", latest or {}, args.timeout)
-                report("action-timeout", id=observation["id"],
-                       type=observation["type"], timeout=f"{args.timeout:g}",
-                       state=wait_state_brief(latest))
-                sys.exit(EXIT_NOT_DONE)
-            watch.wait(remaining)
+    completion, latest = await_action_completion(observation, args.timeout)
+    if completion is not None:
+        try:
+            action_observation_path().unlink()
+        except FileNotFoundError:
+            pass
+        report("action-done", id=observation["id"], type=observation["type"],
+               **completion)
+        return
+    record_wait_failure("action_done", "timeout", latest or {}, args.timeout)
+    report("action-timeout", id=observation["id"],
+           type=observation["type"], timeout=f"{args.timeout:g}",
+           state=wait_state_brief(latest))
+    sys.exit(EXIT_NOT_DONE)
 
 
 def cmd_wait_until(args):
@@ -2194,6 +2245,29 @@ def compile_player_action(rule, snap, food, eat_pick):
                 extra["within"] = within
             return compiled_npc_action("interact-npc", npc, want, **extra), None
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
+    if action["type"] == "cast-npc":
+        spell_id = action["spell"]
+        spell = next((entry for entry in snap.get("spells") or []
+                      if entry.get("id") == spell_id), None)
+        if spell is None:
+            return None, "spell-state-unavailable"
+        if spell.get("target") != "npc/player":
+            return None, "spell-target-not-npc"
+        if spell.get("ready") is not True:
+            return None, "spell-not-ready"
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+            if within is not None and distance > within:
+                return None, "npc-not-within-range"
+            extra = {"spell": spell_id, "target_distance": distance}
+            if within is not None:
+                extra["within"] = within
+            return compiled_npc_action("cast-npc", npc, want, **extra), None
+        return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "walk":
         compiled = {"type": "walk", "x": action["x"], "z": action["z"]}
         if isinstance(action.get("arrive"), int):
@@ -2287,7 +2361,7 @@ def compile_player_action(rule, snap, food, eat_pick):
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("kind", "sidx", "npc", "x", "z", "arrive", "dir", "obj", "cmd", "within",
+    for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "dir", "obj", "cmd", "within",
                 "item", "button",
                 "distance", "dx", "dz", "committed_direction",
                 "target", "text"):
@@ -2304,7 +2378,12 @@ def snap_brief(snap: dict) -> dict:
     brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
                                       "fatigue", "sleeping", "sleep_fatigue", "sleep_status",
                                       "walking", "in_combat", "talking_to_npc",
-                                      "right_click_menu_open")}
+                                      "right_click_menu_open", "hover_text",
+                                      "magic_level", "selected_spell")}
+    brief["ready_spells"] = [
+        {key: spell.get(key) for key in ("id", "name", "target")}
+        for spell in snap.get("spells") or [] if spell.get("ready") is True
+    ]
     brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
     brief["messages"] = (snap.get("messages") or [])[-5:]
     brief["players"] = (snap.get("players") or [])[:24]
@@ -3001,6 +3080,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     action = event["action"]
     final_x = final_z = None
     gained = 0
+    completion_detail = None
     is_retreat = rule is not None and rule["action"].get("type") == "retreat"
     if status == "done" and is_retreat:
         status, final_x, final_z = verify_retreat()
@@ -3029,6 +3109,22 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
                            "id": action_id, "item": action["item"],
                            "x": final_x, "z": final_z, "gained": gained}])
+    elif status == "done" and action["type"] == "cast-npc":
+        fields = [f"{key}={action[key]}" for key in ("spell", "sidx", "npc", "within")
+                  if key in action]
+        observation = make_action_observation(
+            action_id, "cast-npc", fields, snap, event.get("ts"))
+        completion_detail, latest = await_action_completion(
+            observation, WAIT_DEFAULT_S)
+        if completion_detail is None:
+            status = "cast-unverified"
+        elif completion_detail.get("result") == "failed":
+            status = "cast-failed"
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "spell": action["spell"],
+                           "npc": action["npc"], "completion": completion_detail,
+                           "feedback": latest_system_feedback(latest or snap)}])
 
     if action["type"] == "walk" and final_x is not None and final_z is not None \
             and rule_name != BACKTRACK_RULE_NAME:
@@ -3108,6 +3204,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                "objective": objective or None, "activity": activity or None,
                "activity_performance": xp_metrics or None,
                "snap": snap_brief(snap)}
+    if completion_detail is not None:
+        outcome["completion"] = completion_detail
     if action["type"] == "walk":
         outcome["intended"] = {"x": action["x"], "z": action["z"]}
         if final_x is not None:

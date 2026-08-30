@@ -881,6 +881,27 @@ Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 3, 10 and 14.
 
 ## The OpenRSC player
 
+### 2026-08-30 — Magic and the top-left action hint existed only as pixels
+
+The player could see a Magic tab in screenshots but the ACTIONS state carried no spellbook,
+selected spell, target kind, rune requirements, or cast operation. Training therefore became a
+fragile sequence of remembered spell-row coordinates followed by a generic NPC pointer click. A
+successful selection could still end in a no-op with no grounded distinction among an invalid
+target, missing runes, a cooldown, a fizzle, or a real cast. The same blind spot affected the
+ordinary top-left action hint: the pointer could already be over the wanted action while the player
+kept searching because the text was visible only in the framebuffer.
+
+The bridge now publishes `magic_level`, `selected_spell`, a structured staff-aware `spells` array,
+and colour-free `hover_text`. The deliberate `cast-npc` action rechecks spell existence, target
+kind, live Magic, rune availability, NPC identity, and nearer equivalents before sending the
+client's ordinary walk-and-cast packet. The harness exposes these as `spells`, `cast`, and `hover`;
+`cast` waits for causal rune, Magic XP, or game-message evidence, and spell failures are classified
+as failures rather than successful completion. Repeated training can use a locality-bounded,
+activity-scoped learned cast that retains control through the same grounded result. Hover text is
+awareness only, never completion.
+
+Contract: [`specs/game-reflex.md`](../specs/game-reflex.md), rules 3, 5 and 6.
+
 ### 2026-08-29 — XP/hour existed only for the current clock
 
 The player could report XP per action and XP/hour for its selected activity, and the event-driven

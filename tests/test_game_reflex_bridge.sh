@@ -67,8 +67,33 @@ assert s["skills"] == [
     {"id": 1, "name": "Defense", "level": 10, "xp": 1000},
     {"id": 2, "name": "Thieving", "level": 24, "xp": 8421},
 ], s.get("skills")
+assert s["magic_level"] == 3 and s["selected_spell"] == 0
+assert s["spells"] == [
+    {"id": 0, "name": "Wind Strike", "description": "A strength 1 missile attack",
+     "level": 1, "target": "npc/player", "runes": [
+         {"id": 33, "name": "Air-Rune", "held": 12, "required": 1, "available": True},
+         {"id": 35, "name": "Mind-Rune", "held": 12, "required": 1, "available": True},
+     ], "ready": True},
+    {"id": 1, "name": "Confuse", "description": "Reduces your opponent's attack",
+     "level": 3, "target": "npc/player", "runes": [
+         {"id": 33, "name": "Air-Rune", "held": 12, "required": 3, "available": True},
+         {"id": 36, "name": "Body-Rune", "held": 0, "required": 1, "available": False},
+     ], "ready": False},
+    {"id": 2, "name": "Low level alchemy", "description": "Converts an item into gold",
+     "level": 1, "target": "inventory", "runes": [
+         {"id": 31, "name": "Fire-Rune", "held": 0, "required": 3, "available": True},
+         {"id": 40, "name": "Nature-Rune", "held": 1, "required": 1, "available": True},
+     ], "ready": True},
+    {"id": 3, "name": "Water Strike", "description": "A strength 2 missile attack",
+     "level": 5, "target": "npc/player", "runes": [
+         {"id": 32, "name": "Water-Rune", "held": 5, "required": 1, "available": True},
+         {"id": 33, "name": "Air-Rune", "held": 12, "required": 1, "available": True},
+         {"id": 35, "name": "Mind-Rune", "held": 12, "required": 1, "available": True},
+     ], "ready": False},
+], s.get("spells")
 assert s["x"] == 120 and s["z"] == 650
 assert s["walking"] is False and s["in_combat"] is False
+assert s["hover_text"] == "Farmer: Pickpocket / 1 more option"
 assert s["talking_to_npc"] is False
 assert s["dialogue_open"] is False and s["dialogue_options"] == []
 assert s["trade_open"] is False
@@ -119,6 +144,7 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["walking"] is True and s["in_combat"] is True
 assert s["right_click_menu_open"] is True
+assert s["hover_text"] == ""
 assert s["menu_options"] == [
     "Trade with Nearby Friend",
     "Follow Nearby Friend",
@@ -361,6 +387,40 @@ OUT="$(harness exec)"
 refute "an NPC that roamed beyond the compiled range is not chased" \
     contains "$OUT" "npc sidx="
 check_eq "the live range refusal is explicit" "$(rstatus)" \
+    "refused-npc-out-of-range"
+
+echo
+echo "cast-npc validates spell readiness and dispatches one semantic cast (rules 3, 5-7):"
+wact 6601 "$(now_ms)" "type=cast-npc" "spell=0" "sidx=7" "npc=474"
+OUT="$(harness exec)"
+contains "$OUT" "cast spell=0 sidx=7" \
+    && ok "a ready NPC spell reaches the ordinary cast path" \
+    || fail "a ready NPC spell reaches the ordinary cast path" "$OUT"
+check_eq "the semantic cast is receipted done" "$(rstatus)" "done"
+wact 6602 "$(now_ms)" "type=cast-npc" "spell=99" "sidx=7" "npc=474"
+harness exec >/dev/null
+check_eq "an unknown spell is refused" "$(rstatus)" "refused-no-such-spell"
+wact 6603 "$(now_ms)" "type=cast-npc" "spell=2" "sidx=7" "npc=474"
+harness exec >/dev/null
+check_eq "an inventory spell cannot be aimed at an NPC" "$(rstatus)" \
+    "refused-wrong-spell-target"
+wact 6604 "$(now_ms)" "type=cast-npc" "spell=3" "sidx=7" "npc=474"
+harness exec >/dev/null
+check_eq "a spell above the live Magic level is refused" "$(rstatus)" \
+    "refused-magic-level"
+wact 6605 "$(now_ms)" "type=cast-npc" "spell=1" "sidx=7" "npc=474"
+harness exec >/dev/null
+check_eq "a spell with missing live runes is refused" "$(rstatus)" \
+    "refused-missing-runes"
+wact 6606 "$(now_ms)" "type=cast-npc" "spell=0" "sidx=7" "npc=999"
+OUT="$(harness exec)"
+refute "a spell is not sent to an NPC whose identity changed" contains "$OUT" "cast spell="
+check_eq "the spell target mismatch is named" "$(rstatus)" "refused-npc-mismatch"
+wact 6607 "$(now_ms)" "type=cast-npc" "spell=0" "sidx=9" "npc=485" "within=1"
+OUT="$(harness exec)"
+refute "a local Magic reflex does not chase a target beyond its range" \
+    contains "$OUT" "cast spell="
+check_eq "the cast locality refusal is explicit" "$(rstatus)" \
     "refused-npc-out-of-range"
 
 echo

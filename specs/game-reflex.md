@@ -50,9 +50,15 @@ Three parts:
    milliseconds at write), `tick` (a counter that increments every client game tick since launch),
    `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
    `fatigue` (0–100), `skills` (every skill's `id`, `name`, base `level`, and cumulative `xp`),
+   `magic_level` (the live current Magic level), `selected_spell` (the selected spell id or
+   `null`), and `spells` (the complete client spellbook: id, name, description, required level,
+   semantic target kind, `ready`, and every required rune's id/name, literally held count,
+   required count, and staff-aware `available` result),
    `x` and `z` (world coordinates), `walking` (the local player still has
    an unconsumed client waypoint, or a movement-capable bridge action was dispatched within the
-   last second and may still be waiting for its server path), `in_combat`,
+   last second and may still be waiting for its server path), `in_combat`, `hover_text` (the
+   colour-free action hint actually rendered at the top-left for the current pointer; empty when
+   no hint or while the full context menu is open),
    `right_click_menu_open` (the ordinary world context menu is visibly open), `menu_options`
    (its live visible entries as colour-free text, otherwise empty), `trade_open` (either ordinary
    player-trade screen is visible),
@@ -116,7 +122,10 @@ Three parts:
    same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
    NPCs only and structurally cannot message another player), `interact-npc`
    (perform command 1 or 2 from a visible NPC's own definition — the same
-   walk-and-command as its context-menu entry, without reconstructing that menu), `interact-object` (perform a menu
+   walk-and-command as its context-menu entry, without reconstructing that menu), `cast-npc`
+   (cast one NPC/player-targeted spell by spell id on a visible NPC server/type identity after
+   rechecking the live Magic level and staff-aware rune requirements, through the ordinary
+   walk-and-cast packet path), `interact-object` (perform a menu
    command on a loaded game object at an absolute tile — the same walk-and-act the object's own
    right-click Command entry performs; `cmd` 1 or 2 picks the object definition's first or second
    command, so a fishing spot's Net and Bait, a gate's Open, a range's nothing-at-all are all the
@@ -145,8 +154,8 @@ Three parts:
    currently visible ground item identified by item id and world tile), and `retreat` (while in
    combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
    fallback direction, trying alternate directions and nearer tiles without sending failed path
-   probes). `talk-npc`,
-   `interact-object`, `interact-bound`, `click-entity`, `click-inventory`, `use-item-object`,
+   probes). `talk-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
+   `click-entity`, `click-inventory`, `use-item-object`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
    `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
@@ -168,7 +177,11 @@ Three parts:
    `refused-npc-mismatch`, never talked to blind. Immediately before dispatch the bridge also
    refuses `refused-nearer-equivalent` when another currently loaded NPC of that type is strictly
    fewer walking steps away; `interact-npc` rechecks `within` against the NPC's current tile and
-   refuses `refused-npc-out-of-range` if it roamed beyond the cap. `x`, `z`, `obj` — the object type id, NOT named
+   refuses `refused-npc-out-of-range` if it roamed beyond the cap. `cast-npc` carries `spell`,
+   `sidx`, and `npc`, plus optional `within` 0–10; it refuses a missing spell, a non-NPC spell target, insufficient live Magic,
+   or any unavailable rune as `refused-no-such-spell`, `refused-wrong-spell-target`,
+   `refused-magic-level`, or `refused-missing-runes`, then applies the same NPC identity and
+   nearer-equivalent and locality checks before dispatch. `x`, `z`, `obj` — the object type id, NOT named
    `id` for the same collision reason — and `cmd` for interact-object, so an unloaded or swapped
    object is refused as `refused-no-such-object` or `refused-object-mismatch` and a `cmd` outside
    1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on

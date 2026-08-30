@@ -117,7 +117,14 @@ deliberate-play channel.
    target cannot drag the player across the area; deliberate one-off NPC commands may still
    approach their chosen visible target. Every NPC action records the selected target's snapshot
    tile in its decision event, and the bridge refuses it if a strictly nearer equivalent exists by
-   dispatch time. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
+   dispatch time. `cast-npc` (`spell`: the spell id; `npc`: the NPC type id; optional `within`
+   0–10) resolves the same nearest stable NPC identity but only when the structured spellbook says
+   the spell is ready and its target kind is `npc/player`. Spell, NPC identity, and any locality
+   cap ride the action for the client's final live level/rune/identity recheck. After dispatch the
+   rule retains control until a required rune changes, Magic XP changes, or explicit spell feedback
+   arrives; a fizzle/cooldown/refusal is not successful completion. Repeating Magic reflexes use an
+   honest activity scope, `out_of_combat`, and a locality cap so training cannot become an
+   unbounded chase. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
    Chebyshev tolerance rule 7a's verification accepts as arrival), `retreat` (optional `distance`
@@ -206,6 +213,10 @@ deliberate-play channel.
    is required for success; explicit server failure may end it unsuccessfully. A pane/menu
    transition or a furnace's early “smelt together” line is ignored rather than accepted before
    the resulting bar exists.
+   `cast-npc` uses the same causal verifier for direct and learned casts, narrowed to the selected
+   spell's required rune ids, Magic XP, and explicit spell feedback. An unrelated inventory,
+   interface, or message transition cannot make a cast successful, and routine work cannot resume
+   while its result is unresolved.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the open-ended fallback signal. Other exit-4 prerequisites below

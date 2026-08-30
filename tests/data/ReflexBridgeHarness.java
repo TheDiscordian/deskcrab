@@ -23,7 +23,7 @@ import orsc.ReflexBridge;
  *
  * Every host action the bridge executes is printed to stdout, one line each:
 	 * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
-	 * "npc sidx=N cmd=N",
+	 * "npc sidx=N cmd=N", "cast spell=N sidx=N",
 	 * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
 	 * "click x=N y=N button=N", "equip|unequip slot=N item=N",
 	 * "item-command slot=N item=N command=TEXT amount=N", "bank-deposit item=N amount=N",
@@ -120,6 +120,80 @@ public class ReflexBridgeHarness {
 			return new int[]{1540, 1000, 8421}[index];
 		}
 
+		final String[] spellNames = {"Wind Strike", "Confuse", "Low level alchemy", "Water Strike"};
+		final String[] spellDescriptions = {
+			"A strength 1 missile attack", "Reduces your opponent's attack",
+			"Converts an item into gold", "A strength 2 missile attack"
+		};
+		final int[] spellLevels = {1, 3, 1, 5};
+		final int[] spellTargets = {2, 2, 3, 2};
+		final int[][] spellRuneIds = {{33, 35}, {33, 36}, {31, 40}, {32, 33, 35}};
+		final int[][] spellRuneHeld = {{12, 12}, {12, 0}, {0, 1}, {5, 12, 12}};
+		final int[][] spellRuneRequired = {{1, 1}, {3, 1}, {3, 1}, {1, 1, 1}};
+		final boolean[][] spellRuneAvailable = {
+			{true, true}, {true, false}, {true, true}, {true, true, true}
+		};
+
+		public int magicLevel() {
+			return 3;
+		}
+
+		public int selectedSpell() {
+			return 0;
+		}
+
+		public int spellCount() {
+			return spellNames.length;
+		}
+
+		public String spellName(int spell) {
+			return spellNames[spell];
+		}
+
+		public String spellDescription(int spell) {
+			return spellDescriptions[spell];
+		}
+
+		public int spellRequiredLevel(int spell) {
+			return spellLevels[spell];
+		}
+
+		public int spellTargetType(int spell) {
+			return spellTargets[spell];
+		}
+
+		public int spellRuneCount(int spell) {
+			return spellRuneIds[spell].length;
+		}
+
+		public int spellRuneId(int spell, int rune) {
+			return spellRuneIds[spell][rune];
+		}
+
+		public String spellRuneName(int spell, int rune) {
+			switch (spellRuneId(spell, rune)) {
+				case 31: return "Fire-Rune";
+				case 32: return "Water-Rune";
+				case 33: return "Air-Rune";
+				case 35: return "Mind-Rune";
+				case 36: return "Body-Rune";
+				case 40: return "Nature-Rune";
+				default: return "Rune";
+			}
+		}
+
+		public int spellRuneHeld(int spell, int rune) {
+			return spellRuneHeld[spell][rune];
+		}
+
+		public int spellRuneRequired(int spell, int rune) {
+			return spellRuneRequired[spell][rune];
+		}
+
+		public boolean spellRuneAvailable(int spell, int rune) {
+			return spellRuneAvailable[spell][rune];
+		}
+
 		public int x() {
 			return 120;
 		}
@@ -138,6 +212,10 @@ public class ReflexBridgeHarness {
 
 		public boolean isRightClickMenuOpen() {
 			return rightClickMenuOpen;
+		}
+
+		public String hoverText() {
+			return rightClickMenuOpen ? "" : "Farmer: Pickpocket / 1 more option";
 		}
 
 		public int rightClickMenuOptionCount() {
@@ -484,6 +562,10 @@ public class ReflexBridgeHarness {
 
 		public void interactNpc(int serverIndex, int command) {
 			events.add("npc sidx=" + serverIndex + " cmd=" + command);
+		}
+
+		public void castSpellOnNpc(int spell, int serverIndex) {
+			events.add("cast spell=" + spell + " sidx=" + serverIndex);
 		}
 
 		// Two scripted loaded game objects: a gate (57) two tiles away, a

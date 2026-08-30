@@ -107,6 +107,23 @@ for _ in range(100):
                                       if int(item.get("count", 0)) > 0]
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") == "cast-npc":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            for rune_id in (33, 35):
+                for item in state.get("inventory") or []:
+                    if item.get("id") == rune_id:
+                        item["count"] = max(0, int(item.get("count", 0)) - 1)
+            for skill in state.get("skills") or []:
+                if str(skill.get("name", "")).casefold() == "magic":
+                    skill["xp"] = int(skill.get("xp", 0)) + 5
+            messages = state.setdefault("messages", [])
+            next_id = max([m.get("id", 0) for m in messages if isinstance(m, dict)] + [0]) + 1
+            messages.append({"id": next_id, "channel": "game", "incoming": False,
+                             "sender": "", "text": "The spell strikes your target"})
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         tmp = os.path.join(sd, ".receipt.tmp")
         json.dump({"id": int(fields["id"]),
                    "status": "done" if delivered else status,
@@ -358,6 +375,12 @@ refute "interact-npc refuses a command outside the NPC definition verbs" \
 refute "interact-npc refuses a roaming cap beyond ten tiles" \
     python3 "$GP" learn bad-npc-range --priority 1 --trigger npc_visible=11 \
         --action interact-npc --param npc=11 --param within=11
+refute "cast-npc requires both spell and NPC identities" \
+    python3 "$GP" learn bad-cast --priority 1 --trigger npc_visible=11 \
+        --action cast-npc --param npc=11
+refute "cast-npc refuses a roaming cap beyond ten tiles" \
+    python3 "$GP" learn bad-cast-range --priority 1 --trigger npc_visible=11 \
+        --action cast-npc --param spell=0 --param npc=11 --param within=11
 refute "out_of_combat is a literal condition, not an arbitrary value" \
     python3 "$GP" learn bad-combat-trigger --priority 1 --trigger out_of_combat=false \
         --action walk --param x=1 --param z=1
@@ -803,11 +826,32 @@ check_eq "a grounded failed action is still done waiting" "$CODE" "0"
 contains "$OUT" "result=failed" && contains "$OUT" "message=Nothing interesting happens" \
     && ok "the completion verdict distinguishes server refusal from success" \
     || fail "the completion verdict distinguishes server refusal from success" "$OUT"
+snap 1045671 '[]' '{"messages":[{"id":1045671000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9011 cast-npc spell=0 sidx=7 npc=474 >/dev/null
+snap 1045672 '[]' '{"messages":[{"id":1045671000,"channel":"game","text":"Ready"},{"id":1045672000,"channel":"game","text":"The spell fails! You may try again in 20 seconds"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "a spell fizzle completes its wait without pretending to succeed" "$CODE" "0"
+contains "$OUT" "type=cast-npc result=failed" && contains "$OUT" "message=The spell fails" \
+    && ok "spell-specific server feedback is classified as failure" \
+    || fail "spell-specific server feedback is classified as failure" "$OUT"
 CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
 check_eq "a consumed action result cannot be mistaken for the next action" "$CODE" "3"
 contains "$OUT" "action-unarmed" \
     && ok "the next wait requires a freshly armed action" \
     || fail "the next wait requires a freshly armed action" "$OUT"
+snap 1045673 '[]' '{"spells":[{"id":0,"runes":[{"id":33},{"id":35}]}],"inventory":[{"id":33,"name":"Air-Rune","count":12},{"id":35,"name":"Mind-Rune","count":12}],"skills":[{"id":6,"name":"Magic","level":3,"xp":275}],"messages":[{"id":1045673000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9012 cast-npc spell=0 sidx=7 npc=474 >/dev/null
+snap 1045674 '[]' '{"spells":[{"id":0,"runes":[{"id":33},{"id":35}]}],"inventory":[{"id":33,"name":"Air-Rune","count":12},{"id":35,"name":"Mind-Rune","count":12}],"skills":[{"id":6,"name":"Magic","level":3,"xp":275}],"messages":[{"id":1045673000,"channel":"game","text":"Ready"},{"id":1045674000,"channel":"game","text":"A friend has logged in"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "unrelated feedback cannot claim a cast completed" "$CODE" "2"
+contains "$OUT" "action-timeout id=9012 type=cast-npc" \
+    && ok "cast completion stays narrowed to runes, Magic XP, or spell feedback" \
+    || fail "cast completion stays narrowed to runes, Magic XP, or spell feedback" "$OUT"
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "a timed-out action remains explicitly unresolved" "$CODE" "2"
+contains "$OUT" "action-timeout id=9012" \
+    && ok "a later wait cannot silently convert unrelated evidence into success" \
+    || fail "a later wait cannot silently convert unrelated evidence into success" "$OUT"
 python3 "$GP" action-arm 902 interact-object x=120 z=648 obj=118 >/dev/null
 python3 - "$DESKCRAB_GAME_STATE_DIR/last-action-observation.json" <<'PY'
 import json, sys
@@ -1497,6 +1541,12 @@ check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the definition-backed NPC command door" \
     "$(sandbox_count_in '^    npc)' "$HEADLESS")" "1"
+check_eq "the harness carries the structured spellbook door" \
+    "$(sandbox_count_in '^    spells)' "$HEADLESS")" "1"
+check_eq "the harness carries the semantic NPC spell-cast door" \
+    "$(sandbox_count_in '^    cast)' "$HEADLESS")" "1"
+check_eq "the harness carries the top-left hover-text door" \
+    "$(sandbox_count_in '^    hover)' "$HEADLESS")" "1"
 check_eq "the harness carries the direct player-trade door" \
     "$(sandbox_count_in '^    trade)' "$HEADLESS")" "1"
 check_eq "the harness carries the unambiguous menu-text door" \
@@ -1598,6 +1648,75 @@ contains "$OUT" "npc(11 sidx=55 cmd=1)" \
 check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
 refute "the NPC command door did not move the pointer" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648}]' '{
+  "hover_text":"Farmer: Cast Wind Strike on / 1 more option",
+  "magic_level":3,"selected_spell":null,
+  "spells":[
+    {"id":0,"name":"Wind Strike","description":"A strength 1 missile attack","level":1,
+     "target":"npc/player","ready":true,"runes":[
+       {"id":33,"name":"Air-Rune","held":12,"required":1,"available":true},
+       {"id":35,"name":"Mind-Rune","held":12,"required":1,"available":true}]},
+    {"id":1,"name":"Confuse","description":"Reduces attack","level":3,
+     "target":"npc/player","ready":false,"runes":[
+       {"id":36,"name":"Body-Rune","held":0,"required":1,"available":false}]}
+  ],
+  "inventory":[{"id":33,"name":"Air-Rune","count":12},{"id":35,"name":"Mind-Rune","count":12}],
+  "skills":[{"id":6,"name":"Magic","level":3,"xp":275}],
+  "messages":[{"id":117011000,"channel":"game","text":"Ready"}]
+}'
+OUT="$(bash "$HEADLESS" hover)"; CODE=$?
+check_eq "the hover command reads the live top-left action hint" "$CODE" "0"
+contains "$OUT" "Farmer: Cast Wind Strike on / 1 more option" \
+    && ok "a pointer already over the wanted target becomes directly observable" \
+    || fail "a pointer already over the wanted target becomes directly observable" "$OUT"
+OUT="$(bash "$HEADLESS" spells wind)"; CODE=$?
+check_eq "the spellbook command reads structured live state" "$CODE" "0"
+contains "$OUT" "level=3 selected=none" && contains "$OUT" "Wind Strike" \
+    && contains "$OUT" "Air-Rune=12/1:ok" \
+    && ok "the spellbook exposes target, level, and rune readiness without UI coordinates" \
+    || fail "the spellbook exposes target, level, and rune readiness without UI coordinates" "$OUT"
+refute "a spell filter excludes other names" contains "$OUT" "Confuse"
+fake_bridge done
+OUT="$(bash "$HEADLESS" cast wind npc 11 1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the cast door waits for grounded spell completion" "$CODE" "0"
+contains "$OUT" "cast(spell=0 name=Wind Strike npc=11 sidx=55)" \
+    && contains "$OUT" "xp=Magic:+5" && contains "$OUT" "Air-Rune(33):-1" \
+    && ok "the cast result reports actual XP and rune evidence" \
+    || fail "the cast result reports actual XP and rune evidence" "$OUT"
+check_eq "the cast door wrote one semantic cast-npc action" \
+    "$(last_action 'type=cast-npc')" "1"
+check_eq "the action carries the resolved spell id" "$(last_action 'spell=0')" "1"
+check_eq "the action carries the stable NPC server id" "$(last_action 'sidx=55')" "1"
+refute "the semantic cast did not move the pointer or select a spell-panel coordinate" \
+    grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+
+python3 "$GP" learn cast-wind-test --priority 900 --cooldown-ms 1000 \
+    --trigger objective_is=magic-reflex-test --trigger npc_visible=11 \
+    --trigger out_of_combat=true --action cast-npc --param spell=0 --param npc=11 \
+    --param within=3 >/dev/null
+python3 "$GP" objective magic-reflex-test >/dev/null
+snap 117012 '[{"sidx":55,"id":11,"x":121,"z":648}]' '{
+  "magic_level":3,"selected_spell":null,
+  "spells":[{"id":0,"name":"Wind Strike","level":1,"target":"npc/player","ready":true,
+    "runes":[{"id":33,"name":"Air-Rune","held":11,"required":1,"available":true},
+             {"id":35,"name":"Mind-Rune","held":11,"required":1,"available":true}]}],
+  "inventory":[{"id":33,"name":"Air-Rune","count":11},{"id":35,"name":"Mind-Rune","count":11}],
+  "skills":[{"id":6,"name":"Magic","level":3,"xp":280}],
+  "messages":[{"id":117012000,"channel":"game","text":"Ready"}]
+}'
+fake_bridge done
+CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a learned Magic reflex waits for the cast's grounded result" "$CODE" "0"
+contains "$OUT" "rule=cast-wind-test" && contains "$OUT" "status=done" \
+    && ok "a successful learned cast is verified before routine play resumes" \
+    || fail "a successful learned cast is verified before routine play resumes" "$OUT"
+check_eq "the learned reflex emits cast-npc" "$(last_action 'type=cast-npc')" "1"
+check_eq "the learned reflex preserves its spell id" "$(last_action 'spell=0')" "1"
+check_eq "the learned reflex preserves its locality cap" "$(last_action 'within=3')" "1"
+python3 "$GP" remove cast-wind-test >/dev/null
+python3 "$GP" objective --clear >/dev/null
 snap 11702 '[]' '{"players":[{"sidx":55,"name":"Discordian","x":121,"z":648}]}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" trade Discordian)"; CODE=$?
@@ -2360,6 +2479,9 @@ contains "$OUT" "unresolved handoff statement" \
     || fail "the continuation makes acknowledged unfinished actions outrank routine play" "$OUT"
 contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
     || fail "and a fresh snapshot summary" "$OUT"
+contains "$OUT" 'hover_text=""' \
+    && ok "the composed player receives current top-left hover awareness" \
+    || fail "the composed player receives current top-left hover awareness" "$OUT"
 
 # Rule 18: the player is her, playing. A prompt of pure game mechanics makes a
 # stranger wearing her name, which is what shipped before this.
@@ -2557,6 +2679,15 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "entity KIND TYPE-ID" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "inventory ITEM-ID" \
     && ok "the resumed thread receives inventory identity targeting" \
     || fail "the resumed thread receives inventory identity targeting"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh hover" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "hover_text" \
+    && ok "the resumed thread receives top-left hover awareness" \
+    || fail "the resumed thread receives top-left hover awareness"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "orsc-headless.sh cast SPELL npc NPC-TYPE-ID" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh spells" \
+    && ok "the resumed thread receives the semantic magic doors" \
+    || fail "the resumed thread receives the semantic magic doors"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
     && ok "the resumed thread receives the urgent idle-warning action" \
     || fail "the resumed thread receives the urgent idle-warning action"
