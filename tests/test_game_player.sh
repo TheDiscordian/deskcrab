@@ -1430,7 +1430,10 @@ python3 "$GP" objective recover-ghost-skull >/dev/null
 python3 "$GP" learn take-quest-skull --priority 90 --cooldown-ms 0 --once-per-objective \
     --trigger objective_is=recover-ghost-skull --trigger ground_item_visible=27 \
     --action take-ground --param item=27 >/dev/null
-snap 129 '[]' '{"ground_items":[{"id":27,"x":218,"z":3527},{"id":27,"x":230,"z":3540}]}'
+snap 129 '[]' '{"ground_items":[
+  {"id":27,"x":218,"z":3527,"reachable":false,"path_distance":null},
+  {"id":27,"x":230,"z":3540,"reachable":true,"path_distance":14}
+]}'
 fake_take_bridge collected
 OUT="$(python3 "$GP" step)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -1439,7 +1442,8 @@ contains "$OUT" "fired rule=take-quest-skull" && ok "the skull rule owns the pla
     || fail "the skull rule owns the play" "$OUT"
 check_eq "the action is take-ground" "$(last_action 'type=take-ground')" "1"
 check_eq "the item identity crosses ACTIONS" "$(last_action 'item=27')" "1"
-check_eq "the nearest current tile crosses ACTIONS" "$(last_action 'x=218')" "1"
+check_eq "a farther reachable pile wins over a closer unreachable one" \
+    "$(last_action 'x=230')" "1"
 snap 1291 '[]' '{"ground_items":[{"id":27,"x":218,"z":3527}]}'
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 check_eq "an unmatched fallback with a visible pickup exits 4" "$CODE" "4"
@@ -1544,8 +1548,12 @@ python3 "$GP" learn open-farm-door --priority 70 --cooldown-ms 0 --once-per-obje
 python3 "$GP" learn net-fishing-spot --priority 60 --cooldown-ms 0 \
     --trigger objective_is=seek-fred --trigger object_visible=493 \
     --action interact-object --param obj=493 --param cmd=2 >/dev/null
-# Two doors of the wanted id, nearest first: the emitted tile must be the near one.
-snap 130 '[]' '{"bounds":[{"id":1,"x":159,"z":617,"dir":0},{"id":1,"x":170,"z":640,"dir":2}],"objects":[{"id":493,"x":196,"z":726,"dir":6}]}'
+# The visually nearer door is unreachable; the learned action must use the
+# farther door whose interaction edge has a real collision path.
+snap 130 '[]' '{"bounds":[
+  {"id":1,"x":159,"z":617,"dir":0,"reachable":false,"path_distance":null},
+  {"id":1,"x":170,"z":640,"dir":2,"reachable":true,"path_distance":9}
+],"objects":[{"id":493,"x":196,"z":726,"dir":6}]}'
 fake_bridge done
 OUT="$(python3 "$GP" step)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -1553,8 +1561,8 @@ check_eq "the door rule wins the slot and a done receipt exits 0" "$CODE" "0"
 contains "$OUT" "fired rule=open-farm-door" && ok "the verdict names the door rule" \
     || fail "the verdict names the door rule" "$OUT"
 check_eq "the action is interact-bound" "$(last_action 'type=interact-bound')" "1"
-check_eq "aimed at the NEAREST matching door tile" "$(last_action 'x=159')" "1"
-check_eq "with the wall direction riding the file" "$(last_action 'dir=0')" "1"
+check_eq "aimed at the reachable matching door tile" "$(last_action 'x=170')" "1"
+check_eq "with the reachable wall direction riding the file" "$(last_action 'dir=2')" "1"
 check_eq "the type id rides as obj, never id" "$(last_action 'obj=1')" "1"
 check_eq "and the default command is 1" "$(last_action 'cmd=1')" "1"
 # The door rule is spent (once per objective): the fishing spot gets the next step.
@@ -2149,6 +2157,28 @@ contains "$OUT" "taken" && contains "$OUT" "item=27" && contains "$OUT" "gained=
     || fail "and reports the verified item and inventory gain" "$OUT"
 check_eq "the door wrote take-ground" "$(last_action 'type=take-ground')" "1"
 check_eq "the door wrote the current item tile" "$(last_action 'x=121')" "1"
+snap 11730 '[]' '{"ground_items":[{"id":27,"x":121,"z":649,
+  "reachable":false,"path_distance":null}]}'
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+CODE=0; OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" take 27)" || CODE=$?
+check_eq "a collision-unreachable pickup stops immediately" "$CODE" "2"
+contains "$OUT" "take-unreachable item=27" \
+    && ok "the direct door reports path evidence instead of entering a walk timeout" \
+    || fail "the direct door reports path evidence instead of entering a walk timeout" "$OUT"
+refute "an unreachable pickup emits no ACTIONS packet" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 117301 '[]' '{"ground_items":[{"id":27,"x":121,"z":649,
+  "reachable":false,"path_distance":null,"door":{"id":1,"name":"Door",
+  "x":120,"z":649,"dir":0,"cmd":1,"path_distance":2}}]}'
+CODE=0; OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" take 27)" || CODE=$?
+check_eq "a pickup behind one proven door stops for that door" "$CODE" "2"
+contains "$OUT" "take-needs-door item=27" \
+    && contains "$OUT" "door=Door" \
+    && contains "$OUT" "next=bound-120-649-0-1-1" \
+    && ok "the exact semantic door action is exposed as the next route step" \
+    || fail "the exact semantic door action is exposed as the next route step" "$OUT"
+refute "a door-blocked pickup emits no take packet" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 11731 '[]' '{"in_combat":true,"ground_items":[{"id":27,"x":121,"z":649}]}'
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 CODE=0; OUT="$(DESKCRAB_GAME_PLAYER="$GP" bash "$HEADLESS" take 27)" || CODE=$?

@@ -2199,8 +2199,31 @@ def cmd_take(args):
         report("take-not-visible", item=args.item)
         sys.exit(EXIT_NOT_DONE)
     px, pz = snap.get("x"), snap.get("z")
-    target = min(matches, key=lambda entry: max(
-        abs(entry["x"] - px), abs(entry["z"] - pz)))
+    reachable = [entry for entry in matches if entry.get("reachable") is not False]
+    if not reachable:
+        door_entry = next((entry for entry in matches
+                           if isinstance(entry.get("door"), dict)), None)
+        if door_entry is not None:
+            door = door_entry["door"]
+            next_action = "bound-{x}-{z}-{dir}-{id}-{cmd}".format(**door)
+            report("take-needs-door", item=args.item,
+                   x=door_entry["x"], z=door_entry["z"],
+                   door=door.get("name") or door.get("id"),
+                   door_x=door.get("x"), door_z=door.get("z"),
+                   door_dir=door.get("dir"), door_cmd=door.get("cmd"),
+                   next=next_action)
+        else:
+            report("take-unreachable", item=args.item,
+                   reason="collision-path-unavailable", next="choose-other-work")
+        sys.exit(EXIT_NOT_DONE)
+
+    def route_key(entry):
+        distance = entry.get("path_distance")
+        if isinstance(distance, int) and distance >= 0:
+            return (0, distance)
+        return (1, max(abs(entry["x"] - px), abs(entry["z"] - pz)))
+
+    target = min(reachable, key=route_key)
     action = {"type": "take-ground", "item": args.item,
               "x": target["x"], "z": target["z"]}
     before_inventory = inventory_quantity(snap, args.item)
@@ -2444,13 +2467,17 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, "object-not-loaded"
     if action["type"] == "interact-bound":
         want = action["obj"]
+        blocked = False
         for bnd in snap.get("bounds") or []:     # already nearest-first
             if bnd.get("id") == want and isinstance(bnd.get("x"), int) \
                     and isinstance(bnd.get("z"), int):
+                if bnd.get("reachable") is False:
+                    blocked = True
+                    continue
                 return {"type": "interact-bound", "x": bnd["x"], "z": bnd["z"],
                         "dir": bnd.get("dir", 0), "obj": want,
                         "cmd": action.get("cmd", 1)}, None
-        return None, "bound-not-loaded"
+        return None, "bound-unreachable" if blocked else "bound-not-loaded"
     if action["type"] == "click-entity":
         kind = action["kind"]
         want = action["entity"]
@@ -2498,15 +2525,35 @@ def compile_player_action(rule, snap, food, eat_pick):
         want = action["item"]
         within = action.get("within")
         px, pz = snap.get("x"), snap.get("z")
-        for item in snap.get("ground_items") or []:  # already nearest-first
+        matching = []
+        blocked = []
+        for item in snap.get("ground_items") or []:
             if item.get("id") == want and isinstance(item.get("x"), int) \
                     and isinstance(item.get("z"), int):
                 if within is not None and (
                         not isinstance(px, int) or not isinstance(pz, int)
                         or max(abs(px - item["x"]), abs(pz - item["z"])) > within):
                     continue
-                return {"type": "take-ground", "x": item["x"], "z": item["z"],
-                        "item": want}, None
+                if item.get("reachable") is False:
+                    blocked.append(item)
+                else:
+                    matching.append(item)
+        if matching:
+            def route_key(item):
+                distance = item.get("path_distance")
+                if isinstance(distance, int) and distance >= 0:
+                    return (0, distance)
+                if isinstance(px, int) and isinstance(pz, int):
+                    return (1, max(abs(px - item["x"]), abs(pz - item["z"])))
+                return (2, 0)
+
+            item = min(matching, key=route_key)
+            return {"type": "take-ground", "x": item["x"], "z": item["z"],
+                    "item": want}, None
+        if blocked:
+            return None, "ground-item-needs-door" \
+                if any(isinstance(item.get("door"), dict) for item in blocked) \
+                else "ground-item-unreachable"
         return None, "ground-item-not-within-range" if within is not None \
             else "ground-item-not-visible"
     return None, f"unknown-action-{action['type']}"
@@ -2579,10 +2626,15 @@ def gap_signature(snap: dict, objective: str, activity: str = "") -> str:
         "objects": sorted((o.get("id"), o.get("x"), o.get("z"))
                           for o in snap.get("objects") or []
                           if isinstance(o, dict) and isinstance(o.get("id"), int)),
-        "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"))
+        "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"),
+                          b.get("reachable"), b.get("path_distance"), b.get("open_command"))
                          for b in snap.get("bounds") or []
                          if isinstance(b, dict) and isinstance(b.get("id"), int)),
-        "ground_items": sorted((i.get("id"), i.get("x"), i.get("z"))
+        "ground_items": sorted((i.get("id"), i.get("x"), i.get("z"),
+                                i.get("reachable"), i.get("path_distance"),
+                                (i.get("door") or {}).get("id"),
+                                (i.get("door") or {}).get("x"),
+                                (i.get("door") or {}).get("z"))
                                for i in snap.get("ground_items") or []
                                if isinstance(i, dict) and isinstance(i.get("id"), int)),
     }

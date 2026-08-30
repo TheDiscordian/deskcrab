@@ -37,6 +37,9 @@ public class ReflexBridgeHarness {
 		boolean failing = false;
 		boolean projectionsVisible = true;
 		boolean routeAvailable = true;
+		boolean groundRouteAvailable = true;
+		boolean groundDoorAvailable = false;
+		boolean boundRouteAvailable = true;
 		boolean walking = false;
 		boolean inCombat = false;
 		boolean sleeping = false;
@@ -201,6 +204,10 @@ public class ReflexBridgeHarness {
 
 		public int z() {
 			return 650;
+		}
+
+		public void preparePathDistances() {
+			// Scripted distances below are already current for this tick.
 		}
 
 		public boolean isWalking() {
@@ -671,6 +678,15 @@ public class ReflexBridgeHarness {
 			return false;
 		}
 
+		public int boundPathDistance(int i) {
+			if (!boundRouteAvailable && i == 1) return -1;
+			return i == 1 ? 1 : 20;
+		}
+
+		public int boundOpenCommand(int i) {
+			return i == 1 ? 1 : 0;
+		}
+
 		public int[] boundScreenPoint(int i) {
 			return projectionsVisible ? new int[]{260 + i, 130 + i} : null;
 		}
@@ -699,6 +715,15 @@ public class ReflexBridgeHarness {
 
 		public int groundItemZ(int i) {
 			return groundAbsZ[i];
+		}
+
+		public int groundItemPathDistance(int i) {
+			if (!groundRouteAvailable && i == 1) return -1;
+			return i == 1 ? 1 : 10;
+		}
+
+		public int groundItemDoorIndex(int i) {
+			return !groundRouteAvailable && groundDoorAvailable && i == 1 ? 1 : -1;
 		}
 
 		public void takeGroundItem(int i) {
@@ -806,6 +831,16 @@ public class ReflexBridgeHarness {
 		}
 		if ("exec-no-route".equals(mode) || "exec-combat-no-route".equals(mode)) {
 			host.routeAvailable = false;
+		}
+		if ("exec-unreachable-ground".equals(mode)) {
+			host.groundRouteAvailable = false;
+		}
+		if ("exec-ground-needs-door".equals(mode)) {
+			host.groundRouteAvailable = false;
+			host.groundDoorAvailable = true;
+		}
+		if ("exec-unreachable-bound".equals(mode)) {
+			host.boundRouteAvailable = false;
 		}
 		if ("exec-closed".equals(mode)) {
 			host.shopOpen = false;

@@ -97,14 +97,18 @@ Three parts:
    "projectiles_pass":…}` — type id/name, world tile, facing direction, and its two collision
    properties), and `bounds` (the
    wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at
-   12, with those same semantic fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
-   tile stay distinct). `terrain` is a compact radius-6 topology centred on the player: fully
+   12, with those same semantic fields plus `reachable`, collision-aware `path_distance` (null
+   when unreachable), and `open_command` (1/2, or zero when it has no Open command); `dir` is which
+   wall of the tile the boundary stands on, so two doors sharing a tile stay distinct). `terrain` is a compact radius-6 topology centred on the player: fully
    blocked cells and cardinal `barriers` are the only entries (empty floor is implicit), and every
    entry independently says `projectiles_pass`; barrier endpoints are absolute `a:[x,z]` and
    `b:[x,z]` tiles. It comes from the same loaded collision map used by ordinary walking and the
    same projectile-permeability classifications used by server path validation. `ground_items`
-   (items currently visible on the ground, nearest by walking steps first,
-   capped at 12: each `{"id":…,"x":…,"z":…}` — item id and world tile), `shop_open` and
+   (items currently visible on the ground, reachable items first by collision-aware walking steps,
+   capped at 12: each carries `id`, world `x/z`, `reachable`, and `path_distance`). An unreachable
+   item may also carry a `door` identity only when the player's and item's collision components
+   meet on the two sides of that loaded, blocking, openable boundary; visual proximity alone never
+   names a door. `shop_open` and
    `bank_open`, plus `shop_items` and `bank_items`. A shop item is
    `{"slot":…,"id":…,"name":…,"count":…,"noted":…}` from the open shop's 40-slot
    display. A bank item is `{"slot":…,"id":…,"name":…,"count":…}` from the complete

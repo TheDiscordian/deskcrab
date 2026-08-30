@@ -156,10 +156,14 @@ deliberate-play channel.
    current page or scroll row containing the item and resolves that live slot immediately before
    clicking), and `take-ground` (`item`: the item id; optional `within` 0–10 caps its current
    Chebyshev distance). The
-   nearest matching `ground_items` entry is compiled to item id and current world tile; the bridge
-   re-matches both immediately before sending the game's own walk-and-take action. Wanted-loot
-   reflexes deliberately omit `within`: visibility licenses a pathfinding attempt, and an actual
-   route failure is evidence to report instead of waiting for the wanted item to wander closer.
+   shortest reachable matching `ground_items` entry is compiled to item id and current world tile;
+   a visually closer unreachable pile cannot displace a farther reachable one. The bridge re-matches
+   both and rechecks the live collision path immediately before sending the game's own walk-and-take
+   action. It refuses `ground-item-unreachable` without dispatch; when snapshot topology proves one
+   loaded openable boundary connects the separated components, the more specific result is
+   `ground-item-needs-door`. Wanted-loot
+   reflexes deliberately omit `within`: visibility licenses a collision-path check, not a fabricated
+   entity walk.
    `within` is only for a rule whose intended behaviour is explicitly local, never an implicit
    safety restriction on an ordinary desire. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
@@ -207,6 +211,9 @@ deliberate-play channel.
    A direct take attempted during combat emits nothing and reports
    `take-needs-retreat ... next=retreat`; retreat is the action that can make
    the pickup legal, and the wanted pile remains visible for the next pass.
+   A direct take with no collision path likewise emits nothing: it reports `take-needs-door` with
+   the proven boundary identity and semantic next action when one door connects the components,
+   otherwise `take-unreachable`. Neither result enters the verifier's long walk timeout.
    Direct bridge actions are causally armed from the fresh pre-dispatch snapshot. A later
    `wait-until action_done` accepts only a newer grounded consequence attributable to that action:
    inventory or XP deltas, new game/quest/inventory feedback, a relevant interface transition, or
@@ -394,7 +401,9 @@ deliberate-play channel.
    signature, reports `route-needs-detour` at exit 4 to Sol, and emits no further walk merely because the dispatched leg
    settles another tile. A changed visible obstacle signature may make the path viable; otherwise
    Sol must inspect live terrain or choose a different local leg and explicitly set a corrected
-   route. The refusal proves only that attempted local leg did not produce progress; it does not
+   route. Loaded bounds expose whether their interaction edge is reachable, its actual walking
+   distance, and any Open command, allowing a closed door to be approached and opened semantically
+   before the route is retried. The refusal proves only that attempted local leg did not produce progress; it does not
    establish a wall, river, world edge, or map boundary. Changing the durable objective cancels the stale route rather than walking
    toward an old goal. The route survives player and runner process boundaries, owns no second
    action slot or observer, uses no screenshots or timed polling, and cannot loop forever against

@@ -124,8 +124,8 @@ assert s["players"] == [
 ], s.get("players")
 assert s["npc_count"] == 2 and s["npcs_truncated"] is False
 assert s["ground_items"] == [
-    {"id": 27, "x": 121, "z": 650},
-    {"id": 10, "x": 130, "z": 650},
+    {"id": 27, "x": 121, "z": 650, "reachable": True, "path_distance": 1},
+    {"id": 10, "x": 130, "z": 650, "reachable": True, "path_distance": 10},
 ], s["ground_items"]
 messages = s["messages"]
 assert [(m["channel"], m["incoming"], m["sender"], m["text"]) for m in messages] == [
@@ -628,9 +628,11 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["bounds"] == [
     {"id": 1, "name": "Door", "x": 121, "z": 650, "dir": 0,
-     "blocks_movement": True, "projectiles_pass": False},
+     "blocks_movement": True, "projectiles_pass": False,
+     "reachable": True, "path_distance": 1, "open_command": 1},
     {"id": 2, "name": "Stone wall", "x": 140, "z": 660, "dir": 1,
-     "blocks_movement": True, "projectiles_pass": False},
+     "blocks_movement": True, "projectiles_pass": False,
+     "reachable": True, "path_distance": 20, "open_command": 0},
 ], s.get("bounds")
 PY
 python3 - "$S/state.json" <<'PY' && ok "terrain separates walking topology from projectile permeability" \
@@ -696,6 +698,12 @@ check_eq "the mismatch is named" "$(rstatus)" "refused-bound-mismatch"
 wact 77 "$(now_ms)" "type=interact-bound" "x=121" "z=650" "dir=1" "obj=1" "cmd=1"
 harness exec >/dev/null
 check_eq "the same tile on the WRONG wall is no such bound" "$(rstatus)" "refused-no-such-bound"
+wact 771 "$(now_ms)" "type=interact-bound" "x=121" "z=650" "dir=0" "obj=1" "cmd=1"
+OUT="$(harness exec-unreachable-bound)"
+refute "an unreachable closed door never receives a fabricated walk-and-open" \
+    contains "$OUT" "bound x="
+check_eq "the unreachable door is refused before dispatch" "$(rstatus)" \
+    "refused-bound-unreachable"
 
 echo
 echo "click-entity resolves stable identities at execution time (rules 5-7):"
@@ -872,6 +880,16 @@ check_eq "a changed ground item is refused" "$(rstatus)" "refused-ground-item-mi
 wact 91 "$(now_ms)" "type=take-ground" "x=5" "z=5" "item=27"
 harness exec >/dev/null
 check_eq "an empty ground-item tile is refused" "$(rstatus)" "refused-no-such-ground-item"
+wact 92 "$(now_ms)" "type=take-ground" "x=121" "z=650" "item=27"
+OUT="$(harness exec-unreachable-ground)"
+refute "an unreachable ground item never reaches the game's take path" contains "$OUT" "take x="
+check_eq "unreachable terrain is reported before dispatch" "$(rstatus)" \
+    "refused-ground-item-unreachable"
+wact 93 "$(now_ms)" "type=take-ground" "x=121" "z=650" "item=27"
+OUT="$(harness exec-ground-needs-door)"
+refute "a door-blocked ground item is not clicked through the wall" contains "$OUT" "take x="
+check_eq "a proven closed door is distinguished from generic unreachability" "$(rstatus)" \
+    "refused-ground-item-needs-door"
 
 echo
 echo "the learned player opens a door through the real bridge (game-player rules 5, 7):"
