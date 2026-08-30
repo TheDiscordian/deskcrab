@@ -199,7 +199,7 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     own lane — two event wakes settle it at the lock, as they always have.
 22. The wake agenda MUST be delivered as the session's user message. See
     [prompt-assembly.md](prompt-assembly.md) rule 12.
-23. When the stream held an error and no genuine model output — or the run was cut off mid-flight
+23. When the stream held an error and no genuine response text — or the run was cut off mid-flight
     by a usage or session limit with nothing genuine after the refusal, on every account the chain
     could offer (account-fallback.md rules 12a and 12c) — the wake MUST journal the failure with
     the exit code and error text, naming the session limit as the cause when it was one, append

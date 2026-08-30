@@ -4469,6 +4469,123 @@ promise_precheck() {  # <reply>
     printf '%s' "${1:-}" | LC_ALL=C grep -qiE "$PROMISE_COMMIT_RE"
 }
 
+claim_guard_log() {
+    printf '%s\t%s\tclaim-guard: %s\n' "$(date '+%F %T')" "${1:-turn}" "$2" \
+        >> "${STATE_PREFIX}-promise-check.log" 2>/dev/null || true
+}
+
+# Validate a candidate reply before any delivery boundary. If its action
+# claims are unsupported, give the same tool-capable assistant another pass:
+# make the authorised action true now (directly or through a durable job), or
+# replace the claim with what is actually true. Every replacement is checked
+# again against the combined tool record. Nothing drafted here is itself a
+# reply until this function prints it.
+claim_guard_response() {  # <kind> <user text> <candidate> <model> <effort>
+    local KIND="$1" USER_TEXT="$2" CANDIDATE="$3"
+    local GUARD_MODEL="${4:-$CLAUDE_MODEL}" GUARD_EFFORT="${5:-$CLAUDE_EFFORT}"
+    local CHECKER="${PROMISE_CHECK_BIN:-$SCRIPT_DIR/lib/promise-check}"
+    local MAX="${CLAIM_GUARD_REPAIRS:-2}" ATTEMPT=0
+    local SNAP="" VERDICT="" RC=0 ORIGINAL="" REPAIR_LOG="" MERGED=""
+    local REPAIR_PROMPT="" REPAIRED=""
+
+    [ "${CLAIM_GUARD:-${PROMISE_CHECK:-1}}" = 1 ] \
+        || { printf '%s\n' "$CANDIDATE"; return 0; }
+    [ -n "$(printf '%s' "$CANDIDATE" | tr -d '[:space:]')" ] \
+        || { printf '%s\n' "$CANDIDATE"; return 0; }
+    case "$MAX" in ''|*[!0-9]*) MAX=2 ;; esac
+
+    while promise_precheck "$CANDIDATE"; do
+        if [ ! -x "$CHECKER" ] || [ ! -r "${DEBUGLOG:-}" ]; then
+            VERDICT="The action-claim checker or its tool record is unavailable."
+            RC=4
+        else
+            SNAP="${STATE_PREFIX}-claim-inspect-$$-$(date +%s%N)"
+            if ! cp -- "$DEBUGLOG" "$SNAP" 2>/dev/null; then
+                VERDICT="The action-claim tool record could not be snapshotted."
+                RC=4
+            else
+                VERDICT="$("$CHECKER" inspect "$KIND" \
+                    "${SESSION_START:-$(date +%s)}" "$$" "$SNAP" \
+                    "$PROMISE_LEDGER" "$CANDIDATE" 2>&1)"
+                RC=$?
+            fi
+        fi
+        rm -f -- "$SNAP" 2>/dev/null || true
+        if [ "$RC" -eq 0 ]; then
+            claim_guard_log "$KIND" "candidate verified"
+            printf '%s\n' "$CANDIDATE"
+            return 0
+        fi
+
+        ATTEMPT=$(( ATTEMPT + 1 ))
+        claim_guard_log "$KIND" "candidate held (verdict $RC), repair $ATTEMPT/$MAX"
+        [ "$ATTEMPT" -le "$MAX" ] || break
+
+        REPAIR_PROMPT="This is a pre-delivery correction pass. The user has not received the
+draft below. Its action claims were not supported by the machine record.
+
+Use your normal tools now. For every safe action the user authorised and the
+draft claims is happening or happened, actually perform it now or durably
+dispatch it with a builder whose brief names the work. If doing that makes the
+claim true, report only the action the resulting tool record proves. If the
+action is not authorised, cannot be performed, or cannot be verified, replace
+the claim with a plain account of what is actually true. Do not answer with
+another promise to act later. Return one complete replacement reply and no
+commentary about this correction pass.
+
+=== USER'S REQUEST ===
+$USER_TEXT
+
+=== UNSENT DRAFT ===
+$CANDIDATE
+
+=== CHECKER RESULT ===
+${VERDICT:-No safe verdict was available.}"
+
+        ORIGINAL="$(mktemp "${STATE_PREFIX}-claim-original-XXXXXX")" || break
+        REPAIR_LOG="$(mktemp "${STATE_PREFIX}-claim-repair-XXXXXX")" || {
+            rm -f "$ORIGINAL"; break;
+        }
+        MERGED="$(mktemp "${STATE_PREFIX}-claim-merged-XXXXXX")" || {
+            rm -f "$ORIGINAL" "$REPAIR_LOG"; break;
+        }
+        cp -- "$DEBUGLOG" "$ORIGINAL" 2>/dev/null || {
+            rm -f "$ORIGINAL" "$REPAIR_LOG" "$MERGED"; break;
+        }
+
+        REPAIRED="$(CLAIM_GUARD_ACTIVE=1 CLAIM_GUARD_MODEL="$GUARD_MODEL" \
+            claude_generate "$REPAIR_PROMPT" "$GUARD_EFFORT")"
+        cp -- "$DEBUGLOG" "$REPAIR_LOG" 2>/dev/null || : > "$REPAIR_LOG"
+        { sed -n 'p' "$ORIGINAL"; sed -n 'p' "$REPAIR_LOG"; } > "$MERGED"
+        mv -- "$MERGED" "$DEBUGLOG"
+
+        # A provider error is not a truthful replacement. Preserve its record,
+        # but never turn the provider's words into Beatrice's reply.
+        if [ -z "$(printf '%s' "$REPAIRED" | tr -d '[:space:]')" ] || \
+           codex_stream_capacity "$REPAIR_LOG" >/dev/null 2>&1 || \
+           claude_stream_refusal "$REPAIR_LOG" >/dev/null 2>&1 || \
+           claude_stream_limit_cut "$REPAIR_LOG" >/dev/null 2>&1; then
+            VERDICT="The correction pass produced no usable reply."
+            CANDIDATE=""
+        else
+            CANDIDATE="$REPAIRED"
+        fi
+        rm -f "$ORIGINAL" "$REPAIR_LOG" 2>/dev/null || true
+        [ -n "$CANDIDATE" ] || break
+    done
+
+    # A candidate with no action-claim shape needs no model judgement. This is
+    # the normal repair outcome: an honest answer replacing the false claim.
+    if [ -n "$CANDIDATE" ] && ! promise_precheck "$CANDIDATE"; then
+        claim_guard_log "$KIND" "replacement contains no action claim"
+        printf '%s\n' "$CANDIDATE"
+        return 0
+    fi
+
+    claim_guard_log "$KIND" "fail-closed — no supported replacement"
+    printf '%s\n' "That action has not been verified, so I cannot truthfully say it happened."
+}
+
 fire_promise_check() {  # <journal-kind> <response>
     [ "${PROMISE_CHECK:-1}" = "1" ] || return 0
     [ -x "$SCRIPT_DIR/lib/promise-check" ] || return 0
@@ -5035,17 +5152,18 @@ fire_memory_judge() {  # <user-text> <response> [actions]  |  --wake <agenda> <r
         --log "${STATE_PREFIX}-memory-judge.log"
 }
 
-# Did the stream fail before the model did any real work? The CLI reports
+# Did the stream fail before the model produced genuine reply text? The CLI reports
 # API-level failures — session limit, auth, network — SHAPED LIKE A REPLY: a
 # fabricated assistant message ("model":"<synthetic>", is_api_error_message)
 # whose text is the error, plus a result event flagged is_error carrying the
 # same text in its "result" field. extract_response cannot tell it from a real
-# reply. Exit 0 = the stream holds an error and no genuine model output.
+# reply. Exit 0 = the stream holds an error and no genuine reply text. Tool
+# work alone cannot turn a provider error into something safe to deliver.
 wake_stream_failed() {
     command -v python3 >/dev/null 2>&1 || return 1
     python3 - "$DEBUGLOG" <<'PY'
 import json, sys
-err = real = False
+err = real_text = False
 for line in open(sys.argv[1]):
     line = line.strip()
     if not line:
@@ -5062,8 +5180,18 @@ for line in open(sys.argv[1]):
     elif d.get("type") == "assistant":
         if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
             continue
-        real = True
-sys.exit(0 if err and not real else 1)
+        for block in d.get("message", {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text" \
+                    and str(block.get("text") or "").strip():
+                real_text = True
+    elif d.get("type") == "stream_event":
+        event = d.get("event") or {}
+        delta = event.get("delta") or {}
+        if event.get("type") == "content_block_delta" \
+                and delta.get("type") == "text_delta" \
+                and str(delta.get("text") or "").strip():
+            real_text = True
+sys.exit(0 if err and not real_text else 1)
 PY
 }
 
@@ -5811,6 +5939,12 @@ CODEX_PROMPT_MODE="${CODEX_PROMPT_MODE:-instructions}"
 # error events, a failed turn's message, the CLI's own stderr — never a
 # stream's raw bytes, and never while genuine output stands in the slice.
 CODEX_LIMIT_RE="${CODEX_LIMIT_RE:-usage.?limit|rate.?limit|limit.?reached|spend.?control|credits? (depleted|exhausted)|quota|plan limit|hit your .* limit|try again (at|in|later)|upgrade to|not logged in|login required|token expired|401 Unauthorized}"
+# Server capacity is transient, not an account or credits condition. The
+# structured app-server code is authoritative; this wording is the fallback
+# for transports that expose only their own error message.
+CODEX_CAPACITY_RE="${CODEX_CAPACITY_RE:-selected model (is )?at capacity|server.?overloaded}"
+CODEX_CAPACITY_RETRIES="${CODEX_CAPACITY_RETRIES:-2}"
+CODEX_CAPACITY_RETRY_DELAY="${CODEX_CAPACITY_RETRY_DELAY:-1}"
 
 model_backend() {  # <model> -> codex | claude
     case "${1:-}" in
@@ -5930,6 +6064,92 @@ for m in own:
         print(m)
         sys.exit(0)
 sys.exit(1)
+PY
+}
+
+# A server-capacity failure before any reply text retries the same Codex model
+# and login (rule 12a); it never hands the request to a fallback. Tool calls do not make an answer: a
+# capacity event can arrive after tool work while the model is still trying to
+# form its reply. Structured serverOverloaded metadata wins; message matching
+# covers transports that do not preserve that field. Prints the provider
+# message and returns 0 only when a retry is due.
+codex_stream_capacity() {  # <stream file> [byte offset]
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "${2:-0}" "$CODEX_CAPACITY_RE" <<'PY'
+import json, re, sys
+path, off, pattern = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3]
+try:
+    rx = re.compile(pattern, re.I)
+except re.error:
+    sys.exit(1)
+
+capacity = []
+reply_text = False
+
+def error_message(value):
+    if isinstance(value, dict):
+        return str(value.get("message") or "")
+    return str(value or "")
+
+def consider_error(value):
+    message = error_message(value)
+    info = value.get("codexErrorInfo") if isinstance(value, dict) else None
+    if info == "serverOverloaded" or (message and rx.search(message)):
+        capacity.append(message or str(info))
+
+try:
+    f = open(path, "rb")
+except OSError:
+    sys.exit(1)
+f.seek(off)
+for bline in f:
+    line = bline.decode("utf-8", "replace").strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        # The exec transport writes its own stderr directly into this stream.
+        if rx.search(line):
+            capacity.append(line)
+        continue
+    if not isinstance(d, dict):
+        continue
+    kind = d.get("type") or ""
+    if kind == "assistant":
+        if d.get("is_api_error_message"):
+            continue
+        message = d.get("message") or {}
+        if message.get("model") == "<synthetic>":
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text" \
+                    and str(block.get("text") or "").strip():
+                reply_text = True
+    elif kind == "stream_event":
+        event = d.get("event") or {}
+        delta = event.get("delta") or {}
+        if event.get("type") == "content_block_delta" \
+                and delta.get("type") == "text_delta" \
+                and str(delta.get("text") or "").strip():
+            reply_text = True
+    elif d.get("method") == "error":
+        consider_error((d.get("params") or {}).get("error") or {})
+    elif kind == "error":
+        consider_error(d.get("message"))
+    elif kind == "turn.failed":
+        consider_error(d.get("error"))
+    elif kind == "item.completed":
+        item = d.get("item") or {}
+        if item.get("type") == "error":
+            consider_error(item)
+    elif kind == "result" and d.get("is_error") \
+            and d.get("engine") == "codex":
+        consider_error(d.get("result"))
+
+if reply_text or not capacity:
+    sys.exit(1)
+print(capacity[0])
 PY
 }
 
@@ -6270,7 +6490,9 @@ _wake_claude_run() {
 # exactly once. Leaves the last run's exit status in WAKE_CLAUDE_STATUS, like
 # the single run it replaced.
 wake_claude_run_chain() {
-    local ACCT CONFDIR PREV="" ATT=0 REFUSAL LIMITED=0
+    local ACCT CONFDIR PREV="" ATT=0 REFUSAL CAPACITY LIMITED=0
+    local CAPACITY_RETRY=0 CAPACITY_MAX="$CODEX_CAPACITY_RETRIES"
+    case "$CAPACITY_MAX" in ''|*[!0-9]*) CAPACITY_MAX=2 ;; esac
     WAKE_CHAIN_ATTEMPTS=0
     # Did the LIMITS have the last word on EVERY attempt? The wholly-refused
     # judgement (specs/wake-queue.md rule 23a) is the walk's own per-attempt
@@ -6286,28 +6508,43 @@ wake_claude_run_chain() {
     # account is its only one.
     WAKE_CHAIN_ACCT=""
     # The engine follows the model name (specs/model-backends.md rule 12):
-    # a codex wake tries the one codex login first, and refused-or-cooling
-    # the ordinary account walk below takes the same agenda at the fallback
-    # model — locals, so the re-aim is this walk's own and the conf's knob
-    # is untouched. A codex refusal counts as a limited attempt, so a night
+    # a codex wake tries the one codex login first. Server capacity retries
+    # that same model and login here; only refused-or-cooling sends the
+    # agenda to the ordinary account walk below at the fallback model —
+    # locals, so the re-aim is this walk's own and the conf's knob is
+    # untouched. A codex refusal counts as a limited attempt, so a night
     # where codex AND every account refuse still reads wholly-refused and
     # takes the long re-book it is owed (specs/wake-queue.md rule 23a).
     if [ "$(model_backend "$WAKE_MODEL")" = "codex" ]; then
         local WAKE_MODEL="$WAKE_MODEL" WAKE_EFFORT="$WAKE_EFFORT"
         if codex_available; then
-            ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
-            case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
-            WAKE_CHAIN_ATTEMPTS=1
-            _codex_stream_run wake "$WAKE_MODEL" "$WAKE_EFFORT" "$PROMPT_TEXT"
-            WAKE_CLAUDE_STATUS=$CODEX_RUN_STATUS
-            if REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$ATT")"; then
-                codex_limit_record "$REFUSAL"
-                claude_stream_note "codex-limit" \
-                    "codex refused — the Claude walk takes the wake"
-                LIMITED=1
-            else
-                return 0
-            fi
+            while :; do
+                ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+                case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
+                WAKE_CHAIN_ATTEMPTS=$(( WAKE_CHAIN_ATTEMPTS + 1 ))
+                _codex_stream_run wake "$WAKE_MODEL" "$WAKE_EFFORT" "$PROMPT_TEXT"
+                WAKE_CLAUDE_STATUS=$CODEX_RUN_STATUS
+                if CAPACITY="$(codex_stream_capacity "$DEBUGLOG" "$ATT")"; then
+                    if [ "$CAPACITY_RETRY" -lt "$CAPACITY_MAX" ]; then
+                        CAPACITY_RETRY=$(( CAPACITY_RETRY + 1 ))
+                        claude_stream_note "codex-capacity-retry" \
+                            "codex server capacity was unavailable — retrying the same model ($CAPACITY_RETRY/$CAPACITY_MAX)"
+                        sleep "$CODEX_CAPACITY_RETRY_DELAY" 2>/dev/null || sleep 1
+                        continue
+                    fi
+                    claude_stream_note "codex-capacity-exhausted" \
+                        "codex server capacity stayed unavailable after $WAKE_CHAIN_ATTEMPTS attempts"
+                    return 0
+                elif REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$ATT")"; then
+                    codex_limit_record "$REFUSAL"
+                    claude_stream_note "codex-limit" \
+                        "codex refused — the Claude walk takes the wake"
+                    LIMITED=$(( LIMITED + 1 ))
+                else
+                    return 0
+                fi
+                break
+            done
         else
             claude_stream_note "codex-cooling" \
                 "codex is $(codex_unavailable_why) — the Claude walk takes the wake"
@@ -6863,8 +7100,8 @@ run_claude_wake() {
         return 0
     fi
 
-    # A genuine reply (the failure paths above never reach here): the journal
-    # keeps it in full even when every gate below completes the wake silently.
+    # The journal keeps a genuine reply in full even when every gate below
+    # completes the wake silently.
     # It is NOT appended to the conversation here — see the delivery section
     # at the end of this function.
     #
@@ -6874,6 +7111,12 @@ run_claude_wake() {
     # once, and everything below — journal, gates, speakers, bubble — sees
     # the reply she settled on. Fails open to the draft as written.
     RESPONSE="$(claudism_mirror_direct wake "$RESPONSE")"
+    # The phrase rewrite is still a draft. Check every action claim against
+    # the wake's tool record now; an unsupported draft returns to a
+    # tool-capable pass to perform or dispatch the authorised work, or to
+    # replace the claim with the truth. The replacement is checked again.
+    RESPONSE="$(claim_guard_response wake "$PROMPT_TEXT" "$RESPONSE" \
+        "$WAKE_MODEL" "$WAKE_EFFORT")"
     SESSION_REPLY="$RESPONSE"
 
     local SPOKEN DISPLAY_PART TRACE SILENT_NOTE="" QUIET_BUBBLE=""
@@ -7214,7 +7457,11 @@ claim_debuglog() {
 # pure harm — it silences another turn's reply mid-sentence, which is the exact
 # complaint this path keeps generating.
 start_tts_streamer() {
-    claim_debuglog
+    local STREAM_LOG="${_TTS_STREAM_SOURCE:-}"
+    if [ -z "$STREAM_LOG" ]; then
+        claim_debuglog
+        STREAM_LOG="$DEBUGLOG"
+    fi
     _TTS_RECEIPT="${STATE_PREFIX}-speech-receipt-$$.txt"
     # A new turn is a new question — whatever silence was asked for last time
     # is spent. Cleared HERE rather than at `crab shutup` time so that only a
@@ -7230,13 +7477,14 @@ start_tts_streamer() {
         rm -f "$_CLAUDISM_FIRES_FILE" "$_CLAUDISM_FIRES_FILE".verdict-* \
             "$_CLAUDISM_FIRES_FILE.done" 2>/dev/null
     fi
-    DESKCRAB_DEBUGLOG="$DEBUGLOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
+    DESKCRAB_DEBUGLOG="$STREAM_LOG" DESKCRAB_PIPER_VOICE="$PIPER_VOICE" \
         DESKCRAB_PIPER_LENGTH_SCALE="${PIPER_LENGTH_SCALE:-}" \
         DESKCRAB_PIPER_SPEAKER="${PIPER_SPEAKER:-}" \
         DESKCRAB_TTS_FIXES="${TTS_FIXES:-}" \
         DESKCRAB_SPEECHLOCK="$SPEECHLOCK" \
         DESKCRAB_LIVE_SPEECH="$LIVE_SPEECH_FILE" \
         DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE" \
+        DESKCRAB_RETRYABLE_ERROR_RE="$CODEX_CAPACITY_RE" \
         DESKCRAB_SPEECH_LOG="$SPEECH_LOG" \
         DESKCRAB_SPEECH_RECEIPT="$_TTS_RECEIPT" \
         DESKCRAB_CLAUDISMS="${_CLAUDISM_FIRES_FILE:+$CLAUDISMS_FILE}" \
@@ -7250,6 +7498,31 @@ start_tts_streamer() {
     _TTS_STREAMER_PID=$!
 }
 
+# The model's raw stream is a draft until the action-claim guard passes. Build
+# a tiny private stream containing only the verified reply and let the ordinary
+# streamer own speech, receipts, quiet markers, and display splitting from
+# there. The provider stream never reaches the speakers directly.
+start_verified_tts_streamer() {  # <verified response>
+    _TTS_VERIFIED_LOG="${STATE_PREFIX}-verified-speech-$$.log"
+    if ! python3 - "$_TTS_VERIFIED_LOG" "$1" <<'PY'
+import json, sys
+path, text = sys.argv[1], sys.argv[2]
+with open(path + ".tmp", "w", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "assistant", "message": {
+        "id": "verified", "model": "verified",
+        "content": [{"type": "text", "text": text}]}},
+        ensure_ascii=False) + "\n")
+    f.write('{"type":"result"}\n')
+PY
+    then
+        rm -f "$_TTS_VERIFIED_LOG.tmp"
+        _TTS_VERIFIED_LOG=""
+        return 1
+    fi
+    mv -- "$_TTS_VERIFIED_LOG.tmp" "$_TTS_VERIFIED_LOG"
+    _TTS_STREAM_SOURCE="$_TTS_VERIFIED_LOG" start_tts_streamer
+}
+
 # Wait for the streamer, but never forever. The old unbounded `wait` is how a
 # stranded streamer took the whole turn down with it.
 wait_tts_streamer() {
@@ -7261,12 +7534,14 @@ wait_tts_streamer() {
             kill "$_TTS_STREAMER_PID" 2>/dev/null
             sleep 1
             kill -9 "$_TTS_STREAMER_PID" 2>/dev/null
+            [ -z "${_TTS_VERIFIED_LOG:-}" ] || rm -f -- "$_TTS_VERIFIED_LOG"
             return 1
         fi
         sleep 0.2
         WAITED=$((WAITED + 1))
     done
     wait "$_TTS_STREAMER_PID" 2>/dev/null
+    [ -z "${_TTS_VERIFIED_LOG:-}" ] || rm -f -- "$_TTS_VERIFIED_LOG"
     return 0
 }
 
@@ -7335,7 +7610,9 @@ tts_verify_spoken() {
 
 # Extract final response text from DEBUGLOG
 extract_response() {
-    DESKCRAB_DEBUGLOG="$DEBUGLOG" "$LIB_DIR/extract-response" 2>/dev/null
+    DESKCRAB_DEBUGLOG="$DEBUGLOG" \
+        DESKCRAB_CODEX_CAPACITY_RE="$CODEX_CAPACITY_RE" \
+        "$LIB_DIR/extract-response" 2>/dev/null
 }
 
 # One CLI run for an interactive turn, APPENDING to $DEBUGLOG. $1 is a
@@ -7459,8 +7736,8 @@ claude_generate() {
     # subshell), effort rises to DISPUTE_EFFORT unless the caller already
     # asked for more, and DISPUTE_MODEL (when set) takes the turn — the conf
     # points it at the strongest builder model.
-    local MODEL="$CLAUDE_MODEL" PROMPT_DISPUTE=""
-    if dispute_detect "$TEXT"; then
+    local MODEL="${CLAIM_GUARD_MODEL:-$CLAUDE_MODEL}" PROMPT_DISPUTE=""
+    if [ "${CLAIM_GUARD_ACTIVE:-0}" != 1 ] && dispute_detect "$TEXT"; then
         PROMPT_DISPUTE=1
         [ -n "${DISPUTE_MODEL:-}" ] && MODEL="$DISPUTE_MODEL"
         case "$EFFORT" in
@@ -7497,33 +7774,51 @@ claude_generate() {
     # one login, so a limit never walks accounts: refused, it records the
     # cooldown and the ordinary Claude walk takes the turn at the fallback
     # model (rule 12); already cooling, the walk takes it straight away
-    # (rule 13). A codex run that produced genuine output NEVER falls back.
+    # (rule 13). A transient capacity failure before genuine reply text
+    # retries the same Codex model here, without entering that walk or cooling
+    # the next independent Codex run.
     GENERATE_WALK_ACCT=""; GENERATE_WALK_REFUSED=""; GENERATE_WALK_ABANDONED=""
     local RUN_CLAUDE_WALK=1
     if [ "$(model_backend "$MODEL")" = "codex" ]; then
-        local CODEX_OFF CODEX_REFUSAL
-        CODEX_OFF="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
-        case "$CODEX_OFF" in ''|*[!0-9]*) CODEX_OFF=0 ;; esac
+        local CODEX_OFF CODEX_REFUSAL CODEX_CAPACITY
+        local CODEX_CAPACITY_RETRY=0 CODEX_CAPACITY_MAX="$CODEX_CAPACITY_RETRIES"
+        case "$CODEX_CAPACITY_MAX" in ''|*[!0-9]*) CODEX_CAPACITY_MAX=2 ;; esac
         if ! codex_available; then
             claude_stream_note "codex-cooling" \
                 "codex is $(codex_unavailable_why) — the Claude walk takes the turn"
             MODEL="$(codex_fallback_model)"
             EFFORT="$(claude_effort_clamp "$EFFORT")"
         else
-            _codex_stream_run turn "$MODEL" "$EFFORT" "$TEXT"
-            GENERATE_CLAUDE_STATUS=$CODEX_RUN_STATUS
-            if CODEX_REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$CODEX_OFF")"; then
-                codex_limit_record "$CODEX_REFUSAL"
-                claude_stream_note "codex-limit" \
-                    "codex refused — the Claude walk takes the turn"
-                [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \
-                    -h string:x-dunst-stack-tag:deskcrab-account "$NOTIFY_NAME" \
-                    "codex is over its limit — answering on Claude" 2>/dev/null
-                MODEL="$(codex_fallback_model)"
-                EFFORT="$(claude_effort_clamp "$EFFORT")"
-            else
-                RUN_CLAUDE_WALK=""
-            fi
+            while :; do
+                CODEX_OFF="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+                case "$CODEX_OFF" in ''|*[!0-9]*) CODEX_OFF=0 ;; esac
+                _codex_stream_run turn "$MODEL" "$EFFORT" "$TEXT"
+                GENERATE_CLAUDE_STATUS=$CODEX_RUN_STATUS
+                if CODEX_CAPACITY="$(codex_stream_capacity "$DEBUGLOG" "$CODEX_OFF")"; then
+                    if [ "$CODEX_CAPACITY_RETRY" -lt "$CODEX_CAPACITY_MAX" ]; then
+                        CODEX_CAPACITY_RETRY=$(( CODEX_CAPACITY_RETRY + 1 ))
+                        claude_stream_note "codex-capacity-retry" \
+                            "codex server capacity was unavailable — retrying the same model ($CODEX_CAPACITY_RETRY/$CODEX_CAPACITY_MAX)"
+                        sleep "$CODEX_CAPACITY_RETRY_DELAY" 2>/dev/null || sleep 1
+                        continue
+                    fi
+                    claude_stream_note "codex-capacity-exhausted" \
+                        "codex server capacity stayed unavailable after $(( CODEX_CAPACITY_RETRY + 1 )) attempts"
+                    RUN_CLAUDE_WALK=""
+                elif CODEX_REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$CODEX_OFF")"; then
+                    codex_limit_record "$CODEX_REFUSAL"
+                    claude_stream_note "codex-limit" \
+                        "codex refused — the Claude walk takes the turn"
+                    [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \
+                        -h string:x-dunst-stack-tag:deskcrab-account "$NOTIFY_NAME" \
+                        "codex is over its limit — answering on Claude" 2>/dev/null
+                    MODEL="$(codex_fallback_model)"
+                    EFFORT="$(claude_effort_clamp "$EFFORT")"
+                else
+                    RUN_CLAUDE_WALK=""
+                fi
+                break
+            done
         fi
     fi
     [ -n "$RUN_CLAUDE_WALK" ] && _generate_claude_walk
@@ -7597,7 +7892,20 @@ claude_generate() {
     # self-change watcher judges the burst. Covers desktop and phone turns.
     notice_own_writes
 
-    extract_response
+    local GENERATED_RESPONSE
+    GENERATED_RESPONSE="$(extract_response)"
+    if [ "${CLAIM_GUARD_ACTIVE:-0}" = 1 ] || claude_run_limited; then
+        printf '%s\n' "$GENERATED_RESPONSE"
+    else
+        local GUARD_KIND=turn
+        case "${SESSION_KIND:-}" in
+            "desktop turn")    GUARD_KIND=desktop ;;
+            "phone turn")      GUARD_KIND=phone ;;
+            "autonomous wake") GUARD_KIND=wake ;;
+        esac
+        claim_guard_response "$GUARD_KIND" "$TEXT" "$GENERATED_RESPONSE" \
+            "$MODEL" "$EFFORT"
+    fi
 }
 
 # Split a response into its spoken half (everything above ---DISPLAY---).
@@ -8134,6 +8442,10 @@ _run_claude_remote_locked() {
             # reply, so the pass runs here, before anything is committed,
             # shown, or voiced. Fails open to the draft as written.
             RESPONSE="$(claudism_mirror_direct phone "$RESPONSE")"
+            # The final wording must still be supported by the combined tool
+            # record. This also covers a rewrite made by the phrase mirror.
+            RESPONSE="$(claim_guard_response phone "$TEXT" "$RESPONSE" \
+                "$CLAUDE_MODEL" "$CLAUDE_EFFORT")"
             SESSION_REPLY="$RESPONSE"
             # THE delivery gate (specs/turn-pipeline.md rule 16b): one split,
             # one branch, every sink below it. Whitespace and the bare quiet
@@ -8334,12 +8646,6 @@ run_claude_and_respond() {
 
     convo_append_user "$TEXT"
 
-    # The desk turn is the one caller that answers the streamer's claudism
-    # fires (claudism_mirror_desk below), so it is the one that arms them.
-    _CLAUDISM_ARM=1
-    start_tts_streamer
-    _CLAUDISM_ARM=0
-
     notify_thinking
     # The dismissal rides the trap as well as the straight line. "Thinking..."
     # is a -t 0 notification — it stays up until something takes it down — and
@@ -8408,11 +8714,13 @@ run_claude_and_respond() {
         fi
         RESPONSE=""
     elif [ -n "$RESPONSE" ] && {
-            # The pre-speech mirror (specs/speech-output.md rules 38-45): any
-            # fire the streamer is holding gets answered here — her rewrite
-            # goes to the held voice and into the committed reply, or the
-            # original stands. A clean draft returns immediately, untouched.
-            RESPONSE="$(claudism_mirror_desk "$RESPONSE")"
+            # Both draft checks run on the complete reply before the verified
+            # speech stream is created. The phrase mirror lets her rewrite her
+            # own wording; the action guard then proves that rewrite too, so a
+            # mirror cannot accidentally introduce an unsupported claim.
+            RESPONSE="$(claudism_mirror_direct desktop "$RESPONSE")"
+            RESPONSE="$(claim_guard_response desktop "$TEXT" "$RESPONSE" \
+                "$CLAUDE_MODEL" "$CLAUDE_EFFORT")"
             SESSION_REPLY="$RESPONSE"
             # THE delivery gate (specs/turn-pipeline.md rule 16b): one split,
             # one branch, every sink below it. A whitespace-only reply and a
@@ -8501,6 +8809,12 @@ run_claude_and_respond() {
         # next turn queue behind a summarising model call and a memory judge
         # would turn ordering into a stall.
         turn_order_release
+
+        # Only the verified response becomes a speech stream. The provider's
+        # raw draft log remains available as the work record, but no sentence
+        # from it can reach piper.
+        _CLAUDISM_ARM=0
+        start_verified_tts_streamer "$RESPONSE" || true
 
         local DISPLAY_PART="$REPLY_DISPLAY"
 

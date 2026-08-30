@@ -18,7 +18,8 @@
 # So these tests drive a REAL serve.py over a REAL socket with `crab` stubbed:
 # the stub writes its stream-json log the way the CLI does — in pieces, with a
 # line still half-written when the reader reaches it — and the test asserts the
-# progress events arrive on the SSE stream BEFORE the done event, not with it.
+# thinking and tool progress arrive BEFORE the done event, while assistant
+# answer text remains held until the checked completion payload.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -145,12 +146,14 @@ awaits LIVE-TOOL-CANARY \
     && ok "tool use reaches the phone mid-turn" \
     || fail "tool use reaches the phone mid-turn" "never arrived before the turn ended"
 
-# The one that was actually broken: a text block whose line was split by the
-# writer. It must arrive whole, and it must arrive NOW, not with the reply.
-awaits LIVE-TEXT-CANARY \
-    && ok "a text block written in two pieces still reaches the phone" \
-    || fail "a text block written in two pieces still reaches the phone" \
-            "the split line was dropped — the half-line bug"
+# The answer is still only a draft. Even a complete parseable block remains
+# private until crab remote returns the checked replacement.
+if grep -qF LIVE-TEXT-CANARY "$SSE"; then
+    fail "draft answer text stays off the phone" \
+         "the raw provider draft crossed the pre-delivery boundary"
+else
+    ok "draft answer text stays off the phone"
+fi
 
 # Still running? If the turn already finished, "before the end" proves nothing.
 if [ -e "$HOLD_FILE" ]; then
@@ -195,12 +198,11 @@ else
     ok "the limit refusal is never shown to the phone"
 fi
 
-# The split text block must arrive ONCE and WHOLE — not as two fragments, and
-# not duplicated by a re-read.
+# The split draft block must never arrive — neither whole nor as fragments.
 COUNT=$(grep -c 'LIVE-TEXT-CANARY' "$SSE")
-[ "$COUNT" = 1 ] \
-    && ok "the split text block arrived exactly once" \
-    || fail "the split text block arrived exactly once" "saw it $COUNT times"
+[ "$COUNT" = 0 ] \
+    && ok "the raw draft never arrived after completion either" \
+    || fail "the raw draft never arrived after completion either" "saw it $COUNT times"
 
 python3 - "$SSE" <<'PY' && ok "every SSE frame is valid JSON" \
     || fail "every SSE frame is valid JSON" "a frame did not parse"

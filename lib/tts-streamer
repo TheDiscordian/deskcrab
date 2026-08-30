@@ -81,6 +81,9 @@ TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
 # a genuine reply that merely QUOTED a limit phrase was once gagged
 # mid-sentence by the regex.
 LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
+# Transient provider errors can also append a retry to this same stream. This
+# pattern is tested only against an is_error result, never against reply text.
+RETRYABLE_ERROR_RE = os.environ.get("DESKCRAB_RETRYABLE_ERROR_RE", "").strip()
 
 SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
 RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
@@ -143,13 +146,21 @@ def speech_log(msg):
             pass
 
 
-def _is_limit(text):
-    if not LIMIT_RE:
+def _matches(pattern, text):
+    if not pattern:
         return False
     try:
-        return bool(re.search(LIMIT_RE, text or "", re.I))
+        return bool(re.search(pattern, text or "", re.I))
     except re.error:
         return False
+
+
+def _is_limit(text):
+    return _matches(LIMIT_RE, text)
+
+
+def _is_retryable_error(text):
+    return _matches(RETRYABLE_ERROR_RE, text)
 
 
 # --------------------------------------------------------------------------
@@ -824,7 +835,9 @@ with open(LOG) as f:
             # is cannot be known from here (accounts known dry are skipped).
             # When no run ever answers, crab's closing terminator — a result
             # with no error — ends the stream instead.
-            if d.get("is_error") and _is_limit(str(d.get("result") or "")):
+            if d.get("is_error") and (
+                    _is_limit(str(d.get("result") or ""))
+                    or _is_retryable_error(str(d.get("result") or ""))):
                 # No reset of the registry here: the retry's events arrive
                 # under a new message id and message_start rebinds it. The
                 # BlockRegistry docstring carries why touching the block map

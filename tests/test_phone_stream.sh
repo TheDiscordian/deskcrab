@@ -1,14 +1,10 @@
 #!/bin/bash
-# Sentence-level streaming voice on the phone, and the flag that gates it.
+# The phone's verified-answer voice boundary, including the legacy sentence flag.
 # Run: bash tests/test_phone_stream.sh
 #
-# specs/phone.md rule 17: with PHONE_SENTENCE_STREAM=1 the turn's text deltas
-# are chunked into sentences by the desk streamer's own chunker and each
-# sentence becomes a clip the moment it completes, the completed block voicing
-# only the tail the deltas had not spoken; with the flag off (the default) the
-# path is byte-for-byte the one-clip-per-completed-block behaviour it always
-# was. Either way a sentence is never voiced twice, never dropped, and the
-# display half never reaches the synthesiser.
+# specs/phone.md rule 17: thinking and tool progress stay live, while provider
+# answer text and voice remain private until the checked completion payload.
+# PHONE_SENTENCE_STREAM cannot weaken that boundary.
 #
 # Two real servers over two real sockets — one per mode — fed one synthetic
 # delta stream by a stub `crab`, whose synth arm is also the speaker-side
@@ -200,133 +196,40 @@ for line in open(sys.argv[1]):
 PY
 }
 
-# --- the flag on: sentences stream ----------------------------------------
-echo "== flag on: a clip per sentence, the tail from the completed event =="
+# --- both modes: raw answer text and voice stay held -----------------------
+echo "== answer drafts stay behind the claim boundary =="
 
+: > "$T/synth-on.log"
+: > "$T/synth-off.log"
 turn "$PORT_ON" aaa111 "$T/on.sse"
-
-sse_texts "$T/on.sse" voice > "$T/on.voice"
-cat > "$T/on.expected" <<'WANT'
-One plus one is two.
-Two plus two is four!
-And the tail rides the completed event
-Spoken half stays spoken.
-WANT
-diff -q "$T/on.voice" "$T/on.expected" >/dev/null \
-    && ok "every sentence voiced exactly once, in order, tail included" \
-    || fail "every sentence voiced exactly once, in order, tail included" \
-            "$(cat "$T/on.voice")"
-
-diff -q "$T/synth-on.log" "$T/on.expected" >/dev/null \
-    && ok "the synthesiser's own trace agrees, in the same order" \
-    || fail "the synthesiser's own trace agrees, in the same order" \
-            "$(cat "$T/synth-on.log")"
-
-check_eq "no sentence was voiced twice" \
-    "$(sort "$T/on.voice" | uniq -d | wc -l)" "0"
-
-check_eq "the display half never reached the synthesiser" \
-    "$(sandbox_count_in 'never voiced\|DISPLAY' "$T/synth-on.log")" "0"
-
-# Streaming means the first clip cannot be waiting for the block: the stub
-# holds the stream open 1.2s after the first sentence's delta, so a clip cut
-# from the delta lands in the buffer before the completed block's text event.
-FIRST_VOICE=$(grep -n '"kind": *"voice"' "$T/on.sse" | head -n1 | cut -d: -f1)
-FIRST_TEXT=$(grep -n '"kind": *"text"' "$T/on.sse" | head -n1 | cut -d: -f1)
-if [ -n "$FIRST_VOICE" ] && [ -n "$FIRST_TEXT" ] \
-        && [ "$FIRST_VOICE" -lt "$FIRST_TEXT" ]; then
-    ok "the first clip was emitted before the block completed"
-else
-    fail "the first clip was emitted before the block completed" \
-         "first voice at line ${FIRST_VOICE:-none}, first text at ${FIRST_TEXT:-none}"
-fi
-
-# The reply text the page draws is untouched by the flag: still one text
-# event per completed block, the whole spoken half in each.
-sse_texts "$T/on.sse" text > "$T/on.text"
-cat > "$T/on.text.expected" <<'WANT'
-One plus one is two. Two plus two is four! And the tail rides the completed event
-Spoken half stays spoken.
-WANT
-diff -q "$T/on.text" "$T/on.text.expected" >/dev/null \
-    && ok "the text events stay per block, exactly as without the flag" \
-    || fail "the text events stay per block, exactly as without the flag" \
-            "$(cat "$T/on.text")"
-
-DONE_LINE=$(grep '"kind": *"done"' "$T/on.sse" | head -n1)
-case "$DONE_LINE" in
-  *'"audio": ""'*)
-    ok "clips were voiced, so the completion event offers no second copy" ;;
-  *)
-    fail "clips were voiced, so the completion event offers no second copy" \
-         "done event: ${DONE_LINE:-none}" ;;
-esac
-contains "$DONE_LINE" "A card" \
-    && ok "and the display card still rides the completion event" \
-    || fail "and the display card still rides the completion event" \
-            "done event: ${DONE_LINE:-none}"
-
-# Rule 17's never-dropped, at the stream's far end: every voice event precedes
-# the done event, however promptly the turn exits after its last delta. The
-# tail clips of 2026-08-09 (C14) were all emitted before done exactly as this
-# pins — the loss was client-side — and a server that ever let a clip slip
-# past the completion event would starve the client's voice tail the same way.
-LAST_VOICE=$(grep -n '"kind": *"voice"' "$T/on.sse" | tail -n1 | cut -d: -f1)
-DONE_AT=$(grep -n '"kind": *"done"' "$T/on.sse" | head -n1 | cut -d: -f1)
-if [ -n "$LAST_VOICE" ] && [ -n "$DONE_AT" ] && [ "$LAST_VOICE" -lt "$DONE_AT" ]; then
-    ok "every voice event precedes the done event — the tail cannot be orphaned"
-else
-    fail "every voice event precedes the done event — the tail cannot be orphaned" \
-         "last voice at line ${LAST_VOICE:-none}, done at ${DONE_AT:-none}"
-fi
-
-# --- the flag off: byte-for-byte the block behaviour -----------------------
-echo "== flag off: one clip per completed block, nothing streams early =="
-
 turn "$PORT_OFF" bbb222 "$T/off.sse"
 
-sse_texts "$T/off.sse" voice > "$T/off.voice"
-cat > "$T/off.expected" <<'WANT'
-One plus one is two. Two plus two is four! And the tail rides the completed event
-Spoken half stays spoken.
-WANT
-diff -q "$T/off.voice" "$T/off.expected" >/dev/null \
-    && ok "exactly one clip per completed block, the whole spoken half each" \
-    || fail "exactly one clip per completed block, the whole spoken half each" \
-            "$(cat "$T/off.voice")"
+for MODE in on off; do
+    check_eq "$MODE mode emits no raw draft text" \
+        "$(sandbox_count_in '\"kind\": *\"text\"' "$T/$MODE.sse")" "0"
+    check_eq "$MODE mode emits no raw draft voice" \
+        "$(sandbox_count_in '\"kind\": *\"voice\"' "$T/$MODE.sse")" "0"
+    check_eq "$MODE mode never asks synth to voice a provider draft" \
+        "$(wc -l < "$T/synth-$MODE.log" 2>/dev/null || echo 0)" "0"
+    DONE_LINE=$(grep '"kind": *"done"' "$T/$MODE.sse" | head -n1)
+    contains "$DONE_LINE" '"spoken": "the reply"' \
+        && ok "$MODE mode delivers the checked reply in done" \
+        || fail "$MODE mode delivers the checked reply in done" "$DONE_LINE"
+    contains "$DONE_LINE" '"audio": "/audio/' \
+        && ok "$MODE mode carries the checked whole-reply clip once" \
+        || fail "$MODE mode carries the checked whole-reply clip once" "$DONE_LINE"
+    contains "$DONE_LINE" "A card" \
+        && ok "$MODE mode carries the checked display card" \
+        || fail "$MODE mode carries the checked display card" "$DONE_LINE"
+done
 
-check_eq "no sentence-sized clip was cut" \
-    "$(sandbox_count_in '^One plus one is two.$' "$T/synth-off.log")" "0"
-
-FIRST_VOICE=$(grep -n '"kind": *"voice"' "$T/off.sse" | head -n1 | cut -d: -f1)
-FIRST_TEXT=$(grep -n '"kind": *"text"' "$T/off.sse" | head -n1 | cut -d: -f1)
-if [ -n "$FIRST_VOICE" ] && [ -n "$FIRST_TEXT" ] \
-        && [ "$FIRST_TEXT" -lt "$FIRST_VOICE" ]; then
-    ok "and no clip preceded its block's completion"
-else
-    fail "and no clip preceded its block's completion" \
-         "first voice at line ${FIRST_VOICE:-none}, first text at ${FIRST_TEXT:-none}"
-fi
-
-check_eq "the display half never reached the synthesiser here either" \
-    "$(sandbox_count_in 'never voiced\|DISPLAY' "$T/synth-off.log")" "0"
-
-DONE_LINE=$(grep '"kind": *"done"' "$T/off.sse" | head -n1)
-case "$DONE_LINE" in
-  *'"audio": ""'*)
-    ok "the completion audio is empty, exactly as today" ;;
-  *)
-    fail "the completion audio is empty, exactly as today" \
-         "done event: ${DONE_LINE:-none}" ;;
-esac
-
-# --- the flag on, against the re-emit shapes -------------------------------
-echo "== flag on: a re-emitted message and a duplicated event add nothing =="
-
+echo
+echo "== re-emitted drafts still add nothing =="
 echo "replay" > "$T/streammode"
 : > "$T/synth-on.log"
 turn "$PORT_ON" ccc333 "$T/replay.sse"
-
-sse_texts "$T/replay.sse" voice > "$T/replay.voice"
-check_eq "one clip, though the message streamed twice and completed thrice" \
-    "$(cat "$T/replay.voice")" "Spoken half stays spoken."
+check_eq "a message streamed twice and completed thrice emits no draft text" \
+    "$(sandbox_count_in '\"kind\": *\"text\"' "$T/replay.sse")" "0"
+check_eq "and no draft voice" \
+    "$(sandbox_count_in '\"kind\": *\"voice\"' "$T/replay.sse")" "0"
+check_eq "and no draft synthesis" "$(wc -l < "$T/synth-on.log")" "0"

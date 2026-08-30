@@ -57,6 +57,7 @@ stream() {
     TRACE="$TRACE" DESKCRAB_DEBUGLOG="$LOG" DESKCRAB_PIPER_VOICE=/dev/null \
         DESKCRAB_SPEECHLOCK="$T/$NAME.speechlock" \
         DESKCRAB_SPEECH_LOG="$SPEECHLOG" DESKCRAB_SPEECH_RECEIPT="$RECEIPT" \
+        DESKCRAB_RETRYABLE_ERROR_RE='selected model (is )?at capacity|server.?overloaded' \
         DESKCRAB_VOICE_IDLE_CLOSE=30 \
         "$REPO_DIR/lib/tts-streamer" 2>/dev/null &
     SPID=$!
@@ -102,6 +103,16 @@ stream thinking '
     done_json'
 [ "$SAID" = "The answer after the tool call." ] \
     && ok "thinking and tool_use are never spoken, text after them is" || fail "thinking blocks" "$SAID"
+
+stream capacity_retry '
+    a "{\"type\":\"assistant\",\"message\":{\"model\":\"gpt-test\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"printf tool-work\"}}]}}"
+    a "{\"type\":\"result\",\"engine\":\"codex\",\"model\":\"gpt-test\",\"result\":\"Selected model is at capacity. Please try a different model.\",\"is_error\":true}"
+    sleep 0.3
+    say_json "The Sol retry answer."
+    done_json'
+[ "$SAID" = "The Sol retry answer." ] \
+    && ok "a server-capacity result stays silent while the Sol retry appends" \
+    || fail "capacity text surfaced or stopped the Sol retry voice" "$SAID"
 
 stream displaysplit 'say_json "Spoken half here.
 

@@ -44,6 +44,23 @@ for line in sys.stdin:
                          "error": {"message":
                 "You have hit your usage limit. Try again later."}}})
             sys.exit(0)
+        capacity_once = os.environ.get("CODEX_STUB_CAPACITY_ONCE")
+        if os.environ.get("CODEX_STUB_CAPACITY") and \
+                (not capacity_once or not os.path.exists(capacity_once)):
+            if capacity_once:
+                open(capacity_once, "w").close()
+            notify("item/completed", {"threadId": "th-1", "turnId": "tu-1",
+                "item": {"type": "commandExecution", "id": "cmd_0",
+                         "command": "printf tool-work", "status": "completed"}})
+            notify("error", {"error": {
+                "message": "Selected model is at capacity. Please try a different model.",
+                "codexErrorInfo": "serverOverloaded", "additionalDetails": None},
+                "willRetry": False, "threadId": "th-1", "turnId": "tu-1"})
+            notify("turn/completed", {"threadId": "th-1",
+                "turn": {"id": "tu-1", "status": "failed",
+                         "error": {"message":
+                "Selected model is at capacity. Please try a different model."}}})
+            sys.exit(0)
         for d in ("codex ", "stub ", "reply."):
             notify("item/agentMessage/delta",
                    {"threadId": "th-1", "turnId": "tu-1",
@@ -217,6 +234,41 @@ sb "codex_stream_refusal '$R4' '$OFF'" >/dev/null \
     || ok "the offset confines the judgement to this attempt's slice"
 
 echo
+echo "the transient capacity detector — provider overload is not credits (rule 12a):"
+R5="$SANDBOX/slice-capacity.log"
+cat > "$R5" <<'EOF'
+{"type":"assistant","message":{"id":"cmd","model":"gpt-test","content":[{"type":"tool_use","name":"Bash","input":{"command":"printf tool-work"}}]}}
+{"method":"error","params":{"error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded","additionalDetails":null},"willRetry":false}}
+{"type":"result","engine":"codex","model":"gpt-test","result":"Selected model is at capacity. Please try a different model.","is_error":true}
+EOF
+OUT="$(sb "codex_stream_capacity '$R5'")" \
+    && ok "serverOverloaded after tool work is retryable" \
+    || fail "the captured capacity event must be retryable" "$(cat "$R5")"
+check "the detector returns the provider message" contains "$OUT" "Selected model is at capacity"
+R5_META="$SANDBOX/slice-capacity-metadata.log"
+printf '%s\n' '{"method":"error","params":{"error":{"message":"Please retry this request.","codexErrorInfo":"serverOverloaded"}}}' > "$R5_META"
+sb "codex_stream_capacity '$R5_META'" >/dev/null \
+    && ok "structured serverOverloaded metadata is authoritative" \
+    || fail "the structured code must not depend on one message spelling" "$(cat "$R5_META")"
+sb "DEBUGLOG='$R5'; wake_stream_failed" \
+    && ok "tool work cannot make an unanswered capacity error deliverable" \
+    || fail "the wake guard must suppress a provider error after tool work" "$(cat "$R5")"
+R6="$SANDBOX/slice-capacity-after-text.log"
+{ printf '%s\n' '{"type":"assistant","message":{"id":"answer","model":"gpt-test","content":[{"type":"text","text":"A reply already began."}]}}'
+  tail -n2 "$R5"; } > "$R6"
+sb "codex_stream_capacity '$R6'" >/dev/null \
+    && fail "capacity after reply text must not run a second model" "$(cat "$R6")" \
+    || ok "genuine reply text prevents a duplicate answer"
+R7="$SANDBOX/slice-network-after-tool.log"
+cat > "$R7" <<'EOF'
+{"type":"assistant","message":{"id":"cmd","model":"gpt-test","content":[{"type":"tool_use","name":"Bash","input":{"command":"printf tool-work"}}]}}
+{"type":"result","engine":"codex","model":"gpt-test","result":"connection reset by peer","is_error":true}
+EOF
+sb "codex_stream_capacity '$R7'" >/dev/null \
+    && fail "an ordinary failure must not masquerade as server capacity" "$(cat "$R7")" \
+    || ok "ordinary failures remain distinct from server capacity"
+
+echo
 echo "the cooldown — recorded, visible, honoured (rule 13):"
 rm -f "$CODEX_STATE"
 check "with no cooldown codex is available" \
@@ -276,6 +328,34 @@ check "codex was asked for ultra" contains "$(cat "$CODEX_LOG")" "effort=ultra"
 check_eq "the fallback walk clamps ultra to max — the Claude CLI refuses the word" \
     "$(sandbox_count_in '--effort max' "$SANDBOX_CLAUDE_LOG")" "1"
 
+CAPACITY_ONCE="$SANDBOX/capacity-once"
+rm -f "$CODEX_STATE" "$CODEX_LOG" "$CAPACITY_ONCE"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain "CODEX_STUB_CAPACITY=1 CODEX_STUB_CAPACITY_ONCE='$CAPACITY_ONCE' CODEX_CAPACITY_RETRY_DELAY=0" 2>/dev/null)"
+check_eq "a server-capacity wake retries Sol once" \
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "2"
+check_eq "…and both attempts use the same Sol model" \
+    "$(sandbox_count_in 'model=gpt-5.6-sol' "$CODEX_LOG")" "2"
+check_eq "…without entering the Claude account walk" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+check "the same-model retry is named as capacity, never credits" \
+    contains "$(cat "$SANDBOX/wake-debug.log")" "codex-capacity-retry"
+[ ! -e "$CODEX_STATE" ] && ok "transient capacity writes no Codex limit cooldown" \
+    || fail "server capacity must not bench the next independent Sol run" "$(cat "$CODEX_STATE" 2>/dev/null)"
+OUT="$(DESKCRAB_DEBUGLOG="$SANDBOX/wake-debug.log" "$REPO/lib/extract-response")"
+check_eq "only Sol's successful retry extracts from the combined stream" "$OUT" "codex stub reply."
+
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"; : > "$SANDBOX/wake-debug.log"
+OUT="$(wake_chain 'CODEX_STUB_CAPACITY=1 CODEX_CAPACITY_RETRIES=1 CODEX_CAPACITY_RETRY_DELAY=0' 2>/dev/null)"
+check_eq "persistent capacity stops after the configured Sol attempts" \
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "2"
+check_eq "persistent capacity still never enters the Claude walk" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+OUT="$(DESKCRAB_DEBUGLOG="$SANDBOX/wake-debug.log" "$REPO/lib/extract-response")"
+check_eq "exhausted capacity exposes no provider error as a reply" "$OUT" ""
+sb "DEBUGLOG='$SANDBOX/wake-debug.log'; wake_stream_failed" \
+    && ok "exhausted capacity remains a failed wake for ordinary re-booking" \
+    || fail "the exhausted wake must not become a successful silent reply" "$(cat "$SANDBOX/wake-debug.log")"
+
 echo
 echo "the interactive turn — same seam, extract_response still answers (rule 12):"
 turn() { # <extra env...>
@@ -296,6 +376,26 @@ check_eq "…which ran at the fallback model" \
     "$(sandbox_count_in '--model opus' "$SANDBOX_CLAUDE_LOG")" "1"
 check "the swap is on the record" \
     contains "$(cat "$SANDBOX/turn-debug.log")" "codex-limit"
+rm -f "$CODEX_STATE" "$CODEX_LOG" "$CAPACITY_ONCE"; : > "$SANDBOX_CLAUDE_LOG"
+OUT="$(turn "CLAUDE_MODEL=sol CODEX_STUB_CAPACITY=1 CODEX_STUB_CAPACITY_ONCE='$CAPACITY_ONCE' CODEX_CAPACITY_RETRY_DELAY=0" 2>/dev/null)"
+check "a server-capacity turn still answers on the Sol retry" \
+    contains "$OUT" "stub reply."
+check_eq "…with exactly two Sol attempts" \
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "2"
+check_eq "…and no Claude fallback attempt" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
+check "the capacity event is recorded without calling it a limit" \
+    contains "$(cat "$SANDBOX/turn-debug.log")" "codex-capacity-retry"
+[ ! -e "$CODEX_STATE" ] && ok "the turn also leaves Sol available next time" \
+    || fail "the turn wrote a false limit cooldown" "$(cat "$CODEX_STATE" 2>/dev/null)"
+
+rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
+OUT="$(turn "CLAUDE_MODEL=sol CODEX_STUB_CAPACITY=1 CODEX_CAPACITY_RETRIES=1 CODEX_CAPACITY_RETRY_DELAY=0" 2>/dev/null)"
+check_eq "an exhausted capacity turn exposes no provider error as a reply" "$OUT" ""
+check_eq "…after exactly the configured Sol attempts" \
+    "$(sandbox_count_in '^INVOKED' "$CODEX_LOG")" "2"
+check_eq "…and still no Claude fallback attempt" \
+    "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
 
 echo
 echo "the instructions file — the assembled prompt reaches codex WHOLE (rule 7):"

@@ -48,23 +48,13 @@ from urllib.parse import urlparse, parse_qs
 LIB_DIR = Path(__file__).resolve().parent
 WEBAPP_DIR = LIB_DIR / "webapp"
 
-# The desk streamer's sentence chunker, shared (specs/phone.md rule 17;
-# specs/speech-output.md's one-chunker discipline). Stdlib-only itself, so the
-# server's no-dependencies promise holds.
+# Local stdlib-only helpers keep the server's no-dependencies promise.
 sys.path.insert(0, str(LIB_DIR))
-import sentence_stream
 import openrsc_spectator
 # The token ledger's aggregation (specs/metrics.md rules 21-22): the metrics
 # page rides this server rather than getting one of its own. Stdlib-only, so
 # the no-dependencies promise holds here too.
 import token_ledger
-
-# Streaming voice granularity (PHONE_SENTENCE_STREAM in the config). Off, this
-# file behaves byte-for-byte as before the flag existed: one clip per completed
-# block. On, the text deltas already present in the turn log are chunked into
-# sentences and each becomes a clip the moment it completes; the completed
-# block then voices only the tail the deltas had not spoken.
-SENTENCE_STREAM = os.environ.get("DESKCRAB_PHONE_SENTENCE_STREAM", "") == "1"
 
 PORT = int(os.environ.get("DESKCRAB_SERVE_PORT", "8723"))
 BIND = os.environ.get("DESKCRAB_SERVE_BIND", "127.0.0.1")
@@ -1270,12 +1260,11 @@ def stt_session(sid, suffix, create=False):
 
 
 class Speaker:
-    """Voices text blocks as they stream in, one at a time and in order.
+    """Voices only text handed over after the turn's claim check.
 
-    The desktop speaks every text block through piper while the turn is still
-    running; the phone gets the same thing as a series of opus clips. Synthesis
-    runs on its own thread so tailing the log never blocks, and strictly
-    sequentially — a reply spoken out of order is worse than one spoken late.
+    Synthesis runs on its own thread so the completion path never blocks, and
+    strictly sequentially — a reply spoken out of order is worse than one
+    spoken late.
     """
 
     def __init__(self, emit, turn=None):
@@ -1341,25 +1330,8 @@ def _progress_events(logpath, stop, emit, speaker):
     consumer — we only summarise, the TTS streamer is not involved here.
     """
     seen_tools = 0
-    # The quiet marker, judged once per turn on the first worded text block
-    # (specs/speech-output.md rule 57): a reply that opens with it chose the
-    # bubble over the voice while it was written, so nothing of the turn is
-    # voiced and the text events carry the normalised "(quiet) …" form rather
-    # than the raw marker. The sentence-mode chunker holds its own voice the
-    # same way, inside the shared registry — one definition, both modes.
-    quiet_held = None
-    # With sentence streaming on, the registry walks the text deltas through
-    # the shared chunker and the say callback feeds the Speaker one sentence
-    # at a time — the same whitespace collapse the block path applies, and
-    # crab synth strips markdown per clip exactly as it does per block. With
-    # the flag off, chunker stays None and nothing below this line changes.
-    chunker = None
-    if speaker is not None and SENTENCE_STREAM:
-        def _say_sentence(chunk):
-            said = " ".join(chunk.split())
-            if said:
-                speaker.say(said)
-        chunker = sentence_stream.BlockRegistry(_say_sentence)
+    # Answer text is a draft until crab remote returns its checked completion
+    # payload. Only thinking and tool progress cross this live tail.
     while not stop.is_set() and not os.path.exists(logpath):
         time.sleep(0.05)
     partial = ""
@@ -1392,12 +1364,6 @@ def _progress_events(logpath, stop, emit, speaker):
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                # The streaming half, only when the flag armed a chunker: the
-                # registry replays and dedups exactly as the desk's does, so
-                # a re-emitted message or a re-read never speaks twice.
-                if chunker is not None and d.get("type") == "stream_event":
-                    chunker.stream_event(d.get("event") or {})
-                    continue
                 # NEVER stop at a result event: the usage-limit fallback
                 # APPENDS a second claude run to this same log after the
                 # refusal run's result, so a tail that returns at the first
@@ -1425,39 +1391,7 @@ def _progress_events(logpath, stop, emit, speaker):
                                         os.path.basename(logpath))
                         emit("tool", _tool_label(block))
                     elif kind == "text":
-                        raw = block.get("text") or ""
-                        if quiet_held is None and raw.strip():
-                            quiet_held = bool(
-                                sentence_stream.QUIET_RE.match(raw))
-                        said = " ".join(raw.split())
-                        said = said.split("---DISPLAY---")[0].strip()
-                        if quiet_held and sentence_stream.QUIET_RE.match(said):
-                            said = sentence_stream.QUIET_STRIP_RE.sub(
-                                "", said).strip()
-                            if said:
-                                said = "(quiet) " + said
-                        if said:
-                            # Not truncated: this block IS part of the reply on
-                            # the phone, appended in order, not a status line.
-                            # The text event stays per block in BOTH voice
-                            # modes — the bubble and the client's own-turn
-                            # match are built from it, and the flag is about
-                            # clips, not text.
-                            emit("text", said)
-                            # Speak it now, exactly as the desktop's TTS
-                            # streamer does — every text block gets a voice, not
-                            # just the final one. A quiet-held turn voices
-                            # nothing in either mode (rule 57): the marker
-                            # chose the bubble, and the bubble is text.
-                            if speaker and chunker is None and not quiet_held:
-                                speaker.say(said)
-                        if chunker is not None:
-                            # The sentences were voiced off the deltas as they
-                            # completed; this voices only the unspoken tail,
-                            # and marks the block so a re-emitted copy adds
-                            # nothing.
-                            chunker.close_text(d["message"].get("id"), idx,
-                                               block.get("text") or "")
+                        continue
     except OSError:
         return
 
@@ -1476,8 +1410,8 @@ def _tool_label(block):
 def ask(text, on_event=None, speaker=None, turn=None):
     """One turn through the real assistant. Returns the crab remote JSON.
 
-    With on_event, progress is reported live while the turn runs. With speaker,
-    each text block is also voiced as it arrives instead of only at the end.
+    With on_event, thinking and tool progress are reported live while the turn
+    runs. Answer text and voice wait for the checked completion payload.
 
     No --voice here: WHISPER_FIXES was already applied when the transcript was
     made, and --voice would apply it a second time — worse, to typed text too.

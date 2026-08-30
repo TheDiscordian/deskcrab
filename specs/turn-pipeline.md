@@ -305,18 +305,30 @@ cheap and gated, the nightly sleep pass sweeps the whole day behind it
 ([nightly.md](nightly.md) rules 51-53): the checker is the fast hand, the night is the honest
 ledger.
 
-32a. Every turn that delivered a reply — the desk, the phone, and the autonomous wake alike;
-     every channel she speaks on — MUST run the checker's presence pre-check over the reply at
-     the same out-of-band moment as the promise audit and the claudism capture. The pre-check
+32a. Every candidate reply — the desk, the phone, and the autonomous wake alike; every
+     channel she speaks on — MUST run the checker's presence pre-check before any part of the
+     reply is spoken, shown, streamed to the phone, or committed to conversation history. The pre-check
      is a pattern match for the shape of a first-person commitment (`promise_precheck` in
      `lib/common.sh`, one shared function): it costs a grep and MUST NOT call any model. Most
      replies carry no commitment, and for them the whole feature is that grep and one
-     run-trace line — no child spawned, no stream copied, no model invoked. Only a reply the
-     pre-check flags is handed on to `lib/promise-check`, detached, after the user has their
-     answer, never a gate — with the response, a private snapshot of the turn's stream log
-     (taken at fire time, because the phone turn deletes its log moments later and a detached
-     child racing that deletion judges nothing), the durable ledger path, and the journal
-     identity (start epoch, pid, kind).
+     run-trace line — no child spawned, no stream copied, no model invoked. A reply the
+     pre-check flags is handed synchronously to `lib/promise-check inspect` with the response,
+     a private snapshot of the turn's stream log, and the turn identity. A clean verdict lets
+     the candidate continue. An UNKEPT verdict, a missing verdict, or an unavailable checker
+     MUST hold the candidate back.
+32aa. A held candidate goes through another tool-capable pass on the same turn model. That
+      pass receives the user's request, the unsent candidate, and the checker's verdict. It
+      MUST perform or durably dispatch every safe, authorised action needed to make the claim
+      true, then write a complete replacement reply supported by the resulting record. When
+      the action cannot be performed within the user's authority or the available tools, the
+      replacement states what is actually true and does not repeat the claim. The replacement
+      is inspected again against the combined record. This repair is bounded by
+      `CLAIM_GUARD_REPAIRS` (default 2); if no candidate
+      passes, delivery uses a truthful non-action response and none of the unsupported drafts.
+      `CLAIM_GUARD` defaults to the `PROMISE_CHECK` setting, so the existing master switch
+      governs both halves unless the pre-delivery half is explicitly configured on its own.
+      The detached `turn` check remains as a record and nightly backstop after delivery, but it
+      MUST NOT be the first time a candidate action claim is checked.
 32b. The checker asks a cheap verifier — `PROMISE_CHECK_MODEL`, default `sonnet` (the conf
      convention of `MEMORY_JUDGE_MODEL`), with `PROMISE_CHECK_FALLBACK_MODEL` (default
      `haiku`) standing in when the verifier answers with nothing parseable — to extract every

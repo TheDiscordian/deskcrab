@@ -41,10 +41,19 @@ way, and no existing caller changes.
 
 import json
 import os
+import re
 import sys
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 DELIM = "---DISPLAY---"
+CAPACITY_RE = os.environ.get(
+    "DESKCRAB_CODEX_CAPACITY_RE",
+    r"selected model (is )?at capacity|server.?overloaded",
+).strip()
+try:
+    CAPACITY_RX = re.compile(CAPACITY_RE, re.I) if CAPACITY_RE else None
+except re.error:
+    CAPACITY_RX = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sentence_stream import near_duplicate
@@ -56,6 +65,7 @@ if os.environ.get("DESKCRAB_INCLUDE_PARTIAL") == "1":
 
 result_text = ""
 error_text = ""
+capacity_messages = set()
 blocks = []      # {"text", "synthetic", "key"} — synthetic = the CLI's own
                  # error dressed as a reply ("model":"<synthetic>",
                  # is_api_error_message); key names the message the block
@@ -72,9 +82,24 @@ for line in open(LOG):
         d = json.loads(line)
     except json.JSONDecodeError:
         continue
-    if d.get("type") == "result" and d.get("result"):
+    if d.get("method") == "error":
+        error = (d.get("params") or {}).get("error") or {}
+        message = str(error.get("message") or "") if isinstance(error, dict) else ""
+        info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+        if info == "serverOverloaded" or (CAPACITY_RX and CAPACITY_RX.search(message)):
+            capacity_messages.add(message)
+    elif d.get("type") == "error" and CAPACITY_RX \
+            and CAPACITY_RX.search(str(d.get("message") or "")):
+        capacity_messages.add(str(d.get("message") or ""))
+    elif d.get("type") == "result" and d.get("result"):
         if d.get("is_error"):
-            error_text = d["result"]
+            message = str(d["result"])
+            if d.get("engine") == "codex" and (
+                    message in capacity_messages
+                    or (CAPACITY_RX and CAPACITY_RX.search(message))):
+                capacity_messages.add(message)
+            else:
+                error_text = message
         else:
             result_text = d["result"]
     elif d.get("type") == "assistant":

@@ -104,8 +104,10 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     began — is the only shape that falls through to the exec pipeline of rule 11, and only when
     `CODEX_STREAM_MODE` is `auto` (the default; `app` and `exec` pin one road for tests and
     triage). A turn that started and died is a failed run, never a fallback: falling back after
-    real output would spend the subscription twice for one question. Jobs and classifiers stay
-    on the exec pipeline — nobody is waiting on their voice.
+    real reply text would spend the subscription twice for one question. Rule 12a's structured
+    server-capacity failure before any reply text is the exception: tool calls are work, but they
+    are not an answer, and the caller owns a retry on the same Codex model. Jobs and classifiers
+    stay on the exec pipeline — nobody is waiting on their voice.
 
 ### Limits and fallback
 
@@ -115,10 +117,24 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     a refusal the turn and wake paths record the cooldown, announce the swap in the stream, and
     run the ordinary Claude walk at `CODEX_FALLBACK_MODEL` (default: the loop's own
     `CLAUDE_MODEL`) with the path's own effort clamped per rule 4. A codex run that produced
-    genuine output NEVER falls back — a run that happened is a run that happened. The dispute
+    genuine reply text NEVER falls back — text may already be on the speakers. The dispute
     machinery's ordinary-model re-run (account-fallback.md rule 10a) is under the same rule: when
     the loop's own model is itself a codex name, that re-run lands on the Claude walk at the
     fallback model, never back on the engine that refused.
+12a. A server-capacity failure is NOT a subscription refusal. A structured app-server error whose
+    `codexErrorInfo` is `serverOverloaded` is authoritative; the provider's corresponding
+    "selected model is at capacity" message is the fallback recognition for the exec transport,
+    which does not promise the structured field. When that failure lands before any genuine reply
+    text — including after tool calls — a turn or wake MUST wait
+    `CODEX_CAPACITY_RETRY_DELAY` seconds, then append a retry of the same request on the same Codex
+    model, binary, and login to the same stream. It MUST retry at most `CODEX_CAPACITY_RETRIES`
+    additional times and MUST NOT send a capacity retry through the Claude account walk. It MUST
+    NOT write the limit cooldown, describe the event as exhausted credits, or allow the provider's
+    message into speech, display, conversation, or assistant reply text. Exhausting those retries
+    produces no assistant reply; a wake follows its ordinary outage/re-book path. The next
+    independent run therefore tries Codex normally. When genuine
+    reply text preceded the failure, no second model runs: the genuine text stands and the
+    provider error is discarded, so already-streamed speech is never duplicated.
 13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir) for
     `CODEX_LIMIT_COOLDOWN` seconds (default 1800). While it stands, `codex_available` answers no
     and every path goes straight to its fallback rather than paying a doomed boot. The cooldown
@@ -147,6 +163,9 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 | `CODEX_HOME` | auth, the wrap's writable set | default `~/.codex`; never copied, never symlinked |
 | `CODEX_MODEL_SOL` | `codex_model_resolve` | default `gpt-5.6-sol` |
 | `CODEX_LIMIT_RE` | `codex_stream_refusal` | liberal on purpose: only codex-owned error text is ever tested |
+| `CODEX_CAPACITY_RE` | `codex_stream_capacity` and the speech streamer | fallback recognition when structured `serverOverloaded` metadata is unavailable |
+| `CODEX_CAPACITY_RETRIES` | turn/wake capacity retry | additional same-Codex attempts, default 2 |
+| `CODEX_CAPACITY_RETRY_DELAY` | turn/wake capacity retry | seconds before each retry, default 1 |
 | `CODEX_LIMIT_COOLDOWN` | `codex_limit_record` | seconds, default 1800 |
 | `CODEX_FALLBACK_MODEL` | turn/wake fallback (rule 12) | default `$CLAUDE_MODEL` |
 | `CODEX_PROMPT_MODE` | the run functions | `instructions` (default) or `preface` (rule 8) |
@@ -178,4 +197,6 @@ carrying `CODEX_HOME` writable; the instructions file written whole; the streami
 11a) against a stub app-server — the partial-message vocabulary in the stream with the deltas'
 text extracted whole, the completed assistant behind them, usage on the result; a broken
 app-server falling through to the exec pipeline with the note on the record, in auto mode only;
-`CODEX_STREAM_MODE=exec` pinning the old road.
+`CODEX_STREAM_MODE=exec` pinning the old road; and the exact structured `serverOverloaded` event
+after a tool call, proving both turn and wake retry the same Codex model, never enter the Claude
+walk, write no Codex limit cooldown, and extract only the successful retry's answer.

@@ -96,16 +96,13 @@ with the page closed.
 
 ### Voice and media
 
-17. Streaming voice MUST be emitted per completed block while the turn runs, and MUST NOT emit after
-    the completion event. With `PHONE_SENTENCE_STREAM=1` the unit is the sentence instead: the text
-    deltas already present in the turn log are chunked by the desk streamer's own chunker — one
-    shared implementation (`lib/sentence_stream.py`), never a second one — each sentence becomes a
-    clip the moment it completes, and the completed block voices only the tail the deltas had not
-    already spoken. The flag defaults to off, and off MUST be byte-for-byte the per-block behaviour.
-    In either mode a sentence MUST never be voiced twice and never dropped, the display half MUST
-    never reach a clip, and rule 6's completion fallback counts clips identically — the display
-    split, the progress events, and the whole-draft mirror pass of
-    [speech-output.md](speech-output.md) rule 44 are untouched by the flag.
+17. Thinking and tool progress stream while the turn runs. Assistant answer text and voice MUST
+    remain held until the complete candidate has passed the action-claim check in
+    [turn-pipeline.md](turn-pipeline.md) rule 32a. The final verified spoken text is emitted once;
+    an unsupported draft MUST NOT reach a text event, a voice event, or the completion payload.
+    `PHONE_SENTENCE_STREAM` does not weaken this boundary. A sentence MUST never be voiced twice
+    or dropped, the display half MUST never reach a clip, and rule 6's completion fallback counts
+    clips identically.
     The synthesiser join deadline MUST be at least the per-synthesis timeout.
     A synthesis that produces nothing MUST leave a line in the server log, and the synthesiser MUST
     log its own it-never-ran failure too — the standing rule of

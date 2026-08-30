@@ -178,6 +178,21 @@ esac
 check "the snapshot was consumed by the checker" test ! -e "$T/snap-live.jsonl"
 
 echo
+echo "the synchronous inspect mode holds the same claim before delivery:"
+reset
+INSPECT_OUT="$("$T/repo/lib/promise-check" inspect phone 1786400000 4242 \
+    "$(snap "$SNAP_EMPTY")" "$T/ledger.jsonl" \
+    "I took you up on it immediately. I am wiring both viewers now." 2>/dev/null)"
+INSPECT_RC=$?
+check_eq "an unsupported candidate exits with the hold status" "$INSPECT_RC" "3"
+check "the verdict is returned to the correction pass" \
+    grep -q '^UNKEPT:' <<< "$INSPECT_OUT"
+check "a dispatched brief cannot masquerade as present work" \
+    grep -q "tense must match the evidence" "$T/model-stdin"
+check_eq "inspection does not ledger or book post-delivery work" \
+    "$(ledger_n)$(records)" "00"
+
+echo
 echo "a commitment the tool record shows performed books nothing:"
 reset
 sandbox_stub claude <<STUB

@@ -176,6 +176,20 @@ N=$(grep -cF 'SAY	Heard once is enough.' "$TRACE")
     || fail "verify replayed a spoken reply" "piper saw it $N times"
 
 echo
+echo "the provider draft is not the desktop speech source:"
+TRACE="$T/verified-only.trace"; : > "$TRACE"
+TRACE="$TRACE" DESKCRAB_NO_DISPATCH=1 bash -c '
+    source "$1/lib/common.sh" >/dev/null 2>&1
+    claim_debuglog
+    printf "%s\n" "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I took you up on it immediately. I am wiring both viewers now.\"}]}}" > "$DEBUGLOG"
+    start_verified_tts_streamer "No builder was dispatched, and no viewer work is running."
+    wait_tts_streamer' _ "$REPO_DIR"
+check_eq "the unsupported raw draft never reached piper" \
+    "$(sandbox_count_in 'I took you up on it' "$TRACE")" "0"
+check_eq "the verified replacement reached piper once" \
+    "$(sandbox_count_in 'No builder was dispatched, and no viewer work is running.' "$TRACE")" "1"
+
+echo
 echo "a thinking block shifts the stream's index space — the reply speaks once:"
 # The CLI emits the finished text block ALONE, at position 0 of its own
 # assistant event — NOT at its stream index, which a preceding thinking block

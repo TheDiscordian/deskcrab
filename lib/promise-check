@@ -26,11 +26,13 @@
 #
 # Usage:
 #   promise-check turn <kind> <epoch> <pid> <stream-snapshot> <ledger> <response>
+#   promise-check inspect <kind> <epoch> <pid> <stream-snapshot> <ledger> <response>
 #   promise-check sweep [day]
 #   promise-check resolve <day> <item> <fulfilled|struck|booked> <evidence>
 #
-# Every failure path of turn and sweep exits 0 with a trace line: a missing
-# or broken checker costs the check, never the turn. resolve is the one hand
+# Every failure path of turn and sweep exits 0 with a trace line. Inspect is
+# the delivery boundary: it exits 3 for an unkept claim and 4 when no safe
+# verdict can be reached. resolve is the one hand
 # tool here (nightly.md rule 53f) and fails loud instead — a resolution on
 # the wrong row is worse than a refusal.
 set -uo pipefail
@@ -70,8 +72,10 @@ CHECK_FALLBACK_MODEL="${PROMISE_CHECK_FALLBACK_MODEL:-haiku}"
 SWEEP_MODEL="${PROMISE_SWEEP_MODEL:-gpt-5.6-sol}"
 SWEEP_EFFORT="${PROMISE_SWEEP_EFFORT:-high}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
-[ -x "$CLAUDE_BIN" ] || exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
+if [ ! -x "$CLAUDE_BIN" ] || ! command -v python3 >/dev/null 2>&1; then
+    [ "$MODE" = inspect ] && exit 4
+    exit 0
+fi
 
 # The sweep's one judgment call — the shared walk of specs/nightly.md rules
 # 14c-14e, sourced, never re-implemented here. Through common.sh's own
@@ -158,7 +162,8 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# turn — one delivered reply against its own tool record.
+# turn / inspect — one reply against its own tool record. Inspect runs before
+# delivery; turn remains the detached record and wake backstop afterwards.
 # ---------------------------------------------------------------------------
 cmd_turn() {
     KIND="${1:-}"; EPOCH="${2:-}"; PID="${3:-}"; SNAP="${4:-}"
@@ -191,8 +196,9 @@ cmd_turn() {
     # (the immediately preceding turn, by the clock), backs every
     # action-claim by definition: the claim's whole shape is "the builder
     # does it".
-    local BACKED_JOB
-    if ! BACKED_JOB="$(python3 - "$JOBS_DIR" \
+    local BACKED_JOB=""
+    if [ "${PROMISE_INSPECT_ONLY:-0}" != 1 ] && \
+       ! BACKED_JOB="$(python3 - "$JOBS_DIR" \
             "$(( TURN_EPOCH - ${PROMISE_CHECK_JOB_BACKED_WINDOW:-900} ))" \
             2>/dev/null <<'PY'
 import json, os, sys
@@ -613,6 +619,7 @@ PY
     # (rule 32d): an accusation needs the record.
     if [ -z "$SNAP" ] || [ ! -r "$SNAP" ]; then
         check_log "no readable stream log — judged nothing; an accusation needs the record"
+        [ "${PROMISE_INSPECT_ONLY:-0}" = 1 ] && exit 4
         exit 0
     fi
 
@@ -856,7 +863,17 @@ PY
 (nothing is on the books)"
     fi
 
-    local PROMPT EVIDENCE_CLAUSE
+    local PROMPT EVIDENCE_CLAUSE INSPECT_CLAUSE=""
+    if [ "${PROMISE_INSPECT_ONLY:-0}" = 1 ]; then
+        INSPECT_CLAUSE="
+This verdict controls pre-delivery wording, so tense must match the evidence.
+A durable job or wake keeps an explicit claim that work was dispatched,
+scheduled, or will be done. It does NOT make a present-tense claim such as
+'I am wiring it' or 'I am testing it now' true before the record shows that
+substantive work running, and it does NOT make a completed claim true before
+the resulting action or artefact exists. Judge the exact claim she wrote,
+not a nearby claim she could truthfully write instead."
+    fi
     if [ "$WIDE" -eq 1 ]; then
         local OTHERS_N JOBS_N FILES_N GAMES_N
         OTHERS_N="$(printf '%s\n' "$OTHERS_BLOCK" | grep -c '^--- ' || true)"
@@ -924,6 +941,8 @@ performed, embodied, or scheduled is UNKEPT.
 If all six records together hold nothing at all, every commitment to
 action is UNKEPT.
 
+$INSPECT_CLAUSE
+
 Answer with one line per commitment and nothing else:
 UNKEPT: <the commitment, quoted verbatim from the reply> | <one sentence: why no record shows anything did it>
 KEPT: <the commitment, shortened> | <the call, session, job, file, or wake that keeps it>
@@ -988,6 +1007,8 @@ counts as performing it: a 'crab wake-at' or 'crab job' whose text names
 that work is a kept promise. A commitment with no such call is UNKEPT. If
 the record holds no tool calls at all, every commitment to action is UNKEPT.
 
+$INSPECT_CLAUSE
+
 Answer with one line per commitment and nothing else:
 UNKEPT: <the commitment, quoted verbatim from the reply> | <one sentence: why the record shows nothing did it>
 KEPT: <the commitment, shortened> | <the call that did it>
@@ -1003,6 +1024,7 @@ $RECORD_BLOCK"
     local OUT
     if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(UNKEPT|KEPT|NONE)\b')"; then
         check_log "no verdict from $CHECK_MODEL or $CHECK_FALLBACK_MODEL — nothing was judged"
+        [ "${PROMISE_INSPECT_ONLY:-0}" = 1 ] && exit 4
         exit 0
     fi
 
@@ -1012,7 +1034,14 @@ $RECORD_BLOCK"
     UNKEPT_N="$(printf '%s\n' "$UNKEPT" | grep -c . || true)"
     if [ "${UNKEPT_N:-0}" -eq 0 ]; then
         check_log "verdict: ${KEPT_N:-0} kept, 0 unkept"
+        [ "${PROMISE_INSPECT_ONLY:-0}" = 1 ] && printf '%s\n' "$OUT"
         exit 0
+    fi
+
+    if [ "${PROMISE_INSPECT_ONLY:-0}" = 1 ]; then
+        printf '%s\n' "$OUT"
+        check_log "verdict: ${KEPT_N:-0} kept, ${UNKEPT_N} unkept — candidate held"
+        exit 3
     fi
 
     local DELAY="${PROMISE_CHECK_WAKE_DELAY:-3m}"
@@ -1555,8 +1584,9 @@ PY
 
 case "$MODE" in
     turn)    cmd_turn "$@" ;;
+    inspect) PROMISE_INSPECT_ONLY=1 cmd_turn "$@" ;;
     sweep)   cmd_sweep "$@" ;;
     resolve) cmd_resolve "$@" ;;
-    *)     echo "Usage: promise-check turn <kind> <epoch> <pid> <stream-snapshot> <ledger> <response> | sweep [day] | resolve <day> <item> <decision> <evidence>" >&2
+    *)     echo "Usage: promise-check turn|inspect <kind> <epoch> <pid> <stream-snapshot> <ledger> <response> | sweep [day] | resolve <day> <item> <decision> <evidence>" >&2
            exit 2 ;;
 esac

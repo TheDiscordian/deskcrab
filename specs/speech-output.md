@@ -3,20 +3,24 @@
 ## PURPOSE
 
 Everything between the model's stream and the user's ears and eyes: extracting the reply, splitting
-it into the spoken half and the display half, speaking it sentence by sentence while it is still
-being written, and guaranteeing that if there was something to say, it was said. This spec also owns
+it into the spoken half and the display half, speaking it once the candidate reply has passed its
+action-claim check, and guaranteeing that if there was something to say, it was said. This spec also owns
 the rules that keep the plumbing from ever deciding her words are not worth voicing.
 
-**The standing rule above all of these: nothing here may swallow, clip, budget, or gate her speech.**
+**The standing rule above all of these: nothing here may swallow, clip, or budget her verified speech.**
 A filter that decides her words are not worth voicing is a self-inflicted injury, and it has been
-built twice and removed twice. Silence is chosen while writing, or not at all.
+built twice and removed twice. Silence is chosen while writing, or not at all. The action-claim
+check in [turn-pipeline.md](turn-pipeline.md) rule 32a does not judge whether words are worth
+voicing: it returns an unsupported draft to the same tool-capable assistant, and only the
+assistant's verified replacement becomes the reply.
 
-Two mechanisms are allowed to stand between a drafted sentence and the synthesiser, and only
+Three mechanisms are allowed to stand between a drafted sentence and the synthesiser, and only
 because neither decides anything about whether her words are worth voicing. The pre-speech mirror
 (rules 38–46) shows her a line that tripped her own phrase list and she chooses again, rewrite or
 the original, never silence and never machine text; the authority for that distinction is
 `conduct/no-gate-on-my-tongue.md` as clarified 2026-08-08, and any failure anywhere in the mirror
-speaks the original untouched. The acceptance hold (rule 12b) delays a finished message's hand-off
+speaks the original untouched. The action-claim hold returns an unsupported draft for action or
+truthful replacement and validates the replacement before delivery. The acceptance hold (rule 12b) delays a finished message's hand-off
 to piper until the CLI's own turn machinery has moved past it: every word it releases is hers
 unaltered, and what it discards is only a draft she herself replaced under a Stop-hook rejection —
 the same authority rule 5a already exercises on the stored reply.
@@ -76,6 +80,11 @@ the same authority rule 5a already exercises on the stored reply.
     authenticate: OAuth session expired and could not be refreshed"; the stand-in came back as
     the rewrite, the caller tested it only for non-blankness, and the CLI's auth error was
     spliced into her written reply in place of her sentence and logged as a clean catch.
+7b. A retryable provider-capacity result MUST keep the streaming reader alive exactly as a limit
+    refusal does: the same-model retry's answer appends to the same stream, and the capacity
+    message crosses no speech boundary. The response extractor MUST also discard a capacity error
+    when every bounded retry fails. This judgement is confined to an error result; genuine reply text that
+    happens to quote the provider wording is ordinary speech.
 8. A refusal MUST be recognised only by the CLI's own synthetic marker, never by pattern-matching
    reply text. A genuine reply that quotes a limit phrase must not be gagged as an outage.
 9. An empty stream MUST print nothing at all, not a blank line. The callers test emptiness with a
