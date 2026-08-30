@@ -261,6 +261,14 @@ deliberate-play channel.
    the current plan when the message supplies help, identifies a problem, or requests
    coordination.
 
+   The same deduplicated incoming local/private message id tops up the current sitting when its
+   playable deadline has less than 20 minutes remaining. The deadline becomes exactly 20 minutes
+   after observation; a message received during wind-down returns the session to `open`. A
+   separate bounded id ledger makes this work across a hot runner upgrade without letting the
+   bridge's repeated snapshots add time repeatedly. No session is opened by chat, outgoing/system
+   messages add nothing, and a sitting with at least 20 minutes left is unchanged. The extension
+   and its triggering message ids are retained in `session.json` and `player-decisions.jsonl`.
+
    Friend presence is ambient social awareness, not a new interruption class. The client's
    authoritative `friend-status` messages are parsed only from actual “has logged in/out”
    transitions; loading the initial friend list produces no synthetic arrivals. Each transition
@@ -720,7 +728,8 @@ deliberate-play channel.
     — written when rule 14's `play` finds no session open. `play` on an already-open session
     leaves the clock alone: it stays the resume door, and a player process restart is not a new
     sitting. The limit is `OPENRSC_SESSION_LIMIT` in the assistant's config (default `2h`) and
-    the grace after it `OPENRSC_SESSION_GRACE` (default `10m`).
+    the grace after it `OPENRSC_SESSION_GRACE` (default `10m`). `limit_ms` may grow only through
+    rule 7b's player-message top-up; `started` remains fixed, preserving the sitting's true age.
 
 21a. When `started + limit_ms` passes, `step` reports `session-over` (exit 8) with `elapsed_ms`,
     `limit_ms` and `grace_ms_left`, and NO ordinary evaluation happens: no learned rule fires and
@@ -753,6 +762,11 @@ deliberate-play channel.
     be told — so when it finds her still logged in it stops the CLIENT, disconnecting her rather
     than leaving her standing in the world with the guards coming down around her. A disconnect is
     a worse ending than a clean logout, and that asymmetry is deliberate: it is the incentive.
+    A transient cutoff timer is a reminder of the deadline it was armed for, not authority to
+    ignore a later chat extension. On firing it atomically claims the session deadline. If the
+    deadline moved, it schedules a fresh transient timer for the remaining hard-deadline interval
+    and leaves every guard and playing layer up. Only a due claim marks the sitting ended and
+    performs the forced shutdown. Manual ending cancels every old and rearmed cutoff timer.
 
 21c-i. A closed session suppresses exactly as an over-run one does (rule 21a's `ended` phase).
     Ending a sitting means play has STOPPED, so a resident runner that outlived the stop finds the

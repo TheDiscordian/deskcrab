@@ -1912,6 +1912,7 @@ cat > "$SDFAKE/systemd-run" <<'SH'
 #!/bin/bash
 dir="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$@" >> "$dir/systemd-run-args"
+case "$*" in *--on-active=*) exit 0 ;; esac
 args=("$@"); i=0
 while [ $i -lt ${#args[@]} ]; do
     case "${args[$i]}" in
@@ -2005,6 +2006,90 @@ contains "$OUT" "already open" \
 contains "$(gp session 2>&1)" "120m" \
     && ok "so the resume door cannot extend a sitting" \
     || fail "so the resume door cannot extend a sitting"
+# Rule 7b: conversation near the end creates breathing room, but only one
+# credit per genuine incoming message id. The sitting's original start stays
+# truthful; only its deadline (limit_ms) moves.
+TOPUPS0="$(decided session-message-top-up)"
+python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+b = json.load(open(p))
+b["started"] = int(time.time() * 1000) - (b["limit_ms"] - 1800000)
+json.dump(b, open(p, "w"))
+PY
+LIMIT30="$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_DIR/session.json'))['limit_ms'])")"
+snap 7001 '[]' '{"messages":[
+    {"id":8700,"channel":"local","incoming":true,"sender":"Early Friend","text":"Still playing?"}
+]}'
+gp step --local >/dev/null 2>&1 || true
+check_eq "a message with thirty playable minutes left adds no time" \
+    "$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_DIR/session.json'))['limit_ms'])")" "$LIMIT30"
+check_eq "and records no top-up event above the threshold" \
+    "$(( $(decided session-message-top-up) - TOPUPS0 ))" "0"
+python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+b = json.load(open(p))
+b["started"] = int(time.time() * 1000) - (b["limit_ms"] - 300000)
+json.dump(b, open(p, "w"))
+PY
+snap 7002 '[]' '{"messages":[
+    {"id":8700,"channel":"local","incoming":true,"sender":"Early Friend","text":"Still playing?"},
+    {"id":8701,"channel":"private","incoming":true,"sender":"Late Friend","text":"Hello before you go"}
+]}'
+gp step --local >/dev/null 2>&1 || true
+python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY' \
+    && ok "a new message below the threshold tops play back up to twenty minutes" \
+    || fail "late player chat must move the playable deadline to twenty minutes"
+import json, sys, time
+b = json.load(open(sys.argv[1]))
+remaining = b["started"] + b["limit_ms"] - int(time.time() * 1000)
+assert 1190000 <= remaining <= 1200000, remaining
+assert b["last_message_top_up"]["message_ids"] == [8701], b
+PY
+check_eq "the top-up is retained once in the decision log" \
+    "$(( $(decided session-message-top-up) - TOPUPS0 ))" "1"
+TOPPED_LIMIT="$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_DIR/session.json'))['limit_ms'])")"
+gp step --local >/dev/null 2>&1 || true
+check_eq "a repeated snapshot of that message cannot add another twenty minutes" \
+    "$(python3 -c "import json; print(json.load(open('$DESKCRAB_GAME_DIR/session.json'))['limit_ms'])")" "$TOPPED_LIMIT"
+python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+b = json.load(open(p))
+b["started"] = int(time.time() * 1000) - b["limit_ms"] - 60000
+json.dump(b, open(p, "w"))
+PY
+snap 7003 '[]' '{"messages":[
+    {"id":8702,"channel":"local","incoming":true,"sender":"Winddown Friend","text":"Wait, one thing"}
+]}'
+gp step --local >/dev/null 2>&1 || true
+python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY' \
+    && ok "player chat during wind-down returns the sitting to open with twenty minutes" \
+    || fail "wind-down conversation must revive the playable clock"
+import json, sys, time
+b = json.load(open(sys.argv[1]))
+remaining = b["started"] + b["limit_ms"] - int(time.time() * 1000)
+assert 1190000 <= remaining <= 1200000, remaining
+PY
+contains "$(gp session cutoff)" "wait_ms=" \
+    && ok "an obsolete hard-stop claim sees the moved deadline instead of ending it" \
+    || fail "the cutoff must recheck the durable deadline after chat"
+# Leave the surrounding sitting tests on their original two-hour fixture and
+# remove the synthetic conversations so they cannot become later priorities.
+python3 - "$DESKCRAB_GAME_DIR/session.json" \
+          "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY'
+import json, sys, time
+session_path, state_path = sys.argv[1:]
+b = json.load(open(session_path))
+b.update(started=int(time.time() * 1000), limit_ms=7200000, grace_ms=600000,
+         ended=None)
+json.dump(b, open(session_path, "w"))
+s = json.load(open(state_path))
+s["pending_messages"] = []
+s["message_settle_until"] = 0
+json.dump(s, open(state_path, "w"))
+PY
 # Rule 21a: past the limit, ordinary evaluation stops on both hands.
 python3 - "$DESKCRAB_GAME_DIR/session.json" <<'PY'
 import json, sys, time
@@ -2552,9 +2637,14 @@ refute "and the refusal closes no sitting" \
     grep -q '"ended"' "$DESKCRAB_GAME_DIR/session.json"
 # The grace timer has nobody to tell, so its path proceeds — and the arming
 # call must actually use it.
-contains "$(sed -n '/^session_open()/,/^}/p' "$BOC")" 'session-end --force' \
+contains "$(sed -n '/^session_open()/,/^}/p' "$BOC")" 'arm_session_cutoff_ms' \
+    && contains "$(sed -n '/^arm_session_cutoff_ms()/,/^}/p' "$BOC")" 'session-end --force' \
     && ok "the grace timer is armed on the forced path" \
     || fail "the grace timer is armed on the forced path"
+contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'play session cutoff' \
+    && contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'arm_session_cutoff_ms' \
+    && ok "a stale hard-stop timer rechecks and rearms the chat-moved deadline" \
+    || fail "the hard stop must follow the durable extended deadline"
 contains "$(sed -n '/^cmd_session_end()/,/^}/p' "$BOC")" 'stop orsc-client.service' \
     && ok "which disconnects her rather than leaving her unguarded" \
     || fail "which disconnects her rather than leaving her unguarded"

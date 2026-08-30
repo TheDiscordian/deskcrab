@@ -104,6 +104,7 @@ EXIT_SESSION_OVER = 8
 # reads the user's own spelling out of the config and hands them down.
 SESSION_LIMIT_MS = 2 * 60 * 60 * 1000
 SESSION_GRACE_MS = 10 * 60 * 1000
+SESSION_MESSAGE_TOP_UP_MS = 20 * 60 * 1000
 
 EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
 
@@ -305,6 +306,23 @@ def session_path() -> Path:
     return game_dir() / "session.json"
 
 
+def session_lock_path() -> Path:
+    return game_dir() / "session.lock"
+
+
+class session_state_lock:
+    """Serialize session opening, ending, deadline claims, and chat top-ups."""
+    def __enter__(self):
+        session_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(session_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
 def read_session() -> dict:
     """The session record, ended or not, or {} when there is none (spec rule
     21). A file that cannot be read is no session: the clock never invents a
@@ -340,9 +358,13 @@ def session_state(now: int = None) -> dict:
     limit = int(s.get("limit_ms") or SESSION_LIMIT_MS)
     grace = int(s.get("grace_ms") or SESSION_GRACE_MS)
     elapsed = now - int(s["started"])
+    deadline = int(s["started"]) + limit
+    hard_deadline = deadline + grace
     out = {"phase": "open", "started": int(s["started"]), "elapsed_ms": elapsed,
            "limit_ms": limit, "grace_ms": grace,
-           "grace_ms_left": max(0, limit + grace - elapsed)}
+           "deadline_ms": deadline, "hard_deadline_ms": hard_deadline,
+           "remaining_ms": max(0, deadline - now),
+           "grace_ms_left": max(0, hard_deadline - now)}
     if s.get("ended"):
         out["phase"] = "ended"
         out["grace_ms_left"] = 0
@@ -1206,6 +1228,7 @@ def load_player_state() -> dict:
     est.setdefault("pending_system_messages", [])
     est.setdefault("seen_friend_status_ids", [])
     est.setdefault("pending_friend_status", [])
+    est.setdefault("session_top_up_message_ids", [])
     est.setdefault("recent_repetitions", [])
     est.setdefault("reported_repetitions", {})
     est.setdefault("repetition_holds", [])
@@ -1271,6 +1294,70 @@ def capture_player_messages(snap: dict, est: dict, events: list) -> int:
     if captured:
         est["message_settle_until"] = captured_at + PLAYER_MESSAGE_SETTLE_MS
     return captured
+
+
+def top_up_session_from_player_messages(snap: dict, est: dict,
+                                        events: list) -> dict:
+    """Give a live sitting twenty playable minutes after genuine player chat.
+
+    Conversation capture and timer credit have separate id ledgers. That is
+    intentional: a long-lived runner from the previous code generation may
+    already have captured the conversation before a new model-facing `play`
+    loads this feature. Pending messages therefore remain enough evidence to
+    grant the top-up exactly once after a hot upgrade.
+    """
+    credited = set(est.get("session_top_up_message_ids") or [])
+    messages = []
+    sources = list(snap.get("messages") or []) + list(est.get("pending_messages") or [])
+    for message in sources:
+        if not isinstance(message, dict) or message.get("incoming") is not True \
+                or message.get("channel") not in ("local", "private"):
+            continue
+        message_id = message.get("id")
+        if not isinstance(message_id, int) or message_id in credited:
+            continue
+        sender = str(message.get("sender") or "").strip()
+        text = str(message.get("text") or "").strip()
+        if not sender or not text:
+            continue
+        credited.add(message_id)
+        messages.append({"id": message_id, "sender": sender[:80],
+                         "channel": message.get("channel")})
+    est["session_top_up_message_ids"] = sorted(credited)[-500:]
+    if not messages:
+        return {}
+
+    now = now_ms()
+    with session_state_lock():
+        session = read_session()
+        if not session or session.get("ended"):
+            return {}
+        started = int(session["started"])
+        old_limit = int(session.get("limit_ms") or SESSION_LIMIT_MS)
+        old_deadline = started + old_limit
+        remaining = old_deadline - now
+        if remaining >= SESSION_MESSAGE_TOP_UP_MS:
+            return {}
+        new_deadline = now + SESSION_MESSAGE_TOP_UP_MS
+        session["limit_ms"] = new_deadline - started
+        session["last_message_top_up"] = {
+            "at": now, "message_ids": [item["id"] for item in messages],
+            "senders": sorted({item["sender"] for item in messages}),
+        }
+        game_reflex.atomic_write(session_path(), json.dumps(session) + "\n")
+
+    event = {
+        "ts": now, "kind": "session-message-top-up",
+        "message_ids": [item["id"] for item in messages],
+        "senders": sorted({item["sender"] for item in messages}),
+        "remaining_before_ms": max(0, remaining),
+        "old_deadline_ms": old_deadline,
+        "new_deadline_ms": new_deadline,
+        "play_minutes": SESSION_MESSAGE_TOP_UP_MS // 60000,
+    }
+    events.append(event)
+    est["last_session_top_up"] = event
+    return event
 
 
 def capture_friend_status(snap: dict, est: dict, events: list) -> int:
@@ -2592,6 +2679,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         friend_events = []
         with player_state_lock():
             sleeping_state = load_player_state()
+            capture_player_messages(snap, sleeping_state, friend_events)
+            top_up_session_from_player_messages(
+                snap, sleeping_state, friend_events)
             capture_friend_status(snap, sleeping_state, friend_events)
             save_player_state(sleeping_state)
             flush_events(friend_events)
@@ -2666,6 +2756,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         est = load_player_state()
         est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
         capture_player_messages(snap, est, message_events)
+        top_up_session_from_player_messages(snap, est, message_events)
         capture_friend_status(snap, est, message_events)
         capture_urgent_system_messages(snap, est, message_events)
         pending_system_message = oldest_pending_system_message(est)
@@ -3464,37 +3555,59 @@ def cmd_session(args):
         # An ENDED record is not an open sitting — opening past one is exactly
         # how the next sitting starts, and it is what lifts rule 21c-i's
         # suppression. Only a live sitting refuses to be reopened.
-        st = session_state()
-        if st["phase"] in ("open", "over", "expired"):
-            print(f"session already open: {st['elapsed_ms'] // 60000}m elapsed "
-                  f"of {st['limit_ms'] // 60000}m ({st['phase']})")
-            return
-        game_dir().mkdir(parents=True, exist_ok=True)
-        body = {"started": now_ms(),
-                "limit_ms": int(args.limit_ms or SESSION_LIMIT_MS),
-                "grace_ms": int(args.grace_ms or SESSION_GRACE_MS),
-                "ended": None}
-        game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+        with session_state_lock():
+            st = session_state()
+            if st["phase"] in ("open", "over", "expired"):
+                print(f"session already open: {st['elapsed_ms'] // 60000}m elapsed "
+                      f"of {st['limit_ms'] // 60000}m ({st['phase']})")
+                return
+            game_dir().mkdir(parents=True, exist_ok=True)
+            body = {"started": now_ms(),
+                    "limit_ms": int(args.limit_ms or SESSION_LIMIT_MS),
+                    "grace_ms": int(args.grace_ms or SESSION_GRACE_MS),
+                    "ended": None}
+            game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
         print(f"session open: {body['limit_ms'] // 60000}m to play, "
               f"{body['grace_ms'] // 60000}m of grace after that")
         return
     if args.action == "end":
-        st = session_state()
-        if st["phase"] == "none":
-            print("session: none open")
-            return
-        body = dict(read_session())
-        body["ended"] = now_ms()
-        game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+        with session_state_lock():
+            st = session_state()
+            if st["phase"] == "none":
+                print("session: none open")
+                return
+            body = dict(read_session())
+            body["ended"] = now_ms()
+            game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
         print(f"session ended after {st['elapsed_ms'] // 60000}m "
               f"of a {st['limit_ms'] // 60000}m sitting")
+        return
+    if args.action == "cutoff":
+        # The transient hard-stop timer asks atomically. A player message may
+        # have moved the deadline since this timer was armed; in that case the
+        # caller rearms instead of disconnecting her at the obsolete time.
+        with session_state_lock():
+            st = session_state()
+            if st["phase"] in ("none", "ended"):
+                print(f"session-cutoff ignore phase={st['phase']}")
+                return
+            if st["grace_ms_left"] > 0:
+                print(f"session-cutoff wait_ms={st['grace_ms_left']}")
+                return
+            body = dict(read_session())
+            if body and not body.get("ended"):
+                body["ended"] = now_ms()
+                body["ended_reason"] = "deadline"
+                game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+            print(f"session-cutoff due phase={st['phase']}")
         return
     st = session_state()
     if st["phase"] == "none":
         print("session: none open")
         return
     print(f"session: {st['phase']} — {st['elapsed_ms'] // 60000}m elapsed of "
-          f"{st['limit_ms'] // 60000}m, grace left {st['grace_ms_left'] // 60000}m")
+          f"{st['limit_ms'] // 60000}m, play left {st['remaining_ms'] // 60000}m, "
+          f"grace left {st['grace_ms_left'] // 60000}m")
 
 
 def cmd_route(args):
@@ -4019,7 +4132,7 @@ def main():
 
     p = sub.add_parser("session", help="the sitting's clock: open, status, end")
     p.add_argument("action", nargs="?", default="status",
-                   choices=["open", "status", "end"])
+                   choices=["open", "status", "end", "cutoff"])
     p.add_argument("--limit-ms", type=int, dest="limit_ms")
     p.add_argument("--grace-ms", type=int, dest="grace_ms")
     p.set_defaults(fn=cmd_session)
@@ -4123,8 +4236,12 @@ def main():
                 friend_events = []
                 with player_state_lock():
                     live_state = load_player_state()
+                    live_snapshot = game_reflex.read_snapshot() or {}
+                    capture_player_messages(live_snapshot, live_state, friend_events)
+                    top_up_session_from_player_messages(
+                        live_snapshot, live_state, friend_events)
                     capture_friend_status(
-                        game_reflex.read_snapshot() or {}, live_state, friend_events)
+                        live_snapshot, live_state, friend_events)
                     save_player_state(live_state)
                     flush_events(friend_events)
                 friend_updates = pending_friend_status(live_state)

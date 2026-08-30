@@ -916,6 +916,21 @@ become a false arrival burst, and a login does not automatically cancel work or 
 
 Contract: [`specs/game-player.md`](../specs/game-player.md), rule 7b.
 
+### 2026-08-29 — Conversation can keep a sitting alive
+
+The sitting clock used to be immutable after `play` opened it. That was useful protection against
+process restarts quietly creating endless sessions, but it also meant a friend arriving near the
+end could begin a real conversation while the original hard-stop timer continued counting toward
+an abrupt disconnect.
+
+Each genuine incoming local/private message now receives timer credit exactly once. If fewer than
+20 playable minutes remain—including wind-down—the durable deadline moves to 20 minutes after that
+message. Repeated bridge snapshots, outgoing text, and sessions already above the threshold add no
+time. The transient hard-stop rechecks the locked durable deadline when it fires; an obsolete timer
+rearms for the moved hard deadline rather than shutting down the player, runner, or client.
+
+Contract: [`specs/game-player.md`](../specs/game-player.md), rules 7b and 21.
+
 ## Long-term memory
 
 `crab memory`, `lib/memory.py`: a sqlite-vec store at `~/.local/share/deskcrab/memory/memory.db`
