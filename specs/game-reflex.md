@@ -82,16 +82,25 @@ Three parts:
    `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
    client currently holds as loaded, nearest by ordinary walking steps to the player first,
    capped at 64: each
-   `{"sidx":…,"id":…,"x":…,"z":…}` — the client's own server index for that NPC, its type id, and
-   its world tile), plus `npc_count` (the complete loaded count) and `npcs_truncated` (whether the
-   64-entry safety cap omitted anything). Scenery does not occlude this list: an absent NPC is
-   outside the client's loaded set or, when explicitly marked, beyond the cap; the snapshot never
-   establishes a fence as the cause. `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
+   `{"sidx":…,"id":…,"x":…,"z":…,"distance":…,"clear_shot":…,
+   "terrain_melee_reachable":…}` — the client's own server index for that NPC, its type id and
+   world tile, Chebyshev distance, the server-equivalent projectile-line result, and whether the
+   currently loaded movement topology contains a route from it into melee range), plus `npc_count`
+   (the complete loaded count) and `npcs_truncated` (whether the 64-entry safety cap omitted
+   anything). Scenery does not occlude this list: an absent NPC is outside the client's loaded set
+   or, when explicitly marked, beyond the cap. `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
    the client currently holds as loaded, nearest by walking steps first, capped at 12: each
-   `{"id":…,"x":…,"z":…,"dir":…}` — type id, world tile, facing direction), and `bounds` (the
-   wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at 12, the same
-   four fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
-   tile stay distinct), `ground_items` (items currently visible on the ground, nearest by walking steps first,
+   `{"id":…,"name":…,"x":…,"z":…,"dir":…,"blocks_movement":…,
+   "projectiles_pass":…}` — type id/name, world tile, facing direction, and its two collision
+   properties), and `bounds` (the
+   wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at
+   12, with those same semantic fields; `dir` is which wall of the tile the boundary stands on, so two doors sharing a
+   tile stay distinct). `terrain` is a compact radius-6 topology centred on the player: fully
+   blocked cells and cardinal `barriers` are the only entries (empty floor is implicit), and every
+   entry independently says `projectiles_pass`; barrier endpoints are absolute `a:[x,z]` and
+   `b:[x,z]` tiles. It comes from the same loaded collision map used by ordinary walking and the
+   same projectile-permeability classifications used by server path validation. `ground_items`
+   (items currently visible on the ground, nearest by walking steps first,
    capped at 12: each `{"id":…,"x":…,"z":…}` — item id and world tile), `shop_open` and
    `bank_open`, plus `shop_items` and `bank_items`. A shop item is
    `{"slot":…,"id":…,"name":…,"count":…,"noted":…}` from the open shop's 40-slot
@@ -125,7 +134,8 @@ Three parts:
    walk-and-command as its context-menu entry, without reconstructing that menu), `cast-npc`
    (cast one NPC/player-targeted spell by spell id on a visible NPC server/type identity after
    rechecking the live Magic level and staff-aware rune requirements, through the ordinary
-   walk-and-cast packet path), `interact-object` (perform a menu
+   walk-and-cast packet path, or, with `stationary=1`, the cast packet without an approach walk
+   after enforcing Magic's four-tile range), `interact-object` (perform a menu
    command on a loaded game object at an absolute tile — the same walk-and-act the object's own
    right-click Command entry performs; `cmd` 1 or 2 picks the object definition's first or second
    command, so a fishing spot's Net and Bait, a gate's Open, a range's nothing-at-all are all the
@@ -178,10 +188,14 @@ Three parts:
    refuses `refused-nearer-equivalent` when another currently loaded NPC of that type is strictly
    fewer walking steps away; `interact-npc` rechecks `within` against the NPC's current tile and
    refuses `refused-npc-out-of-range` if it roamed beyond the cap. `cast-npc` carries `spell`,
-   `sidx`, and `npc`, plus optional `within` 0–10; it refuses a missing spell, a non-NPC spell target, insufficient live Magic,
+   `sidx`, and `npc`, plus optional `within` 0–10 and 0/1 `stationary`,
+   `require_clear_shot`, and `require_melee_unreachable`; it refuses a missing spell, a non-NPC spell target, insufficient live Magic,
    or any unavailable rune as `refused-no-such-spell`, `refused-wrong-spell-target`,
    `refused-magic-level`, or `refused-missing-runes`, then applies the same NPC identity and
-   nearer-equivalent and locality checks before dispatch. `x`, `z`, `obj` — the object type id, NOT named
+   nearer-equivalent and locality checks before dispatch. A stationary cast beyond four tiles is
+   `refused-stationary-out-of-range`; requested terrain relations are re-read on that same NPC and
+   refuse as `refused-no-clear-shot` or `refused-melee-reachable` when no longer true. No approach
+   walk is emitted for a stationary cast. `x`, `z`, `obj` — the object type id, NOT named
    `id` for the same collision reason — and `cmd` for interact-object, so an unloaded or swapped
    object is refused as `refused-no-such-object` or `refused-object-mismatch` and a `cmd` outside
    1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on

@@ -881,6 +881,46 @@ Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 3, 10 and 14.
 
 ## The OpenRSC player
 
+### 2026-08-30 — One refused local leg became a fictional map boundary
+
+On a southbound route, the straight eight-tile leg returned `refused-no-path`. That established
+only that the generated local endpoint was not currently pathable. Beatrice promoted it to “the
+south road is blocked by a real map boundary,” cleared the destination, and chose unrelated work.
+The prompt had helped the mistake by calling walls, rivers, buildings, and mountains “real strategy
+changes” immediately after its route-block paragraph, while the verdict itself was named as though
+the whole route had been disproved.
+
+Intermediate legs now give the client a one-tile arrival area, because generated local endpoints
+have no landmark significance. A refused straight leg starts a bounded deterministic fan of
+left/right candidates that remain local and closer to the actual destination; tried candidates are
+remembered and never repeated. Only after those alternatives are exhausted does the outward
+verdict become `route-needs-detour`, explicitly saying the evidence is limited to attempted local
+legs and a map boundary is unproven. It directs the player to live terrain or a deliberate waypoint;
+the play prompt forbids naming an unseen cause. Internal blocked state still suppresses retries
+until the obstacle scene changes or Beatrice deliberately supplies a correction.
+
+Contract: [`specs/game-player.md`](../specs/game-player.md), rule 7e.
+
+### 2026-08-30 — Terrain relations were trapped in collision internals
+
+The client could path around local scenery and the server could separately decide whether a spell
+crossed it, but neither relation reached Beatrice's state. She therefore had no grounded way to
+compare candidate firing positions, test one without an automatic approach walk, or retain what a
+successful arrangement taught her. Screenshots showed shapes, not the movement and projectile
+rules those shapes produced.
+
+The bridge now publishes a compact local topology plus, for each loaded NPC, the current clear-shot
+result and whether the loaded terrain gives it a route into melee range. A stationary cast is a
+bounded experiment: it omits approach, checks Magic range and optional live terrain relations on
+the same NPC at dispatch, and fails if Beatrice's tile changes. The direct terrain and cast doors
+show the evidence; the prompt asks her to verify position, XP/runes, HP, and repeated outcomes,
+then retain the resulting terrain lesson. Learned activity reflexes can recheck those relations on
+every firing, so a changed target or topology stops the rule instead of silently turning it into a
+chase. A server clear-shot refusal is terminal failure feedback, not a wait that hangs until timeout.
+
+Contract: [`specs/game-reflex.md`](../specs/game-reflex.md), rules 3 and 6; and
+[`specs/game-player.md`](../specs/game-player.md), rules 5 and 7.
+
 ### 2026-08-30 — A remote destination could reverse into wandering
 
 The durable route handed a far absolute destination directly to a client whose collision map holds

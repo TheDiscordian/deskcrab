@@ -381,6 +381,9 @@ refute "cast-npc requires both spell and NPC identities" \
 refute "cast-npc refuses a roaming cap beyond ten tiles" \
     python3 "$GP" learn bad-cast-range --priority 1 --trigger npc_visible=11 \
         --action cast-npc --param spell=0 --param npc=11 --param within=11
+refute "cast-npc terrain guards are strict booleans" \
+    python3 "$GP" learn bad-cast-guard --priority 1 --trigger npc_visible=11 \
+        --action cast-npc --param spell=0 --param npc=11 --param stationary=2
 refute "out_of_combat is a literal condition, not an arbitrary value" \
     python3 "$GP" learn bad-combat-trigger --priority 1 --trigger out_of_combat=false \
         --action walk --param x=1 --param z=1
@@ -834,6 +837,14 @@ check_eq "a spell fizzle completes its wait without pretending to succeed" "$COD
 contains "$OUT" "type=cast-npc result=failed" && contains "$OUT" "message=The spell fails" \
     && ok "spell-specific server feedback is classified as failure" \
     || fail "spell-specific server feedback is classified as failure" "$OUT"
+snap 10456721 '[]' '{"messages":[{"id":1045672100,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 90111 cast-npc spell=0 sidx=7 npc=474 stationary=1 >/dev/null
+snap 10456722 '[]' '{"messages":[{"id":1045672100,"channel":"game","text":"Ready"},{"id":1045672200,"channel":"game","text":"I can\u0027t get a clear shot from here"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "a blocked stationary cast completes its wait without hanging" "$CODE" "0"
+contains "$OUT" "type=cast-npc result=failed" && contains "$OUT" "clear shot" \
+    && ok "clear-shot refusal is grounded failure feedback" \
+    || fail "clear-shot refusal must not look like a successful or unresolved cast" "$OUT"
 CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
 check_eq "a consumed action result cannot be mistaken for the next action" "$CODE" "3"
 contains "$OUT" "action-unarmed" \
@@ -961,7 +972,7 @@ check_eq "the synthetic route used the ordinary walk ACTION" \
 check_eq "a distant route emits only one eight-tile local leg" \
     "$(last_action 'x=128')" "1"
 check_eq "the route gives collision pathfinding its grounded arrival area" \
-    "$(last_action 'arrive=0')" "1"
+    "$(last_action 'arrive=1')" "1"
 contains "$(python3 "$GP" route)" "last_progress=(140,648)" \
     && ok "the route remembers its last verified progress point" \
     || fail "the route remembers its last verified progress point"
@@ -983,21 +994,62 @@ fake_route_bridge 130 700
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "a large sideways detour blocks instead of becoming route progress" "$CODE" "4"
-contains "$OUT" "route-blocked" \
+contains "$OUT" "route-needs-detour" \
     && ok "the navigator names the directional failure" \
     || fail "the navigator names the directional failure" "$OUT"
 refute "the sideways detour is never recorded as verified progress" \
     grep -q '"last_x": 130' "$DESKCRAB_GAME_DIR/route.json"
 python3 "$GP" route --clear >/dev/null
 
-check "a second route can be set" python3 "$GP" route 900 900
-snap 1050 '[]' '{"x":140,"z":648}'
+check "a local detour recovery route can be set" python3 "$GP" route 200 648
+snap 10491 '[]' '{"x":120,"z":648}'
 fake_bridge refused-no-path
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "a collision refusal licenses Sol to solve the obstacle: exit 4" "$CODE" "4"
-contains "$OUT" "route-blocked" \
-    && ok "the blocker is named" || fail "the blocker is named" "$OUT"
+check_eq "a refused primary leg retains the destination for another candidate" "$CODE" "0"
+contains "$(python3 "$GP" route)" "local_detour_attempts=1" \
+    && ok "the failed local candidate is remembered" \
+    || fail "the route must remember which local leg already failed"
+snap 10492 '[]' '{"x":120,"z":648}'
+fake_route_bridge 128 652
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a grounded side leg resumes autonomous route progress" "$CODE" "0"
+contains "$OUT" "status=route-progress" \
+    && ok "going around the enclosure is ordinary progress" \
+    || fail "a verified side leg must resume the destination" "$OUT"
+refute "a successful side leg clears the old failed-origin search" \
+    contains "$(python3 "$GP" route)" "local_detour_attempts="
+python3 "$GP" route --clear >/dev/null
+
+check "a second route can be set" python3 "$GP" route 900 900
+snap 1050 '[]' '{"x":140,"z":648}'
+: > "$SANDBOX/detour-legs"
+for ATTEMPT in 1 2 3 4 5 6; do
+    fake_bridge refused-no-path
+    CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+    wait "$FAKE_BRIDGE_PID"
+    check_eq "a refused straight leg keeps searching bounded local alternatives" "$CODE" "0"
+    contains "$OUT" "status=route-detour-search" \
+        && ok "the local detour search stays autonomous" \
+        || fail "a remaining local alternative must not wake Sol" "$OUT"
+    awk -F= '$1 == "x" || $1 == "z" {printf "%s%s", $2, ($1 == "z" ? "\n" : ",")}' \
+        "$DESKCRAB_GAME_STATE_DIR/last-action" >> "$SANDBOX/detour-legs"
+    snap "1050$ATTEMPT" '[]' '{"x":140,"z":648}'
+done
+fake_bridge refused-no-path
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+awk -F= '$1 == "x" || $1 == "z" {printf "%s%s", $2, ($1 == "z" ? "\n" : ",")}' \
+    "$DESKCRAB_GAME_STATE_DIR/last-action" >> "$SANDBOX/detour-legs"
+check_eq "all seven local candidates are unique rather than a retry loop" \
+    "$(sort -u "$SANDBOX/detour-legs" | wc -l)" "7"
+check_eq "exhausted local alternatives license Sol to solve the obstacle: exit 4" "$CODE" "4"
+contains "$OUT" "route-needs-detour" \
+    && contains "$OUT" "evidence=attempted-local-leg-only" \
+    && contains "$OUT" "map_boundary=unproven" \
+    && ok "the local-leg failure is bounded to what was observed" \
+    || fail "a local-leg failure must not invent world geography" "$OUT"
 contains "$(python3 "$GP" route)" "status=blocked" \
     && ok "the blocked state persists" || fail "the blocked state persists"
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"
@@ -1719,7 +1771,7 @@ contains "$OUT" "npc(11 sidx=55 cmd=1)" \
 check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
 refute "the NPC command door did not move the pointer" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
-snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648}]' '{
+snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":true,"terrain_melee_reachable":false}]' '{
   "hover_text":"Farmer: Cast Wind Strike on / 1 more option",
   "magic_level":3,"selected_spell":null,
   "spells":[
@@ -1733,8 +1785,19 @@ snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648}]' '{
   ],
   "inventory":[{"id":33,"name":"Air-Rune","count":12},{"id":35,"name":"Mind-Rune","count":12}],
   "skills":[{"id":6,"name":"Magic","level":3,"xp":275}],
+  "terrain":{"radius":6,"blocked_cells":[{"x":120,"z":647,"projectiles_pass":true}],
+    "barriers":[{"a":[120,648],"b":[121,648],"projectiles_pass":true}]},
+  "objects":[{"id":57,"name":"Fence","x":120,"z":647,"dir":0,
+    "blocks_movement":true,"projectiles_pass":true}],"bounds":[],
   "messages":[{"id":117011000,"channel":"game","text":"Ready"}]
 }'
+OUT="$(bash "$HEADLESS" terrain 2)"; CODE=$?
+check_eq "the terrain command reads semantic local topology" "$CODE" "0"
+contains "$OUT" "blocked-cell (120,647) projectiles_pass=True" \
+    && contains "$OUT" "clear_shot=True terrain_melee_reachable=False" \
+    && contains "$OUT" "blocks_movement=True projectiles_pass=True" \
+    && ok "terrain presents movement, shots, and target reachability independently" \
+    || fail "terrain must present all grounded relations" "$OUT"
 OUT="$(bash "$HEADLESS" hover)"; CODE=$?
 check_eq "the hover command reads the live top-left action hint" "$CODE" "0"
 contains "$OUT" "Farmer: Cast Wind Strike on / 1 more option" \
@@ -1748,10 +1811,11 @@ contains "$OUT" "level=3 selected=none" && contains "$OUT" "Wind Strike" \
     || fail "the spellbook exposes target, level, and rune readiness without UI coordinates" "$OUT"
 refute "a spell filter excludes other names" contains "$OUT" "Confuse"
 fake_bridge done
-OUT="$(bash "$HEADLESS" cast wind npc 11 1)"; CODE=$?
+OUT="$(bash "$HEADLESS" cast wind npc 11 1 --stationary)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the cast door waits for grounded spell completion" "$CODE" "0"
-contains "$OUT" "cast(spell=0 name=Wind Strike npc=11 sidx=55)" \
+contains "$OUT" "cast(spell=0 name=Wind Strike npc=11 sidx=55 stationary=1" \
+    && contains "$OUT" "clear_shot=True melee_reachable=False" \
     && contains "$OUT" "xp=Magic:+5" && contains "$OUT" "Air-Rune(33):-1" \
     && ok "the cast result reports actual XP and rune evidence" \
     || fail "the cast result reports actual XP and rune evidence" "$OUT"
@@ -1759,15 +1823,18 @@ check_eq "the cast door wrote one semantic cast-npc action" \
     "$(last_action 'type=cast-npc')" "1"
 check_eq "the action carries the resolved spell id" "$(last_action 'spell=0')" "1"
 check_eq "the action carries the stable NPC server id" "$(last_action 'sidx=55')" "1"
+check_eq "the direct stationary cast cannot emit an approach walk" \
+    "$(last_action 'stationary=1')" "1"
 refute "the semantic cast did not move the pointer or select a spell-panel coordinate" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 
 python3 "$GP" learn cast-wind-test --priority 900 --cooldown-ms 1000 \
     --trigger objective_is=magic-reflex-test --trigger npc_visible=11 \
     --trigger out_of_combat=true --action cast-npc --param spell=0 --param npc=11 \
-    --param within=3 >/dev/null
+    --param within=3 --param stationary=1 --param require_clear_shot=1 \
+    --param require_melee_unreachable=1 >/dev/null
 python3 "$GP" objective magic-reflex-test >/dev/null
-snap 117012 '[{"sidx":55,"id":11,"x":121,"z":648}]' '{
+snap 117012 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":true,"terrain_melee_reachable":false}]' '{
   "magic_level":3,"selected_spell":null,
   "spells":[{"id":0,"name":"Wind Strike","level":1,"target":"npc/player","ready":true,
     "runes":[{"id":33,"name":"Air-Rune","held":11,"required":1,"available":true},
@@ -1786,6 +1853,11 @@ contains "$OUT" "rule=cast-wind-test" && contains "$OUT" "status=done" \
 check_eq "the learned reflex emits cast-npc" "$(last_action 'type=cast-npc')" "1"
 check_eq "the learned reflex preserves its spell id" "$(last_action 'spell=0')" "1"
 check_eq "the learned reflex preserves its locality cap" "$(last_action 'within=3')" "1"
+check_eq "the learned reflex preserves stationary casting" "$(last_action 'stationary=1')" "1"
+check_eq "the learned reflex rechecks the complete projectile relation" \
+    "$(last_action 'require_clear_shot=1')" "1"
+check_eq "the learned reflex rechecks terrain melee reachability" \
+    "$(last_action 'require_melee_unreachable=1')" "1"
 python3 "$GP" remove cast-wind-test >/dev/null
 python3 "$GP" objective --clear >/dev/null
 snap 11702 '[]' '{"players":[{"sidx":55,"name":"Discordian","x":121,"z":648}]}'
@@ -2759,6 +2831,13 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh spells" \
     && ok "the resumed thread receives the semantic magic doors" \
     || fail "the resumed thread receives the semantic magic doors"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh terrain" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "same selected NPC" \
+    && ok "the resumed thread receives grounded projectile-position learning" \
+    || fail "the resumed thread receives grounded projectile-position learning"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "does not prove what physical feature" \
+    && ok "the resumed thread cannot turn one failed leg into imaginary geography" \
+    || fail "the resumed thread needs an evidence boundary for failed route legs"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
     && ok "the resumed thread receives the urgent idle-warning action" \
     || fail "the resumed thread receives the urgent idle-warning action"

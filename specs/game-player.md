@@ -118,13 +118,18 @@ deliberate-play channel.
    approach their chosen visible target. Every NPC action records the selected target's snapshot
    tile in its decision event, and the bridge refuses it if a strictly nearer equivalent exists by
    dispatch time. `cast-npc` (`spell`: the spell id; `npc`: the NPC type id; optional `within`
-   0–10) resolves the same nearest stable NPC identity but only when the structured spellbook says
+   0–10; optional 0/1 `stationary`, `require_clear_shot`, and
+   `require_melee_unreachable`) resolves the same nearest stable NPC identity but only when the structured spellbook says
    the spell is ready and its target kind is `npc/player`. Spell, NPC identity, and any locality
-   cap ride the action for the client's final live level/rune/identity recheck. After dispatch the
+   or terrain guards ride the action for the client's final live level/rune/identity recheck.
+   Guarded target selection applies every requested relation to one NPC, not independent matches.
+   `stationary: 1` omits the client approach walk and is refused beyond the four-tile Magic range;
+   the completion verifier additionally fails the action if the player's tile changes. After dispatch the
    rule retains control until a required rune changes, Magic XP changes, or explicit spell feedback
    arrives; a fizzle/cooldown/refusal is not successful completion. Repeating Magic reflexes use an
-   honest activity scope, `out_of_combat`, and a locality cap so training cannot become an
-   unbounded chase. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
+   honest activity scope and may require a local cap, stationary casting, a live clear shot, and
+   terrain melee unreachability so training cannot become an unbounded chase or continue after
+   its topology changes. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
    Chebyshev tolerance rule 7a's verification accepts as arrival), `retreat` (optional `distance`
@@ -216,7 +221,10 @@ deliberate-play channel.
    `cast-npc` uses the same causal verifier for direct and learned casts, narrowed to the selected
    spell's required rune ids, Magic XP, and explicit spell feedback. An unrelated inventory,
    interface, or message transition cannot make a cast successful, and routine work cannot resume
-   while its result is unresolved.
+   while its result is unresolved. The direct `terrain [RADIUS]` door renders the snapshot's local
+   blocked cells/edges, projectile permeability, and per-NPC clear-shot/melee-reach relations; the
+   direct cast door's `--stationary` option arms the same no-approach action and reports those live
+   relations with its grounded result.
    - `no-snapshot`, `stale`, `logged-out`, `same-tick`, `slot-busy` (exit 3): nothing to
      evaluate against — an unconsumed `action.json` (`slot-busy`) is never overwritten.
    - `no-rule-matched` (exit 4): the open-ended fallback signal. Other exit-4 prerequisites below
@@ -367,17 +375,25 @@ deliberate-play channel.
    for one collision-aware local leg under game-reflex rule 7. The player derives a leg no more
    than eight Chebyshev tiles from the current body, so autonomous routing never hands the client's
    finite collision map a remote edge target. Its `arrive` tolerance is passed into the client's
-   collision pathfinder for the final destination area as well as used for verification; an
+   collision pathfinder for the final destination area as well as used for verification; every
+   non-final directional leg uses an arrival radius of one because its exact generated tile has no
+   landmark meaning. An
    occupied landmark tile can therefore settle on reachable adjacent floor without making Sol
    guess successive neighbouring coordinates. Progress is a strictly smaller squared Euclidean
    distance, so an apparent advance on one axis cannot conceal a much larger sideways detour or
    reversal. A verified shorter distance is
    `route-progress` and immediately licenses the next leg without a model call; reaching the
-   destination is `route-complete` and removes the route. A refused leg or a settled tile no closer
-   to the destination marks the route `blocked` at the current position and visible obstacle
-   signature, reports exit 4 to Sol, and emits no further walk merely because the dispatched leg
+   destination is `route-complete` and removes the route. When a straight non-final leg is refused
+   as unpathable, the runner tries a fixed bounded fan of unique left/right local legs from the
+   same origin, each no more than eight tiles away and each strictly closer to the real destination.
+   It records the refused candidates and never repeats one; the first verified alternative resumes
+   ordinary route progress. Exhausting that fan, or a settled tile no closer to the destination,
+   marks the route `blocked` at the current position and visible obstacle
+   signature, reports `route-needs-detour` at exit 4 to Sol, and emits no further walk merely because the dispatched leg
    settles another tile. A changed visible obstacle signature may make the path viable; otherwise
-   Sol must change strategy and explicitly set a corrected route. Changing the durable objective cancels the stale route rather than walking
+   Sol must inspect live terrain or choose a different local leg and explicitly set a corrected
+   route. The refusal proves only that attempted local leg did not produce progress; it does not
+   establish a wall, river, world edge, or map boundary. Changing the durable objective cancels the stale route rather than walking
    toward an old goal. The route survives player and runner process boundaries, owns no second
    action slot or observer, uses no screenshots or timed polling, and cannot loop forever against
    an unchanged wall.
@@ -458,7 +474,7 @@ deliberate-play channel.
     queued for the whole escape.
     The playing policy the sittings read
     makes rules-first mandatory: open-ended reasoning about the next action is licensed by rule
-    7's `no-rule-matched` or rule 7e's `route-blocked`; other exit-4 prerequisites license only
+    7's `no-rule-matched` or rule 7e's `route-needs-detour`; other exit-4 prerequisites license only
     their named correction. A newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
     leaves a `note` in the outcome queue and keeps moving. While rule 15's resident runner is

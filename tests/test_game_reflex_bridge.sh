@@ -340,8 +340,10 @@ python3 - "$S/state.json" <<'PY' && ok "the snapshot lists NPCs by walking steps
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["npcs"] == [
-    {"sidx": 7, "id": 474, "x": 121, "z": 651},
-    {"sidx": 9, "id": 485, "x": 122, "z": 650},
+    {"sidx": 7, "id": 474, "x": 121, "z": 651, "distance": 1,
+     "clear_shot": True, "terrain_melee_reachable": False},
+    {"sidx": 9, "id": 485, "x": 122, "z": 650, "distance": 2,
+     "clear_shot": False, "terrain_melee_reachable": True},
 ], s["npcs"]
 PY
 wact 60 "$(now_ms)" "type=talk-npc" "sidx=7" "npc=474"
@@ -422,6 +424,18 @@ refute "a local Magic reflex does not chase a target beyond its range" \
     contains "$OUT" "cast spell="
 check_eq "the cast locality refusal is explicit" "$(rstatus)" \
     "refused-npc-out-of-range"
+wact 6608 "$(now_ms)" "type=cast-npc" "spell=0" "sidx=7" "npc=474" \
+    "stationary=1" "require_clear_shot=1" "require_melee_unreachable=1"
+OUT="$(harness exec)"
+contains "$OUT" "cast spell=0 sidx=7 stationary=true" \
+    && ok "a terrain-guarded cast omits approach movement" \
+    || fail "a terrain-guarded cast must remain stationary" "$OUT"
+check_eq "the guarded stationary cast is receipted done" "$(rstatus)" "done"
+wact 6609 "$(now_ms)" "type=cast-npc" "spell=0" "sidx=9" "npc=485" \
+    "require_clear_shot=1"
+harness exec >/dev/null
+check_eq "a changed projectile line invalidates the learned guard" "$(rstatus)" \
+    "refused-no-clear-shot"
 
 echo
 echo "player trade and right-click menu selection use live identities (rules 3, 5-7):"
@@ -601,8 +615,10 @@ python3 - "$S/state.json" <<'PY' && ok "the snapshot lists loaded objects neares
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["objects"] == [
-    {"id": 57, "x": 121, "z": 649, "dir": 2},
-    {"id": 493, "x": 196, "z": 726, "dir": 0},
+    {"id": 57, "name": "Gate", "x": 121, "z": 649, "dir": 2,
+     "blocks_movement": True, "projectiles_pass": True},
+    {"id": 493, "name": "Fishing spot", "x": 196, "z": 726, "dir": 0,
+     "blocks_movement": False, "projectiles_pass": False},
 ], s.get("objects")
 PY
 python3 - "$S/state.json" <<'PY' && ok "and the wall objects (doors) nearest first, with wall direction" \
@@ -610,9 +626,20 @@ python3 - "$S/state.json" <<'PY' && ok "and the wall objects (doors) nearest fir
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["bounds"] == [
-    {"id": 1, "x": 121, "z": 650, "dir": 0},
-    {"id": 2, "x": 140, "z": 660, "dir": 1},
+    {"id": 1, "name": "Door", "x": 121, "z": 650, "dir": 0,
+     "blocks_movement": True, "projectiles_pass": False},
+    {"id": 2, "name": "Stone wall", "x": 140, "z": 660, "dir": 1,
+     "blocks_movement": True, "projectiles_pass": False},
 ], s.get("bounds")
+PY
+python3 - "$S/state.json" <<'PY' && ok "terrain separates walking topology from projectile permeability" \
+    || fail "terrain must expose its two independent channels"
+import json, sys
+s = json.load(open(sys.argv[1]))
+t = s["terrain"]
+assert t["radius"] == 6
+assert t["blocked_cells"] == [{"x": 121, "z": 650, "projectiles_pass": True}]
+assert t["barriers"] and all(edge["projectiles_pass"] is True for edge in t["barriers"])
 PY
 
 echo

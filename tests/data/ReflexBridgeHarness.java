@@ -552,6 +552,14 @@ public class ReflexBridgeHarness {
 			return npcAbsZ[i];
 		}
 
+		public boolean npcClearShot(int i) {
+			return npcSidx[i] == 7;
+		}
+
+		public boolean npcTerrainMeleeReachable(int i) {
+			return npcSidx[i] != 7;
+		}
+
 		public int[] npcScreenPoint(int i) {
 			return projectionsVisible ? new int[]{410 + i, 210 + i} : null;
 		}
@@ -564,8 +572,9 @@ public class ReflexBridgeHarness {
 			events.add("npc sidx=" + serverIndex + " cmd=" + command);
 		}
 
-		public void castSpellOnNpc(int spell, int serverIndex) {
-			events.add("cast spell=" + spell + " sidx=" + serverIndex);
+		public void castSpellOnNpc(int spell, int serverIndex, boolean stationary) {
+			events.add("cast spell=" + spell + " sidx=" + serverIndex
+					+ " stationary=" + stationary);
 		}
 
 		// Two scripted loaded game objects: a gate (57) two tiles away, a
@@ -594,6 +603,18 @@ public class ReflexBridgeHarness {
 
 		public int objectDir(int i) {
 			return objDir[i];
+		}
+
+		public String objectName(int i) {
+			return objId[i] == 57 ? "Gate" : "Fishing spot";
+		}
+
+		public boolean objectBlocksMovement(int i) {
+			return objId[i] == 57;
+		}
+
+		public boolean objectProjectilesPass(int i) {
+			return objId[i] == 57;
 		}
 
 		public int[] objectScreenPoint(int i) {
@@ -633,6 +654,18 @@ public class ReflexBridgeHarness {
 			return bndDir[i];
 		}
 
+		public String boundName(int i) {
+			return bndId[i] == 1 ? "Door" : "Stone wall";
+		}
+
+		public boolean boundBlocksMovement(int i) {
+			return true;
+		}
+
+		public boolean boundProjectilesPass(int i) {
+			return false;
+		}
+
 		public int[] boundScreenPoint(int i) {
 			return projectionsVisible ? new int[]{260 + i, 130 + i} : null;
 		}
@@ -666,6 +699,18 @@ public class ReflexBridgeHarness {
 		public void takeGroundItem(int i) {
 			events.add("take x=" + groundAbsX[i] + " z=" + groundAbsZ[i]
 					+ " id=" + groundId[i]);
+		}
+
+		public int terrainFlagsAt(int absX, int absZ) {
+			return absX == 121 && absZ == 650 ? 64 : 0;
+		}
+
+		public boolean terrainProjectilesPassAt(int absX, int absZ) {
+			return absX == 121 && absZ == 650;
+		}
+
+		public boolean terrainShotClearBetween(int fromX, int fromZ, int toX, int toZ) {
+			return (fromX == 121 && fromZ == 650) || (toX == 121 && toZ == 650);
 		}
 
 		public void useItem(int slot) {
