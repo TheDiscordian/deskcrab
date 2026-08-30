@@ -178,17 +178,32 @@ esac
 check "the snapshot was consumed by the checker" test ! -e "$T/snap-live.jsonl"
 
 echo
-echo "the synchronous inspect mode holds the same claim before delivery:"
+echo "the synchronous inspect mode holds an invented delay before delivery:"
 reset
+NOW_E="$(date +%s)"
+printf '%s\tscheduled\tinspect the active builder viseme correction\t%s\therself\n' \
+    $(( NOW_E + 600 )) "$NOW_E" > "$W/deskcrab-wake-invented-delay.wake"
 INSPECT_OUT="$("$T/repo/lib/promise-check" inspect phone 1786400000 4242 \
     "$(snap "$SNAP_EMPTY")" "$T/ledger.jsonl" \
-    "I took you up on it immediately. I am wiring both viewers now." 2>/dev/null)"
+    "I'll inspect the active builder's degraded viseme at four twenty-five." \
+    "The revised viseme is visibly degraded while its builder is active; correct it." \
+    2>/dev/null)"
 INSPECT_RC=$?
 check_eq "an unsupported candidate exits with the hold status" "$INSPECT_RC" "3"
 check "the verdict is returned to the correction pass" \
     grep -q '^UNKEPT:' <<< "$INSPECT_OUT"
 check "a dispatched brief cannot masquerade as present work" \
     grep -q "tense must match the evidence" "$T/model-stdin"
+check "the exact user request reaches the timing judgement" \
+    grep -qF "The revised viseme is visibly degraded while its builder is active; correct it." \
+        "$T/model-stdin"
+check "the pending later wake reaches the timing judgement" \
+    grep -qF "inspect the active builder viseme correction" "$T/model-stdin"
+check "an invented later wake is explicitly insufficient for active-work feedback" \
+    grep -qF "a later wake time Beatrice chose herself does NOT keep" "$T/model-stdin"
+check "the checker recognises the immediate wake handoff" \
+    grep -qF "crab wake-now" "$T/model-stdin"
+rm -f "$W/deskcrab-wake-invented-delay.wake"
 check_eq "inspection does not ledger or book post-delivery work" \
     "$(ledger_n)$(records)" "00"
 

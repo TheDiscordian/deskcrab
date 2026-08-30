@@ -214,11 +214,12 @@ refute "the assembler takes no message and cannot embed one" \
 
 echo
 echo "the standing attention rules sit in the frame, where they fire:"
-# Rules 38 through 39c. Presence anywhere is not enough — the 2026-08-15 morning
+# Rules 38 through 39d. Presence anywhere is not enough — the 2026-08-15 morning
 # failures are exactly what a rule buried mid-prompt looks like, and the
 # drawer failure was a WAKE's, so both speaking profiles are held to it. The
 # contract is positional: ranking rule, then answer-first, drawer-ownership,
-# request-action, accepted-invitation action, correction discipline, then the
+# request-action, immediate background handoff, accepted-invitation action,
+# correction discipline, then the
 # subject line — the last words before the thing being answered. A builder or classifier carries neither: it has no
 # conversation to answer and no drawers of hers to run.
 first_at() { printf '%s' "$1" | grep -obF "$2" | head -n1 | cut -d: -f1; }
@@ -230,25 +231,28 @@ for p in turn wake; do
     a="$(first_at "$body" 'ANSWER WHAT WAS ASKED, FIRST')"
     d="$(first_at "$body" 'YOUR OWN DRAWERS ARE YOURS TO RUN')"
     q="$(first_at "$body" 'ACT ON REQUESTS')"
+    b="$(first_at "$body" 'BACKGROUND WORK STARTS NOW')"
     i="$(first_at "$body" 'ACCEPTED INVITATIONS ARE ACTIONS')"
     c="$(first_at "$body" 'CORRECT WITHOUT WALLOWING')"
     s="$(first_at "$body" "$subject")"
     check "$p: the answer-first rule is in the prompt" [ -n "$a" ]
     check "$p: the drawer-ownership rule is in the prompt" [ -n "$d" ]
     check "$p: the request-action rule is in the prompt" [ -n "$q" ]
+    check "$p: the immediate-background rule is in the prompt" [ -n "$b" ]
     check "$p: the accepted-invitation rule is in the prompt" [ -n "$i" ]
     check "$p: the correction rule is in the prompt" [ -n "$c" ]
     if [ -n "$r" ] && [ -n "$a" ] && [ -n "$d" ] && [ -n "$q" ] \
-            && [ -n "$i" ] && [ -n "$c" ] && [ -n "$s" ]; then
+            && [ -n "$b" ] && [ -n "$i" ] && [ -n "$c" ] && [ -n "$s" ]; then
         check "$p: answer-first sits below the ranking rule" [ "$r" -lt "$a" ]
         check "$p: drawer-ownership follows it" [ "$a" -lt "$d" ]
         check "$p: requests follow drawer ownership" [ "$d" -lt "$q" ]
-        check "$p: accepted invitations follow requests" [ "$q" -lt "$i" ]
+        check "$p: immediate backgrounding follows requests" [ "$q" -lt "$b" ]
+        check "$p: accepted invitations follow backgrounding" [ "$b" -lt "$i" ]
         check "$p: correction discipline follows invitations" [ "$i" -lt "$c" ]
         check "$p: every attention rule stands above the subject line" [ "$c" -lt "$s" ]
     else
         fail "$p: the frame's fixed points are all present" \
-             "ranking=[$r] answer=[$a] drawers=[$d] requests=[$q] invitations=[$i] correction=[$c] subject=[$s]"
+             "ranking=[$r] answer=[$a] drawers=[$d] requests=[$q] background=[$b] invitations=[$i] correction=[$c] subject=[$s]"
     fi
 done
 for p in job classify; do
@@ -256,6 +260,8 @@ for p in job classify; do
     refute "$p: no attention rules — nothing of hers to answer or to run" \
         contains "$body" 'ANSWER WHAT WAS ASKED'
     refute "$p: no request-action rule" contains "$body" 'ACT ON REQUESTS'
+    refute "$p: no immediate-background rule" \
+        contains "$body" 'BACKGROUND WORK STARTS NOW'
     refute "$p: no accepted-invitation rule" \
         contains "$body" 'ACCEPTED INVITATIONS ARE ACTIONS'
 done
@@ -263,6 +269,10 @@ done
 echo
 echo "the shelves are titles, and the bodies stay on disk:"
 TURN="$(run 'build_system_prompt --profile turn')"
+check "the immediate handoff names wake-now" \
+    contains "$TURN" 'crab wake-now "<specific agenda>"'
+check "future wakes are reserved for a real later reason" \
+    contains "$TURN" 'the work genuinely depends on one'
 check "a want title is in the prompt" contains "$TURN" "Learn to read a score"
 refute "a want body is not" contains "$TURN" "WANT_BODY_MARKER"
 check "the binding test is verbatim" \

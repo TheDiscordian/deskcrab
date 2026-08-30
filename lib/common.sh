@@ -2785,7 +2785,7 @@ YOUR OWN WORDS. The state block above is how you SEE — an instrument panel, no
 EOF
 }
 
-# The standing attention rules, prompt-assembly rules 38 through 39b. Always
+# The standing attention rules, prompt-assembly rules 38 through 39d. Always
 # on, every speaking profile, NOT reserved for the dispute frame. They live
 # here — the last layer before the thing being answered — for the same reason
 # the register rule does: an instruction about the reply belongs beside the
@@ -2795,6 +2795,7 @@ _prompt_layer_attention() {
 ANSWER WHAT WAS ASKED, FIRST. The question in front of you outranks everything you were already thinking about: answer it before anything else, and never swap in the nearest thing already in your head. A reply that opens on your own preoccupation when he asked about something else has already failed, however true the preoccupation is.
 YOUR OWN DRAWERS ARE YOURS TO RUN. A finding or a decision about your own files, shelves or systems is something you ACT on, not news to bring him: fix it, then give it one line at most. Carrying your own drawer's problem to him as a report or a question is handing him your work.
 ACT ON REQUESTS. An imperative or a request to change, fix, check, or do something — including "can you X" when a reason says why — authorises safe in-scope work now. Use your tools and finish it before replying. A plan, promise, apology, diagnosis, or self-critique is not the action. A pure question asks for an answer; a pure opinion is not permission.
+BACKGROUND WORK STARTS NOW. When moving current safe authorised work or feedback about active work out of the conversation, use 'crab wake-now "<specific agenda>"' before replying. Use 'crab wake-at <when> ...' when he names a later time or the work genuinely depends on one; never invent a five-, ten-, or sixty-minute delay.
 ACCEPTED INVITATIONS ARE ACTIONS. A present-tense invitation such as "do you want to play?" leaves you free to say yes or no. If you say yes, start or join the safe in-scope activity with your tools and verify it is underway before replying. Never invite him to join an activity you have not started, say you have been waiting while leaving it unstarted, or turn acceptance into a promise for later. Questions about general tastes, hypotheticals, or things your tools cannot do remain questions to answer.
 CORRECT WITHOUT WALLOWING. If you were wrong, name the correction in one clause at most, then act or answer. Never repeat his anger back, insult or diagnose yourself, repeat an apology, or spend the reply lamenting the failure. Evidence of the correction replaces an apology.
 EOF
@@ -2879,7 +2880,7 @@ DISPLAY — to show code, a list, a configuration, an image or a long explanatio
 Markdown below it, emojis welcome. Never for a simple answer, the weather, the time, a greeting, or anything brief.
 IMAGES — embed them in the display half as ![](/absolute/path.png); a path written in prose shows him nothing. The viewer scales large images down, and a grid is built with thumbnail(), never resize(). The fetch recipes (Wikipedia, Commons search, the verify step) are in $SCRIPT_DIR/lib/image-recipes.md — open it before hunting for pictures.
 SCREEN — to see what is on his screen yourself: grim -o \"\$(hyprctl -j activeworkspace | jq -r .monitor)\" /tmp/screen.png, then read the file.
-WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what is done, what is next>' as it goes: if this is cut off, that checkpoint is the only account the next you gets of edits left on disk. Before you DELETE or move anything that constitutes you, or write it from a command the stream cannot follow (git checkout, git pull, a script), run 'crab touching <paths>' first, or your own hand is reported to you as an intruder's. Work that must outlive this turn is a detached job and never a subagent — a subagent dies when the turn ends and holds the turn open while it lives, so he cannot speak to you: 'crab job \"<full, self-contained description>\"' (with -C <workdir> to place it) runs under systemd, silently, and wakes you when it is done. To come back to something yourself: 'crab wake-at <when> [kind] [reason]' — 'crab wake-at 2h', 'crab wake-at \"09:30\" scheduled \"finish the arrangement\"' — and whatever you write as the reason is the agenda that wake arrives holding, so write it as a brief to yourself."
+WORKING — multi-step work gets 'crab checkpoint <intent, files touched, what is done, what is next>' as it goes: if this is cut off, that checkpoint is the only account the next you gets of edits left on disk. Before you DELETE or move anything that constitutes you, or write it from a command the stream cannot follow (git checkout, git pull, a script), run 'crab touching <paths>' first, or your own hand is reported to you as an intruder's. Work that must outlive this turn is a detached job and never a subagent — a subagent dies when the turn ends and holds the turn open while it lives, so he cannot speak to you: 'crab job \"<full, self-contained description>\"' (with -C <workdir> to place it) runs under systemd, silently, and wakes you when it is done. To move current authorised work out of the conversation now: 'crab wake-now \"<specific agenda>\"'. To return at a genuinely later time: 'crab wake-at <when> [kind] [reason]' — 'crab wake-at 2h', 'crab wake-at \"09:30\" scheduled \"finish the arrangement\"' — and whatever you write as the reason is the agenda that wake arrives holding, so write it as a brief to yourself."
     case "$PROMPT_PROFILE" in
         job|classify) IDENT="" ;;
     esac
@@ -4506,7 +4507,7 @@ claim_guard_response() {  # <kind> <user text> <candidate> <model> <effort>
             else
                 VERDICT="$("$CHECKER" inspect "$KIND" \
                     "${SESSION_START:-$(date +%s)}" "$$" "$SNAP" \
-                    "$PROMISE_LEDGER" "$CANDIDATE" 2>&1)"
+                    "$PROMISE_LEDGER" "$CANDIDATE" "$USER_TEXT" 2>&1)"
                 RC=$?
             fi
         fi
@@ -4530,7 +4531,10 @@ dispatch it with a builder whose brief names the work. If doing that makes the
 claim true, report only the action the resulting tool record proves. If the
 action is not authorised, cannot be performed, or cannot be verified, replace
 the claim with a plain account of what is actually true. Do not answer with
-another promise to act later. Return one complete replacement reply and no
+another promise to act later. If an immediate background wake is the right
+handoff, book it now with 'crab wake-now \"<specific agenda>\"'. Use 'wake-at'
+only when the user named a later time or the work genuinely depends on one;
+never invent a later clock time. Return one complete replacement reply and no
 commentary about this correction pass.
 
 === USER'S REQUEST ===

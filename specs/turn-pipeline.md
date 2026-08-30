@@ -319,7 +319,9 @@ ledger.
 32aa. A held candidate goes through another tool-capable pass on the same turn model. That
       pass receives the user's request, the unsent candidate, and the checker's verdict. It
       MUST perform or durably dispatch every safe, authorised action needed to make the claim
-      true, then write a complete replacement reply supported by the resulting record. When
+      true, using `crab wake-now` when an immediate background wake is the right handoff, then
+      write a complete replacement reply supported by the resulting record. It MUST NOT replace
+      current action with an invented later `wake-at`. When
       the action cannot be performed within the user's authority or the available tools, the
       replacement states what is actually true and does not repeat the claim. The replacement
       is inspected again against the combined record. This repair is bounded by
@@ -360,7 +362,13 @@ ledger.
      artefact that exists, with a modification time consistent with the claim, is the record
      that keeps a completed-work claim — whoever's hand wrote it), and the wake queue's pending
      bookings (a future commitment whose work a pending wake's reason already names is kept by
-     the schedule, whenever the schedule was written). Anything in any of them
+     the schedule, whenever the schedule was written). In pre-delivery `inspect` mode the checker
+     also receives the user's request, and timing is part of the match: when the request calls for
+     current action or reports a defect in active work, a later wake time Beatrice invented does
+     not keep the claim. Direct work, an immediate job, or `crab wake-now` does. A later
+     `wake-at` keeps it when the user named that time or the work genuinely depends on a later
+     condition. Post-delivery checks keep deliberate future commitments exactly as before.
+     Anything in any of them
      that plausibly performed, embodies, or durably schedules the commitment makes it KEPT. A
      commitment nothing anywhere
      performed is UNKEPT; a call that durably scheduled the work counts as performing it —

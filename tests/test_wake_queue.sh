@@ -126,6 +126,43 @@ case "$out" in
 esac
 
 echo
+echo "crab wake-now — current background work enters the urgent event lane immediately:"
+rm -f "$T"/wakes/*.wake
+book_now() {
+    WAKES_DIR="$T/wakes" JOBS_DIR="$T/jobs" WANTS_FILE="$T/wants.md" \
+        "$REPO_DIR/crab" wake-now "$@" 2>&1
+}
+if out="$(book_now 2>&1)"; then
+    fail "an immediate handoff without an agenda is refused" "$out"
+else
+    ok "an immediate handoff without an agenda is refused"
+fi
+check_eq "the refusal leaves no booking" \
+    "$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)" "0"
+
+BEFORE="$(date +%s)"
+out="$(book_now --effort medium --model sol \
+    "fix the active builder from the user's live visual feedback")"
+check_eq "one immediate booking is recorded" \
+    "$(ls "$T"/wakes/*.wake 2>/dev/null | wc -l)" "1"
+check_eq "it is an event wake, so work-shaped feedback is not refused" \
+    "$(cut -f2 "$T"/wakes/*.wake)" "event"
+check_eq "it is explicitly booked by herself" \
+    "$(cut -f5 "$T"/wakes/*.wake)" "herself"
+check_eq "its complete agenda survives" \
+    "$(cut -f3 "$T"/wakes/*.wake)" \
+    "fix the active builder from the user's live visual feedback"
+check_eq "its effort override survives" "$(cut -f6 "$T"/wakes/*.wake)" "medium"
+check_eq "its model override survives" "$(cut -f7 "$T"/wakes/*.wake)" "sol"
+FIRE="$(cut -f1 "$T"/wakes/*.wake)"
+check "it is due immediately, not minutes later" \
+    test "$FIRE" -ge "$(( BEFORE + 1 ))" -a "$FIRE" -le "$(( $(date +%s) + 2 ))"
+case "$out" in
+    *"Wake scheduled (1s"*) ok "the command reports the immediate handoff" ;;
+    *) fail "the command reports a one-second wake" "$out" ;;
+esac
+
+echo
 echo "wake_tidy — a timer that never fired is not a ghost:"
 # Two record-less transient timers. One has already gone off (LastTriggerUSec
 # set) — that one is finished business and gets purged. The other has never

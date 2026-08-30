@@ -152,6 +152,14 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     the argv, and is refused at booking time; the fire side applies the same filter and ignores
     what fails it rather than refusing the whole wake. Absent, the wake runs at `WAKE_MODEL`
     from config, exactly as before the field existed.
+13c. `crab wake-now [--effort <level>] [--model <name>] <reason>` is the immediate background
+    handoff. It MUST require a specific agenda, book exactly a one-second `event` wake under
+    `herself`, and use the same durable record and urgent event lane as every other event wake.
+    It therefore starts as soon as the wake lock permits without the distant-wake spacing or the
+    self-booked scheduled-work gate changing its intent. The effort and model overrides follow
+    rules 13a and 13b; absent, the configured wake defaults apply. `wake-now` never accepts a
+    later moment. `wake-at` remains the road when the work genuinely depends on a later time or
+    the user names one.
 
 ### Argument arity
 

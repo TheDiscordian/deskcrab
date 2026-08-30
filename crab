@@ -867,6 +867,38 @@ What you did tonight is journaled from your tool activity without your help, so 
         exit $?
         ;;
 
+    wake-now)
+        # Move current authorised work out of the conversation without
+        # inventing a later appointment. A one-second event uses the urgent
+        # wake lane and waits for that lane's lock when another wake is active.
+        shift
+        WAKE_NOW_OPTS=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --effort|--model)
+                    if [ -z "${2:-}" ]; then
+                        echo "wake-now: '$1' needs a value." >&2
+                        exit 1
+                    fi
+                    WAKE_NOW_OPTS+=("$1" "$2")
+                    shift 2
+                    ;;
+                --*)
+                    echo "wake-now: unknown option '$1'." >&2
+                    exit 1
+                    ;;
+                *) break ;;
+            esac
+        done
+        WAKE_NOW_REASON="$*"
+        if [ -z "$(printf '%s' "$WAKE_NOW_REASON" | tr -d '[:space:]')" ]; then
+            echo "Usage: crab wake-now [--effort <low|medium|high>] [--model <name>] <reason>" >&2
+            exit 1
+        fi
+        wake_book "${WAKE_NOW_OPTS[@]}" --by herself 1s event "$WAKE_NOW_REASON"
+        exit $?
+        ;;
+
     wake-tidy)
         # Prune the wake queue: fired transient timers nothing remembers,
         # repeated promises, and bookings sharing a second. Runs at the end of
@@ -897,7 +929,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+        echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
         exit 0
         ;;
 
@@ -909,7 +941,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+            echo "Usage: crab start|stop|status|seal|revive|shutup|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|show|collect|dispatch|drop|requeue <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
             exit 1
         fi
         stop_tts

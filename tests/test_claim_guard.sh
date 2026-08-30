@@ -29,6 +29,7 @@ CONF
 cat > "$CHECKER" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$7" >> "$CHECK_CALLS"
+printf '%s\n' "${8:-}" >> "$REQUEST_CALLS"
 response="${7:-}"
 snapshot="${5:-}"
 if printf '%s' "$response" | grep -q 'job 123 is running' \
@@ -50,15 +51,18 @@ ORIGINAL="Yes—I took you up on it immediately. I’m wiring responsive portrai
 echo "== an authorised claim is made true before delivery =="
 : > "$T/debug.jsonl"
 : > "$T/check-calls"
+: > "$T/request-calls"
 : > "$T/repair-calls"
+: > "$T/repair-prompt"
 printf '%s' "$ORIGINAL" > "$T/candidate"
 export CHECK_CALLS="$T/check-calls" CLAIM_TEST_ROOT="$T" \
-    PROMISE_CHECK_BIN="$CHECKER"
+    REQUEST_CALLS="$T/request-calls" PROMISE_CHECK_BIN="$CHECKER"
 OUT="$(sandbox_bash '
         DEBUGLOG="$CLAIM_TEST_ROOT/debug.jsonl"
         CLAIM_GUARD_REPAIRS=2
         claude_generate() {
             printf "%s\n" repair >> "$CLAIM_TEST_ROOT/repair-calls"
+            printf "%s" "$1" > "$CLAIM_TEST_ROOT/repair-prompt"
             : > "$DEBUGLOG"
             printf "%s\n" "{\"type\":\"assistant\",\"message\":{\"model\":\"sol\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"crab job TOOL-CALL-CANARY\"}}]}}" >> "$DEBUGLOG"
             printf "%s\n" "I dispatched a Fable builder for both viewers; job 123 is running."
@@ -71,6 +75,12 @@ check_eq "the tool-capable pass ran once" \
     "$(wc -l < "$T/repair-calls")" "1"
 check_eq "the replacement was inspected after the draft" \
     "$(wc -l < "$T/check-calls")" "2"
+check_eq "the user's request reaches both inspections" \
+    "$(sort -u "$T/request-calls")" "put portraits into both viewers"
+check "the repair pass names the immediate wake handoff" \
+    grep -qF 'crab wake-now "<specific agenda>"' "$T/repair-prompt"
+check "the repair pass forbids an invented later clock" \
+    grep -qF 'never invent a later clock time' "$T/repair-prompt"
 check "the combined turn record proves the dispatch" \
     grep -q TOOL-CALL-CANARY "$T/debug.jsonl"
 if printf '%s' "$OUT" | grep -q 'I took you up on it immediately'; then

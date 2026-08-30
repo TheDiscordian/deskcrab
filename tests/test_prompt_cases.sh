@@ -719,7 +719,7 @@ structural_checks() { # <case state dir> <case source dir>
         && ok "rule 25 — at most one regroup block is emitted" \
         || bad "rule 25 — at most one regroup block is emitted" "$regroups regroup blocks"
 
-    # rules 38 through 39c — the standing attention rules, always on, every
+    # rules 38 through 39d — the standing attention rules, always on, every
     # speaking profile, desk and phone origins alike: answer what was asked
     # first, and act on your own drawers instead of reporting them.
     if grep -qiF 'ANSWER WHAT WAS ASKED, FIRST' <<<"$P"; then
@@ -739,6 +739,13 @@ structural_checks() { # <case state dir> <case source dir>
     else
         bad "rule 39a — requests cause action before the reply" \
             "nothing says a plan, apology, or self-critique is not the requested action"
+    fi
+    if grep -qiF 'BACKGROUND WORK STARTS NOW' <<<"$P" \
+            && grep -qF 'crab wake-now' <<<"$P"; then
+        ok "rule 39d — current work can move out of the conversation without delay"
+    else
+        bad "rule 39d — current work can move out of the conversation without delay" \
+            "nothing makes an immediate wake distinct from a sensible future wake"
     fi
     if grep -qiF 'CORRECT WITHOUT WALLOWING' <<<"$P"; then
         ok "rule 39b — corrections do not become self-abasement"
