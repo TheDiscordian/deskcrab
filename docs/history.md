@@ -901,6 +901,21 @@ rate change is acted on only when grounded outcomes identify a causal correction
 
 Contract: [`specs/game-player.md`](../specs/game-player.md), rules 1, 7, 11 and 16.
 
+### 2026-08-29 — Friend presence was visible but incidental
+
+The OpenRSC client already emitted authoritative friend login/logout messages and the bridge kept
+them in its bounded message window, but the player treated that channel as neither conversation
+nor system feedback. A transition could appear incidentally in an outcome snapshot and scroll away
+without ever reaching the active Sol player.
+
+The ACTIONS observer now copies each friend transition once into locked durable player state and
+the decision log. Pending transitions ride the resident heartbeat and the next ordinary `play`
+verdict as structured `friend_updates`, then only the exact ids shown to the model are acknowledged.
+They remain ambient social context: reflex play does not pause, the initial friend list does not
+become a false arrival burst, and a login does not automatically cancel work or demand a greeting.
+
+Contract: [`specs/game-player.md`](../specs/game-player.md), rule 7b.
+
 ## Long-term memory
 
 `crab memory`, `lib/memory.py`: a sqlite-vec store at `~/.local/share/deskcrab/memory/memory.db`

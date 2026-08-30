@@ -261,6 +261,16 @@ deliberate-play channel.
    the current plan when the message supplies help, identifies a problem, or requests
    coordination.
 
+   Friend presence is ambient social awareness, not a new interruption class. The client's
+   authoritative `friend-status` messages are parsed only from actual “has logged in/out”
+   transitions; loading the initial friend list produces no synthetic arrivals. Each transition
+   is copied once into the locked player state and decision log, survives after it scrolls out of
+   the bridge's bounded message window, and rides the resident heartbeat as `friend_updates` until
+   the next model-facing `play` prints and acknowledges those exact ids. Learned activity keeps
+   running while this happens. A presence change may naturally affect coordination, but it does
+   not by itself require a greeting, cancel a conversation, abandon wanted loot, or outrank safety
+   and an acknowledged commitment.
+
    `reply MESSAGE_ID TEXT` answers through the same shared action slot and receipt path as every
    other deliberate action. A private incoming message compiles to `chat-private` with the
    original sender as target. A local incoming message compiles at reply time: it remains

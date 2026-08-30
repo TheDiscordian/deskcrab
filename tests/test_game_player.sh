@@ -2298,6 +2298,10 @@ contains "$OUT" "## People nearby in OpenRSC" \
 contains "$OUT" "## Writing what you learn about playing" \
     && ok "the player is explicitly taught that play memories are writable" \
     || fail "the player is explicitly taught that play memories are writable" "$OUT"
+contains "$OUT" "## Friends arriving and leaving" \
+    && contains "$OUT" "friend_updates" \
+    && ok "the composed player treats friend presence as ambient awareness" \
+    || fail "the composed player needs the friend-presence contract" "$OUT"
 contains "$OUT" "betty-openrsc remember" \
     && ok "the composed prompt names the sanctioned memory-write door" \
     || fail "the composed prompt names the sanctioned memory-write door" "$OUT"
@@ -2967,7 +2971,10 @@ python3 "$GP" remove walk-legacy-pin >/dev/null
 
 echo
 echo "the resident runner, step's deferral, the queue and the note door (spec rules 15-16):"
-snap 160 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}]}'
+FRIEND0="$(decided friend-status-received)"
+snap 160 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}],"messages":[
+    {"id":9300,"channel":"friend-status","incoming":false,"sender":"","text":"Gm Mitch has logged in"}
+]}'
 python3 "$GP" run --poll-ms 100 > "$SANDBOX/runner-out" 2>&1 &
 RUNNER_PID=$!
 for i in $(seq 1 50); do
@@ -2983,6 +2990,23 @@ check_eq "and hands back the runner's own fallback licence: exit 4" "$CODE" "4"
 contains "$OUT" "ground_items=27" \
     && ok "the deferred fallback still exposes visible pickups" \
     || fail "the deferred fallback still exposes visible pickups" "$OUT"
+contains "$OUT" 'friend_updates=[{"id":9300,"name":"Gm Mitch","status":"online"}]' \
+    && ok "the deferred verdict makes an authoritative friend login visible to Sol" \
+    || fail "the friend transition must ride ordinary play without stopping it" "$OUT"
+check_eq "the friend transition is captured once in the durable decision log" \
+    "$(( $(decided friend-status-received) - FRIEND0 ))" "1"
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json" <<'PY' \
+    && ok "printing the friend update acknowledges exactly that pending transition" \
+    || fail "a surfaced friend update must not remain pending forever"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s.get("pending_friend_status") == [], s
+assert s.get("seen_friend_status_ids") == [9300], s
+PY
+sleep 0.2
+CODE=0; OUT2="$(python3 "$GP" step)" || CODE=$?
+refute "a repeated snapshot cannot announce the same friend login twice" \
+    grep -q 'friend_updates=' <<<"$OUT2"
 grep -q '"kind":"gap"' "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" 2>/dev/null \
     && ok "the runner queued the gap for the background author" \
     || fail "the runner queued the gap for the background author"

@@ -37,6 +37,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
 ACTIONS = ("talk-npc", "interact-npc", "walk", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
+FRIEND_STATUS_RE = re.compile(r"^(.+?)\s+has logged\s+(in|out)\s*$", re.IGNORECASE)
 WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
@@ -1203,6 +1204,8 @@ def load_player_state() -> dict:
     est.setdefault("message_settle_until", 0)
     est.setdefault("seen_system_message_ids", [])
     est.setdefault("pending_system_messages", [])
+    est.setdefault("seen_friend_status_ids", [])
+    est.setdefault("pending_friend_status", [])
     est.setdefault("recent_repetitions", [])
     est.setdefault("reported_repetitions", {})
     est.setdefault("repetition_holds", [])
@@ -1268,6 +1271,73 @@ def capture_player_messages(snap: dict, est: dict, events: list) -> int:
     if captured:
         est["message_settle_until"] = captured_at + PLAYER_MESSAGE_SETTLE_MS
     return captured
+
+
+def capture_friend_status(snap: dict, est: dict, events: list) -> int:
+    """Keep authoritative friend login/logout transitions until Sol sees them.
+
+    The client emits this channel only for an actual status transition, not
+    while loading the initial friend list. It therefore needs no inference
+    from nearby players and cannot announce everyone at login.
+    """
+    seen = set(est.get("seen_friend_status_ids") or [])
+    pending = est.get("pending_friend_status") or []
+    captured = 0
+    captured_at = now_ms()
+    for message in snap.get("messages") or []:
+        if not isinstance(message, dict) or message.get("channel") != "friend-status":
+            continue
+        message_id = message.get("id")
+        text = " ".join(str(message.get("text", "")).split())
+        if not isinstance(message_id, int) or message_id in seen:
+            continue
+        match = FRIEND_STATUS_RE.fullmatch(text)
+        if not match or not match.group(1).strip():
+            # Remember the id even when a future server wording is unknown;
+            # repeated snapshots must not keep reparsing one malformed event.
+            seen.add(message_id)
+            continue
+        item = {
+            "id": message_id,
+            "name": match.group(1).strip()[:80],
+            "status": "online" if match.group(2).casefold() == "in" else "offline",
+            "text": text[:240],
+            "captured_ts": captured_at,
+        }
+        pending.append(item)
+        seen.add(message_id)
+        captured += 1
+        events.append({"ts": captured_at, "kind": "friend-status-received", **item})
+    est["pending_friend_status"] = sorted(pending, key=lambda item: item["id"])[-20:]
+    est["seen_friend_status_ids"] = sorted(seen)[-500:]
+    return captured
+
+
+def pending_friend_status(est: dict) -> list:
+    return sorted((item for item in est.get("pending_friend_status") or []
+                   if isinstance(item, dict) and isinstance(item.get("id"), int)),
+                  key=lambda item: item["id"])
+
+
+def friend_status_text(items: list) -> str:
+    return json.dumps([
+        {"id": item["id"], "name": item.get("name"), "status": item.get("status")}
+        for item in items
+    ], separators=(",", ":"), ensure_ascii=False)
+
+
+def acknowledge_friend_status(items: list) -> None:
+    """A model-facing `play` printed these exact events; retire only those ids."""
+    ids = {item.get("id") for item in items if isinstance(item, dict)}
+    if not ids:
+        return
+    with player_state_lock():
+        est = load_player_state()
+        est["pending_friend_status"] = [
+            item for item in est.get("pending_friend_status") or []
+            if not isinstance(item, dict) or item.get("id") not in ids
+        ]
+        save_player_state(est)
 
 
 def pending_message_batch(est: dict) -> list:
@@ -2437,14 +2507,15 @@ def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
 # --------------------------------------------------------------------------
 def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
                     activity: str = "", activity_xp: str = "",
-                    activity_compare: str = "") -> None:
+                    activity_compare: str = "", friend_updates=None) -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
          "verdict": verdict, "detail": detail,
          "ground_items": ground_items or [],
          "activity": activity or None,
          "activity_xp": activity_xp or None,
-         "activity_compare": activity_compare or None}) + "\n")
+         "activity_compare": activity_compare or None,
+         "friend_updates": friend_updates or []}) + "\n")
 
 
 def read_live_runner():
@@ -2518,6 +2589,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # an old objective, route, reflex, or queued reply pretend it can proceed
     # until the current word has been solved and live state says awake.
     if snap.get("logged_in") is True and snap.get("sleeping") is True:
+        friend_events = []
+        with player_state_lock():
+            sleeping_state = load_player_state()
+            capture_friend_status(snap, sleeping_state, friend_events)
+            save_player_state(sleeping_state)
+            flush_events(friend_events)
         report("sleeping-needs-wake", fatigue=snap.get("fatigue"),
                sleep_fatigue=snap.get("sleep_fatigue"),
                status=snap.get("sleep_status") or None,
@@ -2589,6 +2666,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         est = load_player_state()
         est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
         capture_player_messages(snap, est, message_events)
+        capture_friend_status(snap, est, message_events)
         capture_urgent_system_messages(snap, est, message_events)
         pending_system_message = oldest_pending_system_message(est)
         pending_batch = pending_message_batch(est)
@@ -3857,9 +3935,10 @@ def cmd_run(args):
             live_metrics = activity_metrics(latest, live_activity)
             live_xp = activity_xp_metrics_text(live_metrics)
             live_compare = activity_comparison_text(live_metrics)
+            live_friend_updates = pending_friend_status(load_player_state())
             write_heartbeat(last_verdict, detail,
                             [i.get("id") for i in latest.get("ground_items") or []],
-                            live_activity, live_xp, live_compare)
+                            live_activity, live_xp, live_compare, live_friend_updates)
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -4037,26 +4116,40 @@ def main():
             hb = read_live_runner()
             if hb is not None:
                 verdict = hb.get("verdict", "")
-                if verdict == "player-message":
+                # The resident process normally captured these already. Do
+                # the same read here as a hot-upgrade seam: a newly installed
+                # CLI can surface a still-visible transition even while the
+                # long-lived runner is finishing its old code generation.
+                friend_events = []
+                with player_state_lock():
                     live_state = load_player_state()
+                    capture_friend_status(
+                        game_reflex.read_snapshot() or {}, live_state, friend_events)
+                    save_player_state(live_state)
+                    flush_events(friend_events)
+                friend_updates = pending_friend_status(live_state)
+                friend_updates_field = friend_status_text(friend_updates) \
+                    if friend_updates else None
+                if verdict == "player-message":
                     batch = pending_message_batch(live_state)
                     pending = batch[-1] if batch else None
                     if pending is not None:
                         report("player-message", id=pending["id"],
                                channel=pending["channel"], sender=pending["sender"],
-                               count=len(batch), burst=pending_message_burst(batch))
+                               count=len(batch), burst=pending_message_burst(batch),
+                               friend_updates=friend_updates_field)
                     else:
                         report("runner-player-message", age_ms=now_ms() - hb.get("ts", 0),
-                               pid=hb.get("pid"))
+                               pid=hb.get("pid"), friend_updates=friend_updates_field)
                 elif verdict == "system-message":
-                    pending = oldest_pending_system_message(load_player_state())
+                    pending = oldest_pending_system_message(live_state)
                     if pending is not None:
                         report("system-message", id=pending["id"],
                                channel=pending["channel"], action="move-required",
-                               text=pending["text"])
+                               text=pending["text"], friend_updates=friend_updates_field)
                     else:
                         report("runner-system-message", age_ms=now_ms() - hb.get("ts", 0),
-                               pid=hb.get("pid"))
+                               pid=hb.get("pid"), friend_updates=friend_updates_field)
                 else:
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
@@ -4065,7 +4158,9 @@ def main():
                            activity_compare=hb.get("activity_compare") or None,
                            ground_items=",".join(str(i)
                                                  for i in hb.get("ground_items") or []) or None,
-                           feedback=hb.get("detail") or None)
+                           feedback=hb.get("detail") or None,
+                           friend_updates=friend_updates_field)
+                acknowledge_friend_status(friend_updates)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
                           "route-blocked": EXIT_NO_RULE,
                           "held": EXIT_HELD,
