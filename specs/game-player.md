@@ -41,6 +41,20 @@ deliberate-play channel.
    one real positive base level exists, and pre-v2 baselines without that readiness proof are
    re-established from the first ready snapshot.
 
+   Performance is durable across revisions rather than visible only for the current clock.
+   `$DESKCRAB_GAME_DIR/activity-history.jsonl` holds every completed activity iteration: activity,
+   objective, start/end/reason, elapsed time, positive per-skill gain and XP/hour, and the compact
+   executable reflex set and fingerprint that governed it. Activity switch, explicit restart,
+   clear, or an executable reflex change relevant to the selected activity closes the current
+   iteration before starting the next one from the same grounded XP snapshot. A prose-only note
+   edit and a rule scoped away from the current objective/activity do not reset the clock.
+   `$DESKCRAB_GAME_DIR/reflex-history.jsonl` records every created, changed, enabled, disabled, or
+   removed reflex with its exact before/after body and the activity performance immediately before
+   a relevant executable change. `activity --history [NAME]` reports recent iterations and the
+   best comparable rate; `rules --history [--rule NAME]` reports the revision trail. An iteration
+   under 60 seconds or without positive XP is preserved as evidence but cannot become the
+   performance benchmark.
+
    The engine's own counters live in `$DESKCRAB_GAME_STATE_DIR/player-engine-state.json` and its decisions in
    `$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl` — separate files from the reflex engine's,
    because the two engines are tuned and audited independently. The exchange files
@@ -201,7 +215,9 @@ deliberate-play channel.
      ground-item id so a newly entered room cannot hide an actionable pickup behind another query.
      The current `activity` and any positive `activity_xp` measurements ride the ordinary verdict;
      the resident-runner heartbeat preserves them when a separate player process asks through
-     `play`, so performance feedback is ambient rather than a special inspection ritual.
+     `play`, so performance feedback is ambient rather than a special inspection ritual. Once the
+     current sample is at least 60 seconds old and a comparable prior iteration exists, the verdict
+     also carries `activity_compare`, current XP/hour versus the best prior eligible iteration.
    - `sleeping-needs-wake` (exit 4): the sleep-word screen currently owns input. No objective,
      route, reflex, or reply action is emitted; solving the current word and verifying awake state
      is the sole licensed reasoning task. Invoking the sleeping bag again is never a wake-up action.
@@ -380,7 +396,11 @@ deliberate-play channel.
     moment, which is the arming criterion. `unfinished <name> <note…>` records what could not
     be compiled. `objective [NAME|--clear]` sets or clears the durable objective;
     `enable`/`disable`/`set`/`remove`/`rules` mirror `betty-game`'s. `init` writes an empty
-    valid table if none exists, never overwrites.
+    valid table if none exists, never overwrites. Selecting a genuinely new activity immediately
+    prints the rules already eligible there, prior best XP/hour, and a bounded ranked list of
+    existing activity-scoped reflexes whose non-scope triggers currently match or whose source
+    activity is lexically related. These are templates to consider, never permission to copy an
+    action without grounded evidence and the normal replay gate.
 
 ### The entrypoint
 
@@ -552,6 +572,12 @@ deliberate-play channel.
     generic action cap: productive skilling and valuable finite loot stay repeatable, while a
     fixed low-value respawn, stale dialogue, or other diversion cannot keep firing during its own
     correction. Safety retreat is exempt.
+    Selecting or restarting an activity adds one `activity-start` record carrying its current
+    eligible reflexes, reusable candidates, and prior performance summary. While positive XP keeps
+    arriving, one `activity-checkpoint` at most every three minutes carries the current iteration,
+    reflex fingerprint, XP/hour, and comparison with the prior best. Ending or revising the
+    activity adds an `activity-iteration` review. Thus optimization does not wait for a player to
+    complain or for the sitting to end, while the bounded cadence avoids an XP-trigger loop.
     The queue is the inbox of the background author — an event-driven supervised worker (`run-author` under `orsc-author.path` and
     `orsc-author.service`) that starts when the queue changes, processes only bytes after its
     durable cursor, and then exits; there is no sleep or polling loop. It runs on Sol at medium
@@ -561,7 +587,13 @@ deliberate-play channel.
     that CAN become a reflex SHOULD become one, but rule creation must never block the body.
     An outcome's activity is context, not a default scope: the author adds `activity_is` only
     when the action would be wrong outside that activity. Generic loot, survival, and idle
-    movement remain activity-agnostic; interface- and task-specific interactions opt in.
+    movement remain activity-agnostic; interface- and task-specific interactions opt in. On an
+    `activity-start`, the author MUST inspect current rules and the supplied reuse candidates
+    before inventing a new shape. On checkpoints and completed iterations it compares only eligible
+    samples, preserves safety/commitments and honest stopping conditions ahead of raw rate, and
+    changes a rule only when grounded outcomes explain the performance difference. Every relevant
+    executable change automatically begins the next measurable iteration, so a later review can
+    tell whether the refinement helped rather than remembering only the newest version.
 
 17. Rules are deterministic trigger-to-action data, so they are tested like data.
     `$DESKCRAB_GAME_DIR/learned-rule-tests.json` holds replay cases — `name`, `objective`,

@@ -548,11 +548,31 @@ python3 "$GP" activity --clear >/dev/null
 
 echo
 echo "an activity measures grounded action XP and elapsed rate (spec rules 1, 7):"
+python3 "$GP" learn man-thieving-template --priority 12 --cooldown-ms 2200 \
+    --trigger activity_is=man-thieving --trigger npc_visible=63 \
+    --action interact-npc --param npc=63 --param cmd=1 >/dev/null
 snap 1034 '[]' '{"skills":[{"id":17,"name":"Thieving","level":0,"xp":0}]}'
-check "selecting during the zero-filled login frame does not invent a baseline" \
-    python3 "$GP" activity farmer-thieving
+OUT="$(python3 "$GP" activity farmer-thieving)"
+contains "$OUT" "XP baseline pending" \
+    && ok "selecting during the zero-filled login frame does not invent a baseline" \
+    || fail "selecting during the zero-filled login frame does not invent a baseline" "$OUT"
+contains "$OUT" "man-thieving-template (from man-thieving)" \
+    && ok "a new activity immediately considers a reusable reflex from a related skill" \
+    || fail "a new activity immediately considers a reusable reflex from a related skill" "$OUT"
 refute "the placeholder skill table produces no activity stats" \
     test -e "$DESKCRAB_GAME_DIR/activity-stats.json"
+python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
+    && ok "activity selection queues its current rules, reusable candidates, and prior history" \
+    || fail "activity selection queues its current rules, reusable candidates, and prior history"
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1])]
+start = [e for e in events if e.get("kind") == "activity-start"
+         and e.get("activity") == "farmer-thieving"][-1]
+assert start["baseline_ready"] is False, start
+assert any(c.get("name") == "man-thieving-template"
+           for c in start.get("reuse_candidates") or []), start
+assert "history" in start and "current_rules" in start, start
+PY
 snap 1035 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1000}]}'
 CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
 check_eq "the first ready skill snapshot starts the cumulative-XP baseline" "$CODE" "4"
@@ -591,11 +611,90 @@ python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY' \
     || fail "an explicit restart resets the baseline to current XP"
 import json, sys
 s = json.load(open(sys.argv[1]))
+assert s["v"] == 3 and s["iteration"] == 2, s
 assert s["baseline_xp"] == {"17": 1012} and s["last_action_xp"] == [], s
+PY
+OUT="$(python3 "$GP" activity farmer-thieving --history)"
+contains "$OUT" "iteration 1" && contains "$OUT" "Thieving=12/hr(+12)" \
+    && ok "completed activity iterations preserve their measured XP/hour" \
+    || fail "completed activity iterations preserve their measured XP/hour" "$OUT"
+contains "$OUT" "best comparable: Thieving=12/hr (iteration 1)" \
+    && ok "history identifies the best comparable prior iteration" \
+    || fail "history identifies the best comparable prior iteration" "$OUT"
+
+# A behavior change relevant to the selected activity closes the old measured
+# iteration and begins a fresh one with the new reflex fingerprint. This is
+# the causal before/after boundary XP/hour comparisons need.
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+s = json.load(open(p))
+s["started_ms"] = int(time.time() * 1000) - 3600000
+json.dump(s, open(p, "w"))
+PY
+snap 10361 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1024}]}'
+CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
+check_eq "the second iteration accumulates before its reflex revision" "$CODE" "4"
+python3 "$GP" learn farmer-thieving-fast-pick --priority 13 --cooldown-ms 1800 \
+    --trigger activity_is=farmer-thieving --trigger npc_visible=63 \
+    --action interact-npc --param npc=63 --param cmd=1 >/dev/null
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" \
+          "$DESKCRAB_GAME_DIR/activity-history.jsonl" \
+          "$DESKCRAB_GAME_DIR/reflex-history.jsonl" <<'PY' \
+    && ok "a relevant reflex revision brackets a new comparable XP iteration" \
+    || fail "a relevant reflex revision brackets a new comparable XP iteration"
+import json, sys
+stats = json.load(open(sys.argv[1]))
+activities = [json.loads(line) for line in open(sys.argv[2])]
+changes = [json.loads(line) for line in open(sys.argv[3])]
+assert stats["iteration"] == 3 and stats["baseline_xp"] == {"17": 1024}, stats
+assert activities[-1]["iteration"] == 2, activities[-1]
+assert activities[-1]["end_reason"].startswith("reflex-change:"), activities[-1]
+change = changes[-1]
+assert change["relevant_to_activity"] is True, change
+assert change["performance_before"]["iteration"] == 2, change
+assert change["changes"][0]["name"] == "farmer-thieving-fast-pick", change
+PY
+OUT="$(python3 "$GP" rules --history --rule farmer-thieving-fast-pick)"
+contains "$OUT" "created:farmer-thieving-fast-pick" \
+    && contains "$OUT" "before=Thieving=12/hr" \
+    && ok "the reflex itself remembers the measured performance before its revision" \
+    || fail "the reflex itself remembers the measured performance before its revision" "$OUT"
+
+# A productive activity left running gets a bounded three-minute checkpoint,
+# so optimization is proactive rather than waiting for the activity to end.
+python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+s = json.load(open(p))
+now = int(time.time() * 1000)
+s["started_ms"] = now - 240000
+s["last_review_ms"] = now - 240000
+s["last_review_gained"] = 0
+json.dump(s, open(p, "w"))
+PY
+snap 10362 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1036}]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "the periodic performance pass leaves ordinary reasoning licensed" "$CODE" "4"
+contains "$OUT" "activity_compare=Thieving:" && contains "$OUT" "_vs_best_12/hr" \
+    && ok "ambient play compares the current rate with the best prior iteration" \
+    || fail "ambient play compares the current rate with the best prior iteration" "$OUT"
+python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
+    && ok "three minutes of new XP queues one performance review for the author" \
+    || fail "three minutes of new XP queues one performance review for the author"
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1])]
+checks = [e for e in events if e.get("kind") == "activity-checkpoint"
+          and e.get("activity") == "farmer-thieving"]
+assert len(checks) == 1, checks
+assert checks[0]["performance"]["skills"][0]["gained"] == 12, checks[0]
+assert checks[0]["comparison"][0]["best_xp_per_hour"] == 12, checks[0]
 PY
 python3 "$GP" activity --clear >/dev/null
 refute "clearing activity also clears its measurement" \
     test -e "$DESKCRAB_GAME_DIR/activity-stats.json"
+python3 "$GP" remove farmer-thieving-fast-pick >/dev/null
+python3 "$GP" remove man-thieving-template >/dev/null
 
 echo
 echo "state-based waits use the ACTIONS snapshot without polling (spec rule 7d):"
@@ -2004,6 +2103,14 @@ check "the author does not turn incidental activity into reflex scope" \
     grep -q 'Treat the outcome.*activity as context, not an automatic scope' "$BOC"
 check "the author keeps generic loot activity-agnostic" \
     grep -q 'Generic loot, survival, and idle-movement rules remain activity-agnostic' "$BOC"
+check "the author treats a new activity as a mandatory reflex-reuse review" \
+    grep -q 'Treat activity-start as a mandatory reuse review' "$BOC"
+check "the author reads durable XP iterations and reflex revision history" \
+    grep -q 'play activity --history' "$BOC"
+check "the author refuses to benchmark short or zero-XP samples" \
+    sh -c "grep -A1 'at least sixty seconds' '$BOC' | grep -q 'positive XP'"
+check "the player receives proactive three-minute performance reviews" \
+    grep -q 'performance checkpoint after each three productive minutes' "$BOC"
 check "the game author excludes unrelated Notion and task machinery" \
     grep -q 'Do not query Notion or task' "$BOC"
 contains "$(sed -n '/cmd_run_player.*what systemd execs/,/compose_prompt/p' "$BOC")" 'stack_up' \

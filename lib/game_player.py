@@ -15,8 +15,10 @@ Stdlib only, plain python3.
 import argparse
 import ctypes
 import fcntl
+import hashlib
 import json
 import os
+import re
 import select
 import sys
 import time
@@ -70,6 +72,8 @@ PLAYER_MESSAGE_SETTLE_MS = 5000  # collect one RuneScape-length chat chain befor
 REPETITION_WINDOW_MS = 3 * 60 * 1000
 REPETITION_THRESHOLD = 3
 REPETITION_REVIEW_HOLD_MS = 30 * 1000
+ACTIVITY_PERFORMANCE_MIN_MS = 60 * 1000
+ACTIVITY_REVIEW_INTERVAL_MS = 3 * 60 * 1000
 MOVEMENT_TRAIL_MAX_POINTS = 1024
 MOVEMENT_TRAIL_BREAK_DISTANCE = 12
 ROUTE_RULE_NAME = "active-route"
@@ -125,6 +129,14 @@ def activity_path() -> Path:
 
 def activity_stats_path() -> Path:
     return game_dir() / "activity-stats.json"
+
+
+def activity_history_path() -> Path:
+    return game_dir() / "activity-history.jsonl"
+
+
+def reflex_history_path() -> Path:
+    return game_dir() / "reflex-history.jsonl"
 
 
 def retreat_request_path() -> Path:
@@ -800,15 +812,220 @@ def clear_activity_stats() -> None:
         pass
 
 
-def start_activity_stats(activity: str, snap: dict, started_ms=None) -> dict:
-    """Start one activity clock from a cumulative-XP snapshot, when available."""
+def load_jsonl(path: Path) -> list:
+    records = []
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return records
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def rule_behavior(rule: dict | None) -> dict | None:
+    """The executable part of a reflex, excluding prose provenance."""
+    if not isinstance(rule, dict):
+        return None
+    return {key: rule.get(key) for key in (
+        "enabled", "priority", "cooldown_ms", "hold_ticks",
+        "once_per_objective", "trigger", "action") if key in rule}
+
+
+def rule_behavior_hash(rule: dict) -> str:
+    body = json.dumps(rule_behavior(rule), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def rule_scope_applies(rule: dict, objective: str, activity: str) -> bool:
+    trig = rule.get("trigger") or {}
+    return (not trig.get("objective_is") or trig.get("objective_is") == objective) \
+        and (not trig.get("activity_is") or trig.get("activity_is") == activity)
+
+
+def activity_rule_snapshot(cfg: dict, objective: str, activity: str) -> list:
+    """Compact executable rule set that could affect one activity iteration."""
+    rules = []
+    for rule in cfg.get("rules") or []:
+        if not rule.get("enabled") or not rule_scope_applies(rule, objective, activity):
+            continue
+        trig = rule.get("trigger") or {}
+        rules.append({
+            "name": rule.get("name"),
+            "behavior": rule_behavior_hash(rule),
+            "activity_scope": trig.get("activity_is"),
+            "objective_scope": trig.get("objective_is"),
+            "action": (rule.get("action") or {}).get("type"),
+            "priority": rule.get("priority"),
+            "cooldown_ms": rule.get("cooldown_ms"),
+        })
+    return sorted(rules, key=lambda item: str(item.get("name")))
+
+
+def current_config_or_empty() -> dict:
+    try:
+        cfg = json.loads(rules_path().read_text())
+        validate_config(cfg)
+        cfg.setdefault("unfinished", [])
+        return cfg
+    except (OSError, ValueError, json.JSONDecodeError):
+        return dict(EMPTY_TABLE, defaults=dict(DEFAULTS), rules=[], unfinished=[])
+
+
+def next_activity_iteration(activity: str) -> int:
+    return 1 + sum(1 for record in load_jsonl(activity_history_path())
+                   if record.get("activity") == activity)
+
+
+def activity_metrics_from_stats(stats: dict, ended_ms=None) -> dict:
+    if not stats:
+        return {}
+    end = ended_ms if isinstance(ended_ms, int) else now_ms()
+    started = stats.get("started_ms", end)
+    elapsed = max(1, end - started) if isinstance(started, int) else 1
+    baseline = stats.get("baseline_xp") or {}
+    current = stats.get("last_xp") or {}
+    names = stats.get("skill_names") or {}
+    last_by_id = {str(v.get("id")): v for v in stats.get("last_action_xp") or []
+                  if isinstance(v, dict)}
+    skills = []
+    for key, value in current.items():
+        start_xp = baseline.get(key)
+        if not isinstance(start_xp, int) or not isinstance(value, int) or value <= start_xp:
+            continue
+        gained = value - start_xp
+        item = {"id": int(key), "name": names.get(key, f"skill-{key}"),
+                "gained": gained,
+                "xp_per_hour": round(gained * 3600000 / elapsed)}
+        if key in last_by_id and isinstance(last_by_id[key].get("xp"), int):
+            item["last_action_xp"] = last_by_id[key]["xp"]
+        skills.append(item)
+    return {
+        "activity": stats.get("activity"),
+        "objective": stats.get("objective"),
+        "iteration": stats.get("iteration"),
+        "started_ms": started,
+        "elapsed_ms": elapsed,
+        "reason": stats.get("reason"),
+        "rule_set": stats.get("rule_set") or [],
+        "rule_set_hash": stats.get("rule_set_hash"),
+        "skills": skills,
+    }
+
+
+def activity_history_summary(activity: str, current: dict = None) -> dict:
+    rows = [row for row in load_jsonl(activity_history_path())
+            if row.get("activity") == activity]
+    eligible = [row for row in rows
+                if isinstance(row.get("elapsed_ms"), int)
+                and row["elapsed_ms"] >= ACTIVITY_PERFORMANCE_MIN_MS]
+    best = {}
+    for row in eligible:
+        for skill in row.get("skills") or []:
+            rate = skill.get("xp_per_hour")
+            key = str(skill.get("id"))
+            if not isinstance(rate, int) or rate <= 0:
+                continue
+            if key not in best or rate > best[key]["xp_per_hour"]:
+                best[key] = {**skill, "iteration": row.get("iteration"),
+                             "elapsed_ms": row.get("elapsed_ms")}
+    comparison = []
+    if current and current.get("elapsed_ms", 0) >= ACTIVITY_PERFORMANCE_MIN_MS:
+        for skill in current.get("skills") or []:
+            prior = best.get(str(skill.get("id")))
+            if prior:
+                comparison.append({"id": skill.get("id"), "name": skill.get("name"),
+                                   "xp_per_hour": skill.get("xp_per_hour"),
+                                   "best_xp_per_hour": prior["xp_per_hour"],
+                                   "delta": skill.get("xp_per_hour", 0)
+                                            - prior["xp_per_hour"],
+                                   "best_iteration": prior.get("iteration")})
+    return {"activity": activity, "iterations": len(rows),
+            "latest": rows[-1] if rows else None,
+            "best": list(best.values()), "comparison": comparison}
+
+
+def reusable_rule_candidates(cfg: dict, activity: str, objective: str,
+                             snap: dict, limit=8) -> list:
+    """Rank old activity-scoped reflexes worth considering as templates.
+
+    These are suggestions, never executable rewrites: the background author
+    still needs grounded evidence and the normal test gate before copying one.
+    """
+    tokens = set(re.findall(r"[a-z0-9]+", activity.lower()))
+    candidates = []
+    trigger_fn = make_trigger_fn(objective, activity)
+    for rule in cfg.get("rules") or []:
+        trig = rule.get("trigger") or {}
+        source = trig.get("activity_is")
+        action = rule.get("action") or {}
+        if not source or source == activity or rule.get("once_per_objective") \
+                or action.get("type") in ("walk", "retreat"):
+            continue
+        other = {key: value for key, value in trig.items()
+                 if key not in ("activity_is", "objective_is")}
+        try:
+            live_match = bool(trigger_fn(other, snap, {}))
+        except Exception:
+            live_match = False
+        haystack = " ".join((str(rule.get("name") or ""), source,
+                             str(rule.get("note") or ""))).lower()
+        overlap = sum(1 for token in tokens if token in haystack)
+        if not live_match and not overlap:
+            continue
+        score = (50 if live_match else 0) + overlap * 20 \
+            + (6 if trig.get("objective_is") == objective else 0) \
+            + (2 if rule.get("enabled") else 0)
+        candidates.append({
+            "name": rule.get("name"), "source_activity": source,
+            "enabled": bool(rule.get("enabled")), "score": score,
+            "live_non_scope_match": live_match,
+            "trigger_template": other, "action": action,
+            "note": str(rule.get("note") or "")[:240],
+        })
+    candidates.sort(key=lambda item: (-item["score"], str(item.get("name"))))
+    return candidates[:limit]
+
+
+def activity_briefing(cfg: dict, activity: str, snap: dict) -> dict:
+    objective = read_objective()
+    return {
+        "activity": activity, "objective": objective or None,
+        "current_rules": [item["name"] for item in
+                          activity_rule_snapshot(cfg, objective, activity)],
+        "reuse_candidates": reusable_rule_candidates(
+            cfg, activity, objective, snap),
+        "history": activity_history_summary(activity),
+    }
+
+
+def start_activity_stats(activity: str, snap: dict, started_ms=None,
+                         reason="selected", cfg: dict = None) -> dict:
+    """Start one comparable activity/reflex iteration from grounded XP."""
     skills = snapshot_skills(snap)
     if not activity or not skills_ready(skills):
         return {}
     started = started_ms if isinstance(started_ms, int) else now_ms()
+    cfg = cfg or current_config_or_empty()
+    objective = read_objective()
+    rule_set = activity_rule_snapshot(cfg, objective, activity)
     stats = {
-        "v": 2,
+        "v": 3,
         "activity": activity,
+        "objective": objective or None,
+        "iteration": next_activity_iteration(activity),
+        "reason": reason,
         "started_ms": started,
         "baseline_ready": True,
         "baseline_xp": {key: val["xp"] for key, val in skills.items()},
@@ -816,6 +1033,11 @@ def start_activity_stats(activity: str, snap: dict, started_ms=None) -> dict:
         "skill_names": {key: val["name"] for key, val in skills.items()},
         "last_action_xp": [],
         "updated_ms": started,
+        "last_review_ms": started,
+        "last_review_gained": 0,
+        "rule_set": rule_set,
+        "rule_set_hash": hashlib.sha256(json.dumps(
+            rule_set, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16],
     }
     game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
     return stats
@@ -866,36 +1088,90 @@ def activity_metrics(snap: dict, activity: str) -> dict:
     stats = refresh_activity_stats(snap, activity)
     if not stats:
         return {}
-    now = now_ms()
-    elapsed = max(1, now - stats.get("started_ms", now))
-    baseline = stats.get("baseline_xp") or {}
-    current = snapshot_skills(snap)
-    last_by_id = {str(v.get("id")): v for v in stats.get("last_action_xp") or []
-                  if isinstance(v, dict)}
-    skills = []
-    for key, skill in current.items():
-        start_xp = baseline.get(key)
-        if not isinstance(start_xp, int) or skill["xp"] <= start_xp:
-            continue
-        gained = skill["xp"] - start_xp
-        item = {"id": skill["id"], "name": skill["name"], "gained": gained,
-                "xp_per_hour": round(gained * 3600000 / elapsed)}
-        if key in last_by_id and isinstance(last_by_id[key].get("xp"), int):
-            item["last_action_xp"] = last_by_id[key]["xp"]
-        skills.append(item)
-    return {"activity": activity, "started_ms": stats.get("started_ms"),
-            "elapsed_ms": elapsed, "skills": skills}
+    return activity_metrics_from_stats(stats)
 
 
-def activity_xp_text(snap: dict, activity: str) -> str:
+def activity_xp_metrics_text(metrics: dict) -> str:
     parts = []
-    for skill in activity_metrics(snap, activity).get("skills") or []:
+    for skill in metrics.get("skills") or []:
         fields = []
         if skill.get("last_action_xp", 0) > 0:
             fields.append(f"+{skill['last_action_xp']}/action")
         fields.extend((f"+{skill['gained']}_total", f"{skill['xp_per_hour']}/hr"))
         parts.append(f"{skill['name']}:" + ",".join(fields))
     return ";".join(parts)
+
+
+def activity_xp_text(snap: dict, activity: str) -> str:
+    return activity_xp_metrics_text(activity_metrics(snap, activity))
+
+
+def activity_comparison_text(metrics: dict) -> str:
+    if not metrics or metrics.get("elapsed_ms", 0) < ACTIVITY_PERFORMANCE_MIN_MS:
+        return ""
+    comparison = activity_history_summary(
+        metrics.get("activity") or "", metrics).get("comparison") or []
+    return ";".join(
+        f"{item['name']}:{item['xp_per_hour']}/hr_vs_best_"
+        f"{item['best_xp_per_hour']}/hr,delta={item['delta']:+d}"
+        for item in comparison)
+
+
+def finish_activity_iteration(reason: str, snap: dict = None,
+                              queue_review=True) -> dict:
+    stats = load_activity_stats()
+    if not stats:
+        return {}
+    activity = stats.get("activity") or ""
+    if snap and activity and stats.get("activity") == activity \
+            and skills_ready(snapshot_skills(snap)):
+        stats = refresh_activity_stats(snap, activity)
+    ended = now_ms()
+    record = {"v": 1, "kind": "activity-iteration", "ended_ms": ended,
+              "end_reason": reason,
+              **activity_metrics_from_stats(stats, ended)}
+    prior = activity_history_summary(activity, record)
+    record["comparison"] = prior.get("comparison") or []
+    record["performance_eligible"] = (
+        record.get("elapsed_ms", 0) >= ACTIVITY_PERFORMANCE_MIN_MS
+        and any(skill.get("gained", 0) > 0 for skill in record.get("skills") or []))
+    append_jsonl(activity_history_path(), record)
+    if queue_review:
+        append_outcome({
+            "ts": ended, "kind": "activity-iteration",
+            "activity": activity or None, "objective": record.get("objective"),
+            "iteration": record.get("iteration"), "end_reason": reason,
+            "performance": {key: record.get(key) for key in
+                            ("elapsed_ms", "skills", "comparison",
+                             "performance_eligible", "rule_set_hash")},
+            "rules": record.get("rule_set") or [],
+        })
+    clear_activity_stats()
+    return record
+
+
+def maybe_queue_activity_checkpoint(metrics: dict, cfg: dict,
+                                    objective: str, activity: str) -> None:
+    if not metrics or metrics.get("elapsed_ms", 0) < ACTIVITY_REVIEW_INTERVAL_MS \
+            or not metrics.get("skills"):
+        return
+    stats = load_activity_stats()
+    now = now_ms()
+    total = sum(skill.get("gained", 0) for skill in metrics.get("skills") or [])
+    if now - stats.get("last_review_ms", stats.get("started_ms", now)) \
+            < ACTIVITY_REVIEW_INTERVAL_MS \
+            or total <= stats.get("last_review_gained", 0):
+        return
+    stats["last_review_ms"] = now
+    stats["last_review_gained"] = total
+    game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
+    append_outcome({
+        "ts": now, "kind": "activity-checkpoint", "activity": activity,
+        "objective": objective or None, "iteration": metrics.get("iteration"),
+        "performance": metrics,
+        "comparison": activity_history_summary(activity, metrics).get("comparison") or [],
+        "rules": activity_rule_snapshot(cfg, objective, activity),
+    })
 
 
 # --------------------------------------------------------------------------
@@ -1928,6 +2204,55 @@ def rule_fingerprint(rule: dict) -> str:
                       sort_keys=True, separators=(",", ":"))
 
 
+def reflex_changes(before: dict, after: dict) -> list:
+    old = {rule["name"]: rule for rule in before.get("rules") or []}
+    new = {rule["name"]: rule for rule in after.get("rules") or []}
+    changes = []
+    for name in sorted(set(old) | set(new)):
+        if old.get(name) == new.get(name):
+            continue
+        changes.append({
+            "name": name,
+            "operation": "created" if name not in old else
+                         "removed" if name not in new else "updated",
+            "behavior_changed": rule_behavior(old.get(name)) != rule_behavior(new.get(name)),
+            "before": old.get(name), "after": new.get(name),
+        })
+    return changes
+
+
+def save_config_change(before: dict, after: dict, doing: str) -> None:
+    """Persist one authored mutation and bracket comparable XP iterations."""
+    validate_config(after)
+    changes = reflex_changes(before, after)
+    if not changes:
+        save_config(after)
+        return
+    activity = read_activity()
+    objective = read_objective()
+    snap = game_reflex.read_snapshot() or {}
+    relevant = any(
+        change.get("behavior_changed") and (
+            (isinstance(change.get("before"), dict)
+             and change["before"].get("enabled")
+             and rule_scope_applies(change["before"], objective, activity))
+            or (isinstance(change.get("after"), dict)
+                and change["after"].get("enabled")
+                and rule_scope_applies(change["after"], objective, activity)))
+        for change in changes) if activity else False
+    performance_before = finish_activity_iteration(
+        f"reflex-change:{doing}", snap, queue_review=False) if relevant else {}
+    save_config(after)
+    append_jsonl(reflex_history_path(), {
+        "v": 1, "ts": now_ms(), "kind": "reflex-change", "doing": doing,
+        "objective": objective or None, "activity": activity or None,
+        "relevant_to_activity": relevant, "changes": changes,
+        "performance_before": performance_before or None,
+    })
+    if relevant:
+        start_activity_stats(activity, snap, reason=f"reflex-change:{doing}", cfg=after)
+
+
 def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | None:
     """Aggregate exact repeated plays for the event-driven Sol author.
 
@@ -2111,13 +2436,15 @@ def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
 # --------------------------------------------------------------------------
 def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
-                    activity: str = "", activity_xp: str = "") -> None:
+                    activity: str = "", activity_xp: str = "",
+                    activity_compare: str = "") -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
          "verdict": verdict, "detail": detail,
          "ground_items": ground_items or [],
          "activity": activity or None,
-         "activity_xp": activity_xp or None}) + "\n")
+         "activity_xp": activity_xp or None,
+         "activity_compare": activity_compare or None}) + "\n")
 
 
 def read_live_runner():
@@ -2183,7 +2510,10 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
     record_movement_trail(snap)
-    xp_text = activity_xp_text(snap, activity)
+    xp_metrics = activity_metrics(snap, activity)
+    xp_text = activity_xp_metrics_text(xp_metrics)
+    xp_compare = activity_comparison_text(xp_metrics)
+    maybe_queue_activity_checkpoint(xp_metrics, cfg, objective, activity)
     # The sleep screen owns keyboard input and blocks ordinary play. Never let
     # an old objective, route, reflex, or queued reply pretend it can proceed
     # until the current word has been solved and live state says awake.
@@ -2460,6 +2790,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("no-rule-matched", objective=objective or None,
                activity=activity or None,
                activity_xp=xp_text or None,
+               activity_compare=xp_compare or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
                ground_items=",".join(str(i.get("id"))
@@ -2606,6 +2937,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     outcome = {"ts": now_ms(), "kind": "outcome", "rule": rule_name,
                "id": action_id, "action": action, "status": status,
                "objective": objective or None, "activity": activity or None,
+               "activity_performance": xp_metrics or None,
                "snap": snap_brief(snap)}
     if action["type"] == "walk":
         outcome["intended"] = {"x": action["x"], "z": action["z"]}
@@ -2633,7 +2965,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, x=final_x, z=final_z, objective=objective or None,
-                   activity=activity or None, activity_xp=xp_text or None)
+                   activity=activity or None, activity_xp=xp_text or None,
+                   activity_compare=xp_compare or None)
     else:
         if backtrack_was_blocked:
             report("backtrack-blocked", id=action_id, target_x=action["x"],
@@ -2644,7 +2977,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, objective=objective or None,
-                   activity=activity or None, activity_xp=xp_text or None)
+                   activity=activity or None, activity_xp=xp_text or None,
+                   activity_compare=xp_compare or None)
     if backtrack_was_blocked:
         return "backtrack-blocked", EXIT_NO_RULE
     if route_was_blocked:
@@ -2753,6 +3087,27 @@ def cmd_init(args):
 
 
 def cmd_rules(args):
+    if getattr(args, "history", False):
+        records = load_jsonl(reflex_history_path())
+        wanted = getattr(args, "rule", None)
+        shown = 0
+        for record in records[-100:]:
+            changes = [change for change in record.get("changes") or []
+                       if not wanted or change.get("name") == wanted]
+            if not changes:
+                continue
+            names = ",".join(f"{change.get('operation')}:{change.get('name')}"
+                             for change in changes)
+            perf = record.get("performance_before") or {}
+            rates = ",".join(f"{skill.get('name')}={skill.get('xp_per_hour')}/hr"
+                             for skill in perf.get("skills") or []) or "no-XP-sample"
+            print(f"{record.get('ts')} activity={record.get('activity') or '(none)'} "
+                  f"relevant={str(bool(record.get('relevant_to_activity'))).lower()} "
+                  f"change={names} before={rates} doing={record.get('doing')}")
+            shown += 1
+        if not shown:
+            print("no reflex change history" + (f" for {wanted}" if wanted else ""))
+        return
     cfg = load_config()
     if not cfg["rules"] and not cfg["unfinished"]:
         print("no learned rules yet")
@@ -2790,6 +3145,7 @@ def parse_kv(pairs):
 
 def cmd_learn(args):
     cfg = load_config()
+    before = json.loads(json.dumps(cfg))
     if any(r["name"] == args.name for r in cfg["rules"]):
         die(f"a rule named '{args.name}' already exists")
     rule = {
@@ -2811,7 +3167,7 @@ def cmd_learn(args):
     except ValueError as e:
         die(str(e))
     gate_or_die(cfg, f"learning '{args.name}'")
-    save_config(cfg)
+    save_config_change(before, cfg, f"learning '{args.name}'")
     print(f"learned '{args.name}' "
           f"({'disabled' if args.disabled else 'enabled'}, durable)")
 
@@ -2837,14 +3193,17 @@ def find_rule(cfg, name):
 
 def cmd_enable(args, value=True):
     cfg = load_config()
+    before = json.loads(json.dumps(cfg))
     find_rule(cfg, args.rule)["enabled"] = value
     gate_or_die(cfg, f"{'enabling' if value else 'disabling'} '{args.rule}'")
-    save_config(cfg)
+    save_config_change(before, cfg,
+                       f"{'enabling' if value else 'disabling'} '{args.rule}'")
     print(f"{args.rule}: {'enabled' if value else 'disabled'}")
 
 
 def cmd_set(args):
     cfg = load_config()
+    before = json.loads(json.dumps(cfg))
     rule = find_rule(cfg, args.rule)
     key, value = args.key, game_reflex.parse_value(args.value)
     if key in ("priority", "cooldown_ms", "hold_ticks", "enabled",
@@ -2864,19 +3223,23 @@ def cmd_set(args):
     except ValueError as e:
         die(str(e))
     gate_or_die(cfg, f"setting '{args.rule}' {key}")
-    save_config(cfg)
+    save_config_change(before, cfg, f"setting '{args.rule}' {key}")
     print(f"{args.rule}: {key} = {value!r}")
 
 
 def cmd_remove(args):
     cfg = load_config()
+    old_cfg = json.loads(json.dumps(cfg))
     before = len(cfg["rules"]) + len(cfg["unfinished"])
     cfg["rules"] = [r for r in cfg["rules"] if r["name"] != args.rule]
     cfg["unfinished"] = [e for e in cfg["unfinished"] if e["name"] != args.rule]
     if len(cfg["rules"]) + len(cfg["unfinished"]) == before:
         die(f"nothing named '{args.rule}' in rules or unfinished")
     gate_or_die(cfg, f"removing '{args.rule}'")
-    save_config(cfg)
+    if reflex_changes(old_cfg, cfg):
+        save_config_change(old_cfg, cfg, f"removing '{args.rule}'")
+    else:
+        save_config(cfg)
     print(f"removed '{args.rule}'")
 
 
@@ -2899,9 +3262,56 @@ def cmd_objective(args):
     print(f"objective: {args.name.strip()}")
 
 
+def print_activity_history(activity: str) -> None:
+    if not activity:
+        print("no activity selected")
+        return
+    rows = [row for row in load_jsonl(activity_history_path())
+            if row.get("activity") == activity]
+    current = {}
+    stats = load_activity_stats()
+    if stats.get("activity") == activity:
+        snap = game_reflex.read_snapshot() or {}
+        if skills_ready(snapshot_skills(snap)):
+            stats = refresh_activity_stats(snap, activity)
+        current = activity_metrics_from_stats(stats)
+    if not rows and not current:
+        print(f"activity history: {activity} — no measured iterations yet")
+        return
+    for row in rows[-12:]:
+        rates = ",".join(
+            f"{skill.get('name')}={skill.get('xp_per_hour')}/hr"
+            f"(+{skill.get('gained')})" for skill in row.get("skills") or []) \
+            or "no-positive-XP"
+        eligible = "comparable" if row.get("performance_eligible") else "short/no-XP"
+        print(f"iteration {row.get('iteration')} ended={row.get('ended_ms')} "
+              f"elapsed_ms={row.get('elapsed_ms')} {eligible} rates={rates} "
+              f"reason={row.get('end_reason')} rules={row.get('rule_set_hash')}")
+    if current:
+        rates = ",".join(
+            f"{skill.get('name')}={skill.get('xp_per_hour')}/hr"
+            f"(+{skill.get('gained')})" for skill in current.get("skills") or []) \
+            or "no-positive-XP-yet"
+        print(f"iteration {current.get('iteration')} CURRENT "
+              f"elapsed_ms={current.get('elapsed_ms')} rates={rates} "
+              f"reason={current.get('reason')} rules={current.get('rule_set_hash')}")
+    summary = activity_history_summary(activity, current)
+    if summary.get("best"):
+        print("best comparable: " + ", ".join(
+            f"{skill.get('name')}={skill.get('xp_per_hour')}/hr "
+            f"(iteration {skill.get('iteration')})"
+            for skill in summary["best"]))
+
+
 def cmd_activity(args):
     """The immediate mode of play, separate from the longer-lived objective."""
+    if getattr(args, "history", False):
+        print_activity_history(args.name or read_activity())
+        return
     if args.clear:
+        previous = read_activity()
+        if previous:
+            finish_activity_iteration("activity-cleared", game_reflex.read_snapshot() or {})
         try:
             activity_path().unlink()
         except FileNotFoundError:
@@ -2917,12 +3327,52 @@ def cmd_activity(args):
         die("the activity is one non-empty line")
     selected = args.name.strip()
     previous = read_activity()
+    cfg = load_config()
+    snap = game_reflex.read_snapshot() or {}
+    changed = selected != previous or args.restart
+    if changed and previous:
+        finish_activity_iteration(
+            "activity-restarted" if selected == previous else f"activity-switched-to:{selected}",
+            snap)
     game_dir().mkdir(parents=True, exist_ok=True)
     game_reflex.atomic_write(activity_path(), selected + "\n")
-    if selected != previous or args.restart:
+    if changed:
         clear_activity_stats()
-        start_activity_stats(selected, game_reflex.read_snapshot() or {})
+        stats = start_activity_stats(
+            selected, snap,
+            reason="activity-restarted" if selected == previous else "activity-selected",
+            cfg=cfg)
+        briefing = activity_briefing(cfg, selected, snap)
+        append_outcome({
+            "ts": now_ms(), "kind": "activity-start", "activity": selected,
+            "objective": read_objective() or None,
+            "iteration": stats.get("iteration") or next_activity_iteration(selected),
+            "baseline_ready": bool(stats),
+            "current_rules": briefing["current_rules"],
+            "reuse_candidates": briefing["reuse_candidates"],
+            "history": {key: briefing["history"].get(key) for key in
+                        ("iterations", "latest", "best")},
+            "note": "Review existing reflexes first; reuse only grounded structure, then "
+                    "measure this iteration against comparable prior XP/hour.",
+        })
+    else:
+        stats = load_activity_stats()
+        briefing = activity_briefing(cfg, selected, snap)
     print(f"activity: {selected}")
+    if changed:
+        print(f"iteration: {stats.get('iteration') or next_activity_iteration(selected)} "
+              f"({'baseline ready' if stats else 'XP baseline pending'})")
+    current_names = briefing.get("current_rules") or []
+    print("current reflexes: " + (", ".join(current_names[:12]) if current_names else "none"))
+    candidates = briefing.get("reuse_candidates") or []
+    print("reuse candidates: " + (
+        ", ".join(f"{item['name']} (from {item['source_activity']})"
+                  for item in candidates) if candidates else "none yet"))
+    best = briefing.get("history", {}).get("best") or []
+    if best:
+        print("prior best: " + ", ".join(
+            f"{skill.get('name')} {skill.get('xp_per_hour')}/hr "
+            f"(iteration {skill.get('iteration')})" for skill in best))
 
 
 def cmd_session(args):
@@ -3376,6 +3826,8 @@ def cmd_run(args):
                     append_outcome({"ts": now_ms(), "kind": "gap",
                                     "objective": objective or None,
                                     "activity": activity or None,
+                                    "activity_performance": activity_metrics(
+                                        snap, activity) or None,
                                     "snap": snap_brief(snap)})
                     last_gap_signature = signature
             elif verdict != "same-tick":
@@ -3402,10 +3854,12 @@ def cmd_run(args):
                                    f"with {remaining} point(s) remaining")
                 detail = f"{recovery_detail}; {detail}" if detail else recovery_detail
             live_activity = read_activity()
-            live_xp = activity_xp_text(latest, live_activity)
+            live_metrics = activity_metrics(latest, live_activity)
+            live_xp = activity_xp_metrics_text(live_metrics)
+            live_compare = activity_comparison_text(live_metrics)
             write_heartbeat(last_verdict, detail,
                             [i.get("id") for i in latest.get("ground_items") or []],
-                            live_activity, live_xp)
+                            live_activity, live_xp, live_compare)
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -3428,8 +3882,11 @@ def main():
 
     sub.add_parser("init", help="write an empty learned table if none exists") \
         .set_defaults(fn=cmd_init)
-    sub.add_parser("rules", help="the learned table, unfinished ledger, objective") \
-        .set_defaults(fn=cmd_rules)
+    p = sub.add_parser("rules", help="the learned table or durable reflex history")
+    p.add_argument("--history", action="store_true",
+                   help="show reflex revisions and the XP sample before each change")
+    p.add_argument("--rule", help="with --history, restrict changes to one rule")
+    p.set_defaults(fn=cmd_rules)
 
     p = sub.add_parser("learn", help="persist a verified play as an executable rule")
     p.add_argument("name")
@@ -3477,6 +3934,8 @@ def main():
     p.add_argument("--clear", action="store_true")
     p.add_argument("--restart", action="store_true",
                    help="restart this activity's elapsed time and XP baseline")
+    p.add_argument("--history", action="store_true",
+                   help="show comparable XP/hour iterations for NAME or the current activity")
     p.set_defaults(fn=cmd_activity)
 
     p = sub.add_parser("session", help="the sitting's clock: open, status, end")
@@ -3603,6 +4062,7 @@ def main():
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
                            activity=hb.get("activity") or None,
                            activity_xp=hb.get("activity_xp") or None,
+                           activity_compare=hb.get("activity_compare") or None,
                            ground_items=",".join(str(i)
                                                  for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None)

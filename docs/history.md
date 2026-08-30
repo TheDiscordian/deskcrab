@@ -879,6 +879,28 @@ plays on in the same game.
 
 Contract: [`specs/chessweb.md`](../specs/chessweb.md), rules 3, 10 and 14.
 
+## The OpenRSC player
+
+### 2026-08-29 — XP/hour existed only for the current clock
+
+The player could report XP per action and XP/hour for its selected activity, and the event-driven
+author could refine reflexes from outcomes, but neither side retained the bridge between them.
+Changing activity erased the measured baseline; changing a reflex left no explicit before/after
+performance boundary; and starting a new skill did not point the author at structurally similar
+reflexes already learned elsewhere. The user therefore still had to ask for a reflex explicitly,
+even while current-rate data and reusable rules both existed on disk.
+
+Activity measurements are now iterations. Switching, restarting, clearing, or changing a relevant
+executable reflex closes one durable record with its rule fingerprint and begins the next from live
+cumulative XP. Reflex mutations retain their exact before/after form and the preceding activity
+sample. New activities queue an immediate reuse review, while productive activities queue a bounded
+three-minute performance checkpoint; the background author compares only samples at least a minute
+old with positive XP. This deliberately is not an XP threshold trigger: safety, conversation,
+inventory limits, wanted loot, and acknowledged commitments remain higher-order constraints, and a
+rate change is acted on only when grounded outcomes identify a causal correction.
+
+Contract: [`specs/game-player.md`](../specs/game-player.md), rules 1, 7, 11 and 16.
+
 ## Long-term memory
 
 `crab memory`, `lib/memory.py`: a sqlite-vec store at `~/.local/share/deskcrab/memory/memory.db`
