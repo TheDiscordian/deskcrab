@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import random
+import re
 import statistics
 import sys
 import time
@@ -697,34 +698,117 @@ def bench_default_plan(run):
 # cell measures exactly one model-and-effort pair playing whole games,
 # against one common reference, colours rotated, every timed control,
 # fastest first. Probes are never selection evidence; these games are.
+# The matrix crosses model FAMILY as well as effort (rule 20, amended
+# 2026-08-29 on the user's acceptance criterion): the codex-family
+# candidates ride the same matrix at every effort the codex engine accepts
+# — the shared five plus its own `ultra` — behind rule 15's explicit
+# allowlisting and codex-only attempt list.
 MATRIX_MODELS = ["sonnet", "haiku", "opus", "fable"]
 MATRIX_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+MATRIX_CODEX_MODELS = ["sol"]
+MATRIX_CODEX_EFFORTS = MATRIX_EFFORTS + ["ultra"]
 MATRIX_REFERENCE = "sonnet-low"
 MATRIX_CONTROLS = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
+
+
+def bench_matrix_configs():
+    """Every configuration rule 20 owes, uniform pairs all."""
+    configs = {}
+    for model in MATRIX_MODELS:
+        for effort in MATRIX_EFFORTS:
+            configs["%s-%s" % (model, effort)] = {
+                "model": model, "quiet": effort, "sharp": effort}
+    for model in MATRIX_CODEX_MODELS:
+        for effort in MATRIX_CODEX_EFFORTS:
+            configs["%s-%s" % (model, effort)] = {
+                "model": model, "quiet": effort, "sharp": effort}
+    return configs
+
+
+def bench_matrix_cells(reps=2):
+    """Every (control, white, black) game rule 20 owes, in play order:
+    controls fastest first; within a control the Claude families at the
+    CLI's five efforts, then the codex-family candidates at their own
+    effort list; every cell reps colour-rotated games against the
+    reference, whose own cell is its mirror."""
+    cells = []
+
+    def cell(control, model, effort):
+        cfg = "%s-%s" % (model, effort)
+        for r in range(reps):
+            white, black = ((cfg, MATRIX_REFERENCE) if r % 2 == 0
+                            else (MATRIX_REFERENCE, cfg))
+            cells.append((control, white, black))
+
+    for control in MATRIX_CONTROLS:
+        for effort in MATRIX_EFFORTS:
+            for model in MATRIX_MODELS:
+                cell(control, model, effort)
+        for model in MATRIX_CODEX_MODELS:
+            for effort in MATRIX_CODEX_EFFORTS:
+                cell(control, model, effort)
+    return cells
 
 
 def bench_matrix_plan(run, reps=2):
     """The rule-20 plan: reps colour-rotated games per (configuration,
     control) cell against the reference; the reference's own cell is its
     mirror. No probe section — a route is chosen from complete games."""
-    configs = {}
-    for model in MATRIX_MODELS:
-        for effort in MATRIX_EFFORTS:
-            configs["%s-%s" % (model, effort)] = {
-                "model": model, "quiet": effort, "sharp": effort}
-    games, n = [], 0
-    for control in MATRIX_CONTROLS:
-        for effort in MATRIX_EFFORTS:
-            for model in MATRIX_MODELS:
-                cfg = "%s-%s" % (model, effort)
-                for r in range(reps):
-                    white, black = ((cfg, MATRIX_REFERENCE) if r % 2 == 0
-                                    else (MATRIX_REFERENCE, cfg))
-                    n += 1
-                    games.append({"id": "selfplay-bench%s-%03d" % (run, n),
-                                  "control": control,
-                                  "white": white, "black": black})
-    return {"run": run, "configs": configs, "games": games}
+    games = [{"id": "selfplay-bench%s-%03d" % (run, n + 1),
+              "control": control, "white": white, "black": black}
+             for n, (control, white, black)
+             in enumerate(bench_matrix_cells(reps))]
+    return {"run": run, "configs": bench_matrix_configs(), "games": games}
+
+
+def bench_extend_matrix(plan, reps=2):
+    """Rule 20's extend mode: append whatever matrix cells `plan` is
+    missing, so a matrix widened after play began extends the SAME
+    resumable plan instead of restarting it. Additions land at the END of
+    their control's block (play order stays fastest-control first), ids
+    continue the plan's numbering, existing games — played or not — are
+    untouched, and a second run appends nothing. Returns the appended
+    specs."""
+    plan.setdefault("configs", {})
+    for name, cfg in bench_matrix_configs().items():
+        plan["configs"].setdefault(name, cfg)
+    have = {}
+    for g in plan.get("games", []):
+        k = (g["control"], g["white"], g["black"])
+        have[k] = have.get(k, 0) + 1
+    missing = []
+    for k in bench_matrix_cells(reps):
+        if have.get(k, 0) > 0:
+            have[k] -= 1
+        else:
+            missing.append(k)
+    if not missing:
+        return []
+    n = 0
+    for g in plan.get("games", []):
+        m = re.search(r"-(\d+)$", g["id"])
+        if m:
+            n = max(n, int(m.group(1)))
+    added, by_control = [], {}
+    for control, white, black in missing:
+        n += 1
+        spec = {"id": "selfplay-bench%s-%03d" % (plan["run"], n),
+                "control": control, "white": white, "black": black}
+        added.append(spec)
+        by_control.setdefault(control, []).append(spec)
+    games, out = list(plan.get("games", [])), []
+    for i, g in enumerate(games):
+        out.append(g)
+        c = g["control"]
+        if ((i + 1 == len(games) or games[i + 1]["control"] != c)
+                and c in by_control):
+            out.extend(by_control.pop(c))
+    for control in MATRIX_CONTROLS:  # controls the plan had no games for
+        out.extend(by_control.pop(control, []))
+    for control in sorted(by_control):  # never reached today; never dropped
+        out.extend(by_control.pop(control))
+    plan["games"] = out
+    return added
 
 
 def bench_report(plan):
@@ -854,6 +938,10 @@ def main():
     ap.add_argument("--bench-init-matrix", action="store_true",
                     help="write the full model-and-effort matrix plan "
                          "(specs/chess-selfplay.md rule 20) and exit")
+    ap.add_argument("--bench-extend-matrix", metavar="PLAN",
+                    help="append the matrix cells PLAN is missing "
+                         "(rule 20) and exit — a widened matrix extends "
+                         "the same resumable plan")
     ap.add_argument("--reps", type=int, default=2,
                     help="colour-rotated games per matrix cell")
     ap.add_argument("--bench-probe", metavar="PLAN",
@@ -876,6 +964,18 @@ def main():
             json.dump(plan, fh, indent=1)
             fh.write("\n")
         print(path)
+        return
+    if args.bench_extend_matrix:
+        with open(args.bench_extend_matrix, encoding="utf-8") as fh:
+            plan = json.load(fh)
+        added = bench_extend_matrix(plan, reps=args.reps)
+        tmp = args.bench_extend_matrix + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh, indent=1)
+            fh.write("\n")
+        os.replace(tmp, args.bench_extend_matrix)
+        print("added %d game(s); the plan now schedules %d"
+              % (len(added), len(plan["games"])))
         return
     if args.bench_report:
         with open(args.bench_report, encoding="utf-8") as fh:

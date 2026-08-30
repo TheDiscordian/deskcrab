@@ -496,24 +496,29 @@ def selfplay_models():
 
 def selfplay_job_model(job, alert=lambda *a: None):
     """The model a SELF-PLAY job's own `model` field earns it: the field
-    itself when it is allowlisted Claude, else None (rule 2's knob decides).
-    A codex-family name is refused unconditionally — the one codex login is
-    the user's conversation engine, and no grind may be able to drain it —
-    and an unlisted name is refused loudly rather than silently honoured:
-    2026-08-15 is what a self-play loop quietly naming a dear model does."""
+    itself when it is allowlisted, else None (rule 2's knob decides). A
+    codex-family name is refused like any other unlisted name, and its
+    listing must be EXPLICIT (specs/chess-selfplay.md rule 15, amended
+    2026-08-29 for the family-crossing matrix): the one codex login is the
+    user's conversation engine, and putting it into a grind is a deliberate
+    per-run operator act, never a default. An unlisted name is refused
+    loudly rather than silently honoured: 2026-08-15 is what a self-play
+    loop quietly naming a dear model does."""
     model = (job.get("model") or "").strip()
     if not model:
         return None
-    if _codex_backend(model):
-        alert("mover: self-play job %s names codex-family model %r — "
-              "refused, the conversation engine is not for grinding; "
-              "using the self-play default" % (job.get("gid"), model))
-        return None
     if model not in selfplay_models():
-        alert("mover: self-play job %s names model %r outside "
-              "DESKCRAB_CHESS_SELFPLAY_MODELS (%s) — refused, using the "
-              "self-play default" % (job.get("gid"), model,
-                                     " ".join(selfplay_models())))
+        if _codex_backend(model):
+            alert("mover: self-play job %s names codex-family model %r "
+                  "outside DESKCRAB_CHESS_SELFPLAY_MODELS (%s) — refused, "
+                  "the conversation engine grinds only when listed "
+                  "explicitly; using the self-play default"
+                  % (job.get("gid"), model, " ".join(selfplay_models())))
+        else:
+            alert("mover: self-play job %s names model %r outside "
+                  "DESKCRAB_CHESS_SELFPLAY_MODELS (%s) — refused, using "
+                  "the self-play default" % (job.get("gid"), model,
+                                             " ".join(selfplay_models())))
         return None
     return model
 
@@ -1009,6 +1014,24 @@ class Mover:
             return
         model = job_model or self._model(selfplay)
         if _codex_backend(model):
+            if selfplay:
+                # An honoured codex SELF-PLAY job plays through the codex
+                # login ALONE (specs/chess-selfplay.md rule 15): a benchmark
+                # cell that silently substituted engines would measure
+                # nothing, and the fallback walk would let a grind spend
+                # Claude allowance under a codex flag. A cooling login
+                # yields no attempt at all — the move fails loudly, and in
+                # a timed game the clock fallback records the capacity
+                # interruption against the configuration.
+                if _codex_cooling():
+                    self.alert("mover: codex login is cooling — no attempt "
+                               "for self-play model %r" % model)
+                    return
+                env = self._env(None)
+                env.pop("OPENAI_API_KEY", None)
+                yield ("codex",
+                       self._codex_cmd(effort, selfplay, model=model), env)
+                return
             # specs/model-backends.md rule 15: the one codex login first —
             # unless it is already cooling — then the Claude accounts at the
             # fallback model, so a game in flight never stalls on a dry
@@ -1017,7 +1040,8 @@ class Mover:
             if not _codex_cooling():
                 env = self._env(None)
                 env.pop("OPENAI_API_KEY", None)
-                yield "codex", self._codex_cmd(effort, selfplay), env
+                yield ("codex",
+                       self._codex_cmd(effort, selfplay, model=model), env)
             model = os.environ.get("CODEX_FALLBACK_MODEL") or "sonnet"
             if _codex_backend(model):
                 model = "sonnet"
@@ -1166,11 +1190,13 @@ class Mover:
         return cmd
 
     @classmethod
-    def _codex_cmd(cls, effort, selfplay=False):
+    def _codex_cmd(cls, effort, selfplay=False, model=None):
         """The codex spelling of the same call (specs/model-backends.md
         rules 5-7, 15): the one login's auth from CODEX_HOME, the user's own
         config held out, the mover's system prompt as the session's base
-        instructions, the question on stdin."""
+        instructions, the question on stdin. `model` is the job's own model
+        when it carries one — a benchmark side's configuration, the bridge's
+        per-speed offer — else the environment chain's."""
         codex = os.environ.get("CODEX_BIN", "")
         if codex:
             codex = os.path.expanduser(os.path.expandvars(codex))
@@ -1190,7 +1216,7 @@ class Mover:
         cmd = [codex, "exec", "--ignore-user-config", "--skip-git-repo-check",
                "--sandbox", "read-only",
                "--json", "--color", "never",
-               "-m", _codex_resolve(cls._model(selfplay)),
+               "-m", _codex_resolve(model or cls._model(selfplay)),
                "-c", "model_reasoning_effort=%s" % effort]
         if instr:
             cmd += ["-c", "model_instructions_file=%s" % instr]

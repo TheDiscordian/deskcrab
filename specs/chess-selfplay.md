@@ -101,12 +101,22 @@ the finished games feed the pattern store exactly as every self-play game does.
     classifier per move, read against the SIDE'S OWN pair (`quiet` when no alarm fired, `sharp`
     otherwise), so a configuration is measured playing the way a real game would think. The
     side's model rides the job: the mover honours a self-play job's `model` field ONLY when it
-    names a Claude-family model listed in `$DESKCRAB_CHESS_SELFPLAY_MODELS` (default
-    `haiku sonnet`); a codex-family name is refused unconditionally — the one codex login is
-    the user's conversation engine, and a grind must never be able to drain it — and any other
-    unlisted name falls back loudly to rule 2's default. Real games feel none of this: their
-    model comes from rule 16b's own knobs ([chessweb.md](chessweb.md)), never from this
-    allowlist.
+    is listed in `$DESKCRAB_CHESS_SELFPLAY_MODELS` (default `haiku sonnet`); any unlisted name
+    falls back loudly to rule 2's default. A codex-family name is refused like any other
+    unlisted name, and its LISTING must be explicit (amended 2026-08-29, on the user's
+    2026-08-28 acceptance criterion that the matrix cross model family, Sol included): the one
+    codex login is the user's conversation engine, and putting it into a grind is the same
+    deliberate per-run operator act as raising the budget knobs (rule 14), never a default. An
+    honoured codex self-play job plays through the codex login ALONE — its attempt list is the
+    codex call and nothing else, never the Claude-account fallback walk a real game gets
+    ([model-backends.md](model-backends.md) rule 15) — because a benchmark cell that silently
+    substituted engines would measure nothing, and because the fallback would let a grind spend
+    Claude allowance under a codex flag. Every attempt is budget-counted exactly as rule 4
+    demands; a cooling codex login yields no attempt at all, so the move fails loudly — in a
+    timed game the clock-budget fallback plays and is recorded as the configuration's failure
+    to answer, a capacity interruption rule 20 resumes rather than excludes. Real games feel
+    none of this: their model comes from rule 16b's own knobs ([chessweb.md](chessweb.md)),
+    never from this allowlist.
 16. **The schedule.** The plan lists games with an id (`selfplay-bench*-NNN` — inside rule 1's
     prefix, so every guard keys on it), a time control from the standard set, and the two
     configurations. Each matchup appears an even number of times with colours swapped, so
@@ -156,7 +166,16 @@ the finished games feed the pattern store exactly as every self-play game does.
     model-and-effort pair playing whole games), against ONE common reference configuration
     (`sonnet-low`, the measured steadiest), colours rotated within every cell, across every
     concrete standard timed control, fastest first. The reference's own cell is its mirror
-    game. Selection discipline, for the reader the report serves: a cell RELIABLY FINISHES a
+    game. The matrix crosses model FAMILY as well as effort (amended 2026-08-29, on the
+    user's 2026-08-28 acceptance criterion): the codex-family candidate `sol` — the ChatGPT
+    login's chess-capable model, resolved per [model-backends.md](model-backends.md) rule 2 —
+    rides the same matrix at every effort the codex engine accepts (the shared five plus its
+    own `ultra`), uniform cells against the same reference, with rule 15's explicit listing
+    and codex-only attempt list binding every call. `--bench-extend-matrix <plan>` appends
+    whatever matrix cells an existing plan is missing — grouped at the end of their control's
+    block so play order stays fastest-first, colours still rotated, ids continuing the plan's
+    numbering, existing games untouched — so a matrix widened after play began extends the
+    SAME resumable plan (rule 16) instead of restarting it; a second run appends nothing. Selection discipline, for the reader the report serves: a cell RELIABLY FINISHES a
     control only when its games complete without flags, stalls, fallback rescues, retry
     storms, or account-limit deaths — those are failures to finish, never noise; among
     reliable finishers the strongest measured result wins, tie-broken by head-to-head where
@@ -204,11 +223,16 @@ cap creates nothing and says `games-cap`); the night key (23:30 and 00:30 across
 share a key — no fresh budget at 00:00 — and an afternoon belongs to the coming night); and the
 daytime guard (a mid-day start refuses with status `daytime` naming `--day`, runs with the flag,
 and evening, small-hours, and just-past-the-wall starts keep their old walls); the benchmark
-(a self-play job's `model` is honoured within the allowlist, refused loudly outside it and for
-every codex-family name; a bench plan plays with real clocks and per-side pairs, rotates
-colours, resumes without replaying, appends its ledger exactly once per game; a benchmark game
-whose clock has run out is a recorded flag, no model call; probe lines carry per-call seconds;
-the report renders per-control tables); the matrix plan (every matrix model × effort present
-exactly once as a uniform pair, every timed control covered with colours split evenly against
-the reference, the reference mirrored) and the extended ledger line (final remaining clock,
-per-side attempts mined from the counter, fallback move counts).
+(a self-play job's `model` is honoured within the allowlist, refused loudly outside it —
+codex-family names included unless the operator lists them explicitly, an honoured codex job
+building the codex call ALONE with the job's own model resolved onto the argv, no
+Claude-account attempts, none at all while the login cools; a bench plan plays with real
+clocks and per-side pairs, rotates colours, resumes without replaying, appends its ledger
+exactly once per game; a benchmark game whose clock has run out is a recorded flag, no model
+call; probe lines carry per-call seconds; the report renders per-control tables); the matrix
+plan (every matrix model × effort present exactly once as a uniform pair — the codex
+candidate at its own effort list — every timed control covered with colours split evenly
+against the reference, the reference mirrored; the extend mode appends exactly the missing
+cells grouped with their control, exactly once, existing games untouched) and the extended
+ledger line (final remaining clock, per-side attempts mined from the counter, fallback move
+counts).

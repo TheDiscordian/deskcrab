@@ -277,7 +277,9 @@ print("fable-default:", cm.selfplay_job_model(job("fable"), alert))
 print("codex-default:", cm.selfplay_job_model(job("sol"), alert))
 os.environ["DESKCRAB_CHESS_SELFPLAY_MODELS"] = "haiku sonnet fable"
 print("fable-widened:", cm.selfplay_job_model(job("fable"), alert))
-print("codex-widened:", cm.selfplay_job_model(job("gpt-5.6-sol"), alert))
+print("codex-unlisted:", cm.selfplay_job_model(job("gpt-5.6-sol"), alert))
+os.environ["DESKCRAB_CHESS_SELFPLAY_MODELS"] = "haiku sonnet sol"
+print("codex-listed:", cm.selfplay_job_model(job("sol"), alert))
 print("none:", cm.selfplay_job_model({"gid": "selfplay-bench-001"}, alert))
 print("alerts:", len(said))
 PYEOF
@@ -291,8 +293,11 @@ contains "$JM" "fable-default: None" \
 contains "$JM" "fable-widened: fable" \
     && ok "the operator can widen the allowlist deliberately, per run" \
     || fail "job model: $JM"
-contains "$JM" "codex-default: None" && contains "$JM" "codex-widened: None" \
-    && ok "a codex-family name is refused unconditionally — the conversation engine is not for grinding" \
+contains "$JM" "codex-default: None" && contains "$JM" "codex-unlisted: None" \
+    && ok "a codex-family name is refused wherever it is not listed — the conversation engine grinds only by explicit listing" \
+    || fail "job model: $JM"
+contains "$JM" "codex-listed: sol" \
+    && ok "an explicitly listed codex name rides the job — rule 20's family-crossing matrix" \
     || fail "job model: $JM"
 contains "$JM" "none: None" && contains "$JM" "alerts: 3" \
     && ok "no model field is quiet; every refusal was loud" \
@@ -313,6 +318,58 @@ contains "$MODEL_CMD" "with-job-model: haiku" \
     && contains "$MODEL_CMD" "without: sonnet" \
     && ok "the job's model reaches the built invocation; its absence keeps rule 2's default" \
     || fail "attempts: $MODEL_CMD"
+
+CODEX_CMD="$(env -u DESKCRAB_CHESS_MOVER_CMD -u DESKCRAB_CODEX_STATE \
+             "$PY" - "$REPO/lib" <<'PYEOF'
+import os, sys, tempfile, time
+sys.path.insert(0, sys.argv[1])
+import chess_mover as cm
+said = []
+m = cm.Mover(lambda j, mv: True, log=lambda *a: None,
+             alert=lambda msg: said.append(msg))
+atts = list(m._attempts("ultra", True, "sol"))
+print("codex-attempts:", len(atts))
+label, cmd, env = atts[0]
+print("codex-label:", label)
+print("codex-model:", cmd[cmd.index("-m") + 1])
+print("codex-effort:", "model_reasoning_effort=ultra" in cmd)
+print("codex-key-held-out:", "OPENAI_API_KEY" not in env)
+atts2 = list(m._attempts("ultra", False, "sol"))
+print("real-first:", atts2[0][0])
+print("real-has-fallback:", len(atts2) > 1
+      and all(a[0].startswith("account") for a in atts2[1:]))
+c2 = atts2[1][1]
+print("real-fallback-model:", c2[c2.index("--model") + 1])
+print("real-clamp:", c2[c2.index("--effort") + 1])
+f = tempfile.NamedTemporaryFile("w", delete=False, suffix="-codex-state")
+f.write("blocked-until\t%d\n" % (int(time.time()) + 3600)); f.close()
+os.environ["DESKCRAB_CODEX_STATE"] = f.name
+print("cooling-attempts:", len(list(m._attempts("low", True, "sol"))))
+print("cooling-alerted:", any("cooling" in s for s in said))
+os.unlink(f.name)
+PYEOF
+)"
+contains "$CODEX_CMD" "codex-attempts: 1" \
+    && contains "$CODEX_CMD" "codex-label: codex" \
+    && ok "an honoured codex self-play job builds the codex call ALONE — no Claude-account attempts" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "codex-model: gpt-5.6-sol" \
+    && contains "$CODEX_CMD" "codex-effort: True" \
+    && ok "the job's own model is resolved onto the codex argv, the effort handed through unclamped" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "codex-key-held-out: True" \
+    && ok "OPENAI_API_KEY is held out of the codex child" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "real-first: codex" \
+    && contains "$CODEX_CMD" "real-has-fallback: True" \
+    && contains "$CODEX_CMD" "real-fallback-model: sonnet" \
+    && contains "$CODEX_CMD" "real-clamp: max" \
+    && ok "a REAL-game codex job keeps its Claude fallback walk, ultra clamped to max" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "cooling-attempts: 0" \
+    && contains "$CODEX_CMD" "cooling-alerted: True" \
+    && ok "a cooling codex login yields no self-play attempt, loudly" \
+    || fail "codex attempts: $CODEX_CMD"
 
 echo
 echo "the benchmark plays its plan with real clocks, resumes, records once:"
@@ -486,15 +543,17 @@ from collections import Counter
 p = json.load(open(sys.argv[1]))
 models = ["sonnet", "haiku", "opus", "fable"]
 efforts = ["low", "medium", "high", "xhigh", "max"]
+codex_efforts = efforts + ["ultra"]
 controls = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
 cfgs = p["configs"]
-print("configs:", len(cfgs) == 20
-      and all("%s-%s" % (m, e) in cfgs for m in models for e in efforts))
+print("configs:", len(cfgs) == 26
+      and all("%s-%s" % (m, e) in cfgs for m in models for e in efforts)
+      and all("sol-%s" % e in cfgs for e in codex_efforts))
 print("uniform:", all(c["quiet"] == c["sharp"] for c in cfgs.values()))
-print("games:", len(p["games"]) == 240)
+print("games:", len(p["games"]) == 312)
 print("controls:", sorted(Counter(g["control"]
                                   for g in p["games"]).items()) ==
-      sorted((c, 40) for c in controls))
+      sorted((c, 52) for c in controls))
 print("ids:", all(g["id"].startswith("selfplay-benchmtx-")
                   for g in p["games"]))
 cells = {}
@@ -510,11 +569,11 @@ print("noprobe:", "probe" not in p)
 PYEOF
 )"
 contains "$MP" "configs: True" && contains "$MP" "uniform: True" \
-    && ok "every model at every effort, each a uniform pair" \
+    && ok "every model at every effort — the codex candidate at its own effort list — each a uniform pair" \
     || fail "matrix plan: $MP"
 contains "$MP" "games: True" && contains "$MP" "controls: True" \
     && contains "$MP" "ids: True" \
-    && ok "240 games: 40 per control, every id inside the selfplay prefix" \
+    && ok "312 games: 52 per control, every id inside the selfplay prefix" \
     || fail "matrix plan: $MP"
 contains "$MP" "colours: True mirror: True" \
     && ok "every cell colour-rotated against the reference; the reference mirrored" \
@@ -522,6 +581,80 @@ contains "$MP" "colours: True mirror: True" \
 contains "$MP" "noprobe: True" \
     && ok "no probe section: a route is chosen from complete games (rule 19)" \
     || fail "matrix plan: $MP"
+
+echo
+echo "the extend mode appends exactly the missing cells, once (rule 20):"
+XP="$MDIR/selfplay/bench-xt.json"
+XSTRIP="$("$PY" - "$MDIR/selfplay/bench-mtx.json" "$XP" <<'PYEOF'
+import json, sys
+p = json.load(open(sys.argv[1]))
+p["run"] = "xt"
+p["configs"] = {k: v for k, v in p["configs"].items()
+                if not k.startswith("sol-")}
+p["games"] = [dict(g, id=g["id"].replace("benchmtx", "benchxt"))
+              for g in p["games"]
+              if "sol-" not in g["white"] and "sol-" not in g["black"]]
+json.dump(p, open(sys.argv[2], "w"))
+print(len(p["games"]))
+PYEOF
+)"
+check_eq "the pre-amendment plan holds the 240 Claude-family games" \
+    "$XSTRIP" "240"
+XOUT="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
+        --bench-extend-matrix "$XP" --reps 2 2>&1)"
+contains "$XOUT" "added 72 game(s); the plan now schedules 312" \
+    && ok "--bench-extend-matrix appends the 72 codex cells and says so" \
+    || fail "extend: $XOUT"
+XV="$("$PY" - "$XP" <<'PYEOF'
+import json, sys
+from collections import Counter
+p = json.load(open(sys.argv[1]))
+games = p["games"]
+print("total:", len(games) == 312)
+print("unique-ids:", len({g["id"] for g in games}) == 312)
+print("controls:", sorted(Counter(g["control"] for g in games).items())
+      == sorted((c, 52) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
+                                  "15+10"]))
+sol = [g for g in games if "sol-" in g["white"] or "sol-" in g["black"]]
+print("sol-per-control:",
+      sorted(Counter(g["control"] for g in sol).items())
+      == sorted((c, 12) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
+                                  "15+10"]))
+print("sol-ids-continue:", all(int(g["id"].rsplit("-", 1)[1]) > 240
+                               for g in sol))
+seen, grouped = [], True
+for g in games:
+    if g["control"] in seen and seen[-1] != g["control"]:
+        grouped = False
+    if not seen or seen[-1] != g["control"]:
+        seen.append(g["control"])
+print("grouped:", grouped and seen == ["1+0", "2+1", "3+2", "5+0",
+                                       "10+0", "15+10"])
+old = [g for g in games if int(g["id"].rsplit("-", 1)[1]) <= 240]
+print("old-order-kept:", [int(g["id"].rsplit("-", 1)[1]) for g in old]
+      == sorted(int(g["id"].rsplit("-", 1)[1]) for g in old))
+print("configs:", len(p["configs"]) == 26)
+PYEOF
+)"
+contains "$XV" "total: True" && contains "$XV" "unique-ids: True" \
+    && contains "$XV" "controls: True" \
+    && ok "the extended plan schedules 312 games, 52 per control, ids unique" \
+    || fail "extended plan: $XV"
+contains "$XV" "sol-per-control: True" \
+    && contains "$XV" "sol-ids-continue: True" \
+    && ok "12 codex-cell games rode into every control, ids continuing the numbering" \
+    || fail "extended plan: $XV"
+contains "$XV" "grouped: True" && contains "$XV" "old-order-kept: True" \
+    && ok "play order stays fastest-control first; existing games untouched in order" \
+    || fail "extended plan: $XV"
+contains "$XV" "configs: True" \
+    && ok "the codex configurations joined the plan's table" \
+    || fail "extended plan: $XV"
+XOUT2="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
+         --bench-extend-matrix "$XP" --reps 2 2>&1)"
+contains "$XOUT2" "added 0 game(s); the plan now schedules 312" \
+    && ok "a second run appends nothing — the extend mode is idempotent" \
+    || fail "extend rerun: $XOUT2"
 
 echo
 echo "the extended ledger line (rule 19): remaining clock, attempts, fallbacks:"
