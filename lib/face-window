@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 
+import cairo
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib, Gio, Gdk, GdkPixbuf  # noqa: E402
@@ -43,7 +44,27 @@ GEOMETRY_FILE = os.path.join(
                    os.path.expanduser("~/.local/state")),
     "deskcrab", "face-window.json")
 TRANSITION_MS = 220
-MOUTH_TRANSITION_MS = 80
+MOUTH_TRANSITION_MS = 100
+
+# The fixed public mapping from the resolved expression to motion channels
+# and one-shot gestures (specs/face.md rule 54) — identical to the shared
+# browser renderer's table.  It reads only the broker's resolved state.
+EXPR_MOTION = {
+    "resting": {"energy": 0.5, "agitation": 0.0, "droop": 0.0},
+    "attentive": {"energy": 0.7, "agitation": 0.0, "droop": 0.0},
+    "focused": {"energy": 0.35, "agitation": 0.0, "droop": 0.0},
+    "pleased": {"energy": 0.85, "agitation": 0.0, "droop": 0.0},
+    "caught": {"energy": 0.75, "agitation": 0.3, "droop": 0.0},
+    "annoyed": {"energy": 0.6, "agitation": 0.65, "droop": 0.0},
+    "startled": {"energy": 0.8, "agitation": 0.45, "droop": 0.0},
+    "tired": {"energy": 0.35, "agitation": 0.0, "droop": 0.7},
+}
+EXPR_GESTURE = {"annoyed": "shake", "pleased": "bounce", "startled": "perk"}
+GESTURE_KICKS = {"shake": (34.0, 7.0), "bounce": (9.0, -16.0),
+                 "perk": (7.0, -9.0), "nod": (5.0, 11.0)}
+DEFAULT_ROOT = {"sway_deg": 0.55, "sway_period": 7.6, "shift_px": 1.8,
+                "shift_period": 11.0, "breath_scale": 0.0045,
+                "breath_period": 4.2}
 
 
 def load_manifest():
@@ -64,6 +85,11 @@ class Assets:
         self.mouths = {}
         self.size = (420, 420)
         self.mouth_rect = None
+        self.extents = {}
+        self.mouth_anchor = (0, 0)
+        self.rest_extent = None
+        self.motion_root = None
+        self.regions = []
         m = load_manifest()
         if not m:
             return
@@ -90,6 +116,37 @@ class Assets:
             if pb is not None:
                 self.mouths[name] = pb
                 self.mouth_rect = spec.get("rect", self.mouth_rect)
+                if spec.get("extent"):
+                    self.extents[name] = tuple(spec["extent"])
+        mouth = m.get("mouth") or {}
+        self.mouth_anchor = tuple(mouth.get("anchor", (0, 0)))
+        self.rest_extent = tuple(mouth.get("rest_extent", ())) or None
+        # Motion regions (rules 52-53): each is the resting plate masked by
+        # its feathered mask asset, precomposited once.  Rule 2 makes those
+        # pixels expression-invariant, so one copy serves every frame.
+        self.motion_root = None
+        self.regions = []
+        plate = self.frames.get("resting")
+        motion = m.get("motion") or {}
+        if plate is not None and motion:
+            self.motion_root = motion.get("root")
+            for spec in motion.get("regions") or []:
+                mask_pb = pixbuf(spec.get("asset", ""))
+                if mask_pb is None or "pivot" not in spec:
+                    continue
+                try:
+                    w, h = self.size
+                    mask = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+                    mctx = cairo.Context(mask)
+                    Gdk.cairo_set_source_pixbuf(mctx, mask_pb, 0, 0)
+                    mctx.paint()
+                    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+                    ctx = cairo.Context(surf)
+                    Gdk.cairo_set_source_pixbuf(ctx, plate, 0, 0)
+                    ctx.mask_surface(mask, 0, 0)
+                except Exception:
+                    continue
+                self.regions.append({"spec": spec, "surface": surf})
 
     def frame(self, name):
         return self.frames.get(name) or self.frames.get("resting")
@@ -107,6 +164,19 @@ class FaceView(Gtk.DrawingArea):
         self.previous_viseme = "rest"
         self.viseme_changed_at = 0.0
         self._tick_id = None
+        # The motion engine (face.md rules 51-54): grounded root idle,
+        # damped-spring secondary regions, bounded channels, gestures.
+        self.t = 0.0
+        self._last_mono = None
+        self.channels = {"energy": 0.5, "agitation": 0.0, "droop": 0.0}
+        self.targets = dict(self.channels)
+        self.override = None
+        self.gesture = None            # (name, started_t)
+        self.gesture_seq = None
+        self.mapped_expr = None
+        self.springs = [{"s": 0.0, "v": 0.0} for _ in self.assets.regions]
+        self.region_rel = [0.0] * len(self.assets.regions)
+        self.pose = (0.0, 0.0, 0.0, 1.0, 1.0)   # dx, dy, rot, sx, sy
         self.set_draw_func(self._draw)
         self.set_content_width(self.assets.size[0])
         self.set_content_height(self.assets.size[1])
@@ -138,12 +208,129 @@ class FaceView(Gtk.DrawingArea):
             self.previous_viseme = self.current_viseme
             self.current_viseme = vis
             self.viseme_changed_at = now
+        if self._animations_on():
+            self._step_motion()
         busy = busy or self._speaking_now(now) or self._animations_on()
         self.queue_draw()
         if not busy:
             self._tick_id = None
+            self._last_mono = None
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
+
+    # -- the motion engine ------------------------------------------------
+    def set_channels(self, vals):
+        for k in ("energy", "agitation", "droop"):
+            if isinstance(vals.get(k), (int, float)):
+                self.targets[k] = min(max(float(vals[k]), 0.0), 1.0)
+
+    def fire_gesture(self, name):
+        if name not in GESTURE_KICKS or not self._animations_on():
+            return
+        self.gesture = (name, self.t)
+        pend_kick, bob_kick = GESTURE_KICKS[name]
+        for reg, spring in zip(self.assets.regions, self.springs):
+            spec = reg["spec"]
+            mirror = -1.0 if spec.get("id") == "ringlet-right" else 1.0
+            kick = pend_kick * mirror if spec.get("mode") == "pendulum" \
+                else bob_kick
+            spring["v"] += kick * (
+                0.5 + (spec.get("drive", {}).get("agitation") or 0.5))
+        self._ensure_tick()
+
+    def motion_for_expression(self, name):
+        if self.mapped_expr == name:
+            return
+        self.mapped_expr = name
+        if self.override:
+            return                     # her hand outranks the mapping
+        self.set_channels(EXPR_MOTION.get(name) or EXPR_MOTION["resting"])
+        if name in EXPR_GESTURE:
+            self.fire_gesture(EXPR_GESTURE[name])
+
+    def _step_motion(self):
+        mono = time.monotonic()
+        dt = 0.016 if self._last_mono is None \
+            else min(max(mono - self._last_mono, 0.001), 0.05)
+        self._last_mono = mono
+        self.t += dt
+        t, ch, tg = self.t, self.channels, self.targets
+        for k in ch:
+            ch[k] += (tg[k] - ch[k]) * min(1.0, dt / 1.2)
+        root = self.assets.motion_root or DEFAULT_ROOT
+        e = 0.6 + 0.7 * ch["energy"]
+        a = ch["agitation"]
+        ts = root["sway_period"] / (1 + 1.2 * a)
+        sway = (root["sway_deg"] * e * (1 + 0.9 * a)
+                * (1 - 0.3 * ch["droop"])
+                * (0.7 * math.sin(math.tau * t / ts)
+                   + 0.3 * math.sin(math.tau * t / (ts * 2.63) + 1.1))
+                + a * 0.12 * math.sin(math.tau * t * 7.3))
+        dx = (root["shift_px"] * e
+              * math.sin(math.tau * t / root["shift_period"] + 0.6)
+              + a * 0.5 * math.sin(math.tau * t * 5.1))
+        dy = 2.2 * ch["droop"]
+        tb = root["breath_period"] * (1 - 0.3 * a + 0.4 * ch["droop"])
+        th = math.tau * t / tb
+        breath = 0.5 - 0.5 * math.cos(th + 0.45 * math.sin(th))
+        bs = root["breath_scale"] * (1 + 0.6 * a) * (0.85 + 0.3 * ch["energy"])
+        sy, sx = 1 + bs * breath, 1 - 0.35 * bs * breath
+        grot = 0.0
+        if self.gesture:
+            name, t0 = self.gesture
+            gt = t - t0
+            if gt > 1.6:
+                self.gesture = None
+            elif name == "shake":
+                grot = 1.5 * math.exp(-3.2 * gt) \
+                    * math.sin(math.tau * 3.5 * gt)
+            elif name == "bounce":
+                dy -= 3.0 * math.sin(math.pi * min(gt / 0.7, 1.0)) \
+                    * math.exp(-2 * gt)
+                sy += 0.006 * math.sin(math.tau * gt / 0.7) \
+                    * math.exp(-2 * gt)
+            elif name == "perk":
+                sy += 0.008 * math.exp(-6 * gt)
+                dy -= 2.5 * math.exp(-6 * gt)
+            elif name == "nod":
+                dy += 2.2 * math.sin(math.tau * 2.5 * gt) \
+                    * math.exp(-3 * gt)
+        self.pose = (dx, dy, math.radians(sway + grot), sx, sy)
+        # Secondary springs: each region tracks its driver and what shows
+        # is the lag, zero at rest, so no seam can open (rule 53).
+        height = self.assets.size[1]
+        for i, (reg, spring) in enumerate(
+                zip(self.assets.regions, self.springs)):
+            spec = reg["spec"]
+            drv = spec.get("drive") or {}
+            if spec.get("mode") == "pendulum":
+                d = ((drv.get("sway") or 1.0) * (sway + grot)
+                     + a * (drv.get("agitation") or 0.0) * 0.4
+                     * math.sin(math.tau * t * 3.1 + spec["pivot"][0]))
+            else:
+                lift = (height - spec["pivot"][1]) * bs * breath
+                d = (-(drv.get("breath") or 1.0) * lift * 4
+                     + (drv.get("sway") or 0.0) * dx * 0.4
+                     + a * (drv.get("agitation") or 0.0) * 0.5
+                     * math.sin(math.tau * t * 4.3 + spec["pivot"][0]))
+            k = spec.get("stiffness") or 30.0
+            c = spec.get("damping") or 4.0
+            spring["v"] += (k * (d - spring["s"]) - c * spring["v"]) * dt
+            spring["s"] += spring["v"] * dt
+            # Lag rings on kicks; the pivot-phased breeze keeps the part
+            # gently out of phase with the torso even in calm idle, where
+            # a stiff spring tracks the slow sway too faithfully to see.
+            brz = 1 + 1.2 * a
+            if spec.get("mode") == "pendulum":
+                breeze = 0.35 * e * brz * math.sin(
+                    math.tau * t / 3.7 + spec["pivot"][0] * 0.13)
+                lim = (spec.get("max_deg") or 1.2) * (1 + 0.8 * a)
+            else:
+                breeze = 0.7 * e * brz * math.sin(
+                    math.tau * t / 2.6 + spec["pivot"][0] * 0.21)
+                lim = (spec.get("max_px") or 2.6) * (1 + 0.8 * a)
+            rel = spring["s"] - d + breeze
+            self.region_rel[i] = min(max(rel, -lim), lim)
 
     def _speaking_now(self, now):
         for c in self.state.get("clips") or []:
@@ -170,6 +357,20 @@ class FaceView(Gtk.DrawingArea):
     def apply_state(self, st):
         had_clips = bool(self.state.get("clips"))
         self.state = st
+        # Motion follows the resolved expression through the fixed mapping,
+        # unless the broker's own motion field stands above it (rule 54).
+        if isinstance(st.get("motion"), dict):
+            self.override = st["motion"]
+            self.set_channels(st["motion"])
+        elif self.override:
+            self.override = None
+            self.mapped_expr = None    # re-derive from the expression below
+        gesture = st.get("gesture")
+        if isinstance(gesture, dict) and gesture.get("name") \
+                and gesture.get("id") != self.gesture_seq:
+            self.gesture_seq = gesture.get("id")
+            self.fire_gesture(gesture["name"])
+        self.motion_for_expression(st.get("expression") or "resting")
         want = st.get("expression") or "resting"
         if want not in self.assets.frames:
             want = "resting"     # nearest stable state, never a hole
@@ -198,17 +399,15 @@ class FaceView(Gtk.DrawingArea):
         cr.translate(ox, oy)
         cr.scale(scale, scale)
 
-        # A slow, very small whole-figure shift.  It is one transform around
-        # every registered layer, so the mouth never detaches from the face.
+        # The grounded root idle (rule 51): one transform pivoted at the
+        # frame's bottom centre around every registered layer together, so
+        # she sways over her own weight and the mouth never detaches.
         if self._animations_on():
-            phase = (time.monotonic() % 9.2) / 9.2 * math.tau
-            dx = 1.25 * math.sin(phase)
-            dy = 0.45 * math.sin(phase * 2.0 + 0.7)
-            angle = math.radians(0.15) * math.sin(phase + 0.35)
-            cr.translate(aw / 2 + dx, ah * 0.68 + dy)
-            cr.rotate(angle)
-            cr.scale(1.008, 1.008)
-            cr.translate(-aw / 2, -ah * 0.68)
+            dx, dy, rot, sx, sy = self.pose
+            cr.translate(aw / 2 + dx, ah + dy)
+            cr.rotate(rot)
+            cr.scale(sx, sy)
+            cr.translate(-aw / 2, -ah)
 
         def paint(pixbuf, alpha=1.0, at=(0, 0)):
             cr.save()
@@ -228,6 +427,22 @@ class FaceView(Gtk.DrawingArea):
         else:
             paint(pb, 1.0)
 
+        # Secondary motion regions (rules 52-53), inside the same stage.
+        if self._animations_on():
+            for reg, rel in zip(self.assets.regions, self.region_rel):
+                spec = reg["spec"]
+                px, py = spec["pivot"]
+                cr.save()
+                cr.translate(px, py)
+                if spec.get("mode") == "pendulum":
+                    cr.rotate(math.radians(rel))
+                else:
+                    cr.translate(0, rel)
+                cr.translate(-px, -py)
+                cr.set_source_surface(reg["surface"], 0, 0)
+                cr.paint()
+                cr.restore()
+
         vis = self.current_viseme
         if self.assets.mouth_rect:
             x0, y0 = self.assets.mouth_rect[:2]
@@ -237,10 +452,35 @@ class FaceView(Gtk.DrawingArea):
                                 / MOUTH_TRANSITION_MS, 0.0), 1.0)
             old = self.assets.mouths.get(self.previous_viseme)
             patch = self.assets.mouths.get(vis)
+
+            def extent(name):
+                return self.assets.extents.get(name) \
+                    or self.assets.rest_extent
+
+            def paint_patch(pixbuf, alpha, from_vis, to_vis, progress):
+                """Rule 24's morph: the patch eases between the measured
+                contour extents about the lip anchor while it fades."""
+                cr.save()
+                cr.translate(x0, y0)
+                ea, eb = extent(from_vis), extent(to_vis)
+                if ea and eb and self._animations_on() and progress < 1.0:
+                    start_x = min(max(ea[0] / eb[0], 0.6), 1.6)
+                    start_y = min(max(ea[1] / eb[1], 0.5), 2.0)
+                    fx = start_x + (1.0 - start_x) * progress
+                    fy = start_y + (1.0 - start_y) * progress
+                    ax, ay = self.assets.mouth_anchor
+                    cr.translate(ax, ay)
+                    cr.scale(fx, fy)
+                    cr.translate(-ax, -ay)
+                Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
+                cr.paint_with_alpha(alpha)
+                cr.restore()
+
             if old is not None and blend < 1.0:
-                paint(old, 1.0 - blend, (x0, y0))
+                paint_patch(old, 1.0 - blend, self.previous_viseme,
+                            self.previous_viseme, 1.0)
             if patch is not None:
-                paint(patch, blend, (x0, y0))
+                paint_patch(patch, blend, self.previous_viseme, vis, blend)
         cr.restore()
 
 

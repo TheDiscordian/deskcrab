@@ -34,12 +34,23 @@ mkdir -p "$PORTRAITS/living"
 printf '\211PNG\r\n\032\nresting' > "$PORTRAITS/resting-2026-08-29.png"
 printf '\211PNG\r\n\032\nattentive' > "$PORTRAITS/interrupted-pixel-stable-2026-08-30.png"
 printf '\211PNG\r\n\032\nframe' > "$PORTRAITS/living/face-resting.png"
+printf '\211PNG\r\n\032\nmask' > "$PORTRAITS/living/motion-test.png"
 printf 'not-artwork' > "$SANDBOX/outside-drawer"   # what an escaping id must never fetch
 cat > "$PORTRAITS/manifest.json" <<'JSON'
 {"version": 1, "revision": "test0001", "size": [420, 420],
  "expressions": {"resting": {"asset": "expr-resting"}},
  "visemes": {},
+ "mouth": {"anchor": [27, 16], "rest_extent": [17, 4]},
+ "motion": {"root": {"pivot": [210, 420], "sway_deg": 0.55,
+                     "sway_period": 7.6, "shift_px": 1.8,
+                     "shift_period": 11.0, "breath_scale": 0.0045,
+                     "breath_period": 4.2},
+            "regions": [{"id": "test-region", "asset": "motion-test",
+                         "mode": "pendulum", "pivot": [88, 130],
+                         "stiffness": 26, "damping": 3.4,
+                         "drive": {"sway": 1.0}, "max_deg": 1.2}]},
  "assets": {"expr-resting": {"file": "living/face-resting.png"},
+            "motion-test": {"file": "living/motion-test.png"},
             "escape": {"file": "../outside-drawer"}}}
 JSON
 
@@ -306,6 +317,15 @@ if start_bridge "$CH" "$SANDBOX/wake-shipped.log" --opponent guest \
     check "a long-poll ask against a dead broker still answers at once (rule 50)" \
         bash -c 'timeout 5 curl -fsS "http://127.0.0.1:$1/face/state?after=4" \
             | grep -q "\"available\": false"' _ "$PORT"
+    check_eq "a motion-region mask asset is served by its manifest id (face.md rule 52)" \
+        "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/face/asset/motion-test")" "200"
+    check "the shared renderer carries the motion engine and its channels (face.md rules 51-54)" \
+        bash -c 'grep -q "faceRegion" "$1/lib/face_card.js" \
+            && grep -q "setMotion" "$1/lib/face_card.js" \
+            && grep -q "fireGesture" "$1/lib/face_card.js"' _ "$REPO"
+    check "the renderer morphs mouth contours by measured extent (face.md rules 24, 55)" \
+        bash -c 'grep -q "extent" "$1/lib/face_card.js" \
+            && grep -q "morphScale" "$1/lib/face_card.js"' _ "$REPO"
 fi
 stop_bridge
 

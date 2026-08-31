@@ -50,12 +50,14 @@ anything page-side.
    the visible motion is local facial change. The 2026-08-30 transition test
    is the reason: two separately regenerated portraits dissolved into a
    double exposure.
-6. The motion language is quiet: short expression arrivals with easing and,
-   at the user's 2026-08-30 request, one slow low-amplitude whole-figure sway
-   around every registered image layer together. No bobbing, bouncing,
-   pulsing borders, or animated-GIF runtime. Blinks and simulated breathing
-   remain out of this release. `prefers-reduced-motion` (and the desktop
-   animations setting) MUST remove the sway and yield direct state swaps.
+6. The motion language is quiet but alive: short expression arrivals with
+   easing, and (superseding the 2026-08-30 sway line and its no-breathing
+   clause, at the user's 2026-08-31 request) the grounded idle of rules
+   51-55 — weight, breathing, and damped secondary motion in her ringlets
+   and outfit ornaments. No pulsing borders and no animated-GIF runtime.
+   Blinks remain out of this release. `prefers-reduced-motion` (and the
+   desktop animations setting) MUST remove all idle and secondary motion
+   and yield direct state swaps.
 7. Applications learn stable asset ids from a versioned manifest, never
    dated filenames. The manifest carries version, revision derived from
    asset hashes, dimensions, focal point, masks, expression and viseme
@@ -147,9 +149,11 @@ anything page-side.
     clip carries a finite duration so even a lost stop cannot animate past
     the clip's end.
 24. A late-joining viewer lands at the current cue position of the clip now
-    playing; old mouth motion is never replayed. Ordinary adjacent mouth cues
-    ease briefly between registered patches instead of snapping; an explicit
-    stop, interruption, or playback failure still closes the mouth at once.
+    playing; old mouth motion is never replayed. Ordinary adjacent mouth
+    cues morph briefly between registered patches — the cross-fade plus a
+    short contour-scale interpolation about the manifest's lip anchor (rule
+    55) — never a snap between mismatched silhouettes; an explicit stop,
+    interruption, or playback failure still closes the mouth at once.
 
 ### The conversation portrait window
 
@@ -164,8 +168,10 @@ anything page-side.
     detached so no spoken request ever waits on a GUI start; and it does not
     replace or disturb the display-channel window.
 27. It pauses per-frame animation while unmapped and honours the desktop
-    animations setting as its reduced-motion signal. The idle sway moves the
-    complete composited figure, including the mouth patch, as one unit.
+    animations setting as its reduced-motion signal. The root idle motion
+    moves the complete composited figure, including the mouth patch, as one
+    unit; motion regions (rule 52) add their lag inside that same stage, so
+    the mouth never detaches from the face.
 
 ### Never a dependency
 
@@ -313,6 +319,61 @@ These rules define the ONLY automatic paths, all below her hand.
     wait answers immediately, and the shared renderer degrades to plain
     polling with bounded backoff either way.
 
+### Presence in motion (2026-08-31 amendment)
+
+The user looked at the standalone viewer and found the 2026-08-30 sway
+invisible, and the figure — one flat image rocked around its centre — not
+present. He asked for a visibly alive, grounded idle: weight, breathing,
+convincing spring-and-damper secondary motion in the ringlets and the
+outfit's ornaments, mouth shapes that no longer lurch between sizes, and
+named handles the machinery can later pull for reactions such as irritation
+or scolding.
+
+51. Grounded idle. The root motion moves the whole composited figure like a
+    standing body, not a card: a slow weight sway pivoted at the frame's
+    bottom centre, a breathing lift (a small vertical scale about the same
+    ground pivot, on an asymmetric inhale/exhale curve), and a slight
+    lateral weight shift — perceptible at a glance at the viewer's sizes,
+    restrained enough to stay company (amplitudes on the order of a few
+    pixels at plate scale, stated in the manifest-adjacent build record).
+52. Motion regions. The manifest MAY carry a `motion` section: named
+    regions, each with a feathered mask asset registered to the plate, a
+    pivot at the region's anatomical attachment, a mode (`pendulum` for
+    hanging parts, `bob` for mounted ornaments), spring stiffness and
+    damping, and drive gains. Masks are derived deterministically from the
+    approved frames (rule 1's deterministic-tools clause — no generative
+    step) and live in the drawer as ordinary manifest assets. A region
+    renders as a masked copy of the resting plate — rule 2 guarantees those
+    pixels are expression-invariant — painted inside the same root motion
+    stage as everything else, so the mouth patch never detaches (rule 27).
+    A manifest without the section, a surface without animation support, or
+    reduced motion yields the still portrait exactly as before.
+53. Secondary physics. Each region is a damped spring driven by the root
+    motion, so ringlets and ornaments lag the torso, overshoot, and settle;
+    mask alpha and pivot placement taper the amplitude to zero at the
+    attachment. Region motion stays local: a region never translates more
+    than its mask's feathered margin, so no seam of doubled artwork can
+    open.
+54. Motion channels. Every surface's renderer exposes the same named,
+    bounded expressive channels — `energy`, `agitation`, `droop` — and
+    one-shot gestures — `shake` (the scold), `bounce`, `perk`, `nod` —
+    ranked like expression itself: an explicit `motion`/`gesture` field in
+    the broker state document (reserved for her hand and the automatic
+    tier; the broker does not emit it yet) outranks the fixed public
+    mapping from the resolved expression (annoyed raises `agitation` and
+    fires one `shake`; pleased `bounce`s; startled `perk`s; tired droops),
+    which outranks the idle defaults. The mapping reads only rule 43's
+    resolved expression — no page-side inference — and channels move motion
+    only, never pixels of expression art.
+55. Mouth normalisation. Viseme patches are normalised by the deterministic
+    build so every changed region stays within a stated band of the resting
+    lip line (the build record carries the measured before/after extents;
+    the oversized `open` and `wide` of 2026-08-30 are the reason). The
+    manifest carries each viseme's measured `extent` and the family's lip
+    `anchor`; renderers use them for rule 24's morph. Patch borders remain
+    stable plate skin (rule 9), and nothing outside the viseme rect ever
+    changes.
+
 ## DATA
 
 | Path | Owner/Role | Purpose |
@@ -332,6 +393,9 @@ These rules define the ONLY automatic paths, all below her hand.
 | `FACE_AUTO_EXPRESSION`, `FACE_AUTO_MODEL`, `FACE_AUTO_TIMEOUT` | conf, read by common.sh and `lib/face-auto` | rule 42's updater knobs |
 | `${STATE_PREFIX}-face-auto.log` | `lib/face-auto` | one line per updater run |
 | localStorage `deskcrab-face-size-{openrsc,chess,viewer}` | each page | rule 46's remembered size |
+| manifest `motion` section | drawer build script writes; every renderer reads | rule 52's regions: mask asset, pivot, mode, spring constants, drive gains |
+| manifest viseme `extent`/`anchor` | drawer build script | rule 55's morph measurements |
+| `<portrait drawer>/motion-build-record.json` | drawer build script | rule 51/55's stated amplitudes and before/after extents |
 
 ## INTERACTIONS
 
@@ -385,4 +449,6 @@ the cue track function's fixture, the sentence-cue table, the streamer's
 per-sentence acting against a stub synthesiser, and the mood updater's
 no-block/stale/failure behaviour against a stub classifier. Both web suites
 additionally pin the size control markup, the shared renderer route, and
-`?after=` answering with a dead broker.
+`?after=` answering with a dead broker; the chess suite further pins the
+motion-region mask route, the renderer's motion engine and channels, and
+the extent-driven mouth morph (rules 24, 51-55).
