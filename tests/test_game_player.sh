@@ -3201,6 +3201,15 @@ contains "$OUT" "Quest objectives come from the live journal" \
     && contains "$OUT" 'play quests <name fragment>' \
     && ok "the player checks the live journal before choosing a quest" \
     || fail "quest selection needs the authoritative journal rule" "$OUT"
+contains "$OUT" '`route` alone reads the current durable route' \
+    && contains "$OUT" '`route X Z [ARRIVE]` sets one' \
+    && contains "$OUT" 'There is no `route status` form' \
+    && ok "the fresh player receives exact route inspection and mutation syntax" \
+    || fail "the fresh player must not guess route subcommands" "$OUT"
+contains "$OUT" '`use ITEM-ID npc NAME`' \
+    && contains "$OUT" 'Never put a screenshot coordinate' \
+    && ok "the fresh player receives the semantic action and reflex hierarchy" \
+    || fail "the fresh player needs the concrete semantic tool map" "$OUT"
 
 # Rule 18: the player is her, playing. A prompt of pure game mechanics makes a
 # stranger wearing her name, which is what shipped before this.
@@ -3413,6 +3422,14 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "entity KIND TYPE-ID" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "inventory ITEM-ID" \
     && ok "the resumed thread receives inventory identity targeting" \
     || fail "the resumed thread receives inventory identity targeting"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    '`route` alone reads the current durable route' \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        'There is no `route status` form' \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        '`use ITEM-ID npc NAME`' \
+    && ok "the resumed thread receives exact semantic tool spellings" \
+    || fail "the resumed thread must not guess tool syntax"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh hover" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "hover_text" \
     && ok "the resumed thread receives top-left hover awareness" \
