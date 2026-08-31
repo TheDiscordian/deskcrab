@@ -35,7 +35,8 @@ seed_timed() {
         MOVES="$*" pyrun <<'PY'
 import json, os, time
 controls = {"1+0": ("bullet", 60000, 0), "2+1": ("bullet", 120000, 1000),
-            "3+2": ("blitz", 180000, 2000), "5+0": ("blitz", 300000, 0)}
+            "3+2": ("blitz", 180000, 2000), "5+0": ("blitz", 300000, 0),
+            "10+0": ("rapid", 600_000, 0)}
 speed, base, inc = controls[os.environ["TCNAME"]]
 ago = os.environ["AGO"]
 g = {"id": os.environ["GID"], "opponent": "guest",
@@ -504,3 +505,123 @@ print("  ok: fallback", mv.uci(), "loses nothing by the count")
 PY
 [ $? -eq 0 ] && ok "the fallback move survives the exchange count; no-move boards say None" \
     || fail "fallback chooser"
+
+echo "the browser-047 shape at DEFAULT knobs: 98.5s derives ~46.8s, never 90:"
+pyrun <<'PY'
+import os, sys, time
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+import chess_mover as cm
+# No knob overrides here on purpose: this is the incident replayed against
+# the shipped arithmetic. The call itself is stubbed at _call so the derived
+# ceiling can be read without waiting 47 real seconds for the kill; the
+# real-kill path is proven by the scaled test above.
+os.environ["DESKCRAB_CHESS_MOVER_CMD"] = "true"
+played, metrics, timeouts = [], [], []
+m = cm.Mover(lambda j, mv: played.append((j, mv)) or True,
+             log=lambda *a: None,
+             metric=lambda s, d="": metrics.append((s, d)),
+             alert=lambda *a: None)
+def fake_call(cmd, env, prompt, timeout=None):
+    timeouts.append(timeout)
+    return "", "clock-budget-%.0fs" % (timeout or 0)
+m._call = fake_call
+board = chess.Board()
+t0 = time.time()
+m.submit({"key": "b047", "gid": "browser-047-repro", "ply": 88,
+          "fen": board.fen(), "side": "white", "opponent": "guest",
+          "history": "",
+          "clock": {"white_ms": 98524, "black_ms": 244000,
+                    "running": "white"},
+          "effort": "medium", "t0": t0})
+assert m.wait_idle(timeout=10), "mover never went idle"
+took = time.time() - t0
+# defaults: usable = 98.524 - 5 = 93.524 -> min(90, max(10, 46.762), 93.524)
+assert timeouts, "no attempt was made"
+assert abs(timeouts[0] - 46.762) < 1.0, timeouts
+assert timeouts[0] < 90, timeouts
+assert played and played[0][1] in board.legal_moves, played
+assert played[0][0].get("fallback"), "the job was not marked as a fallback"
+assert took < 5, "the fallback dawdled: %.1fs" % took
+assert any(s == "model-start" and "effort medium" in d
+           for s, d in metrics), metrics
+assert any(s == "mover-fallback" for s, d in metrics), metrics
+# ample time: a 30-minute clock still runs at the configured fixed ceiling
+m.submit({"key": "fat", "gid": "t-fat", "ply": 0, "fen": board.fen(),
+          "side": "white", "opponent": "guest", "history": "",
+          "clock": {"white_ms": 1800000, "black_ms": 1800000,
+                    "running": "white"},
+          "effort": "low", "t0": time.time()})
+assert m.wait_idle(timeout=10)
+assert len(timeouts) >= 2 and abs(timeouts[-1] - 90.0) < 1e-6, timeouts
+print("  ok: 98.5s -> %.1fs ceiling, fallback %s in %.1fs; 30min -> %.0fs"
+      % (timeouts[0], played[0][1].uci(), took, timeouts[-1]))
+PY
+[ $? -eq 0 ] && ok "at defaults 98.5s never affords the 90s knob, and 30min still does" \
+    || fail "browser-047 default-knob derivation"
+
+echo "end-to-end: a 10+0 game at 98.5s stores a fallback long before zero:"
+# The incident whole: her clock at browser-047's 98.524s in a rapid game, a
+# sharp position the classifier sends to medium, and a model call that would
+# sleep past the flag. Fraction and floor are tightened so the derived kill
+# lands in seconds of wall time instead of 47 — the arithmetic at defaults is
+# pinned above — and the move must land on the game file with the clock
+# charged and nowhere near zero.
+SLOW_STUB="$SANDBOX/mover-slow"
+printf '#!/bin/bash\nexec sleep 300\n' > "$SLOW_STUB"
+chmod +x "$SLOW_STUB"
+seed_timed b047-001 black 10+0 550000 98524 0 e2e4 e7e5 d1h5 g7g6 h5e5
+export DESKCRAB_CHESS_MOVER_CLOCK_FRACTION=0.03
+export DESKCRAB_CHESS_MOVER_CLOCK_FLOOR=2
+export DESKCRAB_CHESS_CHAT=0
+OLD_MOVER_STUB="$MOVER_STUB"
+MOVER_STUB="$SLOW_STUB"
+if start_bridge "$SANDBOX/wake-b047.log" --game b047-001; then
+    pyrun <<'PY'
+import json, os, sys, time
+sys.path.insert(0, os.path.join(os.environ["DESKCRAB_SANDBOX_REPO"], "lib"))
+import chess
+gpath = os.path.join(os.environ["DESKCRAB_CHESS_DIR"], "games",
+                     "b047-001.json")
+g = None
+deadline = time.time() + 25
+while time.time() < deadline:
+    try:
+        g = json.load(open(gpath))
+    except (OSError, ValueError):
+        g = None
+    if g and len(g["moves"]) >= 6:
+        break
+    time.sleep(0.3)
+assert g and len(g["moves"]) == 6, "no move was stored: %r" % (
+    g and g["moves"])
+b = chess.Board()
+for u in g["moves"][:5]:
+    b.push(chess.Move.from_uci(u))
+assert b.is_check(), "the seeded position lost its sharpness"
+mv = chess.Move.from_uci(g["moves"][5])
+assert mv in b.legal_moves, "the stored move is not legal: %s" % g["moves"][5]
+assert g["flag_fell"] is None, g["flag_fell"]
+ck = g["clock"]
+assert 80000 < ck["black_ms"] < 98524, ck
+print("  ok: fallback %s stored with %.1fs still on her clock"
+      % (g["moves"][5], ck["black_ms"] / 1000))
+PY
+    [ $? -eq 0 ] && ok "the 10+0 incident shape ends in a stored legal move, not a flag" \
+        || { sed 's/^/    serve: /' "$SANDBOX/serve.log" | tail -15
+             fail "browser-047 end-to-end"; }
+    grep -q "CLOCK-BUDGET FALLBACK" "$SANDBOX/serve.log" \
+        && ok "the serve log names the fallback for what it is" \
+        || fail "no CLOCK-BUDGET FALLBACK line in the serve log"
+    MET="$DESKCRAB_METRICS_DIR/$(date +%F).log"
+    grep "b047-001" "$MET" | grep -q "model-start.*effort medium" \
+        && ok "the sharp rapid position still rode at medium under the ceiling" \
+        || fail "no medium model-start metric for b047-001"
+    grep "b047-001" "$MET" | grep -q "move-played.*fallback" \
+        && ok "the stored move is recorded as the model's failure, never a success" \
+        || fail "no fallback move-played metric for b047-001"
+fi
+stop_bridge
+MOVER_STUB="$OLD_MOVER_STUB"
+unset DESKCRAB_CHESS_MOVER_CLOCK_FRACTION DESKCRAB_CHESS_MOVER_CLOCK_FLOOR \
+      DESKCRAB_CHESS_CHAT
