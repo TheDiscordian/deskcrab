@@ -639,11 +639,10 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     rather than a silence — and MUST name the failure on the check log: the widening may make
     the checker fairer, never quietly absent. Its reason MUST open with the unkept-commitment prefix (a
     constant in `lib/common.sh` beside the auditor's two), MUST quote the promise exactly and
-    instruct her to do the work now or book it deliberately, and MUST fire minutes out, never
-    hours — the point is to catch her while the context is still warm. It MUST be booked with
-    the effort override **low** (rule 13a), so the fired session runs at the wake path's own
-    model — opus — at low effort: enough hands to do one named piece of work, cheap enough to
-    fire for every catch. The checker fires on every channel, wakes included, so its own
+    instruct her to do the work now or book it deliberately, and MUST use the urgent one-second
+    lane — the point is to make a safe authorised claim true immediately. It inherits the
+    configured `WAKE_EFFORT`, like any wake without a deliberate per-booking override. The checker
+    fires on every channel, wakes included, so its own
     follow-up is not exempt from the evidence test — a wake that claims again and again does
     nothing is caught again — and the chain is bounded instead of exempted: the wake path MUST
     skip the promise AUDIT for this prefix exactly as for the auditor's two (the agenda quotes
@@ -823,7 +822,8 @@ within one window of each other and never moves the pending one, a cluster witho
 is refused, the fold lands on the ledger as `folded`, and a folded item is cut through `utf8_trim`
 so the reason stays whole UTF-8),
 `tests/test_promise_check.sh` (rule 43b: the unkept-commitment wake is an event wake in the
-checker's own name, effort low on the record, prefix on the reason and the promise quoted verbatim;
+checker's own name, inheriting configured `WAKE_EFFORT`, with the prefix on the reason and the
+promise quoted verbatim;
 the audit skips the prefix; the rebook bound and the auditor's deferred wake each stop a duplicate
 booking; the widened evidence — a job dispatched in the turn's window and a mover-played chess
 announcement each short-circuit the model, another session's record and the jobs ledger reach the

@@ -288,14 +288,14 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # rules 32a-32d). After a reply is delivered on any channel, a cheap pattern
 # pre-check looks for the shape of a first-person commitment ("I'm wiring it
 # now", "I've written it to the log"); only a reply that has one is judged by
-# a small model against the tool calls the turn's own stream log records. An
+# a small model against the tool calls and results the turn's own stream log records. An
 # unkept commitment lands on the promise ledger and books an event wake
-# minutes out at effort low, quoting the promise, so the work actually
-# happens. The nightly sleep pass sweeps the whole day behind it.
+# immediately at the configured WAKE_EFFORT, quoting the promise, so the work
+# actually happens. The nightly sleep pass sweeps the whole day behind it.
 # PROMISE_CHECK=1                   # set 0 to disable the checker entirely
 # PROMISE_CHECK_MODEL="sonnet"      # the verifier — evidence-reading, not taste
 # PROMISE_CHECK_FALLBACK_MODEL="haiku"  # when the verifier answers unparseably
-# PROMISE_CHECK_WAKE_DELAY="3m"     # how far out the do-it-now wake fires
+# PROMISE_CHECK_WAKE_DELAY="1s"     # urgent correction lane; never delays speech
 # PROMISE_CHECK_WAKE_CAP=3          # pending unkept-commitment wakes, at most
 # PROMISE_CHECK_REBOOK_MAX=2        # wakes one verbatim promise may earn a day
 # PROMISE_SWEEP_WAKE_AT="09:45"     # when the night sweep's misses are surfaced

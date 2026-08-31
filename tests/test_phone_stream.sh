@@ -1,9 +1,9 @@
 #!/bin/bash
-# The phone's verified-answer voice boundary, including the legacy sentence flag.
+# The phone's completed-answer voice boundary, including the legacy sentence flag.
 # Run: bash tests/test_phone_stream.sh
 #
 # specs/phone.md rule 17: thinking and tool progress stay live, while provider
-# answer text and voice remain private until the checked completion payload.
+# answer text and voice remain private until the completed reply payload.
 # PHONE_SENTENCE_STREAM cannot weaken that boundary.
 #
 # Two real servers over two real sockets — one per mode — fed one synthetic
@@ -197,7 +197,7 @@ PY
 }
 
 # --- both modes: raw answer text and voice stay held -----------------------
-echo "== answer drafts stay behind the claim boundary =="
+echo "== answer drafts stay behind the phone completion boundary =="
 
 : > "$T/synth-on.log"
 : > "$T/synth-off.log"
@@ -213,14 +213,14 @@ for MODE in on off; do
         "$(wc -l < "$T/synth-$MODE.log" 2>/dev/null || echo 0)" "0"
     DONE_LINE=$(grep '"kind": *"done"' "$T/$MODE.sse" | head -n1)
     contains "$DONE_LINE" '"spoken": "the reply"' \
-        && ok "$MODE mode delivers the checked reply in done" \
-        || fail "$MODE mode delivers the checked reply in done" "$DONE_LINE"
+        && ok "$MODE mode delivers the completed reply in done" \
+        || fail "$MODE mode delivers the completed reply in done" "$DONE_LINE"
     contains "$DONE_LINE" '"audio": "/audio/' \
-        && ok "$MODE mode carries the checked whole-reply clip once" \
-        || fail "$MODE mode carries the checked whole-reply clip once" "$DONE_LINE"
+        && ok "$MODE mode carries the completed whole-reply clip once" \
+        || fail "$MODE mode carries the completed whole-reply clip once" "$DONE_LINE"
     contains "$DONE_LINE" "A card" \
-        && ok "$MODE mode carries the checked display card" \
-        || fail "$MODE mode carries the checked display card" "$DONE_LINE"
+        && ok "$MODE mode carries the completed display card" \
+        || fail "$MODE mode carries the completed display card" "$DONE_LINE"
 done
 
 echo

@@ -3,10 +3,10 @@
 # rule 43b, nightly.md rules 51-53. Run: bash tests/test_promise_check.sh
 #
 # Her replies claim first-person concrete actions and the turn ends with the
-# action never taken. The checker holds each claim against the tool calls the
+# action never taken. The checker audits each delivered claim against the tool calls and results the
 # turn's own stream log records: a cheap pattern pre-check gates the model so
 # most turns cost a grep, an unkept commitment lands on the durable ledger
-# and books an opus-low wake quoting the promise, and the nightly sweep
+# and books an immediate wake at the configured wake effort, and the nightly sweep
 # reconciles the whole day. Every case here runs against stubs — no model is
 # ever spent, no timer is ever armed.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
@@ -42,6 +42,7 @@ PIPER_VOICE="$T/voice.onnx"
 WHISPER_MODEL="$T/whisper.bin"
 MEMORY_STORE=0
 PROMISE_CHECK=1
+WAKE_EFFORT="medium"
 CONF
 
 export WAKES_DIR="$W"
@@ -65,13 +66,19 @@ reset()    { rm -f "$W"/*.wake "$W/ledger.log" "$T/wake-calls" "$T/ledger.jsonl"
 # empty of tools IS evidence, not absence.
 SNAP_TOOLS="$T/snap-tools.jsonl"
 cat > "$SNAP_TOOLS" <<'EOF'
-{"type":"assistant","message":{"model":"real","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/home/nobody/.config/greenhouse/fan.conf","content":"on"}}]}}
+{"type":"assistant","message":{"model":"real","content":[{"type":"tool_use","id":"write-fan","name":"Write","input":{"file_path":"/home/nobody/.config/greenhouse/fan.conf","content":"on"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"write-fan","is_error":false,"content":"status=completed exit=0\nwrote fan.conf"}]}}
 {"type":"assistant","message":{"model":"real","content":[{"type":"text","text":"I've wired the greenhouse fan into the config now."}]}}
 EOF
 SNAP_EMPTY="$T/snap-empty.jsonl"
 cat > "$SNAP_EMPTY" <<'EOF'
 {"type":"assistant","message":{"model":"real","content":[{"type":"text","text":"I'll wire the greenhouse fan into the config now."}]}}
 {"type":"result","result":"done"}
+EOF
+SNAP_FAILED="$T/snap-failed.jsonl"
+cat > "$SNAP_FAILED" <<'EOF'
+{"type":"assistant","message":{"model":"real","content":[{"type":"tool_use","id":"write-fan-failed","name":"Write","input":{"file_path":"/home/nobody/.config/greenhouse/fan.conf","content":"on"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"write-fan-failed","is_error":true,"content":"status=failed exit=1\npermission denied"}]}}
 EOF
 # fire_promise_check consumes (removes) its snapshot through the checker, so
 # tests hand it throwaway copies.
@@ -121,7 +128,7 @@ check_eq "and the stream log was snapshotted for it" \
 rm -f "$T"/state/deskcrab-promise-evidence-*
 
 echo
-echo "an unkept commitment: ledger line, and the opus-low wake with the promise quoted:"
+echo "an unkept commitment: ledger line, and an immediate configured-effort wake with the promise quoted:"
 reset
 sandbox_stub claude <<STUB
 #!/bin/bash
@@ -153,8 +160,8 @@ check "with the journal identity on it" \
 check_eq "one wake record was booked" "$(records)" "1"
 check_eq "in the checker's own name" "$(field 5)" "promise-check"
 check_eq "as an event wake" "$(field 2)" "event"
-check_eq "at effort low on the record itself, so the fired session runs opus low" \
-    "$(field 6)" "low"
+check_eq "with no per-booking effort override, so WAKE_EFFORT medium applies" \
+    "$(field 6)" ""
 case "$(field 3)" in
     "$CHECK_PREFIX"*) ok "the reason opens with the unkept-commitment prefix the audit skips" ;;
     *) fail "the reason must open with the class prefix" "$(field 3)" ;;
@@ -165,10 +172,10 @@ case "$(field 3)" in
     *) fail "the wake must carry the promise in her own words" "$(field 3)" ;;
 esac
 F="$(fire_in)"
-check "the alarm fires minutes out, never hours" test "$F" -ge 60 -a "$F" -le 600
+check "the alarm fires immediately" test "$F" -ge -2 -a "$F" -le 10
 case "$(calls)" in
-    *"--effort low"*) ok "the booking asked for the low-effort override" ;;
-    *) fail "the wake must be booked at effort low" "$(calls)" ;;
+    *"--effort "*) fail "the correction must inherit configured WAKE_EFFORT" "$(calls)" ;;
+    *) ok "the booking leaves effort to configured WAKE_EFFORT=medium" ;;
 esac
 case "$(calls)" in
     *"--cap 3 --cap-prefix $CHECK_PREFIX"*)
@@ -178,7 +185,7 @@ esac
 check "the snapshot was consumed by the checker" test ! -e "$T/snap-live.jsonl"
 
 echo
-echo "the synchronous inspect mode holds an invented delay before delivery:"
+echo "diagnostic inspect identifies an invented delay without controlling delivery:"
 reset
 NOW_E="$(date +%s)"
 printf '%s\tscheduled\tinspect the active builder viseme correction\t%s\therself\n' \
@@ -189,11 +196,11 @@ INSPECT_OUT="$("$T/repo/lib/promise-check" inspect phone 1786400000 4242 \
     "The revised viseme is visibly degraded while its builder is active; correct it." \
     2>/dev/null)"
 INSPECT_RC=$?
-check_eq "an unsupported candidate exits with the hold status" "$INSPECT_RC" "3"
-check "the verdict is returned to the correction pass" \
+check_eq "an unsupported candidate exits with the diagnostic status" "$INSPECT_RC" "3"
+check "the verdict is returned to the diagnostic caller" \
     grep -q '^UNKEPT:' <<< "$INSPECT_OUT"
 check "a dispatched brief cannot masquerade as present work" \
-    grep -q "tense must match the evidence" "$T/model-stdin"
+    grep -q "exact tense with the evidence" "$T/model-stdin"
 check "the exact user request reaches the timing judgement" \
     grep -qF "The revised viseme is visibly degraded while its builder is active; correct it." \
         "$T/model-stdin"
@@ -210,6 +217,18 @@ check_eq "inspection does not ledger or book post-delivery work" \
     "$(ledger_n)$(records)" "00"
 
 echo
+echo "a failed tool result proves an attempt, never successful work:"
+reset
+"$T/repo/lib/promise-check" inspect desktop 1786400001 4243 \
+    "$(snap "$SNAP_FAILED")" "$T/ledger.jsonl" \
+    "I've wired the greenhouse fan into the config now." \
+    "Wire the greenhouse fan into the config." >/dev/null 2>&1
+check "the failed outcome is paired with the attempted Write" \
+    grep -q "Write: /home/nobody/.config/greenhouse/fan.conf => ERROR: status=failed exit=1 permission denied" \
+        "$T/model-stdin"
+check_eq "diagnostic inspection still books nothing" "$(ledger_n)$(records)" "00"
+
+echo
 echo "a commitment the tool record shows performed books nothing:"
 reset
 sandbox_stub claude <<STUB
@@ -224,6 +243,8 @@ STUB
 check_eq "the model ran — this case is judged, not skipped" "$(claude_n)" "1"
 check "and was shown the Write call that did the work" \
     grep -q "Write: /home/nobody/.config/greenhouse/fan.conf" "$T/model-stdin"
+check "and was shown the successful tool result, not merely the command" \
+    grep -q "RESULT: status=completed exit=0 wrote fan.conf" "$T/model-stdin"
 check_eq "no ledger line" "$(ledger_n)" "0"
 check_eq "no wake booked" "$(records)" "0"
 check "the trace records a kept verdict" grep -q "1 kept, 0 unkept" "$CHECK_LOG"
@@ -471,8 +492,8 @@ echo "the chase chain is bounded by class per day — a re-claim in different wo
 # the wording.
 reset
 NOW_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
-printf '{"time":"%s","kind":"desktop","promise":"I am wiring the greenhouse fan into the config now","wake":"booked 3m out at effort low"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
-printf '{"time":"%s","kind":"wake","promise":"I will hook the fan up to the configuration right away","wake":"booked 3m out at effort low"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
+printf '{"time":"%s","kind":"desktop","promise":"I am wiring the greenhouse fan into the config now","wake":"booked immediately at configured wake effort"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
+printf '{"time":"%s","kind":"wake","promise":"I will hook the fan up to the configuration right away","wake":"booked immediately at configured wake effort"}\n' "$NOW_ISO" >> "$T/ledger.jsonl"
 sandbox_stub claude <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
@@ -489,7 +510,7 @@ check "marked as handed to the night, counted by class rather than wording" \
 # A sweep record is not a chase booking, and yesterday is not today: neither
 # may count against the day's bound.
 reset
-printf '{"time":"%s","kind":"desktop","promise":"an older promise","wake":"booked 3m out at effort low"}\n' \
+printf '{"time":"%s","kind":"desktop","promise":"an older promise","wake":"booked immediately at configured wake effort"}\n' \
     "$(date -d yesterday +%Y-%m-%dT%H:%M:%S%z)" >> "$T/ledger.jsonl"
 printf '{"time":"%s","type":"sweep","day":"yesterday","promise":"a swept promise","wake":"booked for the morning"}\n' \
     "$NOW_ISO" >> "$T/ledger.jsonl"

@@ -32,7 +32,8 @@ CONVO="${DESKCRAB_STATE_PREFIX}-convo.txt"
 SESSLOG="${DESKCRAB_STATE_PREFIX}-sessions.log"
 ORDERDIR="${DESKCRAB_STATE_PREFIX}-turn-order"
 
-# The stub claude. SLOW streams a two-sentence delta, hangs mid-run — the
+# The stub provider. SLOW declares the Sol app transport, streams a two-sentence
+# delta, hangs mid-run — the
 # shape of a turn still generating when he speaks over it — and then, if the
 # run is still alive, streams two MORE sentences. Those last two are the
 # proof that matters: the catch-all's stop_tts has always pkilled the box's
@@ -56,6 +57,7 @@ case "$TEXT" in
 esac
 case "$TEXT" in
     *SLOW*)
+        printf '{"type":"system","subtype":"init","engine":"codex","transport":"app-server"}\n'
         printf '{"type":"stream_event","event":{"type":"message_start"}}\n'
         printf '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}\n'
         printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Sentence one of the doomed answer. Sentence two must never be heard."}}}\n'

@@ -200,6 +200,27 @@ python3 -c "import sys;sys.exit(0 if float(sys.argv[1])>=float(sys.argv[2]) else
     && ok "one piper process for the whole burst (the voice model loads once)" \
     || fail "piper restarted per sentence" "$(grep -c START "$TRACE")"
 
+echo
+echo "the Sol app stream speaks before the turn completes:"
+stream codex_live '
+    a "{\"type\":\"system\",\"subtype\":\"init\",\"engine\":\"codex\",\"transport\":\"app-server\"}"
+    a "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"sol-live\"}}}"
+    tblock 0
+    delta "The viewer is running correctly now. "
+    sleep 0.8
+    date +%s.%N > "'"$T"'/codex-live-result-at"
+    say_json "The viewer is running correctly now. "
+    done_json'
+FIRST_ABS="$(sed -n 's/^\([0-9.]*\)\tSAY\t.*/\1/p' "$TRACE" | head -1)"
+RESULT_AT="$(cat "$T/codex-live-result-at")"
+[ "$SAID" = "The viewer is running correctly now." ] \
+    && ok "Sol's first complete sentence is spoken exactly once" \
+    || fail "Sol's live sentence was held or repeated" "$SAID"
+python3 -c "import sys;sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)" \
+    "$FIRST_ABS" "$RESULT_AT" \
+    && ok "the sentence crossed to piper before Sol's result event" \
+    || fail "Sol speech still waited for the whole turn" "speech=$FIRST_ABS result=$RESULT_AT"
+
 # The reply shape of 2026-08-09 (C14): a quoted span, an em dash, and a final
 # sentence that ends at a question mark with no trailing newline. The clipping
 # was in the phone client, not here — this pins that the desk's final flush

@@ -82,6 +82,24 @@ def assistant(item_id, block):
                         "content": [block]}}
 
 
+def tool_result(item_id, item):
+    output = item.get("aggregated_output") or item.get("aggregatedOutput") or ""
+    status = item.get("status") or "unknown"
+    exit_code = item.get("exit_code", item.get("exitCode"))
+    summary = "status=%s" % status
+    if exit_code is not None:
+        summary += " exit=%s" % exit_code
+    if output:
+        output = str(output)
+        if len(output) > 4000:
+            output = output[:1000] + "\n… tool output clipped …\n" + output[-2970:]
+        summary += "\n" + output
+    return {"type": "user", "message": {"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": item_id or "codex",
+        "is_error": status not in ("completed", "success"),
+        "content": summary}]}}
+
+
 def on_item(item):
     kind = item.get("type") or item.get("item_type") or ""
     item_id = item.get("id") or ""
@@ -93,8 +111,10 @@ def on_item(item):
     if kind == "command_execution":
         cmd = item.get("command") or ""
         if cmd:
-            emit(assistant(item_id, {"type": "tool_use", "name": "Bash",
+            emit(assistant(item_id, {"type": "tool_use", "id": item_id,
+                                     "name": "Bash",
                                      "input": {"command": cmd}}))
+            emit(tool_result(item_id, item))
         return None
     if kind == "file_change":
         changes = item.get("changes")

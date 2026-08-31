@@ -20,7 +20,8 @@ Two things this must get right, and both were broken:
    part not already chunked is taken — so a stream WITHOUT partial messages
    (a wake, an older CLI) behaves exactly as it always did.
 
-   Chunked, but not spoken on the spot: the ACCEPTANCE HOLD
+   Chunked, then spoken on the spot when the transport has no Stop-hook
+   rejection event. On a transport that can reject a finished message, the ACCEPTANCE HOLD
    (specs/speech-output.md rule 12b) sits between the chunker and piper. The
    CLI's Stop hook can reject a message only after it is complete, and on
    2026-08-25 every sentence of a four-sentence draft was through piper before
@@ -33,7 +34,9 @@ Two things this must get right, and both were broken:
    a rejection nothing real follows, or a stream that just ends — terminator,
    killed CLI, reaped watchdog, orphaned tail — releases what is held before
    the tail closes. The hold delays speech by the width of the acceptance; it
-   never swallows it.
+   never swallows it. Codex app-server emits live text deltas but no Stop-hook
+   feedback event, so holding that stream until its result would buy no safety
+   and restore the whole-turn delay this streamer exists to remove.
 
 piper and aplay are started ONCE per speaking burst and kept alive, because
 loading the voice model costs ~0.9 s. One long-lived pair means that cost is
@@ -760,6 +763,16 @@ def clear_live_speech():
 
 
 def _on_term(*_a):
+    # A turn cut or `crab shutup` owns this streamer's children too. Merely
+    # exiting closes the pipe eventually, but piper may already have read one
+    # sentence and have another queued in its stdin; leaving those processes
+    # alive lets the queued sentence sound after the replacement turn starts.
+    for proc in (VOICE.piper, VOICE.aplay):
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
     write_receipt()
     clear_live_speech()
     # An asked-for stop closes the mouth NOW and clears queued cues
@@ -812,6 +825,12 @@ class AcceptanceHold:
         self._draft_open = False  # chunks still arriving belong to the rejected draft
         self._mark = 0            # registry.voiced_texts length when the pending message began
         self._anon = 0
+        self.eager = False        # no rejection event: speak completed sentences immediately
+
+    def enable_eager(self):
+        """Release the hold for a transport that cannot reject a message."""
+        self.accept()
+        self.eager = True
 
     def anon_mid(self):
         """A distinct slot for a message the stream never named."""
@@ -821,6 +840,9 @@ class AcceptanceHold:
     def add(self, chunk):
         """The registry's voice callback: every chunk waits here."""
         if not (chunk or "").strip():
+            return
+        if self.eager:
+            self._speak(chunk)
             return
         if self._draft_open:
             # The tail of a message already rejected belongs with its head.
@@ -995,6 +1017,12 @@ with open(LOG) as f:
             metric_once("first-tool")
 
         kind = d.get("type")
+
+        if kind == "system":
+            if d.get("engine") == "codex" and d.get("transport") == "app-server":
+                HOLD.enable_eager()
+                speech_log("codex app stream — speaking sentences as they complete")
+            continue
 
         if kind == "result":
             # A limit refusal never ends the tail: crab may append the next

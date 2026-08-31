@@ -19,7 +19,7 @@
 # the stub writes its stream-json log the way the CLI does — in pieces, with a
 # line still half-written when the reader reaches it — and the test asserts the
 # thinking and tool progress arrive BEFORE the done event, while assistant
-# answer text remains held until the checked completion payload.
+# answer text remains held until the completed reply payload.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -147,10 +147,10 @@ awaits LIVE-TOOL-CANARY \
     || fail "tool use reaches the phone mid-turn" "never arrived before the turn ended"
 
 # The answer is still only a draft. Even a complete parseable block remains
-# private until crab remote returns the checked replacement.
+# private until crab remote returns the completed reply.
 if grep -qF LIVE-TEXT-CANARY "$SSE"; then
     fail "draft answer text stays off the phone" \
-         "the raw provider draft crossed the pre-delivery boundary"
+         "the raw provider draft crossed the phone completion boundary"
 else
     ok "draft answer text stays off the phone"
 fi

@@ -298,45 +298,35 @@ Her replies claim, in the first person, concrete actions — "I am wiring it now
 it to the log", "I will restart it and tell you when it is in" — and the turn ends with the
 action never taken. The promise audit catches the promise with no booking behind it; this
 catches the claim with no work behind it, and it can, because the turn's own stream log
-records every tool call that actually happened. External and automatic on purpose: she has
+records every tool call and result that actually happened. External and automatic on purpose: she has
 proven she cannot be trusted to audit her own follow-through, so the verdict comes from a
 cheap model reading the evidence, never from her. And because the live check is deliberately
 cheap and gated, the nightly sleep pass sweeps the whole day behind it
 ([nightly.md](nightly.md) rules 51-53): the checker is the fast hand, the night is the honest
 ledger.
 
-32a. Every candidate reply — the desk, the phone, and the autonomous wake alike; every
-     channel she speaks on — MUST run the checker's presence pre-check before any part of the
-     reply is spoken, shown, streamed to the phone, or committed to conversation history. The pre-check
-     is a pattern match for the shape of a first-person commitment (`promise_precheck` in
-     `lib/common.sh`, one shared function): it costs a grep and MUST NOT call any model. Most
-     replies carry no commitment, and for them the whole feature is that grep and one
-     run-trace line — no child spawned, no stream copied, no model invoked. A reply the
-     pre-check flags is handed synchronously to `lib/promise-check inspect` with the response,
-     a private snapshot of the turn's stream log, and the turn identity. A clean verdict lets
-     the candidate continue. An UNKEPT verdict, a missing verdict, or an unavailable checker
-     MUST hold the candidate back.
-32aa. A held candidate goes through another tool-capable pass on the same turn model. That
-      pass receives the user's request, the unsent candidate, and the checker's verdict. It
-      MUST perform or durably dispatch every safe, authorised action needed to make the claim
-      true, using `crab wake-now` when an immediate background wake is the right handoff and
-      `crab job steer <id> <correction>` when the claim concerns an active builder, then
-      write a complete replacement reply supported by the resulting record. It MUST NOT replace
-      current action with an invented later `wake-at`. When
-      the action cannot be performed within the user's authority or the available tools, the
-      replacement states what is actually true and does not repeat the claim. The replacement
-      is inspected again against the combined record. This repair is bounded by
-      `CLAIM_GUARD_REPAIRS` (default 2); if no candidate
-      passes, delivery uses a truthful non-action response and none of the unsupported drafts.
-      `CLAIM_GUARD` defaults to the `PROMISE_CHECK` setting, so the existing master switch
-      governs both halves unless the pre-delivery half is explicitly configured on its own.
-      The detached `turn` check remains as a record and nightly backstop after delivery, but it
-      MUST NOT be the first time a candidate action claim is checked.
+32a. Every delivered reply — the desk, the phone, and the autonomous wake alike — MUST run the
+     checker's presence pre-check after the user has the answer. The pre-check is a pattern match
+     for the shape of a first-person commitment (`promise_precheck` in `lib/common.sh`, one shared
+     function): it costs a grep and MUST NOT call any model. Most replies carry no commitment, and
+     for them the whole feature is that grep and one run-trace line — no child spawned, no stream
+     copied, no model invoked. A reply the pre-check flags is handed to the detached checker with a
+     private snapshot of the turn's stream log and the turn identity. Neither the pre-check nor the
+     checker may hold, replace, rewrite, or veto the reply. In particular, no generic checker prose
+     may be delivered in Beatrice's voice. The provider stream remains the desktop speech source,
+     and the checker is corrective work after delivery, not another author in the conversation.
+32aa. An UNKEPT verdict starts the matching safe, authorised work immediately through the wake
+      queue's urgent lane. The reason carries the exact claim and evidence gap, so that hand either
+      performs the action, uses `crab job steer <id> <correction>` when the claim concerns an active
+      builder, or reports the truth through its normal delivery path when the action cannot be made
+      true. It MUST NOT invent a later clock time. A wake is still a separate hand and never proves
+      that an active builder was steered.
 32b. The checker asks a cheap verifier — `PROMISE_CHECK_MODEL`, default `sonnet` (the conf
      convention of `MEMORY_JUDGE_MODEL`), with `PROMISE_CHECK_FALLBACK_MODEL` (default
      `haiku`) standing in when the verifier answers with nothing parseable — to extract every
      first-person commitment to a concrete action from the reply and judge each against the
-     tool calls the stream actually records. Three shapes are in scope: the present
+     tool calls and their results that the stream actually records. A command without a result is
+     evidence that an attempt began, not evidence that it succeeded. Three shapes are in scope: the present
      commitment ("I am wiring it now"), the immediate future ("I'll restart it"), and the
      claim of completed work ("I've written it to the log") — the completed claim is
      precisely the lie this checker exists for, and unlike the audit it holds the record that
@@ -363,7 +353,7 @@ ledger.
      artefact that exists, with a modification time consistent with the claim, is the record
      that keeps a completed-work claim — whoever's hand wrote it), and the wake queue's pending
      bookings (a future commitment whose work a pending wake's reason already names is kept by
-     the schedule, whenever the schedule was written). In pre-delivery `inspect` mode the checker
+     the schedule, whenever the schedule was written). In diagnostic `inspect` mode the checker
      also receives the user's request, and timing is part of the match: when the request calls for
      current action or reports a defect in active work, a later wake time Beatrice invented does
      not keep the claim. Direct work, an immediate job, or `crab wake-now` does. A later
@@ -405,10 +395,8 @@ ledger.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the
-     queue's one door, minutes out (`PROMISE_CHECK_WAKE_DELAY`, default 3m — the point is to
-     catch her while the context is still warm), booked at effort **low** through the
-     rule-13a override, so the fired session runs at the wake path's own model — opus — at
-     low effort: cheap enough to fire freely, strong enough to actually do the thing. Its
+     queue's one door on the urgent lane (`PROMISE_CHECK_WAKE_DELAY`, default 1s), using the
+     configured `WAKE_EFFORT`. Its
      reason opens with the unkept-commitment prefix and quotes the promise verbatim
      ([wake-queue.md](wake-queue.md) rule 43b). Two bounds keep an accusation from becoming a
      storm: a promise the auditor's deferred wake already covers from this same turn is
@@ -617,8 +605,9 @@ journals the interrupted outcome; a turn that delivered normally is untouched; t
 no-outcome row of 2026-08-10 is unreachable.
 
 `tests/test_promise_check.sh` — rules 32a-32d and [nightly.md](nightly.md) rules 51-53: a reply
-with a commitment whose work is absent lands on the ledger and books the opus-low wake with the
-promise quoted verbatim; a commitment the tool record shows performed books nothing; a reply with
+with a commitment whose work is absent lands on the ledger and books an immediate wake at the
+configured wake effort with the promise quoted verbatim; a commitment the tool result shows
+performed books nothing; a reply with
 no commitment never reaches the model (the pre-check's gate is proven from the CLI witness log); a
 missing stream snapshot judges nothing; the auditor's deferred wake and the per-promise rebook
 bound each stop a duplicate booking; the sweep hands the model the whole day and its reconciling

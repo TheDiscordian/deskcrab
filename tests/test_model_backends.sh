@@ -61,6 +61,15 @@ for line in sys.stdin:
                          "error": {"message":
                 "Selected model is at capacity. Please try a different model."}}})
             sys.exit(0)
+        notify("item/commandExecution/outputDelta",
+               {"threadId": "th-1", "turnId": "tu-1",
+                "itemId": "cmd_ok",
+                "delta": "viewer restarted, new pid 2468\n"})
+        notify("item/completed", {"threadId": "th-1", "turnId": "tu-1",
+            "item": {"type": "commandExecution", "id": "cmd_ok",
+                     "command": "crab face-window", "status": "completed",
+                     "exitCode": 0,
+                     "aggregatedOutput": "viewer restarted, new pid 2468\n"}})
         for d in ("codex ", "stub ", "reply."):
             notify("item/agentMessage/delta",
                    {"threadId": "th-1", "turnId": "tu-1",
@@ -163,7 +172,7 @@ CODEX_STREAM_HEARTBEAT=0 CODEX_STREAM_MODEL="gpt-test" \
 {"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":""}}
 {"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"echo hi","status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"echo hi","exit_code":0}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"echo hi","status":"completed","exit_code":0,"aggregated_output":"hi"}}
 {"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/tmp/a.txt","kind":"add"}]}}
 {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"the answer."}}
 not json at all
@@ -179,6 +188,10 @@ check_eq "an EMPTY agent message is never emitted" \
     "$(grep -c '"item_0"' "$TR")" "0"
 check "a command becomes a Bash tool_use" contains "$(cat "$TR")" '"name": "Bash"'
 check "…carrying the command itself" contains "$(cat "$TR")" '"command": "echo hi"'
+check "the command result is paired with its tool call" \
+    contains "$(cat "$TR")" '"type": "tool_result"'
+check "the command result carries status, exit, and output" \
+    contains "$(cat "$TR")" 'status=completed exit=0\nhi'
 check "a file change becomes a Write tool_use" \
     contains "$(cat "$TR")" '"file_path": "/tmp/a.txt"'
 check_eq "one Bash tool_use, not one per item state" \
@@ -366,6 +379,10 @@ rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
 OUT="$(turn "CLAUDE_MODEL=sol" 2>/dev/null)"
 check "a codex turn's reply comes back through extract_response" \
     contains "$OUT" "codex stub reply."
+check "the app-server stream records the command result" \
+    contains "$(cat "$SANDBOX/turn-debug.log")" '"type": "tool_result"'
+check "the checker can see what the command actually returned" \
+    contains "$(cat "$SANDBOX/turn-debug.log")" 'viewer restarted, new pid 2468'
 check_eq "…with no Claude account walked" \
     "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
 rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"

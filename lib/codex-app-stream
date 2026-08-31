@@ -100,6 +100,13 @@ def usage_map(u):
             "output_tokens": n("outputTokens")}
 
 
+def clip_tool_output(text, limit=4000):
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    return text[:1000] + "\n… tool output clipped …\n" + text[-(limit - 1030):]
+
+
 class Driver:
     def __init__(self, child):
         self.child = child
@@ -112,6 +119,7 @@ class Driver:
         self.turn_started = False
         self.turn_error = ""
         self.turn_status = None
+        self.command_outputs = {}
 
     def send(self, obj):
         line = json.dumps(obj, ensure_ascii=False) + "\n"
@@ -190,6 +198,13 @@ class Driver:
                                 "delta": {"type": "text_delta",
                                           "text": delta}}})
             return
+        if method == "item/commandExecution/outputDelta":
+            item_id = params.get("itemId") or "codex"
+            delta = params.get("delta") or ""
+            if delta:
+                current = self.command_outputs.get(item_id, "") + str(delta)
+                self.command_outputs[item_id] = current[-12000:]
+            return
         if method == "item/completed":
             self.on_item(params.get("item") or {})
             return
@@ -221,7 +236,6 @@ class Driver:
                       "item/reasoning/textDelta",
                       "item/reasoning/summaryPartAdded",
                       "rawResponseItem/completed", "rawResponse/completed",
-                      "item/commandExecution/outputDelta",
                       "account/rateLimits/updated",
                       "account/updated"):
             return
@@ -247,8 +261,24 @@ class Driver:
                 emit({"type": "assistant",
                       "message": {"id": item_id, "model": MODEL,
                                   "content": [{"type": "tool_use",
+                                               "id": item_id,
                                                "name": "Bash",
                                                "input": {"command": cmd}}]}})
+                output = item.get("aggregatedOutput")
+                if output is None:
+                    output = self.command_outputs.pop(item_id, "")
+                status = item.get("status") or "unknown"
+                exit_code = item.get("exitCode")
+                summary = "status=%s" % status
+                if exit_code is not None:
+                    summary += " exit=%s" % exit_code
+                if output:
+                    summary += "\n" + clip_tool_output(output)
+                emit({"type": "user", "message": {"role": "user",
+                      "content": [{"type": "tool_result",
+                                   "tool_use_id": item_id,
+                                   "is_error": status not in ("completed", "success"),
+                                   "content": summary}]}})
         elif kind == "fileChange":
             for c in item.get("changes") or []:
                 p = c.get("path") if isinstance(c, dict) else None

@@ -3,24 +3,22 @@
 ## PURPOSE
 
 Everything between the model's stream and the user's ears and eyes: extracting the reply, splitting
-it into the spoken half and the display half, speaking it once the candidate reply has passed its
-action-claim check, and guaranteeing that if there was something to say, it was said. This spec also owns
+it into the spoken half and the display half, speaking it as the model writes it, and guaranteeing
+that if there was something to say, it was said. This spec also owns
 the rules that keep the plumbing from ever deciding her words are not worth voicing.
 
-**The standing rule above all of these: nothing here may swallow, clip, or budget her verified speech.**
+**The standing rule above all of these: nothing here may swallow, clip, or budget her speech.**
 A filter that decides her words are not worth voicing is a self-inflicted injury, and it has been
 built twice and removed twice. Silence is chosen while writing, or not at all. The action-claim
-check in [turn-pipeline.md](turn-pipeline.md) rule 32a does not judge whether words are worth
-voicing: it returns an unsupported draft to the same tool-capable assistant, and only the
-assistant's verified replacement becomes the reply.
+check in [turn-pipeline.md](turn-pipeline.md) rule 32a is an after-delivery audit: it can start
+missing work immediately, but it cannot delay, replace, or imitate her voice.
 
-Three mechanisms are allowed to stand between a drafted sentence and the synthesiser, and only
+Two mechanisms are allowed to stand between a drafted sentence and the synthesiser, and only
 because neither decides anything about whether her words are worth voicing. The pre-speech mirror
 (rules 38–46) shows her a line that tripped her own phrase list and she chooses again, rewrite or
 the original, never silence and never machine text; the authority for that distinction is
 `conduct/no-gate-on-my-tongue.md` as clarified 2026-08-08, and any failure anywhere in the mirror
-speaks the original untouched. The action-claim hold returns an unsupported draft for action or
-truthful replacement and validates the replacement before delivery. The acceptance hold (rule 12b) delays a finished message's hand-off
+speaks the original untouched. The acceptance hold (rule 12b) delays a finished message's hand-off
 to piper until the CLI's own turn machinery has moved past it: every word it releases is hers
 unaltered, and what it discards is only a draft she herself replaced under a Stop-hook rejection —
 the same authority rule 5a already exercises on the stored reply.
@@ -95,7 +93,8 @@ the same authority rule 5a already exercises on the stored reply.
 ### Speaking
 
 11. Speech MUST start when she starts talking, not when she stops. The stream carries partial
-    message events for exactly this reason.
+    message events for exactly this reason. A second stream assembled after generation or after an
+    auditing model call MUST NOT replace the provider stream as the desktop speech source.
 12. The streamer MUST speak sentence by sentence as sentences complete.
 12a. A block that never started sounding, whose text is a near-duplicate (rule 5b's test) of a
     block this turn already voiced, MUST NOT be voiced: the shared registry both live voices are
@@ -123,7 +122,10 @@ the same authority rule 5a already exercises on the stored reply.
     silent still outranks the hook, exactly as in rule 5a: a rejection that no real message
     follows releases the held draft, and a stream that ends with a message still pending — the
     terminator, a killed CLI, a reaped watchdog — speaks it before the tail closes. The hold
-    may delay her speech; it may never swallow it. Rule 12a's carve-out ("a rewrite whose
+    may delay her speech; it may never swallow it. The hold applies only to a transport that can
+    emit the Stop-hook feedback event. A transport that cannot emit that rejection MUST hand each
+    completed sentence to piper immediately; waiting for its turn terminator recreates whole-turn
+    speech latency without buying any rejection safety. Rule 12a's carve-out ("a rewrite whose
     deltas streamed live will still sound") described the world before this boundary: with the
     draft held, the rewrite is the only copy piper ever gets. The witness for this boundary is
     the external piper trace, never the streamer's own logs or receipts.

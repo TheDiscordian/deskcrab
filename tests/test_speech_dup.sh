@@ -176,18 +176,24 @@ N=$(grep -cF 'SAY	Heard once is enough.' "$TRACE")
     || fail "verify replayed a spoken reply" "piper saw it $N times"
 
 echo
-echo "the provider draft is not the desktop speech source:"
-TRACE="$T/verified-only.trace"; : > "$TRACE"
+echo "the provider stream is the desktop speech source:"
+TRACE="$T/provider-live.trace"; : > "$TRACE"
 TRACE="$TRACE" DESKCRAB_NO_DISPATCH=1 bash -c '
     source "$1/lib/common.sh" >/dev/null 2>&1
     claim_debuglog
-    printf "%s\n" "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I took you up on it immediately. I am wiring both viewers now.\"}]}}" > "$DEBUGLOG"
-    start_verified_tts_streamer "No builder was dispatched, and no viewer work is running."
+    start_tts_streamer
+    printf "%s\n" \
+      "{\"type\":\"system\",\"engine\":\"codex\",\"transport\":\"app-server\"}" \
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"sol-1\"}}}" \
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}" \
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"The viewer restart worked. \"}}}" >> "$DEBUGLOG"
+    sleep 0.5
+    printf "%s\n" \
+      "{\"type\":\"assistant\",\"message\":{\"id\":\"sol-1\",\"content\":[{\"type\":\"text\",\"text\":\"The viewer restart worked. \"}]}}" \
+      "{\"type\":\"result\",\"result\":\"The viewer restart worked. \"}" >> "$DEBUGLOG"
     wait_tts_streamer' _ "$REPO_DIR"
-check_eq "the unsupported raw draft never reached piper" \
-    "$(sandbox_count_in 'I took you up on it' "$TRACE")" "0"
-check_eq "the verified replacement reached piper once" \
-    "$(sandbox_count_in 'No builder was dispatched, and no viewer work is running.' "$TRACE")" "1"
+check_eq "Sol's streamed sentence reached piper once" \
+    "$(sandbox_count_in 'The viewer restart worked.' "$TRACE")" "1"
 
 echo
 echo "a thinking block shifts the stream's index space — the reply speaks once:"

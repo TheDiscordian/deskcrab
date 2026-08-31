@@ -15,10 +15,9 @@
 # named on the trace. The promise audit beside this one reads what was
 # SAID; this reads the work.
 #
-# An unkept commitment lands on the durable ledger and books an event wake
-# minutes out at effort low — the wake path's opus, cheap enough to fire
-# freely, strong enough to actually do the thing — quoting the promise
-# verbatim. Because the live pass is gated by a cheap pattern pre-check and
+# An unkept commitment lands on the durable ledger and books an immediate
+# event wake at the configured wake effort, quoting the promise verbatim.
+# Because the live pass is gated by a cheap pattern pre-check and
 # may miss, the nightly sweep mode reads the whole day's journal beside the
 # ledger, reconciles promises fulfilled later, and surfaces only the genuine
 # end-of-day misses. specs/turn-pipeline.md rules 32a-32d, specs/wake-queue.md
@@ -31,7 +30,7 @@
 #   promise-check resolve <day> <item> <fulfilled|struck|booked> <evidence>
 #
 # Every failure path of turn and sweep exits 0 with a trace line. Inspect is
-# the delivery boundary: it exits 3 for an unkept claim and 4 when no safe
+# a diagnostic mode: it exits 3 for an unkept claim and 4 when no safe
 # verdict can be reached. resolve is the one hand
 # tool here (nightly.md rule 53f) and fails loud instead — a resolution on
 # the wrong row is worse than a refusal.
@@ -629,7 +628,16 @@ PY
     local TOOL_RECORD
     TOOL_RECORD="$(python3 - "$SNAP" <<'PY'
 import json, sys
-calls = []
+calls, by_id = [], {}
+
+def result_text(value):
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False)
+    text = " ".join(text.split())
+    return text if len(text) <= 700 else text[:700] + "…"
+
 for raw in open(sys.argv[1], errors="replace"):
     raw = raw.strip()
     if not raw:
@@ -638,22 +646,39 @@ for raw in open(sys.argv[1], errors="replace"):
         d = json.loads(raw)
     except ValueError:
         continue
-    if not isinstance(d, dict) or d.get("type") != "assistant":
+    if not isinstance(d, dict):
         continue
     msg = d.get("message") or {}
-    if d.get("is_api_error_message") or msg.get("model") == "<synthetic>":
-        continue
-    for b in msg.get("content") or []:
-        if not isinstance(b, dict) or b.get("type") != "tool_use":
+    if d.get("type") == "assistant":
+        if d.get("is_api_error_message") or msg.get("model") == "<synthetic>":
             continue
-        name, inp = b.get("name", "?"), b.get("input") or {}
-        if name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-            detail = inp.get("file_path") or inp.get("notebook_path") or ""
-        elif name == "Bash":
-            detail = (inp.get("command") or "").replace("\n", " ")[:300]
-        else:
-            detail = json.dumps(inp, ensure_ascii=False)[:200]
-        calls.append("%s: %s" % (name, detail))
+        for b in msg.get("content") or []:
+            if not isinstance(b, dict) or b.get("type") != "tool_use":
+                continue
+            name, inp = b.get("name", "?"), b.get("input") or {}
+            if name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                detail = inp.get("file_path") or inp.get("notebook_path") or ""
+            elif name == "Bash":
+                detail = (inp.get("command") or "").replace("\n", " ")[:300]
+            else:
+                detail = json.dumps(inp, ensure_ascii=False)[:200]
+            calls.append("%s: %s" % (name, detail))
+            if b.get("id"):
+                by_id[str(b["id"])] = len(calls) - 1
+    elif d.get("type") == "user":
+        content = msg.get("content") or []
+        if isinstance(content, str):
+            content = []
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            rid = str(b.get("tool_use_id") or "")
+            outcome = ("ERROR: " if b.get("is_error") else "RESULT: ") \
+                + result_text(b.get("content") or "")
+            if rid in by_id:
+                calls[by_id[rid]] += " => " + outcome
+            else:
+                calls.append(outcome)
 print("\n".join(calls))
 PY
 )"
@@ -706,7 +731,7 @@ for mt, path, name in cands[:MAX_FILES]:
     sid = name[len(base) + len("-debug-"):-len(".log")]
     label = ("builder job " + sid[len("job-"):]) if sid.startswith("job-") \
         else ("session " + sid)
-    calls = []
+    calls, by_id = [], {}
     try:
         fh = open(path, errors="replace")
     except OSError:
@@ -720,22 +745,44 @@ for mt, path, name in cands[:MAX_FILES]:
                 rec = json.loads(raw)
             except ValueError:
                 continue
-            if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            if not isinstance(rec, dict):
                 continue
             msg = rec.get("message") or {}
-            if rec.get("is_api_error_message") or msg.get("model") == "<synthetic>":
-                continue
-            for b in msg.get("content") or []:
-                if not isinstance(b, dict) or b.get("type") != "tool_use":
+            if rec.get("type") == "assistant":
+                if rec.get("is_api_error_message") or msg.get("model") == "<synthetic>":
                     continue
-                tname, inp = b.get("name", "?"), b.get("input") or {}
-                if tname in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-                    detail = inp.get("file_path") or inp.get("notebook_path") or ""
-                elif tname == "Bash":
-                    detail = (inp.get("command") or "").replace("\n", " ")[:300]
-                else:
-                    detail = json.dumps(inp, ensure_ascii=False)[:200]
-                calls.append("%s: %s" % (tname, detail))
+                for b in msg.get("content") or []:
+                    if not isinstance(b, dict) or b.get("type") != "tool_use":
+                        continue
+                    tname, inp = b.get("name", "?"), b.get("input") or {}
+                    if tname in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                        detail = inp.get("file_path") or inp.get("notebook_path") or ""
+                    elif tname == "Bash":
+                        detail = (inp.get("command") or "").replace("\n", " ")[:300]
+                    else:
+                        detail = json.dumps(inp, ensure_ascii=False)[:200]
+                    calls.append("%s: %s" % (tname, detail))
+                    if b.get("id"):
+                        by_id[str(b["id"])] = len(calls) - 1
+            elif rec.get("type") == "user":
+                content = msg.get("content") or []
+                if isinstance(content, str):
+                    content = []
+                for b in content:
+                    if not isinstance(b, dict) or b.get("type") != "tool_result":
+                        continue
+                    rid = str(b.get("tool_use_id") or "")
+                    result = b.get("content") or ""
+                    if not isinstance(result, str):
+                        result = json.dumps(result, ensure_ascii=False)
+                    result = " ".join(result.split())
+                    if len(result) > 700:
+                        result = result[:700] + "…"
+                    outcome = ("ERROR: " if b.get("is_error") else "RESULT: ") + result
+                    if rid in by_id:
+                        calls[by_id[rid]] += " => " + outcome
+                    else:
+                        calls.append(outcome)
     if not calls:
         continue
     out.append("--- %s (last write %s) ---"
@@ -875,7 +922,7 @@ PY
 === USER'S REQUEST ===
 ${REQUEST:-(not supplied)}"
         INSPECT_CLAUSE="
-This verdict controls pre-delivery wording, so tense must match the evidence.
+This diagnostic verdict compares the exact tense with the evidence.
 A durable job or wake keeps an explicit claim that work was dispatched,
 scheduled, or will be done. It does NOT make a present-tense claim such as
 'I am wiring it' or 'I am testing it now' true before the record shows that
@@ -894,7 +941,7 @@ and only its delivered receipt keeps a claim that the builder received it.
 A future 'crab wake-at' keeps it when the user named that later time, the work
 genuinely depends on a later condition, or the record gives a mechanical reason
 it cannot run sooner. This timing rule overrides the general scheduling rule
-above for this pre-delivery verdict."
+above for this diagnostic verdict."
     fi
     if [ "$WIDE" -eq 1 ]; then
         local OTHERS_N JOBS_N FILES_N GAMES_N
@@ -1080,7 +1127,7 @@ $RECORD_BLOCK"
         exit 3
     fi
 
-    local DELAY="${PROMISE_CHECK_WAKE_DELAY:-3m}"
+    local DELAY="${PROMISE_CHECK_WAKE_DELAY:-1s}"
     local CAP="${PROMISE_CHECK_WAKE_CAP:-3}"
     local REBOOK_MAX="${PROMISE_CHECK_REBOOK_MAX:-2}"
     local LINE PROMISE WHY WAKE_NOTE BOOKING TODAY
@@ -1161,20 +1208,18 @@ PY
         fi
 
         if [ -z "$WAKE_NOTE" ]; then
-            # The chase: an event wake through the queue's one door, minutes
-            # out, at effort LOW — the fired session is the wake path's own
-            # model with a low-effort nudge, there to DO one named thing.
+            # The chase: an event wake through the queue's urgent lane, using the
+            # configured WAKE_EFFORT, there to DO one named thing.
             # The reason opens with the class prefix (the audit skips it)
             # and quotes the promise verbatim.
             BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-check \
                 --cap "$CAP" --cap-prefix "$PROMISE_CHECK_REASON_PREFIX" \
-                --effort low \
                 "$DELAY" event "$PROMISE_CHECK_REASON_PREFIX \"$PROMISE\" — you said it at $(date '+%H:%M') on the $KIND channel, and this check fired because $EVIDENCE_CLAUSE. Do it now, or book it deliberately with 'crab wake-at' with the work named in the reason; a claim does not get to stand with no work behind it." 2>&1)"
             case "$BOOKING" in
                 *"Not booked"*|*"already pending"*)
                     WAKE_NOTE="not booked (${BOOKING%%$'\n'*})" ;;
                 *)
-                    WAKE_NOTE="booked $DELAY out at effort low" ;;
+                    WAKE_NOTE="booked immediately at configured wake effort" ;;
             esac
         fi
 
