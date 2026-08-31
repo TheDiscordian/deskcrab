@@ -2821,6 +2821,11 @@ contains "$OUT" "backtrack history" \
 contains "$OUT" "reply-undeliverable" \
     && ok "the composed player cannot loop on an unavailable reply target" \
     || fail "the composed player needs the unavailable-reply release" "$OUT"
+contains "$OUT" "An open objective never resolves to voluntary idle" \
+    && contains "$OUT" 'no-rule-matched' \
+    && contains "$OUT" 'GAP is unfinished' \
+    && ok "the composed player treats an unmatched rule gap as an obligation to act" \
+    || fail "the composed player must not turn an unmatched rule gap into voluntary idle" "$OUT"
 refute "irrelevant desk-life recall is not carried into a play prompt" \
     grep -q 'IRRELEVANT-DESK-LIFE-MARKER' <<<"$OUT"
 contains "$(cat "$MEMFAKE/recall-capture" 2>/dev/null)" "recall-block" \
@@ -3032,6 +3037,12 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh backtrack" 
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "reply-undeliverable" \
     && ok "the resumed thread receives unavailable-reply recovery" \
     || fail "the resumed thread receives unavailable-reply recovery"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "An open objective never resolves to voluntary idle" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        "wait for possible messages" \
+    && ok "the resumed thread cannot choose idle while an open objective remains" \
+    || fail "the resumed thread needs the active-play decision contract"
 refute "the resumed thread is not handed the full standing prompt again" \
     grep -q 'BASE-PROMPT-MARKER' "$PH/run-prompt.txt"
 refute "nor is the emergency handoff re-read for a routine process boundary" \
@@ -3042,6 +3053,66 @@ check "every start leaves the exact composed prompt on file" \
     test -s "$PH/run-prompt.txt"
 check_eq "and stamps the durable player log" \
     "$(grep -c 'player start' "$PH/player.log" 2>/dev/null)" "2"
+
+# A bad continuing thread can decide that the open-ended fallback means
+# "remain idle" and then preserve that decision across every Restart=always
+# boundary. The supervisor gives one corrected continuation, then retires
+# only that model thread if it repeats; game state and every runtime layer are
+# outside this audit.
+NPPH="$SANDBOX/no-progress-phome"; NPG="$SANDBOX/no-progress-gdata"
+NPS="$SANDBOX/no-progress-state"; NPCODEX="$PSD/no-progress-codex"
+mkdir -p "$NPPH" "$NPG" "$NPS"
+printf 'BASE-PROMPT-MARKER\n' > "$NPPH/prompt.md"
+printf 'keep cooking\n' > "$NPG/objective"
+python3 - "$NPG/session.json" "$NPS/state.json" <<'PY'
+import json, sys, time
+now = int(time.time() * 1000)
+json.dump({"started": now, "limit_ms": 7200000, "grace_ms": 600000,
+           "ended": None}, open(sys.argv[1], "w"))
+json.dump({"v": 1, "ts": now, "tick": 1, "logged_in": True,
+           "x": 120, "z": 648, "hits": 10, "hits_max": 10,
+           "fatigue": 0, "walking": False, "in_combat": False,
+           "talking_to_npc": False, "inventory": [], "messages": [],
+           "npcs": []}, open(sys.argv[2], "w"))
+PY
+cat > "$NPCODEX" <<'SH'
+#!/bin/bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+printf '%s\n' "$@" > "$dir/no-progress-capture"
+cat > "$dir/no-progress-stdin"
+printf '%s\n' '{"type":"thread.started","thread_id":"99999999-2222-3333-4444-555555555555"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc '\''./orsc-headless.sh play'\''","aggregated_output":"runner-no-rule-matched activity=traveling\n","exit_code":4,"status":"failed"}}'
+if [ "$(cat "$dir/no-progress-mode" 2>/dev/null)" = act ]; then
+    printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc '\''./orsc-headless.sh walk 121 648'\''","aggregated_output":"walk: {\"status\":\"done\"}\n","exit_code":0,"status":"completed"}}'
+fi
+exit 0
+SH
+chmod +x "$NPCODEX"
+NPENV=(PATH="$PSD:$PATH" "${BOCENV[@]}" BETTY_OPENRSC_HOME="$NPPH" \
+       BETTY_OPENRSC_CODEX="$NPCODEX" BETTY_OPENRSC_CODEX_STREAM="$REPO/lib/codex-stream" \
+       BETTY_OPENRSC_TEST_SKIP_RECOVERY=1 DESKCRAB_GAME_DIR="$NPG" \
+       DESKCRAB_GAME_STATE_DIR="$NPS")
+printf 'idle\n' > "$PSD/no-progress-mode"
+env "${NPENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+check_eq "one unmatched GAP without an action records one no-progress lapse" \
+    "$(python3 -c "import json; print(json.load(open('$NPG/player-no-progress.json'))['count'])")" "1"
+check "one lapse preserves the continuing Sol thread for a corrected retry" \
+    test -s "$NPPH/player-thread"
+env "${NPENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+contains "$(cat "$NPPH/run-prompt.txt" 2>/dev/null)" \
+    "Supervisor correction — the previous GAP is still unfinished" \
+    && ok "the next continuation receives the durable no-progress correction" \
+    || fail "the no-progress record must ride the next continuation"
+check_eq "a repeated unmatched GAP increments the same lapse record" \
+    "$(python3 -c "import json; print(json.load(open('$NPG/player-no-progress.json'))['count'])")" "2"
+refute "two consecutive lapses retire the self-reinforcing saved thread" \
+    test -e "$NPPH/player-thread"
+printf 'act\n' > "$PSD/no-progress-mode"
+env "${NPENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
+refute "the recovery start is fresh rather than resuming the retired thread" \
+    grep -q '^resume$' "$PSD/no-progress-capture"
+refute "a successful game action clears the no-progress correction" \
+    test -e "$NPG/player-no-progress.json"
 
 # The same background pass sees reflex/outcome evidence and compact direct
 # command history. Claims from either the player or another person remain

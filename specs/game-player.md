@@ -502,7 +502,16 @@ deliberate-play channel.
     The playing policy the sittings read
     makes rules-first mandatory: open-ended reasoning about the next action is licensed by rule
     7's `no-rule-matched` or rule 7e's `route-needs-detour`; other exit-4 prerequisites license only
-    their named correction. A newly verified play must become an executable rule — but
+    their named correction. `no-rule-matched` is an unfinished GAP, never permission to idle or
+    end ordinary play. While the sitting is open, the character is logged in, and an objective is
+    non-empty, the deliberate hand MUST use that licence to perform and verify a useful game action.
+    If it does not yet know the action, it performs only the bounded semantic inspections needed
+    to identify one and then acts; a failed action is followed by a changed strategy in the same
+    turn where practical. Waiting for player messages, keeping a spectator available, having no
+    matching learned rule, or being uncertain are not blockers and cannot resolve the GAP to
+    deliberate idle. A genuinely unresolved prerequisite is named precisely together with the
+    corrective inspection or action it requires; it is not converted into a vague decision to
+    stop playing. A newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
     leaves a `note` in the outcome queue and keeps moving. While rule 15's resident runner is
     live, `step` defers to it instead of evaluating — one engine-state writer at a time — and
@@ -600,6 +609,17 @@ deliberate-play channel.
       deliberation while the body stands still is the exact failure this shape exists to
       prevent. A single bridge action, an engine reflex, a login, or any builder job is
       not playing; playing is that loop, continued for the whole run.
+    - The supervisor audits each completed model-process turn against its command stream. If the
+      final `no-rule-matched` in that turn is not followed by a successful action-bearing game
+      door while rule 12's logged-in/open/objective conditions still hold, it atomically records
+      the consecutive lapse in `$DESKCRAB_GAME_DIR/player-no-progress.json`. Read-only semantic
+      inspection, waits, memory, notes, narration, and a plan do not count as an in-game action.
+      The next fresh or resumed prompt carries a prominent correction that this GAP remains
+      unfinished. A successful game action, logout, cleared objective, or non-open sitting clears
+      the record. Two consecutive lapses invalidate only the saved model thread after its id is
+      captured, so `Restart=always` composes a fresh player from the durable objective, snapshot,
+      decisions, handoff, and correction instead of preserving a self-reinforcing idle decision;
+      the client, bridge, runner, author, and spectator are untouched.
     - Arbitrary timed waits and screenshot loops are structurally forbidden in the Sol player's
       shell commands.
       The player starts with the `openrsc-player` Codex profile and its trusted `PreToolUse`
