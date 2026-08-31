@@ -3417,11 +3417,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         lx, lz = latest.get("x"), latest.get("z")
         start_distance = navigation_distance_sq(
             snap["x"], snap["z"], route["x"], route["z"])
+        route_best_distance = int(route.get("best_distance_sq", start_distance))
+        current_distance = navigation_distance_sq(
+            lx, lz, route["x"], route["z"]) \
+            if isinstance(lx, int) and isinstance(lz, int) else None
         reached_destination = isinstance(lx, int) and isinstance(lz, int) \
             and route_distance(lx, lz, route) <= route["arrive"]
-        made_progress = isinstance(lx, int) and isinstance(lz, int) \
-            and navigation_distance_sq(lx, lz, route["x"], route["z"]) \
-            < start_distance
+        made_progress = current_distance is not None and current_distance < start_distance
+        made_best_progress = current_distance is not None \
+            and current_distance < route_best_distance
         moved = isinstance(lx, int) and isinstance(lz, int) \
             and (lx, lz) != (snap.get("x"), snap.get("z"))
         endpoint = [lx, lz] if isinstance(lx, int) and isinstance(lz, int) else None
@@ -3436,7 +3440,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "target_z": route["z"]}])
         elif status in ("done", "walk-short") and action.get("route_step") \
                 and moved and not repeated_endpoint:
-            nonclosing = 0 if made_progress \
+            # A route can legitimately move closer after first wandering far
+            # away, but that is not renewed progress until it beats the best
+            # point already reached on this route. Otherwise a wide
+            # oscillation can reset its own detour budget forever.
+            nonclosing = 0 if made_best_progress \
                 else int(route.get("nonclosing_legs") or 0) + 1
             if nonclosing > NAVIGATION_MAX_NONCLOSING_LEGS:
                 route_was_blocked = True
@@ -3454,12 +3462,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                               if not key.startswith("detour_")}
                 visited.append(endpoint)
                 progressed.update({"status": "active", "last_x": lx, "last_z": lz,
-                                   "last_distance_sq": navigation_distance_sq(
-                                       lx, lz, route["x"], route["z"]),
-                                   "best_distance_sq": min(
-                                       int(route.get("best_distance_sq", start_distance)),
-                                       navigation_distance_sq(
-                                           lx, lz, route["x"], route["z"])),
+                                   "last_distance_sq": current_distance,
+                                   "best_distance_sq": min(route_best_distance,
+                                                           current_distance),
                                    "nonclosing_legs": nonclosing,
                                    "visited": visited[-NAVIGATION_VISITED_MAX:],
                                    "last_ts": now_ms()})
@@ -3469,6 +3474,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                                "target_z": route["z"],
                                "pathfinder_prefix": True,
                                "detour": not made_progress,
+                               "new_route_best": made_best_progress,
                                "nonclosing_legs": nonclosing}])
         elif status in ("done", "walk-short") and action.get("route_step") \
                 and repeated_endpoint:

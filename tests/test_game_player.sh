@@ -1074,6 +1074,13 @@ contains "$OUT" "status=route-progress" \
 check_eq "the non-closing detour is counted" \
     "$(jq -r .nonclosing_legs "$DESKCRAB_GAME_DIR/route.json")" "1"
 snap 10490 '[]' '{"x":118,"z":650}'
+fake_route_bridge 119 649
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "coming back from a detour remains a verified pathfinder prefix" "$CODE" "0"
+check_eq "local recovery cannot reset wandering before a new route-best point" \
+    "$(jq -r .nonclosing_legs "$DESKCRAB_GAME_DIR/route.json")" "2"
+snap 104901 '[]' '{"x":119,"z":649}'
 fake_route_bridge 120 648
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"

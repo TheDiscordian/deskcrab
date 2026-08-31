@@ -409,7 +409,11 @@ deliberate-play channel.
    temporarily increases straight-line distance; that detour is pathfinder evidence, not a claim
    that the destination moved. The route stores recent settled endpoints, refuses a repeated one
    as `route-cycle`, and permits at most twelve consecutive non-closing prefixes before asking for
-   a new decision, so grounded detours cannot become wandering. A refusal, unchanged settlement,
+   a new decision, so grounded detours cannot become wandering. That budget resets only when a
+   prefix establishes a new route-best distance to the durable destination; moving closer than
+   the immediately preceding self-created detour, while remaining worse than an earlier point on
+   the same route, is not renewed progress and cannot sustain a wide oscillation. A refusal,
+   unchanged settlement,
    cycle, or exhausted detour budget marks the route `blocked` at the current position and visible obstacle
    signature, reports `route-needs-detour` at exit 4 to Sol, and emits no further walk merely because the dispatched leg
    settles another tile. A changed visible obstacle signature may make the path viable; otherwise
