@@ -1371,3 +1371,17 @@ phone refresh delivered the new client against the old server: the client asked 
 `playseen` and the server had no such channel to answer on. **After changing `lib/serve.py`, restart
 the unit** (`systemctl --user restart deskcrab-serve.service`) — and remember the half-deployed
 state looks like a client bug, because the client is the only part that updated.
+
+### 2026-08-30 — a route alternated between two tiles instead of taking the real detour
+
+An explicit destination and an older learned walk fragment were both eligible. The fragment pulled
+one way, the route pulled back, and the loop guard treated each individually successful walk as
+progress. Even without that conflict, the route planner could only invent short endpoints that were
+strictly closer to the destination, so it could not represent the ordinary north-then-east-then-south
+shape required to go around an obstacle.
+
+Explicit routes now hold learned walk fragments while leaving interactions available. The client
+pathfinder resolves the complete currently loaded collision path to the real destination and
+dispatches only a bounded prefix of that path. Prefixes may temporarily increase straight-line
+distance; repeated endpoints and a bounded non-closing-leg budget stop a genuine cycle and return a
+grounded navigation gap for semantic reasoning.

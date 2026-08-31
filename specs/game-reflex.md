@@ -186,8 +186,10 @@ Three parts:
 
 6. `action.json` and every notice file are flat `key=value` lines: `ts` (epoch ms when the engine
    emitted it), `id` (the engine's monotonically increasing action id), `type`, then the type's
-   parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`
-   for walk; `text` for warn and chat-local; `target` and `text` for chat-private; `sidx` and `npc` — the server index and the type id the emitter saw
+   parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`,
+   optional arrival radius `arrive`, optional preflight ceiling `max_path`, and optional
+   collision-path prefix length `route_step` for walk; `text` for warn and chat-local; `target`
+   and `text` for chat-private; `sidx` and `npc` — the server index and the type id the emitter saw
    there, the latter deliberately NOT named `id` so it can never collide with the action id line —
    for talk-npc and interact-npc (the latter also carries `cmd` 1 or 2 and may carry `within`
    0–10), so a despawned or swapped NPC is refused as `refused-no-such-npc` or
@@ -269,12 +271,18 @@ Three parts:
    and, on the game channel, writes the receipt with status `held`, `stale`, or `refused-<why>` —
    a refused action is never silently dropped. Notices need no receipt; `action.json` always gets
    one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`. A `walk` uses
-   the client's collision map and pathfinder. If its destination is outside the currently loaded
+   the client's collision map and pathfinder. `arrive` is bounded to 0–10. `max_path`, when
+   positive, refuses a loaded destination whose actual collision path is longer than that ceiling.
+   `route_step`, when present, is bounded to 1–32 and instead asks the pathfinder for at most that
+   many actual steps along the complete currently loaded path toward `x,z`: the action file still
+   names the real destination, and the bridge—not a model-authored coordinate guess—chooses and
+   dispatches the grounded prefix endpoint. If its destination is outside the currently loaded
    map, the client clips the request to the edge of the current region in the destination's
    direction, searches that edge for a reachable alternative when the direct crossing is blocked,
-   and dispatches one regional leg. A later action re-plans from the resulting live region; no
-   guessed intermediate coordinates cross the action file. If the destination is already loaded,
-   the walk remains exact. A walk for which no progressive local path exists is
+   and `route_step` truncates that proven regional path to the same bounded prefix. A later action
+   re-plans from the resulting live region; no guessed intermediate coordinates cross the action
+   file. If the destination is already loaded, an ordinary walk remains exact while a route-step
+   walk follows only its grounded prefix. A walk for which no progressive local path exists is
    `refused-no-path`, never `done`. A retreat tries the requested distance first in its preferred
    direction, then alternate directions and shorter nonzero distances, and sends only the first
    pathfinder-approved ordinary walk. With no reachable candidate it reports

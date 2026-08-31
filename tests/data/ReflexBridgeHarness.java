@@ -756,6 +756,16 @@ public class ReflexBridgeHarness {
 			return true;
 		}
 
+		public boolean walkRouteStepTowardTile(int absX, int absZ,
+				int arrive, int maxSteps) {
+			if (!routeAvailable) {
+				return false;
+			}
+			events.add("route-step x=" + absX + " z=" + absZ
+					+ " arrive=" + arrive + " max=" + maxSteps);
+			return true;
+		}
+
 		public int walkPathDistance(int absX, int absZ, int arrive) {
 			return routeAvailable ? walkPathDistance : -1;
 		}

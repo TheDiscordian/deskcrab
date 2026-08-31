@@ -81,6 +81,9 @@ MOVEMENT_TRAIL_MAX_POINTS = 1024
 MOVEMENT_TRAIL_BREAK_DISTANCE = 12
 NAVIGATION_LEG_MAX_TILES = 8  # stay inside the collision map a person can currently see
 NAVIGATION_LEG_MAX_PATH_TILES = 16  # reject a nearby waypoint whose real route is a huge loop
+NAVIGATION_ROUTE_STEP_TILES = 8  # client-grounded prefix of the real destination path
+NAVIGATION_MAX_NONCLOSING_LEGS = 12  # allow real detours, never unbounded wandering
+NAVIGATION_VISITED_MAX = 64
 BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
@@ -470,6 +473,15 @@ def load_route():
             or not isinstance(route.get("objective"), str) \
             or route.get("status") not in ("active", "blocked"):
         return {"status": "invalid"}
+    visited = route.get("visited", [])
+    if not isinstance(visited, list) or len(visited) > NAVIGATION_VISITED_MAX \
+            or any(not isinstance(point, list) or len(point) != 2
+                   or not all(isinstance(value, int) for value in point)
+                   for point in visited):
+        return {"status": "invalid"}
+    nonclosing = route.get("nonclosing_legs", 0)
+    if not isinstance(nonclosing, int) or nonclosing < 0:
+        return {"status": "invalid"}
     return route
 
 
@@ -651,49 +663,6 @@ def bounded_navigation_leg(x: int, z: int, target_x: int, target_z: int,
         leg_x += 1 if dx > 0 else -1 if dx < 0 else 0
         leg_z += 1 if dz > 0 else -1 if dz < 0 else 0
     return leg_x, leg_z
-
-
-def navigation_leg_candidates(x: int, z: int, target_x: int, target_z: int,
-                              limit: int = NAVIGATION_LEG_MAX_TILES) -> list:
-    """Bounded forward and side legs, all closer to the real destination.
-
-    A straight generated endpoint may fall inside an enclosure even though an
-    ordinary route continues around it.  These are a small deterministic fan,
-    not an unbounded random walk: the client pathfinder grounds each candidate
-    and the runner stops after every unique local option has been refused.
-    """
-    dx, dz = target_x - x, target_z - z
-    distance = max(abs(dx), abs(dz))
-    if distance <= limit:
-        return [(target_x, target_z)]
-    forward_x, forward_z = dx / float(distance), dz / float(distance)
-    side_x, side_z = -forward_z, forward_x
-    candidates = []
-    for side in (0.0, 0.5, -0.5, 1.0, -1.0, 2.0, -2.0):
-        vx = forward_x + side * side_x
-        vz = forward_z + side * side_z
-        scale = limit / max(abs(vx), abs(vz))
-        cx = x + int(round(vx * scale))
-        cz = z + int(round(vz * scale))
-        candidate = (cx, cz)
-        if candidate == (x, z) or candidate in candidates:
-            continue
-        if navigation_distance_sq(cx, cz, target_x, target_z) \
-                >= navigation_distance_sq(x, z, target_x, target_z):
-            continue
-        candidates.append(candidate)
-    return candidates
-
-
-def route_candidate(route: dict, x: int, z: int) -> tuple:
-    """The next untried local leg from this exact settled origin."""
-    candidates = navigation_leg_candidates(x, z, route["x"], route["z"])
-    failed = route.get("detour_failed_legs") \
-        if route.get("detour_origin") == [x, z] else []
-    failed_set = {tuple(point) for point in failed or []
-                  if isinstance(point, list) and len(point) == 2}
-    return next((candidate for candidate in candidates
-                 if candidate not in failed_set), candidates[0])
 
 
 def route_obstacle_signature(snap: dict) -> str:
@@ -2476,6 +2445,8 @@ def compile_player_action(rule, snap, food, eat_pick):
         # from silently expanding into a long walk in the opposite direction.
         if isinstance(action.get("max_path"), int):
             compiled["max_path"] = action["max_path"]
+        if isinstance(action.get("route_step"), int):
+            compiled["route_step"] = action["route_step"]
         return compiled, None
     if action["type"] == "retreat":
         if snap.get("in_combat") is not True:
@@ -2589,7 +2560,7 @@ def compile_player_action(rule, snap, food, eat_pick):
 
 def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
-    for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "dir", "obj", "cmd", "within",
+    for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "route_step", "dir", "obj", "cmd", "within",
                 "stationary", "require_clear_shot", "require_melee_unreachable",
                 "item", "button",
                 "distance", "dx", "dz", "committed_direction",
@@ -3203,6 +3174,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if backtrack is not None and rule["name"] != BACKTRACK_RULE_NAME \
                 and rule["name"] not in urgent_retreat_names:
             continue
+        # One explicit route is the movement commitment. A stale learned
+        # travel leg must not pull the body away and then hand it back to the
+        # route (the observed east/west ping-pong). Nonmovement interactions
+        # retain their normal priority and may still interrupt useful travel.
+        if route is not None and (rule.get("action") or {}).get("type") == "walk" \
+                and rule["name"] not in urgent_retreat_names \
+                and trigger_true(rule.get("trigger") or {}, snap, {}):
+            events.append({"ts": now, "kind": "route-conflict-hold",
+                           "rule": rule["name"],
+                           "rule_target": {"x": rule["action"]["x"],
+                                           "z": rule["action"]["z"]},
+                           "route_target": {"x": route["x"], "z": route["z"]}})
+            continue
         if rule.get("once_per_objective") and rule["enabled"] \
                 and once_key(rule["name"], objective) in est["objective_fired"]:
             continue
@@ -3219,17 +3203,14 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         # the shared engine wants the key spelled out.
         live_rules.append(dict(rule, channel="game"))
     if route is not None and not route_blocked and not urgent_retreat_names:
-        leg_x, leg_z = route_candidate(route, snap["x"], snap["z"])
-        final_leg = (leg_x, leg_z) == (route["x"], route["z"])
         live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
                            "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
                            "hold_ticks": 1, "channel": "game", "trigger": {},
-                           "action": {"type": "walk", "x": leg_x,
-                                      "z": leg_z,
+                           "action": {"type": "walk", "x": route["x"],
+                                      "z": route["z"],
+                                      "route_step": NAVIGATION_ROUTE_STEP_TILES,
                                       "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
-                                      # A generated intermediate point is
-                                      # directional, not a sacred exact tile.
-                                      "arrive": route["arrive"] if final_leg else 1}})
+                                      "arrive": route["arrive"]}})
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
@@ -3261,9 +3242,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    target_x=route["x"], target_z=route["z"],
                    reason=route.get("blocked_reason", "no-progress"),
                    feedback=latest_system_feedback(snap),
-                   evidence="attempted-local-leg-only",
+                   evidence="grounded-collision-path",
                    map_boundary="unproven",
-                   next="inspect-terrain-or-choose-alternate-local-leg")
+                   next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
             return "route-needs-detour", EXIT_NO_RULE
         if backtrack is not None and backtrack.get("status") == "invalid":
             report("backtrack-invalid", file=str(backtrack_path()))
@@ -3403,13 +3384,67 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         made_progress = isinstance(lx, int) and isinstance(lz, int) \
             and navigation_distance_sq(lx, lz, route["x"], route["z"]) \
             < start_distance
+        moved = isinstance(lx, int) and isinstance(lz, int) \
+            and (lx, lz) != (snap.get("x"), snap.get("z"))
+        endpoint = [lx, lz] if isinstance(lx, int) and isinstance(lz, int) else None
+        visited = [point for point in route.get("visited") or []
+                   if isinstance(point, list) and len(point) == 2]
+        repeated_endpoint = endpoint is not None and endpoint in visited
         if reached_destination:
             clear_route()
             status = "route-complete"
             flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"]}])
+        elif status in ("done", "walk-short") and action.get("route_step") \
+                and moved and not repeated_endpoint:
+            nonclosing = 0 if made_progress \
+                else int(route.get("nonclosing_legs") or 0) + 1
+            if nonclosing > NAVIGATION_MAX_NONCLOSING_LEGS:
+                route_was_blocked = True
+                route_block_reason = "detour-budget"
+                block_route(route, latest, route_block_reason)
+                flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                               "id": action_id, "reason": route_block_reason,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"],
+                               "nonclosing_legs": nonclosing}])
+                status = "route-needs-detour"
+            else:
+                status = "route-progress"
+                progressed = {key: value for key, value in route.items()
+                              if not key.startswith("detour_")}
+                visited.append(endpoint)
+                progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                                   "last_distance_sq": navigation_distance_sq(
+                                       lx, lz, route["x"], route["z"]),
+                                   "best_distance_sq": min(
+                                       int(route.get("best_distance_sq", start_distance)),
+                                       navigation_distance_sq(
+                                           lx, lz, route["x"], route["z"])),
+                                   "nonclosing_legs": nonclosing,
+                                   "visited": visited[-NAVIGATION_VISITED_MAX:],
+                                   "last_ts": now_ms()})
+                save_route(progressed)
+                flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"],
+                               "pathfinder_prefix": True,
+                               "detour": not made_progress,
+                               "nonclosing_legs": nonclosing}])
+        elif status in ("done", "walk-short") and action.get("route_step") \
+                and repeated_endpoint:
+            route_was_blocked = True
+            route_block_reason = "route-cycle"
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"]}])
+            status = "route-needs-detour"
         elif status in ("done", "walk-short") and made_progress:
+            # Compatibility with route records/actions produced before the
+            # path-prefix bridge existed.
             status = "route-progress"
             progressed = {key: value for key, value in route.items()
                           if not key.startswith("detour_")}
@@ -3422,43 +3457,13 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"], "leg_x": action["x"],
                            "leg_z": action["z"]}])
-        elif status in ("refused-no-path", "refused-waypoint-detour"):
-            candidates = navigation_leg_candidates(
-                snap["x"], snap["z"], route["x"], route["z"])
-            failed = list(route.get("detour_failed_legs") or []) \
-                if route.get("detour_origin") == [snap["x"], snap["z"]] else []
-            attempted = [action["x"], action["z"]]
-            if attempted not in failed:
-                failed.append(attempted)
-            remaining = [candidate for candidate in candidates
-                         if [candidate[0], candidate[1]] not in failed]
-            if remaining:
-                searching = dict(route)
-                searching.update({"status": "active",
-                                  "detour_origin": [snap["x"], snap["z"]],
-                                  "detour_failed_legs": failed})
-                save_route(searching)
-                flush_events([{"ts": now_ms(), "kind": "route-detour-search",
-                               "id": action_id, "x": snap["x"], "z": snap["z"],
-                               "failed_leg": attempted,
-                               "alternatives_left": len(remaining),
-                               "target_x": route["x"], "target_z": route["z"]}])
-                status = "route-detour-search"
-            else:
-                route_was_blocked = True
-                route_block_reason = status
-                block_route(route, latest, status)
-                flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
-                               "id": action_id, "reason": status, "x": lx, "z": lz,
-                               "attempts": len(failed),
-                               "target_x": route["x"], "target_z": route["z"]}])
-                status = "route-needs-detour"
         else:
             route_was_blocked = True
-            route_block_reason = status
-            block_route(route, latest, status)
+            route_block_reason = "no-progress" \
+                if status in ("done", "walk-short") and not moved else status
+            block_route(route, latest, route_block_reason)
             flush_events([{"ts": now_ms(), "kind": "route-leg-blocked", "id": action_id,
-                           "reason": status, "x": lx, "z": lz,
+                           "reason": route_block_reason, "x": lx, "z": lz,
                            "target_x": route["x"], "target_z": route["z"]}])
             status = "route-needs-detour"
 
@@ -3548,9 +3553,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         elif route_was_blocked:
             report("route-needs-detour", id=action_id, x=final_x, z=final_z,
                    leg_x=action["x"], leg_z=action["z"],
-                   reason=route_block_reason, evidence="attempted-local-leg-only",
+                   reason=route_block_reason, evidence="grounded-collision-path",
                    map_boundary="unproven",
-                   next="inspect-terrain-or-choose-alternate-local-leg")
+                   next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, x=final_x, z=final_z, objective=objective or None,
@@ -3563,9 +3568,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         elif route_was_blocked:
             report("route-needs-detour", id=action_id,
                    leg_x=action["x"], leg_z=action["z"], reason=route_block_reason,
-                   evidence="attempted-local-leg-only",
+                   evidence="grounded-collision-path",
                    map_boundary="unproven",
-                   next="inspect-terrain-or-choose-alternate-local-leg")
+                   next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, objective=objective or None,
@@ -3576,7 +3581,6 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if route_was_blocked:
         return "route-needs-detour", EXIT_NO_RULE
     return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
-                                               "route-detour-search",
                                                "backtrack-progress", "backtrack-complete")
                      else EXIT_NOT_DONE)
 
@@ -4081,11 +4085,15 @@ def cmd_route(args):
         die("route --arrive must be from 0 through 10")
     snap = game_reflex.read_snapshot() or {}
     route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
-             "objective": read_objective(), "status": "active", "set_ts": now_ms()}
+             "objective": read_objective(), "status": "active", "set_ts": now_ms(),
+             "visited": [], "nonclosing_legs": 0}
     if isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int):
         route.update({"origin_x": snap["x"], "origin_z": snap["z"],
                       "origin_distance_sq": navigation_distance_sq(
-                          snap["x"], snap["z"], args.x, args.z)})
+                          snap["x"], snap["z"], args.x, args.z),
+                      "best_distance_sq": navigation_distance_sq(
+                          snap["x"], snap["z"], args.x, args.z),
+                      "visited": [[snap["x"], snap["z"]]]})
     # A newly chosen destination is an explicit replacement strategy, not a
     # second movement commitment to race an old recovery.
     clear_backtrack()

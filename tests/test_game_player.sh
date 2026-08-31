@@ -976,6 +976,11 @@ rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
 echo
 echo "durable routes advance through ACTIONS without model turns (spec rule 7e):"
 python3 "$GP" objective cross-region >/dev/null
+check "a stale travel fragment can coexist in the table" \
+    python3 "$GP" learn stale-route-fragment-test --priority 500 --cooldown-ms 0 \
+        --trigger objective_is=cross-region \
+        --trigger 'near_tile={"x":120,"z":648,"radius":2}' \
+        --action walk --param x=80 --param z=700
 check "route records a destination" python3 "$GP" route 160 648 --arrive 1
 contains "$(python3 "$GP" route)" "status=active target=(160,648) arrive=1" \
     && ok "route status exposes its target and tolerance" \
@@ -995,12 +1000,19 @@ check "the destination remains durable for the next runner pass" \
     test -f "$DESKCRAB_GAME_DIR/route.json"
 check_eq "the synthetic route used the ordinary walk ACTION" \
     "$(last_action 'type=walk')" "1"
-check_eq "a distant route emits only one eight-tile local leg" \
-    "$(last_action 'x=128')" "1"
+check_eq "the route action retains its real destination" \
+    "$(last_action 'x=160')" "1"
+check_eq "the client is asked for one grounded eight-step path prefix" \
+    "$(last_action 'route_step=8')" "1"
 check_eq "the route gives collision pathfinding its grounded arrival area" \
     "$(last_action 'arrive=1')" "1"
 check_eq "the local waypoint carries a bounded actual-path budget" \
     "$(last_action 'max_path=16')" "1"
+check_eq "the conflicting learned walk never reached the bridge" \
+    "$(last_action 'x=80')" "0"
+check_eq "the conflict is explicit in the decision record" \
+    "$(sandbox_count_in '"kind":"route-conflict-hold"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl")" "1"
+python3 "$GP" remove stale-route-fragment-test >/dev/null
 contains "$(python3 "$GP" route)" "last_progress=(140,648)" \
     && ok "the route remembers its last verified progress point" \
     || fail "the route remembers its last verified progress point"
@@ -1013,71 +1025,52 @@ contains "$OUT" "status=route-complete" \
     && ok "completion is explicit" || fail "completion is explicit" "$OUT"
 refute "the completed route cannot fire again" test -f "$DESKCRAB_GAME_DIR/route.json"
 
-# This is the live failure shape: one coordinate looks closer while the body
-# has actually wandered much farther sideways. Chebyshev-only progress used to
-# bless it; squared-distance progress must block it.
-check "a directionality probe route can be set" python3 "$GP" route 200 648
+# A real collision path may initially move away from its destination to clear
+# a wall. That is productive only because the bridge chose the prefix; a
+# repeated endpoint still proves a cycle and stops it.
 snap 1049 '[]' '{"x":120,"z":648}'
-fake_route_bridge 130 700
+check "a pathfinder-detour route can be set" python3 "$GP" route 200 648
+fake_route_bridge 118 650
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "a large sideways detour blocks instead of becoming route progress" "$CODE" "4"
-contains "$OUT" "route-needs-detour" \
-    && ok "the navigator names the directional failure" \
-    || fail "the navigator names the directional failure" "$OUT"
-refute "the sideways detour is never recorded as verified progress" \
-    grep -q '"last_x": 130' "$DESKCRAB_GAME_DIR/route.json"
+check_eq "a grounded temporarily farther prefix remains productive" "$CODE" "0"
+contains "$OUT" "status=route-progress" \
+    && ok "collision evidence can represent the first half of a real detour" \
+    || fail "a pathfinder prefix must not be judged by straight-line distance alone" "$OUT"
+check_eq "the non-closing detour is counted" \
+    "$(jq -r .nonclosing_legs "$DESKCRAB_GAME_DIR/route.json")" "1"
+snap 10490 '[]' '{"x":118,"z":650}'
+fake_route_bridge 120 648
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a repeated route endpoint stops the cycle: exit 4" "$CODE" "4"
+contains "$OUT" "reason=route-cycle" \
+    && ok "route cycles are named on their first repeated endpoint" \
+    || fail "a grounded prefix must still be cycle-bounded" "$OUT"
 python3 "$GP" route --clear >/dev/null
 
-check "a local detour recovery route can be set" python3 "$GP" route 200 648
+check "an obstructed route can be set" python3 "$GP" route 200 648
 snap 10491 '[]' '{"x":120,"z":648}'
-fake_bridge refused-waypoint-detour
+fake_bridge refused-no-path
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "a disproportionate primary leg retains the destination for another candidate" "$CODE" "0"
-contains "$(python3 "$GP" route)" "local_detour_attempts=1" \
-    && ok "the overlong local candidate is remembered" \
-    || fail "the route must remember which local leg expanded into a detour"
-snap 10492 '[]' '{"x":120,"z":648}'
-fake_route_bridge 128 652
-CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-wait "$FAKE_BRIDGE_PID"
-check_eq "a grounded side leg resumes autonomous route progress" "$CODE" "0"
-contains "$OUT" "status=route-progress" \
-    && ok "going around the enclosure is ordinary progress" \
-    || fail "a verified side leg must resume the destination" "$OUT"
-refute "a successful side leg clears the old failed-origin search" \
-    contains "$(python3 "$GP" route)" "local_detour_attempts="
+check_eq "a full collision-path refusal asks for a semantic correction" "$CODE" "4"
+contains "$OUT" "route-needs-detour" \
+    && ok "an unavailable path does not launch coordinate guesses" \
+    || fail "a collision-path refusal must remain a bounded reasoning gap" "$OUT"
 python3 "$GP" route --clear >/dev/null
 
 check "a second route can be set" python3 "$GP" route 900 900
 snap 1050 '[]' '{"x":140,"z":648}'
-: > "$SANDBOX/detour-legs"
-for ATTEMPT in 1 2 3 4 5 6; do
-    fake_bridge refused-no-path
-    CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
-    wait "$FAKE_BRIDGE_PID"
-    check_eq "a refused straight leg keeps searching bounded local alternatives" "$CODE" "0"
-    contains "$OUT" "status=route-detour-search" \
-        && ok "the local detour search stays autonomous" \
-        || fail "a remaining local alternative must not wake Sol" "$OUT"
-    awk -F= '$1 == "x" || $1 == "z" {printf "%s%s", $2, ($1 == "z" ? "\n" : ",")}' \
-        "$DESKCRAB_GAME_STATE_DIR/last-action" >> "$SANDBOX/detour-legs"
-    snap "1050$ATTEMPT" '[]' '{"x":140,"z":648}'
-done
 fake_bridge refused-no-path
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
-awk -F= '$1 == "x" || $1 == "z" {printf "%s%s", $2, ($1 == "z" ? "\n" : ",")}' \
-    "$DESKCRAB_GAME_STATE_DIR/last-action" >> "$SANDBOX/detour-legs"
-check_eq "all seven local candidates are unique rather than a retry loop" \
-    "$(sort -u "$SANDBOX/detour-legs" | wc -l)" "7"
-check_eq "exhausted local alternatives license Sol to solve the obstacle: exit 4" "$CODE" "4"
+check_eq "one grounded path refusal licenses Sol to solve the obstacle: exit 4" "$CODE" "4"
 contains "$OUT" "route-needs-detour" \
-    && contains "$OUT" "evidence=attempted-local-leg-only" \
+    && contains "$OUT" "evidence=grounded-collision-path" \
     && contains "$OUT" "map_boundary=unproven" \
-    && ok "the local-leg failure is bounded to what was observed" \
-    || fail "a local-leg failure must not invent world geography" "$OUT"
+    && ok "the path failure is bounded to what was observed" \
+    || fail "a path failure must not invent world geography" "$OUT"
 contains "$(python3 "$GP" route)" "status=blocked" \
     && ok "the blocked state persists" || fail "the blocked state persists"
 rm -f "$DESKCRAB_GAME_STATE_DIR/action.json"

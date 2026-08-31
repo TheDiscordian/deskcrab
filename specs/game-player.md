@@ -132,7 +132,9 @@ deliberate-play channel.
    its topology changes. `walk` (absolute `x`/`z`, **unclamped** — deliberate travel crosses the map, and
    the game's own pathing already decides reachability; the 15-tile clamp is a reflex-channel
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
-   Chebyshev tolerance rule 7a's verification accepts as arrival), `retreat` (optional `distance`
+   Chebyshev tolerance rule 7a's verification accepts as arrival; the resident route may add the
+   internal bridge parameters `route_step` and `max_path`, which cannot be authored into learned
+   rules), `retreat` (optional `distance`
    1–10, default 5, and fallback direction `dx`/`dz`; while fighting, the bridge prefers away from
    the identified opponent and tries alternate directions and nearer tiles until its collision
    map finds one reachable ordinary walk), `interact-object` (`obj`: the object type id,
@@ -379,36 +381,36 @@ deliberate-play channel.
    [--arrive N]` atomically records one absolute destination, the current objective, and an arrival
    tolerance from 0 through 10 in `$DESKCRAB_GAME_DIR/route.json`; `route` with no coordinates
    reports it, and `route --clear` cancels it. The resident runner treats an active route as its
-   lowest-priority synthetic walk rule, so every ordinary learned interaction may interrupt it and
-   incoming player or urgent system messages still outrank it. Each `walk` action asks the client
-   for one collision-aware local leg under game-reflex rule 7. The player derives a leg no more
-   than eight Chebyshev tiles from the current body, so autonomous routing never hands the client's
-   finite collision map a remote edge target. Its `arrive` tolerance is passed into the client's
-   collision pathfinder for the final destination area as well as used for verification. Each
-   generated waypoint also carries a 16-step actual-path budget: a waypoint eight tiles away that
-   would expand into a huge collision detour is refused as `refused-waypoint-detour` before any
-   movement is sent, then treated like an unpathable candidate while the bounded side-leg fan is
-   tried. The budget constrains only the generated local waypoint, never the durable distant
-   destination. Every
-   non-final directional leg uses an arrival radius of one because its exact generated tile has no
-   landmark meaning. An
-   occupied landmark tile can therefore settle on reachable adjacent floor without making Sol
-   guess successive neighbouring coordinates. Progress is a strictly smaller squared Euclidean
-   distance, so an apparent advance on one axis cannot conceal a much larger sideways detour or
-   reversal. A verified shorter distance is
-   `route-progress` and immediately licenses the next leg without a model call; reaching the
-   destination is `route-complete` and removes the route. When a straight non-final leg is refused
-   as unpathable, the runner tries a fixed bounded fan of unique left/right local legs from the
-   same origin, each no more than eight tiles away and each strictly closer to the real destination.
-   It records the refused candidates and never repeats one; the first verified alternative resumes
-   ordinary route progress. Exhausting that fan, or a settled tile no closer to the destination,
-   marks the route `blocked` at the current position and visible obstacle
+   lowest-priority synthetic rule among nonmovement interactions, so useful NPC/object/interface
+   work may interrupt it and incoming player or urgent system messages still outrank it. A second
+   learned `walk` is different: while an explicit route exists it is held and logged as a route
+   conflict instead of silently replacing the current movement commitment. This prevents an old
+   route fragment whose broad trigger still matches from pulling the body away and then handing it
+   back, a two-controller oscillation no repetition timer can make productive.
+
+   Each route action names the REAL durable destination and asks the client bridge for an at-most
+   eight-step prefix of the complete collision path currently known toward it (`route_step=8`).
+   The bridge pathfinder chooses that prefix endpoint; no guessed intermediate coordinate crosses
+   the action file. When the destination lies outside the loaded 96×96 region, the client first
+   selects a reachable progressive region-edge path and takes the same bounded prefix, then the
+   next pass replans in the new region. A 16-step `max_path` field travels with the request as a
+   safe compatibility refusal for an older bridge that does not understand `route_step`; the
+   route-aware bridge applies the prefix instead of that full-destination ceiling. Its `arrive`
+   tolerance is pathfinding input for the destination area as well as verification. An occupied
+   landmark tile can therefore settle on reachable adjacent floor without making Sol guess
+   successive neighbouring coordinates. A verified path prefix is `route-progress` and
+   immediately licenses the next prefix without a model call even when going around collision
+   temporarily increases straight-line distance; that detour is pathfinder evidence, not a claim
+   that the destination moved. The route stores recent settled endpoints, refuses a repeated one
+   as `route-cycle`, and permits at most twelve consecutive non-closing prefixes before asking for
+   a new decision, so grounded detours cannot become wandering. A refusal, unchanged settlement,
+   cycle, or exhausted detour budget marks the route `blocked` at the current position and visible obstacle
    signature, reports `route-needs-detour` at exit 4 to Sol, and emits no further walk merely because the dispatched leg
    settles another tile. A changed visible obstacle signature may make the path viable; otherwise
-   Sol must inspect live terrain or choose a different local leg and explicitly set a corrected
-   route. Loaded bounds expose whether their interaction edge is reachable, its actual walking
+   Sol must inspect live terrain or choose a semantic boundary interaction or explicit waypoint
+   and set a corrected route. Loaded bounds expose whether their interaction edge is reachable, its actual walking
    distance, and any Open command, allowing a closed door to be approached and opened semantically
-   before the route is retried. The refusal proves only that attempted local leg did not produce progress; it does not
+   before the route is retried. The refusal proves only that the attempted collision path did not produce progress; it does not
    establish a wall, river, world edge, or map boundary. Changing the durable objective cancels the stale route rather than walking
    toward an old goal. The route survives player and runner process boundaries, owns no second
    action slot or observer, uses no screenshots or timed polling, and cannot loop forever against

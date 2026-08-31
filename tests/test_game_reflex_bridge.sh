@@ -281,6 +281,16 @@ refute "a nearby waypoint whose real path is a huge loop sends no walk" \
     contains "$OUT" "walk x="
 check_eq "the collision detour is named distinctly from an unreachable tile" \
     "$(rstatus)" "refused-waypoint-detour"
+wact 5704 "$(now_ms)" "type=walk" "x=90" "z=660" "arrive=2" "max_path=16" "route_step=8"
+OUT="$(harness exec-long-detour)"
+contains "$OUT" "route-step x=90 z=660 arrive=2 max=8" \
+    && ok "a route step follows a bounded prefix toward the real destination" \
+    || fail "the bridge must ground the route prefix itself" "$OUT"
+check_eq "a route prefix supersedes the old full-path compatibility ceiling" \
+    "$(rstatus)" "done"
+wact 5705 "$(now_ms)" "type=walk" "x=90" "z=660" "route_step=33"
+harness exec >/dev/null
+check_eq "a route prefix length is bounded" "$(rstatus)" "refused-bad-coordinates"
 wact 571 "$(now_ms)" "type=walk" "x=900" "z=900"
 OUT="$(harness exec-no-route)"
 refute "a destination with no progressive collision path sends no walk" \
