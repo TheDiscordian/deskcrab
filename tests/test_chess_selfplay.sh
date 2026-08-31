@@ -450,6 +450,68 @@ check_eq "and appends nothing: the ledger still holds one line per game" \
     "$(sandbox_count_in '"game"' "$BLEDGER")" "2"
 
 echo
+echo "an eliminated game is never created, resumed, or recorded (rule 20a):"
+EDIR="$SANDBOX/chesse"
+mkdir -p "$EDIR/selfplay" "$EDIR/games"
+EPLAN="$EDIR/selfplay/bench-t4.json"
+"$PY" - "$EDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t4",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht4-001", "control": "1+0",
+                   "white": "a", "black": "b"},
+                  {"id": "selfplay-bencht4-002", "control": "1+0",
+                   "white": "b", "black": "a",
+                   "pruned": "eliminated by a longer-clock failure"},
+                  {"id": "selfplay-bencht4-003", "control": "1+0",
+                   "white": "a", "black": "b",
+                   "pruned": "cell already carries a disqualifying event"}]}
+json.dump(plan, open(d + "/selfplay/bench-t4.json", "w"))
+# 003 was stranded mid-flight before its prune: the driver must neither
+# resume nor record it — the file stays on disk as evidence, untouched.
+g = {"id": "selfplay-bencht4-003", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 30000, "black_ms": 60000,
+               "turn_started": time.time() - 86400},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht4-003.json", "w"))
+PYEOF
+ESUM_BEFORE="$(cksum "$EDIR/games/selfplay-bencht4-003.json")"
+ECALLS="$SANDBOX/stub-calls-elim"
+: > "$ECALLS"
+sed "s|$CALLS|$ECALLS|" "$STUB" > "$SANDBOX/stub-mover-elim"
+chmod +x "$SANDBOX/stub-mover-elim"
+OUTE="$(DESKCRAB_CHESS_DIR="$EDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-elim" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$EPLAN" --budget 300 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+SE="$(grep '^STATUS ' <<<"$OUTE" | tail -n1)"
+contains "$SE" '"status": "bench-done"' \
+    && contains "$SE" '"bench_recorded": 1' \
+    && contains "$SE" '"bench_total": 1' \
+    && contains "$SE" '"bench_pruned": 2' \
+    && ok "the chunk plays only the unpruned game and counts the prunes" \
+    || fail "STATUS line: $SE"
+ELEDGER="$EDIR/selfplay/bench-t4.jsonl"
+check_eq "the ledger holds the played game alone" \
+    "$(sandbox_count_in '"game"' "$ELEDGER")" "1"
+grep -q 'bencht4-002\|bencht4-003' "$ELEDGER" \
+    && fail "a pruned game reached the ledger: $(cat "$ELEDGER")" \
+    || ok "neither pruned game was recorded"
+[ -e "$EDIR/games/selfplay-bencht4-002.json" ] \
+    && fail "a never-started pruned game was created" \
+    || ok "the never-started pruned game was never created"
+check_eq "the stranded mid-flight file is untouched evidence" \
+    "$(cksum "$EDIR/games/selfplay-bencht4-003.json")" "$ESUM_BEFORE"
+
+echo
 echo "a recorded flag is finished business, never a model call (rule 17):"
 FDIR="$SANDBOX/chessf"
 mkdir -p "$FDIR/selfplay" "$FDIR/games"

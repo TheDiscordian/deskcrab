@@ -556,6 +556,10 @@ def run_bench(args, plan, started, deadline_ts):
     consecutive_failures = 0
     try:
         for spec in plan["games"]:
+            if spec.get("pruned"):
+                # Rule 20a: an eliminated game is never created, resumed,
+                # or recorded — a stranded mid-flight file stays as evidence.
+                continue
             path = chess_cli.GAMES_DIR / (spec["id"] + ".json")
             g = load_game(spec["id"]) if path.exists() else None
             if g is not None:
@@ -1042,10 +1046,12 @@ def main():
         games = selfplay_games()
         done = sum(1 for g in games if chess_cli.compute_state(
             g, chess_cli.build_board(g))[0] != "active")
+        pruned = sum(1 for g in plan["games"] if g.get("pruned"))
         print("STATUS " + json.dumps({
             "status": status, "moves_this_chunk": moved,
             "bench_recorded": len(recorded),
-            "bench_total": len(plan["games"]),
+            "bench_total": len(plan["games"]) - pruned,
+            "bench_pruned": pruned,
             "selfplay_finished": done, "selfplay_total": len(games)}),
             flush=True)
         return

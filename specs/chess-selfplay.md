@@ -191,12 +191,42 @@ the finished games feed the pattern store exactly as every self-play game does.
     played, then fewer failure events, then the lower latency tail, then the cheaper pair
     (lower effort, then cheaper model). A cell interrupted by capacity limits is RESUMED,
     never excluded — the plan file plus the game files are the resumable state, exactly rule
-    16. The untimed route is a second, smaller round scheduled from the timed evidence —
-    candidate pairs at `untimed` in the same plan shape, complete games only — because the
-    untimed game routes too and probes may not choose for it either. The verdict lands as
+    16. The untimed route stays on the uniform pair (chessweb.md rule 16b): the second,
+    untimed round this rule once scheduled is retired by the user's 2026-08-31 correction
+    (rule 20a) — a timed elimination benchmark owes no untimed play. The verdict lands as
     `chess_effort.SPEED_PAIRS` and `chess_effort.SPEED_MODELS` values
     (chessweb.md rule 16b), with the full matrix, the exclusion and uncertainty statements,
     and the raw ledger locations written into the run's report in `docs/`.
+20a. **Longest-clock-first elimination** (adopted 2026-08-31, on the user's correction of the
+    matrix ask: a timed elimination benchmark, not an exhaustive round robin and never an
+    untimed round). Controls are judged longest clock first. A pair that fails a longer
+    control for CLOCK reasons — a flag, a remaining-clock-aware budget breach, a per-call
+    ceiling death, a retry storm, an account-limit death, or otherwise proving too slow to
+    finish — is eliminated from every shorter control without playing those games: less
+    clock can only fail harder. A non-clock failure (a no-legal-move fallback with time in
+    hand) still poisons its own cell under rule 20's reliability discipline but eliminates
+    nothing downward. A game is also unnecessary when no outcome of it can change any routed
+    class's selection: a pair already measured-unreliable at the class's other control, a
+    mirror game whose points are arithmetically pinned, a cell already carrying a
+    disqualifying event its second colour cannot cure. Every such game is PRUNED — a
+    deliberate operator act like the append, never the driver's own idea: the spec keeps its
+    place in the plan and gains `pruned: <reason>`; the driver skips a pruned spec, never
+    creating, resuming, or recording it (a mid-flight game file a prune strands stays on
+    disk as evidence); the analysis subtracts pruned games from the schedule, so a cell
+    whose remaining games are all pruned is settled by elimination, never "incomplete", and
+    every prune is printed with its reason so nothing vanishes silently. Pruning a game
+    already on the run's ledger is refused — recorded play is evidence, and elimination
+    never deletes evidence. Pruning a replacement spec (rule 17) cancels the artifact slot
+    it owed, stated reason and all. Top-ups are owed only where a selection is genuinely
+    ambiguous among reliable finishers — a reliable cell within the close margin of its
+    control's reliable winner, decided at completion; the former one-failure-event-in-two-
+    games top-up is retired, because an event-carrying cell is eliminated already and more
+    games cannot change any selection. Where a control or speed class has NO reliable
+    finisher, the route is still chosen from the measured evidence rather than by feel:
+    among complete cells — fewest flags per game, then fewest event games per game, then
+    the higher score rate, then fewer fallback moves per game, then the lower latency tail,
+    then the cheaper pair — with the failure record stated beside the applied verdict
+    wherever it lands.
 
 ## DATA
 
