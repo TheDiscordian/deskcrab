@@ -54,6 +54,11 @@ CUR_MOOD="$(printf '%s' "$STATE_JSON" | python3 -c \
 CUR_ACT="$(printf '%s' "$STATE_JSON" | python3 -c \
     'import json,sys; d=json.load(sys.stdin); print(d.get("activity") or "resting")' \
     2>/dev/null)" || CUR_ACT="resting"
+CUR_SOURCES="$(printf '%s' "$STATE_JSON" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(", ".join(str(x) for x in (d.get("activity_sources") or [])))
+' 2>/dev/null)" || CUR_SOURCES=""
 
 # The recent conversation, bounded: mood is continuity across the talk, not
 # a verdict on one line. The convo file may be empty or missing — fine.
@@ -65,16 +70,29 @@ shows a slow-moving emotional baseline between conversations, below any
 expression she chooses herself. You are given her current mood, her current
 activity, recent conversation, and the exchange that just finished.
 
-Answer with EXACTLY one word — her standing mood NOW — from:
+Answer with EXACTLY one line in this format:
+<mood><TAB><brief reason><TAB><brief source>
+
+The mood must be one of:
 pleased annoyed tired focused attentive neutral
+
+The reason is a short, concrete clause explaining what in the recent exchange
+or work moved or sustained the mood. Do not merely restate the mood. Do not use
+the user's name; refer to the user without naming them.
+
+The source is a short concrete noun phrase naming what the feeling is about,
+such as RuneScape, a chess game, coding work, or a conversation about her
+face. The phrases automatic mood updater, desktop exchange, phone exchange,
+and autonomous wake are mechanisms or delivery channels, not sources.
 
 Guidance: keep the current mood unless the conversation has clearly moved
 it; a single neutral exchange does not erase a mood, but a clear shift in
 the conversation's emotional weather does, at once. neutral means no
-particular mood stands. Never answer anything but one of those six words."
+particular mood stands. Use no markdown and no second line."
 
 QUESTION="Current mood: $CUR_MOOD
 Current activity: $CUR_ACT
+Active runtime sources: ${CUR_SOURCES:-none}
 
 Recent conversation (may be empty):
 $CONVO_TAIL
@@ -83,18 +101,55 @@ The exchange that just finished:
 User: $USER_TEXT
 Assistant: $ASSISTANT_TEXT
 
-One word:"
+Mood, reason, and source:"
 
 ANSWER="$(printf '%s' "$QUESTION" \
     | CLAUDE_CLASSIFY_TIMEOUT="${FACE_AUTO_TIMEOUT:-90}" \
       claude_classify "${FACE_AUTO_MODEL:-haiku}" "$SYS_PROMPT" 2>/dev/null)" \
     || { mood_log "classify failed — mood unchanged"; exit 0; }
 
-WORD="$(printf '%s' "$ANSWER" | tr '[:upper:]' '[:lower:]' \
-    | grep -oE 'pleased|annoyed|tired|focused|attentive|neutral' | head -1)"
-[ -n "$WORD" ] || { mood_log "unparseable answer ($(printf '%.40s' "$ANSWER")) — mood unchanged"; exit 0; }
+FIRST="$(printf '%s\n' "$ANSWER" | sed -n '/[^[:space:]]/{p;q;}')"
+PARSED_FIRST="${FIRST//<TAB>/$'\t'}"
+PARSED_FIRST="${PARSED_FIRST//<tab>/$'\t'}"
+WORD="${PARSED_FIRST%%$'\t'*}"
+WORD="$(printf '%s' "$WORD" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+case "$WORD" in
+    pleased|annoyed|tired|focused|attentive|neutral) ;;
+    *) mood_log "unparseable answer ($(printf '%.40s' "$ANSWER")) — mood unchanged"; exit 0 ;;
+esac
+REASON=""
+MOOD_SOURCE=""
+case "$PARSED_FIRST" in
+    *$'\t'*$'\t'*)
+        MOOD_FIELDS="${PARSED_FIRST#*$'\t'}"
+        REASON="${MOOD_FIELDS%%$'\t'*}"
+        MOOD_SOURCE="${MOOD_FIELDS#*$'\t'}"
+        ;;
+esac
+REASON="$(printf '%s' "$REASON" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^[[:space:]]+|[[:space:]]+$//g' | cut -c1-240)"
+MOOD_SOURCE="$(printf '%s' "$MOOD_SOURCE" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^[[:space:]]+|[[:space:]]+$//g' | cut -c1-80)"
+
+if [ "$WORD" != neutral ]; then
+    SOURCE_KEY="$(printf '%s' "$MOOD_SOURCE" | tr '[:upper:]' '[:lower:]')"
+    case "$SOURCE_KEY" in
+        ""|"automatic mood updater"|"desktop exchange"|"phone exchange"|\
+        "autonomous wake"|"completed exchange")
+            mood_log "unparseable source ($(printf '%.40s' "$MOOD_SOURCE")) — mood unchanged"
+            exit 0
+            ;;
+    esac
+fi
+
+case "$TURN" in
+    wake-*) MOOD_ORIGIN="autonomous wake" ;;
+    phone-*) MOOD_ORIGIN="phone exchange" ;;
+    turn-*) MOOD_ORIGIN="desktop exchange" ;;
+    *) MOOD_ORIGIN="completed exchange" ;;
+esac
 
 REPLY="$(DESKCRAB_FACE_SOCKET="$FACE_SOCKET" DESKCRAB_FACE_TURN="$TURN" \
-    "$SCRIPT_DIR/lib/face-broker" mood "$WORD" 2>/dev/null)" || REPLY="refused"
-mood_log "mood $CUR_MOOD -> $WORD (turn ${TURN:-none}): $REPLY"
+    "$SCRIPT_DIR/lib/face-broker" mood "$WORD" \
+        --reason "$REASON" --source "$MOOD_SOURCE" --origin "$MOOD_ORIGIN" \
+        --source-ref "$TURN" 2>/dev/null)" || REPLY="refused"
+mood_log "mood $CUR_MOOD -> $WORD from $MOOD_ORIGIN (turn ${TURN:-none}): source ${MOOD_SOURCE:-none} — $REPLY"
 exit 0

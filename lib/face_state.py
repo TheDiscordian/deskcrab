@@ -164,6 +164,43 @@ def _now():
     return time.time()
 
 
+def _one_line(value, limit):
+    """Bounded state text: useful context, never a multiline prompt splice."""
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _recover_mood_provenance(mood):
+    """Recover subject, origin, and turn reference from the updater record.
+
+    Saved mood records made without provenance still have a precise set time.
+    A matching updater-log transition within two minutes is evidence; the
+    mechanism's own name is not.  No match remains explicitly unavailable.
+    """
+    try:
+        with open(STATE_PREFIX + "-face-auto.log", errors="replace") as fh:
+            lines = fh.readlines()[-200:]
+        target = float(mood.get("set_at", 0))
+        marker = " -> %s from " % mood.get("name")
+        for line in reversed(lines):
+            stamp, message = line.rstrip("\n").split("\t", 1)
+            if marker not in message or " (turn " not in message:
+                continue
+            source_and_ref = message.split(marker, 1)[1]
+            origin, ref_tail = source_and_ref.split(" (turn ", 1)
+            source_ref, detail = ref_tail.split("):", 1)
+            subject = "source unavailable"
+            detail = detail.strip()
+            if detail.startswith("source "):
+                subject = detail[7:].split(" — ", 1)[0].strip()
+            logged = time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S"))
+            if abs(logged - target) <= 120:
+                return (_one_line(subject, 80), _one_line(origin, 80),
+                        _one_line(source_ref, 120))
+    except Exception:
+        pass
+    return "source unavailable", "origin unavailable", ""
+
+
 # --------------------------------------------------------------------------
 # Client side: everything the CLI, the streamer, and the web servers need.
 # Every function here is best-effort and bounded — the face is company,
@@ -243,7 +280,7 @@ class Broker:
         self.activity = "resting"
         self.activity_detail = ""
         self.expression = None   # {"name", "source", "set_at", "expires_at"}
-        self.mood = None         # {"name", "set_at", "expires_at"}
+        self.mood = None         # name, reason, source, origin/ref, times
         self.turn = ""           # the live turn's token; stale autos bounce
         self.clips = []          # [{"id","start","duration","cues"}...]
         self.watchers = 0
@@ -264,6 +301,22 @@ class Broker:
                 self.expression = exp
             mood = d.get("mood")
             if isinstance(mood, dict) and mood.get("name") in MOODS:
+                mood.setdefault("reason", "")
+                legacy_origin = mood.get("source") if mood.get("source") in (
+                    "desktop exchange", "phone exchange", "autonomous wake",
+                    "completed exchange") else ""
+                if legacy_origin:
+                    mood["source"] = "source unavailable"
+                    mood["origin"] = legacy_origin
+                    mood.setdefault("source_ref", "")
+                elif not mood.get("source"):
+                    subject, origin, source_ref = _recover_mood_provenance(mood)
+                    mood["source"] = subject
+                    mood["origin"] = origin
+                    mood["source_ref"] = source_ref
+                else:
+                    mood.setdefault("origin", "origin unavailable")
+                    mood.setdefault("source_ref", "")
                 self.mood = mood
             self.turn = str(d.get("turn", ""))[:80]
             clips = d.get("clips")
@@ -333,6 +386,12 @@ class Broker:
                 "expression_source": source,
                 "expression_set_at": (exp or {}).get("set_at"),
                 "mood": (self.mood or {}).get("name", ""),
+                "mood_reason": (self.mood or {}).get("reason", ""),
+                "mood_source": (self.mood or {}).get("source", ""),
+                "mood_origin": (self.mood or {}).get("origin", ""),
+                "mood_source_ref": (self.mood or {}).get("source_ref", ""),
+                "mood_set_at": (self.mood or {}).get("set_at"),
+                "mood_expires_at": (self.mood or {}).get("expires_at"),
                 "speaking": speaking,
                 "clips": clips,
             }
@@ -391,7 +450,8 @@ class Broker:
             self._bump()
         return {"ok": True, "state": self.snapshot()}
 
-    def set_mood(self, name, turn=None):
+    def set_mood(self, name, turn=None, reason="", source="", origin="",
+                 source_ref=""):
         """The standing baseline. `neutral` clears it; anything else must be
         in the mood family and lives MOOD_SECONDS from now unless refreshed.
         Display precedence is below every expression record, so a mood can
@@ -408,12 +468,20 @@ class Broker:
             return {"ok": False,
                     "error": "unknown mood %r (family: %s, or neutral)"
                              % (name, ", ".join(MOODS))}
+        reason = _one_line(reason, 240)
+        source = _one_line(source, 80) or "source unavailable"
+        origin = _one_line(origin, 80) or "origin unavailable"
+        source_ref = _one_line(source_ref, 120)
         with self.lock:
             if self._stale(turn):
                 return {"ok": True, "state": self.snapshot(),
                         "note": "stale turn — not applied"}
-            self.mood = {"name": name, "set_at": _now(),
-                         "expires_at": _now() + MOOD_SECONDS}
+            set_at = _now()
+            self.mood = {"name": name, "reason": reason,
+                         "source": source, "origin": origin,
+                         "source_ref": source_ref,
+                         "set_at": set_at,
+                         "expires_at": set_at + MOOD_SECONDS}
             self._bump()
         return {"ok": True, "state": self.snapshot()}
 
@@ -517,7 +585,11 @@ class Broker:
                                        seconds=cmd.get("seconds"),
                                        turn=cmd.get("turn"))
         if verb == "mood":
-            return self.set_mood(cmd.get("name", ""), turn=cmd.get("turn"))
+            return self.set_mood(cmd.get("name", ""), turn=cmd.get("turn"),
+                                 reason=cmd.get("reason", ""),
+                                 source=cmd.get("source", ""),
+                                 origin=cmd.get("origin", ""),
+                                 source_ref=cmd.get("source_ref", ""))
         if verb == "rest":
             return self.rest()
         if verb == "event":

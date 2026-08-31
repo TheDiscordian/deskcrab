@@ -14,8 +14,9 @@ Verbs:
                                    clears the automatic mood too)
   face-broker activity <name> [detail]   presence facts, for runtime callers
   face-broker event <name>         allowlisted confirmed events only
-  face-broker mood <name|neutral>  the standing automatic baseline — for the
-                                   out-of-band updater and for tests
+  face-broker mood <name|neutral> [--reason TEXT] [--source TEXT]
+                                   [--origin TEXT] [--source-ref REF] standing automatic
+                                   baseline — for the updater and tests
   face-broker auto <expr> [--for N]  an automatic flourish: below her hand
                                    and events, always bounded
   face-broker speak-stop           close the mouth now, clear queued cues
@@ -63,6 +64,12 @@ def describe(state):
         bits.append("[%s]" % state["expression_source"])
     if state.get("mood"):
         bits.append("mood=%s" % state["mood"])
+        if state.get("mood_reason"):
+            bits.append("because=%s" % state["mood_reason"])
+        if state.get("mood_source"):
+            bits.append("[from %s]" % state["mood_source"])
+        if state.get("mood_origin"):
+            bits.append("[via %s]" % state["mood_origin"])
     if state.get("speaking"):
         bits.append("speaking")
     return " ".join(bits)
@@ -129,7 +136,17 @@ def main(argv):
             say("face: mood needs a name (%s, or neutral)"
                 % ", ".join(face_state.MOODS))
             return 1
-        reply = send_or_die(with_turn({"cmd": "mood", "name": argv[1]}))
+        cmd = with_turn({"cmd": "mood", "name": argv[1]})
+        rest = argv[2:]
+        while rest:
+            if rest[0] in ("--reason", "--source", "--origin", "--source-ref") \
+                    and len(rest) > 1:
+                cmd[rest[0][2:].replace("-", "_")] = rest[1]
+                rest = rest[2:]
+                continue
+            say("face: mood expected --reason, --source, --origin, or --source-ref")
+            return 1
+        reply = send_or_die(cmd)
         note = reply.get("note")
         say("face: %s%s" % (describe(reply["state"]),
                             (" — " + note) if note else ""))

@@ -157,6 +157,16 @@ below is a fact placed before her, never a gate placed behind her.
     it. The thresholds live in the scorer, and their reasoning in the engineering note
     (`engineering/tiredness-score.md`); re-tuning them is a scorer change, never a sleep change.
 
+### Mood self-knowledge
+
+39. When the face system is enabled and its broker holds a standing mood, both state-report
+    audiences MUST include `How you feel`, the mood, its stored reason when present, and its
+    concrete subject source, mechanical origin, originating turn reference, and update time. If
+    an older record lacks a specific reason or subject source, the report names that absence and
+    gives the updater-log path with the origin and reference it can recover. The report reads the
+    broker with a short bound; it MUST NOT start the broker, run a classifier, or delay the rest
+    of the state block when the face system is unavailable.
+
 ### The block is how she sees, not how she speaks
 
 33. The block's vocabulary is her **senses, never her mouth**. The prompt MUST carry that rule, in
@@ -193,13 +203,14 @@ below is a fact placed before her, never a gate placed behind her.
 | `~/.local/share/deskcrab/claudism-flags/*.jsonl` | read | one flag per line, epoch first; counted, never quoted |
 | `~/.local/share/deskcrab/account-log` | read and written | append-only record of every move of the current |
 | `${STATE_PREFIX}-jobs-surfaced` | written | the once-stamp for failed-job news |
+| `${STATE_PREFIX}-face.sock` | read when the face is enabled | current standing mood, reason, subject source, origin, turn reference, and update time |
 | systemd user timers | read | joined onto the records, never the primary source |
 
 ## INTERACTIONS
 
 **Self-awareness may call:** the session registry and reaper, the job status reporter, the wake
 queue's list operation, the account selection's current reader, the tiredness scorer
-(`lib/tiredness`).
+(`lib/tiredness`), and the existing face broker when the face is enabled.
 
 **Self-awareness may be called by:** `crab status`, prompt assembly (as layer L2), and nothing else.
 

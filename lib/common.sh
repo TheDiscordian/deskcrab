@@ -447,6 +447,40 @@ fire_face_mood() {  # <user-text> <response>
     detach_turn_child face-auto "$SCRIPT_DIR/lib/face-auto" \
         --turn "${DESKCRAB_FACE_TURN:-}" "$@"
 }
+
+# Her standing emotional baseline is one of her senses, not merely a renderer
+# detail. Read the broker record into both state-report audiences so she knows
+# why she feels as she does without running a command or another classifier.
+face_mood_report() {
+    [ "${FACE_ENABLED:-0}" = 1 ] || return 0
+    DESKCRAB_FACE_SOCKET="$FACE_SOCKET" python3 - "$LIB_DIR" "$STATE_PREFIX" <<'PY' 2>/dev/null
+import datetime
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import face_state
+
+state = face_state.get_state(timeout=0.35)
+if not state or not state.get("mood"):
+    raise SystemExit(0)
+mood = state["mood"]
+reason = " ".join(str(state.get("mood_reason") or "").split())
+source = " ".join(str(state.get("mood_source") or "unspecified").split())
+origin = " ".join(str(state.get("mood_origin") or "origin unavailable").split())
+source_ref = " ".join(str(state.get("mood_source_ref") or "").split())
+set_at = state.get("mood_set_at")
+when = datetime.datetime.fromtimestamp(set_at).strftime("%H:%M") if set_at else "time unknown"
+provenance = origin + ((", reference: " + source_ref) if source_ref else "")
+if reason:
+    print(f"How you feel: {mood} — {reason} (source: {source}; "
+          f"origin: {provenance}; updated {when}).")
+else:
+    print(f"How you feel: {mood} — no specific reason was recorded "
+          f"(source: {source}; origin: {provenance}; updated {when}; "
+          f"source record: {sys.argv[2]}-face-auto.log; "
+          f"details: crab face status).")
+PY
+}
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
 # of the worst silence in this thing. A wake firing beside a desktop turn ran
 # `: > "$DEBUGLOG"` on the very file that turn's TTS streamer was tailing: the
@@ -1780,6 +1814,10 @@ self_state_report() {
         done
         printf '  Lift it early with: crab numb --off\n'
     fi
+
+    local face_mood
+    face_mood="$(face_mood_report 2>/dev/null)" || face_mood=""
+    [ -n "$face_mood" ] && printf '%s\n' "$face_mood"
 
     local f kind pid started epoch startt n=0 body=""
     for f in "$SESSIONS_DIR"/*; do
@@ -7046,6 +7084,10 @@ run_claude_wake() {
     CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
     local WAKE_T0
     WAKE_T0="$(date +%s)"
+    # A wake is work too. Register its live activity from the same runtime
+    # fact as a desk turn, with no classifier and no awaited face process.
+    export DESKCRAB_FACE_TURN="wake-$$-$(date +%s%N)"
+    face_touch activity considering
     wake_claude_run_chain
     local CLAUDE_STATUS="$WAKE_CLAUDE_STATUS"
     printf '{"type":"result"}\n' >> "$DEBUGLOG"
@@ -7060,6 +7102,9 @@ run_claude_wake() {
 
     local RESPONSE
     RESPONSE=$(extract_response)
+    # Generation has ended on every branch below. The mood update, when the
+    # wake succeeded, is dispatched separately and never delays this return.
+    face_touch activity resting
 
     # A wake that never got a model does not get a voice. When the CLI fails
     # before any real work (session limit, auth, network), the error text
@@ -7124,6 +7169,11 @@ run_claude_wake() {
             local TRACE
             TRACE="$(wake_work_trace)"
             session_outcome "(silent — ${TRACE:-ran no tools, touched nothing})"
+            # A successful tool-only wake still changes what she is doing.
+            # Its trace is the completed-work half that a spoken reply would
+            # otherwise provide to the detached mood updater.
+            fire_face_mood "${WAKE_REASON:-$PROMPT_TEXT}" \
+                "${TRACE:-completed a quiet wake without tool activity}"
             # A wordless wake is the case reinforcement most needs to see, not
             # the one to skip: its entire output is the work. The trace is the
             # evidence, so the judge runs on it. A crashed wake still just
@@ -7235,6 +7285,9 @@ run_claude_wake() {
     # record whoever was listening, and the checker judges fresh words
     # against fresh evidence, never the agenda (turn-pipeline rule 32a).
     fire_promise_check wake "$RESPONSE"
+    # Wakes shape the standing mood whether or not a later delivery gate
+    # keeps their words quiet. This is detached, just like the desk path.
+    fire_face_mood "${WAKE_REASON:-$PROMPT_TEXT}" "$RESPONSE"
     # Same moment for the memory judge: the wake's outcome is recorded, and a
     # silent completion below must not skip the judgement — a memory used by
     # a wake that chose to say nothing was still used.
@@ -8404,8 +8457,13 @@ _run_claude_remote_locked() {
     rotate_convo
     convo_append_user "$TEXT"
 
+    # Phone work is the same live considering activity as desk work. The
+    # token also prevents its detached mood result repainting a newer turn.
+    export DESKCRAB_FACE_TURN="phone-$$-$(date +%s%N)"
+    face_touch activity considering
     local RESPONSE
     RESPONSE=$(claude_generate "$TEXT")
+    face_touch activity resting
 
     # Cut-and-consolidate (specs/turn-pipeline.md rule 15f), the phone half:
     # he spoke again — on either device — while this was generating, and the
@@ -8579,6 +8637,7 @@ _run_claude_remote_locked() {
     # Out of band, with the reply audio already synthesised: a want stated on
     # the phone dies with the turn exactly like one stated at the desk. The
     # memory judge rides the same moment — reply delivered, hot path over.
+    fire_face_mood "$TEXT" "$RESPONSE"
     fire_promise_audit "$TEXT" "$RESPONSE"
     fire_memory_judge "$TEXT" "$RESPONSE" "$WORK_TRACE"
     fire_claudism_capture phone "$RESPONSE"

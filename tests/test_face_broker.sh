@@ -106,6 +106,21 @@ check "a mood alone shows when nothing outranks it (rule 43)" \
     bash -c 'python3 "$0/lib/face-broker" mood tired >/dev/null
         python3 "$0/lib/face-broker" | grep -q "expression=tired \[mood\]"' "$REPO_DIR"
 FB rest >/dev/null
+check "a mood record keeps its reason, source, and originating turn (rules 41, 42a)" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-cause python3 "$0/lib/face-broker" \
+        mood pleased --reason "finishing the repair cleanly felt satisfying" \
+        --source "RuneScape" --origin "desktop exchange" \
+        --source-ref turn-cause >/dev/null
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood_reason\"] == \"finishing the repair cleanly felt satisfying\", s
+assert s[\"mood_source\"] == \"RuneScape\", s
+assert s[\"mood_origin\"] == \"desktop exchange\", s
+assert s[\"mood_source_ref\"] == \"turn-cause\", s
+assert s[\"mood_record\"][\"reason\"] == s[\"mood_reason\"], s
+"' "$REPO_DIR"
+FB rest >/dev/null
 check "an automatic flourish recovers by its own lifetime (rules 18, 40)" \
     bash -c 'python3 "$0/lib/face-broker" auto startled --for 1 >/dev/null
         python3 "$0/lib/face-broker" | grep -q "expression=startled \[auto\]" || exit 1
@@ -318,17 +333,53 @@ EOF
 FACE_AUTO_ENV=(FACE_ENABLED=1 FACE_AUTO_EXPRESSION=1
     DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET")
 check "a delivered exchange moves the standing mood" \
-    bash -c 'env "$@" CLAUDE_STUB_ANSWER=pleased \
+    bash -c 'env "$@" CLAUDE_STUB_ANSWER="$(printf "pleased\tfinishing the exchange well felt satisfying\tRuneScape rescue")" \
         "$0/lib/face-auto" --turn "" "hi" "That went beautifully." >/dev/null 2>&1
-        python3 "$0/lib/face-broker" | grep -q "mood=pleased"' \
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood\"] == \"pleased\", s
+assert s[\"mood_reason\"] == \"finishing the exchange well felt satisfying\", s
+assert s[\"mood_source\"] == \"RuneScape rescue\", s
+assert s[\"mood_origin\"] == \"completed exchange\", s
+"' \
     "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+MOOD_SELF="$(sandbox_bash 'FACE_ENABLED=1; face_mood_report')"
+contains "$MOOD_SELF" "How you feel: pleased" \
+    && contains "$MOOD_SELF" "finishing the exchange well felt satisfying" \
+    && contains "$MOOD_SELF" "source: RuneScape rescue" \
+    && contains "$MOOD_SELF" "origin: completed exchange" \
+    && ok "the self-state prompt carries the mood, why, and source (rule 42a)" \
+    || fail "mood self-knowledge is missing from the state block" "$MOOD_SELF"
+check "phone mood provenance names the phone origin, not the updater" \
+    bash -c 'DESKCRAB_FACE_TURN=phone-cause python3 "$0/lib/face-broker" \
+        activity considering >/dev/null
+        env "$@" CLAUDE_STUB_ANSWER="focused<TAB>the call needed attention<TAB>phone conversation" \
+        "$0/lib/face-auto" --turn phone-cause "hello" "I am listening." >/dev/null 2>&1
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood_source\"] == \"phone conversation\", s
+assert s[\"mood_origin\"] == \"phone exchange\", s
+"' "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+check "wake mood provenance names the wake origin, not the updater" \
+    bash -c 'DESKCRAB_FACE_TURN=wake-cause python3 "$0/lib/face-broker" \
+        activity considering >/dev/null
+        env "$@" CLAUDE_STUB_ANSWER="attentive<TAB>the task needed care<TAB>scheduled work" \
+        "$0/lib/face-auto" --turn wake-cause "check the task" "completed it" >/dev/null 2>&1
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood_source\"] == \"scheduled work\", s
+assert s[\"mood_origin\"] == \"autonomous wake\", s
+"' "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
 check "neutral clears the mood rather than guessing one" \
     bash -c 'env "$@" CLAUDE_STUB_ANSWER=neutral \
         "$0/lib/face-auto" --turn "" "hi" "Noted." >/dev/null 2>&1
         ! python3 "$0/lib/face-broker" | grep -q "mood="' \
     "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
 check "an unparseable answer changes nothing (fail to resting, rule 42)" \
-    bash -c 'env "$@" CLAUDE_STUB_ANSWER=pleased \
+    bash -c 'env "$@" CLAUDE_STUB_ANSWER="pleased<TAB>the rescue succeeded<TAB>RuneScape" \
         "$0/lib/face-auto" --turn "" "hi" "Good." >/dev/null 2>&1
         env "$@" CLAUDE_STUB_ANSWER="who can say" \
         "$0/lib/face-auto" --turn "" "hi" "Hmm." >/dev/null 2>&1
@@ -342,7 +393,7 @@ check "a failed classify changes nothing either" \
 check "a result for a finished turn is turned away (rule 38)" \
     bash -c 'DESKCRAB_FACE_TURN=turn-now python3 "$0/lib/face-broker" \
         activity considering >/dev/null
-        env "$@" CLAUDE_STUB_ANSWER=annoyed \
+        env "$@" CLAUDE_STUB_ANSWER="$(printf "annoyed\tthe action failed\tcoding work")" \
         "$0/lib/face-auto" --turn turn-done "hi" "Ugh." >/dev/null 2>&1
         python3 "$0/lib/face-broker" | grep -q "mood=pleased"' \
     "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
@@ -352,7 +403,7 @@ check "a result for a finished turn is turned away (rule 38)" \
 sandbox_systemd_rc 1   # force the setsid fallback so the child really runs
 START_NS=$(date +%s%N)
 sandbox_bash 'FACE_ENABLED=1 FACE_AUTO_EXPRESSION=1 \
-    CLAUDE_STUB_SLEEP=3 CLAUDE_STUB_ANSWER=tired \
+    CLAUDE_STUB_SLEEP=3 CLAUDE_STUB_ANSWER="tired<TAB>the work was draining<TAB>coding work" \
     DESKCRAB_FACE_TURN= fire_face_mood "hi" "So tired tonight."' \
     >/dev/null 2>&1
 ELAPSED_MS=$(( ($(date +%s%N) - START_NS) / 1000000 ))

@@ -262,17 +262,41 @@ These rules define the ONLY automatic paths, all below her hand.
     lifetime (`DESKCRAB_FACE_MOOD_SECONDS`, default 900 s, refreshed on
     update, decaying to nothing on its own). It gives the face emotional
     continuity between turns and shows only when no expression record
-    stands.
-42. The mood updater (`lib/face-auto`) runs detached after a delivered desk
-    turn, reads the exchange, a bounded conversation tail, the current
-    activity, and the PRIOR mood, and asks one classifier-shaped question
-    through `claude_classify` on `FACE_AUTO_MODEL` (default `haiku` — the
-    cheapest reliable route this codebase already has). Continuity is in
-    the prompt: it moves the standing mood, it does not judge one line in
-    isolation. Gated by `FACE_AUTO_EXPRESSION` (and `FACE_ENABLED`);
-    bounded by `FACE_AUTO_TIMEOUT`; every failure, refusal, or
-    unparseable answer changes nothing and is one line in
-    `${STATE_PREFIX}-face-auto.log`.
+    stands. Every non-neutral mood record also carries a concise reason; a
+    concrete subject source such as `RuneScape`, `chess`, `coding work`, or
+    `conversation about her face`; the mechanical origin (`desktop exchange`,
+    `phone exchange`, or `autonomous wake`); the originating turn reference
+    when one exists; and its set and expiry times. The broker snapshot and
+    diagnostics expose all of them. The updater mechanism and delivery channel
+    are provenance, not the source of a feeling.
+42. The mood updater (`lib/face-auto`) runs detached after every completed
+    desk or phone exchange and every successful wake, including wake work
+    kept silent by its delivery gates. It reads the exchange or wake agenda,
+    a bounded conversation tail, the current activity, and the PRIOR mood,
+    and asks one classifier-shaped question through `claude_classify` on
+    `FACE_AUTO_MODEL` (default `haiku` — the cheapest reliable route this
+    codebase already has). A successful wordless wake uses its work trace as
+    the completed-work half. Continuity is in the prompt: it moves the
+    standing mood, it does not judge one line in isolation. Its answer carries
+    the mood word, a brief reason for the movement, and a short concrete source
+    naming what the feeling is about. The updater adds the mechanical origin
+    and turn reference itself rather than asking the model to invent
+    provenance. A non-neutral answer with no useful subject source is
+    unparseable and changes nothing. The delimiter may be an actual tab or the literal
+    token `<TAB>`: classifier routes sometimes preserve the format marker
+    verbatim, and that mechanically equivalent answer is not a failed mood.
+    Gated by
+    `FACE_AUTO_EXPRESSION` (and `FACE_ENABLED`); bounded by
+    `FACE_AUTO_TIMEOUT`; every failure, refusal, or unparseable answer
+    changes nothing and is one line in `${STATE_PREFIX}-face-auto.log`.
+42a. A current standing mood MUST appear in the assistant's self-state prompt
+    as `How you feel`, followed by its stored reason, concrete subject source,
+    mechanical origin, and turn reference. When a retained record predates a
+    usable reason or source, its update time, origin, reference, and face-updater
+    log path still appear, so she can inspect the concrete originating record.
+    Naming only the automatic updater is never a source. This is a read of the
+    broker's existing record: it runs no classifier and starts no broker while
+    the prompt waits.
 43. Resolution order, in the broker's snapshot so every surface agrees:
     expression record (`explicit` > `event` > `auto`) > mood > activity
     map > `resting`. Failure of anything automatic defaults to `resting` —
@@ -414,6 +438,7 @@ or scolding.
 | `DESKCRAB_FACE_AUTO_SECONDS` | broker | default lifetime of an `auto` record |
 | `FACE_AUTO_EXPRESSION`, `FACE_AUTO_MODEL`, `FACE_AUTO_TIMEOUT` | conf, read by common.sh and `lib/face-auto` | rule 42's updater knobs |
 | `${STATE_PREFIX}-face-auto.log` | `lib/face-auto` | one line per updater run |
+| `${STATE_PREFIX}-face-state.json` | broker writes; prompt state reads through the broker | current mood, reason, source, source reference, and timing |
 | localStorage `deskcrab-face-size-{openrsc,chess,viewer}` | each page | rule 46's remembered size |
 | manifest `motion` section | drawer build script writes; every renderer reads | rule 52's regions: mask asset, pivot, mode, spring constants, drive gains |
 | manifest viseme `extent`/`anchor` | drawer build script | rule 55's morph measurements |
