@@ -121,12 +121,17 @@ def spectator_state(now_ms=None):
     fresh = isinstance(ts, int) and 0 <= now - ts <= 5000
     activity = ""
     objective = ""
+    plan = ""
     try:
         activity = (GAME_DIR / "activity").read_text().strip()
     except OSError:
         pass
     try:
         objective = (GAME_DIR / "objective").read_text().strip()
+    except OSError:
+        pass
+    try:
+        plan = (GAME_DIR / "plan").read_text().strip()
     except OSError:
         pass
 
@@ -159,6 +164,7 @@ def spectator_state(now_ms=None):
         "snapshot_age_ms": max(0, now - ts) if isinstance(ts, int) else None,
         "activity": activity,
         "objective": objective,
+        "plan": plan,
         "recent_thought": latest_player_thought(),
         "tile": ({"x": state.get("x"), "z": state.get("z")}
                  if fresh and isinstance(state.get("x"), int)

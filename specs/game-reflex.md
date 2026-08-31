@@ -85,16 +85,19 @@ Three parts:
    `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
    client currently holds as loaded, nearest by ordinary walking steps to the player first,
    capped at 64: each
-   `{"sidx":…,"id":…,"x":…,"z":…,"distance":…,"clear_shot":…,
-   "terrain_melee_reachable":…}` — the client's own server index for that NPC, its type id and
-   world tile, Chebyshev distance, the server-equivalent projectile-line result, and whether the
+   `{"sidx":…,"id":…,"name":…,"description":…,"attackable":…,"stats":{"attack":…,
+   "strength":…,"defense":…,"hits":…},"x":…,"z":…,"distance":…,
+   "clear_shot":…,"terrain_melee_reachable":…}` — the client's own index for that NPC, its
+   client-cache identity/stats and world tile, Chebyshev distance, the ordinary-game
+   projectile-line result, and whether the
    currently loaded movement topology contains a route from it into melee range), plus `npc_count`
    (the complete loaded count) and `npcs_truncated` (whether the 64-entry safety cap omitted
    anything). Scenery does not occlude this list: an absent NPC is outside the client's loaded set
    or, when explicitly marked, beyond the cap. `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
    the client currently holds as loaded, nearest by walking steps first, capped at 12: each
-   `{"id":…,"name":…,"x":…,"z":…,"dir":…,"blocks_movement":…,
-   "projectiles_pass":…}` — type id/name, world tile, facing direction, and its two collision
+   `{"id":…,"name":…,"description":…,"commands":[…],"x":…,"z":…,"dir":…,
+   "blocks_movement":…,"projectiles_pass":…}` — type id/name and the two client-cache verbs,
+   world tile, facing direction, and its two collision
    properties), and `bounds` (the
    wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at
    12, with those same semantic fields plus `reachable`, collision-aware `path_distance` (null
@@ -103,9 +106,10 @@ Three parts:
    blocked cells and cardinal `barriers` are the only entries (empty floor is implicit), and every
    entry independently says `projectiles_pass`; barrier endpoints are absolute `a:[x,z]` and
    `b:[x,z]` tiles. It comes from the same loaded collision map used by ordinary walking and the
-   same projectile-permeability classifications used by server path validation. `ground_items`
+   same projectile-permeability classifications used by ordinary client play. `ground_items`
    (items currently visible on the ground, reachable items first by collision-aware walking steps,
-   capped at 12: each carries `id`, world `x/z`, `reachable`, and `path_distance`). An unreachable
+   capped at 12: each carries client-cache `id`/`name`/`description`, world `x/z`, `reachable`, and
+   `path_distance`). An unreachable
    item may also carry a `door` identity only when the player's and item's collision components
    meet on the two sides of that loaded, blocking, openable boundary; visual proximity alone never
    names a door. `shop_open` and
@@ -116,6 +120,12 @@ Three parts:
    Only what the
    player's own client can see is ever in it; the bridge reads
    no server internals.
+
+   A second read-only IPC pair, `route-request.json` / `route-result.json`, lets the player ask the
+   running client to plan from the complete landscape archive already installed for that client.
+   The request may include openable object/boundary observations learned from normal snapshots;
+   those become high-cost portal edges. The planner does not send a packet, consume the action
+   slot, read server files, or require the server to know that it exists.
 
 4. The bridge is **inert by default**. It activates only when `DESKCRAB_GAME_STATE_DIR` is present
    in the client's environment; the stock launcher does not set it, so the plain client is
@@ -157,7 +167,9 @@ Three parts:
    held item's published definition-backed commands by one-based command number and positive
    amount), `use-item-object` (resolve a held item id and loaded object identity together, walk to
    that object, and send the ordinary item-on-object packet as one operation, without opening the
-   inventory pane or staging pointer clicks), `click-shop` and `click-bank` (find an item
+   inventory pane or staging pointer clicks), `use-item-npc` (resolve a held item id and a visible
+   NPC's server/type identity together, walk to that NPC, and send the ordinary item-on-NPC packet
+   as one operation, without selecting the inventory item or moving the pointer), `click-shop` and `click-bank` (find an item
    by id in the currently open interface, expose its containing page or scroll row, resolve its
    current slot centre, and click button 1, 2, or 3; bank identity covers
    inventory items shown for deposit even when no bank stack exists),
@@ -172,7 +184,7 @@ Three parts:
    combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
    fallback direction, trying alternate directions and nearer tiles without sending failed path
    probes). `talk-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
-   `click-entity`, `click-inventory`, `use-item-object`,
+   `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
    `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
@@ -212,7 +224,8 @@ Three parts:
    `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
    click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
    for click-inventory, click-shop, and click-bank; `item`, `x`, `z`, and `obj` for
-   use-item-object; `item` for equip-inventory and
+   use-item-object; `item`, `sidx`, and `npc`, plus optional `within` 0–10, for use-item-npc;
+   `item` for equip-inventory and
    unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
    `item` and `amount` for the
    four transaction actions; `sidx` for trade-player; `text` for choose-menu and
@@ -226,14 +239,19 @@ Three parts:
    and retry deliberately. Interface-targeting actions are not blocked by this guard. No screen
    coordinates cross the action file. For click-inventory it
    finds the first matching current item id, opens the inventory tab, and calculates the slot
-   centre from the current client UI; a missing item is `refused-no-such-item`. No slot or screen
-   coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a
+   centre from the current client UI; a missing item is `refused-no-such-item`. The snapshot's
+   `selected_inventory_item` is the item id currently selected for a later Use-with action, or
+   null. It distinguishes a consumed click from a pointer that merely reached the item. No slot or
+   screen coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a
    non-wearable item, and never invert an item already in the requested state. Inventory commands
    recheck that the requested definition command still exists on that item before sending the
    ordinary item-command packet. `use-item-object` rechecks both the item's current slot and the
    object's exact tile/type before sending the same walk-and-use packet as the client's ordinary
    menu action; a missing item or changed object is refused rather than becoming a stale second
-   click. `click-shop` and `click-bank` use the same identity-only
+   click. `use-item-npc` performs the equivalent rechecks against the current inventory slot and
+   NPC server/type identity, including the nearer-equivalent and optional locality checks used by
+   other NPC actions. It sends the ordinary item-on-NPC packet without an inventory selection
+   phase. `click-shop` and `click-bank` use the same identity-only
    contract. A closed interface or missing item is refused; for a bank item the bridge switches
    the live bank to the page or scroll row containing the item before resolving its slot centre.
    A transaction rechecks that its interface is open and that its item has a

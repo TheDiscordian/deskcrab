@@ -213,25 +213,7 @@ def nearest_to(cands, point, max_jump):
 
 # --- presence gate ----------------------------------------------------------
 
-def defs_ids(defs_path, name):
-    """Every NPC type id whose defs name equals `name`, case-insensitively."""
-    try:
-        with open(defs_path) as fh:
-            doc = json.load(fh)
-    except (OSError, ValueError):
-        return set()
-    want = name.lower()
-    ids = set()
-    for npc in doc.get('npcs', []):
-        if str(npc.get('name', '')).lower() == want and 'id' in npc:
-            try:
-                ids.add(int(npc['id']))
-            except (TypeError, ValueError):
-                continue
-    return ids
-
-
-def presence(state_dir, ids, now_ms=None):
+def presence(state_dir, name, now_ms=None):
     """'ok' | 'not-visible' | 'skipped' per spec rule 7."""
     try:
         with open(os.path.join(state_dir, 'state.json')) as fh:
@@ -248,12 +230,11 @@ def presence(state_dir, ids, now_ms=None):
         return 'skipped'
     if not snap.get('logged_in') or age < 0 or age > STATE_FRESH_MS:
         return 'skipped'
+    wanted = name.casefold()
     for npc in snap.get('npcs') or []:
-        try:
-            if int(npc.get('id', -1)) in ids:
-                return 'ok'
-        except (AttributeError, TypeError, ValueError):
-            continue
+        if isinstance(npc, dict) \
+                and str(npc.get('name') or '').casefold() == wanted:
+            return 'ok'
     return 'not-visible'
 
 
@@ -313,14 +294,11 @@ def run(args, display):
         min_pixels = args.min_pixels if args.min_pixels is not None else 12
         is_name = False
 
-    if not args.no_presence_gate and is_name and args.defs:
-        ids = defs_ids(args.defs, args.intent)
-        if ids:
-            gate = presence(args.state_dir, ids)
-            if gate == 'not-visible':
-                report('not-visible', intent=args.intent, gate='ok',
-                       ids=','.join(str(i) for i in sorted(ids)))
-                return EXIT_NOT_VISIBLE
+    if not args.no_presence_gate and is_name:
+        gate = presence(args.state_dir, args.intent)
+        if gate == 'not-visible':
+            report('not-visible', intent=args.intent, gate='ok')
+            return EXIT_NOT_VISIBLE
 
     view = args.view
     toolbar = args.toolbar
@@ -430,7 +408,6 @@ def main(argv):
     ap.add_argument('--view', type=rect, default=DEFAULT_VIEW)
     ap.add_argument('--toolbar', type=rect, default=DEFAULT_TOOLBAR)
     ap.add_argument('--conf', default=os.path.join(game_dir, 'npc-visuals.conf'))
-    ap.add_argument('--defs', default=os.environ.get('DESKCRAB_GAME_NPC_DEFS'))
     ap.add_argument('--state-dir',
                     default=os.environ.get('DESKCRAB_GAME_STATE_DIR',
                                            '/tmp/deskcrab-game'))

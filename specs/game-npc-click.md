@@ -71,14 +71,13 @@ every click that is not one (attack, chase, menus, disambiguation by eye).
    the `--near X,Y` screen hint when given, else the `--nth K` largest (1-based) when given, else
    the largest.
 
-7. Presence gate: when the intent is a registry name, the defs file (`--defs`, default
-   `$DESKCRAB_GAME_NPC_DEFS`) knows that name (case-insensitive; all matching type ids count), and
-   a snapshot from `--state-dir` (default `$DESKCRAB_GAME_STATE_DIR`, then `/tmp/deskcrab-game`)
-   is readable, fresh (`ts` within 2000 ms), logged in, and carries an `npcs` field — then an
-   `npcs` list with no matching type id means exit 4 `not-visible` with the pointer untouched. A
-   missing, stale, logged-out or `npcs`-less snapshot, a name the defs do not know, a non-name
-   intent, or no defs file at all **skips** the gate and the report says `gate=skipped` — silence
-   never implies the check ran. `--no-presence-gate` disables it explicitly (`gate=off`).
+7. Presence gate: when the intent is a registry name and a snapshot from `--state-dir` (default
+   `$DESKCRAB_GAME_STATE_DIR`, then `/tmp/deskcrab-game`) is readable, fresh (`ts` within 2000 ms),
+   logged in, and carries an `npcs` field, the client-published NPC names are matched
+   case-insensitively. No matching name means exit 4 `not-visible` with the pointer untouched. A
+   missing, stale, logged-out or `npcs`-less snapshot, or a non-name intent, **skips** the gate and
+   the report says `gate=skipped` — silence never implies the check ran. `--no-presence-gate`
+   disables it explicitly (`gate=off`).
 
 ### Acquire, verify, act
 

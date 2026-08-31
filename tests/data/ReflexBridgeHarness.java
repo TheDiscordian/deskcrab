@@ -378,6 +378,10 @@ public class ReflexBridgeHarness {
 			return invNames[slot];
 		}
 
+		public int selectedInventoryItemId() {
+			return 81;
+		}
+
 		public boolean inventoryEquipped(int slot) {
 			return invEquipped[slot];
 		}
@@ -409,6 +413,11 @@ public class ReflexBridgeHarness {
 			events.add("use-item-object slot=" + slot + " item=" + invIds[slot]
 					+ " x=" + objAbsX[objectIndex] + " z=" + objAbsZ[objectIndex]
 					+ " obj=" + objId[objectIndex]);
+		}
+
+		public void useInventoryItemOnNpc(int slot, int serverIndex) {
+			events.add("use-item-npc slot=" + slot + " item=" + invIds[slot]
+					+ " sidx=" + serverIndex);
 		}
 
 		public int equipmentStatCount() {
@@ -578,6 +587,26 @@ public class ReflexBridgeHarness {
 			return npcType[i];
 		}
 
+		public String npcName(int i) {
+			return npcSidx[i] == 7 ? "Farmer" : "Guard";
+		}
+
+		public String npcDescription(int i) {
+			return npcSidx[i] == 7 ? "A local farmer" : "A watchful guard";
+		}
+
+		public boolean npcAttackable(int i) {
+			return true;
+		}
+
+		public int npcAttack(int i) { return npcSidx[i] == 7 ? 2 : 8; }
+
+		public int npcStrength(int i) { return npcSidx[i] == 7 ? 2 : 7; }
+
+		public int npcDefense(int i) { return npcSidx[i] == 7 ? 2 : 9; }
+
+		public int npcHits(int i) { return npcSidx[i] == 7 ? 8 : 15; }
+
 		public int npcX(int i) {
 			return npcAbsX[i];
 		}
@@ -643,6 +672,15 @@ public class ReflexBridgeHarness {
 			return objId[i] == 57 ? "Gate" : "Fishing spot";
 		}
 
+		public String objectDescription(int i) {
+			return objId[i] == 57 ? "A wooden gate" : "Fish are swimming here";
+		}
+
+		public String objectCommand(int i, int command) {
+			if (objId[i] == 57) return command == 1 ? "Open" : "Examine";
+			return command == 1 ? "Net" : "Bait";
+		}
+
 		public boolean objectBlocksMovement(int i) {
 			return objId[i] == 57;
 		}
@@ -692,6 +730,15 @@ public class ReflexBridgeHarness {
 			return bndId[i] == 1 ? "Door" : "Stone wall";
 		}
 
+		public String boundDescription(int i) {
+			return bndId[i] == 1 ? "The door is shut" : "A solid wall";
+		}
+
+		public String boundCommand(int i, int command) {
+			if (bndId[i] == 1) return command == 1 ? "Open" : "Examine";
+			return command == 1 ? "WalkTo" : "Examine";
+		}
+
 		public boolean boundBlocksMovement(int i) {
 			return true;
 		}
@@ -729,6 +776,14 @@ public class ReflexBridgeHarness {
 
 		public int groundItemId(int i) {
 			return groundId[i];
+		}
+
+		public String groundItemName(int i) {
+			return groundId[i] == 27 ? "Skull" : "Coins";
+		}
+
+		public String groundItemDescription(int i) {
+			return groundId[i] == 27 ? "A scary skull" : "Lovely money";
 		}
 
 		public int groundItemX(int i) {

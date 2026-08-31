@@ -56,7 +56,7 @@ class AimCase(unittest.TestCase):
     def args(self, **changes):
         values = dict(
             intent="255,0,0:0", conf=os.path.join(self.root, "missing.conf"),
-            button=None, min_pixels=4, no_presence_gate=True, defs="",
+            button=None, min_pixels=4, no_presence_gate=True,
             state_dir=self.root, view=(0, 0, 160, 120),
             toolbar=(200, 200, 210, 210), settle_ms=0, stable_px=2,
             max_jump=48, near=None, nth=None, dry_run=False, retries=5,
@@ -154,18 +154,14 @@ class TestRegistryAndGate(AimCase):
 
     def test_absent_named_npc_is_refused_before_a_frame_grab(self):
         conf = os.path.join(self.root, "npc-visuals.conf")
-        defs = os.path.join(self.root, "NpcDefs.json")
         with open(conf, "w") as fh:
             fh.write("sheep = red-cape button=3 min=4\n")
-        with open(defs, "w") as fh:
-            json.dump({"npcs": [{"id": 2, "name": "Sheep"}]}, fh)
         with open(os.path.join(self.root, "state.json"), "w") as fh:
             json.dump({"ts": int(time.time() * 1000), "logged_in": True,
-                       "npcs": [{"id": 7}]}, fh)
+                       "npcs": [{"id": 7, "name": "Man"}]}, fh)
         display = FakeDisplay([frame(30, 40)])
         code, out = self.invoke(
-            display, intent="sheep", conf=conf, defs=defs,
-            no_presence_gate=False)
+            display, intent="sheep", conf=conf, no_presence_gate=False)
         self.assertEqual(code, aim.EXIT_NOT_VISIBLE)
         self.assertIn("not-visible", out)
         self.assertIn("gate=ok", out)

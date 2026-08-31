@@ -450,7 +450,8 @@ against the shipped CLI before this rule was written.
     spectator's magenta ring and crosshair. No HTTP method or route may send mouse, keyboard,
     bridge actions, or game commands.
 55. `/openrsc/state` is an allowlist, not a mirror of `state.json`: login/freshness, tile, HP,
-    fatigue, movement/combat/sleep, objective, activity, and positive activity XP/hour only.
+    fatigue, movement/combat/sleep, objective, its deliberately selected plan, activity, and
+    positive activity XP/hour only.
     Inventory, chat, credentials, routes, memory, and engine internals never leave the machine.
     The self-contained page is mobile-first, reconnects after game/server transitions, pauses when
     hidden, offers fullscreen and an explicit spectator pause, and labels the view read-only.

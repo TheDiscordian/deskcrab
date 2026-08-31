@@ -133,7 +133,11 @@ deliberate-play channel.
    target cannot drag the player across the area; deliberate one-off NPC commands may still
    approach their chosen visible target. Every NPC action records the selected target's snapshot
    tile in its decision event, and the bridge refuses it if a strictly nearer equivalent exists by
-   dispatch time. `cast-npc` (`spell`: the spell id; `npc`: the NPC type id; optional `within`
+   dispatch time. `use-item-npc` (`item`: the held item id; `npc`: the NPC type id; optional
+   `within` 0–10) requires both identities in current structured state and compiles them into one
+   ordinary item-on-NPC action. It never selects an inventory slot or moves the pointer. After
+   dispatch the rule retains control until the held quantity changes, grounded game feedback
+   arrives, or NPC dialogue changes; a receipt alone is not completion. `cast-npc` (`spell`: the spell id; `npc`: the NPC type id; optional `within`
    0–10; optional 0/1 `stationary`, `require_clear_shot`, and
    `require_melee_unreachable`) resolves the same nearest stable NPC identity but only when the structured spellbook says
    the spell is ready and its target kind is `npc/player`. Spell, NPC identity, and any locality
@@ -254,6 +258,16 @@ deliberate-play channel.
    is required for success; explicit server failure may end it unsuccessfully. A pane/menu
    transition or a furnace's early “smelt together” line is ignored rather than accepted before
    the resulting bar exists.
+   `orsc-headless.sh use ITEM-ID npc NPC-NAME|TYPE-ID [SECONDS]` and learned `use-item-npc`
+   actions use the same causal verifier after resolving the held item and NPC identities. An item
+   delta, grounded game feedback, or NPC-dialogue transition verifies the use; a bridge receipt or
+   moved pointer does not.
+   An identity-based inventory click is also unresolved until newer state shows the item selected
+   for Use-with, a context menu, an inventory change, or grounded game feedback. A changed hover
+   alone proves only pointer placement and is never reported as click completion.
+   Identity-based NPC, object, and bound clicks follow the same rule. Movement, combat, dialogue,
+   a context menu, grounded feedback, or another causal game-state change can verify the click;
+   pointer placement and hover text alone cannot.
    `cast-npc` uses the same causal verifier for direct and learned casts, narrowed to the selected
    spell's required rune ids, Magic XP, and explicit spell feedback. An unrelated inventory,
    interface, or message transition cannot make a cast successful, and routine work cannot resume
@@ -416,22 +430,23 @@ deliberate-play channel.
    route fragment whose broad trigger still matches from pulling the body away and then handing it
    back, a two-controller oscillation no repetition timer can make productive.
 
-   The client owns only its loaded 96×96 collision region, so it is not the authority for a distant
-   journey. A loopback-only service in the local OpenRSC server runs A* over the complete live
-   same-floor collision map and returns a chain of real path tiles sampled at no more than eight
-   steps per waypoint. The resident runner keeps the REAL durable destination in `route.json`,
-   sends only the next server-validated waypoint through ACTIONS, and replans from the body's
-   observed settlement after every leg. A 16-step `max_path` compatibility guard and `route_step=8`
-   still protect each local client dispatch; neither can replace the final destination. `arrive`
-   is planner input for the destination area as well as verification, so an occupied landmark may
-   settle on truthful nearby floor. No model-authored intermediate coordinate crosses the action
-   file.
+   The graphical client has both a loaded 96×96 live collision region and the complete static
+   landscape archive used to build each region. A separate read-only request/result door asks that
+   same client to run A* over its cached same-floor landscape; neither DeskCrab nor the game server
+   supplies map truth. The request also carries openable obstacles accumulated in
+   `$DESKCRAB_GAME_DIR/navigation-atlas.json` from ordinary client packets and client-cache names.
+   The resident runner keeps the REAL durable destination in `route.json`, sends only the next
+   client-planned waypoint through ACTIONS, and replans from the body's observed settlement after
+   every leg. A 16-step `max_path` guard and `route_step=8` still protect each local live dispatch;
+   neither can replace the final destination. `arrive` is planner input for the destination area
+   as well as verification, so an occupied landmark may settle on truthful nearby floor. No
+   model-authored intermediate coordinate crosses the action file.
 
    A complete map path may move farther from the destination for arbitrarily many legs while going
    around real terrain. Those legs are `route-progress`; straight-line progress budgets and the
-   old client-local edge fallback cannot reject them or erase the destination. The authoritative
-   planner treats a currently closed, definition-backed Open door or gate as a high-cost semantic
-   edge. Open ground is therefore preferred (including the free long route around a toll gate),
+   old straight-line edge fallback cannot reject them or erase the destination. The client-cache
+   planner treats a cached or previously observed Open door or gate as a high-cost semantic edge.
+   Open ground is therefore preferred (including a learned free route around a toll gate),
    but a building or pen with one real exit yields a route to that exact portal instead of to the
    piece of wall geometrically closest to the goal. The runner stops before crossing that edge,
    persists its kind/id/tile/direction, and reports `route-needs-local-interaction` at exit 4.
@@ -439,25 +454,47 @@ deliberate-play channel.
    destination and replans from the new side. Stairs, ladders, and cross-floor transitions remain
    semantic portal actions rather than fabricated walk edges.
 
-   If the server planner is unavailable or returns malformed data, the route fails closed and
+   If the client planner is unavailable or returns malformed data, the route fails closed and
    remains binding: the player never silently resumes straight-line coordinate probes. An
-   unchanged or refused server-validated local leg likewise blocks without replacing the goal.
+   unchanged or refused client-planned local leg likewise blocks without replacing the goal.
    Sol may inspect live terrain and perform a supported semantic interaction, but must not use
    `head`, guessed waypoints, or `route clear` as obstacle-solving techniques. A route is cleared
    only because its destination became obsolete or its objective changed. The route survives
    player and runner process boundaries, owns no second action slot or observer, uses no
    screenshots or timed polling, and cannot loop forever against an unchanged portal.
 
-   A destination name must not be inferred from the type of scenery that happened to be nearby.
-   `landmark TEXT [--kind npc|object|bound] [--id N]` joins matching names/descriptions in the server's own
-   definition tables to their authoritative fixed spawn/placement records and reports those
-   identities and locations. `--id` narrows a reported semantic match by its authoritative
-   definition identity. `--nearest` deliberately resolves repeated placements against the
-   current tile; `--route` sets the same durable route only when the resulting placement is unique
-   (or was explicitly narrowed with `--nearest`). That route retains the semantic kind, id, name,
-   description, and original query in `route.json` and status output. Learned prose cannot alter
-   this index. Thus seeing a door near an expected gate is not evidence that it is that gate;
-   uncertain destination identity is resolved through `landmark` before navigation continues.
+   The atlas also records every client-observed NPC/object/bound identity, location, timestamp,
+   and sighting count. `landmark TEXT [--kind npc|object|bound] [--id N]` searches those observed
+   names and locations; `--id` narrows by the client-cache type identity. `--nearest` deliberately
+   resolves repeated placements against the current tile; `--route` sets the same durable route
+   only when the result is unique (or was explicitly narrowed with `--nearest`). The route retains
+   the semantic kind, id, name, description, and original query. NPC positions are reported as
+   last observations and must be reacquired live. Thus seeing an arbitrary door near an expected
+   gate is not evidence that it is that gate, and neither prose nor a server file can inject an
+   unobserved place into the atlas.
+
+   A destination expressed as a name, person, shop, resource, or other human landmark is resolved
+   through `landmark` before any raw coordinate route is set. Search may be narrowed with a compact
+   observed identity or description fragment such as the NPC, service, item, or sign associated
+   with the place. Raw `route X Z` remains for an exact tile that was actually supplied or verified;
+   it is not a substitute for failing to look up a named destination.
+
+   Setting either a raw or landmark route also checks every tile in its requested arrival area
+   against the observation atlas before claiming `route-set`. When that whole area has already
+   been observed and every tile is movement-blocked, the setter refuses it as an observed blocked
+   destination and preserves no route. Incomplete observations remain unknown and are left for
+   the complete client-cache planner; a guessed coordinate can therefore never turn known water
+   or other known blocked terrain into a successful destination merely by being far away.
+
+   Each successfully settled client-planned route leg is also stored as a directed verified link
+   in the observation atlas. These links are activity-agnostic movement evidence: an activity or
+   objective chooses where to go, but a proven ordinary walk between two tiles is reusable by any
+   later activity. Before asking the client to search the complete cache again, the runner checks
+   for a connected chain of verified links from the current tile into the destination's arrival
+   area. It follows that chain one live collision-checked leg at a time. A link that fails the
+   current collision check is disabled immediately and the unchanged destination falls back to a
+   fresh client-cache plan; remembered travel can therefore accelerate repeated routes without
+   overruling a door, dynamic blocker, changed map, or current client state.
 
 7f. Actual movement is also recovery evidence. Every distinct logged-in tile observed by the
    resident runner is appended with its timestamp to

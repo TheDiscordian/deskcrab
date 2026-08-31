@@ -111,6 +111,7 @@ assert s["inventory"] == [
     {"id": 81, "name": 'Test "helm"', "count": 3, "equipped": True, "wearable": True,
      "commands": ["Polish", "Inspect"]},
 ]
+assert s["selected_inventory_item"] == 81
 assert s["equipment"] == [
     {"id": 81, "name": 'Test "helm"', "count": 3},
 ]
@@ -130,8 +131,10 @@ assert s["players"] == [
 ], s.get("players")
 assert s["npc_count"] == 2 and s["npcs_truncated"] is False
 assert s["ground_items"] == [
-    {"id": 27, "x": 121, "z": 650, "reachable": True, "path_distance": 1},
-    {"id": 10, "x": 130, "z": 650, "reachable": True, "path_distance": 10},
+    {"id": 27, "name": "Skull", "description": "A scary skull",
+     "x": 121, "z": 650, "reachable": True, "path_distance": 1},
+    {"id": 10, "name": "Coins", "description": "Lovely money",
+     "x": 130, "z": 650, "reachable": True, "path_distance": 10},
 ], s["ground_items"]
 messages = s["messages"]
 assert [(m["channel"], m["incoming"], m["sender"], m["text"]) for m in messages] == [
@@ -363,9 +366,13 @@ python3 - "$S/state.json" <<'PY' && ok "the snapshot lists NPCs by walking steps
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["npcs"] == [
-    {"sidx": 7, "id": 474, "x": 121, "z": 651, "distance": 1,
+    {"sidx": 7, "id": 474, "name": "Farmer", "description": "A local farmer",
+     "attackable": True, "stats": {"attack": 2, "strength": 2, "defense": 2, "hits": 8},
+     "x": 121, "z": 651, "distance": 1,
      "clear_shot": True, "terrain_melee_reachable": False},
-    {"sidx": 9, "id": 485, "x": 122, "z": 650, "distance": 2,
+    {"sidx": 9, "id": 485, "name": "Guard", "description": "A watchful guard",
+     "attackable": True, "stats": {"attack": 8, "strength": 7, "defense": 9, "hits": 15},
+     "x": 122, "z": 650, "distance": 2,
      "clear_shot": False, "terrain_melee_reachable": True},
 ], s["npcs"]
 PY
@@ -647,9 +654,11 @@ python3 - "$S/state.json" <<'PY' && ok "the snapshot lists loaded objects neares
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["objects"] == [
-    {"id": 57, "name": "Gate", "x": 121, "z": 649, "dir": 2,
+    {"id": 57, "name": "Gate", "description": "A wooden gate",
+     "commands": ["Open", "Examine"], "x": 121, "z": 649, "dir": 2,
      "blocks_movement": True, "projectiles_pass": True},
-    {"id": 493, "name": "Fishing spot", "x": 196, "z": 726, "dir": 0,
+    {"id": 493, "name": "Fishing spot", "description": "Fish are swimming here",
+     "commands": ["Net", "Bait"], "x": 196, "z": 726, "dir": 0,
      "blocks_movement": False, "projectiles_pass": False},
 ], s.get("objects")
 PY
@@ -658,10 +667,12 @@ python3 - "$S/state.json" <<'PY' && ok "and the wall objects (doors) nearest fir
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["bounds"] == [
-    {"id": 1, "name": "Door", "x": 121, "z": 650, "dir": 0,
+    {"id": 1, "name": "Door", "description": "The door is shut",
+     "commands": ["Open", "Examine"], "x": 121, "z": 650, "dir": 0,
      "blocks_movement": True, "projectiles_pass": False,
      "reachable": True, "path_distance": 1, "open_command": 1},
-    {"id": 2, "name": "Stone wall", "x": 140, "z": 660, "dir": 1,
+    {"id": 2, "name": "Stone wall", "description": "A solid wall",
+     "commands": ["WalkTo", "Examine"], "x": 140, "z": 660, "dir": 1,
      "blocks_movement": True, "projectiles_pass": False,
      "reachable": True, "path_distance": 20, "open_command": 0},
 ], s.get("bounds")
@@ -714,6 +725,25 @@ check_eq "an item no longer held is refused before object use" "$(rstatus)" "ref
 wact 743 "$(now_ms)" "type=use-item-object" "item=81" "x=121" "z=649" "obj=999"
 harness exec >/dev/null
 check_eq "a changed object identity is refused before item use" "$(rstatus)" "refused-object-mismatch"
+
+echo
+echo "use-item-npc resolves held item and visible NPC identities atomically (rules 5-7):"
+wact 744 "$(now_ms)" "type=use-item-npc" "item=81" "sidx=7" "npc=474"
+OUT="$(harness exec)"
+contains "$OUT" "use-item-npc slot=1 item=81 sidx=7" \
+    && ok "one semantic action carries the current item slot and NPC server identity" \
+    || fail "item-on-NPC should bypass inventory selection and pointer timing" "$OUT"
+check_eq "the item-on-NPC action is receipted done" "$(rstatus)" "done"
+wact 745 "$(now_ms)" "type=use-item-npc" "item=999" "sidx=7" "npc=474"
+harness exec >/dev/null
+check_eq "an item no longer held is refused before NPC use" "$(rstatus)" "refused-no-such-item"
+wact 746 "$(now_ms)" "type=use-item-npc" "item=81" "sidx=7" "npc=485"
+harness exec >/dev/null
+check_eq "a changed NPC type is refused before item use" "$(rstatus)" "refused-npc-mismatch"
+wact 747 "$(now_ms)" "type=use-item-npc" "item=81" "sidx=7" "npc=474" "within=0"
+harness exec >/dev/null
+check_eq "an optional locality cap is rechecked against the live NPC" "$(rstatus)" \
+    "refused-npc-out-of-range"
 
 echo
 echo "interact-bound opens the door, matched on tile AND wall (rules 5-7):"

@@ -15,8 +15,7 @@ GP="$REPO/lib/game_player.py"
 export DESKCRAB_GAME_STATE_DIR="$SANDBOX/gstate"
 export DESKCRAB_GAME_DIR="$SANDBOX/gdata"
 # Hermetic fixtures below exercise the client bridge with synthetic routes.
-# Live play defaults to the authoritative OpenRSC world planner.
-export DESKCRAB_NAVIGATION_ENDPOINT=off
+# Live play asks the ordinary client-cache planner through the same state dir.
 
 refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
 
@@ -59,6 +58,19 @@ import json, os, re, sys, time
 sd, status = sys.argv[1], sys.argv[2]
 ap = os.path.join(sd, "action.json")
 for _ in range(100):
+    rp = os.path.join(sd, "route-request.json")
+    if os.path.exists(rp):
+        route = dict(line.split("=", 1) for line in open(rp).read().splitlines()
+                     if "=" in line)
+        os.remove(rp)
+        plan = {"status": "ok", "source": "client-cache", "steps": 8,
+                "expanded": 10,
+                "waypoints": [[int(route["x"]), int(route["z"])]],
+                "portals": []}
+        tmp_route = os.path.join(sd, ".route-result.tmp")
+        json.dump({"id": int(route["id"]), "ts": int(time.time() * 1000),
+                   "plan": plan}, open(tmp_route, "w"))
+        os.replace(tmp_route, os.path.join(sd, "route-result.json"))
     if os.path.exists(ap):
         body = open(ap).read()
         open(os.path.join(sd, "last-action"), "w").write(body)
@@ -127,6 +139,34 @@ for _ in range(100):
             state["tick"] = int(state.get("tick", 0)) + 1
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") == "click-inventory":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            if fields.get("button", "1") == "1":
+                state["selected_inventory_item"] = int(fields["item"])
+            else:
+                state["right_click_menu_open"] = True
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") == "use-item-npc":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            item_id = int(fields["item"])
+            for item in state.get("inventory") or []:
+                if item.get("id") == item_id:
+                    item["count"] = max(0, int(item.get("count", 0)) - 1)
+                    break
+            state["inventory"] = [item for item in state.get("inventory") or []
+                                  if int(item.get("count", 0)) > 0]
+            messages = state.setdefault("messages", [])
+            next_id = max([m.get("id", 0) for m in messages if isinstance(m, dict)] + [0]) + 1
+            messages.append({"id": next_id, "channel": "quest", "incoming": False,
+                             "sender": "", "text": "The NPC accepts the item"})
+            state["talking_to_npc"] = True
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         tmp = os.path.join(sd, ".receipt.tmp")
         json.dump({"id": int(fields["id"]),
                    "status": "done" if delivered else status,
@@ -178,7 +218,8 @@ PY
     FAKE_BRIDGE_PID=$!
 }
 
-# A route leg also updates the authoritative snapshot before answering. The
+# A route leg answers the client-cache planning query, then updates the
+# observed snapshot before answering the action. The
 # destination can be the final tile or an intermediate regional settlement.
 fake_route_bridge() {  # FINAL-X FINAL-Z [STATUS]
     python3 - "$DESKCRAB_GAME_STATE_DIR" "$1" "$2" "${3:-done}" <<'PY' &
@@ -186,6 +227,19 @@ import json, os, sys, time
 sd, final_x, final_z, status = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 ap = os.path.join(sd, "action.json")
 for _ in range(100):
+    rp = os.path.join(sd, "route-request.json")
+    if os.path.exists(rp):
+        fields = dict(line.split("=", 1) for line in open(rp).read().splitlines()
+                      if "=" in line)
+        os.remove(rp)
+        plan = {"status": "ok", "source": "client-cache", "steps": 8,
+                "expanded": 10,
+                "waypoints": [[int(fields["x"]), int(fields["z"])]],
+                "portals": []}
+        tmp_route = os.path.join(sd, ".route-result.tmp")
+        json.dump({"id": int(fields["id"]), "ts": int(time.time() * 1000),
+                   "plan": plan}, open(tmp_route, "w"))
+        os.replace(tmp_route, os.path.join(sd, "route-result.json"))
     if os.path.exists(ap):
         body = open(ap).read()
         open(os.path.join(sd, "last-action"), "w").write(body)
@@ -202,6 +256,40 @@ for _ in range(100):
             os.replace(tmp_state, state_path)
         tmp = os.path.join(sd, ".receipt.tmp")
         json.dump({"id": int(fields["id"]), "status": status,
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
+# A repeated verified route must not need a new complete-map query. This fake
+# services only the ordinary action slot and leaves a marker if the player
+# incorrectly asks the cache planner before following its proven link.
+fake_verified_link_bridge() {  # FINAL-X FINAL-Z
+    python3 - "$DESKCRAB_GAME_STATE_DIR" "$1" "$2" <<'PY' &
+import json, os, sys, time
+sd, final_x, final_z = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    if os.path.exists(os.path.join(sd, "route-request.json")):
+        open(os.path.join(sd, "unexpected-route-request"), "w").write("1")
+    if os.path.exists(ap):
+        body = open(ap).read()
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        os.remove(ap)
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        state.update({"x": final_x, "z": final_z, "walking": False,
+                      "tick": state.get("tick", 0) + 1,
+                      "ts": int(time.time() * 1000)})
+        tmp_state = os.path.join(sd, ".state.tmp")
+        json.dump(state, open(tmp_state, "w"))
+        os.replace(tmp_state, state_path)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
                    "ts": int(time.time() * 1000)}, open(tmp, "w"))
         os.replace(tmp, os.path.join(sd, "receipt.json"))
         break
@@ -521,6 +609,10 @@ CODE=0; OUT="$(python3 "$GP" objective finish-cooks-assistant 2>&1)" || CODE=$?
     || fail "completed quest wrappers need the same refusal" "$OUT"
 check "an actually started quest remains selectable" python3 "$GP" objective demon-slayer
 python3 "$GP" objective --clear >/dev/null
+# The quest CLI checks above can exceed the bridge's deliberately short live
+# snapshot freshness window on a loaded machine. Refresh the same grounded
+# NPC state so this assertion tests objective scoping, not wall-clock speed.
+snap 105 '[{"sidx":77,"id":478,"x":121,"z":648}]'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "right NPC but no objective set: objective_is can never hold" "$CODE" "4"
 refute "still no action" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
@@ -1092,30 +1184,40 @@ check_eq "the next action targets the guide's new tile, not the old one" \
     "$(last_action 'x=140')" "1"
 check "follow can be ended explicitly" python3 "$GP" follow --clear
 
-DEFS="$SANDBOX/world-defs"
-mkdir -p "$DEFS/locs"
-export DESKCRAB_GAME_DEFS_DIR="$DEFS"
-printf '%s\n' '{"npcs":[{"id":161,"name":"Border Guard","description":"a guard from Al Kharid"}]}' > "$DEFS/NpcDefs.json"
-printf '%s\n' '{"npclocs":[{"id":161,"start":{"X":92,"Y":650},"min":{"X":92,"Y":647},"max":{"X":94,"Y":652}}]}' > "$DEFS/locs/NpcLocs.json"
-printf '%s\n' '<GameObjectDef-array><GameObjectDef><name>Tree</name><description>A tree</description><command1>Chop</command1></GameObjectDef><GameObjectDef><name>gate</name><description>A gate from Lumbridge to Al Kharid</description><command1>Open</command1></GameObjectDef></GameObjectDef-array>' > "$DEFS/GameObjectDef.xml"
-printf '%s\n' '{"sceneries":[{"id":1,"pos":{"X":92,"Y":649},"direction":0}]}' > "$DEFS/locs/SceneryLocs.json"
-printf '%s\n' '<DoorDef-array><DoorDef><name>Door</name><description>An ordinary door</description><command1>Open</command1></DoorDef></DoorDef-array>' > "$DEFS/DoorDef.xml"
-printf '%s\n' '{"boundaries":[{"id":0,"pos":{"X":106,"Y":675},"direction":1}]}' > "$DEFS/locs/BoundaryLocs.json"
-snap 1045 '[]' '{"x":106,"z":675}'
+snap 1045 '[{"sidx":22,"id":161,"name":"Border Guard","description":"a guard from Al Kharid","attackable":true,"stats":{},"x":92,"z":650}]' '{"x":106,"z":675,"objects":[{"id":1,"name":"gate","description":"A gate from Lumbridge to Al Kharid","commands":["Open","Examine"],"x":92,"z":649,"dir":0,"blocks_movement":true,"projectiles_pass":false}],"bounds":[{"id":0,"name":"Door","description":"An ordinary door","commands":["Open","Examine"],"x":106,"z":675,"dir":1,"blocks_movement":true,"projectiles_pass":false}]}'
 OUT="$(python3 "$GP" landmark Al Kharid)"
-contains "$OUT" 'kind=object id=1 name="gate" spawn=(92,649)' \
-    && contains "$OUT" 'kind=npc id=161 name="Border Guard" spawn=(92,650)' \
-    && ok "semantic landmark lookup joins authoritative definitions and placements" \
-    || fail "semantic landmarks must come from the world data" "$OUT"
+contains "$OUT" 'kind=object id=1 name="gate" observed=(92,649)' \
+    && contains "$OUT" 'kind=npc id=161 name="Border Guard" observed=(92,650)' \
+    && ok "semantic landmark lookup uses client-observed identities and places" \
+    || fail "semantic landmarks must come from client observations" "$OUT"
 refute "a nearby arbitrary door cannot satisfy a different named landmark" \
     sh -c "python3 '$GP' landmark --kind bound 'Al Kharid' >/dev/null 2>&1"
 check "an unambiguous semantic landmark can become the durable route" \
     python3 "$GP" landmark --kind object --route --arrive 2 Al Kharid
 contains "$(python3 "$GP" route)" 'landmark="gate"' \
     && contains "$(python3 "$GP" route)" 'target=(92,649)' \
-    && ok "the route retains its authoritative semantic identity" \
+    && ok "the route retains its observed semantic identity" \
     || fail "a landmark route must retain its identity" "$(python3 "$GP" route)"
 python3 "$GP" route --clear >/dev/null
+python3 - "$DESKCRAB_GAME_DIR/navigation-atlas.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+atlas = json.load(open(path))
+for x in range(298, 303):
+    for z in range(298, 303):
+        atlas["tiles"][f"{x},{z}"] = {
+            "x": x, "z": z, "blocked": True, "projectiles_pass": True,
+            "first_seen": 1, "last_seen": 1, "sightings": 1,
+        }
+json.dump(atlas, open(path, "w"))
+PY
+CODE=0; OUT="$(python3 "$GP" route 300 300 --arrive 2 2>&1)" || CODE=$?
+check_eq "a fully observed blocked arrival area is refused before route-set" "$CODE" "1"
+contains "$OUT" "entirely movement-blocked" \
+    && ok "the refusal names known blocked terrain rather than a generic route failure" \
+    || fail "known blocked destinations need a useful refusal" "$OUT"
+refute "a refused blocked destination leaves no durable route" \
+    test -f "$DESKCRAB_GAME_DIR/route.json"
 python3 "$GP" objective cross-region >/dev/null
 check "a stale travel fragment can coexist in the table" \
     python3 "$GP" learn stale-route-fragment-test --priority 500 --cooldown-ms 0 \
@@ -1166,6 +1268,50 @@ contains "$OUT" "status=route-complete" \
     && ok "completion is explicit" || fail "completion is explicit" "$OUT"
 refute "the completed route cannot fire again" test -f "$DESKCRAB_GAME_DIR/route.json"
 
+python3 - "$GP" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("game_player_links", sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+gp.record_navigation_link(120, 648, 128, 648)
+gp.record_navigation_link(128, 648, 136, 648)
+PY
+check_eq "successful local walks become reusable atlas links" \
+    "$(jq '.links | length' "$DESKCRAB_GAME_DIR/navigation-atlas.json")" "2"
+snap 10481 '[]' '{"x":120,"z":648}'
+check "a previously walked destination can be selected again" \
+    python3 "$GP" route 136 648 --arrive 1
+rm -f "$DESKCRAB_GAME_STATE_DIR/route-request.json" \
+      "$DESKCRAB_GAME_STATE_DIR/unexpected-route-request"
+fake_verified_link_bridge 128 648
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a repeated route follows its verified graph without another map search" "$CODE" "0"
+check_eq "the first reused link targets its previously settled endpoint" \
+    "$(last_action 'x=128')" "1"
+refute "verified-link reuse does not ask the complete-cache planner again" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/unexpected-route-request"
+check_eq "the decision evidence identifies verified-link planning" \
+    "$(sandbox_count_in '"planner":"verified-links"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl")" "1"
+python3 "$GP" route --clear >/dev/null
+
+snap 10482 '[]' '{"x":120,"z":648}'
+python3 "$GP" route 136 648 --arrive 1 >/dev/null
+fake_bridge refused-no-path
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a stale verified link is retired without blocking its destination" "$CODE" "0"
+contains "$OUT" "status=route-replanning" \
+    && ok "the failed reuse immediately schedules fresh client planning" \
+    || fail "a stale route link must fall back mechanically" "$OUT"
+check_eq "the failed directed edge is disabled in the atlas" \
+    "$(jq -r '.links["120,648>128,648"].disabled' \
+        "$DESKCRAB_GAME_DIR/navigation-atlas.json")" "true"
+contains "$(python3 "$GP" route)" "status=active target=(136,648)" \
+    && ok "retiring one link preserves the original destination" \
+    || fail "a stale link must not erase the travel commitment"
+python3 "$GP" route --clear >/dev/null
+
 # A real collision path may initially move away from its destination to clear
 # a wall. That is productive only because the bridge chose the prefix; a
 # repeated endpoint still proves a cycle and stops it.
@@ -1203,7 +1349,7 @@ fake_bridge refused-no-path
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "a full collision-path refusal asks for a semantic correction" "$CODE" "4"
-contains "$OUT" "route-needs-detour" \
+contains "$OUT" "route-needs-local-interaction" \
     && ok "an unavailable path does not launch coordinate guesses" \
     || fail "a collision-path refusal must remain a bounded reasoning gap" "$OUT"
 python3 "$GP" route --clear >/dev/null
@@ -1214,9 +1360,8 @@ fake_bridge refused-no-path
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "one grounded path refusal licenses Sol to solve the obstacle: exit 4" "$CODE" "4"
-contains "$OUT" "route-needs-detour" \
-    && contains "$OUT" "evidence=grounded-collision-path" \
-    && contains "$OUT" "map_boundary=unproven" \
+contains "$OUT" "route-needs-local-interaction" \
+    && contains "$OUT" "evidence=client-cache-path" \
     && ok "the path failure is bounded to what was observed" \
     || fail "a path failure must not invent world geography" "$OUT"
 contains "$(python3 "$GP" route)" "status=blocked" \
@@ -1240,33 +1385,35 @@ check "route clear is idempotent" python3 "$GP" route --clear
 python3 "$GP" objective --clear >/dev/null
 
 python3 - "$GP" <<'PY' \
-    && ok "authoritative route legs retain the destination and stop at the real semantic portal" \
-    || fail "the authoritative route/portal handoff must remain durable"
+    && ok "client-cache route legs retain the destination and stop at an observed semantic portal" \
+    || fail "the client-cache route/portal handoff must remain durable"
 import importlib.util, os, sys
 
 spec = importlib.util.spec_from_file_location("game_player_under_test", sys.argv[1])
 gp = importlib.util.module_from_spec(spec)
 sys.path.insert(0, os.path.dirname(sys.argv[1]))
 spec.loader.exec_module(gp)
-os.environ["DESKCRAB_NAVIGATION_ENDPOINT"] = "127.0.0.1:1"
 gp.save_route = lambda route: None
 gp.route_obstacle_signature = lambda snap: "fixture-topology"
 route = {"v": 1, "x": 80, "z": 675, "arrive": 2, "objective": "travel",
          "status": "active", "visited": [], "nonclosing_legs": 0}
 portal = {"kind": "object", "id": 60, "x": 105, "z": 619, "dir": 0,
           "from": [104, 619], "to": [105, 619]}
-gp.authoritative_route_plan = lambda *args: {
+gp.client_cache_route_plan = lambda *args: {
     "status": "ok", "waypoints": [[104, 615], [104, 619], [105, 619]],
     "steps": 12, "expanded": 30, "remaining_cost": None,
     "portals": [portal]}
-planned, leg = gp.prepare_authoritative_route(route, {"x": 104, "z": 607})
+planned, leg = gp.prepare_client_cache_route(route, {"x": 104, "z": 607})
 assert leg == (104, 615), (planned, leg)
 assert (planned["x"], planned["z"]) == (80, 675), planned
 assert planned["next_portal"] == portal, planned
-gp.authoritative_route_plan = lambda *args: {
+gp.client_cache_route_plan = lambda *args: {
     "status": "ok", "waypoints": [[105, 619]], "steps": 1, "expanded": 2,
     "remaining_cost": None, "portals": [portal]}
-blocked, leg = gp.prepare_authoritative_route(route, {"x": 104, "z": 619})
+blocked, leg = gp.prepare_client_cache_route(route, {
+    "x": 104, "z": 619,
+    "objects": [{"id": 60, "x": 105, "z": 619, "dir": 0,
+                 "blocks_movement": True}]})
 assert leg is None, (blocked, leg)
 assert blocked["status"] == "blocked", blocked
 assert blocked["blocked_reason"] == "semantic-portal-needed", blocked
@@ -1741,6 +1888,12 @@ refute "click-entity refuses an unknown entity kind" \
 refute "click-entity refuses a mouse button outside 1-3" \
     python3 "$GP" learn bad9 --priority 1 --trigger npc_visible=2 \
         --action click-entity --param kind=npc --param entity=2 --param button=4
+refute "use-item-npc without an item id is refused" \
+    python3 "$GP" learn bad-item-npc --priority 1 --trigger npc_visible=121 \
+        --action use-item-npc --param npc=121
+refute "use-item-npc refuses a locality cap beyond ten tiles" \
+    python3 "$GP" learn bad-item-npc-range --priority 1 --trigger inventory_has=193 \
+        --action use-item-npc --param item=193 --param npc=121 --param within=11
 refute "click-inventory without an item id is refused" \
     python3 "$GP" learn bad10 --priority 1 --trigger inventory_has=145 \
         --action click-inventory
@@ -1909,10 +2062,18 @@ fi
 # Every direct harness action now records its pre-dispatch causal baseline.
 # Keep that observer in this test's sandbox instead of the relocated HOME.
 export DESKCRAB_GAME_PLAYER="$GP"
+check_eq "the coordinate fallback is named as a screen click, not a key press" \
+    "$(sandbox_count_in '^    click-screen)' "$HEADLESS")" "1"
+CODE=0; OUT="$(BETTY_OPENRSC_AUTONOMOUS=0 "$HEADLESS" press 1 2>&1)" || CODE=$?
+check_eq "an incomplete coordinate press fails immediately" "$CODE" "1"
+contains "$OUT" "not a key command" \
+    && contains "$OUT" "key 1" \
+    && ok "the press error gives the correct keyboard spelling" \
+    || fail "the old press error must explain the correction" "$OUT"
 check_eq "the harness carries the identity-based entity door" \
     "$(sandbox_count_in '^    entity)' "$HEADLESS")" "1"
 check_eq "the harness carries the definition-backed NPC command door" \
-    "$(sandbox_count_in '^    npc)' "$HEADLESS")" "1"
+    "$(sandbox_count_in '^    npc).*cmd_npc' "$HEADLESS")" "1"
 check_eq "the harness carries the structured spellbook door" \
     "$(sandbox_count_in '^    spells)' "$HEADLESS")" "1"
 check_eq "the harness carries the semantic NPC spell-cast door" \
@@ -1942,6 +2103,9 @@ check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
 check_eq "the harness carries the atomic item-on-object door" \
     "$(sandbox_count_in '^    use)' "$HEADLESS")" "1"
+check "the client bridge accepts semantic held-item-on-NPC actions" \
+    grep -q '"use-item-npc".equals(type)' \
+        "$GAME_TREE/Core-Framework/Client_Base/src/orsc/ReflexBridge.java"
 check_eq "the harness carries the semantic equipment listing door" \
     "$(sandbox_count_in '^    equipment)' "$HEADLESS")" "1"
 check_eq "the harness carries idempotent equip and unequip doors" \
@@ -2050,7 +2214,7 @@ fake_bridge done
 OUT="$(bash "$HEADLESS" npc 11 1)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the NPC command door completes through ACTIONS" "$CODE" "0"
-contains "$OUT" "npc(11 sidx=55 cmd=1)" \
+contains "$OUT" "npc=11 sidx=55 cmd=1" \
     && ok "and reports the stable NPC identity and command" \
     || fail "and reports the stable NPC identity and command" "$OUT"
 check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
@@ -2233,7 +2397,7 @@ check_eq "the dialogue door wrote choose-dialogue" \
     "$(last_action 'type=choose-dialogue')" "1"
 check_eq "the dialogue action carries one intact text field" \
     "$(last_action 'text=Ask about')" "1"
-snap 1172 '[]' '{"inventory":[{"id":145,"count":2}]}'
+snap 1172 '[]' '{"inventory":[{"id":145,"count":2}],"selected_inventory_item":null}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" inventory 145 3)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -2245,6 +2409,18 @@ check_eq "the door wrote click-inventory" "$(last_action 'type=click-inventory')
 check_eq "the door wrote only the item id" "$(last_action 'item=145')" "1"
 refute "the inventory door did not write a slot" \
     grep -q '^slot=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 11719 '[{"sidx":55,"id":121,"name":"Joe","x":121,"z":650}]' '{"inventory":[{"id":193,"name":"Beer","count":1}],"messages":[{"id":11719000,"channel":"game","text":"Ready"}]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" use 193 npc Joe 1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the item-on-NPC door waits for grounded completion" "$CODE" "0"
+contains "$OUT" "name=Joe" && contains "$OUT" "Beer(193):-1" \
+    && ok "the semantic door reports the NPC identity and consumed item" \
+    || fail "item-on-NPC should not require inventory or pointer staging" "$OUT"
+check_eq "item-on-NPC crosses as one semantic action" \
+    "$(last_action 'type=use-item-npc')" "1"
+check_eq "the action carries Joe's live server identity" "$(last_action 'sidx=55')" "1"
+check_eq "the action carries the held beer identity" "$(last_action 'item=193')" "1"
 snap 117211 '[]' '{"objects":[{"id":118,"x":121,"z":648}],"inventory":[{"id":150,"name":"copper ore","count":1},{"id":202,"name":"tin ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":117211000,"channel":"game","text":"Ready"}]}'
 fake_smelt_bridge
 OUT="$(bash "$HEADLESS" use 150 object 118 1)"; CODE=$?
@@ -3033,6 +3209,10 @@ contains "$OUT" "betty-openrsc remember" \
 contains "$OUT" "backtrack history" \
     && ok "the composed player knows its timestamped movement memory" \
     || fail "the composed player knows its timestamped movement memory" "$OUT"
+contains "$OUT" "For every destination expressed as a person" \
+    && contains "$OUT" "before setting a raw coordinate route" \
+    && ok "an unsteered player receives atlas-first named navigation" \
+    || fail "named destinations must resolve through the atlas before coordinates" "$OUT"
 contains "$OUT" "reply-undeliverable" \
     && ok "the composed player cannot loop on an unavailable reply target" \
     || fail "the composed player needs the unavailable-reply release" "$OUT"
@@ -3221,10 +3401,13 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh terrain" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "same selected NPC" \
     && ok "the resumed thread receives grounded projectile-position learning" \
     || fail "the resumed thread receives grounded projectile-position learning"
-contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "Never probe alternate coordinate legs" \
-    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "authoritative world collision map" \
-    && ok "the resumed thread keeps the authoritative route instead of inventing geography" \
-    || fail "the resumed thread needs the authoritative navigation contract"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "client plans the same-floor route from its own complete" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "landscape cache" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        "Do not manually probe neighbouring tiles" \
+    && ok "the resumed thread keeps the client-grounded route instead of inventing geography" \
+    || fail "the resumed thread needs the client-grounded navigation contract"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
     && ok "the resumed thread receives the urgent idle-warning action" \
     || fail "the resumed thread receives the urgent idle-warning action"

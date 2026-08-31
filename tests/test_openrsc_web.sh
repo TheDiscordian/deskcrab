@@ -56,6 +56,7 @@ json.dump({
 PY
 printf 'mining\n' > "$GDATA/activity"
 printf 'mining-level-15\n' > "$GDATA/objective"
+printf 'Bank the ore, then return to the nearest observed rocks.\n' > "$GDATA/plan"
 python3 - "$GDATA/activity-stats.json" "$NOW_MS" <<'PY'
 import json, sys
 json.dump({"activity": "mining", "started_ms": int(sys.argv[2]) - 3600000,
@@ -191,6 +192,9 @@ echo "== the HUD is useful but narrowly allowlisted =="
 STATE="$(curl -fsS -b "$T/watch.cookies" "$BASE/openrsc/state")"
 check_eq "activity reaches the HUD" \
     "$(printf '%s' "$STATE" | jq -r .activity)" "mining"
+check_eq "the chosen plan reaches the HUD" \
+    "$(printf '%s' "$STATE" | jq -r .plan)" \
+    "Bank the ore, then return to the nearest observed rocks."
 check_eq "HP reaches the HUD" \
     "$(printf '%s' "$STATE" | jq -r '.hp | "\(.current)/\(.maximum)"')" "19/21"
 check_eq "positive XP/hour is calculated from the activity baseline" \

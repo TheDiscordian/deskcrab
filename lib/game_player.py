@@ -16,16 +16,15 @@ import argparse
 import ctypes
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import re
 import select
-import socket
 import subprocess
 import sys
 import time
 import unicodedata
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +37,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "in_combat", "out_of_combat")
-ACTIONS = ("talk-npc", "interact-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
+ACTIONS = ("talk-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
@@ -89,8 +88,11 @@ NAVIGATION_LEG_MAX_PATH_TILES = 16  # reject a nearby waypoint whose real route 
 NAVIGATION_ROUTE_STEP_TILES = 8  # client-grounded prefix of the real destination path
 NAVIGATION_MAX_NONCLOSING_LEGS = 12  # allow real detours, never unbounded wandering
 NAVIGATION_VISITED_MAX = 64
-NAVIGATION_SERVICE_DEFAULT = "127.0.0.1:43595"
-NAVIGATION_SERVICE_TIMEOUT_S = 5.0
+CLIENT_ROUTE_TIMEOUT_S = 5.0
+NAVIGATION_ATLAS_REFRESH_MS = 60 * 1000
+NAVIGATION_ATLAS_NPC_SITES = 128
+NAVIGATION_ATLAS_STATIC_SITES = 2048
+NAVIGATION_ATLAS_LINKS = 8192
 BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
@@ -222,41 +224,16 @@ def clear_retreat_request() -> None:
         pass
 
 
-_aggressive_npc_ids_cache = None
-
-
-def aggressive_npc_ids() -> set[int]:
-    """Server-defined aggressive NPC identities, when this OpenRSC install
-    exposes its ordinary definition file. Missing definitions fail open for
-    movement but the origin-clearance proof still applies."""
-    global _aggressive_npc_ids_cache
-    if _aggressive_npc_ids_cache is not None:
-        return _aggressive_npc_ids_cache
-    candidates = []
-    configured = os.environ.get("DESKCRAB_GAME_NPC_DEFS")
-    if configured:
-        candidates.append(Path(configured))
-    candidates.append(Path.home() / "Games/OpenRSC/Core-Framework/server/conf/server/defs/NpcDefs.json")
-    result = set()
-    for path in candidates:
-        try:
-            raw = json.loads(path.read_text())
-            result = {
-                item["id"] for item in raw.get("npcs", [])
-                if isinstance(item, dict) and isinstance(item.get("id"), int)
-                and item.get("aggressive") in (1, True)
-            }
-            break
-        except (OSError, json.JSONDecodeError, AttributeError):
-            continue
-    _aggressive_npc_ids_cache = result
-    return result
-
-
 def visible_aggressive_npcs(snap: dict) -> list[dict]:
-    ids = aggressive_npc_ids()
+    """Visible combat-capable NPCs known through the ordinary client.
+
+    The client cache exposes whether an NPC can be attacked, but not the
+    server's private aggression policy.  Treating every attackable visible
+    NPC as a possible hazard is conservative during an explicit retreat and
+    never consults a server definition file.
+    """
     return [npc for npc in snap.get("npcs") or []
-            if isinstance(npc, dict) and npc.get("id") in ids
+            if isinstance(npc, dict) and npc.get("attackable") is True
             and isinstance(npc.get("x"), int) and isinstance(npc.get("z"), int)]
 
 
@@ -329,17 +306,12 @@ def follow_path() -> Path:
     return game_dir() / "follow.json"
 
 
-def world_defs_dir() -> Path:
-    """The authoritative OpenRSC definitions used for semantic landmarks.
+def navigation_atlas_path() -> Path:
+    return game_dir() / "navigation-atlas.json"
 
-    A test or alternate server may provide its own definition root. Ordinary
-    play reads the same checked-in world files as the running local server;
-    this is discovery only and never writes into the game checkout.
-    """
-    configured = os.environ.get("DESKCRAB_GAME_DEFS_DIR")
-    if configured:
-        return Path(configured)
-    return (Path.home() / "Games/OpenRSC/Core-Framework/server/conf/server/defs")
+
+def navigation_atlas_lock_path() -> Path:
+    return game_dir() / "navigation-atlas.lock"
 
 
 def session_path() -> Path:
@@ -553,79 +525,391 @@ def _normalise_landmark_text(value) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
-def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]:
-    """Resolve stable NPC/object/boundary spawns from the server's own data.
+def load_navigation_atlas() -> dict:
+    try:
+        atlas = json.loads(navigation_atlas_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"v": 1, "tiles": {}, "barriers": {}, "entities": {}, "links": {}}
+    if not isinstance(atlas, dict) or atlas.get("v") != 1:
+        return {"v": 1, "tiles": {}, "barriers": {}, "entities": {}, "links": {}}
+    for field in ("tiles", "barriers", "entities", "links"):
+        if not isinstance(atlas.get(field), dict):
+            atlas[field] = {}
+    return atlas
 
-    The name is semantic evidence; the location comes from the matching locs
-    table. This prevents a nearby arbitrary door from being renamed as a
-    distant landmark merely because play expected to encounter a door.
+
+def _atlas_refresh(entry: dict, observed_ms: int) -> bool:
+    last_seen = entry.get("last_seen")
+    return not isinstance(last_seen, int) \
+        or observed_ms - last_seen >= NAVIGATION_ATLAS_REFRESH_MS
+
+
+def _atlas_site_key(x: int, z: int, direction) -> str:
+    return f"{x},{z},{direction if isinstance(direction, int) else '-'}"
+
+
+def record_navigation_observation(snap: dict) -> None:
+    """Persist only world facts delivered to this ordinary client.
+
+    The local terrain square comes from the client's collision map; entity
+    names and commands come from the client's cache; locations come from
+    normal packets.  Repeated frames are coalesced to one refresh per minute
+    so the resident observer does not rewrite the atlas every tick.
     """
-    root = world_defs_dir()
+    if snap.get("logged_in") is not True:
+        return
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return
+    observed_ms = snap.get("ts") if isinstance(snap.get("ts"), int) else now_ms()
+    game_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        with open(navigation_atlas_lock_path(), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            atlas = load_navigation_atlas()
+            changed = False
+
+            terrain = snap.get("terrain")
+            if isinstance(terrain, dict) and isinstance(terrain.get("radius"), int):
+                radius = min(12, max(0, terrain["radius"]))
+                blocked = {
+                    (cell.get("x"), cell.get("z")): cell
+                    for cell in terrain.get("blocked_cells") or []
+                    if isinstance(cell, dict) and isinstance(cell.get("x"), int)
+                    and isinstance(cell.get("z"), int)
+                }
+                for x in range(px - radius, px + radius + 1):
+                    for z in range(pz - radius, pz + radius + 1):
+                        cell = blocked.get((x, z))
+                        facts = {
+                            "x": x, "z": z, "blocked": cell is not None,
+                            "projectiles_pass": (
+                                cell.get("projectiles_pass") if cell is not None else True),
+                        }
+                        key = f"{x},{z}"
+                        old = atlas["tiles"].get(key)
+                        if not isinstance(old, dict):
+                            atlas["tiles"][key] = {
+                                **facts, "first_seen": observed_ms,
+                                "last_seen": observed_ms, "sightings": 1,
+                            }
+                            changed = True
+                        elif any(old.get(name) != value for name, value in facts.items()) \
+                                or _atlas_refresh(old, observed_ms):
+                            old.update(facts)
+                            old["last_seen"] = observed_ms
+                            old["sightings"] = int(old.get("sightings", 0)) + 1
+                            changed = True
+
+                for barrier in terrain.get("barriers") or []:
+                    if not isinstance(barrier, dict) \
+                            or not isinstance(barrier.get("a"), list) \
+                            or not isinstance(barrier.get("b"), list) \
+                            or len(barrier["a"]) != 2 or len(barrier["b"]) != 2 \
+                            or not all(isinstance(value, int)
+                                       for value in barrier["a"] + barrier["b"]):
+                        continue
+                    a, b = sorted((barrier["a"], barrier["b"]))
+                    key = f"{a[0]},{a[1]}:{b[0]},{b[1]}"
+                    facts = {"a": a, "b": b,
+                             "projectiles_pass": barrier.get("projectiles_pass") is True}
+                    old = atlas["barriers"].get(key)
+                    if not isinstance(old, dict):
+                        atlas["barriers"][key] = {
+                            **facts, "first_seen": observed_ms,
+                            "last_seen": observed_ms, "sightings": 1,
+                        }
+                        changed = True
+                    elif any(old.get(name) != value for name, value in facts.items()) \
+                            or _atlas_refresh(old, observed_ms):
+                        old.update(facts)
+                        old["last_seen"] = observed_ms
+                        old["sightings"] = int(old.get("sightings", 0)) + 1
+                        changed = True
+
+            for kind, collection in (("npc", "npcs"), ("object", "objects"),
+                                     ("bound", "bounds")):
+                for entity in snap.get(collection) or []:
+                    if not isinstance(entity, dict) \
+                            or not isinstance(entity.get("id"), int) \
+                            or not isinstance(entity.get("x"), int) \
+                            or not isinstance(entity.get("z"), int):
+                        continue
+                    entity_key = f"{kind}:{entity['id']}"
+                    stored = atlas["entities"].get(entity_key)
+                    if not isinstance(stored, dict):
+                        stored = {"kind": kind, "id": entity["id"], "sites": {}}
+                        atlas["entities"][entity_key] = stored
+                        changed = True
+                    metadata = {
+                        "name": str(entity.get("name") or "").strip(),
+                        "description": str(entity.get("description") or "").strip(),
+                    }
+                    if kind == "npc":
+                        metadata.update({"attackable": entity.get("attackable") is True,
+                                         "stats": entity.get("stats") or {}})
+                    else:
+                        metadata.update({
+                            "commands": [str(value or "").strip()
+                                         for value in entity.get("commands") or []][:2],
+                        })
+                    if any(stored.get(name) != value for name, value in metadata.items()):
+                        stored.update(metadata)
+                        changed = True
+                    direction = entity.get("dir")
+                    site_key = _atlas_site_key(entity["x"], entity["z"], direction)
+                    sites = stored.setdefault("sites", {})
+                    site_facts = {"x": entity["x"], "z": entity["z"]}
+                    if isinstance(direction, int):
+                        site_facts["dir"] = direction
+                    if kind != "npc":
+                        site_facts.update({
+                            "blocks_movement": entity.get("blocks_movement") is True,
+                            "projectiles_pass": entity.get("projectiles_pass") is True,
+                        })
+                    old = sites.get(site_key)
+                    if not isinstance(old, dict):
+                        sites[site_key] = {
+                            **site_facts, "first_seen": observed_ms,
+                            "last_seen": observed_ms, "sightings": 1,
+                        }
+                        changed = True
+                    elif any(old.get(name) != value for name, value in site_facts.items()) \
+                            or _atlas_refresh(old, observed_ms):
+                        old.update(site_facts)
+                        old["last_seen"] = observed_ms
+                        old["sightings"] = int(old.get("sightings", 0)) + 1
+                        changed = True
+                    limit = (NAVIGATION_ATLAS_NPC_SITES if kind == "npc"
+                             else NAVIGATION_ATLAS_STATIC_SITES)
+                    if len(sites) > limit:
+                        for remove in sorted(
+                                sites, key=lambda key: sites[key].get("last_seen", 0))[
+                                    :len(sites) - limit]:
+                            del sites[remove]
+                            changed = True
+
+            if changed:
+                atlas["updated_ms"] = observed_ms
+                game_reflex.atomic_write(
+                    navigation_atlas_path(), json.dumps(atlas, indent=2) + "\n")
+    except OSError:
+        # Observation must never prevent the next game action.
+        return
+
+
+def learned_navigation_portals() -> list[dict]:
+    """Openable blockers learned from ordinary client packets/cache."""
+    portals = []
+    for entity in load_navigation_atlas()["entities"].values():
+        if not isinstance(entity, dict) or entity.get("kind") not in ("object", "bound"):
+            continue
+        commands = {_normalise_landmark_text(value)
+                    for value in entity.get("commands") or []}
+        if "open" not in commands or not isinstance(entity.get("id"), int):
+            continue
+        for site in (entity.get("sites") or {}).values():
+            if not isinstance(site, dict) or site.get("blocks_movement") is not True \
+                    or not isinstance(site.get("x"), int) \
+                    or not isinstance(site.get("z"), int):
+                continue
+            portals.append({"kind": entity["kind"], "id": entity["id"],
+                            "x": site["x"], "z": site["z"],
+                            "dir": site.get("dir", 0)})
+    return sorted(portals, key=lambda item: (
+        item["kind"], item["x"], item["z"], item["id"], item["dir"]))
+
+
+def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]:
+    """Resolve semantic places from this player's own observation atlas."""
     wanted = _normalise_landmark_text(query)
     if not wanted:
         return []
     candidates = []
-
-    def matches(name, description) -> bool:
-        return wanted in _normalise_landmark_text(f"{name or ''} {description or ''}")
-
-    if kind in (None, "npc"):
-        try:
-            definitions = {
-                entry["id"]: entry
-                for entry in json.loads((root / "NpcDefs.json").read_text()).get("npcs", [])
-                if isinstance(entry, dict) and isinstance(entry.get("id"), int)
-                and matches(entry.get("name"), entry.get("description"))
-            }
-            locations = json.loads((root / "locs/NpcLocs.json").read_text()).get("npclocs", [])
-            for location in locations:
-                definition = definitions.get(location.get("id"))
-                start = location.get("start") or {}
-                if definition is None or not isinstance(start.get("X"), int) \
-                        or not isinstance(start.get("Y"), int):
-                    continue
-                candidates.append({"kind": "npc", "id": location["id"],
-                                   "name": definition.get("name") or "?",
-                                   "description": definition.get("description") or "",
-                                   "x": start["X"], "z": start["Y"],
-                                   "min": location.get("min"), "max": location.get("max")})
-        except (OSError, ValueError, TypeError, KeyError):
-            pass
-
-    for candidate_kind, defs_name, locs_name, locs_key in (
-            ("object", "GameObjectDef.xml", "SceneryLocs.json", "sceneries"),
-            ("bound", "DoorDef.xml", "BoundaryLocs.json", "boundaries")):
-        if kind not in (None, candidate_kind):
+    for entity in load_navigation_atlas()["entities"].values():
+        if not isinstance(entity, dict) or entity.get("kind") not in ("npc", "object", "bound") \
+                or kind not in (None, entity.get("kind")) \
+                or wanted not in _normalise_landmark_text(
+                    f"{entity.get('name', '')} {entity.get('description', '')}"):
             continue
-        try:
-            definitions = []
-            for entry in ET.parse(root / defs_name).getroot():
-                definitions.append({"name": entry.findtext("name") or "?",
-                                    "description": entry.findtext("description") or "",
-                                    "command1": entry.findtext("command1") or "",
-                                    "command2": entry.findtext("command2") or ""})
-            locations = json.loads((root / "locs" / locs_name).read_text()).get(locs_key, [])
-            for location in locations:
-                object_id = location.get("id")
-                pos = location.get("pos") or {}
-                if not isinstance(object_id, int) or not 0 <= object_id < len(definitions) \
-                        or not isinstance(pos.get("X"), int) \
-                        or not isinstance(pos.get("Y"), int):
-                    continue
-                definition = definitions[object_id]
-                if not matches(definition["name"], definition["description"]):
-                    continue
-                candidates.append({"kind": candidate_kind, "id": object_id,
-                                   "name": definition["name"],
-                                   "description": definition["description"],
-                                   "command1": definition["command1"],
-                                   "command2": definition["command2"],
-                                   "x": pos["X"], "z": pos["Y"],
-                                   "dir": location.get("direction")})
-        except (OSError, ValueError, TypeError, ET.ParseError):
-            pass
+        sites = [site for site in (entity.get("sites") or {}).values()
+                 if isinstance(site, dict) and isinstance(site.get("x"), int)
+                 and isinstance(site.get("z"), int)]
+        if entity["kind"] == "npc" and sites:
+            sites = [max(sites, key=lambda site: site.get("last_seen", 0))]
+        commands = entity.get("commands") or []
+        for site in sites:
+            candidates.append({
+                "kind": entity["kind"], "id": entity["id"],
+                "name": entity.get("name") or "?",
+                "description": entity.get("description") or "",
+                "command1": commands[0] if commands else "",
+                "command2": commands[1] if len(commands) > 1 else "",
+                "x": site["x"], "z": site["z"], "dir": site.get("dir"),
+                "first_seen": site.get("first_seen"),
+                "last_seen": site.get("last_seen"),
+                "sightings": site.get("sightings", 1),
+            })
     return sorted(candidates, key=lambda item: (item["kind"], item["name"].casefold(),
                                                 item["x"], item["z"], item["id"]))
+
+
+def observed_arrival_walkability(target_x: int, target_z: int, arrive: int):
+    """Return False only when the entire requested area is observed blocked.
+
+    Missing tiles are unknown rather than open: the complete client-cache planner
+    remains responsible for terrain this character has not observed yet.
+    """
+    tiles = load_navigation_atlas()["tiles"]
+    saw_unknown = False
+    for x in range(target_x - arrive, target_x + arrive + 1):
+        for z in range(target_z - arrive, target_z + arrive + 1):
+            tile = tiles.get(f"{x},{z}")
+            if not isinstance(tile, dict) or not isinstance(tile.get("blocked"), bool):
+                saw_unknown = True
+            elif tile["blocked"] is False:
+                return True
+    return None if saw_unknown else False
+
+
+def refuse_observed_blocked_destination(target_x: int, target_z: int, arrive: int) -> None:
+    if observed_arrival_walkability(target_x, target_z, arrive) is False:
+        die(f"destination area around ({target_x},{target_z}) is already observed "
+            "as entirely movement-blocked; resolve the intended landmark instead "
+            "of routing toward that coordinate")
+
+
+def _navigation_link_key(start_x: int, start_z: int, end_x: int, end_z: int) -> str:
+    return f"{start_x},{start_z}>{end_x},{end_z}"
+
+
+def record_navigation_link(start_x: int, start_z: int, end_x: int, end_z: int,
+                           landmark: dict | None = None) -> None:
+    """Remember one actually completed client-side walk as a directed edge.
+
+    The activity or objective chooses a destination. A verified ordinary walk
+    between two tiles is game-wide movement evidence and can serve any later
+    activity, while every reuse still passes through live collision checks.
+    """
+    if (start_x, start_z) == (end_x, end_z):
+        return
+    if max(abs(end_x - start_x), abs(end_z - start_z)) \
+            > NAVIGATION_LEG_MAX_PATH_TILES:
+        # Larger settlements can contain an unseen portal transition. Never
+        # promote one of those to an ordinary reusable walk edge.
+        return
+    observed_ms = now_ms()
+    game_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        with open(navigation_atlas_lock_path(), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            atlas = load_navigation_atlas()
+            key = _navigation_link_key(start_x, start_z, end_x, end_z)
+            old = atlas["links"].get(key)
+            successes = int(old.get("successes", 0)) + 1 \
+                if isinstance(old, dict) else 1
+            link = {
+                "from": [start_x, start_z], "to": [end_x, end_z],
+                "distance": max(abs(end_x - start_x), abs(end_z - start_z)),
+                "successes": successes,
+                "first_success": (old.get("first_success", observed_ms)
+                                  if isinstance(old, dict) else observed_ms),
+                "last_success": observed_ms,
+                "disabled": False,
+            }
+            if isinstance(old, dict) and isinstance(old.get("failures"), int):
+                link["failures"] = old["failures"]
+            if isinstance(landmark, dict) and landmark.get("name"):
+                link["destination"] = {
+                    field: landmark[field]
+                    for field in ("kind", "id", "name", "query")
+                    if field in landmark
+                }
+            atlas["links"][key] = link
+            if len(atlas["links"]) > NAVIGATION_ATLAS_LINKS:
+                removable = sorted(
+                    atlas["links"],
+                    key=lambda item: atlas["links"][item].get("last_success", 0))
+                for item in removable[:len(atlas["links"]) - NAVIGATION_ATLAS_LINKS]:
+                    del atlas["links"][item]
+            atlas["updated_ms"] = observed_ms
+            game_reflex.atomic_write(
+                navigation_atlas_path(), json.dumps(atlas, indent=2) + "\n")
+    except OSError:
+        return
+
+
+def disable_navigation_link(key: str) -> None:
+    """Retire a remembered edge that failed its current live collision check."""
+    if not key:
+        return
+    try:
+        with open(navigation_atlas_lock_path(), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            atlas = load_navigation_atlas()
+            link = atlas["links"].get(key)
+            if not isinstance(link, dict):
+                return
+            link["disabled"] = True
+            link["failures"] = int(link.get("failures", 0)) + 1
+            link["last_failure"] = now_ms()
+            atlas["updated_ms"] = link["last_failure"]
+            game_reflex.atomic_write(
+                navigation_atlas_path(), json.dumps(atlas, indent=2) + "\n")
+    except OSError:
+        return
+
+
+def verified_navigation_path(start_x: int, start_z: int, target_x: int,
+                             target_z: int, arrive: int) -> list[list]:
+    """Return the cheapest chain of actually completed directed walk edges."""
+    start = (start_x, start_z)
+    adjacency = {}
+    for key, link in load_navigation_atlas()["links"].items():
+        if not isinstance(link, dict) or link.get("disabled") is True \
+                or not isinstance(link.get("from"), list) \
+                or not isinstance(link.get("to"), list) \
+                or len(link["from"]) != 2 or len(link["to"]) != 2 \
+                or not all(isinstance(value, int)
+                           for value in link["from"] + link["to"]):
+            continue
+        origin, destination = tuple(link["from"]), tuple(link["to"])
+        distance = int(link.get("distance") or
+                       max(abs(destination[0] - origin[0]),
+                           abs(destination[1] - origin[1])))
+        if distance <= 0 or distance > NAVIGATION_LEG_MAX_PATH_TILES:
+            continue
+        adjacency.setdefault(origin, []).append((distance, destination, key))
+    if start not in adjacency:
+        return []
+    queue = [(0, start)]
+    best = {start: 0}
+    previous = {}
+    goal = None
+    while queue and len(best) <= NAVIGATION_ATLAS_LINKS:
+        cost, node = heapq.heappop(queue)
+        if cost != best.get(node):
+            continue
+        if max(abs(node[0] - target_x), abs(node[1] - target_z)) <= arrive:
+            goal = node
+            break
+        for distance, destination, key in adjacency.get(node, []):
+            new_cost = cost + distance
+            if new_cost >= best.get(destination, sys.maxsize):
+                continue
+            best[destination] = new_cost
+            previous[destination] = (node, key)
+            heapq.heappush(queue, (new_cost, destination))
+    if goal is None or goal == start:
+        return []
+    path = []
+    node = goal
+    while node != start:
+        origin, key = previous[node]
+        path.append([node[0], node[1], key])
+        node = origin
+    path.reverse()
+    return path
 
 
 def load_movement_trail() -> dict:
@@ -917,71 +1201,61 @@ def bounded_navigation_leg(x: int, z: int, target_x: int, target_z: int,
     return leg_x, leg_z
 
 
-def navigation_service_endpoint() -> tuple[str, int] | None:
-    """Return the private authoritative planner endpoint.
+def client_cache_route_plan(start_x: int, start_z: int, target_x: int,
+                            target_z: int, arrive: int) -> dict:
+    """Ask the running client to plan from its own landscape cache.
 
-    ``off`` exists only for hermetic/legacy fixtures that deliberately test
-    the old client-local bridge. Live play defaults to the server planner and
-    must fail closed if it is unavailable; silently resuming coordinate
-    guesses is the navigation bug this service replaces.
+    The request/result files are a read-only query door separate from the
+    action slot. The game server is neither contacted nor aware of it.
     """
-    value = os.environ.get(
-        "DESKCRAB_NAVIGATION_ENDPOINT", NAVIGATION_SERVICE_DEFAULT).strip()
-    if value.casefold() in ("off", "none", "disabled"):
-        return None
-    host, separator, port_text = value.rpartition(":")
-    if not separator or not host:
-        raise ValueError("DESKCRAB_NAVIGATION_ENDPOINT must be HOST:PORT or off")
-    port = int(port_text)
-    if not 1 <= port <= 65535:
-        raise ValueError("navigation service port is out of range")
-    return host, port
-
-
-def authoritative_route_plan(start_x: int, start_z: int, target_x: int,
-                             target_z: int, arrive: int) -> dict:
-    """Ask the OpenRSC server's complete collision map for a real path."""
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    request_path = directory / "route-request.json"
+    result_path = directory / "route-result.json"
+    lock_path = directory / "route-request.lock"
+    request_id = now_ms() * 1000 + os.getpid() % 1000
     try:
-        endpoint = navigation_service_endpoint()
-    except (TypeError, ValueError) as exc:
-        return {"status": "error", "reason": f"planner-config:{exc}"}
-    if endpoint is None:
-        return {"status": "disabled"}
-    request = f"ROUTE {start_x} {start_z} {target_x} {target_z} {arrive}\n"
-    try:
-        with socket.create_connection(
-                endpoint, timeout=NAVIGATION_SERVICE_TIMEOUT_S) as connection:
-            connection.settimeout(NAVIGATION_SERVICE_TIMEOUT_S)
-            connection.sendall(request.encode("ascii"))
-            chunks = []
-            total = 0
-            while True:
-                chunk = connection.recv(65536)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > 256 * 1024:
-                    return {"status": "error", "reason": "planner-response-too-large"}
-                chunks.append(chunk)
-                if b"\n" in chunk:
-                    break
-        response = json.loads(b"".join(chunks).split(b"\n", 1)[0].decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        with open(lock_path, "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            lines = [f"id={request_id}", f"ts={now_ms()}",
+                     f"start_x={start_x}", f"start_z={start_z}",
+                     f"x={target_x}", f"z={target_z}", f"arrive={arrive}"]
+            portals = learned_navigation_portals()
+            if portals:
+                lines.append("learned_portals=" + ";".join(
+                    f"{portal['kind']},{portal['id']},{portal['x']},"
+                    f"{portal['z']},{portal['dir']}" for portal in portals))
+            game_reflex.atomic_write(request_path, "\n".join(lines) + "\n")
+            deadline = time.monotonic() + CLIENT_ROUTE_TIMEOUT_S
+            response = None
+            while time.monotonic() < deadline:
+                try:
+                    envelope = json.loads(result_path.read_text())
+                    if envelope.get("id") == request_id:
+                        response = envelope.get("plan")
+                        break
+                except (OSError, ValueError, AttributeError):
+                    pass
+                time.sleep(0.02)
+    except OSError as exc:
         return {"status": "error",
-                "reason": f"planner-unavailable:{exc.__class__.__name__}"}
+                "reason": f"client-cache-planner-io:{exc.__class__.__name__}"}
+    if response is None:
+        return {"status": "error", "reason": "client-cache-planner-timeout"}
     if not isinstance(response, dict) \
-            or response.get("status") not in ("ok", "partial", "error"):
-        return {"status": "error", "reason": "planner-invalid-response"}
+            or response.get("status") not in ("ok", "error") \
+            or response.get("source") != "client-cache":
+        return {"status": "error", "reason": "client-cache-planner-invalid-response"}
     if response["status"] == "error":
         reason = response.get("reason")
         return {"status": "error",
-                "reason": reason if isinstance(reason, str) else "planner-error"}
+                "reason": reason if isinstance(reason, str) else "client-cache-planner-error"}
     waypoints = response.get("waypoints")
     if not isinstance(waypoints, list) or len(waypoints) > 512 \
             or any(not isinstance(point, list) or len(point) != 2
                    or not all(isinstance(value, int) for value in point)
                    for point in waypoints):
-        return {"status": "error", "reason": "planner-invalid-waypoints"}
+        return {"status": "error", "reason": "client-cache-planner-invalid-waypoints"}
     portals = response.get("portals", [])
     if not isinstance(portals, list) or len(portals) > 64 \
             or any(not isinstance(portal, dict)
@@ -992,46 +1266,45 @@ def authoritative_route_plan(start_x: int, start_z: int, target_x: int,
                    or len(portal["from"]) != 2
                    or not all(isinstance(value, int) for value in portal["from"])
                    for portal in portals):
-        return {"status": "error", "reason": "planner-invalid-portals"}
+        return {"status": "error", "reason": "client-cache-planner-invalid-portals"}
     return {"status": response["status"], "waypoints": waypoints,
             "steps": response.get("steps"), "expanded": response.get("expanded"),
             "remaining_cost": response.get("remaining_cost"), "portals": portals}
 
 
-def prepare_authoritative_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
-    """Plan the next local leg without ever replacing the final destination."""
+def _observed_closed_portal(snap: dict, portal: dict) -> bool:
+    collection = "objects" if portal.get("kind") == "object" else "bounds"
+    return any(entity.get("id") == portal.get("id")
+               and entity.get("x") == portal.get("x")
+               and entity.get("z") == portal.get("z")
+               and (collection != "bounds" or entity.get("dir") == portal.get("dir"))
+               and entity.get("blocks_movement") is True
+               for entity in snap.get(collection) or [] if isinstance(entity, dict))
+
+
+def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
+    """Plan the next local leg without replacing the final destination."""
     px, pz = snap.get("x"), snap.get("z")
     if not isinstance(px, int) or not isinstance(pz, int):
         return route, None
-    try:
-        endpoint = navigation_service_endpoint()
-    except (TypeError, ValueError) as exc:
-        blocked = dict(route)
-        blocked.update({"status": "blocked",
-                        "blocked_reason": f"planner-config:{exc}",
-                        "blocked_ts": now_ms(), "planner": "authoritative-world"})
-        save_route(blocked)
-        return blocked, None
-    if endpoint is None:
-        # Explicit hermetic compatibility mode. It is never the live default.
-        return route, (route["x"], route["z"])
-    plan = authoritative_route_plan(
+    plan = client_cache_route_plan(
         px, pz, route["x"], route["z"], route["arrive"])
     if plan["status"] == "error":
         blocked = dict(route)
         blocked.update({"status": "blocked", "blocked_reason": plan["reason"],
-                        "blocked_ts": now_ms(), "planner": "authoritative-world"})
+                        "blocked_ts": now_ms(), "planner": "client-cache"})
         save_route(blocked)
         return blocked, None
     waypoints = plan.get("waypoints") or []
     portals = plan.get("portals") or []
     next_portal = portals[0] if portals else None
-    if next_portal is not None and next_portal["from"] == [px, pz]:
+    if next_portal is not None and next_portal["from"] == [px, pz] \
+            and _observed_closed_portal(snap, next_portal):
         blocked = {key: value for key, value in route.items()
                    if key != "next_portal"}
         blocked.update({"status": "blocked",
                         "blocked_reason": "semantic-portal-needed",
-                        "blocked_ts": now_ms(), "planner": "authoritative-world",
+                        "blocked_ts": now_ms(), "planner": "client-cache",
                         "planner_status": plan["status"],
                         "planned_from": [px, pz], "waypoints": waypoints,
                         "next_portal": next_portal,
@@ -1040,10 +1313,9 @@ def prepare_authoritative_route(route: dict, snap: dict) -> tuple[dict, tuple | 
         return blocked, None
     if not waypoints:
         blocked = dict(route)
-        reason = "semantic-portal-needed" if plan["status"] == "partial" \
-            else "authoritative-route-empty"
+        reason = "client-cache-route-empty"
         blocked.update({"status": "blocked", "blocked_reason": reason,
-                        "blocked_ts": now_ms(), "planner": "authoritative-world",
+                        "blocked_ts": now_ms(), "planner": "client-cache",
                         "planner_status": plan["status"], "planned_from": [px, pz],
                         "waypoints": [],
                         "blocked_signature": route_obstacle_signature(snap)})
@@ -1051,7 +1323,7 @@ def prepare_authoritative_route(route: dict, snap: dict) -> tuple[dict, tuple | 
         return blocked, None
     planned = {key: value for key, value in route.items()
                if key != "next_portal"}
-    planned.update({"status": "active", "planner": "authoritative-world",
+    planned.update({"status": "active", "planner": "client-cache",
                     "planner_status": plan["status"], "planned_from": [px, pz],
                     "waypoints": waypoints, "planner_steps": plan.get("steps"),
                     "planner_expanded": plan.get("expanded"),
@@ -1062,6 +1334,26 @@ def prepare_authoritative_route(route: dict, snap: dict) -> tuple[dict, tuple | 
         planned["planner_remaining_cost"] = plan["remaining_cost"]
     save_route(planned)
     return planned, tuple(waypoints[0])
+
+
+def prepare_navigation_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
+    """Prefer a chain already walked successfully, then ask the client cache."""
+    px, pz = snap.get("x"), snap.get("z")
+    if isinstance(px, int) and isinstance(pz, int):
+        path = verified_navigation_path(
+            px, pz, route["x"], route["z"], route["arrive"])
+        if path:
+            planned = {key: value for key, value in route.items()
+                       if key != "next_portal" and not key.startswith("blocked_")}
+            planned.update({
+                "status": "active", "planner": "verified-links",
+                "planned_from": [px, pz],
+                "waypoints": [[point[0], point[1]] for point in path],
+                "graph_link": path[0][2], "planner_ts": now_ms(),
+            })
+            save_route(planned)
+            return planned, (path[0][0], path[0][1])
+    return prepare_client_cache_route(route, snap)
 
 
 def route_obstacle_signature(snap: dict) -> str:
@@ -1215,6 +1507,15 @@ def validate_config(cfg: dict) -> None:
             if "within" in action and (not isinstance(action["within"], int)
                                         or not 0 <= action["within"] <= 10):
                 bad(f"{where}: interact-npc within must be an integer 0..10")
+        elif atype == "use-item-npc":
+            if not set(action) <= {"type", "item", "npc", "within"} \
+                    or not isinstance(action.get("item"), int) or action["item"] < 0 \
+                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
+                bad(f"{where}: use-item-npc takes item=<item id>, npc=<type id>, "
+                    "and optionally within")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: use-item-npc within must be an integer 0..10")
         elif atype == "cast-npc":
             if not set(action) <= {"type", "spell", "npc", "within", "stationary",
                                    "require_clear_shot", "require_melee_unreachable"} \
@@ -2273,10 +2574,12 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "ts": snap.get("ts"), "tick": snap.get("tick"),
             "x": snap.get("x"), "z": snap.get("z"),
             "walking": snap.get("walking"),
+            "in_combat": snap.get("in_combat"),
             "talking_to_npc": snap.get("talking_to_npc"),
             "right_click_menu_open": snap.get("right_click_menu_open"),
             "ui_panel_open": snap.get("ui_panel_open"),
             "ui_panel": snap.get("ui_panel"),
+            "selected_inventory_item": snap.get("selected_inventory_item"),
             "trade_open": snap.get("trade_open"),
             "bank_open": snap.get("bank_open"),
             "shop_open": snap.get("shop_open"),
@@ -2382,13 +2685,32 @@ def action_completion(observation: dict, snap: dict):
     ))
     completed = bool(inventory_changes or xp_changes or message
                      or ui_changes or movement_done)
+    fields = dict(field.split("=", 1) for field in observation.get("fields", [])
+                  if isinstance(field, str) and "=" in field)
+    if observation["type"] == "click-inventory":
+        try:
+            selected = int(fields.get("item", ""))
+        except ValueError:
+            selected = -1
+        selected_now = snap.get("selected_inventory_item") == selected \
+            and before.get("selected_inventory_item") != selected
+        menu_opened = snap.get("right_click_menu_open") is True \
+            and before.get("right_click_menu_open") is not True
+        if selected_now:
+            ui_changes.append(f"selected_inventory_item:{selected}")
+        completed = bool(selected_now or menu_opened or inventory_changes
+                         or xp_changes or message or failure)
+    if observation["type"] == "click-entity":
+        for key in ("walking", "in_combat"):
+            if isinstance(snap.get(key), bool) and snap.get(key) != before.get(key):
+                ui_changes.append(f"{key}:{str(snap[key]).lower()}")
+        completed = bool(inventory_changes or xp_changes or message
+                         or ui_changes or moved or failure)
     if observation["type"] == "use-item-object":
         # Pane/menu changes were the old two-click race, not evidence that the
         # server used the selected item. A furnace's start line also precedes
         # the bar. Ground success in its input changing or XP; only explicit
         # failure feedback may terminate it without either delta.
-        fields = dict(field.split("=", 1) for field in observation.get("fields", [])
-                      if isinstance(field, str) and "=" in field)
         completed = bool(fields.get("item") in changed_item_ids
                          or xp_changes or failure)
     if observation["type"] == "cast-npc":
@@ -2839,6 +3161,23 @@ def compile_player_action(rule, snap, food, eat_pick):
                 extra["within"] = within
             return compiled_npc_action("interact-npc", npc, want, **extra), None
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
+    if action["type"] == "use-item-npc":
+        item_id = action["item"]
+        if not any(entry.get("id") == item_id for entry in snap.get("inventory") or []):
+            return None, "item-not-held"
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+            if within is not None and distance > within:
+                return None, "npc-not-within-range"
+            extra = {"item": item_id, "target_distance": distance}
+            if within is not None:
+                extra["within"] = within
+            return compiled_npc_action("use-item-npc", npc, want, **extra), None
+        return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "cast-npc":
         spell_id = action["spell"]
         spell = next((entry for entry in snap.get("spells") or []
@@ -3048,7 +3387,8 @@ def snap_brief(snap: dict) -> dict:
                                       "walking", "in_combat", "talking_to_npc",
                                       "right_click_menu_open", "ui_panel_open", "ui_panel",
                                       "hover_text",
-                                      "magic_level", "selected_spell", "quest_points")}
+                                      "magic_level", "selected_spell",
+                                      "selected_inventory_item", "quest_points")}
     brief["quests"] = [
         {key: quest.get(key) for key in ("id", "name", "stage", "status")}
         for quest in snap.get("quests") or []
@@ -3435,6 +3775,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("no-snapshot", dir=str(state_dir()))
         return "no-snapshot", EXIT_NOT_READY
     record_movement_trail(snap)
+    record_navigation_observation(snap)
     xp_metrics = activity_metrics(snap, activity)
     xp_text = activity_xp_metrics_text(xp_metrics)
     xp_compare = activity_comparison_text(xp_metrics)
@@ -3678,7 +4019,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                 route["status"] = "active"
                 save_route(route)
         if route is not None and route.get("status") == "active":
-            route, route_leg = prepare_authoritative_route(route, snap)
+            route, route_leg = prepare_navigation_route(route, snap)
             route_blocked = route.get("status") == "blocked"
 
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
@@ -3746,9 +4087,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                                       "z": leg_z,
                                       "route_step": NAVIGATION_ROUTE_STEP_TILES,
                                       "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
-                                      "arrive": (0 if route.get("planner") ==
-                                                 "authoritative-world"
-                                                 else route["arrive"])}})
+                                      "arrive": (route["arrive"]
+                                                 if len(route.get("waypoints") or []) == 1
+                                                 else 0)}})
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
@@ -3781,8 +4122,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                               if isinstance(follow.get("last_x"), int) else None))
             return "follow-waiting", EXIT_NOT_READY
         if route_blocked and route is not None:
-            authoritative = route.get("planner") == "authoritative-world"
-            route_gap = ("route-needs-local-interaction" if authoritative else
+            cache_planned = route.get("planner") == "client-cache"
+            route_gap = ("route-needs-local-interaction" if cache_planned else
                          "route-needs-detour")
             report(route_gap, x=snap.get("x"), z=snap.get("z"),
                    target_x=route["x"], target_z=route["z"],
@@ -3790,11 +4131,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    feedback=latest_system_feedback(snap),
                    portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
                            if route.get("next_portal") else None),
-                   evidence=("authoritative-world-path" if authoritative
+                   evidence=("client-cache-path" if cache_planned
                              else "grounded-collision-path"),
-                   map_boundary=(None if authoritative else "unproven"),
+                   map_boundary=(None if cache_planned else "unproven"),
                    next=("use-nearby-semantic-door-gate-stair-or-ladder;"
-                         "final-route-remains-binding" if authoritative else
+                         "final-route-remains-binding" if cache_planned else
                          "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
             return route_gap, EXIT_NO_RULE
         if backtrack is not None and backtrack.get("status") == "invalid":
@@ -3917,6 +4258,25 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "id": action_id, "spell": action["spell"],
                            "npc": action["npc"], "completion": completion_detail,
                            "feedback": latest_system_feedback(latest or snap)}])
+    elif status == "done" and action["type"] in (
+            "use-item-npc", "click-inventory", "click-entity"):
+        fields = [f"{key}={action[key]}" for key in (
+            "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
+            "within", "button") if key in action]
+        observation = make_action_observation(
+            action_id, action["type"], fields, snap, event.get("ts"))
+        completion_detail, latest = await_action_completion(
+            observation, WAIT_DEFAULT_S)
+        if completion_detail is None:
+            status = f"{action['type']}-unverified"
+        elif completion_detail.get("result") == "failed":
+            status = f"{action['type']}-failed"
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "item": action["item"],
+                           "npc": action.get("npc"),
+                           "completion": completion_detail,
+                           "feedback": latest_system_feedback(latest or snap)}])
 
     if action["type"] == "walk" and final_x is not None and final_z is not None \
             and rule_name != BACKTRACK_RULE_NAME:
@@ -3948,29 +4308,38 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         visited = [point for point in route.get("visited") or []
                    if isinstance(point, list) and len(point) == 2]
         repeated_endpoint = endpoint is not None and endpoint in visited
+        route_planner = route.get("planner")
+        if route_planner in ("client-cache", "verified-links") \
+                and status in ("done", "walk-short") and moved:
+            record_navigation_link(
+                snap["x"], snap["z"], lx, lz, route.get("landmark"))
         if reached_destination:
             clear_route()
             status = "route-complete"
             flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
                            "x": lx, "z": lz, "target_x": route["x"],
-                           "target_z": route["z"]}])
-        elif route.get("planner") == "authoritative-world" \
-                and status in ("done", "walk-short") and moved:
-            # This leg is on a server-validated path. It may intentionally
+                           "target_z": route["z"], "planner": route_planner}])
+        elif route_planner in ("client-cache", "verified-links") \
+                and status in ("done", "walk-short") and moved \
+                and not repeated_endpoint:
+            # This leg is on a grounded topology path. It may intentionally
             # move away from the destination for much longer than an arbitrary
             # straight-line detour budget would allow. Replan from the body's
             # observed settlement while retaining the original destination.
             status = "route-progress"
             progressed = {key: value for key, value in route.items()
-                          if key not in ("waypoints", "planned_from")
+                          if key not in ("waypoints", "planned_from", "planner",
+                                         "graph_link")
                           and not key.startswith("planner_")
                           and not key.startswith("blocked_")}
             visited.append(endpoint)
+            nonclosing = 0 if made_best_progress \
+                else int(route.get("nonclosing_legs") or 0) + 1
             progressed.update({"status": "active", "last_x": lx, "last_z": lz,
                                "last_distance_sq": current_distance,
                                "best_distance_sq": min(route_best_distance,
                                                        current_distance),
-                               "nonclosing_legs": 0,
+                               "nonclosing_legs": nonclosing,
                                "visited": visited[-NAVIGATION_VISITED_MAX:],
                                "last_ts": now_ms()})
             save_route(progressed)
@@ -3978,10 +4347,42 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"], "leg_x": action["x"],
                            "leg_z": action["z"],
-                           "planner": "authoritative-world"}])
-        elif route.get("planner") == "authoritative-world":
+                           "nonclosing_legs": nonclosing,
+                           "planner": route_planner}])
+        elif route_planner == "verified-links":
+            # A remembered edge is only a hint. If today's live collision
+            # state rejects it, retire that edge and mechanically fall back to
+            # a fresh cache plan without changing or blocking the destination.
+            disable_navigation_link(str(route.get("graph_link") or ""))
+            replanning = {key: value for key, value in route.items()
+                          if key not in ("waypoints", "planned_from", "planner",
+                                         "graph_link")
+                          and not key.startswith("planner_")
+                          and not key.startswith("blocked_")}
+            replanning["status"] = "active"
+            replanning["last_ts"] = now_ms()
+            save_route(replanning)
+            flush_events([{"ts": now_ms(), "kind": "route-link-retired",
+                           "id": action_id, "reason": status,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"],
+                           "link": route.get("graph_link")}])
+            status = "route-replanning"
+        elif route_planner == "client-cache" \
+                and status in ("done", "walk-short") and moved \
+                and repeated_endpoint:
             route_was_blocked = True
-            route_block_reason = "authoritative-leg-no-progress" \
+            route_block_reason = "route-cycle"
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"],
+                           "planner": "client-cache"}])
+            status = "route-needs-local-interaction"
+        elif route_planner == "client-cache":
+            route_was_blocked = True
+            route_block_reason = "client-cache-leg-no-progress" \
                 if status in ("done", "walk-short") else status
             block_route(route, latest, route_block_reason)
             flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
@@ -3989,7 +4390,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"], "leg_x": action["x"],
                            "leg_z": action["z"],
-                           "planner": "authoritative-world"}])
+                           "planner": "client-cache"}])
             status = "route-needs-local-interaction"
         elif status in ("done", "walk-short") and action.get("route_step") \
                 and moved and not repeated_endpoint:
@@ -4178,19 +4579,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             report("backtrack-blocked", id=action_id, x=final_x, z=final_z,
                    target_x=action["x"], target_z=action["z"])
         elif route_was_blocked:
-            authoritative = route.get("planner") == "authoritative-world"
-            report(("route-needs-local-interaction" if authoritative else
+            cache_planned = route.get("planner") == "client-cache"
+            report(("route-needs-local-interaction" if cache_planned else
                     "route-needs-detour"),
                    id=action_id, x=final_x, z=final_z,
                    leg_x=action["x"], leg_z=action["z"],
                    reason=route_block_reason,
                    portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
                            if route.get("next_portal") else None),
-                   evidence=("authoritative-world-path" if authoritative
+                   evidence=("client-cache-path" if cache_planned
                              else "grounded-collision-path"),
-                   map_boundary=(None if authoritative else "unproven"),
+                   map_boundary=(None if cache_planned else "unproven"),
                    next=("use-nearby-semantic-door-gate-stair-or-ladder;"
-                         "final-route-remains-binding" if authoritative else
+                         "final-route-remains-binding" if cache_planned else
                          "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
         elif follow_was_blocked:
             report("follow-needs-path", id=action_id,
@@ -4207,17 +4608,17 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             report("backtrack-blocked", id=action_id, target_x=action["x"],
                    target_z=action["z"], reason=status)
         elif route_was_blocked:
-            authoritative = route.get("planner") == "authoritative-world"
-            report(("route-needs-local-interaction" if authoritative else
+            cache_planned = route.get("planner") == "client-cache"
+            report(("route-needs-local-interaction" if cache_planned else
                     "route-needs-detour"), id=action_id,
                    leg_x=action["x"], leg_z=action["z"], reason=route_block_reason,
                    portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
                            if route.get("next_portal") else None),
-                   evidence=("authoritative-world-path" if authoritative
+                   evidence=("client-cache-path" if cache_planned
                              else "grounded-collision-path"),
-                   map_boundary=(None if authoritative else "unproven"),
+                   map_boundary=(None if cache_planned else "unproven"),
                    next=("use-nearby-semantic-door-gate-stair-or-ladder;"
-                         "final-route-remains-binding" if authoritative else
+                         "final-route-remains-binding" if cache_planned else
                          "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
         elif follow_was_blocked:
             report("follow-needs-path", id=action_id,
@@ -4233,11 +4634,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         return "backtrack-blocked", EXIT_NO_RULE
     if route_was_blocked:
         return ("route-needs-local-interaction"
-                if route is not None and route.get("planner") == "authoritative-world"
+                if route is not None and route.get("planner") == "client-cache"
                 else "route-needs-detour"), EXIT_NO_RULE
     if follow_was_blocked:
         return "follow-needs-path", EXIT_NO_RULE
     return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
+                                               "route-replanning",
                                                "follow-progress",
                                                "backtrack-progress", "backtrack-complete")
                      else EXIT_NOT_DONE)
@@ -4886,6 +5288,7 @@ def cmd_route(args):
         die("route needs both X and Z")
     if not 0 <= args.arrive <= 10:
         die("route --arrive must be from 0 through 10")
+    refuse_observed_blocked_destination(args.x, args.z, args.arrive)
     snap = game_reflex.read_snapshot() or {}
     route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
              "objective": read_objective(), "status": "active", "set_ts": now_ms(),
@@ -4907,19 +5310,15 @@ def cmd_route(args):
 
 
 def cmd_landmark(args):
-    """Find stable world placements by semantic identity, optionally route.
-
-    This is deliberately not a writable landmark notebook. The model cannot
-    make a claim authoritative by storing it; results are joined from the
-    server's definitions and placement tables every time.
-    """
+    """Find client-observed places by semantic identity, optionally route."""
     query = " ".join(args.query).strip()
+    snap = game_reflex.read_snapshot() or {}
+    record_navigation_observation(snap)
     candidates = world_landmark_candidates(query, args.kind)
     if args.id is not None:
         candidates = [item for item in candidates if item["id"] == args.id]
     if not candidates:
-        die(f"no authoritative {args.kind or 'world'} landmark matches {query!r}")
-    snap = game_reflex.read_snapshot() or {}
+        die(f"no client-observed {args.kind or 'world'} landmark matches {query!r}")
     px, pz = snap.get("x"), snap.get("z")
     if args.nearest:
         if not isinstance(px, int) or not isinstance(pz, int):
@@ -4931,13 +5330,10 @@ def cmd_landmark(args):
         distance = ""
         if isinstance(px, int) and isinstance(pz, int):
             distance = f" distance={max(abs(item['x'] - px), abs(item['z'] - pz))}"
-        roam = ""
-        if item["kind"] == "npc" and item.get("min") and item.get("max"):
-            roam = (f" roam=({item['min'].get('X')},{item['min'].get('Y')})"
-                    f"-({item['max'].get('X')},{item['max'].get('Y')})")
         command = f" command={item.get('command1')}" if item.get("command1") else ""
+        seen = f" sightings={item.get('sightings', 1)} last_seen={item.get('last_seen')}"
         print(f"landmark kind={item['kind']} id={item['id']} name={json.dumps(item['name'])} "
-              f"spawn=({item['x']},{item['z']}){distance}{roam}{command} "
+              f"observed=({item['x']},{item['z']}){distance}{command}{seen} "
               f"description={json.dumps(item['description'])}")
     if len(candidates) > 40:
         print(f"landmark: {len(candidates) - 40} more matches; narrow --kind or use --nearest")
@@ -4949,6 +5345,7 @@ def cmd_landmark(args):
     if not 0 <= args.arrive <= 10:
         die("landmark --arrive must be from 0 through 10")
     item = candidates[0]
+    refuse_observed_blocked_destination(item["x"], item["z"], args.arrive)
     route = {"v": 1, "x": item["x"], "z": item["z"], "arrive": args.arrive,
              "objective": read_objective(), "status": "active", "set_ts": now_ms(),
              "visited": [], "nonclosing_legs": 0,

@@ -28,6 +28,7 @@ with tempfile.TemporaryDirectory() as raw:
     }))
     (game_dir / "activity").write_text("bank-resupply\n")
     (game_dir / "objective").write_text("prayer-training\n")
+    (game_dir / "plan").write_text("Withdraw food, then return to the altar.\n")
     player_log.write_text("\n".join((
         json.dumps({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Low on tea; banking before the next load."}
@@ -50,6 +51,7 @@ with tempfile.TemporaryDirectory() as raw:
     doc = module.spectator_state(now)
 
 assert doc["recent_thought"] == "Low on tea; banking before the next load.", doc
+assert doc["plan"] == "Withdraw food, then return to the altar.", doc
 encoded = json.dumps(doc)
 assert "private chain" not in encoded, encoded
 assert "private chat" not in encoded, encoded
@@ -60,5 +62,10 @@ assert 'id="recent-thought"' in page, "Recent thought card missing"
 assert "thoughtText.textContent = st.recent_thought" in page, \
     "thought must render as text, never injected HTML"
 assert "Recent thought" in page
+assert page.index('id="recent-thought"') < page.index('id="current-plan"'), \
+    "the plan card must follow the recent thought"
+assert "planText.textContent = st.plan" in page, \
+    "plan must render as text, never as injected HTML"
+assert "Current plan" in page
 
-print("test_openrsc_thought: 8 passed, 0 failed")
+print("test_openrsc_thought: 12 passed, 0 failed")
