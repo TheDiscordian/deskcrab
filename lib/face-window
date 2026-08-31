@@ -243,10 +243,24 @@ class FaceView(Gtk.DrawingArea):
     def motion_for_expression(self, name):
         if self.mapped_expr == name:
             return
+        previous = self.mapped_expr
         self.mapped_expr = name
         if self.override:
             return                     # her hand outranks the mapping
-        self.set_channels(EXPR_MOTION.get(name) or EXPR_MOTION["resting"])
+        motion = EXPR_MOTION.get(name) or EXPR_MOTION["resting"]
+        self.set_channels(motion)
+        # A scold may ring through the curls, but it must not leave the calm
+        # expressions visibly trembling after the feeling has passed.  End
+        # the high-frequency driver immediately and discard its spring kick;
+        # the ordinary slow sway and breath continue below it.
+        previous_motion = EXPR_MOTION.get(previous) or EXPR_MOTION["resting"]
+        if previous_motion.get("agitation", 0.0) \
+                and not motion.get("agitation", 0.0):
+            self.channels["agitation"] = 0.0
+            if self.gesture and self.gesture[0] == "shake":
+                self.gesture = None
+            for spring in self.springs:
+                spring["v"] = 0.0
         if name in EXPR_GESTURE:
             self.fire_gesture(EXPR_GESTURE[name])
 

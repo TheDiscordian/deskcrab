@@ -372,6 +372,9 @@ or scolding.
     only, never pixels of expression art. `annoyed` keeps only low sustained
     agitation (`0.18` by default): its one-shot `shake` carries the scold, so
     repeated mechanical failures cannot turn the held pose into vibration.
+    When an agitated expression resolves to a non-agitated one, every renderer
+    ends the agitation driver and its remaining spring impulse immediately;
+    calm must not inherit visible trembling while root sway and breath continue.
 55. Mouth normalisation. Viseme patches are normalised by the deterministic
     build so every changed region stays within a stated band of the resting
     lip line (the build record carries the measured before/after extents;
