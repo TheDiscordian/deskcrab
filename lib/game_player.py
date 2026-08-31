@@ -20,6 +20,7 @@ import json
 import os
 import re
 import select
+import socket
 import subprocess
 import sys
 import time
@@ -88,6 +89,8 @@ NAVIGATION_LEG_MAX_PATH_TILES = 16  # reject a nearby waypoint whose real route 
 NAVIGATION_ROUTE_STEP_TILES = 8  # client-grounded prefix of the real destination path
 NAVIGATION_MAX_NONCLOSING_LEGS = 12  # allow real detours, never unbounded wandering
 NAVIGATION_VISITED_MAX = 64
+NAVIGATION_SERVICE_DEFAULT = "127.0.0.1:43595"
+NAVIGATION_SERVICE_TIMEOUT_S = 5.0
 BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
@@ -511,6 +514,26 @@ def load_route():
     nonclosing = route.get("nonclosing_legs", 0)
     if not isinstance(nonclosing, int) or nonclosing < 0:
         return {"status": "invalid"}
+    waypoints = route.get("waypoints", [])
+    if not isinstance(waypoints, list) or len(waypoints) > 512 \
+            or any(not isinstance(point, list) or len(point) != 2
+                   or not all(isinstance(value, int) for value in point)
+                   for point in waypoints):
+        return {"status": "invalid"}
+    planned_from = route.get("planned_from")
+    if planned_from is not None \
+            and (not isinstance(planned_from, list) or len(planned_from) != 2
+                 or not all(isinstance(value, int) for value in planned_from)):
+        return {"status": "invalid"}
+    portal = route.get("next_portal")
+    if portal is not None and (not isinstance(portal, dict)
+            or portal.get("kind") not in ("object", "bound")
+            or not all(isinstance(portal.get(key), int)
+                       for key in ("id", "x", "z", "dir"))
+            or not isinstance(portal.get("from"), list)
+            or len(portal["from"]) != 2
+            or not all(isinstance(value, int) for value in portal["from"])):
+        return {"status": "invalid"}
     return route
 
 
@@ -892,6 +915,153 @@ def bounded_navigation_leg(x: int, z: int, target_x: int, target_z: int,
         leg_x += 1 if dx > 0 else -1 if dx < 0 else 0
         leg_z += 1 if dz > 0 else -1 if dz < 0 else 0
     return leg_x, leg_z
+
+
+def navigation_service_endpoint() -> tuple[str, int] | None:
+    """Return the private authoritative planner endpoint.
+
+    ``off`` exists only for hermetic/legacy fixtures that deliberately test
+    the old client-local bridge. Live play defaults to the server planner and
+    must fail closed if it is unavailable; silently resuming coordinate
+    guesses is the navigation bug this service replaces.
+    """
+    value = os.environ.get(
+        "DESKCRAB_NAVIGATION_ENDPOINT", NAVIGATION_SERVICE_DEFAULT).strip()
+    if value.casefold() in ("off", "none", "disabled"):
+        return None
+    host, separator, port_text = value.rpartition(":")
+    if not separator or not host:
+        raise ValueError("DESKCRAB_NAVIGATION_ENDPOINT must be HOST:PORT or off")
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        raise ValueError("navigation service port is out of range")
+    return host, port
+
+
+def authoritative_route_plan(start_x: int, start_z: int, target_x: int,
+                             target_z: int, arrive: int) -> dict:
+    """Ask the OpenRSC server's complete collision map for a real path."""
+    try:
+        endpoint = navigation_service_endpoint()
+    except (TypeError, ValueError) as exc:
+        return {"status": "error", "reason": f"planner-config:{exc}"}
+    if endpoint is None:
+        return {"status": "disabled"}
+    request = f"ROUTE {start_x} {start_z} {target_x} {target_z} {arrive}\n"
+    try:
+        with socket.create_connection(
+                endpoint, timeout=NAVIGATION_SERVICE_TIMEOUT_S) as connection:
+            connection.settimeout(NAVIGATION_SERVICE_TIMEOUT_S)
+            connection.sendall(request.encode("ascii"))
+            chunks = []
+            total = 0
+            while True:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 256 * 1024:
+                    return {"status": "error", "reason": "planner-response-too-large"}
+                chunks.append(chunk)
+                if b"\n" in chunk:
+                    break
+        response = json.loads(b"".join(chunks).split(b"\n", 1)[0].decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return {"status": "error",
+                "reason": f"planner-unavailable:{exc.__class__.__name__}"}
+    if not isinstance(response, dict) \
+            or response.get("status") not in ("ok", "partial", "error"):
+        return {"status": "error", "reason": "planner-invalid-response"}
+    if response["status"] == "error":
+        reason = response.get("reason")
+        return {"status": "error",
+                "reason": reason if isinstance(reason, str) else "planner-error"}
+    waypoints = response.get("waypoints")
+    if not isinstance(waypoints, list) or len(waypoints) > 512 \
+            or any(not isinstance(point, list) or len(point) != 2
+                   or not all(isinstance(value, int) for value in point)
+                   for point in waypoints):
+        return {"status": "error", "reason": "planner-invalid-waypoints"}
+    portals = response.get("portals", [])
+    if not isinstance(portals, list) or len(portals) > 64 \
+            or any(not isinstance(portal, dict)
+                   or portal.get("kind") not in ("object", "bound")
+                   or not all(isinstance(portal.get(key), int)
+                              for key in ("id", "x", "z", "dir"))
+                   or not isinstance(portal.get("from"), list)
+                   or len(portal["from"]) != 2
+                   or not all(isinstance(value, int) for value in portal["from"])
+                   for portal in portals):
+        return {"status": "error", "reason": "planner-invalid-portals"}
+    return {"status": response["status"], "waypoints": waypoints,
+            "steps": response.get("steps"), "expanded": response.get("expanded"),
+            "remaining_cost": response.get("remaining_cost"), "portals": portals}
+
+
+def prepare_authoritative_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
+    """Plan the next local leg without ever replacing the final destination."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return route, None
+    try:
+        endpoint = navigation_service_endpoint()
+    except (TypeError, ValueError) as exc:
+        blocked = dict(route)
+        blocked.update({"status": "blocked",
+                        "blocked_reason": f"planner-config:{exc}",
+                        "blocked_ts": now_ms(), "planner": "authoritative-world"})
+        save_route(blocked)
+        return blocked, None
+    if endpoint is None:
+        # Explicit hermetic compatibility mode. It is never the live default.
+        return route, (route["x"], route["z"])
+    plan = authoritative_route_plan(
+        px, pz, route["x"], route["z"], route["arrive"])
+    if plan["status"] == "error":
+        blocked = dict(route)
+        blocked.update({"status": "blocked", "blocked_reason": plan["reason"],
+                        "blocked_ts": now_ms(), "planner": "authoritative-world"})
+        save_route(blocked)
+        return blocked, None
+    waypoints = plan.get("waypoints") or []
+    portals = plan.get("portals") or []
+    next_portal = portals[0] if portals else None
+    if next_portal is not None and next_portal["from"] == [px, pz]:
+        blocked = {key: value for key, value in route.items()
+                   if key != "next_portal"}
+        blocked.update({"status": "blocked",
+                        "blocked_reason": "semantic-portal-needed",
+                        "blocked_ts": now_ms(), "planner": "authoritative-world",
+                        "planner_status": plan["status"],
+                        "planned_from": [px, pz], "waypoints": waypoints,
+                        "next_portal": next_portal,
+                        "blocked_signature": route_obstacle_signature(snap)})
+        save_route(blocked)
+        return blocked, None
+    if not waypoints:
+        blocked = dict(route)
+        reason = "semantic-portal-needed" if plan["status"] == "partial" \
+            else "authoritative-route-empty"
+        blocked.update({"status": "blocked", "blocked_reason": reason,
+                        "blocked_ts": now_ms(), "planner": "authoritative-world",
+                        "planner_status": plan["status"], "planned_from": [px, pz],
+                        "waypoints": [],
+                        "blocked_signature": route_obstacle_signature(snap)})
+        save_route(blocked)
+        return blocked, None
+    planned = {key: value for key, value in route.items()
+               if key != "next_portal"}
+    planned.update({"status": "active", "planner": "authoritative-world",
+                    "planner_status": plan["status"], "planned_from": [px, pz],
+                    "waypoints": waypoints, "planner_steps": plan.get("steps"),
+                    "planner_expanded": plan.get("expanded"),
+                    "planner_ts": now_ms()})
+    if next_portal is not None:
+        planned["next_portal"] = next_portal
+    if plan.get("remaining_cost") is not None:
+        planned["planner_remaining_cost"] = plan["remaining_cost"]
+    save_route(planned)
+    return planned, tuple(waypoints[0])
 
 
 def route_obstacle_signature(snap: dict) -> str:
@@ -3479,6 +3649,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # learned interaction below retain priority.
     route = None if backtrack is not None or follow is not None else load_route()
     route_blocked = False
+    route_leg = None
     if route is not None and route.get("status") == "invalid":
         report("route-invalid", file=str(route_path()))
         return "route-needs-detour", EXIT_NO_RULE
@@ -3506,6 +3677,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                          if not k.startswith("blocked_")}
                 route["status"] = "active"
                 save_route(route)
+        if route is not None and route.get("status") == "active":
+            route, route_leg = prepare_authoritative_route(route, snap)
+            route_blocked = route.get("status") == "blocked"
 
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
     # engine sees the table, so the machinery stays vocabulary-blind.
@@ -3562,15 +3736,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         # Every player rule is game-channel by construction (spec rule 5);
         # the shared engine wants the key spelled out.
         live_rules.append(dict(rule, channel="game"))
-    if route is not None and not route_blocked and not urgent_retreat_names:
+    if route is not None and route_leg is not None \
+            and not route_blocked and not urgent_retreat_names:
+        leg_x, leg_z = route_leg
         live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
                            "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
                            "hold_ticks": 1, "channel": "game", "trigger": {},
-                           "action": {"type": "walk", "x": route["x"],
-                                      "z": route["z"],
+                           "action": {"type": "walk", "x": leg_x,
+                                      "z": leg_z,
                                       "route_step": NAVIGATION_ROUTE_STEP_TILES,
                                       "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
-                                      "arrive": route["arrive"]}})
+                                      "arrive": (0 if route.get("planner") ==
+                                                 "authoritative-world"
+                                                 else route["arrive"])}})
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
@@ -3603,14 +3781,22 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                               if isinstance(follow.get("last_x"), int) else None))
             return "follow-waiting", EXIT_NOT_READY
         if route_blocked and route is not None:
-            report("route-needs-detour", x=snap.get("x"), z=snap.get("z"),
+            authoritative = route.get("planner") == "authoritative-world"
+            route_gap = ("route-needs-local-interaction" if authoritative else
+                         "route-needs-detour")
+            report(route_gap, x=snap.get("x"), z=snap.get("z"),
                    target_x=route["x"], target_z=route["z"],
                    reason=route.get("blocked_reason", "no-progress"),
                    feedback=latest_system_feedback(snap),
-                   evidence="grounded-collision-path",
-                   map_boundary="unproven",
-                   next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
-            return "route-needs-detour", EXIT_NO_RULE
+                   portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
+                           if route.get("next_portal") else None),
+                   evidence=("authoritative-world-path" if authoritative
+                             else "grounded-collision-path"),
+                   map_boundary=(None if authoritative else "unproven"),
+                   next=("use-nearby-semantic-door-gate-stair-or-ladder;"
+                         "final-route-remains-binding" if authoritative else
+                         "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
+            return route_gap, EXIT_NO_RULE
         if backtrack is not None and backtrack.get("status") == "invalid":
             report("backtrack-invalid", file=str(backtrack_path()))
             return "backtrack-blocked", EXIT_NO_RULE
@@ -3768,6 +3954,43 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
                            "x": lx, "z": lz, "target_x": route["x"],
                            "target_z": route["z"]}])
+        elif route.get("planner") == "authoritative-world" \
+                and status in ("done", "walk-short") and moved:
+            # This leg is on a server-validated path. It may intentionally
+            # move away from the destination for much longer than an arbitrary
+            # straight-line detour budget would allow. Replan from the body's
+            # observed settlement while retaining the original destination.
+            status = "route-progress"
+            progressed = {key: value for key, value in route.items()
+                          if key not in ("waypoints", "planned_from")
+                          and not key.startswith("planner_")
+                          and not key.startswith("blocked_")}
+            visited.append(endpoint)
+            progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                               "last_distance_sq": current_distance,
+                               "best_distance_sq": min(route_best_distance,
+                                                       current_distance),
+                               "nonclosing_legs": 0,
+                               "visited": visited[-NAVIGATION_VISITED_MAX:],
+                               "last_ts": now_ms()})
+            save_route(progressed)
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"], "leg_x": action["x"],
+                           "leg_z": action["z"],
+                           "planner": "authoritative-world"}])
+        elif route.get("planner") == "authoritative-world":
+            route_was_blocked = True
+            route_block_reason = "authoritative-leg-no-progress" \
+                if status in ("done", "walk-short") else status
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"], "leg_x": action["x"],
+                           "leg_z": action["z"],
+                           "planner": "authoritative-world"}])
+            status = "route-needs-local-interaction"
         elif status in ("done", "walk-short") and action.get("route_step") \
                 and moved and not repeated_endpoint:
             # A route can legitimately move closer after first wandering far
@@ -3955,11 +4178,20 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             report("backtrack-blocked", id=action_id, x=final_x, z=final_z,
                    target_x=action["x"], target_z=action["z"])
         elif route_was_blocked:
-            report("route-needs-detour", id=action_id, x=final_x, z=final_z,
+            authoritative = route.get("planner") == "authoritative-world"
+            report(("route-needs-local-interaction" if authoritative else
+                    "route-needs-detour"),
+                   id=action_id, x=final_x, z=final_z,
                    leg_x=action["x"], leg_z=action["z"],
-                   reason=route_block_reason, evidence="grounded-collision-path",
-                   map_boundary="unproven",
-                   next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
+                   reason=route_block_reason,
+                   portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
+                           if route.get("next_portal") else None),
+                   evidence=("authoritative-world-path" if authoritative
+                             else "grounded-collision-path"),
+                   map_boundary=(None if authoritative else "unproven"),
+                   next=("use-nearby-semantic-door-gate-stair-or-ladder;"
+                         "final-route-remains-binding" if authoritative else
+                         "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
         elif follow_was_blocked:
             report("follow-needs-path", id=action_id,
                    player=json.dumps(follow["player"]), x=final_x, z=final_z,
@@ -3975,11 +4207,18 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             report("backtrack-blocked", id=action_id, target_x=action["x"],
                    target_z=action["z"], reason=status)
         elif route_was_blocked:
-            report("route-needs-detour", id=action_id,
+            authoritative = route.get("planner") == "authoritative-world"
+            report(("route-needs-local-interaction" if authoritative else
+                    "route-needs-detour"), id=action_id,
                    leg_x=action["x"], leg_z=action["z"], reason=route_block_reason,
-                   evidence="grounded-collision-path",
-                   map_boundary="unproven",
-                   next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
+                   portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
+                           if route.get("next_portal") else None),
+                   evidence=("authoritative-world-path" if authoritative
+                             else "grounded-collision-path"),
+                   map_boundary=(None if authoritative else "unproven"),
+                   next=("use-nearby-semantic-door-gate-stair-or-ladder;"
+                         "final-route-remains-binding" if authoritative else
+                         "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
         elif follow_was_blocked:
             report("follow-needs-path", id=action_id,
                    player=json.dumps(follow["player"]),
@@ -3993,7 +4232,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if backtrack_was_blocked:
         return "backtrack-blocked", EXIT_NO_RULE
     if route_was_blocked:
-        return "route-needs-detour", EXIT_NO_RULE
+        return ("route-needs-local-interaction"
+                if route is not None and route.get("planner") == "authoritative-world"
+                else "route-needs-detour"), EXIT_NO_RULE
     if follow_was_blocked:
         return "follow-needs-path", EXIT_NO_RULE
     return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
@@ -4626,9 +4867,19 @@ def cmd_route(args):
             landmark = route.get("landmark") or {}
             label = f" landmark={json.dumps(landmark.get('name'))}" \
                 if landmark.get("name") else ""
+            planner = f" planner={route.get('planner')}" \
+                if route.get("planner") else ""
+            next_waypoint = route.get("waypoints", [None])[0] \
+                if route.get("waypoints") else None
+            waypoint = f" next=({next_waypoint[0]},{next_waypoint[1]})" \
+                if next_waypoint else ""
+            portal_value = route.get("next_portal") or {}
+            portal = (f" portal={portal_value.get('kind')}:{portal_value.get('id')}"
+                      f"@({portal_value.get('x')},{portal_value.get('z')})"
+                      if portal_value else "")
             print(f"route: status={route['status']} target=({route['x']},{route['z']}) "
                   f"arrive={route['arrive']} objective={route['objective'] or '(none)'}"
-                  f"{label}{current}{last}{detour}"
+                  f"{label}{planner}{waypoint}{portal}{current}{last}{detour}"
                   f"{(' reason=' + route.get('blocked_reason', '')) if route['status'] == 'blocked' else ''}")
         return
     if args.x is None or args.z is None:

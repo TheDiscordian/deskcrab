@@ -416,37 +416,37 @@ deliberate-play channel.
    route fragment whose broad trigger still matches from pulling the body away and then handing it
    back, a two-controller oscillation no repetition timer can make productive.
 
-   Each route action names the REAL durable destination and asks the client bridge for an at-most
-   eight-step prefix of the complete collision path currently known toward it (`route_step=8`).
-   The bridge pathfinder chooses that prefix endpoint; no guessed intermediate coordinate crosses
-   the action file. When the destination lies outside the loaded 96×96 region, the client first
-   selects a reachable progressive region-edge path and takes the same bounded prefix, then the
-   next pass replans in the new region. A 16-step `max_path` field travels with the request as a
-   safe compatibility refusal for an older bridge that does not understand `route_step`; the
-   route-aware bridge applies the prefix instead of that full-destination ceiling. Its `arrive`
-   tolerance is pathfinding input for the destination area as well as verification. An occupied
-   landmark tile can therefore settle on reachable adjacent floor without making Sol guess
-   successive neighbouring coordinates. A verified path prefix is `route-progress` and
-   immediately licenses the next prefix without a model call even when going around collision
-   temporarily increases straight-line distance; that detour is pathfinder evidence, not a claim
-   that the destination moved. The route stores recent settled endpoints, refuses a repeated one
-   as `route-cycle`, and permits at most twelve consecutive non-closing prefixes before asking for
-   a new decision, so grounded detours cannot become wandering. That budget resets only when a
-   prefix establishes a new route-best distance to the durable destination; moving closer than
-   the immediately preceding self-created detour, while remaining worse than an earlier point on
-   the same route, is not renewed progress and cannot sustain a wide oscillation. A refusal,
-   unchanged settlement,
-   cycle, or exhausted detour budget marks the route `blocked` at the current position and visible obstacle
-   signature, reports `route-needs-detour` at exit 4 to Sol, and emits no further walk merely because the dispatched leg
-   settles another tile. A changed visible obstacle signature may make the path viable; otherwise
-   Sol must inspect live terrain or choose a semantic boundary interaction or explicit waypoint
-   and set a corrected route. Loaded bounds expose whether their interaction edge is reachable, its actual walking
-   distance, and any Open command, allowing a closed door to be approached and opened semantically
-   before the route is retried. The refusal proves only that the attempted collision path did not produce progress; it does not
-   establish a wall, river, world edge, or map boundary. Changing the durable objective cancels the stale route rather than walking
-   toward an old goal. The route survives player and runner process boundaries, owns no second
-   action slot or observer, uses no screenshots or timed polling, and cannot loop forever against
-   an unchanged wall.
+   The client owns only its loaded 96×96 collision region, so it is not the authority for a distant
+   journey. A loopback-only service in the local OpenRSC server runs A* over the complete live
+   same-floor collision map and returns a chain of real path tiles sampled at no more than eight
+   steps per waypoint. The resident runner keeps the REAL durable destination in `route.json`,
+   sends only the next server-validated waypoint through ACTIONS, and replans from the body's
+   observed settlement after every leg. A 16-step `max_path` compatibility guard and `route_step=8`
+   still protect each local client dispatch; neither can replace the final destination. `arrive`
+   is planner input for the destination area as well as verification, so an occupied landmark may
+   settle on truthful nearby floor. No model-authored intermediate coordinate crosses the action
+   file.
+
+   A complete map path may move farther from the destination for arbitrarily many legs while going
+   around real terrain. Those legs are `route-progress`; straight-line progress budgets and the
+   old client-local edge fallback cannot reject them or erase the destination. The authoritative
+   planner treats a currently closed, definition-backed Open door or gate as a high-cost semantic
+   edge. Open ground is therefore preferred (including the free long route around a toll gate),
+   but a building or pen with one real exit yields a route to that exact portal instead of to the
+   piece of wall geometrically closest to the goal. The runner stops before crossing that edge,
+   persists its kind/id/tile/direction, and reports `route-needs-local-interaction` at exit 4.
+   Loaded semantic object/boundary actions open it; a changed obstacle signature resumes the SAME
+   destination and replans from the new side. Stairs, ladders, and cross-floor transitions remain
+   semantic portal actions rather than fabricated walk edges.
+
+   If the server planner is unavailable or returns malformed data, the route fails closed and
+   remains binding: the player never silently resumes straight-line coordinate probes. An
+   unchanged or refused server-validated local leg likewise blocks without replacing the goal.
+   Sol may inspect live terrain and perform a supported semantic interaction, but must not use
+   `head`, guessed waypoints, or `route clear` as obstacle-solving techniques. A route is cleared
+   only because its destination became obsolete or its objective changed. The route survives
+   player and runner process boundaries, owns no second action slot or observer, uses no
+   screenshots or timed polling, and cannot loop forever against an unchanged portal.
 
    A destination name must not be inferred from the type of scenery that happened to be nearby.
    `landmark TEXT [--kind npc|object|bound] [--id N]` joins matching names/descriptions in the server's own

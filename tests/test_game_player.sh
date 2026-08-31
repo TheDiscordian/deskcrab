@@ -14,6 +14,9 @@ REPO="$SANDBOX_REPO"
 GP="$REPO/lib/game_player.py"
 export DESKCRAB_GAME_STATE_DIR="$SANDBOX/gstate"
 export DESKCRAB_GAME_DIR="$SANDBOX/gdata"
+# Hermetic fixtures below exercise the client bridge with synthetic routes.
+# Live play defaults to the authoritative OpenRSC world planner.
+export DESKCRAB_NAVIGATION_ENDPOINT=off
 
 refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
 
@@ -3183,9 +3186,10 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh terrain" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "same selected NPC" \
     && ok "the resumed thread receives grounded projectile-position learning" \
     || fail "the resumed thread receives grounded projectile-position learning"
-contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "does not prove what physical feature" \
-    && ok "the resumed thread cannot turn one failed leg into imaginary geography" \
-    || fail "the resumed thread needs an evidence boundary for failed route legs"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "Never probe alternate coordinate legs, infer a map boundary" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "authoritative world collision map" \
+    && ok "the resumed thread keeps the authoritative route instead of inventing geography" \
+    || fail "the resumed thread needs the authoritative navigation contract"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=move-required" \
     && ok "the resumed thread receives the urgent idle-warning action" \
     || fail "the resumed thread receives the urgent idle-warning action"
