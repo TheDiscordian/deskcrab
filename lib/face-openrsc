@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Turn confirmed OpenRSC state changes into bounded portrait reactions.
+
+This is deliberately a small local observer.  It never steers play and never
+guesses from hit points: it reads the bridge's atomic state document, compares
+it with its own cursor, and sends only the public events accepted by the face
+broker.  Starting against an existing game seeds the cursor without replaying
+old adventures as if they had just happened.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import face_state  # noqa: E402
+
+STATE = Path(os.environ.get("DESKCRAB_GAME_STATE",
+                            "/tmp/deskcrab-game/state.json"))
+CURSOR = Path(os.environ.get("DESKCRAB_FACE_OPENRSC_CURSOR",
+                             "/tmp/deskcrab-face-openrsc.json"))
+POLL_SECONDS = float(os.environ.get("DESKCRAB_FACE_OPENRSC_POLL", "0.25"))
+
+# These are confirmations, not sentiment inference.  The game itself has
+# refused or completed something in words whose meaning is mechanically fixed.
+FAILURE = re.compile(
+    r"(?i)\b(?:you (?:can(?:not|'t)|fail(?:ed)?|do not have|don't have|need)|"
+    r"nothing interesting happens|not enough|inventory is full|"
+    r"you are too|you must be|you have no room)\b")
+SUCCESS = re.compile(
+    r"(?i)\b(?:well done|quest complete|you have completed|"
+    r"you advance (?:an?|a) |congratulations)\b")
+
+
+def _mapping(rows, field="level"):
+    out = {}
+    for row in rows or []:
+        if isinstance(row, dict) and row.get("id") is not None:
+            out[str(row["id"])] = row.get(field)
+    return out
+
+
+def cursor_for(st):
+    messages = [m for m in st.get("messages") or [] if isinstance(m, dict)]
+    return {
+        "message_id": max((int(m.get("id") or 0) for m in messages), default=0),
+        "skills": _mapping(st.get("skills")),
+        "quests": _mapping(st.get("quests"), "status"),
+        "in_combat": bool(st.get("in_combat")),
+        "logged_in": bool(st.get("logged_in")),
+    }
+
+
+def reactions(old, st):
+    """Return public broker events, most important first."""
+    events = []
+    now = cursor_for(st)
+    if not now["logged_in"]:
+        return events, now
+
+    old_skills = old.get("skills") or {}
+    if any(isinstance(level, (int, float))
+           and isinstance(old_skills.get(sid), (int, float))
+           and level > old_skills[sid]
+           for sid, level in now["skills"].items()):
+        events.append("game-win")
+
+    old_quests = old.get("quests") or {}
+    if any(status == "completed" and old_quests.get(qid) != "completed"
+           for qid, status in now["quests"].items()
+           if qid in old_quests):
+        events.append("game-win")
+
+    new_messages = sorted(
+        (m for m in st.get("messages") or []
+         if isinstance(m, dict) and int(m.get("id") or 0)
+         > int(old.get("message_id") or 0)),
+        key=lambda m: int(m.get("id") or 0))
+    texts = [str(m.get("text") or "") for m in new_messages]
+    if any(FAILURE.search(text) for text in texts):
+        events.append("failed-action")
+    if any(SUCCESS.search(text) for text in texts):
+        events.append("game-win")
+    if any(bool(m.get("incoming")) for m in new_messages):
+        events.append("player-message")
+    if any(m.get("channel") == "quest" and not m.get("incoming")
+           and str(m.get("sender") or "").casefold() != "beatrice"
+           for m in new_messages):
+        events.append("quest-message")
+    if now["in_combat"] and not bool(old.get("in_combat")):
+        events.append("combat-start")
+
+    # One snapshot may contain several confirmations.  Preserve priority and
+    # do not make the face refire the same expression twice in one pass.
+    priority = ("game-win", "failed-action", "player-message",
+                "quest-message", "combat-start")
+    return [e for e in priority if e in events], now
+
+
+def load_json(path):
+    try:
+        with path.open() as fh:
+            value = json.load(fh)
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_cursor(value):
+    try:
+        CURSOR.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CURSOR.with_name(CURSOR.name + ".%d.tmp" % os.getpid())
+        with tmp.open("w") as fh:
+            json.dump(value, fh, separators=(",", ":"))
+        os.replace(tmp, CURSOR)
+    except OSError:
+        pass
+
+
+def observe_once():
+    st = load_json(STATE)
+    if not st:
+        return []
+    old = load_json(CURSOR)
+    if not old:
+        save_cursor(cursor_for(st))
+        return []
+    events, new = reactions(old, st)
+    save_cursor(new)
+    for event in events[:1]:
+        reply = face_state.send_cmd({"cmd": "event", "name": event})
+        if not reply or not reply.get("ok"):
+            break
+    return events[:1]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--once", action="store_true")
+    args = ap.parse_args(argv)
+    if args.once:
+        for event in observe_once():
+            print(event)
+        return 0
+    while True:
+        observe_once()
+        time.sleep(max(0.05, POLL_SECONDS))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

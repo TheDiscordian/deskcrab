@@ -1,0 +1,12 @@
+[Unit]
+Description=Beatrice portrait reactions to confirmed OpenRSC events
+After=graphical-session.target deskcrab-face-broker.service
+
+[Service]
+Type=simple
+ExecStart=/home/discordian/Programming/Claude/deskcrab/lib/face-openrsc
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

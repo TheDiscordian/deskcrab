@@ -325,7 +325,10 @@ if start_bridge "$CH" "$SANDBOX/wake-shipped.log" --opponent guest \
             && grep -q "fireGesture" "$1/lib/face_card.js"' _ "$REPO"
     check "the renderer morphs mouth contours by measured extent (face.md rules 24, 55)" \
         bash -c 'grep -q "extent" "$1/lib/face_card.js" \
-            && grep -q "morphScale" "$1/lib/face_card.js"' _ "$REPO"
+            && grep -q "morphScale" "$1/lib/face_card.js" \
+            && grep -q "mouthHideTimer" "$1/lib/face_card.js" \
+            && ! grep -q "transition:opacity 100ms" "$1/lib/face_card.js" \
+            && ! grep -q "paint_patch(old, 1.0 - blend" "$1/lib/face-window"' _ "$REPO"
 fi
 stop_bridge
 

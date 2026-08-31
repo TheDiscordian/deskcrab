@@ -104,8 +104,9 @@ anything page-side.
     her explicit choice outranks everything until she releases it or its
     chosen lifetime ends, and a confirmed event outranks anything
     automatic. A new choice at equal-or-higher rank supersedes the old one.
-17. The event allowlist maps a confirmed game win to `pleased` and a
-    confirmed failed action to `annoyed`, nothing else. It is inspectable
+17. The event allowlist maps a confirmed game win to `pleased`, a confirmed
+    failed action to `annoyed`, an incoming player message or NPC quest line
+    to `attentive`, and the start of combat to `focused`, nothing else. It is inspectable
     (`crab face status` prints it), disableable (`DESKCRAB_FACE_EVENTS`),
     and an event-sourced expression always carries a bounded lifetime.
 18. Activity changes never erase an expression record. A record ends only
@@ -149,11 +150,13 @@ anything page-side.
     clip carries a finite duration so even a lost stop cannot animate past
     the clip's end.
 24. A late-joining viewer lands at the current cue position of the clip now
-    playing; old mouth motion is never replayed. Ordinary adjacent mouth
-    cues morph briefly between registered patches — the cross-fade plus a
-    short contour-scale interpolation about the manifest's lip anchor (rule
-    55) — never a snap between mismatched silhouettes; an explicit stop,
-    interruption, or playback failure still closes the mouth at once.
+    playing; old mouth motion is never replayed. Exactly one opaque patch is
+    painted: on each cue its source changes at the outgoing contour's extent
+    and that single contour eases geometrically to the incoming extent about
+    the manifest's lip anchor (rule 55); on ordinary close it contracts to
+    rest before the expression plate resumes. Old and new contours are never
+    opacity-crossfaded. An explicit stop, interruption, or playback failure
+    still closes the mouth at once.
 
 ### The conversation portrait window
 
@@ -370,9 +373,20 @@ or scolding.
     lip line (the build record carries the measured before/after extents;
     the oversized `open` and `wide` of 2026-08-30 are the reason). The
     manifest carries each viseme's measured `extent` and the family's lip
-    `anchor`; renderers use them for rule 24's morph. Patch borders remain
-    stable plate skin (rule 9), and nothing outside the viseme rect ever
-    changes.
+    `anchor`; renderers use them for rule 24's morph. The build removes the
+    resting contour into one deterministic clean-mouth plate before laying
+    down a viseme, then centres the changed contour on that anchor: exactly
+    one mouth contour may remain in any speaking patch, with no old frown
+    exposed underneath. Patch borders remain stable plate skin (rule 9), and
+    nothing outside the viseme rect ever changes.
+56. OpenRSC reactions. One read-only local observer watches the bridge's
+    atomic `state.json` and remembers the last message, skill levels, quest
+    statuses, and combat edge it saw. It seeds from an already-running game
+    without replaying history. Only confirmed transitions enter rule 17:
+    incoming player messages, NPC quest lines, skill/quest completion,
+    mechanically explicit failure/success feedback, and combat start. It
+    never steers the game, never reads hit points as emotion, and its service
+    may be stopped without changing play or the portrait's other layers.
 
 ## DATA
 
@@ -396,6 +410,8 @@ or scolding.
 | manifest `motion` section | drawer build script writes; every renderer reads | rule 52's regions: mask asset, pivot, mode, spring constants, drive gains |
 | manifest viseme `extent`/`anchor` | drawer build script | rule 55's morph measurements |
 | `<portrait drawer>/motion-build-record.json` | drawer build script | rule 51/55's stated amplitudes and before/after extents |
+| `${STATE_PREFIX}-game/state.json` | OpenRSC bridge writes; `face-openrsc` reads | rule 56's confirmed game transitions |
+| `${STATE_PREFIX}-face-openrsc.json` | `face-openrsc` | replay-safe cursor for rule 56 |
 
 ## INTERACTIONS
 

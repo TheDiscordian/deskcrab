@@ -457,30 +457,41 @@ class FaceView(Gtk.DrawingArea):
                 return self.assets.extents.get(name) \
                     or self.assets.rest_extent
 
-            def paint_patch(pixbuf, alpha, from_vis, to_vis, progress):
-                """Rule 24's morph: the patch eases between the measured
-                contour extents about the lip anchor while it fades."""
+            def paint_patch(pixbuf, asset_vis, from_vis, to_vis, progress):
+                """Ease one opaque contour between measured extents.
+
+                Cross-fading two contours is the doubled mouth Ryan caught
+                in the live viewer; the patch source changes, its geometry
+                morphs, and no second contour is painted underneath it.
+                """
                 cr.save()
                 cr.translate(x0, y0)
-                ea, eb = extent(from_vis), extent(to_vis)
-                if ea and eb and self._animations_on() and progress < 1.0:
-                    start_x = min(max(ea[0] / eb[0], 0.6), 1.6)
-                    start_y = min(max(ea[1] / eb[1], 0.5), 2.0)
-                    fx = start_x + (1.0 - start_x) * progress
-                    fy = start_y + (1.0 - start_y) * progress
+                ea, eb, intrinsic = (extent(from_vis), extent(to_vis),
+                                     extent(asset_vis))
+                if ea and eb and intrinsic and self._animations_on():
+                    want_x = ea[0] + (eb[0] - ea[0]) * progress
+                    want_y = ea[1] + (eb[1] - ea[1]) * progress
+                    # Scaling the full skin patch above its authored size
+                    # exposes its rectangular edges across the nose/chin.
+                    # Keep easing when a smaller contour grows into a larger
+                    # one, but never enlarge the incoming patch past 1:1.
+                    fx = min(max(want_x / intrinsic[0], 0.6), 1.0)
+                    fy = min(max(want_y / intrinsic[1], 0.5), 1.0)
                     ax, ay = self.assets.mouth_anchor
                     cr.translate(ax, ay)
                     cr.scale(fx, fy)
                     cr.translate(-ax, -ay)
                 Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
-                cr.paint_with_alpha(alpha)
+                cr.paint()
                 cr.restore()
 
-            if old is not None and blend < 1.0:
-                paint_patch(old, 1.0 - blend, self.previous_viseme,
-                            self.previous_viseme, 1.0)
             if patch is not None:
-                paint_patch(patch, blend, self.previous_viseme, vis, blend)
+                paint_patch(patch, vis, self.previous_viseme, vis, blend)
+            elif old is not None and blend < 1.0:
+                # Keep the outgoing patch opaque while its only contour
+                # contracts; then reveal the expression's resting mouth.
+                paint_patch(old, self.previous_viseme,
+                            self.previous_viseme, "rest", blend)
         cr.restore()
 
 

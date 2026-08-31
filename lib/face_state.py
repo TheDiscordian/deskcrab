@@ -73,8 +73,16 @@ VISEMES = ("rest", "slight", "open", "wide", "round", "teeth")
 # The event allowlist (specs/face.md rule 17): confirmed event -> expression.
 # Inspectable here, disableable via DESKCRAB_FACE_EVENTS (a comma list of the
 # events that remain enabled; empty string disables them all).
-EVENT_MAP = {"game-win": "pleased", "failed-action": "annoyed"}
-_ENABLED = os.environ.get("DESKCRAB_FACE_EVENTS", "game-win,failed-action")
+EVENT_MAP = {
+    "game-win": "pleased",
+    "failed-action": "annoyed",
+    "player-message": "attentive",
+    "quest-message": "attentive",
+    "combat-start": "focused",
+}
+_ENABLED = os.environ.get(
+    "DESKCRAB_FACE_EVENTS",
+    "game-win,failed-action,player-message,quest-message,combat-start")
 ENABLED_EVENTS = {e.strip() for e in _ENABLED.split(",") if e.strip()}
 
 # An event-sourced expression never outstays its welcome (rule 17): it always

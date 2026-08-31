@@ -116,6 +116,34 @@ check "the diagnostics name the allowlist, the tier, and the surfaces (rule 19)"
         && python3 "$0/lib/face-broker" status | grep -q "mood_seconds"' "$REPO_DIR"
 
 echo
+echo "OpenRSC reactions — confirmed bridge changes, no history replay (rule 56):"
+GAME_STATE="$T/openrsc-state.json"
+GAME_CURSOR="$T/openrsc-cursor.json"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":10,"channel":"game","incoming":false,"text":"old"}],"skills":[{"id":0,"level":4}],"quests":[{"id":1,"status":"started"}]}
+EOF
+check_eq "the first observation only seeds its cursor" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":10,"channel":"game","incoming":false,"text":"old"},{"id":11,"channel":"private","incoming":true,"sender":"Ryan","text":"hello"}],"skills":[{"id":0,"level":4}],"quests":[{"id":1,"status":"started"}]}
+EOF
+check_eq "a new incoming player message reaches the broker" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "player-message"
+check "the message visibly resolves as attentive" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=attentive \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":12,"channel":"game","incoming":false,"text":"You cannot reach that"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a completion outranks simultaneous refusal noise" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "game-win"
+check "the completion visibly resolves as pleased" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
+FB rest >/dev/null; FB activity resting >/dev/null
+
+echo
 echo "turn tokens — a result computed for a finished turn never lands (rule 38):"
 check "the turn machinery registers its token through activity" \
     bash -c 'DESKCRAB_FACE_TURN=turn-live python3 "$0/lib/face-broker" \
