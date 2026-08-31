@@ -1295,6 +1295,15 @@ def _observed_closed_portal(snap: dict, portal: dict) -> bool:
                for entity in snap.get(collection) or [] if isinstance(entity, dict))
 
 
+def distinct_route_portals(portals: list[dict]) -> list[dict]:
+    """Collapse the same wide door appearing on more than one path edge."""
+    distinct = {}
+    for portal in portals:
+        key = tuple(portal.get(field) for field in ("kind", "id", "x", "z", "dir"))
+        distinct.setdefault(key, portal)
+    return list(distinct.values())
+
+
 def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
     """Plan the next local leg without replacing the final destination."""
     px, pz = snap.get("x"), snap.get("z")
@@ -1310,6 +1319,20 @@ def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | N
         return blocked, None
     waypoints = plan.get("waypoints") or []
     portals = plan.get("portals") or []
+    distinct_portals = distinct_route_portals(portals)
+    if len(distinct_portals) > 1 and not route.get("landmark") \
+            and not route.get("portal_authorized_reason"):
+        blocked = {key: value for key, value in route.items()
+                   if key != "next_portal"}
+        blocked.update({"status": "blocked",
+                        "blocked_reason": "raw-route-crosses-multiple-portals",
+                        "blocked_ts": now_ms(), "planner": "client-cache",
+                        "planner_status": plan["status"],
+                        "planned_from": [px, pz], "waypoints": waypoints,
+                        "route_portal_count": len(distinct_portals),
+                        "blocked_signature": route_obstacle_signature(snap)})
+        save_route(blocked)
+        return blocked, None
     next_portal = portals[0] if portals else None
     if next_portal is not None and next_portal["from"] == [px, pz] \
             and _observed_closed_portal(snap, next_portal):
@@ -5260,10 +5283,14 @@ def cmd_route(args):
     if args.clear:
         if args.x is not None or args.z is not None:
             die("route --clear takes no coordinates")
+        if args.allow_portals is not None:
+            die("route --clear does not accept --allow-portals")
         clear_route()
         print("route cleared")
         return
     if args.x is None and args.z is None:
+        if args.allow_portals is not None:
+            die("route --allow-portals needs destination coordinates")
         route = load_route()
         if route is None:
             print("route: (none)")
@@ -5306,6 +5333,9 @@ def cmd_route(args):
     route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
              "objective": read_objective(), "status": "active", "set_ts": now_ms(),
              "visited": [], "nonclosing_legs": 0}
+    if args.allow_portals is not None:
+        route["portal_authorized_reason"] = validate_plan_line(
+            args.allow_portals, "route portal reason", PLAN_REASON_MAX_CHARS)
     if isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int):
         route.update({"origin_x": snap["x"], "origin_z": snap["z"],
                       "origin_distance_sq": navigation_distance_sq(
@@ -5976,6 +6006,8 @@ def main():
     p.add_argument("z", nargs="?", type=int)
     p.add_argument("--arrive", type=int, default=1)
     p.add_argument("--clear", action="store_true")
+    p.add_argument("--allow-portals", metavar="REASON",
+                   help="allow an exact verified raw route through multiple doors")
     p.set_defaults(fn=cmd_route)
 
     p = sub.add_parser("landmark",

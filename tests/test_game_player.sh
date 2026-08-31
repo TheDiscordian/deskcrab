@@ -1455,6 +1455,26 @@ assert blocked["status"] == "blocked", blocked
 assert blocked["blocked_reason"] == "semantic-portal-needed", blocked
 assert blocked["blocked_signature"] == "fixture-topology", blocked
 assert (blocked["x"], blocked["z"]) == (80, 675), blocked
+
+portal2 = {"kind": "bound", "id": 21, "x": 148, "z": 533, "dir": 0,
+           "from": [148, 533], "to": [148, 532]}
+gp.client_cache_route_plan = lambda *args: {
+    "status": "ok", "waypoints": [[140, 538], [145, 533], [148, 533]],
+    "steps": 20, "expanded": 200, "remaining_cost": None,
+    "portals": [portal, portal2]}
+raw = dict(route)
+blocked, leg = gp.prepare_client_cache_route(raw, {"x": 148, "z": 540})
+assert leg is None, (blocked, leg)
+assert blocked["blocked_reason"] == "raw-route-crosses-multiple-portals", blocked
+assert blocked["route_portal_count"] == 2, blocked
+
+semantic = dict(route, landmark={"kind": "npc", "id": 30, "name": "Romeo"})
+planned, leg = gp.prepare_client_cache_route(semantic, {"x": 148, "z": 540})
+assert leg == (140, 538), (planned, leg)
+
+authorized = dict(route, portal_authorized_reason="the supplied tile is inside")
+planned, leg = gp.prepare_client_cache_route(authorized, {"x": 148, "z": 540})
+assert leg == (140, 538), (planned, leg)
 PY
 
 echo

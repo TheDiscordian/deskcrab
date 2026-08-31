@@ -483,6 +483,14 @@ deliberate-play channel.
    with the place. Raw `route X Z` remains for an exact tile that was actually supplied or verified;
    it is not a substitute for failing to look up a named destination.
 
+   A raw coordinate route whose cache path crosses more than one distinct door or gate stops before
+   moving with `raw-route-crosses-multiple-portals`. Multiple portals are strong evidence that an
+   unlabelled coordinate has selected a building, compound, or unrelated interior rather than the
+   named goal. A semantic `landmark --route` carries enough identity to proceed. A genuinely supplied
+   and verified exact tile may instead be reissued with `route X Z --allow-portals REASON`; the reason
+   is retained with the route so an unexplained directional probe cannot silently become permission
+   to open every door along it.
+
    Setting either a raw or landmark route also checks every tile in its requested arrival area
    against the observation atlas before claiming `route-set`. When that whole area has already
    been observed and every tile is movement-blocked, the setter refuses it as an observed blocked
