@@ -1009,6 +1009,94 @@ rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
 
 echo
 echo "durable routes advance through ACTIONS without model turns (spec rule 7e):"
+python3 "$GP" objective semantic-guide-test >/dev/null
+snap 10430 '[]' '{"x":120,"z":648,"players":[{"sidx":7,"name":"Guide","x":130,"z":648}]}'
+check "the player can author a new identity-based semantic behaviour" \
+    python3 "$GP" learn approach-guide-test --priority 500 --cooldown-ms 0 \
+        --trigger 'entity_visible={"collection":"players","field":"name","value":"Guide"}' \
+        --action approach-entity --param collection=players --param field=name \
+        --param value=Guide --param within=2
+fake_route_bridge 128 648
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the learned semantic approach executes through the ordinary walk: exit 0" "$CODE" "0"
+check_eq "the learned behaviour reacquires the player's current tile" \
+    "$(last_action 'x=130')" "1"
+check "the learned rule stores identity and no world coordinate" \
+    sh -c "jq -e '.rules[] | select(.name==\"approach-guide-test\") | .action | has(\"value\") and (has(\"x\")|not) and (has(\"z\")|not)' '$DESKCRAB_GAME_DIR/learned-rules.json' >/dev/null"
+python3 "$GP" remove approach-guide-test >/dev/null
+
+snap 104305 '[]' '{"x":120,"z":648,"players":[{"sidx":7,"name":"Guide","x":130,"z":648}]}'
+check "a native semantic player-follow action is authorable too" \
+    python3 "$GP" learn follow-guide-test --priority 500 --cooldown-ms 0 \
+        --trigger 'entity_visible={"collection":"players","field":"name","value":"Guide"}' \
+        --action follow-player --param name=Guide --param within=2
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the learned player follow dispatches through ACTIONS: exit 0" "$CODE" "0"
+check_eq "the native action is follow-player" "$(last_action 'type=follow-player')" "1"
+check_eq "the current server identity is resolved at dispatch" "$(last_action 'sidx=7')" "1"
+check_eq "the learned follow carries no pointer coordinate" "$(last_action 'button=')" "0"
+python3 "$GP" remove follow-guide-test >/dev/null
+
+rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
+snap 10431 '[]' '{"x":120,"z":648,"players":[{"sidx":7,"name":"Guide","x":130,"z":648}]}'
+check "a visible guide can become one durable follow commitment" \
+    python3 "$GP" follow Guide --within 2
+contains "$(python3 "$GP" follow)" 'status=active player="Guide" within=2' \
+    && ok "follow status exposes the semantic commitment" \
+    || fail "follow status must expose the semantic commitment" "$(python3 "$GP" follow)"
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "following sends one grounded native request for the live guide: exit 0" "$CODE" "0"
+contains "$OUT" 'status=follow-progress' \
+    && ok "follow progress is explicit" || fail "follow progress must be explicit" "$OUT"
+check_eq "the durable commitment uses RuneScape's native follow action" \
+    "$(last_action 'type=follow-player')" "1"
+snap 10432 '[]' '{"x":128,"z":648,"players":[{"sidx":7,"name":"Guide","x":130,"z":648}]}'
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+check_eq "standing near the guide waits without clicking: exit 3" "$CODE" "3"
+contains "$OUT" 'following-near player="Guide"' \
+    && ok "the runner names its useful stand-near state" \
+    || fail "following must not issue redundant walks" "$OUT"
+refute "stand-near following emits no game action" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 10433 '[]' '{"x":128,"z":648,"players":[{"sidx":7,"name":"Guide","x":140,"z":648}]}'
+rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
+fake_bridge done
+OUT="$(python3 "$GP" step --local)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the same commitment reacquires the guide after they move: exit 0" "$CODE" "0"
+check_eq "the next action targets the guide's new tile, not the old one" \
+    "$(last_action 'x=140')" "1"
+check "follow can be ended explicitly" python3 "$GP" follow --clear
+
+DEFS="$SANDBOX/world-defs"
+mkdir -p "$DEFS/locs"
+export DESKCRAB_GAME_DEFS_DIR="$DEFS"
+printf '%s\n' '{"npcs":[{"id":161,"name":"Border Guard","description":"a guard from Al Kharid"}]}' > "$DEFS/NpcDefs.json"
+printf '%s\n' '{"npclocs":[{"id":161,"start":{"X":92,"Y":650},"min":{"X":92,"Y":647},"max":{"X":94,"Y":652}}]}' > "$DEFS/locs/NpcLocs.json"
+printf '%s\n' '<GameObjectDef-array><GameObjectDef><name>Tree</name><description>A tree</description><command1>Chop</command1></GameObjectDef><GameObjectDef><name>gate</name><description>A gate from Lumbridge to Al Kharid</description><command1>Open</command1></GameObjectDef></GameObjectDef-array>' > "$DEFS/GameObjectDef.xml"
+printf '%s\n' '{"sceneries":[{"id":1,"pos":{"X":92,"Y":649},"direction":0}]}' > "$DEFS/locs/SceneryLocs.json"
+printf '%s\n' '<DoorDef-array><DoorDef><name>Door</name><description>An ordinary door</description><command1>Open</command1></DoorDef></DoorDef-array>' > "$DEFS/DoorDef.xml"
+printf '%s\n' '{"boundaries":[{"id":0,"pos":{"X":106,"Y":675},"direction":1}]}' > "$DEFS/locs/BoundaryLocs.json"
+snap 1045 '[]' '{"x":106,"z":675}'
+OUT="$(python3 "$GP" landmark Al Kharid)"
+contains "$OUT" 'kind=object id=1 name="gate" spawn=(92,649)' \
+    && contains "$OUT" 'kind=npc id=161 name="Border Guard" spawn=(92,650)' \
+    && ok "semantic landmark lookup joins authoritative definitions and placements" \
+    || fail "semantic landmarks must come from the world data" "$OUT"
+refute "a nearby arbitrary door cannot satisfy a different named landmark" \
+    sh -c "python3 '$GP' landmark --kind bound 'Al Kharid' >/dev/null 2>&1"
+check "an unambiguous semantic landmark can become the durable route" \
+    python3 "$GP" landmark --kind object --route --arrive 2 Al Kharid
+contains "$(python3 "$GP" route)" 'landmark="gate"' \
+    && contains "$(python3 "$GP" route)" 'target=(92,649)' \
+    && ok "the route retains its authoritative semantic identity" \
+    || fail "a landmark route must retain its identity" "$(python3 "$GP" route)"
+python3 "$GP" route --clear >/dev/null
 python3 "$GP" objective cross-region >/dev/null
 check "a stale travel fragment can coexist in the table" \
     python3 "$GP" learn stale-route-fragment-test --priority 500 --cooldown-ms 0 \
@@ -1254,7 +1342,9 @@ json.dump({"v": 1, "points": [
 ]}, open(sys.argv[1], "w"))
 PY
 snap 105235 '[]' '{"x":107,"z":100}'
-OUT="$(python3 "$GP" backtrack all)"
+refute "whole-history backtracking requires a deliberate reason" \
+    sh -c "python3 '$GP' backtrack all >/dev/null 2>&1"
+OUT="$(python3 "$GP" backtrack all --reason 'return to the last verified branch')"
 contains "$OUT" "loop_erased=2" \
     && ok "recovery reports that it removed an observed cycle" \
     || fail "recovery must make cycle removal visible" "$OUT"
@@ -1285,7 +1375,7 @@ import json, sys
 points = json.load(open(sys.argv[1]))["points"]
 assert points[2]["x"] == 300 and points[2]["break"] is True, points
 PY
-python3 "$GP" backtrack all >/dev/null
+python3 "$GP" backtrack all --reason 'return to this side of the portal boundary' >/dev/null
 python3 - "$DESKCRAB_GAME_DIR/backtrack.json" <<'PY' \
     && ok "backtracking stops on the current side of that boundary" \
     || fail "backtracking stops on the current side of that boundary"
@@ -1489,6 +1579,14 @@ refute "take-ground refuses a roaming cap beyond ten tiles" \
 refute "a non-integer ground_item_visible is refused" \
     python3 "$GP" learn bad-ground2 --priority 1 --trigger ground_item_visible=skull \
         --action take-ground --param item=27
+refute "an ungrounded semantic collection is refused" \
+    python3 "$GP" learn bad-semantic-selector --priority 1 \
+        --trigger 'entity_visible={"collection":"pixels","field":"name","value":"Guide"}' \
+        --action walk --param x=1 --param z=1
+refute "a semantic approach must declare a bounded stand-near radius" \
+    python3 "$GP" learn bad-semantic-action --priority 1 \
+        --trigger objective_is=test --action approach-entity \
+        --param collection=players --param field=name --param value=Guide --param within=0
 python3 "$GP" objective recover-ghost-skull >/dev/null
 python3 "$GP" learn take-quest-skull --priority 90 --cooldown-ms 0 --once-per-objective \
     --trigger objective_is=recover-ghost-skull --trigger ground_item_visible=27 \
@@ -1771,6 +1869,15 @@ check_eq "the harness carries the explicit hover-panel awareness door" \
     "$(sandbox_count_in '^    panel)' "$HEADLESS")" "1"
 check_eq "the harness carries the direct player-trade door" \
     "$(sandbox_count_in '^    trade)' "$HEADLESS")" "1"
+check_eq "the harness carries the durable semantic player-follow door" \
+    "$(sandbox_count_in '^    follow)' "$HEADLESS")" "1"
+check "the client bridge accepts the native semantic follow action" \
+    grep -q '"follow-player".equals(type)' \
+        "$GAME_TREE/Core-Framework/Client_Base/src/orsc/ReflexBridge.java"
+check "the client host sends RuneScape's native Follow packet" \
+    sh -c "sed -n '/public void followPlayer/,/^\t\t\t}/p' \
+        '$GAME_TREE/Core-Framework/Client_Base/src/orsc/mudclient.java' | \
+        grep -q 'newPacket(165)'"
 check_eq "the harness carries the unambiguous menu-text door" \
     "$(sandbox_count_in '^    menu)' "$HEADLESS")" "1"
 check_eq "the harness carries the semantic NPC-dialogue door" \

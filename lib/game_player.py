@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,12 +32,15 @@ import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 
 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
 TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", "bound_visible",
+                "entity_visible",
                 "ground_item_visible", "shop_item_visible", "bank_item_visible",
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "in_combat", "out_of_combat")
-ACTIONS = ("talk-npc", "interact-npc", "cast-npc", "walk", "retreat", "interact-object", "interact-bound", "click-entity",
+ACTIONS = ("talk-npc", "interact-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
+ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
+ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
 FRIEND_STATUS_RE = re.compile(r"^(.+?)\s+has logged\s+(in|out)\s*$", re.IGNORECASE)
 WAIT_CONDITIONS = (
@@ -89,6 +93,8 @@ ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
 BACKTRACK_RULE_NAME = "active-backtrack"
 BACKTRACK_PRIORITY = 900_000  # deliberate recovery beats routine work; retreat still wins
+FOLLOW_RULE_NAME = "active-follow-player"
+FOLLOW_PRIORITY = 850_000  # an accepted guide beats routine work; escape still wins
 MANUAL_RETREAT_RULE_NAME = "manual-retreat-request"
 MANUAL_RETREAT_PRIORITY = 1_000_000
 
@@ -316,6 +322,23 @@ def backtrack_path() -> Path:
     return game_dir() / "backtrack.json"
 
 
+def follow_path() -> Path:
+    return game_dir() / "follow.json"
+
+
+def world_defs_dir() -> Path:
+    """The authoritative OpenRSC definitions used for semantic landmarks.
+
+    A test or alternate server may provide its own definition root. Ordinary
+    play reads the same checked-in world files as the running local server;
+    this is discovery only and never writes into the game checkout.
+    """
+    configured = os.environ.get("DESKCRAB_GAME_DEFS_DIR")
+    if configured:
+        return Path(configured)
+    return (Path.home() / "Games/OpenRSC/Core-Framework/server/conf/server/defs")
+
+
 def session_path() -> Path:
     return game_dir() / "session.json"
 
@@ -503,6 +526,85 @@ def clear_route() -> None:
         pass
 
 
+def _normalise_landmark_text(value) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]:
+    """Resolve stable NPC/object/boundary spawns from the server's own data.
+
+    The name is semantic evidence; the location comes from the matching locs
+    table. This prevents a nearby arbitrary door from being renamed as a
+    distant landmark merely because play expected to encounter a door.
+    """
+    root = world_defs_dir()
+    wanted = _normalise_landmark_text(query)
+    if not wanted:
+        return []
+    candidates = []
+
+    def matches(name, description) -> bool:
+        return wanted in _normalise_landmark_text(f"{name or ''} {description or ''}")
+
+    if kind in (None, "npc"):
+        try:
+            definitions = {
+                entry["id"]: entry
+                for entry in json.loads((root / "NpcDefs.json").read_text()).get("npcs", [])
+                if isinstance(entry, dict) and isinstance(entry.get("id"), int)
+                and matches(entry.get("name"), entry.get("description"))
+            }
+            locations = json.loads((root / "locs/NpcLocs.json").read_text()).get("npclocs", [])
+            for location in locations:
+                definition = definitions.get(location.get("id"))
+                start = location.get("start") or {}
+                if definition is None or not isinstance(start.get("X"), int) \
+                        or not isinstance(start.get("Y"), int):
+                    continue
+                candidates.append({"kind": "npc", "id": location["id"],
+                                   "name": definition.get("name") or "?",
+                                   "description": definition.get("description") or "",
+                                   "x": start["X"], "z": start["Y"],
+                                   "min": location.get("min"), "max": location.get("max")})
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+
+    for candidate_kind, defs_name, locs_name, locs_key in (
+            ("object", "GameObjectDef.xml", "SceneryLocs.json", "sceneries"),
+            ("bound", "DoorDef.xml", "BoundaryLocs.json", "boundaries")):
+        if kind not in (None, candidate_kind):
+            continue
+        try:
+            definitions = []
+            for entry in ET.parse(root / defs_name).getroot():
+                definitions.append({"name": entry.findtext("name") or "?",
+                                    "description": entry.findtext("description") or "",
+                                    "command1": entry.findtext("command1") or "",
+                                    "command2": entry.findtext("command2") or ""})
+            locations = json.loads((root / "locs" / locs_name).read_text()).get(locs_key, [])
+            for location in locations:
+                object_id = location.get("id")
+                pos = location.get("pos") or {}
+                if not isinstance(object_id, int) or not 0 <= object_id < len(definitions) \
+                        or not isinstance(pos.get("X"), int) \
+                        or not isinstance(pos.get("Y"), int):
+                    continue
+                definition = definitions[object_id]
+                if not matches(definition["name"], definition["description"]):
+                    continue
+                candidates.append({"kind": candidate_kind, "id": object_id,
+                                   "name": definition["name"],
+                                   "description": definition["description"],
+                                   "command1": definition["command1"],
+                                   "command2": definition["command2"],
+                                   "x": pos["X"], "z": pos["Y"],
+                                   "dir": location.get("direction")})
+        except (OSError, ValueError, TypeError, ET.ParseError):
+            pass
+    return sorted(candidates, key=lambda item: (item["kind"], item["name"].casefold(),
+                                                item["x"], item["z"], item["id"]))
+
+
 def load_movement_trail() -> dict:
     try:
         trail = json.loads(movement_trail_path().read_text())
@@ -630,6 +732,104 @@ def clear_backtrack() -> None:
         backtrack_path().unlink()
     except FileNotFoundError:
         pass
+
+
+def load_follow():
+    try:
+        request = json.loads(follow_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    if not isinstance(request, dict) or request.get("v") != 1 \
+            or not isinstance(request.get("player"), str) \
+            or not request["player"].strip() or "\n" in request["player"] \
+            or not isinstance(request.get("within"), int) \
+            or not 1 <= request["within"] <= 10 \
+            or not isinstance(request.get("objective"), str) \
+            or request.get("status") not in ("active", "blocked"):
+        return {"status": "invalid"}
+    for key in ("last_x", "last_z"):
+        if key in request and not isinstance(request[key], int):
+            return {"status": "invalid"}
+    return request
+
+
+def save_follow(request: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(follow_path(), json.dumps(request, indent=2) + "\n")
+
+
+def clear_follow() -> None:
+    try:
+        follow_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def state_entity_matches(entity: dict, field: str, value) -> bool:
+    actual = entity.get(field)
+    if isinstance(value, str):
+        return isinstance(actual, str) and actual.casefold() == value.casefold()
+    return actual == value
+
+
+def matching_state_entities(snap: dict, selector: dict) -> list[dict]:
+    collection = snap.get(selector["collection"]) or []
+    return [entity for entity in collection
+            if isinstance(entity, dict)
+            and state_entity_matches(entity, selector["field"], selector["value"])
+            and isinstance(entity.get("x"), int) and isinstance(entity.get("z"), int)]
+
+
+def nearest_state_entity(snap: dict, selector: dict):
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    candidates = matching_state_entities(snap, selector)
+    if not candidates:
+        return None
+
+    def candidate_key(entity):
+        path = entity.get("path_distance")
+        if isinstance(path, int) and path >= 0:
+            return (0, path, entity.get("sidx", 0), entity["x"], entity["z"])
+        return (1, max(abs(entity["x"] - px), abs(entity["z"] - pz)),
+                abs(entity["x"] - px) + abs(entity["z"] - pz),
+                entity.get("sidx", 0))
+
+    return min(candidates, key=candidate_key)
+
+
+def prepare_follow(snap: dict, objective: str):
+    request = load_follow()
+    if request is None or request.get("status") == "invalid":
+        return request, None
+    if request["objective"] != objective:
+        clear_follow()
+        flush_events([{"ts": now_ms(), "kind": "follow-cancelled",
+                       "reason": "objective-changed", "player": request["player"],
+                       "from": request["objective"], "to": objective}])
+        return None, None
+    selector = {"collection": "players", "field": "name", "value": request["player"]}
+    target = nearest_state_entity(snap, selector)
+    if target is not None:
+        target_changed = (request.get("last_x"), request.get("last_z")) \
+            != (target["x"], target["z"])
+        request.update({"last_x": target["x"], "last_z": target["z"],
+                        "last_sidx": target.get("sidx"), "last_seen_ts": now_ms()})
+        if request.get("status") == "blocked" and target_changed:
+            request = {key: value for key, value in request.items()
+                       if not key.startswith("blocked_")}
+            request["status"] = "active"
+        save_follow(request)
+    elif request.get("status") == "blocked" \
+            and route_obstacle_signature(snap) != request.get("blocked_signature"):
+        request = {key: value for key, value in request.items()
+                   if not key.startswith("blocked_")}
+        request["status"] = "active"
+        save_follow(request)
+    return request, target
 
 
 def prepare_backtrack(snap: dict, objective: str):
@@ -800,6 +1000,17 @@ def validate_config(cfg: dict) -> None:
                         or set(val) != {"x", "z", "radius"}):
                     bad(f"{where}: trigger.near_tile must be "
                         "{{\"x\":int,\"z\":int,\"radius\":0..50}}")
+            elif key == "entity_visible":
+                if not isinstance(val, dict) \
+                        or set(val) != {"collection", "field", "value"} \
+                        or val.get("collection") not in ENTITY_COLLECTIONS \
+                        or val.get("field") not in ENTITY_SELECTOR_FIELDS \
+                        or not isinstance(val.get("value"), (str, int)) \
+                        or isinstance(val.get("value"), bool) \
+                        or isinstance(val.get("value"), str) and not val["value"].strip():
+                    bad(f"{where}: trigger.entity_visible must be "
+                        "{\"collection\":players|npcs|objects|bounds|ground_items,"
+                        "\"field\":name|id|sidx,\"value\":string|int}")
             elif key in ("npc_visible", "object_visible", "bound_visible",
                          "ground_item_visible", "shop_item_visible", "bank_item_visible",
                          "inventory_has", "inventory_lacks"):
@@ -858,6 +1069,25 @@ def validate_config(cfg: dict) -> None:
             if "arrive" in action and (not isinstance(action["arrive"], int)
                                        or not 0 <= action["arrive"] <= 10):
                 bad(f"{where}: walk arrive must be an integer 0..10")
+        elif atype == "approach-entity":
+            if set(action) != {"type", "collection", "field", "value", "within"} \
+                    or action.get("collection") not in ENTITY_COLLECTIONS \
+                    or action.get("field") not in ENTITY_SELECTOR_FIELDS \
+                    or not isinstance(action.get("value"), (str, int)) \
+                    or isinstance(action.get("value"), bool) \
+                    or isinstance(action.get("value"), str) and not action["value"].strip() \
+                    or not isinstance(action.get("within"), int) \
+                    or not 1 <= action["within"] <= 10:
+                bad(f"{where}: approach-entity takes collection, field, value, "
+                    "and within=1..10")
+        elif atype == "follow-player":
+            if set(action) != {"type", "name", "within"} \
+                    or not isinstance(action.get("name"), str) \
+                    or not action["name"].strip() or "\n" in action["name"] \
+                    or not isinstance(action.get("within"), int) \
+                    or not 1 <= action["within"] <= 10:
+                bad(f"{where}: follow-player takes a non-empty player name and "
+                    "within=1..10")
         elif atype == "retreat":
             if set(action) - {"type", "distance", "dx", "dz"}:
                 bad(f"{where}: retreat takes only optional distance/dx/dz")
@@ -2344,6 +2574,9 @@ def make_trigger_fn(objective: str, activity: str = ""):
             if not any(b.get("id") == trig["bound_visible"]
                        for b in snap.get("bounds") or []):
                 return False
+        if "entity_visible" in trig:
+            if not matching_state_entities(snap, trig["entity_visible"]):
+                return False
         if "ground_item_visible" in trig:
             if not any(i.get("id") == trig["ground_item_visible"]
                        for i in snap.get("ground_items") or []):
@@ -2484,6 +2717,35 @@ def compile_player_action(rule, snap, food, eat_pick):
         if isinstance(action.get("route_step"), int):
             compiled["route_step"] = action["route_step"]
         return compiled, None
+    if action["type"] == "approach-entity":
+        selector = {"collection": action["collection"], "field": action["field"],
+                    "value": action["value"]}
+        target = nearest_state_entity(snap, selector)
+        if target is None:
+            return None, "semantic-entity-not-visible"
+        px, pz = snap.get("x"), snap.get("z")
+        distance = max(abs(px - target["x"]), abs(pz - target["z"]))
+        if distance <= action["within"]:
+            return None, "semantic-entity-already-near"
+        return {"type": "walk", "x": target["x"], "z": target["z"],
+                "arrive": action["within"]}, None
+    if action["type"] == "follow-player":
+        target = nearest_state_entity(
+            snap, {"collection": "players", "field": "name",
+                   "value": action["name"]})
+        if target is None or not isinstance(target.get("sidx"), int):
+            return None, "follow-player-not-visible"
+        px, pz = snap.get("x"), snap.get("z")
+        distance = max(abs(px - target["x"]), abs(pz - target["z"]))
+        if distance <= action["within"]:
+            return None, "follow-player-already-near"
+        # x/z/arrive are causal metadata for verification and the durable
+        # reacquisition loop. The client acts only on the current server
+        # index, using RuneScape's native Follow request.
+        return {"type": "follow-player", "sidx": target["sidx"],
+                "name": target.get("name") or action["name"],
+                "x": target["x"], "z": target["z"],
+                "arrive": action["within"]}, None
     if action["type"] == "retreat":
         if snap.get("in_combat") is not True:
             return None, "already-out-of-combat"
@@ -2751,7 +3013,8 @@ def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | 
     action = outcome.get("action") or {}
     if rule is None or action.get("type") == "retreat" \
             or outcome.get("rule") in (
-                ROUTE_RULE_NAME, BACKTRACK_RULE_NAME, MANUAL_RETREAT_RULE_NAME):
+                ROUTE_RULE_NAME, BACKTRACK_RULE_NAME, FOLLOW_RULE_NAME,
+                MANUAL_RETREAT_RULE_NAME):
         return None
     now = int(outcome.get("ts") or now_ms())
     identity = {key: action.get(key) for key in (
@@ -3070,6 +3333,25 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "action": {"type": "walk", "x": leg_x, "z": leg_z,
                        "arrive": 0},
         })
+    follow, follow_target = prepare_follow(snap, objective)
+    if follow is not None and follow.get("status") == "active":
+        if follow_target is not None:
+            follow_action = {"type": "follow-player", "name": follow["player"],
+                             "within": follow["within"]}
+        elif isinstance(follow.get("last_x"), int) \
+                and isinstance(follow.get("last_z"), int):
+            follow_action = {"type": "walk", "x": follow["last_x"],
+                             "z": follow["last_z"], "arrive": follow["within"]}
+        else:
+            follow_action = None
+        if follow_action is not None:
+            source_rules.append({
+                "name": FOLLOW_RULE_NAME, "enabled": True,
+                "priority": FOLLOW_PRIORITY, "cooldown_ms": 0,
+                "hold_ticks": 1, "once_per_objective": False,
+                "note": "reacquire the chosen live player and stay nearby",
+                "trigger": {}, "action": follow_action,
+            })
     trigger_true = make_trigger_fn(objective, activity)
     urgent_retreat_names = {
         rule["name"] for rule in source_rules
@@ -3160,10 +3442,37 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("npc-dialogue-in-progress", next="wait-for-next-dialogue-state")
         return "npc-dialogue-in-progress", EXIT_NOT_READY
 
+    if not urgent_retreat_names and follow is not None:
+        if follow.get("status") == "invalid":
+            report("follow-invalid", file=str(follow_path()))
+            return "follow-needs-path", EXIT_NO_RULE
+        px, pz = snap.get("x"), snap.get("z")
+        if follow.get("status") == "blocked":
+            report("follow-needs-path", player=json.dumps(follow["player"]),
+                   x=px, z=pz, reason=follow.get("blocked_reason", "no-progress"),
+                   next="inspect-obstacle-or-clear-follow")
+            return "follow-needs-path", EXIT_NO_RULE
+        if follow_target is not None and isinstance(px, int) and isinstance(pz, int) \
+                and max(abs(px - follow_target["x"]),
+                        abs(pz - follow_target["z"])) <= follow["within"]:
+            report("following-near", player=json.dumps(follow["player"]),
+                   distance=max(abs(px - follow_target["x"]),
+                                abs(pz - follow_target["z"])),
+                   within=follow["within"], next="runner-will-reacquire-if-player-moves")
+            return "following-near", EXIT_NOT_READY
+        if follow_target is None and isinstance(px, int) and isinstance(pz, int) \
+                and isinstance(follow.get("last_x"), int) \
+                and max(abs(px - follow["last_x"]), abs(pz - follow["last_z"])) \
+                    <= follow["within"]:
+            report("follow-target-lost", player=json.dumps(follow["player"]),
+                   last_seen=f"({follow['last_x']},{follow['last_z']})",
+                   next="wait-for-visibility-or-clear-follow")
+            return "follow-target-lost", EXIT_NO_RULE
+
     # Spec rule 7e: one durable destination, executed by this resident runner
     # as ordinary lowest-priority walk actions. Messages above and every
     # learned interaction below retain priority.
-    route = None if backtrack is not None else load_route()
+    route = None if backtrack is not None or follow is not None else load_route()
     route_blocked = False
     if route is not None and route.get("status") == "invalid":
         report("route-invalid", file=str(route_path()))
@@ -3211,17 +3520,26 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if backtrack is not None and rule["name"] != BACKTRACK_RULE_NAME \
                 and rule["name"] not in urgent_retreat_names:
             continue
+        # Following a human guide is a live navigation commitment. Ambient
+        # loot and routine reflexes cannot repeatedly cut across it; chat and
+        # an urgent retreat were already given their higher precedence.
+        if follow is not None and rule["name"] != FOLLOW_RULE_NAME \
+                and rule["name"] not in urgent_retreat_names:
+            continue
         # One explicit route is the movement commitment. A stale learned
         # travel leg must not pull the body away and then hand it back to the
         # route (the observed east/west ping-pong). Nonmovement interactions
         # retain their normal priority and may still interrupt useful travel.
-        if route is not None and (rule.get("action") or {}).get("type") == "walk" \
+        if route is not None and (rule.get("action") or {}).get("type") \
+                in ("walk", "approach-entity") \
                 and rule["name"] not in urgent_retreat_names \
                 and trigger_true(rule.get("trigger") or {}, snap, {}):
             events.append({"ts": now, "kind": "route-conflict-hold",
                            "rule": rule["name"],
-                           "rule_target": {"x": rule["action"]["x"],
-                                           "z": rule["action"]["z"]},
+                           "rule_target": ({"x": rule["action"]["x"],
+                                            "z": rule["action"]["z"]}
+                                           if rule["action"]["type"] == "walk"
+                                           else {"semantic": rule["action"]}),
                            "route_target": {"x": route["x"], "z": route["z"]}})
             continue
         if rule.get("once_per_objective") and rule["enabled"] \
@@ -3274,6 +3592,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if now - snap.get("ts", 0) > config_defaults(cfg)["stale_ms"]:
             report("stale", age_ms=now - snap.get("ts", 0))
             return "stale", EXIT_NOT_READY
+        if follow is not None:
+            report("follow-waiting", player=json.dumps(follow.get("player")),
+                   last_seen=(f"({follow.get('last_x')},{follow.get('last_z')})"
+                              if isinstance(follow.get("last_x"), int) else None))
+            return "follow-waiting", EXIT_NOT_READY
         if route_blocked and route is not None:
             report("route-needs-detour", x=snap.get("x"), z=snap.get("z"),
                    target_x=route["x"], target_z=route["z"],
@@ -3362,7 +3685,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                                game_reflex.read_snapshot() or snap)}])
     elif status == "done" and action["type"] == "walk":
         arrive = WALK_ARRIVE_DEFAULT
-        if rule is not None and isinstance(rule["action"].get("arrive"), int):
+        if isinstance(action.get("arrive"), int):
+            arrive = action["arrive"]
+        elif rule is not None and isinstance(rule["action"].get("arrive"), int):
             arrive = rule["action"]["arrive"]
         status, final_x, final_z = verify_walk(action["x"], action["z"], arrive)
         if status != "done":
@@ -3511,6 +3836,36 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "target_x": route["x"], "target_z": route["z"]}])
             status = "route-needs-detour"
 
+    is_follow = rule_name == FOLLOW_RULE_NAME and follow is not None
+    follow_was_blocked = False
+    if is_follow:
+        latest = game_reflex.read_snapshot() or snap
+        lx, lz = latest.get("x"), latest.get("z")
+        moved = isinstance(lx, int) and isinstance(lz, int) \
+            and (lx, lz) != (snap.get("x"), snap.get("z"))
+        if status == "done" or status == "walk-short" and moved:
+            status = "follow-progress"
+            follow = {key: value for key, value in follow.items()
+                      if not key.startswith("blocked_")}
+            follow.update({"status": "active", "last_move_ts": now_ms()})
+            save_follow(follow)
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "player": follow["player"], "x": lx, "z": lz,
+                           "target_x": action["x"], "target_z": action["z"],
+                           "within": follow["within"]}])
+        else:
+            follow_was_blocked = True
+            follow = dict(follow)
+            follow.update({"status": "blocked",
+                           "blocked_reason": status if status else "no-progress",
+                           "blocked_signature": route_obstacle_signature(latest),
+                           "blocked_ts": now_ms()})
+            save_follow(follow)
+            flush_events([{"ts": now_ms(), "kind": "follow-blocked",
+                           "id": action_id, "player": follow["player"],
+                           "reason": follow["blocked_reason"], "x": lx, "z": lz,
+                           "target_x": action["x"], "target_z": action["z"]}])
+
     is_backtrack = rule_name == BACKTRACK_RULE_NAME and backtrack is not None
     backtrack_was_blocked = False
     if is_backtrack:
@@ -3600,6 +3955,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    reason=route_block_reason, evidence="grounded-collision-path",
                    map_boundary="unproven",
                    next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
+        elif follow_was_blocked:
+            report("follow-needs-path", id=action_id,
+                   player=json.dumps(follow["player"]), x=final_x, z=final_z,
+                   reason=follow.get("blocked_reason"),
+                   next="inspect-obstacle-or-clear-follow")
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, x=final_x, z=final_z, objective=objective or None,
@@ -3615,6 +3975,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    evidence="grounded-collision-path",
                    map_boundary="unproven",
                    next="inspect-terrain-or-use-semantic-boundary-or-waypoint")
+        elif follow_was_blocked:
+            report("follow-needs-path", id=action_id,
+                   player=json.dumps(follow["player"]),
+                   reason=follow.get("blocked_reason"),
+                   next="inspect-obstacle-or-clear-follow")
         else:
             report("fired", rule=rule_name, id=action_id, type=action["type"],
                    status=status, objective=objective or None,
@@ -3624,7 +3989,10 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         return "backtrack-blocked", EXIT_NO_RULE
     if route_was_blocked:
         return "route-needs-detour", EXIT_NO_RULE
+    if follow_was_blocked:
+        return "follow-needs-path", EXIT_NO_RULE
     return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
+                                               "follow-progress",
                                                "backtrack-progress", "backtrack-complete")
                      else EXIT_NOT_DONE)
 
@@ -4206,9 +4574,12 @@ def cmd_route(args):
                 and isinstance(route.get("last_z"), int) else ""
             detour = f" local_detour_attempts={len(route.get('detour_failed_legs') or [])}" \
                 if route.get("detour_failed_legs") else ""
+            landmark = route.get("landmark") or {}
+            label = f" landmark={json.dumps(landmark.get('name'))}" \
+                if landmark.get("name") else ""
             print(f"route: status={route['status']} target=({route['x']},{route['z']}) "
                   f"arrive={route['arrive']} objective={route['objective'] or '(none)'}"
-                  f"{current}{last}{detour}"
+                  f"{label}{current}{last}{detour}"
                   f"{(' reason=' + route.get('blocked_reason', '')) if route['status'] == 'blocked' else ''}")
         return
     if args.x is None or args.z is None:
@@ -4229,9 +4600,121 @@ def cmd_route(args):
     # A newly chosen destination is an explicit replacement strategy, not a
     # second movement commitment to race an old recovery.
     clear_backtrack()
+    clear_follow()
     save_route(route)
     print(f"route-set target=({args.x},{args.z}) arrive={args.arrive} "
           f"objective={route['objective'] or '(none)'}")
+
+
+def cmd_landmark(args):
+    """Find stable world placements by semantic identity, optionally route.
+
+    This is deliberately not a writable landmark notebook. The model cannot
+    make a claim authoritative by storing it; results are joined from the
+    server's definitions and placement tables every time.
+    """
+    query = " ".join(args.query).strip()
+    candidates = world_landmark_candidates(query, args.kind)
+    if args.id is not None:
+        candidates = [item for item in candidates if item["id"] == args.id]
+    if not candidates:
+        die(f"no authoritative {args.kind or 'world'} landmark matches {query!r}")
+    snap = game_reflex.read_snapshot() or {}
+    px, pz = snap.get("x"), snap.get("z")
+    if args.nearest:
+        if not isinstance(px, int) or not isinstance(pz, int):
+            die("landmark --nearest needs a snapshot with the current tile")
+        candidates = [min(candidates,
+                          key=lambda item: (max(abs(item["x"] - px), abs(item["z"] - pz)),
+                                            item["kind"], item["id"], item["x"], item["z"]))]
+    for item in candidates[:40]:
+        distance = ""
+        if isinstance(px, int) and isinstance(pz, int):
+            distance = f" distance={max(abs(item['x'] - px), abs(item['z'] - pz))}"
+        roam = ""
+        if item["kind"] == "npc" and item.get("min") and item.get("max"):
+            roam = (f" roam=({item['min'].get('X')},{item['min'].get('Y')})"
+                    f"-({item['max'].get('X')},{item['max'].get('Y')})")
+        command = f" command={item.get('command1')}" if item.get("command1") else ""
+        print(f"landmark kind={item['kind']} id={item['id']} name={json.dumps(item['name'])} "
+              f"spawn=({item['x']},{item['z']}){distance}{roam}{command} "
+              f"description={json.dumps(item['description'])}")
+    if len(candidates) > 40:
+        print(f"landmark: {len(candidates) - 40} more matches; narrow --kind or use --nearest")
+    if not args.route:
+        return
+    if len(candidates) != 1:
+        die(f"landmark --route is ambiguous ({len(candidates)} placements); "
+            "narrow --kind or deliberately select --nearest")
+    if not 0 <= args.arrive <= 10:
+        die("landmark --arrive must be from 0 through 10")
+    item = candidates[0]
+    route = {"v": 1, "x": item["x"], "z": item["z"], "arrive": args.arrive,
+             "objective": read_objective(), "status": "active", "set_ts": now_ms(),
+             "visited": [], "nonclosing_legs": 0,
+             "landmark": {"query": query, "kind": item["kind"], "id": item["id"],
+                          "name": item["name"], "description": item["description"]}}
+    if isinstance(px, int) and isinstance(pz, int):
+        route.update({"origin_x": px, "origin_z": pz,
+                      "origin_distance_sq": navigation_distance_sq(
+                          px, pz, item["x"], item["z"]),
+                      "best_distance_sq": navigation_distance_sq(
+                          px, pz, item["x"], item["z"]),
+                      "visited": [[px, pz]]})
+    clear_backtrack()
+    clear_follow()
+    save_route(route)
+    print(f"landmark-route-set kind={item['kind']} id={item['id']} "
+          f"name={json.dumps(item['name'])} target=({item['x']},{item['z']}) "
+          f"arrive={args.arrive} objective={route['objective'] or '(none)'}")
+
+
+def cmd_follow(args):
+    """Keep reacquiring one visible player and stay within a useful radius."""
+    if args.clear:
+        if args.player:
+            die("follow --clear takes no player name")
+        clear_follow()
+        print("follow cleared")
+        return
+    if not args.player:
+        request = load_follow()
+        if request is None:
+            print("follow: (none)")
+        elif request.get("status") == "invalid":
+            print(f"follow: invalid ({follow_path()})")
+        else:
+            last = ""
+            if isinstance(request.get("last_x"), int):
+                last = f" last_seen=({request['last_x']},{request['last_z']})"
+            reason = f" reason={request.get('blocked_reason')}" \
+                if request.get("status") == "blocked" else ""
+            print(f"follow: status={request['status']} player={json.dumps(request['player'])} "
+                  f"within={request['within']} objective={request['objective'] or '(none)'}"
+                  f"{last}{reason}")
+        return
+    player = args.player.strip()
+    if not player or "\n" in player or "\r" in player:
+        die("follow needs one non-empty player name")
+    if not 1 <= args.within <= 10:
+        die("follow --within must be from 1 through 10")
+    snap = game_reflex.read_snapshot() or {}
+    target = nearest_state_entity(
+        snap, {"collection": "players", "field": "name", "value": player})
+    if target is None:
+        die(f"follow cannot start: no visible player named {player!r}")
+    canonical = str(target.get("name") or player)
+    request = {"v": 1, "player": canonical, "within": args.within,
+               "objective": read_objective(), "status": "active",
+               "set_ts": now_ms(), "last_seen_ts": now_ms(),
+               "last_sidx": target.get("sidx"),
+               "last_x": target["x"], "last_z": target["z"]}
+    clear_route()
+    clear_backtrack()
+    save_follow(request)
+    print(f"follow-set player={json.dumps(canonical)} within={args.within} "
+          f"last_seen=({target['x']},{target['z']}) "
+          f"objective={request['objective'] or '(none)'}")
 
 
 def cmd_backtrack(args):
@@ -4303,9 +4786,14 @@ def cmd_backtrack(args):
         if limit <= 0:
             die("backtrack point count must be positive")
         targets = targets[:limit]
+    elif not args.reason or not args.reason.strip():
+        die("backtrack all replays the whole connected history; provide --reason TEXT, "
+            "or use the bounded default")
     request = {"v": 1, "objective": read_objective(), "status": "active",
-               "index": 0, "points": targets, "set_ts": now_ms()}
+               "index": 0, "points": targets, "set_ts": now_ms(),
+               "reason": args.reason.strip() if args.reason else None}
     clear_route()
+    clear_follow()
     save_backtrack(request)
     if loop_points_removed:
         flush_events([{"ts": now_ms(), "kind": "backtrack-loop-erased",
@@ -4767,10 +5255,32 @@ def main():
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_route)
 
+    p = sub.add_parser("landmark",
+                       help="find authoritative world placements by semantic identity")
+    p.add_argument("query", nargs="+")
+    p.add_argument("--kind", choices=["npc", "object", "bound"])
+    p.add_argument("--id", type=int,
+                   help="narrow the authoritative matches to one definition id")
+    p.add_argument("--nearest", action="store_true",
+                   help="deliberately select the matching spawn nearest the current tile")
+    p.add_argument("--route", action="store_true",
+                   help="set a durable route when the result is unambiguous")
+    p.add_argument("--arrive", type=int, default=2)
+    p.set_defaults(fn=cmd_landmark)
+
+    p = sub.add_parser("follow",
+                       help="durably reacquire one visible player and stay nearby")
+    p.add_argument("player", nargs="?")
+    p.add_argument("--within", type=int, default=2)
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_follow)
+
     p = sub.add_parser("backtrack",
                        help="retrace observed successful tiles to the current portal boundary")
     p.add_argument("action", nargs="?", default=str(BACKTRACK_DEFAULT_POINTS),
                    help="point count, all, history, status, or clear")
+    p.add_argument("--reason",
+                   help="required evidence for the exceptional whole-history replay")
     p.set_defaults(fn=cmd_backtrack)
 
     p = sub.add_parser("step",

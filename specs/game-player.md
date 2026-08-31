@@ -92,6 +92,11 @@ deliberate-play channel.
    - `npc_visible` (int): the snapshot's `npcs` list holds that type id.
    - `object_visible` (int): the snapshot's `objects` list holds that type id.
    - `bound_visible` (int): the snapshot's `bounds` list holds that type id.
+   - `entity_visible` (`{"collection":…,"field":…,"value":…}`): a structured
+     `players`, `npcs`, `objects`, `bounds`, or `ground_items` entry has the exact `name`, `id`,
+     or `sidx` value (string names compare case-insensitively). This is the generic semantic
+     selector from which the player can author identity-based behaviours the original table did
+     not happen to ship with.
    - `ground_item_visible` (int): the snapshot's `ground_items` list holds that item id.
    - `shop_item_visible` / `bank_item_visible` (int): the respective open interface's item list
      holds that item id.
@@ -139,7 +144,18 @@ deliberate-play channel.
    rule about panic moves, not a bridge property; optional `arrive`, 0–10 defaulting to 1, the
    Chebyshev tolerance rule 7a's verification accepts as arrival; the resident route may add the
    internal bridge parameters `route_step` and `max_path`, which cannot be authored into learned
-   rules), `retreat` (optional `distance`
+   rules), `approach-entity` (`collection`, `field`, `value`, and `within` 1–10) resolves the
+   nearest matching structured entity at every firing and compiles to an ordinary receipted walk
+   toward that entity's current tile. No coordinate is stored in the learned rule. Together with
+   `entity_visible`, this is the declarative extension point for player-authored semantic actions:
+   the behaviour receives its own meaningful rule name, activity/objective scope, priority,
+   cooldown, and replay tests while the primitive remains grounded and code-free. A moving player
+   can therefore be approached by a learned behaviour, and future structured-state games can
+   expose their own entity collections without admitting shell commands or remembered pixels.
+   OpenRSC additionally exposes `follow-player` (`name`, `within` 1–10): it resolves the player's
+   current server identity from structured state and emits the game's native Follow action, never
+   a menu or remembered pointer coordinate.
+   `retreat` (optional `distance`
    1–10, default 5, and fallback direction `dx`/`dz`; while fighting, the bridge prefers away from
    the identified opponent and tries alternate directions and nearer tiles until its collision
    map finds one reachable ordinary walk), `interact-object` (`obj`: the object type id,
@@ -426,6 +442,17 @@ deliberate-play channel.
    action slot or observer, uses no screenshots or timed polling, and cannot loop forever against
    an unchanged wall.
 
+   A destination name must not be inferred from the type of scenery that happened to be nearby.
+   `landmark TEXT [--kind npc|object|bound] [--id N]` joins matching names/descriptions in the server's own
+   definition tables to their authoritative fixed spawn/placement records and reports those
+   identities and locations. `--id` narrows a reported semantic match by its authoritative
+   definition identity. `--nearest` deliberately resolves repeated placements against the
+   current tile; `--route` sets the same durable route only when the resulting placement is unique
+   (or was explicitly narrowed with `--nearest`). That route retains the semantic kind, id, name,
+   description, and original query in `route.json` and status output. Learned prose cannot alter
+   this index. Thus seeing a door near an expected gate is not evidence that it is that gate;
+   uncertain destination identity is resolved through `landmark` before navigation continues.
+
 7f. Actual movement is also recovery evidence. Every distinct logged-in tile observed by the
    resident runner is appended with its timestamp to
    `$DESKCRAB_GAME_DIR/movement-trail.json`; the settled end of a synchronous ACTIONS walk is
@@ -439,7 +466,8 @@ deliberate-play channel.
    `backtrack-loop-erased`, and leaves the raw timestamped observation trail intact. Backtracking
    therefore cannot faithfully replay an oscillation that already failed during forward play.
    With no count it selects at most eight checkpoints; replaying the whole segment requires the
-   deliberate `all` argument. Those exact observed tiles become high-priority recovery targets,
+   deliberate `all --reason TEXT` form so a moment of confusion cannot silently reverse an entire
+   day. Those exact observed tiles become high-priority recovery targets,
    but a target farther than eight tiles is approached through separately verified local legs:
    urgent retreat and messages
    still outrank recovery, but routine interactions cannot interrupt it. Every verified reverse
@@ -450,6 +478,20 @@ deliberate-play channel.
    The trail is compact transient operational memory, not a claim that every coordinate is a
    reusable route fact. Once play verifies the correct landmark sequence or exit interaction,
    rule 19's memory door preserves that durable lesson.
+
+7g. `follow PLAYER [--within N]` is the durable, direct form of the common guided-travel
+   behaviour. It starts only from an exact visible player name, stores the objective and last
+   observed identity/tile in `$DESKCRAB_GAME_DIR/follow.json`, cancels competing route/recovery,
+   and makes the resident runner reacquire that player's current structured entry on every pass.
+   Player messages and urgent retreat still outrank it; routine reflexes and ambient loot cannot
+   interrupt it. While inside the chosen 1–10 tile radius it waits without clicking, then resumes
+   automatically when the guide moves. If visibility is lost it approaches only the last observed
+   tile, then reports `follow-target-lost`; a grounded unchanged obstruction reports
+   `follow-needs-path` instead of retrying forever. `follow` reports the commitment and
+   `follow --clear` ends it. Objective changes and an explicitly selected route or recovery cancel
+   it. The direct door is implemented with the same authorable `follow-player` action available to
+   learned rules. The native game follow owns continuous movement; the durable wrapper reacquires
+   the player by name if that game-side follow ends or visibility changes.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule
