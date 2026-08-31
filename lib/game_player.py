@@ -4273,7 +4273,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             status = f"{action['type']}-failed"
         if status != "done":
             flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
-                           "id": action_id, "item": action["item"],
+                           "id": action_id, "item": action.get("item"),
                            "npc": action.get("npc"),
                            "completion": completion_detail,
                            "feedback": latest_system_feedback(latest or snap)}])

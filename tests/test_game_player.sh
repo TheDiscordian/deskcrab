@@ -139,6 +139,16 @@ for _ in range(100):
             state["tick"] = int(state.get("tick", 0)) + 1
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") == "click-entity":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            if fields.get("button", "1") == "1":
+                state["walking"] = not bool(state.get("walking", False))
+            else:
+                state["right_click_menu_open"] = True
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         if delivered and fields.get("type") == "click-inventory":
             state_path = os.path.join(sd, "state.json")
             state = json.load(open(state_path))
@@ -1000,6 +1010,14 @@ check_eq "a grounded failed action is still done waiting" "$CODE" "0"
 contains "$OUT" "result=failed" && contains "$OUT" "message=Nothing interesting happens" \
     && ok "the completion verdict distinguishes server refusal from success" \
     || fail "the completion verdict distinguishes server refusal from success" "$OUT"
+snap 10456701 '[]' '{"hover_text":null}'
+python3 "$GP" action-arm 90101 click-entity kind=npc sidx=7 npc=121 button=1 >/dev/null
+snap 10456702 '[]' '{"hover_text":"Talk-to Joe"}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "an NPC hover without a click consequence remains unresolved" "$CODE" "2"
+contains "$OUT" "action-timeout id=90101 type=click-entity" \
+    && ok "hover text cannot verify an NPC click" \
+    || fail "hover text cannot verify an NPC click" "$OUT"
 snap 1045671 '[]' '{"messages":[{"id":1045671000,"channel":"game","text":"Ready"}]}'
 python3 "$GP" action-arm 9011 cast-npc spell=0 sidx=7 npc=474 >/dev/null
 snap 1045672 '[]' '{"messages":[{"id":1045671000,"channel":"game","text":"Ready"},{"id":1045672000,"channel":"game","text":"The spell fails! You may try again in 20 seconds"}]}'
