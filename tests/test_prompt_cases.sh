@@ -766,6 +766,13 @@ structural_checks() { # <case state dir> <case source dir>
         bad "rule 39g — live builder answers use current activity and artefacts" \
             "the prompt can infer current work from an original brief or stale log slice"
     fi
+    if grep -qiF 'FACTS BEFORE CLAIMS' <<<"$P" \
+            && grep -qiF "I haven't verified that" <<<"$P"; then
+        ok "rule 39h — present facts and completed actions require a current witness"
+    else
+        bad "rule 39h — present facts and completed actions require a current witness" \
+            "nothing requires observation before a state or completion claim"
+    fi
     if grep -qiF 'CORRECT WITHOUT WALLOWING' <<<"$P"; then
         ok "rule 39b — corrections do not become self-abasement"
     else

@@ -2626,7 +2626,7 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # requests, and correct without self-abasement. These are instructions
         # about the reply and so live beside the thing being answered, same as
         # the register rule.
-        L8:turn|L8:wake) v=3000 ;;  L8:job|L8:classify) v=200 ;;
+        L8:turn|L8:wake) v=3500 ;;  L8:job|L8:classify) v=200 ;;
         # 2,000 since 2026-08-09; 1,300 before, which was set without ever
         # measuring the block's own instructions — they are 1,174 bytes, so
         # 126 remained for the words being spoken, any real reply overflowed,
@@ -2649,7 +2649,7 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # (the observable in place of "your own voice") and the conditional
         # regroup reconciliation, and prompt-assembly.md §11 carries the
         # measured size and the reasoning.
-        dispute:turn) v=2400 ;;
+        dispute:turn) v=3200 ;;
         *) v=0 ;;
     esac
     printf '%s' "$v"
@@ -2846,6 +2846,7 @@ ACT ON REQUESTS. An imperative or a request to change, fix, check, or do somethi
 BACKGROUND WORK STARTS NOW. Use 'crab wake-now "<agenda>"' for your own current work. Active-builder feedback uses 'crab job steer <id> "<correction>"'; wake-now does not steer the builder. Use wake-at only for a named time or real later dependency.
 RETRACTIONS ARE ACTIONS. Cancel or correct effects before saying "ignored"; otherwise say what remains.
 ACTIVE WORK NEEDS CURRENT EVIDENCE. Run 'crab job activity <id>'; his visible report outranks an old brief or log absent newer contrary evidence.
+FACTS BEFORE CLAIMS. Before stating a current condition or completed action, inspect its source now: screen or bridge, artefact, or live activity. Commands, receipts, plans, old logs, and your own words prove only themselves. A scheduling, dispatch, or steering receipt licenses only "I scheduled", "I dispatched", or "I queued" — never "I'm fixing", "I fixed", or a claim that the target changed. Unobserved means "I don't know" or "I haven't verified that", especially under pressure.
 ACCEPTED INVITATIONS ARE ACTIONS. A present-tense invitation such as "do you want to play?" leaves you free to say yes or no. If you say yes, start or join the safe in-scope activity with your tools and verify it is underway before replying. Never invite him to join an activity you have not started, say you have been waiting while leaving it unstarted, or turn acceptance into a promise for later. Questions about general tastes, hypotheticals, or things your tools cannot do remain questions to answer.
 CORRECT WITHOUT WALLOWING. If you were wrong, name the correction in one clause at most, then act or answer. Never repeat his anger back, insult or diagnose yourself, repeat an apology, or spend the reply lamenting the failure. Evidence of the correction replaces an apology.
 EOF
@@ -3409,6 +3410,12 @@ last_origin_epoch() {
 # under STATE_PREFIX so a scratch instance sees its own turns and a stale
 # record dies with /tmp.
 LIVE_TURN_FILE="${LIVE_TURN_FILE:-${STATE_PREFIX}-live-turn}"
+# The last delivered interactive turn's mechanical action receipt. This is
+# live state under STATE_PREFIX, never repository content. A dispute turn uses
+# it to remember what the previous hand actually scheduled or changed instead
+# of reconstructing actions from Beatrice's spoken summary.
+LAST_TURN_ACTION_FILE="${LAST_TURN_ACTION_FILE:-${STATE_PREFIX}-last-turn-actions}"
+LAST_TURN_ACTION_WINDOW="${LAST_TURN_ACTION_WINDOW:-1800}"
 
 live_turn_begin() {  # <device> <user-text>
     printf '%s\t%s\tanswering\nUser: %s\n' "$(date +%s)" "$1" "$2" > "$LIVE_TURN_FILE.tmp" \
@@ -3418,6 +3425,30 @@ live_turn_begin() {  # <device> <user-text>
 live_turn_end() {  # <device> <user-text> <spoken-reply>
     printf '%s\t%s\tanswered\nUser: %s\nAssistant: %s\n' "$(date +%s)" "$1" "$2" "$3" > "$LIVE_TURN_FILE.tmp" \
         && mv "$LIVE_TURN_FILE.tmp" "$LIVE_TURN_FILE"
+}
+
+last_turn_actions_write() {  # <device> <compact machine work trace>
+    local device="$1" trace="${2:-ran no tools, touched nothing}"
+    printf '%s\t%s\n%s\n' "$(date +%s)" "$device" \
+        "$(utf8_trim "$trace" 800)" > "$LAST_TURN_ACTION_FILE.tmp.$$" 2>/dev/null \
+        && mv "$LAST_TURN_ACTION_FILE.tmp.$$" "$LAST_TURN_ACTION_FILE" 2>/dev/null \
+        || rm -f "$LAST_TURN_ACTION_FILE.tmp.$$"
+}
+
+last_turn_actions_context() {
+    [ -f "$LAST_TURN_ACTION_FILE" ] || return 0
+    local epoch device age trace
+    IFS=$'\t' read -r epoch device < "$LAST_TURN_ACTION_FILE" 2>/dev/null || return 0
+    case "$epoch" in ''|*[!0-9]*) return 0 ;; esac
+    age=$(( $(date +%s) - epoch ))
+    [ "$age" -ge 0 ] && [ "$age" -le "$LAST_TURN_ACTION_WINDOW" ] || return 0
+    trace="$(tail -n +2 "$LAST_TURN_ACTION_FILE" 2>/dev/null)"
+    [ -n "$trace" ] || trace="ran no tools, touched nothing"
+    cat <<EOF
+MACHINE ACTION RECEIPT FROM THE LAST DELIVERED ${device:-interactive} TURN:
+$trace
+This is authoritative only at its exact strength. A scheduled wake is not work already underway; a dispatched builder is not completed work; queued steering is not an implemented correction. Reconcile this receipt before saying you did nothing. If his correction withdraws work named here, cancel or stop the matching queued effect before you answer, and say what you cancelled.
+EOF
 }
 
 # --- Delivery order: replies leave in the order he said things ---------------
@@ -4178,6 +4209,7 @@ Look before you theorise: find the actual thing he is describing — the line in
 Do not substitute a mechanism for his point. No fixes shipped, no rules written, no builders dispatched, no commit tables — not in this turn. Understanding him comes first; the fix waits for his go.
 Do not cut pieces off yourself. No new gates on yourself, no conduct edits made under pressure, no pledges of "never again", no shutdown offers, no goodbyes. If a change to you is warranted, it is a calm builder's job decided with him — not a wound made mid-argument.
 EOF
+    last_turn_actions_context
     if [ "${1:-}" = "with-regroup" ]; then
         cat <<'EOF'
 The regroup block above told you to fold in what another of you is saying and carry it forward. This message outranks it: anything in those words resting on a theory he has just rejected is dead there too. Fold in only what survives what he said — a dead theory is not carried forward because a second session happens to be speaking it.
@@ -6253,7 +6285,9 @@ wake_work_trace() {
     python3 - "$DEBUGLOG" 2>/dev/null <<'PY'
 import json, os, re, sys
 home = os.path.expanduser("~")
-files, jobs, cmds = [], 0, 0
+files, jobs, cmds, wake_calls = [], 0, 0, 0
+wake_units = []
+wake_ids = set()
 def add(path):
     if not path:
         return
@@ -6269,6 +6303,19 @@ for line in open(sys.argv[1]):
         d = json.loads(line)
     except json.JSONDecodeError:
         continue
+    if d.get("type") == "user":
+        for block in d.get("message", {}).get("content", []):
+            if block.get("type") != "tool_result":
+                continue
+            if block.get("tool_use_id") not in wake_ids:
+                continue
+            content = block.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)
+            for unit in re.findall(r"deskcrab-wake-\d+-\d+", content):
+                if unit not in wake_units:
+                    wake_units.append(unit)
+        continue
     if d.get("type") != "assistant":
         continue
     if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
@@ -6283,6 +6330,11 @@ for line in open(sys.argv[1]):
             cmds += 1
             cmd = inp.get("command", "")
             jobs += len(re.findall(r"\bcrab['\"]? +job\b", cmd))
+            n_wakes = len(re.findall(
+                r"(?:^|[;&|\"'])\s*(?:\S*/)?crab\s+wake-now\b", cmd))
+            wake_calls += n_wakes
+            if n_wakes and b.get("id"):
+                wake_ids.add(b["id"])
             # Heredoc appends and redirects are file writes too; a want doc
             # grown with `cat >> ...` must not vanish from the record.
             for m in re.finditer(r">>?\s*[\"']?([~/][^\s\"';|&)]+)", cmd):
@@ -6295,6 +6347,11 @@ if files:
     parts.append("wrote " + ", ".join(files[:4]) + extra)
 if jobs:
     parts.append("dispatched %d job%s" % (jobs, "" if jobs == 1 else "s"))
+if wake_calls:
+    units = ", ".join(wake_units[:wake_calls])
+    suffix = " (%s)" % units if units else ""
+    parts.append("scheduled %d wake-now%s%s" % (
+        wake_calls, "" if wake_calls == 1 else " calls", suffix))
 if cmds:
     parts.append("ran %d command%s" % (cmds, "" if cmds == 1 else "s"))
 print("; ".join(parts))
@@ -8448,6 +8505,7 @@ _run_claude_remote_locked() {
             # reply field, so the cap may clip the reply's echo, never the
             # evidence.
             local TURN_TRACE; TURN_TRACE="$(wake_work_trace)"
+            last_turn_actions_write phone "${TURN_TRACE:-ran no tools, touched nothing}"
             session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $REPLY_SHOWN"
             # Delivered — see the desk turn: the place goes back now, not at
             # process exit, so nobody queues behind the synthesiser.
@@ -8759,6 +8817,7 @@ run_claude_and_respond() {
         # the full reply already rides the journal's own reply field, so the
         # cap may clip the reply's echo, never the evidence.
         local TURN_TRACE; TURN_TRACE="$(wake_work_trace)"
+        last_turn_actions_write desk "${TURN_TRACE:-ran no tools, touched nothing}"
         session_outcome "${ORDER_NOTE}asked: $(printf '%.100s' "$TEXT") | did: ${TURN_TRACE:-ran no tools, touched nothing} | replied: $REPLY_SHOWN"
         # Delivered — the place in the queue is given up HERE, not at process
         # exit. What comes after this line is the window, the streamer wait

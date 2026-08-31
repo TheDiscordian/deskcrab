@@ -176,6 +176,28 @@ refute "a wake never does — no message to be pushed back on" \
     contains "$(run 'PROMPT_DISPUTE=1 build_system_prompt --profile wake')" "HE IS PUSHING BACK"
 
 echo
+echo "a dispute receives the previous delivered turn's machine action receipt:"
+run 'last_turn_actions_write desk "scheduled 1 wake-now (deskcrab-wake-1788210740-727954); ran 1 command"'
+TURN="$(run 'PROMPT_DISPUTE=1 build_system_prompt --profile turn')"
+check "the exact wake unit reaches the correction turn" \
+    contains "$TURN" "deskcrab-wake-1788210740-727954"
+check "the frame keeps the receipt at scheduling strength" \
+    contains "$TURN" "A scheduled wake is not work already underway"
+check "the frame requires withdrawn queued work to be cancelled before speech" \
+    contains "$TURN" "cancel or stop the matching queued effect before you answer"
+
+echo
+echo "the work trace records wake-now as scheduling, including its unit:"
+TRACE_LOG="$SANDBOX/wake-now-trace.jsonl"
+cat > "$TRACE_LOG" <<'EOF'
+{"type":"assistant","message":{"model":"real","content":[{"type":"tool_use","id":"wake-1","name":"Bash","input":{"command":"/bin/bash -lc \"crab wake-now 'fix the bridge'\""}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"wake-1","is_error":false,"content":"Wake scheduled as deskcrab-wake-1788210740-727954"}]}}
+EOF
+TRACE="$(run "DEBUGLOG='$TRACE_LOG' wake_work_trace")"
+check "the trace says scheduled rather than fixing" \
+    contains "$TRACE" "scheduled 1 wake-now (deskcrab-wake-1788210740-727954)"
+
+echo
 echo "when regroup fires too, dispute reconciles the two (rule 8a):"
 BOTH="$(run 'REGROUP_CONTEXT="ANOTHER OF YOU IS SPEAKING RIGHT NOW - stub regroup block" PROMPT_DISPUTE=1 build_system_prompt --profile turn')"
 check "the reconciliation sentence rides along" \

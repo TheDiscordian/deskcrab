@@ -88,11 +88,11 @@ flowchart TD
 | L5 where things are | 2,000 | 2,000 | 2,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 0 | 0 |
-| L8 turn frame | 3,000 | 3,000 | 200 | 200 |
+| L8 turn frame | 3,500 | 3,500 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional interrupt | 2,600 | 0 | 0 | 0 |
-| conditional dispute | 2,400 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 65,200** | **≤ 59,200** | **≤ 3,000** | **≤ 200** |
+| conditional dispute | 3,200 | 0 | 0 | 0 |
+| **system-prompt total** | **≤ 65,700** | **≤ 59,700** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -185,6 +185,9 @@ carry: a present-tense invitation is a question until she accepts it, then the a
 activity is action now. The whole standing frame consequently measures just over the old row in
 both speaking profiles. The frame is the last instruction before the message and none of it may be
 trimmed, so the row rises by 600 to 3,000 and the two speaking totals move by the same amount.
+
+L8 carries the observed-fact check at the point of writing. The frame fits inside 3,500 bytes with
+working room, and both speaking totals include that full allowance.
 
 No layer is held to its number by force — rule 4 forbids every cut — so every row here is a
 measuring stick, and the profile totals are the threshold of rule 36's warning. Measured on an idle
@@ -456,6 +459,17 @@ instruction about the reply belongs beside the thing being answered.
     original brief and an older log slice describe earlier state and cannot prove what the builder
     is doing now. The user's direct report of visible activity stands unless newer concrete
     evidence disproves it.
+39h. **Present-tense and completed-action claims MUST have a current witness.** Before stating a
+    condition in the world or saying an action happened, she inspects the source capable of
+    showing that fact in this turn: the screen or structured bridge for visible state, the
+    artefact for a file change, and newest activity plus freshly changed artefacts for running
+    work. A clean command exit, dispatch receipt, steering receipt, plan, old log, or her own
+    earlier sentence proves only itself. Scheduling, dispatch, and steering receipts must be
+    named at their exact strength: "I scheduled a wake", "I dispatched a builder", or "I queued
+    a correction". They never license "I am fixing it", "I fixed it", or a claim that the target
+    changed. When no source has been observed, the only licensed claim is that she does not know
+    or has not verified it. The frame states this rule immediately before the reply is written and
+    explicitly makes pressure-ending answers a high-risk case.
 
 ### One copy of anything — the de-duplication pass
 

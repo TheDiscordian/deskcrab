@@ -825,8 +825,9 @@ so the reason stays whole UTF-8),
 checker's own name, inheriting configured `WAKE_EFFORT`, with the prefix on the reason and the
 promise quoted verbatim;
 the audit skips the prefix; the rebook bound and the auditor's deferred wake each stop a duplicate
-booking; the widened evidence — a job dispatched in the turn's window and a mover-played chess
-announcement each short-circuit the model, another session's record and the jobs ledger reach the
+booking; the widened evidence — a mover-played chess announcement short-circuits the model, while
+job dispatches reach the verifier as evidence that must match the exact action and tense claimed;
+another session's record and the jobs ledger reach the
 judge as labelled sections, an empty window still flags, and a gathering failure falls back to the
 own-record judgement with the failure on the trace),
 `tests/test_wake_hot_hold.sh` (rule 27a: a quiet bubble into a hot conversation reaches no bubble,

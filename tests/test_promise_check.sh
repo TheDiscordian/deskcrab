@@ -200,7 +200,7 @@ check_eq "an unsupported candidate exits with the diagnostic status" "$INSPECT_R
 check "the verdict is returned to the diagnostic caller" \
     grep -q '^UNKEPT:' <<< "$INSPECT_OUT"
 check "a dispatched brief cannot masquerade as present work" \
-    grep -q "exact tense with the evidence" "$T/model-stdin"
+    grep -qF "Judge the exact action and tense she wrote" "$T/model-stdin"
 check "the exact user request reaches the timing judgement" \
     grep -qF "The revised viseme is visibly degraded while its builder is active; correct it." \
         "$T/model-stdin"
@@ -250,18 +250,28 @@ check_eq "no wake booked" "$(records)" "0"
 check "the trace records a kept verdict" grep -q "1 kept, 0 unkept" "$CHECK_LOG"
 
 echo
-echo "a job dispatched in the turn's window backs every action-claim — no model, no wake:"
+echo "an unrelated recent job cannot acquit a present-progress claim:"
 reset
 NOW_E="$(date +%s)"
 cat > "$JOBS_DIR/20990101-000000-1.json" <<EOF
-{"id": "20990101-000000-1", "description": "wire the greenhouse fan into the config", "started_epoch": $(( NOW_E - 60 )), "state": "running", "unit": "x"}
+{"id": "20990101-000000-1", "description": "complete the timed chess benchmark", "started_epoch": $(( NOW_E - 60 )), "state": "running", "unit": "x"}
 EOF
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"UNKEPT: \\"I am fixing the OpenRSC bridge now\\" | the only recent job is an unrelated chess benchmark"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
 "$T/repo/lib/promise-check" turn desktop "$NOW_E" 4249 "$(snap "$SNAP_EMPTY")" \
-    "$T/ledger.jsonl" "I'll wire the greenhouse fan into the config now." >/dev/null 2>&1
-check_eq "the model was never called" "$(claude_n)" "0"
-check_eq "nothing ledgered, nothing booked" "$(ledger_n)$(records)" "00"
-check "the trace names the backing job" \
-    grep -q "backed: job 20990101-000000-1" "$CHECK_LOG"
+    "$T/ledger.jsonl" "I am fixing the OpenRSC bridge now." >/dev/null 2>&1
+check_eq "the verifier ran" "$(claude_n)" "1"
+check_eq "the false claim was ledgered and booked for correction" \
+    "$(ledger_n)$(records)" "11"
+check "the unrelated job still reached the verifier as labelled evidence" \
+    grep -q "complete the timed chess benchmark" "$T/model-stdin"
+check "the verifier was told that dispatch does not prove present work" \
+    grep -qF "present-progress claim such as 'I am fixing it'" "$T/model-stdin"
 rm -f "$JOBS_DIR"/*.json
 
 echo

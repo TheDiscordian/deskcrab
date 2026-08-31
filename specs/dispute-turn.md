@@ -86,6 +86,14 @@ is performed.
    resting on a theory this message rejects is dead there too: she folds in only what survives
    what he just said. The reconciliation sentence is emitted only when both layers are present
    (rule 29 of prompt-assembly: nothing points at a block that is not there).
+8b. A dispute turn MUST receive the machine action receipt from the last delivered interactive
+   turn. The receipt is narrow evidence: a `wake-now` receipt proves that a wake was scheduled,
+   a job receipt proves that a builder was dispatched, and a steering receipt proves that a
+   correction was queued or delivered. None proves that the underlying work started, finished,
+   or changed its target. The turn MUST reconcile this receipt before saying that she did
+   nothing. When the user's correction withdraws or replaces work named by the receipt, she MUST
+   cancel, stop, or correct the matching queued effect before replying; cancellation is part of
+   the correction, not a new fix that waits for later.
 9. The frame's overlap with L7's ranking rule is deliberate — the regroup bargain: under pushback
    the ranking rule is the one being broken, so it is restated beside the thing being answered.
 10. Detection MUST be visible after the fact: the turn metric records that pushback was detected
@@ -97,6 +105,7 @@ is performed.
 |---|---|---|
 | her last reply, wherever it stands (`_convo_last_assistant_anywhere`) | `dispute_detect` | a dispute needs something to dispute; ordering-independent (rule 6) |
 | `DISPUTE_EFFORT`, `DISPUTE_MODEL` | `claude_generate` | conf knobs; default high / unset |
+| `${STATE_PREFIX}-last-turn-actions` | dispute prompt | latest delivered interactive turn's mechanical work trace |
 | `DISPUTE_SUPERSEDES` | `_turn_order_is_pushback` | set by the detector on STRONG only (rule 6b) |
 
 ## INTERACTIONS

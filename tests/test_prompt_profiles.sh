@@ -166,7 +166,7 @@ check "the index is never trimmed — it reports over budget instead" \
 # numbers on purpose. Until 2026-08-09 this function held numbers 400 under
 # the table: the 2026-08-08 L4 raise moved the spec alone, which is exactly
 # the drift the paragraph above forbids.
-total_budget() { case "$1" in turn) echo 65200 ;; wake) echo 59200 ;;
+total_budget() { case "$1" in turn) echo 65700 ;; wake) echo 59700 ;;
                               job) echo 3000 ;; classify) echo 200 ;; esac; }
 for p in turn wake job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"
@@ -232,6 +232,7 @@ for p in turn wake; do
     d="$(first_at "$body" 'YOUR OWN DRAWERS ARE YOURS TO RUN')"
     q="$(first_at "$body" 'ACT ON REQUESTS')"
     b="$(first_at "$body" 'BACKGROUND WORK STARTS NOW')"
+    f="$(first_at "$body" 'FACTS BEFORE CLAIMS')"
     i="$(first_at "$body" 'ACCEPTED INVITATIONS ARE ACTIONS')"
     c="$(first_at "$body" 'CORRECT WITHOUT WALLOWING')"
     s="$(first_at "$body" "$subject")"
@@ -239,14 +240,17 @@ for p in turn wake; do
     check "$p: the drawer-ownership rule is in the prompt" [ -n "$d" ]
     check "$p: the request-action rule is in the prompt" [ -n "$q" ]
     check "$p: the immediate-background rule is in the prompt" [ -n "$b" ]
+    check "$p: the witnessed-facts rule is in the prompt" [ -n "$f" ]
     check "$p: the accepted-invitation rule is in the prompt" [ -n "$i" ]
     check "$p: the correction rule is in the prompt" [ -n "$c" ]
     if [ -n "$r" ] && [ -n "$a" ] && [ -n "$d" ] && [ -n "$q" ] \
-            && [ -n "$b" ] && [ -n "$i" ] && [ -n "$c" ] && [ -n "$s" ]; then
+            && [ -n "$b" ] && [ -n "$f" ] && [ -n "$i" ] && [ -n "$c" ] && [ -n "$s" ]; then
         check "$p: answer-first sits below the ranking rule" [ "$r" -lt "$a" ]
         check "$p: drawer-ownership follows it" [ "$a" -lt "$d" ]
         check "$p: requests follow drawer ownership" [ "$d" -lt "$q" ]
         check "$p: immediate backgrounding follows requests" [ "$q" -lt "$b" ]
+        check "$p: witnessed facts follow backgrounding" [ "$b" -lt "$f" ]
+        check "$p: accepted invitations follow witnessed facts" [ "$f" -lt "$i" ]
         check "$p: accepted invitations follow backgrounding" [ "$b" -lt "$i" ]
         check "$p: correction discipline follows invitations" [ "$i" -lt "$c" ]
         check "$p: every attention rule stands above the subject line" [ "$c" -lt "$s" ]

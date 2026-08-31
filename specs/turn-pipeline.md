@@ -363,14 +363,16 @@ ledger.
      the correction was queued for that builder, and its delivery receipt is required to claim
      that the builder received it. Post-delivery checks keep deliberate future commitments
      exactly as before.
-     Anything in any of them
-     that plausibly performed, embodies, or durably schedules the commitment makes it KEPT. A
-     commitment nothing anywhere
-     performed is UNKEPT; a call that durably scheduled the work counts as performing it —
-     a `crab wake-at` or `crab job` naming that work is a kept promise, not an excuse — and
-     four cheap backed short-circuits (a job dispatched in the turn's window; a chess-move
-     announcement the mover's record shows played; a chess claim the game's own record backs;
-     a named path fresh on disk) spare the model call entirely. The last two are the artefact
+     Evidence MUST match the exact action and tense claimed. A schedule or dispatch keeps an
+     explicit claim that work was scheduled, dispatched, or assigned, and may keep a future
+     commitment delegated to that hand. It does not keep a present-progress claim that she is
+     doing the underlying work or a completed claim that the target changed. A steering receipt
+     keeps only the claim that feedback was queued or delivered; it does not prove the builder
+     followed it. Anything in the records that plausibly performed or embodies the exact
+     commitment makes it KEPT. A commitment nothing anywhere performed is UNKEPT. Three cheap
+     backed short-circuits (a chess-move announcement the mover's record shows played; a chess
+     claim the game's own record backs; a named path fresh on disk) spare the model call entirely.
+     The last two are the artefact
      standard reaching where it had not. A claim ABOUT a chess game — a move announced or
      described, a capture counted, a statement of board state — is not a promise at all: it
      owes truth, not work, and its witness is the game's own move list under the chess state
@@ -427,6 +429,11 @@ ledger.
      channels was unfalsifiable the next day. The trace rides between the asked and replied
      halves on purpose: the outcome line is capped, the full reply already rides the journal's
      own reply field, so the cap may clip the reply's echo and never the evidence.
+32f. Each delivered desk or phone reply MUST also replace
+     `${STATE_PREFIX}-last-turn-actions` with that turn's compact machine work trace. A dispute
+     prompt reads this receipt before reconstructing what the preceding turn did. The receipt is
+     live state outside the repository, expires from prompt use after a bounded interval, and
+     records `wake-now` bookings by unit so a later retraction can cancel the actual queued effect.
 
 ### Turn metrics
 
@@ -453,6 +460,7 @@ file rather than re-instrumented every time the question comes up.
 | `${STATE_PREFIX}-debug-<pid>.log` | the turn | stream-json, one file per session |
 | `${STATE_PREFIX}-debug.log` | `claim_debuglog` | symlink to the newest session log |
 | `${STATE_PREFIX}-live-turn` | turn | `epoch \t device \t status \t user text \t reply` |
+| `${STATE_PREFIX}-last-turn-actions` | delivered desk/phone turn | `epoch \t device`, then the compact machine work trace |
 | `${STATE_PREFIX}-turn-order/<seq>.ticket` | `turn_order_take` (rule 15a) | `pid \t proc-start \t epoch \t device \t stream-log \t user text (flattened, bounded)`; zero-padded seq, so glob order is arrival order; readers of the first four fields tolerate the short pre-15f form |
 | `${STATE_PREFIX}-turn-order/<seq>.superseded` | `turn_order_take` (rule 15c) | `superseding-seq \t the message that closed it` |
 | `${STATE_PREFIX}-turn-order/<seq>.cut` | `turn_order_take` (rule 15f) | `cutting-seq \t the new utterance (flattened, bounded)`; read by the cut turn's watchdog, its delivery gates, and the guarantee's belt |
