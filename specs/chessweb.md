@@ -274,11 +274,13 @@ cannot be changed.
        with `--strict-mcp-config --mcp-config lib/empty-mcp.json`, `--disable-slash-commands`,
        a two-line `--system-prompt`, `-p` with the prompt on stdin, a sterile cwd, auto-memory
        off. Model `$DESKCRAB_CHESS_MOVER_MODEL` (default `$CLAUDE_MODEL`, else `sonnet`);
-       effort per rule 16b; per-attempt ceiling `$DESKCRAB_CHESS_MOVER_TIMEOUT` (default 90s).
+       effort per rule 16b; no fixed per-attempt ceiling exists (the retired
+       `$DESKCRAB_CHESS_MOVER_TIMEOUT`, default 90s, was ruled unauthorized 2026-08-31): a
+       TIMED attempt is bounded by the moving side's live clock alone (rule 16g), an untimed
+       attempt by nothing.
        A SELF-PLAY position is the exception: its model and its nightly budget are
-       [chess-selfplay.md](chess-selfplay.md)'s (rules 2–5 there), keyed off the job itself, and
-       the mover knob above is never consulted for one — the user's knob for real games must not
-       be spendable by the grind (2026-08-15).
+       [chess-selfplay.md](chess-selfplay.md)'s (rules 2–5 there), keyed off the job itself —
+       the user's knobs for real games must not be spendable by the grind (2026-08-15).
     c. There is no queue. At most one position is ever being answered: a newer position arriving
        while a call is in flight kills the flight and takes the slot, and positions are
        deduplicated by `fen_key`, so the same position is never answered twice concurrently and
@@ -318,32 +320,23 @@ cannot be changed.
        limit" on stdout in every logged detail.
     f. `$DESKCRAB_CHESS_MOVER_CMD` replaces the model invocation wholesale for tests — the
        prompt arrives on stdin, the reply is its stdout — so no test thinks with a real model.
-    g. **The clock bounds the call** (adopted 2026-08-28; the browser-047 death: 98.5s on the
-       clock in a won 10+0 game, one call ran to the fixed 90s ceiling, the flag fell nine
-       seconds later with no move ever returned). For a TIMED game — a job carrying the live
-       `clock` of rule 22f, which this rule is what finally consults — every model attempt's
-       ceiling is derived from the moving side's remaining clock, never the fixed knob alone:
-       with `usable = remaining − reserve` (reserve `$DESKCRAB_CHESS_MOVER_CLOCK_RESERVE`,
-       default 5s — the time held back to validate, record and broadcast whatever answer
-       lands, and to play the fallback below), one attempt may run at most
-       `min($DESKCRAB_CHESS_MOVER_TIMEOUT, max(floor, usable × fraction), usable)` seconds
-       (fraction `$DESKCRAB_CHESS_MOVER_CLOCK_FRACTION`, default 0.5; floor
-       `$DESKCRAB_CHESS_MOVER_CLOCK_FLOOR`, default 10s — a healthy clock must not starve a
-       working model down to nothing), remaining re-read before EVERY attempt so a retry walk
-       cannot spend what the first attempt already burned. When no attempt worth making fits
-       (under 2s of budget), no call is made at all. And when the budget is spent without an
-       answer — the attempt killed at its derived ceiling, or none affordable — the mover
-       plays a **fallback move** itself, chosen with no model by the same arithmetic the
-       prompt is built from (destination-square exchange, the one-ply reply scan, captured
-       material as compensation; the least-punished candidate wins, any failure falls back to
-       the first legal move): recorded, broadcast and clock-charged exactly like any move of
-       hers, stamped and logged loudly as a fallback with the seconds it had left, because a
-       legal move she did not choose is strictly better than a flag she did not deserve — and
-       it is a recorded FAILURE of the model to answer, never a success (the benchmark counts
-       every fallback against the configuration that needed it). An untimed game is untouched:
-       the fixed ceiling and rule 16e's retry rounds stand exactly as before.
-       `DESKCRAB_CHESS_MOVER_CLOCK_BUDGET=0` restores the fixed ceiling wholesale, fallback
-       included.
+    g. **The clock is the only ceiling** (rewritten 2026-08-31 by the user's ruling,
+       superseding the 2026-08-28 clock-budget fallback: an arbitrary fixed per-call ceiling
+       and an automatically manufactured move are both unauthorized, in real games and in
+       benchmarks alike — a move may come only from rule 16a's reflex/book replay or from the
+       selected model, and nothing else may ever produce one). For a TIMED game — a job
+       carrying the live `clock` of rule 22f, which this rule is what finally consults — a
+       model attempt is bounded by the moving side's actual remaining clock and by NOTHING
+       else: no fixed knob, no reserve, no fraction, no floor. The remaining time is re-read
+       before every attempt so a retry walk cannot spend what the first attempt already
+       burned; an attempt still unanswered when the flag falls is killed, and the fallen flag
+       IS the result — the game ends as the genuine, recorded clock loss rule 22b computes,
+       with no move inserted by anyone. A failed attempt with time still on the board walks
+       rule 16e's account list under the same bound. An UNTIMED game has no per-attempt
+       ceiling at all: a failed or dead model process is exposed and retried (rule 16e's
+       rounds — an honest stall beats a move nobody chose), but no move is ever manufactured
+       for it. No knob restores the retired behaviour; the retired
+       `$DESKCRAB_CHESS_MOVER_CLOCK_*` knobs are dead names.
 16b. When rule 16a has missed and the model call is about to be made, the bridge asks the effort
     pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
     arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
@@ -545,8 +538,8 @@ cannot be changed.
        current think already deducted; a flagged side reads zero), the shipped client draws
        both clocks counting down for the side to move and shows the flag result in words when
        one falls, and `betty-chess status` prints the control and both remaining times. The
-       mover's job dict carries the same live clock — and rule 16g is what consults it: the
-       per-attempt ceiling and the fallback are derived from this figure. The effort dials
+       mover's job dict carries the same live clock — and rule 16g is what consults it: a
+       timed attempt's one bound, the flag, is read from this figure. The effort dials
        (rule 16b) remain unchanged by this rule.
     g. `undo` on a flagged game clears `flag_fell` exactly as it clears a resignation, and any
        undo in a timed game restarts `turn_started` at the undo itself. Remaining time is NOT

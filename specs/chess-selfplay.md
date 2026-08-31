@@ -113,8 +113,9 @@ the finished games feed the pattern store exactly as every self-play game does.
     substituted engines would measure nothing, and because the fallback would let a grind spend
     Claude allowance under a codex flag. Every attempt is budget-counted exactly as rule 4
     demands; a cooling codex login yields no attempt at all, so the move fails loudly — in a
-    timed game the clock-budget fallback plays and is recorded as the configuration's failure
-    to answer, a capacity interruption rule 20 resumes rather than excludes. Real games feel
+    timed game the clock keeps running and the flag, when it falls, is the recorded result
+    (rule 17: no move is ever manufactured); a capacity interruption with time still standing
+    rule 20 resumes rather than excludes. Real games feel
     none of this: their model comes from rule 16b's own knobs ([chessweb.md](chessweb.md)),
     never from this allowlist.
 16. **The schedule.** The plan lists games with an id (`selfplay-bench*-NNN` — inside rule 1's
@@ -129,6 +130,11 @@ the finished games feed the pattern store exactly as every self-play game does.
     `compute_state`. The clock runs on wall time — mover queueing, retries and failures
     included — because latency is the very thing being weighed against the control: a
     configuration too slow for its clock SHOULD flag, and that flag is a result, not a defect.
+    The clock is also the ONLY ceiling (the user's 2026-08-31 ruling, chessweb.md rule 16g): a
+    model attempt runs until it answers or the flag falls, never cut at a fixed per-call
+    limit, and no move is ever manufactured for a side whose model failed to answer — the
+    driver waits for a timed move as long as the side on move has clock (plus recording
+    grace), and a spent clock is the game's genuine, recorded clock loss.
     The wall clock binds only UNDER A LIVE DRIVER: the pause between driver invocations
     belongs to the harness, never to the side on move. A driver picking up an unfinished,
     unledgered game therefore restarts its turn clock before judging state — balances stand,
@@ -147,8 +153,9 @@ the finished games feed the pattern store exactly as every self-play game does.
     the normal path resumes: reflex first, the mover otherwise.
 19. **The record.** Each benchmark game carries a `bench` object — the control, each side's
     configuration, and one row per move `[ply, side, source, effort, seconds]` (source `book`,
-    `reflex`, `model`, or `fallback` — a clock-budget fallback move, chessweb.md rule 16g, is
-    recorded under its own source because it is a move the model FAILED to answer) — written
+    `reflex`, or `model`; the `fallback` source is retired — a manufactured move is
+    unauthorized, and it survives only in records written before the 2026-08-31 ruling, every
+    one of which rule 20b names invalid) — written
     with the game as it plays, so nothing about the run needs reconstructing from logs. A
     finished game appends one JSON line to the run's ledger
     (`$DESKCRAB_CHESS_DIR/selfplay/bench-<run>.jsonl`), exactly once across resumes, and the
@@ -200,12 +207,15 @@ the finished games feed the pattern store exactly as every self-play game does.
 20a. **Longest-clock-first elimination** (adopted 2026-08-31, on the user's correction of the
     matrix ask: a timed elimination benchmark, not an exhaustive round robin and never an
     untimed round). Controls are judged longest clock first. A pair that fails a longer
-    control for CLOCK reasons — a flag, a remaining-clock-aware budget breach, a per-call
-    ceiling death, a retry storm, an account-limit death, or otherwise proving too slow to
-    finish — is eliminated from every shorter control without playing those games: less
-    clock can only fail harder. A non-clock failure (a no-legal-move fallback with time in
-    hand) still poisons its own cell under rule 20's reliability discipline but eliminates
-    nothing downward. A game is also unnecessary when no outcome of it can change any routed
+    control for CLOCK reasons — a flag, a retry storm or account-limit death that burned the
+    clock away, or otherwise proving too slow to finish — is eliminated from every shorter
+    control without playing those games: less clock can only fail harder. The same monotone
+    arithmetic runs along the EFFORT axis within one model: a higher effort of the same model
+    thinks strictly longer per call, so when a lower effort of a model fails a control for
+    clock reasons, every higher effort of that model is eliminated there and below without
+    play — recorded as an inference, named as such. A non-clock failure (a stall with time
+    still in hand — every attempt failing while the clock stands) still poisons its own cell
+    under rule 20's reliability discipline but eliminates nothing downward. A game is also unnecessary when no outcome of it can change any routed
     class's selection: a pair already measured-unreliable at the class's other control, a
     mirror game whose points are arithmetically pinned, a cell already carrying a
     disqualifying event its second colour cannot cure. Every such game is PRUNED — a
@@ -226,9 +236,24 @@ the finished games feed the pattern store exactly as every self-play game does.
     cell is eliminated already and more games cannot change any selection. Where a control or speed class has NO reliable
     finisher, the route is still chosen from the measured evidence rather than by feel:
     among complete cells — fewest flags per game, then fewest event games per game, then
-    the higher score rate, then fewer fallback moves per game, then the lower latency tail,
-    then the cheaper pair — with the failure record stated beside the applied verdict
-    wherever it lands.
+    the higher score rate, then the lower latency tail, then the cheaper pair — with the
+    failure record stated beside the applied verdict wherever it lands. Either way, a
+    pair is ELIGIBLE for a speed-class verdict only with a colour-rotated pair of valid
+    games at each of the class's controls — rule 16's even-colours discipline applied to
+    the evidence, not just the schedule; a pair short of that floor is named as
+    uncertainty, never routed.
+20b. **Regime invalidation** (adopted 2026-08-31, the user's ruling that retired the fixed
+    per-call ceiling and the manufactured fallback move). A benchmark game recorded under the
+    retired regime is INVALID EVIDENCE when either side's record carries a fallback move, or
+    when its outcome was created by the retired ceiling or by a driver stall of undetermined
+    cause — invalid for strength AND for reliability, because a game contaminated by a move
+    nobody chose, or by a cut nobody ordered, proves neither. A clean game of the retired
+    regime — every move book, reflex, or the model's own, every call completed within bounds
+    at least as tight as rule 17 now allows — remains valid: a pass under harsher constraints
+    is a pass. Invalid games stay on the ledger untouched (recorded play is never deleted);
+    the analysis excludes them by their own recorded move sources, names every exclusion with
+    its reason, and the evidence a selection still requires is re-played under the corrected
+    rule 17 as replacement specs appended to the same resumable plan.
 
 ## DATA
 

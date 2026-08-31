@@ -584,38 +584,14 @@ def _stall_retry():
     return _env_secs("DESKCRAB_CHESS_MOVER_STALL_RETRY", "600")
 
 
-# --- The clock bounds the call (specs/chessweb.md rule 16g) -----------------
-# browser-047, 2026-08-28: 98.5s on the clock in a won 10+0 game, one call ran
-# to the fixed 90s ceiling, and the flag fell nine seconds later with no move
-# ever returned. A timed game's per-attempt ceiling is derived from the moving
-# side's remaining clock, and when the budget is spent without an answer the
-# mover plays a legal fallback move itself — a move she did not choose beats a
-# flag she did not deserve, and every fallback is recorded as the model's
-# failure to answer, never as a success.
-
-def _clock_budget_on():
-    return os.environ.get("DESKCRAB_CHESS_MOVER_CLOCK_BUDGET", "1") != "0"
-
-
-def call_budget(remaining_s):
-    """Seconds ONE model attempt may spend against `remaining_s` of live
-    clock, or None for no clock (the fixed ceiling stands). With
-    usable = remaining - reserve: min(fixed ceiling, max(floor,
-    usable * fraction), usable) — the fraction keeps a single call from
-    eating nearly all remaining time (the browser-047 death), the floor
-    keeps a healthy clock from starving a working model, and the reserve
-    holds back the seconds needed to validate, record, broadcast, and play
-    the fallback. Never negative."""
-    if remaining_s is None:
-        return None
-    fixed = _env_secs("DESKCRAB_CHESS_MOVER_TIMEOUT", "90")
-    reserve = _env_secs("DESKCRAB_CHESS_MOVER_CLOCK_RESERVE", "5")
-    fraction = _env_secs("DESKCRAB_CHESS_MOVER_CLOCK_FRACTION", "0.5")
-    floor = _env_secs("DESKCRAB_CHESS_MOVER_CLOCK_FLOOR", "10")
-    usable = remaining_s - reserve
-    if usable <= 0:
-        return 0.0
-    return max(0.0, min(fixed, max(floor, usable * fraction), usable))
+# --- The clock is the only ceiling (specs/chessweb.md rule 16g) -------------
+# Rewritten 2026-08-31 by the user's ruling: the fixed per-call ceiling and
+# the manufactured fallback move are both unauthorized, in real games and in
+# benchmarks alike. A TIMED attempt is bounded by the moving side's actual
+# remaining clock and by nothing else; an attempt still unanswered when the
+# flag falls is killed and the fallen flag IS the result. An UNTIMED attempt
+# has no ceiling at all: a failed or dead process is exposed and retried
+# (rule 16e), never answered for.
 
 
 def _job_remaining(job, now=None):
@@ -634,36 +610,6 @@ def _job_remaining(job, now=None):
     except (TypeError, ValueError):
         aged = 0.0
     return ms / 1000.0 - aged
-
-
-def fallback_move(board):
-    """The clock-budget fallback: a legal move chosen with no model, by the
-    same arithmetic the prompt is built from — destination-square exchange,
-    the one-ply reply scan, captured material as compensation; the
-    least-punished candidate wins. Deterministic; any failure is the first
-    legal move; None only on a board with no legal moves at all."""
-    best, best_score = None, None
-    try:
-        for m in board.legal_moves:
-            loss = material_loss(board, m)
-            try:
-                worst = worst_reply(board, m)[0]
-            except Exception:
-                worst = 0
-            victim = board.piece_type_at(m.to_square)
-            comp = PIECE_VALUE[victim] if victim else 0
-            if m.promotion:
-                comp += PIECE_VALUE[m.promotion] - PIECE_VALUE[chess.PAWN]
-            score = max(loss, worst) - comp
-            if best_score is None or score < best_score:
-                best, best_score = m, score
-    except Exception:
-        pass
-    if best is not None:
-        return best
-    for m in board.legal_moves:
-        return m
-    return None
 
 
 # Output lines carrying one of these name the failure better than whatever
@@ -943,21 +889,20 @@ class Mover:
             job_model = (job.get("model") or "").strip() or None
         move = None
         last_why = ""
-        # The clock bounds the call (rule 16g): a timed job's attempts run
-        # under a budget derived from the moving side's LIVE remaining time,
-        # re-read before every attempt so a retry walk cannot spend what the
-        # first attempt already burned.
-        clocked = _clock_budget_on() and _job_remaining(job) is not None
+        # The clock is the only ceiling (rule 16g, rewritten 2026-08-31): a
+        # timed job's attempt runs until it answers or the moving side's
+        # flag falls, remaining re-read before every attempt so a retry
+        # walk cannot spend what the first attempt already burned. An
+        # untimed job's attempt has no ceiling at all.
+        clocked = _job_remaining(job) is not None
         for label, cmd, env in self._attempts(effort, selfplay, job_model):
             timeout = None
             if clocked:
                 remaining = _job_remaining(job)
-                budget = call_budget(remaining)
-                if budget < 2.0:
-                    last_why = (f"clock-budget: {remaining:.1f}s left, "
-                                "no attempt affordable")
+                if remaining is None or remaining <= 0:
+                    last_why = last_why or "flag fell before an attempt"
                     break
-                timeout = budget
+                timeout = remaining
             t0 = time.time()
             if selfplay:
                 _selfplay_charge(f"{job['gid']} ply {job['ply']} {label}")
@@ -982,24 +927,17 @@ class Mover:
             last_why = f"{label}: {outcome}"
             self.alert(f"mover: {job['gid']} ply {job['ply']} attempt "
                        f"{label} came back {outcome} after {dt:.1f}s")
-        if move is None and clocked:
-            # The fallback (rule 16g): a legal move she did not choose beats
-            # a flag she did not deserve — recorded as the model's failure
-            # to answer, never as a success.
-            fb = fallback_move(board)
-            if fb is not None:
-                remaining = _job_remaining(job)
-                job["fallback"] = last_why or "clock-budget"
-                self.metric("mover-fallback",
-                            f"{job['gid']} ply {job['ply']} {fb.uci()} "
-                            f"{max(0.0, remaining):.1f}s left "
-                            f"({last_why or 'budget spent'})")
-                self.alert(f"mover: {job['gid']} ply {job['ply']} clock "
-                           f"budget spent with no answer "
-                           f"({last_why or 'no attempt affordable'}) — "
-                           f"playing fallback {fb.uci()} with "
-                           f"{max(0.0, remaining):.1f}s left")
-                return ("posted" if self.play(job, fb) else "stale"), None
+        if move is None and clocked and (_job_remaining(job) or 0) <= 0:
+            # The flag fell with no answer (rule 16g): the game is over as
+            # a genuine clock loss, computed by rule 22b wherever state is
+            # next read. Nothing is played and nothing is manufactured.
+            self.metric("mover-flag",
+                        f"{job['gid']} ply {job['ply']} flag fell with no "
+                        f"answer ({last_why or 'no attempt ran'})")
+            self.alert(f"mover: {job['gid']} ply {job['ply']} flag fell "
+                       f"with no answer ({last_why or 'no attempt ran'}) — "
+                       f"the clock loss stands, no move played")
+            return "failed", last_why or "flag fell with no answer"
         if move is None:
             self.alert(f"mover: {job['gid']} ply {job['ply']}: every attempt "
                        f"failed — last: {last_why or 'no attempts ran'}")
@@ -1252,14 +1190,12 @@ class Mover:
     def _call(self, cmd, env, prompt, timeout=None):
         """(stdout, why-it-failed). why is None on a clean exit and
         'superseded' when a newer position killed or outran the call.
-        `timeout` is rule 16g's clock-derived attempt budget when given —
-        a kill at that ceiling says 'clock-budget' so the record can tell a
-        budget kill from a fixed-ceiling death — else the fixed knob."""
-        kill_label = "timeout"
-        if timeout is not None:
-            kill_label = "clock-budget"
-        else:
-            timeout = _env_secs("DESKCRAB_CHESS_MOVER_TIMEOUT", "90")
+        `timeout` is rule 16g's one bound — the moving side's remaining
+        clock, given only for a TIMED job, and a kill there means the flag
+        fell mid-think. An untimed call has no ceiling at all (the fixed
+        per-call knob is retired, 2026-08-31): it runs until the process
+        answers or dies."""
+        kill_label = "flag-fell"
         try:
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

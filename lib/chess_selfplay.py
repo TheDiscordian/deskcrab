@@ -60,7 +60,10 @@ LOG_FILE = SP_DIR / ("night-" + chess_mover.night_key() + ".log")
 
 PLY_CAP = 240           # backstop: agree a draw rather than shuffle forever
 HOT_MINUTES = 15        # leave the accounts alone while a person's game moves
-MOVE_TIMEOUT = 240      # one position may not eat more than this per chunk
+MOVE_TIMEOUT = 240      # one UNTIMED position may not eat more than this per
+                        # chunk; a TIMED position waits out the side's whole
+                        # remaining clock instead (rule 17: the clock is the
+                        # only ceiling, and the flag is a result)
 
 
 def nightly_games():
@@ -172,10 +175,12 @@ def make_play(side):
         # The same clock charge as every other recording path (rule 17); an
         # untimed game — every ordinary self-play game — is untouched by it.
         chess_cli.clock_move(g)
-        # A clock-budget fallback (chessweb.md rule 16g) is recorded under
-        # its own source: a move the model FAILED to answer, and the
-        # benchmark counts it against the configuration that needed it.
-        source = "fallback" if job.get("fallback") else "model"
+        # The mover can no longer manufacture a move (rule 16g rewritten
+        # 2026-08-31): every move that reaches this recorder is the
+        # model's own. The retired `fallback` source survives only in
+        # records written before the ruling (rule 19), which rule 20b
+        # names invalid evidence.
+        source = "model"
         if "bench" in g:
             g["bench"]["rows"].append([job["ply"], side, source,
                                        job.get("effort") or "default",
@@ -299,7 +304,17 @@ def play_one_move(g, movers, bench=None):
         job["effort"] = bench_effort(g, board, cfg)
     else:
         job["effort"] = move_effort(g, board)
-    deadline = time.time() + MOVE_TIMEOUT
+    # Rule 17: the clock is the only ceiling. A timed side may legally think
+    # until its flag falls, so the driver waits out the side's whole
+    # remaining clock plus recording grace before calling the move failed;
+    # the compute_state check below records the flag the moment it falls.
+    # Untimed play keeps the fixed chunk-protection bound.
+    wait = MOVE_TIMEOUT
+    if isinstance(job.get("clock"), dict):
+        ms = job["clock"].get(side + "_ms")
+        if isinstance(ms, (int, float)):
+            wait = ms / 1000.0 + 30.0
+    deadline = time.time() + wait
     while time.time() < deadline:
         if mover.claim(key):
             mover.submit(job)
@@ -325,7 +340,7 @@ def play_one_move(g, movers, bench=None):
             return "stalled"
         time.sleep(3)
     n, _, why = mover.failure_state(key)
-    log(f"{g['id']} ply {ply}: {side} made no move inside {MOVE_TIMEOUT}s "
+    log(f"{g['id']} ply {ply}: {side} made no move inside {wait:.0f}s "
         f"({n} failed round(s), last cause: {why or 'unknown'})")
     return "failed"
 
