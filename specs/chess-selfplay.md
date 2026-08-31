@@ -219,9 +219,11 @@ the finished games feed the pattern store exactly as every self-play game does.
     never deletes evidence. Pruning a replacement spec (rule 17) cancels the artifact slot
     it owed, stated reason and all. Top-ups are owed only where a selection is genuinely
     ambiguous among reliable finishers — a reliable cell within the close margin of its
-    control's reliable winner, decided at completion; the former one-failure-event-in-two-
-    games top-up is retired, because an event-carrying cell is eliminated already and more
-    games cannot change any selection. Where a control or speed class has NO reliable
+    control's reliable winner, decided at completion — and only ONE round each: a cell
+    already carrying its top-up games is owed nothing further (the appender refuses a
+    re-top, and a verdict that waited on a margin that never widens would wait forever);
+    the former one-failure-event-in-two-games top-up is retired, because an event-carrying
+    cell is eliminated already and more games cannot change any selection. Where a control or speed class has NO reliable
     finisher, the route is still chosen from the measured evidence rather than by feel:
     among complete cells — fewest flags per game, then fewest event games per game, then
     the higher score rate, then fewer fallback moves per game, then the lower latency tail,
