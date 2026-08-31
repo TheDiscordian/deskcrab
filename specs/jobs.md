@@ -94,6 +94,13 @@ and the completion channel a job has back to her.
 7g. A builder MUST NOT finish successfully while its inbox still contains a pending correction.
     The runner records each such message as undelivered and fails the job in plain words, so the
     completion path cannot present an off-course result as though the correction reached it.
+7h. A detached builder is neither the user nor the assistant persona. The shared conversation
+    boundary MUST refuse a builder context before it can create a desktop, phone, or autonomous
+    turn, and the `crab` presentation doors (bare message text, `remote`, `notify`, `play`, and
+    wake/display controls) MUST fail closed too. A builder reports through its job log/checkpoint
+    and any attached engineering record; the existing job-completion wake is the labeled path by
+    which Beatrice later learns the result. Builder prose MUST never be written as a `User` block,
+    spoken in Beatrice's voice, or displayed as though Ryan said it.
 
 ### State
 

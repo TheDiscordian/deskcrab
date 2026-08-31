@@ -122,6 +122,10 @@ message is a report she will read later in $LOG, so make it concrete — what yo
 changed, file:line, what you ran, and what the output was.
 
 Hard rules:
+- Never call `crab` with bare message text, or use its remote, notify, play,
+  wake, or other presentation doors. You are neither Ryan nor Beatrice, and
+  those doors reject builder contexts. Communicate only through this job log,
+  your checkpoint/sidecar, and the engineering record when one is attached.
 - Test what you claim. If you could not verify something, say so in plain words
   rather than implying it works. An unproven claim is worse than an admitted gap.
 - Run long commands in the FOREGROUND and wait for them. Your session — and

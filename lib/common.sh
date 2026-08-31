@@ -6915,7 +6915,37 @@ wake_stale_note_drop() {  # reads WAKE_REASON, WAKE_ID, WAKE_KIND
     esac
 }
 
+deskcrab_is_builder_context() {
+    # The exported role is the ordinary path. The cgroup check is the belt
+    # under it: a detached job must not become an interactive speaker merely
+    # because a child shell dropped an environment variable.
+    [ "${DESKCRAB_ENG_ROLE:-}" = "builder" ] \
+        || [ -n "${DESKCRAB_JOB_ID:-}" ] \
+        || grep -Eq '(^|/)deskcrab-job-[^/]+\.service($|/)' \
+            /proc/self/cgroup 2>/dev/null
+}
+
+deskcrab_is_direct_job_runner_child() {
+    # The runner's completion notification is the one presentation-adjacent
+    # operation a detached job legitimately causes.  Authorise that edge by
+    # process provenance, not by an environment flag the builder inherits (or
+    # can invent): when job-runner itself execs `crab wake-at`, its command is
+    # the direct parent.  A builder's Bash tool has a shell/tool process in
+    # between and therefore cannot pass this check by merely spelling
+    # `--by job-runner`.
+    [ -r "/proc/$PPID/cmdline" ] || return 1
+    tr '\0' '\n' < "/proc/$PPID/cmdline" 2>/dev/null \
+        | grep -Eq '(^|/)job-runner$'
+}
+
+deskcrab_require_persona_source() {
+    deskcrab_is_builder_context || return 0
+    echo "DeskCrab: a detached builder cannot create a user or Beatrice turn. Write the job log/checkpoint or engineering record; a labeled completion wake will surface the result." >&2
+    return 64
+}
+
 run_claude_wake() {
+    deskcrab_require_persona_source || return $?
     session_register "autonomous wake"
     # Nobody spoke, so the day journal's "user" slot carries the wake's
     # agenda — an event's reason reads back as what the wake was about. An
@@ -8237,6 +8267,7 @@ synth_opus() {
 REMOTE_LOCK_WAIT="${REMOTE_LOCK_WAIT:-600}"
 
 run_claude_remote() {
+    deskcrab_require_persona_source || return $?
     # Serialize remote turns: two overlapping requests would otherwise run two
     # claude processes whose stream logs and conversation appends race. The
     # phone is one person talking, so queueing is the honest behaviour.
@@ -8539,6 +8570,7 @@ notify_thinking_clear() {
 
 # Run claude, save response, handle display channel
 run_claude_and_respond() {
+    deskcrab_require_persona_source || return $?
     session_register "desktop turn"
     turn_metric turn-start desk
     record_origin desk

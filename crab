@@ -7,6 +7,30 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/lifecycle"
 
+# Detached builders write artefacts and report through their job record. They
+# are never Ryan and they are never Beatrice. These presentation/input doors
+# can otherwise make builder prose look like Ryan's speech or Beatrice's own
+# voice. The generation functions carry the same guard independently.
+if deskcrab_is_builder_context; then
+    case "${1:-}" in
+        wake-at)
+            # job-runner may book the single labeled return that reports a
+            # detached job's result.  A builder cannot self-authorise this by
+            # copying the label: the runner must be crab's direct parent.
+            if ! deskcrab_is_direct_job_runner_child \
+                || [ "${2:-}" != "--by" ] \
+                || [ "${3:-}" != "job-runner" ]; then
+                echo "DeskCrab: 'wake-at' is unavailable to detached builders; only job-runner may book the labeled completion wake." >&2
+                exit 64
+            fi
+            ;;
+        start|stop|shutup|face|face-window|wake|wake-now|remote|play|notify|show)
+            echo "DeskCrab: '${1:-message}' is unavailable to detached builders; use the job log/checkpoint or engineering record." >&2
+            exit 64
+            ;;
+    esac
+fi
+
 # The running whisper-stream's pid. Overridable so a scratch instance does not
 # read the LIVE desk's recording state: user_busy consults this file, and a
 # scratch test that happened to run while someone was holding push-to-talk was
@@ -979,6 +1003,10 @@ What you did tonight is journaled from your tool activity without your help, so 
     *)
         # Anything else is treated as a text query — but a leading dash is a
         # mistyped flag, not speech; it must never reach the spoken channel.
+        if deskcrab_is_builder_context; then
+            echo "DeskCrab: detached builder text cannot enter the user conversation. Write the job log/checkpoint or engineering record." >&2
+            exit 64
+        fi
         TEXT="$*"
         case "$TEXT" in
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
