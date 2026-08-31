@@ -21,6 +21,7 @@ broken chrome; a missing overlay — fall back to the nearest stable frame.
 """
 
 import json
+import math
 import os
 import socket
 import sys
@@ -42,6 +43,7 @@ GEOMETRY_FILE = os.path.join(
                    os.path.expanduser("~/.local/state")),
     "deskcrab", "face-window.json")
 TRANSITION_MS = 220
+MOUTH_TRANSITION_MS = 80
 
 
 def load_manifest():
@@ -102,6 +104,8 @@ class FaceView(Gtk.DrawingArea):
         self.shown = "resting"      # the frame on screen
         self.fading_from = None     # (name, started_at) during a cross-fade
         self.current_viseme = "rest"
+        self.previous_viseme = "rest"
+        self.viseme_changed_at = 0.0
         self._tick_id = None
         self.set_draw_func(self._draw)
         self.set_content_width(self.assets.size[0])
@@ -131,8 +135,10 @@ class FaceView(Gtk.DrawingArea):
             busy = busy or self.fading_from is not None
         vis = self._viseme_at(now)
         if vis != self.current_viseme:
+            self.previous_viseme = self.current_viseme
             self.current_viseme = vis
-        busy = busy or self._speaking_now(now)
+            self.viseme_changed_at = now
+        busy = busy or self._speaking_now(now) or self._animations_on()
         self.queue_draw()
         if not busy:
             self._tick_id = None
@@ -162,6 +168,7 @@ class FaceView(Gtk.DrawingArea):
 
     # -- state from the broker -------------------------------------------
     def apply_state(self, st):
+        had_clips = bool(self.state.get("clips"))
         self.state = st
         want = st.get("expression") or "resting"
         if want not in self.assets.frames:
@@ -170,6 +177,12 @@ class FaceView(Gtk.DrawingArea):
             if self._animations_on():
                 self.fading_from = (self.shown, time.time())
             self.shown = want
+        # A stop/interruption closes immediately. Ordinary cue boundaries
+        # still receive the short articulation ease in _draw.
+        if had_clips and not st.get("clips") and not st.get("speaking"):
+            self.current_viseme = "rest"
+            self.previous_viseme = "rest"
+            self.viseme_changed_at = 0.0
         self._ensure_tick()
         self.queue_draw()
 
@@ -184,6 +197,18 @@ class FaceView(Gtk.DrawingArea):
         cr.save()
         cr.translate(ox, oy)
         cr.scale(scale, scale)
+
+        # A slow, very small whole-figure shift.  It is one transform around
+        # every registered layer, so the mouth never detaches from the face.
+        if self._animations_on():
+            phase = (time.monotonic() % 9.2) / 9.2 * math.tau
+            dx = 1.25 * math.sin(phase)
+            dy = 0.45 * math.sin(phase * 2.0 + 0.7)
+            angle = math.radians(0.15) * math.sin(phase + 0.35)
+            cr.translate(aw / 2 + dx, ah * 0.68 + dy)
+            cr.rotate(angle)
+            cr.scale(1.008, 1.008)
+            cr.translate(-aw / 2, -ah * 0.68)
 
         def paint(pixbuf, alpha=1.0, at=(0, 0)):
             cr.save()
@@ -203,12 +228,19 @@ class FaceView(Gtk.DrawingArea):
         else:
             paint(pb, 1.0)
 
-        vis = self._viseme_at(now)
-        if vis != "rest" and self.assets.mouth_rect:
+        vis = self.current_viseme
+        if self.assets.mouth_rect:
+            x0, y0 = self.assets.mouth_rect[:2]
+            blend = 1.0
+            if self._animations_on() and self.viseme_changed_at:
+                blend = min(max((now - self.viseme_changed_at) * 1000
+                                / MOUTH_TRANSITION_MS, 0.0), 1.0)
+            old = self.assets.mouths.get(self.previous_viseme)
             patch = self.assets.mouths.get(vis)
+            if old is not None and blend < 1.0:
+                paint(old, 1.0 - blend, (x0, y0))
             if patch is not None:
-                x0, y0 = self.assets.mouth_rect[:2]
-                paint(patch, 1.0, (x0, y0))
+                paint(patch, blend, (x0, y0))
         cr.restore()
 
 

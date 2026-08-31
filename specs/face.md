@@ -50,10 +50,12 @@ anything page-side.
    the visible motion is local facial change. The 2026-08-30 transition test
    is the reason: two separately regenerated portraits dissolved into a
    double exposure.
-6. The motion language is quiet: short expression arrivals with easing; no
-   bobbing, bouncing, pulsing borders, idle loops, or animated-GIF runtime.
-   Blinks and breathing are OUT of this release. `prefers-reduced-motion`
-   (and the desktop animations setting) MUST yield a direct state swap.
+6. The motion language is quiet: short expression arrivals with easing and,
+   at the user's 2026-08-30 request, one slow low-amplitude whole-figure sway
+   around every registered image layer together. No bobbing, bouncing,
+   pulsing borders, or animated-GIF runtime. Blinks and simulated breathing
+   remain out of this release. `prefers-reduced-motion` (and the desktop
+   animations setting) MUST remove the sway and yield direct state swaps.
 7. Applications learn stable asset ids from a versioned manifest, never
    dated filenames. The manifest carries version, revision derived from
    asset hashes, dimensions, focal point, masks, expression and viseme
@@ -145,7 +147,9 @@ anything page-side.
     clip carries a finite duration so even a lost stop cannot animate past
     the clip's end.
 24. A late-joining viewer lands at the current cue position of the clip now
-    playing; old mouth motion is never replayed.
+    playing; old mouth motion is never replayed. Ordinary adjacent mouth cues
+    ease briefly between registered patches instead of snapping; an explicit
+    stop, interruption, or playback failure still closes the mouth at once.
 
 ### The conversation portrait window
 
@@ -160,7 +164,8 @@ anything page-side.
     detached so no spoken request ever waits on a GUI start; and it does not
     replace or disturb the display-channel window.
 27. It pauses per-frame animation while unmapped and honours the desktop
-    animations setting as its reduced-motion signal.
+    animations setting as its reduced-motion signal. The idle sway moves the
+    complete composited figure, including the mouth patch, as one unit.
 
 ### Never a dependency
 
