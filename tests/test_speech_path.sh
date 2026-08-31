@@ -57,6 +57,7 @@ stream() {
     TRACE="$TRACE" DESKCRAB_DEBUGLOG="$LOG" DESKCRAB_PIPER_VOICE=/dev/null \
         DESKCRAB_SPEECHLOCK="$T/$NAME.speechlock" \
         DESKCRAB_SPEECH_LOG="$SPEECHLOG" DESKCRAB_SPEECH_RECEIPT="$RECEIPT" \
+        DESKCRAB_TTS_FIXES="${TTS_FIXES_UNDER_TEST:-}" \
         DESKCRAB_RETRYABLE_ERROR_RE='selected model (is )?at capacity|server.?overloaded' \
         DESKCRAB_VOICE_IDLE_CLOSE=30 \
         "$REPO_DIR/lib/tts-streamer" 2>/dev/null &
@@ -90,6 +91,16 @@ stream plain '
     say_json "The answer is yes."
     done_json'
 [ "$SAID" = "The answer is yes." ] && ok "a plain reply is spoken" || fail "plain reply" "$SAID"
+
+TTS_FIXES_UNDER_TEST='s/—/\n/g'
+stream dashpause '
+    a "{\"type\":\"system\",\"subtype\":\"init\",\"engine\":\"codex\",\"transport\":\"app-server\"}"
+    say_json "Ah—eight of fifteen."
+    done_json'
+unset TTS_FIXES_UNDER_TEST
+[ "$SAID" = $'Ah\neight of fifteen.' ] \
+    && ok "a TTS_FIXES em dash becomes two piper lines and its sentence pause" \
+    || fail "the streamer collapsed the configured em-dash pause" "$SAID"
 
 stream leadws 'say_json "
 

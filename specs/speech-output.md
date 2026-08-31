@@ -129,6 +129,11 @@ the same authority rule 5a already exercises on the stored reply.
     deltas streamed live will still sound") described the world before this boundary: with the
     draft held, the rewrite is the only copy piper ever gets. The witness for this boundary is
     the external piper trace, never the streamer's own logs or receipts.
+12c. A line break created by `TTS_FIXES` MUST reach piper as a new input line on every speech path.
+    The desktop streamer collapses ordinary draft whitespace before applying the fixes, then
+    preserves the line boundaries the fixes create. This lets an em-dash rewrite
+    (`s/—/\n/g`) turn piper's rushed em-dash delivery into its normal sentence silence without
+    changing the written reply or its display section.
 13. The streamer MUST NEVER count bytes it did not read. The read counter is advanced by the length
     of lines actually read, never by a size taken from the file's metadata. Assigning the stat size
     to the read counter counts bytes appended between the read and the stat, and then counts them
@@ -372,6 +377,12 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     read back from the bytes on disk with ffprobe. A clip that fails the probe is withdrawn
     the same way, with the probe's own reading in the line. The size test stays as the fast
     first gate — the header-only husk of a dead synthesiser — but it no longer decides alone.
+
+53a. Successful phone synthesis retains Piper's debug phoneme records in a private face sidecar
+    beside the Opus file and derives its viseme track from those records plus the file's measured
+    duration. Sidecar creation is best-effort and MUST never change whether the audio succeeds,
+    reaches the phone, or is reported as played. The sidecar expires under the same scoped hourly
+    cleanup as its clip and is never served by the audio route.
 
 54. A repair MUST NOT costume the line. The mirror call's prompt MUST forbid adding a verbal tic
     or catchphrase the draft did not already carry. A rewrite model handed one isolated sentence

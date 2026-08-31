@@ -132,25 +132,33 @@ anything page-side.
     duration, so a fixture can hold the whole track still.
 21. Mouth cues derive from the actual outgoing speech path: the
     synthesiser's own per-clip record of the audio it produced — never from
-    the written reply, and never from a page timer guessing. No audio means
-    no lip movement, even if text claims she is speaking.
-22. Cue time zero is the clip's playback start. With the long-lived
+    the written reply, and never from a page timer guessing. The desk
+    streamer reads that record directly from Piper's debug drain. Phone and
+    phone-routed wake synthesis retain the same phoneme records, measured
+    duration, and derived cue track in a private sidecar beside the generated
+    Opus file; the browser receives only an opaque cue id. No audio means no
+    lip movement, even if text claims she is speaking.
+22. Cue time zero is the clip's playback start. With the long-lived desk
     synthesiser pipe, playback start is modelled: a clip begins either when
     the audio scheduled before it drains, or one pipe-and-device lead
     (`DESKCRAB_FACE_AUDIO_LEAD`, documented beside the manifest) after its
-    synthesis lands. Sentence gaps return toward the expression's resting
-    mouth without resetting chosen eyes and brows. The measured error of
-    this model is recorded with the review sheets, and the conversation
-    window is authoritative for lip sync. (Amended 2026-08-30:) the chess
-    table, the spectator, and the standalone viewer may render the broker's
-    cue tracks in full, read-only, correcting for server clock skew from
-    the state document's own `now`; a mirrored mouth is still only ever the
-    real clip schedule, never a page timer guessing from text.
+    synthesis lands. For phone audio, the media element's real `playing`
+    report is time zero: the server looks up its own retained cue document
+    by opaque id and publishes that clip to the broker then, never when the
+    file was generated or merely requested. Sentence gaps return toward the
+    expression's resting mouth without resetting chosen eyes and brows. The
+    measured desk error is recorded with the review sheets, and the
+    conversation window is authoritative for lip sync. The chess table, the
+    spectator, and the standalone viewer may render the broker's cue tracks
+    in full, read-only, correcting for server clock skew from the state
+    document's own `now`; a mirrored mouth is still only ever the real clip
+    schedule, never a page timer guessing from text.
 23. Stopping speech, playback failure, interruption, or `shutup` closes the
-    mouth immediately and clears queued cues: the streamer's own drain and
-    term paths and `shutup_now` all say `speak-stop`, and every scheduled
-    clip carries a finite duration so even a lost stop cannot animate past
-    the clip's end.
+    mouth immediately and clears the affected cues: the streamer's own drain
+    and term paths and `shutup_now` say `speak-stop`; a phone clip's terminal
+    playback report removes that clip by id without erasing another voice's
+    track. Every scheduled clip carries a finite duration, so even a lost
+    terminal report cannot animate past the clip's end.
 24. A late-joining viewer lands at the current cue position of the clip now
     playing; old mouth motion is never replayed. Exactly one opaque patch is
     painted: on each cue its source changes at the outgoing contour's extent
@@ -427,6 +435,7 @@ or scolding.
 | `<portrait drawer>/living/` | build script | canonical frames and mouth patches |
 | `${STATE_PREFIX}-face.sock` | broker binds; every caller connects | rule 19's one socket (`DESKCRAB_FACE_SOCKET`) |
 | `${STATE_PREFIX}-face-state.json` | broker | the retained snapshot behind rule 19 |
+| `${REMOTE_AUDIO_PREFIX}*.opus.face.json` | phone synthesiser; phone server reads | private, bounded phoneme records, duration, and cue track for rule 21 |
 | `$XDG_STATE_HOME/deskcrab/face-window.json` | window | remembered size (rule 25) |
 | `DESKCRAB_FACE_AUDIO_LEAD` | streamer | rule 22's documented playback lead |
 | `DESKCRAB_FACE_EVENTS` | broker | rule 17's disableable allowlist |
@@ -478,10 +487,8 @@ scope (rule 33); write game controls (rule 35).
 | Id | What implementation must fix |
 |---|---|
 | FACE-1 | Playback start is modelled (rule 22), not measured from the device; the lead constant has not been calibrated against live audio hardware. |
-| FACE-2 | The phone voice path (`serve.py` clips) carries no cue tracks yet; the phone page shows no mouth motion. |
 | FACE-3 | Wake speech (`speak_once`) bypasses the streamer and schedules no cues and no `speaking` presence. |
 | FACE-4 | Opening the window under a focus-follows-new-window compositor may still focus it; no client-side fix exists under Wayland. |
-| FACE-5 | The mood updater fires only on delivered desk turns; phone turns and wakes move activity but never the mood. |
 | FACE-6 | Web mouth mirrors assume the square 420×420 family: a future non-square plate would need crop-aware mouth-rect math in `face_card.js`. |
 
 ## TESTS

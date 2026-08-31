@@ -25,6 +25,11 @@ recorded in the portrait drawer's review sheets, and the honest bound is
 "phoneme-proportional, anchored to real clip starts", not "frame-exact".
 """
 
+import json
+import math
+import os
+import re
+
 # Multi-character IPA sequences first, longest match wins.
 _MULTI = (
     "aɪə", "aʊə",
@@ -66,6 +71,9 @@ _PAUSE = {",": 0.22, ";": 0.28, ":": 0.28,
 _IGNORE = set("ˈˌː ‍͡()")   # stress, length alone, ties
 
 MIN_CUE = 0.045   # cues shorter than this merge into their neighbour
+
+_PIPER_PHONEMES = re.compile(r"Converting \d+ phoneme\(s\) to ids: (.*)$")
+_PIPER_DURATION = re.compile(r"Synthesized ([0-9.]+) second")
 
 
 def _tokens(ipa):
@@ -158,9 +166,110 @@ def cue_track(ipa, duration):
     return cues
 
 
+def piper_records(debug_text):
+    """The ordered phoneme/duration pairs in one Piper ``--debug`` log.
+
+    Piper writes a phoneme line followed by a duration line for each input
+    utterance.  Other stderr (including ffmpeg's) is ignored.  A duration
+    without a preceding phoneme line is not useful for mouth motion and is
+    deliberately skipped.
+    """
+    records = []
+    ipa = ""
+    for line in str(debug_text or "").splitlines():
+        match = _PIPER_PHONEMES.search(line)
+        if match:
+            ipa = match.group(1).strip()[:4096]
+            continue
+        match = _PIPER_DURATION.search(line)
+        if not match or not ipa:
+            continue
+        try:
+            duration = float(match.group(1))
+        except ValueError:
+            ipa = ""
+            continue
+        if math.isfinite(duration) and duration > 0:
+            records.append({"phonemes": ipa, "duration": duration})
+        ipa = ""
+        if len(records) >= 64:
+            break
+    return records
+
+
+def cue_document(debug_text, measured_duration):
+    """A retained phone-clip document from Piper's log and the real file.
+
+    One Opus file may contain several Piper input lines (for example, an
+    em-dash pause made by ``TTS_FIXES``).  Their own durations anchor the
+    cue pieces; any measured time left in the encoded file is divided into
+    resting gaps after those pieces.  The final file duration remains the
+    authority, and every gap therefore closes the mouth naturally.
+    """
+    try:
+        measured = float(measured_duration)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(measured) or measured <= 0:
+        return None
+    records = piper_records(debug_text)
+    if not records:
+        return None
+
+    spoken = sum(r["duration"] for r in records)
+    gap = max(0.0, measured - spoken) / len(records)
+    cues = []
+    offset = 0.0
+    for record in records:
+        for cue_offset, viseme in cue_track(
+                record["phonemes"], record["duration"]):
+            at = round(min(offset + cue_offset, measured), 3)
+            if cues and cues[-1][1] == viseme:
+                continue
+            cues.append([at, viseme])
+        offset += record["duration"] + gap
+        if offset < measured and (not cues or cues[-1][1] != "rest"):
+            cues.append([round(offset, 3), "rest"])
+    if not cues:
+        return None
+    if cues[-1][1] != "rest":
+        cues.append([round(measured, 3), "rest"])
+    return {
+        "version": 1,
+        "duration": round(measured, 3),
+        "phoneme_records": [
+            {"phonemes": r["phonemes"], "duration": round(r["duration"], 3)}
+            for r in records
+        ],
+        "cues": cues[:400],
+    }
+
+
+def write_cue_document(debug_path, measured_duration, output_path):
+    """Atomically retain a cue document.  False means cues were unavailable."""
+    try:
+        with open(debug_path, errors="replace") as fh:
+            doc = cue_document(fh.read(), measured_duration)
+        if doc is None:
+            return False
+        tmp = "%s.%d.tmp" % (output_path, os.getpid())
+        with open(tmp, "w") as fh:
+            json.dump(doc, fh, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, output_path)
+        return True
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except (OSError, UnboundLocalError):
+            pass
+        return False
+
+
 if __name__ == "__main__":
-    import json
     import sys
+    if sys.argv[1:2] == ["--piper-debug"] and len(sys.argv) == 5:
+        raise SystemExit(0 if write_cue_document(
+            sys.argv[2], sys.argv[3], sys.argv[4]) else 1)
     ipa = sys.argv[1] if len(sys.argv) > 1 else "həlˈoʊ wˈɜːld"
     dur = float(sys.argv[2]) if len(sys.argv) > 2 else 1.4
     print(json.dumps(cue_track(ipa, dur)))

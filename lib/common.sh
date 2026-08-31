@@ -4364,8 +4364,22 @@ wake_speak_to_phone() {
     # sweeps it like any reply clip — but only within this instance's own glob.
     OUT="${REMOTE_AUDIO_PREFIX}wake-$ID.opus"
     synth_opus "$1" "$OUT" || return 1
-    python3 -c 'import json,sys; print(json.dumps({"id":sys.argv[1],"audio":"/audio/"+sys.argv[2],"spoken":sys.argv[3]}))' \
-        "$ID" "$(basename "$OUT")" "$1" > "$PTR.tmp" && mv "$PTR.tmp" "$PTR" || return 1
+    python3 - "$ID" "$(basename "$OUT")" "$1" "${OUT}.face.json" <<'PY' \
+        > "$PTR.tmp" && mv "$PTR.tmp" "$PTR" || return 1
+import json
+import sys
+
+doc = {"id": sys.argv[1], "audio": "/audio/" + sys.argv[2],
+       "spoken": sys.argv[3]}
+try:
+    with open(sys.argv[4]) as fh:
+        face = json.load(fh)
+    doc["face_cue"] = "wake-" + sys.argv[1]
+    doc["_face"] = face
+except (OSError, ValueError):
+    pass
+print(json.dumps(doc, ensure_ascii=False, separators=(",", ":")))
+PY
     # Handed off: the phone plays this, and this process is about to exit, so
     # there is no pid for the next session to watch. Publish the words with the
     # clip's own length as the end time instead — a voice on the phone is still
@@ -8304,6 +8318,12 @@ synth_opus() {
     local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
     [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
+    local FACE_SIDECAR=""
+    if [ "${FACE_ENABLED:-0}" = 1 ] && [ -f "$LIB_DIR/viseme_cues.py" ]; then
+        CMD+=(--debug)
+        FACE_SIDECAR="${OUT}.face.json"
+        rm -f "$FACE_SIDECAR"
+    fi
     # Both processes are silenced on the terminal — a synthesiser narrating into
     # the middle of a turn is noise — but their stderr is kept here so a lost
     # voice has something to be read off (spec rule 53).
@@ -8364,6 +8384,13 @@ synth_opus() {
         speech_log "synth_opus: the clip does not probe as playable audio (piper rc=$PIPER_RC, ffmpeg rc=$FF_RC, $SIZE bytes; probe: streams=$NSTREAMS audio=$NAUDIO codec=${PCODEC:-none} container=${PFMT:-none} duration=${PDUR:-none}) — withdrawn, not served -> $OUT${WHY:+ — stderr: $WHY}"
         rm -f "$ERR" "$OUT"
         return 1
+    fi
+    # Retain Piper's own phoneme record and the cue track beside the phone
+    # clip. This is deliberately after every audio validity gate: a sidecar
+    # can fail without changing a playable voice into a failed synthesis.
+    if [ -n "$FACE_SIDECAR" ]; then
+        python3 "$LIB_DIR/viseme_cues.py" --piper-debug \
+            "$ERR" "$PDUR" "$FACE_SIDECAR" >/dev/null 2>&1 || true
     fi
     rm -f "$ERR"
 }
@@ -8633,6 +8660,9 @@ _run_claude_remote_locked() {
     # whenever a scratch instance ran beside it.
     find "$(dirname "$REMOTE_AUDIO_PREFIX")" -maxdepth 1 \
         -name "$(basename "$REMOTE_AUDIO_PREFIX")*.opus" -mmin +60 -delete 2>/dev/null
+    find "$(dirname "$REMOTE_AUDIO_PREFIX")" -maxdepth 1 \
+        -name "$(basename "$REMOTE_AUDIO_PREFIX")*.opus.face.json" \
+        -mmin +60 -delete 2>/dev/null
 
     # Out of band, with the reply audio already synthesised: a want stated on
     # the phone dies with the turn exactly like one stated at the desk. The

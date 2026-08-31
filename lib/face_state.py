@@ -537,6 +537,18 @@ class Broker:
             self._bump()
         return {"ok": True, "state": self.snapshot()}
 
+    def speak_end(self, clip_id):
+        """Remove one finished remote clip without erasing another voice."""
+        clip_id = str(clip_id or "")[:64]
+        if not clip_id:
+            return {"ok": False, "error": "clip id is required"}
+        with self.lock:
+            kept = [c for c in self.clips if c.get("id") != clip_id]
+            if len(kept) != len(self.clips):
+                self.clips = kept
+                self._bump()
+        return {"ok": True, "state": self.snapshot()}
+
     def diag(self):
         snap = self.snapshot()
         with self.lock:
@@ -598,6 +610,8 @@ class Broker:
             return self.speak(cmd.get("clips"))
         if verb == "speak-stop":
             return self.speak_stop()
+        if verb == "speak-end":
+            return self.speak_end(cmd.get("id", ""))
         if verb == "diag":
             return self.diag()
         return {"ok": False, "error": "unknown cmd %r" % verb}

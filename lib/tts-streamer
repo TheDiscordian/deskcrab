@@ -493,7 +493,12 @@ class Voice(threading.Thread):
         # `raw` is the unstripped draft text this utterance came from — what
         # the mirror scans and what the caller splices on. None means "not a
         # draft sentence" and the mirror never looks at it.
-        text = " ".join(text.split())
+        # Ordinary draft whitespace was collapsed before TTS_FIXES ran. Keep
+        # the line boundaries a fix created: piper treats every input line as
+        # an utterance and adds its sentence silence after it, which is how a
+        # configured em-dash rewrite becomes a real pause (speech rule 12c).
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        text = "\n".join(line for line in lines if line)
         if text:
             self.queued_chars += len(text)
             self.q.put((text, raw))
@@ -704,10 +709,13 @@ class Voice(threading.Thread):
                 # let the receipt tell the caller nothing was spoken.
                 continue
             try:
-                self.piper.stdin.write((item + "\n").encode())
+                piper_lines = item.splitlines()
+                self.piper.stdin.write(("\n".join(piper_lines) + "\n").encode())
                 self.piper.stdin.flush()
                 with self._pho_lock:
-                    self._pho_expect.append(item)
+                    # Piper reports one phoneme/duration record per input line,
+                    # so the face cue queue follows the same pause boundaries.
+                    self._pho_expect.extend(piper_lines)
             except Exception as exc:
                 self.error = "piper stopped accepting text: %s" % exc
                 speech_log("SPEECH INTERRUPTED — %s" % self.error)
@@ -718,7 +726,7 @@ class Voice(threading.Thread):
                 continue
             # Every utterance leaves a pid-stamped trace: "who spoke this
             # twice" must be answerable from the speech log alone.
-            speech_log("SAID: %s" % item[:90])
+            speech_log("SAID: %s" % item.replace("\n", " [pause] ")[:90])
             metric_once("first-audio", "%d chars" % len(item))
             self.spoke_chars += len(item)
             self.spoke_lines += 1
@@ -789,6 +797,10 @@ def for_speech(text):
     it only rewrites how words are pronounced."""
     text = re.sub(r"\*+", "", text)
     text = re.sub(r"\x60[^\x60]*\x60", "", text)
+    # Collapse the model's formatting first, then let TTS_FIXES deliberately
+    # introduce piper input boundaries. Voice.say preserves only those new
+    # boundaries instead of turning them back into spaces (speech rule 12c).
+    text = " ".join(text.split())
     text = fix_pronunciation(text)
     return text.strip()
 

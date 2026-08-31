@@ -679,6 +679,8 @@ What you did tonight is journaled from your tool activity without your help, so 
                DESKCRAB_GEO_STALE_S="$GEO_STALE_S" \
                DESKCRAB_GEO_LOOKUP_TIMEOUT_S="$GEO_LOOKUP_TIMEOUT_S"
         [ "${TURN_METRICS:-1}" = 1 ] && export DESKCRAB_METRICS_DIR="$METRICS_DIR"
+        [ "${FACE_ENABLED:-0}" = 1 ] \
+            && export DESKCRAB_FACE_SOCKET="$FACE_SOCKET"
         exec python3 "$SCRIPT_DIR/lib/serve.py"
         ;;
 

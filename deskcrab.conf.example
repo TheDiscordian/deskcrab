@@ -94,10 +94,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Example: WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 # WHISPER_FIXES=''
 
-# Optional: TTS pronunciation fixes (sed expressions applied to spoken text)
-# Useful for words piper mispronounces or spells out letter-by-letter.
+# Optional: TTS fixes (sed expressions applied to spoken text)
+# Useful for words piper mispronounces or spells out letter-by-letter. A
+# replacement newline starts a new piper input line and its sentence pause.
 # Applied only to the spoken reply — display-channel content is untouched.
-# Example: TTS_FIXES='s/\bhmph\b/humph/gi'
+# Example: TTS_FIXES='s/\bhmph\b/humph/gi; s/—/\n/g'
 # TTS_FIXES=''
 
 # What the CLI puts in front of her, per run. Measured numbers and the

@@ -338,6 +338,16 @@ says so.
     route, answered as the file's exact bytes; the chess bridge serves the SAME file, byte for
     byte, through its own explicit route ([chessweb.md](chessweb.md) rule 24g) — shared as a
     neutral module both pages load, never one server importing or proxying the other.
+44d. A generated voice clip that has a face cue document carries an opaque `face_cue` id in its
+    voice event or wake pointer. The phoneme record and cue track stay server-side beside the
+    Opus file; the page MUST NOT manufacture, edit, or echo them. The page returns only that id
+    with its existing `/played` report. `requested` moves no mouth. On the media element's first
+    real `started` report, the server resolves its own bounded record and publishes the cue track
+    to the face broker with that instant as playback time zero. `completed`, `error`, and the
+    chosen stop remove that phone clip by id without clearing another clip that may be sounding.
+    Missing cue data, a dead broker, or any cue-publication failure costs only the mouth motion;
+    the audio queue and its reports continue unchanged. Phone-routed wake clips use the same id
+    and the same playback-truth path.
 45. The server MUST record every playback report to the per-day metrics log it already writes its
     latency stamps to, so the stamp that says a clip was synthesised has a neighbour that says
     whether it was ever heard.
@@ -464,6 +474,7 @@ against the shipped CLI before this rule was written.
 | `${STATE_PREFIX}-remote.lock` | serialises phone turns |
 | `${STATE_PREFIX}-phone-seen` | touched on every authenticated poll; the delivery beacon |
 | `${STATE_PREFIX}-wake-audio` | pointer to a wake's synthesised reply |
+| `${REMOTE_AUDIO_PREFIX}*.opus.face.json` | private phoneme records, measured duration, and cue track retained beside a generated phone clip |
 | `${STATE_PREFIX}-play` | pointer to a handed audio file (`crab play`), expiring |
 | `${STATE_PREFIX}-midturn/` | the mid-turn spool (rules 51-52): one file per queued message, named `<arrival-ns>.<turn-id>.msg`, expiring at the reader |
 | `${STATE_PREFIX}-convo.txt` | followed by the poll route |
@@ -501,8 +512,8 @@ flowchart TD
 ## INTERACTIONS
 
 **The phone server may call:** the remote turn entry point, the synthesiser, the batch transcriber,
-the push sender (directly, and as `crab notify` for rule 46's silent-turn alarm), and the
-conversation reader.
+the face broker for playback-anchored cue tracks, the push sender (directly, and as `crab notify`
+for rule 46's silent-turn alarm), and the conversation reader.
 
 **The phone server may be called by:** the client page, by the wake path writing an audio pointer,
 and by any hand writing the play pointer (`crab play`).

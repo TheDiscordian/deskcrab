@@ -292,16 +292,17 @@ function attachDisplay(replyEl, html) {
 // a report that cannot be delivered, or a server too old to take one, must
 // never disturb the playback it describes.
 function reportPlay(meta, event, detail) {
-  if (!meta || !meta.tid) return;
+  if (!meta || (!meta.tid && !meta.faceCue)) return;
   // One failure, one report (spec rule 44a): a dead source signals twice, and
   // 8 of one day's 38 play-errors were the second report of a failure already
   // counted. The first error a clip reports is the whole of its error story.
   if (event === "error") {
-    const k = meta.tid + ":" + meta.clip;
+    const k = (meta.tid || meta.faceCue) + ":" + (meta.clip || "face");
     if (clipErrorsReported.has(k)) return;
     clipErrorsReported.add(k);
   }
-  post("/played", JSON.stringify({ turn: meta.tid, clip: meta.clip,
+  post("/played", JSON.stringify({ turn: meta.tid || "", clip: meta.clip || "",
+                                   face_cue: meta.faceCue || "",
                                    event, detail: detail || "" }),
        { "Content-Type": "application/json" }, 10000).catch(() => {});
 }
@@ -528,7 +529,8 @@ async function deliver(res, replyEl, meta) {
   // emptiness, which reads as the assistant saying "no reply" out loud.
   if (!replyEl.textContent && !replyEl.querySelector("*")) replyEl.remove();
   setStatus("ready");
-  if (res.audio) enqueueVoice(res.audio, meta);
+  if (res.audio) enqueueVoice(res.audio,
+    Object.assign({}, meta, { faceCue: res.face_cue || "" }));
   replyEl.scrollIntoView({ block: "end" });
 }
 
@@ -706,7 +708,9 @@ async function streamTurn(text, turn, tid, resuming, seq, loc) {
             const idx = String(clipIdx++);
             const skip = ev.played === true ||
                          (ev.played === undefined && Date.now() < voiceGateUntil);
-            if (!skip) enqueueVoice(ev.audio, { tid, clip: idx });
+            if (!skip) enqueueVoice(ev.audio, {
+              tid, clip: idx, faceCue: ev.face_cue || ""
+            });
             continue;
           }
           showThought(turn, ev);
@@ -949,7 +953,9 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take) {
       // Streamed clips played above as they arrived; a completion clip here
       // means nothing streamed and this is the only sound the turn will ever
       // make. Play it; touch nothing else.
-      enqueueVoice(res.audio, { tid, clip: "done" });
+      enqueueVoice(res.audio, {
+        tid, clip: "done", faceCue: res.face_cue || ""
+      });
     }
   } catch (e) {
     setStatus(String(e.message || e), "err");
@@ -1684,7 +1690,7 @@ async function startWatch() {
         // A stop applies to the speech it interrupted, not to a wake that
         // hasn't spoken yet.
         voiceMuted = false;
-        enqueueVoice(data.wake.audio);
+        enqueueVoice(data.wake.audio, { faceCue: data.wake.face_cue || "" });
       }
       // A handed piece. Not gated on voiceMuted — the stop-tap is about
       // speech — and the persistent mute silences rather than suppresses,

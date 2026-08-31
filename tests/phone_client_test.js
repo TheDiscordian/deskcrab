@@ -928,7 +928,7 @@ async function testResumeReplayIsQuiet() {
     randomHex: () => "MUSTNOTBEUSED",
     setStatus: () => {},
     showThought: () => {},
-    enqueueVoice: u => voiced.push(u),
+    enqueueVoice: (u, meta) => voiced.push({ url: u, meta }),
     turnCtl: null, lastTurnProgress: 0, turnKicked: false, releasedSeq: 0,
     hiddenAt: 0, hiddenTotal: 0, resumeCount: 0,
     fetch: async (url, opts) => {
@@ -938,11 +938,11 @@ async function testResumeReplayIsQuiet() {
           reads++;
           if (reads === 1)          // the buffered backlog, replayed at once
             res({ value: enc.encode(
-                'data: {"kind":"voice","audio":"/audio/old.opus"}\n\n'),
+                'data: {"kind":"voice","audio":"/audio/old.opus","face_cue":"old-private"}\n\n'),
                   done: false });
           else if (reads === 2)     // a clip that is genuinely live
             setTimeout(() => res({ value: enc.encode(
-                'data: {"kind":"voice","audio":"/audio/new.opus"}\n\n' +
+                'data: {"kind":"voice","audio":"/audio/new.opus","face_cue":"new-opaque"}\n\n' +
                 'data: {"kind":"done","spoken":"back"}\n\n'), done: false }),
                 350);
           else res({ done: true });
@@ -965,9 +965,50 @@ async function testResumeReplayIsQuiet() {
   if (posts.length && /"turn":"cafe1234"/.test(posts[0].body || ""))
     ok("the POST carries the remembered id — an attach, never a second run");
   else bad("the given id must ride the POST", posts.length ? posts[0].body : "no post");
-  if (voiced.join(",") === "/audio/new.opus")
+  if (voiced.length === 1 && voiced[0].url === "/audio/new.opus")
     ok("the replayed backlog stays quiet; the live clip plays");
-  else bad("replayed clips must not re-sound", voiced.join(",") || "nothing");
+  else bad("replayed clips must not re-sound", JSON.stringify(voiced));
+  if (voiced.length === 1 && voiced[0].meta.faceCue === "new-opaque")
+    ok("the live clip keeps its opaque face cue through the queue hand-off");
+  else bad("the cue id must follow the exact clip that can sound",
+           JSON.stringify(voiced));
+}
+
+async function testFaceCueReportsAndCompletion() {
+  console.log("");
+  console.log("phone face cues — only the opaque id follows real playback:");
+  const posts = [], voiced = [];
+  const ctx = {
+    clipErrorsReported: new Set(),
+    post: async (url, body) => { posts.push({ url, body: JSON.parse(body) }); },
+    pendingReply: null,
+    setStatus: () => {},
+    attachDisplay: () => {},
+    enqueueVoice: (url, meta) => voiced.push({ url, meta }),
+  };
+  let api = build(["function reportPlay"], ctx);
+  api.reportPlay({ tid: "turn1", clip: "0", faceCue: "cue-report" }, "started");
+  await sleep(0);
+  if (posts.length === 1 && posts[0].url === "/played" &&
+      posts[0].body.face_cue === "cue-report")
+    ok("a playback report returns the opaque cue id to the server");
+  else bad("the report must carry the server-issued cue id", JSON.stringify(posts));
+
+  const reply = {
+    textContent: "", _said: [], removed: false,
+    querySelector: () => null,
+    remove() { this.removed = true; },
+    scrollIntoView() {},
+  };
+  api = build(["function norm", "function residue", "function addSaid",
+               "async function deliver"], ctx);
+  await api.deliver({ spoken: "reply", audio: "/audio/done.opus",
+                      face_cue: "cue-done", display_html: "", error: "" },
+                    reply, { tid: "turn2", clip: "done" });
+  if (voiced.length === 1 && voiced[0].url === "/audio/done.opus" &&
+      voiced[0].meta.faceCue === "cue-done")
+    ok("a completion clip keeps its cue id through deliver");
+  else bad("the completion cue must follow its own audio", JSON.stringify(voiced));
 }
 
 async function testForegroundKick() {
@@ -1845,6 +1886,7 @@ async function testRealRefusalStillOffersButton() {
   await testStopControl();
   await testSendTypedDispatch();
   await testResumeReplayIsQuiet();
+  await testFaceCueReportsAndCompletion();
   await testForegroundKick();
   await testDeadMicReacquired();
   await testHiddenTurnResumesToReply();

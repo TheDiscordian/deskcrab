@@ -116,6 +116,7 @@ def face_after_param(query):
 
 # Local stdlib-only helpers keep the server's no-dependencies promise.
 sys.path.insert(0, str(LIB_DIR))
+import face_state
 import openrsc_spectator
 # The token ledger's aggregation (specs/metrics.md rules 21-22): the metrics
 # page rides this server rather than getting one of its own. Stdlib-only, so
@@ -536,6 +537,106 @@ def playback_state(tid):
         return st
 
 
+# Phone mouth tracks (face.md rules 21-23; phone.md rule 44d).  The browser
+# receives only an opaque id.  Piper's phoneme record and the derived cues
+# remain here, bounded like the turn buffers, until the media element reports
+# that this exact clip really started.  Generation and request are not sound.
+PHONE_FACE_CUES = {}
+PHONE_FACE_LOCK = threading.Lock()
+PHONE_FACE_CAP = 256
+
+
+def _clean_phone_face(doc):
+    """The bounded part of a private synthesis sidecar the broker may use."""
+    if not isinstance(doc, dict):
+        return None
+    try:
+        duration = float(doc.get("duration", 0))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration) or duration <= 0 or duration > 3600:
+        return None
+    cues = []
+    last = -1.0
+    for raw in doc.get("cues") or []:
+        try:
+            offset, viseme = float(raw[0]), str(raw[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not math.isfinite(offset) or offset < last or offset < 0 \
+                or offset > duration or viseme not in face_state.VISEMES:
+            continue
+        cues.append([offset, viseme])
+        last = offset
+        if len(cues) >= 400:
+            break
+    if not cues:
+        return None
+    return {"duration": duration, "cues": cues}
+
+
+def remember_phone_face(cue_id, doc):
+    cue_id = re.sub(r"[^A-Za-z0-9_-]", "", str(cue_id or ""))[:56]
+    clean = _clean_phone_face(doc)
+    if not cue_id or clean is None:
+        return ""
+    now = time.time()
+    with PHONE_FACE_LOCK:
+        for stale in [key for key, rec in PHONE_FACE_CUES.items()
+                      if now - rec["created"] > TURN_BUFFER_TTL]:
+            PHONE_FACE_CUES.pop(stale, None)
+        rec = PHONE_FACE_CUES.get(cue_id)
+        if rec is None:
+            rec = PHONE_FACE_CUES[cue_id] = {
+                "created": now, "doc": clean, "started": False,
+                "ended": False,
+            }
+        else:
+            rec["doc"] = clean
+        while len(PHONE_FACE_CUES) > PHONE_FACE_CAP:
+            PHONE_FACE_CUES.pop(next(iter(PHONE_FACE_CUES)))
+    return cue_id
+
+
+def phone_face_for_audio(path, cue_id=None):
+    """Register one generated clip's private sidecar and return its id."""
+    try:
+        with open(str(path) + ".face.json") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    return remember_phone_face(cue_id or uuid.uuid4().hex, doc)
+
+
+def phone_face_started(cue_id):
+    """Anchor one retained cue track to the browser's real playback start."""
+    with PHONE_FACE_LOCK:
+        rec = PHONE_FACE_CUES.get(cue_id)
+        if rec is None or rec["started"] or rec["ended"]:
+            return
+        rec["started"] = True
+        doc = rec["doc"]
+    face_state.send_cmd({"cmd": "speak", "clips": [{
+        "id": "phone-" + cue_id,
+        "start": time.time(),
+        "duration": doc["duration"],
+        "cues": doc["cues"],
+    }]}, timeout=0.35)
+
+
+def phone_face_ended(cue_id):
+    """Close one terminal phone clip without clearing another voice track."""
+    with PHONE_FACE_LOCK:
+        rec = PHONE_FACE_CUES.get(cue_id)
+        if rec is None or rec["ended"]:
+            return
+        rec["ended"] = True
+        started = rec["started"]
+    if started:
+        face_state.send_cmd({"cmd": "speak-end", "id": "phone-" + cue_id},
+                            timeout=0.35)
+
+
 def _silence_alarm(tid, clips_offered):
     """One notification for one turn nobody fully heard, and never a second.
 
@@ -686,17 +787,22 @@ def run_turn(turn, text):
             # streaming synthesis became total silence with a good clip
             # already sitting on disk.
             audio = ""
+            face_cue = ""
             if speaker.voiced == 0 and reply.get("audio"):
                 audio = "/audio/" + os.path.basename(reply["audio"])
+                face_cue = phone_face_for_audio(reply["audio"])
                 print("speech: no streaming clip was voiced — the completion "
                       "event carries the turn's own reply clip",
                       file=sys.stderr, flush=True)
-            turn.emit("done", {
+            done = {
                 "spoken": reply.get("spoken", ""),
                 "display_html": render_markdown(reply.get("display", "")),
                 "audio": audio,
                 "error": reply.get("error", ""),
-            })
+            }
+            if face_cue:
+                done["face_cue"] = face_cue
+            turn.emit("done", done)
             # The reply's text is on its way; whether any of its sound is ever
             # heard is now the client's story to tell (spec rules 44-46). A
             # turn that spoke no text has nothing to be silent about, and an
@@ -898,8 +1004,12 @@ def read_wake():
     except (OSError, ValueError):
         return None
     if doc.get("id") and doc.get("audio"):
-        return {"id": str(doc["id"]), "audio": doc["audio"],
-                "spoken": doc.get("spoken", "")}
+        out = {"id": str(doc["id"]), "audio": doc["audio"],
+               "spoken": doc.get("spoken", "")}
+        face_cue = remember_phone_face(doc.get("face_cue"), doc.get("_face"))
+        if face_cue:
+            out["face_cue"] = face_cue
+        return out
     return None
 
 
@@ -1375,8 +1485,12 @@ class Speaker:
                 self.voiced += 1
                 if self.voiced == 1:
                     turn_metric("first-audio", "%d chars" % len(text))
-                self.emit("voice", {"text": text,
-                                    "audio": "/audio/" + os.path.basename(out)})
+                payload = {"text": text,
+                           "audio": "/audio/" + os.path.basename(out)}
+                face_cue = phone_face_for_audio(out)
+                if face_cue:
+                    payload["face_cue"] = face_cue
+                self.emit("voice", payload)
             else:
                 err = r.stderr.decode("utf-8", "replace").strip()[-300:]
                 print("speech: synthesis produced nothing for %d chars (rc=%d)%s"
@@ -1984,10 +2098,22 @@ class Handler(BaseHTTPRequestHandler):
                          str(doc.get("turn", "")).lower())[:64]
             event = str(doc.get("event", ""))
             clip = str(doc.get("clip", ""))[:16]
+            face_cue = re.sub(r"[^A-Za-z0-9_-]", "",
+                              str(doc.get("face_cue", "")))[:56]
             detail = " ".join(str(doc.get("detail", "")).split())[:120]
-            if not tid or event not in ("requested", "started", "completed",
-                                        "error"):
+            if (not tid and not face_cue) or event not in (
+                    "requested", "started", "completed", "error"):
                 return self._json(400, {"error": "bad report"})
+            # Mouth motion follows playback truth too (phone rule 44d).
+            # A wake has no conversation turn id, so a valid face-only report
+            # ends here after moving its one private cue record.
+            if face_cue:
+                if event == "started":
+                    phone_face_started(face_cue)
+                elif event in ("completed", "error"):
+                    phone_face_ended(face_cue)
+            if not tid:
+                return self._json(200, {"ok": True})
             st = playback_state(tid)
             with PLAYBACK_LOCK:
                 PLAY_CAPABLE[0] = True

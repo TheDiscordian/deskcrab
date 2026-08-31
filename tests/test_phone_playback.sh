@@ -16,12 +16,19 @@
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
+refute() {
+    local desc="$1"
+    shift
+    if "$@"; then fail "$desc"; else ok "$desc"; fi
+}
+
 REPO_DIR="$SANDBOX_REPO"
 T="$SANDBOX"
 
-PID_A="" PID_B=""
+PID_A="" PID_B="" FACE_PID=""
 sandbox_at_exit '[ -n "$PID_A" ] && kill "$PID_A" 2>/dev/null'
 sandbox_at_exit '[ -n "$PID_B" ] && kill "$PID_B" 2>/dev/null'
+sandbox_at_exit '[ -n "$FACE_PID" ] && kill "$FACE_PID" 2>/dev/null'
 
 SECRET="testsecret"
 # Ports nobody else is on; the other phone tests hold 18723-18731.
@@ -40,12 +47,17 @@ cat > "$T/crab" <<'STUB'
 case "$1" in
   synth)
     printf 'CLIP-BYTES%.0s' $(seq 1 30) > "$2"
+    printf '%s\n' '{"version":1,"duration":2.0,"phoneme_records":[{"phonemes":"həlˈoʊ","duration":1.8}],"cues":[[0.0,"slight"],[0.5,"open"],[1.8,"rest"]]}' > "$2.face.json"
     exit 0 ;;
   notify)
     shift
     printf '%s\n' "$*" >> "$NOTIFY_LOG"
     exit 0 ;;
-  remote) ;;
+  remote)
+    STUB_REMOTE_AUDIO="$(mktemp "${TMPDIR:?}/deskcrab-remote-playback.XXXXXX.opus")"
+    printf 'CLIP-BYTES%.0s' $(seq 1 30) > "$STUB_REMOTE_AUDIO"
+    printf '%s\n' '{"version":1,"duration":2.0,"phoneme_records":[{"phonemes":"həlˈoʊ","duration":1.8}],"cues":[[0.0,"slight"],[0.5,"open"],[1.8,"rest"]]}' > "$STUB_REMOTE_AUDIO.face.json"
+    export STUB_REMOTE_AUDIO ;;
   *) exit 1 ;;
 esac
 python3 - <<'PY'
@@ -54,7 +66,7 @@ with open(os.environ["DESKCRAB_REMOTE_LOG"], "a") as f:
     f.write(json.dumps({"type": "assistant", "message": {"id": "m1",
         "content": [{"type": "text", "text": "the reply"}]}}) + "\n")
 PY
-python3 -c 'import json;print(json.dumps({"spoken":"the reply","display":"","audio":"","error":""}))'
+python3 -c 'import json,os;print(json.dumps({"spoken":"the reply","display":"","audio":os.environ.get("STUB_REMOTE_AUDIO", ""),"error":""}))'
 exit 0
 STUB
 chmod +x "$T/crab"
@@ -64,10 +76,18 @@ mkdir -p "$T/metrics-a" "$T/metrics-b"
 : > "$T/notify-a.log"
 : > "$T/notify-b.log"
 
+DESKCRAB_STATE_PREFIX="$T/deskcrab-a" \
+DESKCRAB_FACE_SOCKET="$T/face-a.sock" \
+DESKCRAB_FACE_STATE="$T/face-a-state.json" \
+    python3 "$REPO_DIR/lib/face_state.py" serve > "$T/face-a.log" 2>&1 &
+FACE_PID=$!
+
 DESKCRAB_SERVE_SECRET="$SECRET" DESKCRAB_SERVE_PORT="$PORT_A" \
 DESKCRAB_SERVE_BIND=127.0.0.1 DESKCRAB_SERVE_TIMEOUT=30 \
 DESKCRAB_SERVE_PLAY_ALARM="$ALARM" \
 DESKCRAB_CRAB_BIN="$T/crab" DESKCRAB_STATE_PREFIX="$T/deskcrab-a" \
+DESKCRAB_FACE_SOCKET="$T/face-a.sock" \
+DESKCRAB_FACE_STATE="$T/face-a-state.json" \
 DESKCRAB_METRICS_DIR="$T/metrics-a" NOTIFY_LOG="$T/notify-a.log" \
     python3 "$REPO_DIR/lib/serve.py" > "$T/server-a.log" 2>&1 &
 PID_A=$!
@@ -97,10 +117,17 @@ turn() {  # <port> <turn id>
         "http://127.0.0.1:$1/say" > "$T/$2.sse" 2>"$T/curl.err"
 }
 
-played() {  # <port> <turn id> <clip> <event> [detail]
+played() {  # <port> <turn id> <clip> <event> [detail] [face cue]
     curl -sS -m 5 -H "X-Crab-Key: $SECRET" -H "Content-Type: application/json" \
-        --data "{\"turn\":\"$2\",\"clip\":\"$3\",\"event\":\"$4\",\"detail\":\"${5-}\"}" \
+        --data "{\"turn\":\"$2\",\"clip\":\"$3\",\"event\":\"$4\",\"detail\":\"${5-}\",\"face_cue\":\"${6-}\"}" \
         "http://127.0.0.1:$1/played"
+}
+
+face_status() {
+    DESKCRAB_STATE_PREFIX="$T/deskcrab-a" \
+    DESKCRAB_FACE_SOCKET="$T/face-a.sock" \
+    DESKCRAB_FACE_STATE="$T/face-a-state.json" \
+        python3 "$REPO_DIR/lib/face-broker" status
 }
 
 METRICS_A="$T/metrics-a/$(date +%Y-%m-%d).log"
@@ -126,9 +153,34 @@ T1=a1a1a1a1b2b2b2b2c3c3c3c3d4d4d4d4
 turn "$PORT_A" "$T1"
 contains "$(cat "$T/$T1.sse")" '"kind": "done"' \
     || die "turn one never completed" "$(cat "$T/server-a.log")"
-played "$PORT_A" "$T1" 0 requested >/dev/null
-played "$PORT_A" "$T1" 0 started   >/dev/null
-played "$PORT_A" "$T1" 0 completed >/dev/null
+FACE_CUE="$(python3 - "$T/$T1.sse" <<'PY'
+import json
+import sys
+
+for line in open(sys.argv[1]):
+    if line.startswith("data: "):
+        event = json.loads(line[6:])
+        if event.get("kind") in ("voice", "done") and event.get("face_cue"):
+            print(event["face_cue"])
+            break
+PY
+)"
+[ -n "$FACE_CUE" ] && ok "the generated voice payload carries an opaque face cue id" \
+    || fail "the generated voice payload carries an opaque face cue id" "$(cat "$T/$T1.sse")"
+refute "the private phoneme record never crosses into the voice payload" \
+    grep -q 'həlˈoʊ\|phoneme_records\|face.json' "$T/$T1.sse"
+played "$PORT_A" "$T1" 0 requested "" "$FACE_CUE" >/dev/null
+refute "requesting a clip does not move the mouth" \
+    grep -q "phone-$FACE_CUE" < <(face_status)
+played "$PORT_A" "$T1" 0 started "" "$FACE_CUE" >/dev/null
+FACE_STARTED="$(face_status)"
+contains "$FACE_STARTED" "phone-$FACE_CUE" \
+    && contains "$FACE_STARTED" '"open"' \
+    && ok "the real playback start publishes the retained cue track" \
+    || fail "the real playback start publishes the retained cue track" "$FACE_STARTED"
+played "$PORT_A" "$T1" 0 completed "" "$FACE_CUE" >/dev/null
+refute "completion removes only that phone mouth track" \
+    grep -q "phone-$FACE_CUE" < <(face_status)
 
 sleep $((ALARM + 2))
 check_eq "no notification for a turn whose clip reported playing" \
@@ -137,6 +189,26 @@ for EV in play-requested play-started play-completed; do
     check_eq "the metrics log carries $EV for the turn" \
         "$(sandbox_count_in "$EV	turn ${T1:0:8} clip 0" "$METRICS_A")" "1"
 done
+
+# --- phone-routed wake speech uses the same playback truth ----------------
+echo "== a phone-routed wake carries private cues through the same route =="
+
+printf '%s\n' '{"id":"wake-test","audio":"/audio/deskcrab-remote-wake-test.opus","spoken":"wake reply","face_cue":"wake-test","_face":{"version":1,"duration":1.5,"phoneme_records":[{"phonemes":"wˈeɪk","duration":1.3}],"cues":[[0.0,"wide"],[1.3,"rest"]]}}' \
+    > "$T/deskcrab-a-wake-audio"
+WATCH="$(curl -sS -m 5 -H "X-Crab-Key: $SECRET" \
+    "http://127.0.0.1:$PORT_A/watch?wait=0&wakeseen=none")"
+WAKE_CUE="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["wake"]["face_cue"])' \
+    <<< "$WATCH")"
+check_eq "the wake exposes only its opaque cue id" "$WAKE_CUE" "wake-test"
+refute "the wake response keeps phonemes and cues private" \
+    grep -q 'phoneme_records\|_face\|wˈeɪk' <<< "$WATCH"
+played "$PORT_A" "" "" started "" "$WAKE_CUE" >/dev/null
+contains "$(face_status)" "phone-$WAKE_CUE" \
+    && ok "a wake begins mouth motion only when its audio starts" \
+    || fail "a wake begins mouth motion only when its audio starts"
+played "$PORT_A" "" "" completed "" "$WAKE_CUE" >/dev/null
+refute "a completed wake closes its own mouth track" \
+    grep -q "phone-$WAKE_CUE" < <(face_status)
 
 # --- a silent turn notifies, exactly once ----------------------------------
 echo "== a silent turn: one notification, never a second =="

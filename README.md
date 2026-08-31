@@ -130,7 +130,7 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `CONVO_TIMEOUT` | No | Seconds of inactivity before archiving conversation (default: 300) |
 | `CUSTOM_PROMPT` | No | Path to a markdown file appended to Crab's core system prompt |
 | `WHISPER_FIXES` | No | `sed` expressions to fix common whisper mistranscriptions |
-| `TTS_FIXES` | No | `sed` expressions to fix TTS pronunciation (spoken text only) |
+| `TTS_FIXES` | No | `sed` expressions to fix TTS pronunciation or add input-line pauses (spoken text only) |
 | `CLAUDE_TOOLS_TURN` | No | Tools a turn or wake may use (default: `Bash,Read,Write,Edit,WebFetch,WebSearch`) |
 | `CLAUDE_SKILLS` | No | `1` to give her sessions the skills catalogue back (default: off, worth ~6,700 tokens a session) |
 | `PROMPT_BUDGET_<layer>_<profile>` | No | Override one prompt layer's byte budget, e.g. `PROMPT_BUDGET_L6_TURN=12000` |
@@ -167,10 +167,10 @@ WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 
 ### TTS fixes
 
-Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. Fixes apply only to the spoken reply; display-channel content is untouched:
+Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. A replacement newline starts a new Piper input line, which uses Piper's sentence silence and can give punctuation a natural pause. Fixes apply only to the spoken reply; display-channel content is untouched:
 
 ```bash
-TTS_FIXES='s/\bhmph\b/humph/gi'
+TTS_FIXES='s/\bhmph\b/humph/gi; s/—/\n/g'
 ```
 
 ## Autonomous wants & wakes
