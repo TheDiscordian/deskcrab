@@ -28,7 +28,8 @@ import orsc.ReflexBridge;
 	 * "click x=N y=N button=N", "equip|unequip slot=N item=N",
 	 * "item-command slot=N item=N command=TEXT amount=N", "bank-deposit item=N amount=N",
 	 * "bank-withdraw item=N amount=N", "shop-buy item=N amount=N",
-	 * "shop-sell item=N amount=N", "take x=N z=N id=N".
+	 * "shop-sell item=N amount=N", "trade-player sidx=N", "follow-player sidx=N",
+	 * "take x=N z=N id=N".
  */
 public class ReflexBridgeHarness {
 
@@ -123,6 +124,22 @@ public class ReflexBridgeHarness {
 
 		public int skillExperience(int index) {
 			return new int[]{1540, 1000, 8421}[index];
+		}
+
+		public int questPoints() {
+			return 7;
+		}
+
+		public int questCount() {
+			return 4;
+		}
+
+		public String questName(int index) {
+			return new String[]{"Cook's Assistant", "Demon Slayer", "", "Dragon Quest"}[index];
+		}
+
+		public int questStage(int index) {
+			return new int[]{-1, 3, 0, 0}[index];
 		}
 
 		final String[] spellNames = {"Wind Strike", "Confuse", "Low level alchemy", "Water Strike"};
@@ -534,6 +551,10 @@ public class ReflexBridgeHarness {
 
 		public void tradePlayer(int serverIndex) {
 			events.add("trade-player sidx=" + serverIndex);
+		}
+
+		public void followPlayer(int serverIndex) {
+			events.add("follow-player sidx=" + serverIndex);
 		}
 
 		// Two scripted visible NPCs: server index 7 is diagonally adjacent

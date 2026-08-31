@@ -67,6 +67,12 @@ assert s["skills"] == [
     {"id": 1, "name": "Defense", "level": 10, "xp": 1000},
     {"id": 2, "name": "Thieving", "level": 24, "xp": 8421},
 ], s.get("skills")
+assert s["quest_points"] == 7
+assert s["quests"] == [
+    {"id": 0, "name": "Cook's Assistant", "stage": -1, "status": "completed"},
+    {"id": 1, "name": "Demon Slayer", "stage": 3, "status": "started"},
+    {"id": 3, "name": "Dragon Quest", "stage": 0, "status": "not_started"},
+], s.get("quests")
 assert s["magic_level"] == 3 and s["selected_spell"] == 0
 assert s["spells"] == [
     {"id": 0, "name": "Wind Strike", "description": "A strength 1 missile attack",
@@ -465,6 +471,15 @@ check_eq "the trade request is receipted done" "$(rstatus)" "done"
 wact 652 "$(now_ms)" "type=trade-player" "sidx=99"
 harness exec >/dev/null
 check_eq "a player who is no longer visible is refused" "$(rstatus)" "refused-no-such-player"
+wact 653 "$(now_ms)" "type=follow-player" "sidx=11"
+OUT="$(harness exec)"
+contains "$OUT" "follow-player sidx=11" \
+    && ok "semantic follow uses the native visible-player action" \
+    || fail "semantic follow must reach the native player packet" "$OUT"
+check_eq "the native follow is receipted done" "$(rstatus)" "done"
+wact 654 "$(now_ms)" "type=follow-player" "sidx=99"
+harness exec >/dev/null
+check_eq "a player who is no longer visible cannot be followed" "$(rstatus)" "refused-no-such-player"
 wact 65201 "$(now_ms)" "type=trade-offer" "item=132" "amount=1"
 OUT="$(harness exec-trade-offer)"
 contains "$OUT" "trade-offer slot=0 amount=1 item=132" \

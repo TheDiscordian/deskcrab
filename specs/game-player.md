@@ -34,6 +34,12 @@ deliberate-play channel.
    `cooking`). The plan remains binding across ordinary turns, process restarts, route trouble, and
    activity changes. Proximity or convenience cannot silently replace it. A genuinely new
    objective clears the old plan so a stale method never leaks into a different goal.
+   The bridge snapshot's `quest_points` and `quests` are the server-authored quest journal;
+   each named quest carries its numeric stage and `completed`, `started`, or `not_started`
+   status. `quests [TEXT]` reads or searches it. Before selecting a quest objective, the player
+   reads this journal instead of guessing from inventory, memory, prior prose, or a screenshot.
+   `objective` compares punctuation-insensitive quest names and common objective wrappers and
+   refuses a quest whose authoritative stage is already completed.
    `$DESKCRAB_GAME_DIR/activity-stats.json` is the selected activity's measured clock: its start
    time, per-skill cumulative-XP baselines, latest observed XP values, and the most recent positive
    XP delta. Selecting a different activity or `activity --restart` resets that baseline; selecting
@@ -521,7 +527,8 @@ deliberate-play channel.
     rule 3's gate and persists. A learned rule arrives **enabled** — unlike game-reflex rule
     14's shipped defaults, learning is already the player's own explicit act on a verified
     moment, which is the arming criterion. `unfinished <name> <note…>` records what could not
-    be compiled. `objective [NAME|--clear]` sets or clears the durable objective. `plan [TEXT]`
+    be compiled. `objective [NAME|--clear]` sets or clears the durable objective, subject to the
+    completed-quest refusal above; `quests [TEXT]` reads the journal. `plan [TEXT]`
     shows or makes the first durable method selection. Repeating the same plan is idempotent, but
     replacing it requires `plan --revise REASON TEXT`, and clearing it requires
     `plan --clear REASON`; both the old/new method and grounded reason enter the decision and

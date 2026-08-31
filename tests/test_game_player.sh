@@ -501,7 +501,23 @@ OUT="$(python3 "$GP" step)"; CODE=$?
 check_eq "wrong NPC on screen: exit 4, the fallback signal" "$CODE" "4"
 refute "and no action was written" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 python3 "$GP" objective --clear >/dev/null
-snap 104 '[{"sidx":77,"id":478,"x":121,"z":648}]'
+snap 104 '[{"sidx":77,"id":478,"x":121,"z":648}]' \
+    '{"quest_points":7,"quests":[{"id":0,"name":"Cook'"'"'s Assistant","stage":-1,"status":"completed"},{"id":1,"name":"Demon Slayer","stage":3,"status":"started"},{"id":2,"name":"Dragon Quest","stage":0,"status":"not_started"}]}'
+OUT="$(python3 "$GP" quests Cook)"
+contains "$OUT" "completed" && contains "$OUT" "Cook's Assistant" \
+    && ok "the player can search the authoritative quest journal" \
+    || fail "the player needs searchable quest status" "$OUT"
+CODE=0; OUT="$(python3 "$GP" objective cooks-assistant 2>&1)" || CODE=$?
+[ "$CODE" -ne 0 ] && contains "$OUT" "already completed" \
+    && ok "a completed quest cannot become the durable objective" \
+    || fail "the objective door must reject completed quests" "$OUT"
+refute "a refused completed quest writes no objective" test -e "$DESKCRAB_GAME_DIR/objective"
+CODE=0; OUT="$(python3 "$GP" objective finish-cooks-assistant 2>&1)" || CODE=$?
+[ "$CODE" -ne 0 ] && contains "$OUT" "already completed" \
+    && ok "common objective wording cannot bypass completed quest status" \
+    || fail "completed quest wrappers need the same refusal" "$OUT"
+check "an actually started quest remains selectable" python3 "$GP" objective demon-slayer
+python3 "$GP" objective --clear >/dev/null
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "right NPC but no objective set: objective_is can never hold" "$CODE" "4"
 refute "still no action" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
@@ -2910,7 +2926,7 @@ chmod +x "$MEMFAKE/memory.py"
 # Nearby players ride the composed recall query: the people standing there are
 # the people she is about to have to answer.
 snap 140 '[{"sidx":9,"id":11,"x":121,"z":649}]' \
-     '{"players":[{"name":"Neighbour One"},{"name":"Neighbour Two"}]}'
+     '{"players":[{"name":"Neighbour One"},{"name":"Neighbour Two"}],"quest_points":7,"quests":[{"id":0,"name":"Cook'"'"'s Assistant","stage":-1,"status":"completed"},{"id":1,"name":"Demon Slayer","stage":3,"status":"started"}]}'
 BOCENV=(BETTY_OPENRSC_HOME="$PH" BETTY_OPENRSC_HEADLESS="$OH2" \
         BETTY_OPENRSC_PERSONA_SHEET="$SHEET" \
         BETTY_OPENRSC_MEMORY="$MEMFAKE/memory.py" \
@@ -2938,6 +2954,14 @@ contains "$OUT" "pos=(120,648)" && ok "and a fresh snapshot summary" \
 contains "$OUT" 'hover_text=""' \
     && ok "the composed player receives current top-left hover awareness" \
     || fail "the composed player receives current top-left hover awareness" "$OUT"
+contains "$OUT" 'quests_completed=["Cook'"'"'s Assistant"]' \
+    && contains "$OUT" 'quests_started=["Demon Slayer"]' \
+    && ok "the composed player receives authoritative quest progress" \
+    || fail "the composed player needs live completed and started quests" "$OUT"
+contains "$OUT" "Quest objectives come from the live journal" \
+    && contains "$OUT" 'play quests <name fragment>' \
+    && ok "the player checks the live journal before choosing a quest" \
+    || fail "quest selection needs the authoritative journal rule" "$OUT"
 
 # Rule 18: the player is her, playing. A prompt of pure game mechanics makes a
 # stranger wearing her name, which is what shipped before this.

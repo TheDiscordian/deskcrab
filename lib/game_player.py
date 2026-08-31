@@ -2878,7 +2878,12 @@ def snap_brief(snap: dict) -> dict:
                                       "walking", "in_combat", "talking_to_npc",
                                       "right_click_menu_open", "ui_panel_open", "ui_panel",
                                       "hover_text",
-                                      "magic_level", "selected_spell")}
+                                      "magic_level", "selected_spell", "quest_points")}
+    brief["quests"] = [
+        {key: quest.get(key) for key in ("id", "name", "stage", "status")}
+        for quest in snap.get("quests") or []
+        if quest.get("status") in ("completed", "started")
+    ]
     brief["ready_spells"] = [
         {key: spell.get(key) for key in ("id", "name", "target")}
         for spell in snap.get("spells") or [] if spell.get("ready") is True
@@ -4252,6 +4257,43 @@ def cmd_remove(args):
     print(f"removed '{args.rule}'")
 
 
+def quest_key(value: str) -> str:
+    """Compare journal names with objective slugs without trusting punctuation."""
+    words = re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", value).casefold())
+    wrappers = {"begin", "complete", "do", "finish", "quest", "start"}
+    while words and words[0] in wrappers:
+        words.pop(0)
+    while words and words[-1] in wrappers:
+        words.pop()
+    return "".join(words)
+
+
+def snapshot_quests() -> tuple[dict, list[dict]]:
+    snap = game_reflex.read_snapshot() or {}
+    quests = snap.get("quests")
+    if not isinstance(quests, list):
+        return snap, []
+    return snap, [quest for quest in quests
+                  if isinstance(quest, dict)
+                  and isinstance(quest.get("name"), str)
+                  and quest.get("name", "").strip()]
+
+
+def cmd_quests(args):
+    snap, quests = snapshot_quests()
+    if "quests" not in snap:
+        die("quest journal unavailable — the running client bridge has not published it")
+    fragment = " ".join(args.query or []).strip().casefold()
+    shown = [quest for quest in quests
+             if not fragment or fragment in quest["name"].casefold()]
+    print(f"quest-points={snap.get('quest_points', '?')} matches={len(shown)}")
+    for quest in shown:
+        print(f"{quest.get('status', 'unknown'):11s} stage={quest.get('stage', '?'):>3} "
+              f"id={quest.get('id', '?'):>2} {quest['name']}")
+    if fragment and not shown:
+        die(f"no quest name contains {fragment!r}")
+
+
 def cmd_objective(args):
     old_objective = read_objective()
     old_plan = read_plan()
@@ -4272,6 +4314,13 @@ def cmd_objective(args):
     if "\n" in args.name or not args.name.strip():
         die("the objective is one non-empty line")
     new_objective = args.name.strip()
+    _snap, quests = snapshot_quests()
+    wanted = quest_key(new_objective)
+    for quest in quests:
+        if wanted and quest_key(quest["name"]) == wanted \
+                and (quest.get("status") == "completed" or quest.get("stage", 0) < 0):
+            die(f"objective refused: {quest['name']} is already completed "
+                f"(journal stage={quest.get('stage')}); choose unfinished work")
     game_dir().mkdir(parents=True, exist_ok=True)
     game_reflex.atomic_write(objective_path(), new_objective + "\n")
     if old_plan and old_objective != new_objective:
@@ -5224,6 +5273,10 @@ def main():
     p.add_argument("name", nargs="?")
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_objective)
+
+    p = sub.add_parser("quests", help="show or search the authoritative quest journal")
+    p.add_argument("query", nargs="*")
+    p.set_defaults(fn=cmd_quests)
 
     p = sub.add_parser("plan", help="show or deliberately revise the objective's method")
     p.add_argument("text", nargs="?")
