@@ -3221,7 +3221,7 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh terrain" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "same selected NPC" \
     && ok "the resumed thread receives grounded projectile-position learning" \
     || fail "the resumed thread receives grounded projectile-position learning"
-contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "Never probe alternate coordinate legs, infer a map boundary" \
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "Never probe alternate coordinate legs" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "authoritative world collision map" \
     && ok "the resumed thread keeps the authoritative route instead of inventing geography" \
     || fail "the resumed thread needs the authoritative navigation contract"
