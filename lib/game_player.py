@@ -728,10 +728,20 @@ def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]
     candidates = []
     for entity in load_navigation_atlas()["entities"].values():
         if not isinstance(entity, dict) or entity.get("kind") not in ("npc", "object", "bound") \
-                or kind not in (None, entity.get("kind")) \
-                or wanted not in _normalise_landmark_text(
-                    f"{entity.get('name', '')} {entity.get('description', '')}"):
+                or kind not in (None, entity.get("kind")):
             continue
+        normal_name = _normalise_landmark_text(entity.get("name", ""))
+        normal_description = _normalise_landmark_text(entity.get("description", ""))
+        name_match = wanted in normal_name
+        description_match = wanted in normal_description
+        if not name_match and not description_match:
+            continue
+        # "To Varrock" describes where a sign points, not where the sign is.
+        # An exact query for the whole inscription may deliberately select the
+        # sign itself; a bare place name must not silently become its location.
+        directional_cue = bool(
+            not name_match and wanted != normal_description
+            and ("sign" in normal_name or normal_description.startswith("to ")))
         sites = [site for site in (entity.get("sites") or {}).values()
                  if isinstance(site, dict) and isinstance(site.get("x"), int)
                  and isinstance(site.get("z"), int)]
@@ -749,9 +759,12 @@ def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]
                 "first_seen": site.get("first_seen"),
                 "last_seen": site.get("last_seen"),
                 "sightings": site.get("sightings", 1),
+                "match": ("directional-cue" if directional_cue else
+                          "name" if name_match else "description"),
             })
-    return sorted(candidates, key=lambda item: (item["kind"], item["name"].casefold(),
-                                                item["x"], item["z"], item["id"]))
+    return sorted(candidates, key=lambda item: (
+        item["match"] == "directional-cue", item["kind"],
+        item["name"].casefold(), item["x"], item["z"], item["id"]))
 
 
 def observed_arrival_walkability(target_x: int, target_z: int, arrive: int):
@@ -5319,6 +5332,14 @@ def cmd_landmark(args):
         candidates = [item for item in candidates if item["id"] == args.id]
     if not candidates:
         die(f"no client-observed {args.kind or 'world'} landmark matches {query!r}")
+    if args.route:
+        routeable = [item for item in candidates
+                     if item.get("match") != "directional-cue"]
+        if routeable:
+            candidates = routeable
+        else:
+            die(f"{query!r} matches only a directional sign, not the named place; "
+                "use the sign as a cue and resolve an actual destination landmark")
     px, pz = snap.get("x"), snap.get("z")
     if args.nearest:
         if not isinstance(px, int) or not isinstance(pz, int):
@@ -5332,9 +5353,10 @@ def cmd_landmark(args):
             distance = f" distance={max(abs(item['x'] - px), abs(item['z'] - pz))}"
         command = f" command={item.get('command1')}" if item.get("command1") else ""
         seen = f" sightings={item.get('sightings', 1)} last_seen={item.get('last_seen')}"
+        match = f" match={item.get('match')}" if item.get("match") else ""
         print(f"landmark kind={item['kind']} id={item['id']} name={json.dumps(item['name'])} "
               f"observed=({item['x']},{item['z']}){distance}{command}{seen} "
-              f"description={json.dumps(item['description'])}")
+              f"description={json.dumps(item['description'])}{match}")
     if len(candidates) > 40:
         print(f"landmark: {len(candidates) - 40} more matches; narrow --kind or use --nearest")
     if not args.route:

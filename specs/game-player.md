@@ -445,10 +445,11 @@ deliberate-play channel.
    A complete map path may move farther from the destination for arbitrarily many legs while going
    around real terrain. Those legs are `route-progress`; straight-line progress budgets and the
    old straight-line edge fallback cannot reject them or erase the destination. The client-cache
-   planner treats a cached or previously observed Open door or gate as a high-cost semantic edge.
-   Open ground is therefore preferred (including a learned free route around a toll gate),
-   but a building or pen with one real exit yields a route to that exact portal instead of to the
-   piece of wall geometrically closest to the goal. The runner stops before crossing that edge,
+   planner treats a cached or previously observed Open door or gate as a small-cost semantic edge.
+   Open ground is preferred when the alternative is genuinely comparable, but one ordinary door
+   can never be priced like hundreds of walking tiles and cause a huge regional detour. A building
+   or pen with one real exit yields a route to that exact portal instead of to the piece of wall
+   geometrically closest to the goal. The runner stops before crossing that edge,
    persists its kind/id/tile/direction, and reports `route-needs-local-interaction` at exit 4.
    Loaded semantic object/boundary actions open it; a changed obstacle signature resumes the SAME
    destination and replans from the new side. Stairs, ladders, and cross-floor transitions remain
@@ -471,7 +472,10 @@ deliberate-play channel.
    the semantic kind, id, name, description, and original query. NPC positions are reported as
    last observations and must be reacquired live. Thus seeing an arbitrary door near an expected
    gate is not evidence that it is that gate, and neither prose nor a server file can inject an
-   unobserved place into the atlas.
+   unobserved place into the atlas. A description-only sign match such as a physical signpost whose
+   inscription says `To Varrock` is explicitly a `directional-cue`, not an observation of Varrock;
+   `landmark --route Varrock` refuses it. An explicit `landmark --route signpost` (or exact full
+   inscription) may still target the sign object itself.
 
    A destination expressed as a name, person, shop, resource, or other human landmark is resolved
    through `landmark` before any raw coordinate route is set. Search may be narrowed with a compact

@@ -1202,7 +1202,7 @@ check_eq "the next action targets the guide's new tile, not the old one" \
     "$(last_action 'x=140')" "1"
 check "follow can be ended explicitly" python3 "$GP" follow --clear
 
-snap 1045 '[{"sidx":22,"id":161,"name":"Border Guard","description":"a guard from Al Kharid","attackable":true,"stats":{},"x":92,"z":650}]' '{"x":106,"z":675,"objects":[{"id":1,"name":"gate","description":"A gate from Lumbridge to Al Kharid","commands":["Open","Examine"],"x":92,"z":649,"dir":0,"blocks_movement":true,"projectiles_pass":false}],"bounds":[{"id":0,"name":"Door","description":"An ordinary door","commands":["Open","Examine"],"x":106,"z":675,"dir":1,"blocks_movement":true,"projectiles_pass":false}]}'
+snap 1045 '[{"sidx":22,"id":161,"name":"Border Guard","description":"a guard from Al Kharid","attackable":true,"stats":{},"x":92,"z":650}]' '{"x":106,"z":675,"objects":[{"id":1,"name":"gate","description":"A gate from Lumbridge to Al Kharid","commands":["Open","Examine"],"x":92,"z":649,"dir":0,"blocks_movement":true,"projectiles_pass":false},{"id":61,"name":"signpost","description":"To Varrock","commands":["WalkTo","Examine"],"x":109,"z":658,"dir":6,"blocks_movement":true,"projectiles_pass":true}],"bounds":[{"id":0,"name":"Door","description":"An ordinary door","commands":["Open","Examine"],"x":106,"z":675,"dir":1,"blocks_movement":true,"projectiles_pass":false}]}'
 OUT="$(python3 "$GP" landmark Al Kharid)"
 contains "$OUT" 'kind=object id=1 name="gate" observed=(92,649)' \
     && contains "$OUT" 'kind=npc id=161 name="Border Guard" observed=(92,650)' \
@@ -1216,6 +1216,24 @@ contains "$(python3 "$GP" route)" 'landmark="gate"' \
     && contains "$(python3 "$GP" route)" 'target=(92,649)' \
     && ok "the route retains its observed semantic identity" \
     || fail "a landmark route must retain its identity" "$(python3 "$GP" route)"
+python3 "$GP" route --clear >/dev/null
+OUT="$(python3 "$GP" landmark Varrock)"
+contains "$OUT" 'name="signpost"' \
+    && contains "$OUT" 'match=directional-cue' \
+    && ok "a sign pointing to a place is exposed as a directional cue" \
+    || fail "directional signs must not impersonate named places" "$OUT"
+CODE=0; OUT="$(python3 "$GP" landmark --route Varrock 2>&1)" || CODE=$?
+check_eq "a place name cannot route to the sign that merely points there" "$CODE" "1"
+contains "$OUT" "directional sign, not the named place" \
+    && ok "the refusal explains how to use the sign without claiming arrival" \
+    || fail "directional-cue refusal must be explicit" "$OUT"
+refute "the refused directional cue leaves no route" \
+    test -f "$DESKCRAB_GAME_DIR/route.json"
+check "an explicit signpost query can still route to the physical sign" \
+    python3 "$GP" landmark --route --arrive 2 signpost
+contains "$(python3 "$GP" route)" 'landmark="signpost"' \
+    && ok "the sign remains usable when it is the actual requested object" \
+    || fail "explicit signpost routing must remain available" "$(python3 "$GP" route)"
 python3 "$GP" route --clear >/dev/null
 python3 - "$DESKCRAB_GAME_DIR/navigation-atlas.json" <<'PY'
 import json, sys
