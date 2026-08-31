@@ -106,7 +106,9 @@ anything page-side.
     automatic. A new choice at equal-or-higher rank supersedes the old one.
 17. The event allowlist maps a confirmed game win to `pleased`, a confirmed
     failed action to `annoyed`, an incoming player message or NPC quest line
-    to `attentive`, and the start of combat to `focused`, nothing else. It is inspectable
+    to `attentive`, and the start of combat to `focused`, nothing else. A
+    routine failed action recovers after eight seconds by default rather than
+    holding an agitated pose for the general event lifetime. It is inspectable
     (`crab face status` prints it), disableable (`DESKCRAB_FACE_EVENTS`),
     and an event-sourced expression always carries a bounded lifetime.
 18. Activity changes never erase an expression record. A record ends only
@@ -367,7 +369,9 @@ or scolding.
     fires one `shake`; pleased `bounce`s; startled `perk`s; tired droops),
     which outranks the idle defaults. The mapping reads only rule 43's
     resolved expression — no page-side inference — and channels move motion
-    only, never pixels of expression art.
+    only, never pixels of expression art. `annoyed` keeps only low sustained
+    agitation (`0.18` by default): its one-shot `shake` carries the scold, so
+    repeated mechanical failures cannot turn the held pose into vibration.
 55. Mouth normalisation. Viseme patches are normalised by the deterministic
     build so every changed region stays within a stated band of the resting
     lip line (the build record carries the measured before/after extents;
@@ -403,6 +407,7 @@ or scolding.
 | `DESKCRAB_FACE_SENTENCE_CUES` | broker+streamer | rule 40's on/off switch |
 | `DESKCRAB_FACE_CUE_LINGER` | streamer | rule 40's flourish tail |
 | `DESKCRAB_FACE_MOOD_SECONDS` | broker | rule 41's mood decay clock |
+| `DESKCRAB_FACE_FAILED_ACTION_SECONDS` | broker | rule 17's short mechanical-failure recovery (default 8 s) |
 | `DESKCRAB_FACE_AUTO_SECONDS` | broker | default lifetime of an `auto` record |
 | `FACE_AUTO_EXPRESSION`, `FACE_AUTO_MODEL`, `FACE_AUTO_TIMEOUT` | conf, read by common.sh and `lib/face-auto` | rule 42's updater knobs |
 | `${STATE_PREFIX}-face-auto.log` | `lib/face-auto` | one line per updater run |

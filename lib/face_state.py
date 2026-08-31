@@ -89,6 +89,12 @@ ENABLED_EVENTS = {e.strip() for e in _ENABLED.split(",") if e.strip()}
 # carries a bounded lifetime, so a mood is never fabricated into permanence.
 EVENT_EXPRESSION_SECONDS = float(
     os.environ.get("DESKCRAB_FACE_EVENT_SECONDS", "60"))
+# A failed click is a flinch, not a minute-long emotional baseline. Keep the
+# shared lifetime for meaningful arrivals and completions while letting a
+# routine mechanical refusal recover promptly.
+FAILED_ACTION_SECONDS = float(
+    os.environ.get("DESKCRAB_FACE_FAILED_ACTION_SECONDS", "8"))
+EVENT_LIFETIMES = {"failed-action": FAILED_ACTION_SECONDS}
 
 # Expression sources, ranked (specs/face.md rule 16 as amended 2026-08-30):
 # her explicit hand > the confirmed-event allowlist > the automatic tier.
@@ -428,7 +434,9 @@ class Broker:
         if name not in ENABLED_EVENTS:
             return {"ok": True, "note": "event mapping disabled",
                     "state": self.snapshot()}
-        return self.set_expression(EVENT_MAP[name], source="event")
+        return self.set_expression(
+            EVENT_MAP[name], source="event",
+            seconds=EVENT_LIFETIMES.get(name, EVENT_EXPRESSION_SECONDS))
 
     def speak(self, clips):
         cleaned = []
@@ -469,6 +477,11 @@ class Broker:
                          "state_file": self.state_path,
                          "events_enabled": sorted(ENABLED_EVENTS),
                          "event_map": EVENT_MAP,
+                         "event_lifetimes": {
+                             name: EVENT_LIFETIMES.get(
+                                 name, EVENT_EXPRESSION_SECONDS)
+                             for name in EVENT_MAP
+                         },
                          "expressions": list(EXPRESSIONS),
                          "activities": list(ACTIVITIES),
                          "visemes": list(VISEMES),

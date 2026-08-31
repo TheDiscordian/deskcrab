@@ -322,7 +322,9 @@ if start_bridge "$CH" "$SANDBOX/wake-shipped.log" --opponent guest \
     check "the shared renderer carries the motion engine and its channels (face.md rules 51-54)" \
         bash -c 'grep -q "faceRegion" "$1/lib/face_card.js" \
             && grep -q "setMotion" "$1/lib/face_card.js" \
-            && grep -q "fireGesture" "$1/lib/face_card.js"' _ "$REPO"
+            && grep -q "fireGesture" "$1/lib/face_card.js" \
+            && grep -Fq "annoyed: { energy: 0.6, agitation: 0.18" "$1/lib/face_card.js" \
+            && grep -Fq "\"annoyed\": {\"energy\": 0.6, \"agitation\": 0.18" "$1/lib/face-window"' _ "$REPO"
     check "the renderer morphs mouth contours by measured extent (face.md rules 24, 55)" \
         bash -c 'grep -q "extent" "$1/lib/face_card.js" \
             && grep -q "morphScale" "$1/lib/face_card.js" \

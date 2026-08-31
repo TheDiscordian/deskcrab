@@ -85,6 +85,13 @@ check "activity resting shows resting — never a guessed mood (rule 4)" \
 check "with composure at rest the event mapping stands (rule 17)" \
     bash -c 'python3 "$0/lib/face-broker" event failed-action >/dev/null
         python3 "$0/lib/face-broker" | grep -q "expression=annoyed \[event\]"' "$REPO_DIR"
+check "a routine failed action recovers far sooner than a meaningful event (rule 17)" \
+    bash -c 'python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"event_lifetimes\"][\"failed-action\"] == 8.0, s
+assert s[\"event_lifetimes\"][\"failed-action\"] < s[\"event_lifetimes\"][\"game-win\"], s
+"' "$REPO_DIR"
 check "an automatic flourish cannot displace an event (rule 16)" \
     bash -c 'python3 "$0/lib/face-broker" auto pleased | grep -q "stands"' "$REPO_DIR"
 check "a newer explicit choice supersedes the event (rule 16)" \
