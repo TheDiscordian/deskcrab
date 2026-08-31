@@ -433,6 +433,28 @@ def bench_recorded(plan):
     return {e["game"] for e in bench_ledger_lines(plan) if "game" in e}
 
 
+def bench_resume_clock(g, board, started):
+    """Rule 17's boundary: the wall clock binds under a live driver — mover
+    queueing, retries and failures included — but the pause BETWEEN driver
+    invocations belongs to the harness, not the configuration. An unfinished,
+    unledgered game picked up by this run restarts its turn clock before any
+    state judgment — balances stand, chessweb.md rule 22g's treatment of an
+    undo — so a flag can only fall from wall time some invocation actually
+    spent playing. Callers must not offer ledgered games: settled evidence
+    is never reopened. True when the clock was restarted."""
+    ck = g.get("clock")
+    if (not ck or ck.get("turn_started") is None
+            or ck["turn_started"] >= started
+            or g.get("resigned_by") or g.get("draw_agreed")
+            or g.get("flag_fell") or board.is_game_over()):
+        return False
+    ck["turn_started"] = time.time()
+    chess_cli.save_game(g)
+    log(f"{g['id']}: picked up mid-game — turn clock restarted, balances "
+        f"stand (white {ck.get('white_ms')}ms, black {ck.get('black_ms')}ms)")
+    return True
+
+
 def bench_new_game(spec, plan):
     tc, ck = chess_cli.make_time_control(spec["control"])
     g = {"id": spec["id"], "opponent": "selfplay", "my_side": "white",
@@ -536,12 +558,18 @@ def run_bench(args, plan, started, deadline_ts):
         for spec in plan["games"]:
             path = chess_cli.GAMES_DIR / (spec["id"] + ".json")
             g = load_game(spec["id"]) if path.exists() else None
-            if g is not None and chess_cli.compute_state(
-                    g, chess_cli.build_board(g))[0] != "active":
+            if g is not None:
+                board = chess_cli.build_board(g)
                 if spec["id"] not in recorded:
-                    bench_record_game(plan, spec, g)
-                    recorded.add(spec["id"])
-                continue
+                    # Rule 17's boundary: the inter-invocation pause is the
+                    # harness's, never the mover's — restart the turn clock
+                    # BEFORE judging state, or the pause records as a flag.
+                    bench_resume_clock(g, board, started)
+                if chess_cli.compute_state(g, board)[0] != "active":
+                    if spec["id"] not in recorded:
+                        bench_record_game(plan, spec, g)
+                        recorded.add(spec["id"])
+                    continue
             while True:
                 if time.time() - started >= args.budget:
                     return "budget", moved

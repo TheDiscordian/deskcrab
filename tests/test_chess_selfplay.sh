@@ -450,7 +450,7 @@ check_eq "and appends nothing: the ledger still holds one line per game" \
     "$(sandbox_count_in '"game"' "$BLEDGER")" "2"
 
 echo
-echo "a clock that ran out is a recorded flag, never a model call:"
+echo "a recorded flag is finished business, never a model call (rule 17):"
 FDIR="$SANDBOX/chessf"
 mkdir -p "$FDIR/selfplay" "$FDIR/games"
 FPLAN="$FDIR/selfplay/bench-t2.json"
@@ -464,9 +464,13 @@ plan = {"run": "t2",
         "games": [{"id": "selfplay-bencht2-001", "control": "1+0",
                    "white": "a", "black": "b"}]}
 json.dump(plan, open(d + "/selfplay/bench-t2.json", "w"))
+# The flag fell under a live driver and was settled onto the file (the
+# durable form bench_record_game writes); the stale turn clock beside it
+# must not matter — settled is settled.
 g = {"id": "selfplay-bencht2-001", "opponent": "selfplay",
      "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
      "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "flag_fell": "white",
      "created": "2026-01-01T00:00:00+00:00",
      "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
                       "inc_ms": 0},
@@ -495,6 +499,108 @@ contains "$FLINE" '"flagged": "white"' \
 grep -q '"flag_fell": "white"' "$FDIR/games/selfplay-bencht2-001.json" \
     && ok "the flag is recorded onto the game file for every later reader" \
     || fail "game file: $(cat "$FDIR/games/selfplay-bencht2-001.json")"
+
+echo
+echo "the pause between invocations is the harness's, never the mover's:"
+RDIR="$SANDBOX/chessr"
+mkdir -p "$RDIR/selfplay" "$RDIR/games"
+RPLAN="$RDIR/selfplay/bench-t3.json"
+"$PY" - "$RDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t3",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht3-001", "control": "1+0",
+                   "white": "a", "black": "b"}]}
+json.dump(plan, open(d + "/selfplay/bench-t3.json", "w"))
+# Mid-game, unledgered, no flag recorded — the driver died yesterday with
+# white on move and 30s in hand. Rule 17's boundary: the day-long pause
+# must NOT be charged as think time; the game resumes and plays on.
+g = {"id": "selfplay-bencht3-001", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 30000, "black_ms": 60000,
+               "turn_started": time.time() - 86400},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht3-001.json", "w"))
+PYEOF
+RCALLS="$SANDBOX/stub-calls-resume"
+: > "$RCALLS"
+sed "s|$CALLS|$RCALLS|" "$STUB" > "$SANDBOX/stub-mover-resume"
+chmod +x "$SANDBOX/stub-mover-resume"
+OUTR="$(DESKCRAB_CHESS_DIR="$RDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-resume" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$RPLAN" --budget 300 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+contains "$OUTR" "turn clock restarted" \
+    && ok "pickup restarts the turn clock, balances standing" \
+    || fail "driver output: $(tail -n 5 <<<"$OUTR")"
+[ "$(sandbox_count_in . "$RCALLS")" -gt 0 ] \
+    && ok "the resumed side thinks again — the pause cost it nothing" \
+    || fail "no model call after resume; output: $(tail -n 5 <<<"$OUTR")"
+"$PY" - "$RDIR" <<'PYEOF' && ok "the game continued past the stored position instead of flagging on the pause" || fail "resume ledger: $(cat "$RDIR/selfplay/bench-t3.jsonl" 2>/dev/null)"
+import json, sys
+d = sys.argv[1]
+rows = [json.loads(x) for x in open(d + "/selfplay/bench-t3.jsonl")]
+assert len(rows) == 1, rows
+assert rows[0]["plies"] > 4, rows[0]
+PYEOF
+
+echo
+echo "a ledgered game is settled evidence — the pickup restart never reopens it:"
+LDIR="$SANDBOX/chessl"
+mkdir -p "$LDIR/selfplay" "$LDIR/games"
+LPLAN="$LDIR/selfplay/bench-t4.json"
+"$PY" - "$LDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t4",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht4-001", "control": "1+0",
+                   "white": "a", "black": "b"}]}
+json.dump(plan, open(d + "/selfplay/bench-t4.json", "w"))
+# The 162 shape: the ledger already carries the game (recorded off a pause
+# under the old rule), the file still LOOKS active with a stale clock. The
+# restart must skip it — recorded evidence never reopens, never replays.
+g = {"id": "selfplay-bencht4-001", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 30000, "black_ms": 60000,
+               "turn_started": time.time() - 86400},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht4-001.json", "w"))
+line = {"game": "selfplay-bencht4-001", "control": "1+0", "white": "a",
+        "black": "b", "result": "0-1", "state": "flag", "desc": "recorded",
+        "plies": 4, "flagged": "white", "clock_remaining": None,
+        "sides": {}, "finished": "2026-01-02T00:00:00+00:00"}
+open(d + "/selfplay/bench-t4.jsonl", "w").write(json.dumps(line) + "\n")
+PYEOF
+LCALLS="$SANDBOX/stub-calls-ledgered"
+: > "$LCALLS"
+sed "s|$CALLS|$LCALLS|" "$STUB" > "$SANDBOX/stub-mover-ledgered"
+chmod +x "$SANDBOX/stub-mover-ledgered"
+LGAME_BEFORE="$(cat "$LDIR/games/selfplay-bencht4-001.json")"
+OUTL="$(DESKCRAB_CHESS_DIR="$LDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-ledgered" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$LPLAN" --budget 60 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+check_eq "no model call for the settled game" \
+    "$(sandbox_count_in . "$LCALLS")" "0"
+check_eq "the ledger still carries exactly one line for it" \
+    "$(sandbox_count_in '"game"' "$LDIR/selfplay/bench-t4.jsonl")" "1"
+[ "$(cat "$LDIR/games/selfplay-bencht4-001.json")" = "$LGAME_BEFORE" ] \
+    && ok "the game file is untouched — no restart wrote through it" \
+    || fail "game file changed: $(cat "$LDIR/games/selfplay-bencht4-001.json")"
 
 echo
 echo "the probe prices a configuration's bare call, budget-counted:"

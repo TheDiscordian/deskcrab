@@ -129,6 +129,15 @@ the finished games feed the pattern store exactly as every self-play game does.
     `compute_state`. The clock runs on wall time — mover queueing, retries and failures
     included — because latency is the very thing being weighed against the control: a
     configuration too slow for its clock SHOULD flag, and that flag is a result, not a defect.
+    The wall clock binds only UNDER A LIVE DRIVER: the pause between driver invocations
+    belongs to the harness, never to the side on move. A driver picking up an unfinished,
+    unledgered game therefore restarts its turn clock before judging state — balances stand,
+    exactly chessweb.md rule 22g's treatment of an undo — so a flag can only fall from wall
+    time some invocation actually spent playing (queueing, retries and failures still
+    included). A game already on the run's ledger is settled evidence: the pickup restart
+    skips it, so nothing recorded can reopen. (Named 2026-08-31: two games of the 20260828
+    matrix were recorded as flags off 2- and 15-hour driver pauses their sides never played —
+    a pause charged as think time is an artifact, not a result.)
 18. **Openings vary by book, results stay honest.** For the first plies of a benchmark game
     (`$DESKCRAB_CHESS_BENCH_BOOK_PLIES`, default 6) the driver plays a uniformly random legal
     book move when the book offers one, instead of reflex-or-model — so a batch samples
