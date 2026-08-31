@@ -85,6 +85,49 @@ LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
 # pattern is tested only against an is_error result, never against reply text.
 RETRYABLE_ERROR_RE = os.environ.get("DESKCRAB_RETRYABLE_ERROR_RE", "").strip()
 
+# --------------------------------------------------------------------------
+# Mouth cue plumbing (specs/face.md rules 21-23). Armed ONLY when the caller
+# passed a face broker socket; unarmed, the speech path matches what it was
+# before the face existed. Armed, piper runs with --debug and its stderr is
+# parsed for the two lines it logs per sentence — the eSpeak IPA phoneme
+# string and the seconds of audio produced — which become a timed viseme
+# track handed to the face broker against the clip's estimated playback
+# start. Every failure in here is a failure to MOVE A DRAWN MOUTH, never a
+# failure to speak: the pump keeps pumping and the words keep sounding.
+# --------------------------------------------------------------------------
+FACE_SOCKET = os.environ.get("DESKCRAB_FACE_SOCKET", "").strip()
+# How long a sample takes to cross the pipe and the device buffer once piper
+# has written it: measured against real playback and recorded in the review
+# sheets; overridable when the audio stack changes.
+FACE_AUDIO_LEAD = float(os.environ.get("DESKCRAB_FACE_AUDIO_LEAD", "0.25"))
+# piper appends this much silence after each sentence (its default; we do
+# not override it), so the NEXT clip's playback starts this much later.
+FACE_SENTENCE_SILENCE = 0.2
+# The turn token the caller registered with the broker: per-sentence acting
+# carries it, so a flourish from a streamer that outlived its turn is turned
+# away instead of repainting the next turn's face.
+FACE_TURN = os.environ.get("DESKCRAB_FACE_TURN", "").strip()
+# How long a sentence's flourish outlives its clip before recovery.
+FACE_CUE_LINGER = float(os.environ.get("DESKCRAB_FACE_CUE_LINGER", "2.0"))
+_face_mod = _cue_mod = None
+if FACE_SOCKET:
+    try:
+        import face_state as _face_mod
+        import viseme_cues as _cue_mod
+    except Exception as _face_exc:
+        _face_mod = _cue_mod = None
+
+
+def face_send(cmd):
+    """Fire-and-forget to the face broker. A dead broker costs one refused
+    connect and nothing else."""
+    if _face_mod is None:
+        return
+    try:
+        _face_mod.send_cmd(cmd, timeout=0.8)
+    except Exception:
+        pass
+
 SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
 RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
 
@@ -240,6 +283,19 @@ class Voice(threading.Thread):
         self._said = []
         self._stop = False
         self.claudism_seq = 0
+        # Mouth cue bookkeeping (armed only with FACE_SOCKET): the sentences
+        # handed to piper, in order, waiting for their stderr record; and
+        # when the audio already scheduled will stop playing.
+        self._pho_lock = threading.Lock()
+        self._pho_expect = []
+        self._pho_partial = {}
+        self._burst_end = 0.0
+        self._clip_n = 0
+        # Per-sentence acting timers (specs/face.md, 2026-08-30 amendment):
+        # a flourish waits for ITS clip's modelled playback start, never for
+        # synthesis, so the face acts when the words sound. All side-thread,
+        # all cancellable, none of it on the pump.
+        self._cue_timers = []
 
     # Speech mutex: held for the whole TTS stage of this turn, so no other
     # session (a wake's speak_once, another streamer) talks over it. Taken
@@ -266,14 +322,26 @@ class Voice(threading.Thread):
             cmd += ["--length-scale", LENGTH_SCALE]
         if SPEAKER:
             cmd += ["--speaker", SPEAKER]
+        # With a face broker listening, piper's own debug log is the phoneme
+        # witness for the mouth cues. The pipeline shape is unchanged:
+        # piper's stdout still feeds aplay directly, and a stderr that
+        # nobody could read would only cost cues, never words — the drainer
+        # below always keeps the pipe empty.
+        face_here = bool(FACE_SOCKET) and _cue_mod is not None
+        if face_here:
+            cmd += ["--debug"]
         try:
             self.piper = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL)
+                stderr=subprocess.PIPE if face_here else subprocess.DEVNULL)
             self.aplay = subprocess.Popen(
                 ["aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", "-t", "raw"],
                 stdin=self.piper.stdout, stderr=subprocess.DEVNULL)
             self.piper.stdout.close()   # aplay owns the read end now
+            if face_here:
+                threading.Thread(target=self._drain_phonemes,
+                                 args=(self.piper.stderr,),
+                                 daemon=True).start()
         except Exception as exc:
             self.error = "cannot start the voice: %s" % exc
             speech_log("SPEECH FAILED — %s (piper=%s)" % (self.error, PIPER))
@@ -297,6 +365,9 @@ class Voice(threading.Thread):
         except Exception:
             pass
         self.piper = self.aplay = None
+        # The device has drained: whatever the mouth schedule believed, the
+        # audio is over. Close the mouth rather than trusting the model.
+        self._mouth_close()
         # Give the speech mutex back the moment the voice goes idle. Holding
         # it until process exit made every OTHER session queue its audio
         # behind this turn's entire multi-minute run — text on screen, speech
@@ -326,6 +397,94 @@ class Voice(threading.Thread):
             os.replace(tmp, path)
         except Exception:
             pass
+
+    # ---- mouth cues (specs/face.md rules 21-23) --------------------------
+    # piper logs two lines per sentence: the IPA phoneme string it will
+    # speak, then how many seconds of audio it produced. Sentences leave in
+    # FIFO order, so the Nth record belongs to the Nth text handed over. The
+    # playback start of clip N is modelled, not measured: audio N begins
+    # either when the audio before it drains, or — on a fresh burst — one
+    # pipe-and-device lead after synthesis lands. The measured error of this
+    # model is documented beside the manifest; the broker's clips carry it.
+    def _drain_phonemes(self, stderr):
+        import re as _re
+        conv = _re.compile(r"Converting \d+ phoneme\(s\) to ids: (.*)$")
+        done = _re.compile(r"Synthesized ([0-9.]+) second")
+        try:
+            for bline in iter(stderr.readline, b""):
+                line = bline.decode("utf-8", "replace").rstrip()
+                try:
+                    m = conv.search(line)
+                    if m:
+                        with self._pho_lock:
+                            self._pho_partial["ipa"] = m.group(1)
+                        continue
+                    m = done.search(line)
+                    if m:
+                        self._schedule_clip(float(m.group(1)))
+                except Exception:
+                    # A cue lost is a cue lost; the drain never stops.
+                    continue
+        except Exception:
+            pass
+
+    def _schedule_clip(self, duration):
+        with self._pho_lock:
+            ipa = self._pho_partial.pop("ipa", "")
+            text = self._pho_expect.pop(0) if self._pho_expect else ""
+            self._clip_n += 1
+            n = self._clip_n
+            now = time.time()
+            start = self._burst_end if self._burst_end > now + FACE_AUDIO_LEAD \
+                else now + FACE_AUDIO_LEAD
+            self._burst_end = start + duration + FACE_SENTENCE_SILENCE
+        cues = _cue_mod.cue_track(ipa, duration)
+        if n == 1:
+            face_send({"cmd": "activity", "name": "speaking"})
+        face_send({"cmd": "speak", "clips": [{
+            "id": "desk-%d-%d" % (os.getpid(), n),
+            "start": start, "duration": duration, "cues": cues}]})
+        # Per-sentence acting: a fixed public table over the words SHE wrote
+        # for this clip (face_state.sentence_cue), applied at the clip's own
+        # modelled playback start — piper synthesises ahead of the speakers,
+        # and a "Wow!" acted while an earlier sentence still sounds would be
+        # the face contradicting the voice. Fire-and-forget on a timer
+        # thread; a failure costs the flourish, never a word.
+        flourish = None
+        try:
+            flourish = _face_mod.sentence_cue(text) if _face_mod else None
+        except Exception:
+            flourish = None
+        if flourish:
+            cmd = {"cmd": "expression", "name": flourish, "source": "auto",
+                   "seconds": duration + FACE_CUE_LINGER}
+            if FACE_TURN:
+                cmd["turn"] = FACE_TURN
+            delay = start - time.time()
+            if delay <= 0.01:
+                # The clip is already sounding: act now, no timer to lose.
+                face_send(cmd)
+            else:
+                timer = threading.Timer(delay, face_send, args=(cmd,))
+                timer.daemon = True
+                with self._pho_lock:
+                    self._cue_timers = [t for t in self._cue_timers
+                                        if t.is_alive()] + [timer]
+                timer.start()
+
+    def _mouth_close(self):
+        """The voice is over or broken: cancel un-fired flourishes and close
+        the drawn mouth now (specs/face.md rule 23)."""
+        with self._pho_lock:
+            self._burst_end = 0.0
+            self._pho_expect = []
+            timers, self._cue_timers = self._cue_timers, []
+        for t in timers:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        face_send({"cmd": "speak-stop"})
 
     def say(self, text, raw=None):
         # `raw` is the unstripped draft text this utterance came from — what
@@ -544,10 +703,15 @@ class Voice(threading.Thread):
             try:
                 self.piper.stdin.write((item + "\n").encode())
                 self.piper.stdin.flush()
+                with self._pho_lock:
+                    self._pho_expect.append(item)
             except Exception as exc:
                 self.error = "piper stopped accepting text: %s" % exc
                 speech_log("SPEECH INTERRUPTED — %s" % self.error)
                 self.piper = self.aplay = None
+                # Playback broke mid-burst: the drawn mouth must not keep
+                # talking over a dead device (specs/face.md rule 23).
+                self._mouth_close()
                 continue
             # Every utterance leaves a pid-stamped trace: "who spoke this
             # twice" must be answerable from the speech log alone.
@@ -598,6 +762,9 @@ def clear_live_speech():
 def _on_term(*_a):
     write_receipt()
     clear_live_speech()
+    # An asked-for stop closes the mouth NOW and clears queued cues
+    # (specs/face.md rule 23) — the words were already stopped by the kill.
+    face_send({"cmd": "speak-stop"})
     os._exit(0)
 
 

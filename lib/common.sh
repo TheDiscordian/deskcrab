@@ -403,6 +403,50 @@ PROMPT_DUPES_FILE="${STATE_PREFIX}-prompt-dupes.txt"
 # block while it stands. The check reports and never rewrites.
 SHELF_OVERRUNS_FILE="${STATE_PREFIX}-shelf-overruns.txt"
 TTSPIDFILE="${STATE_PREFIX}-tts.pid"
+# The face broker (specs/face.md): the one owner of what her portrait is
+# doing. Off unless the conf turns it on — enabling the face changes what
+# runs on the user's desk, which is their call, the same rule the units
+# follow. The socket path is derived here so every child of a turn shares
+# one broker per state prefix, live or scratch.
+FACE_ENABLED="${FACE_ENABLED:-0}"
+FACE_SOCKET="${DESKCRAB_FACE_SOCKET:-${STATE_PREFIX}-face.sock}"
+# The automatic expression tier (specs/face.md, 2026-08-30 amendment): a
+# standing mood inferred OUT OF BAND from the conversation, plus the
+# streamer's per-sentence acting. Both are below her explicit hand and the
+# event allowlist, both disableable here. The mood updater's model rides
+# claude_classify — the classifier-shaped route this codebase already has —
+# so the cheapest configured name does the job.
+FACE_AUTO_EXPRESSION="${FACE_AUTO_EXPRESSION:-1}"
+FACE_AUTO_MODEL="${FACE_AUTO_MODEL:-haiku}"
+# Broker-side knobs a conf may set without speaking env-var dialect; every
+# face child inherits them.
+[ -n "${FACE_MOOD_SECONDS:-}" ] && export DESKCRAB_FACE_MOOD_SECONDS="$FACE_MOOD_SECONDS"
+[ -n "${FACE_SENTENCE_CUES:-}" ] && export DESKCRAB_FACE_SENTENCE_CUES="$FACE_SENTENCE_CUES"
+[ -n "${FACE_EVENTS:-}" ] && export DESKCRAB_FACE_EVENTS="$FACE_EVENTS"
+[ -n "${FACE_ACTIVITY_EXPRESSIONS:-}" ] && export DESKCRAB_FACE_ACTIVITY_EXPRESSIONS="$FACE_ACTIVITY_EXPRESSIONS"
+
+# One background, best-effort touch of the face broker. The face is company:
+# a slow or absent broker may cost this call nothing and the turn nothing.
+face_touch() {  # <face-broker verb and args...>
+    [ "${FACE_ENABLED:-0}" = 1 ] || return 0
+    [ -x "$LIB_DIR/face-broker" ] || return 0
+    DESKCRAB_FACE_SOCKET="$FACE_SOCKET" \
+        "$LIB_DIR/face-broker" "$@" >/dev/null 2>&1 &
+}
+
+# The out-of-band mood updater (specs/face.md, 2026-08-30 amendment): after
+# the reply is DELIVERED, a detached classifier reads the exchange and moves
+# the standing mood — never an awaited call, never on the speech path, and
+# the broker turns away a result whose turn token has gone stale.
+fire_face_mood() {  # <user-text> <response>
+    [ "${FACE_ENABLED:-0}" = 1 ] || return 0
+    [ "${FACE_AUTO_EXPRESSION:-1}" = 1 ] || return 0
+    [ -x "$SCRIPT_DIR/lib/face-auto" ] || return 0
+    # The token rides as an argument: the detached child starts from a bare
+    # unit environment, and a lost token would defeat the staleness check.
+    detach_turn_child face-auto "$SCRIPT_DIR/lib/face-auto" \
+        --turn "${DESKCRAB_FACE_TURN:-}" "$@"
+}
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
 # of the worst silence in this thing. A wake firing beside a desktop turn ran
 # `: > "$DEBUGLOG"` on the very file that turn's TTS streamer was tailing: the
@@ -1875,6 +1919,10 @@ shutup_now() {
     : > "$SHUTUP_MARKER"
     pkill -f "$LIB_DIR/tts-streamer" 2>/dev/null
     stop_tts
+    # The mouth closes with the voice (specs/face.md rule 23). The streamer's
+    # own term handler says the same thing; this covers the kill that landed
+    # before the handler could.
+    face_touch speak-stop
 }
 
 # A rotation that fails must be impossible to miss. Losing a transcript looks
@@ -5362,6 +5410,22 @@ claude_sterile_cwd() {
     printf '%s' "$d"
 }
 
+# A reasoning run may inspect, render, and measure audio files, but it must not
+# open the user's speakers merely because its agenda says "listen".  Keep the
+# blockade on the model/tool subprocess rather than the surrounding wake: the
+# wake may still speak its final reply through DeskCrab's own TTS path after
+# the reasoning process has exited.  Jobs are entirely silent and use this
+# same environment in lib/job-runner.
+deskcrab_silence_tool_audio() {
+    export SDL_AUDIODRIVER=dummy
+    export AUDIODRIVER=dummy
+    export PULSE_SERVER="unix:${XDG_RUNTIME_DIR:-/run/user/$UID}/deskcrab-no-audio"
+    export PIPEWIRE_REMOTE=deskcrab-no-audio
+    export JACK_NO_START_SERVER=1
+    export ALSA_CONFIG_PATH="$LIB_DIR/silent-alsa.conf"
+    export PATH="$SCRIPT_DIR/.shim:$PATH"
+}
+
 # One question, one text answer, no tools: the 181-token shape. Reads the
 # question on stdin and prints the answer. $1 is the model, $2 the system
 # prompt. Every classifier-shaped call belongs here — a memory judge, a
@@ -6190,6 +6254,7 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
     INSTR="${STATE_PREFIX}-codex-instructions-$$.md"
     (
         cd "$PROJECT_DIR" || exit 1
+        [ "$PROFILE" = "wake" ] && deskcrab_silence_tool_audio
         PROMPT="$RTEXT"
         if [ "$CODEX_PROMPT_MODE" = "preface" ]; then
             PROMPT="$(printf '%s\n\n--- the message to answer ---\n\n%s' \
@@ -6476,6 +6541,7 @@ _wake_claude_run() {
     local CONFDIR="$1"
     (
         cd "$PROJECT_DIR" || exit 1
+        deskcrab_silence_tool_audio
         # Always explicit, account 1 included (specs/account-fallback.md rule
         # 3). "No override" was once an account name, and it read leftovers as
         # decisions: the variable is exported into a Claude Code session's
@@ -7517,6 +7583,8 @@ start_tts_streamer() {
         DESKCRAB_METRICS_FILE="$([ "${TURN_METRICS:-1}" = 1 ] && printf '%s' "$METRICS_DIR/$(date +%F).log")" \
         DESKCRAB_METRICS_PID="$$" \
         DESKCRAB_METRICS_KIND="${SESSION_KIND:-desk}" \
+        DESKCRAB_FACE_SOCKET="$([ "${FACE_ENABLED:-0}" = 1 ] && printf '%s' "$FACE_SOCKET")" \
+        DESKCRAB_FACE_TURN="${DESKCRAB_FACE_TURN:-}" \
         "$LIB_DIR/tts-streamer" 2>>"$SPEECH_LOG" &
     _TTS_STREAMER_PID=$!
 }
@@ -8670,6 +8738,12 @@ run_claude_and_respond() {
     convo_append_user "$TEXT"
 
     notify_thinking
+    # The portrait's presence layer, from the same fact the toast reads
+    # (specs/face.md rule 15): a reply is being formed. The token names THIS
+    # turn to the broker, so an automatic expression computed for it cannot
+    # land on a later one (the staleness check of the 2026-08-30 amendment).
+    export DESKCRAB_FACE_TURN="turn-$$-$(date +%s%N)"
+    face_touch activity considering
     # The dismissal rides the trap as well as the straight line. "Thinking..."
     # is a -t 0 notification — it stays up until something takes it down — and
     # it was only ever dismissed after claude_generate RETURNED, so a turn that
@@ -8862,6 +8936,13 @@ run_claude_and_respond() {
         # streamer's untouched receipt as a broken speech path.
         tts_verify_spoken "$REPLY_SPOKEN"
         claudism_mirror_cleanup
+        # The turn is delivered: presence returns to rest. An authored
+        # expression she set mid-turn stands — activity never erases it.
+        face_touch activity resting
+        # And the standing mood moves out of band, from the exchange that
+        # just happened — detached, token-carrying, never awaited (specs/
+        # face.md, 2026-08-30 amendment).
+        fire_face_mood "$TEXT" "$RESPONSE"
 
         # Out of band, after the user has their answer: did I say I wanted
         # something and fail to write it down? If so this fires an event wake

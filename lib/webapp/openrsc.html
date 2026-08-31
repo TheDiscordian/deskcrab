@@ -18,6 +18,39 @@
     max(10px, env(safe-area-inset-left)); }
   header { max-width: 1024px; margin: 0 auto 9px; display: flex; align-items: center;
     gap: 9px; min-height: 34px; }
+  .presence { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 150px; }
+  /* Three remembered sizes (compact / medium / large), chosen by the Face
+     button and persisted locally. Large is a genuinely readable portrait;
+     the game frame below stays the page's primary surface. */
+  .portrait { position: relative; width: 92px; height: 92px; flex: 0 0 92px;
+    border-radius: 13px; overflow: hidden; border: 1px solid #e2b86688;
+    background: radial-gradient(circle at 50% 32%, #2a2420, var(--card) 78%);
+    box-shadow: 0 5px 18px #0008; }
+  .portrait[data-face-size="compact"] { width: 48px; height: 48px; flex-basis: 48px;
+    border-radius: 11px; }
+  .portrait[data-face-size="medium"] { width: 92px; height: 92px; flex-basis: 92px; }
+  .portrait[data-face-size="large"] { width: 164px; height: 164px; flex-basis: 164px;
+    border-radius: 17px; }
+  .portrait img { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; transition: opacity .22s ease;
+    /* Legibility against the dark study: a display treatment, never a
+       repaint of the artwork. */
+    filter: brightness(1.09) contrast(1.03); }
+  .portrait [data-face-mouth] { position: absolute; inset: auto;
+    width: auto; height: auto; transition: none; pointer-events: none; }
+  .portrait .attentive { opacity: 0; }
+  .portrait.paused .resting, .portrait.expressive .resting { opacity: 0; }
+  .portrait.paused .attentive, .portrait.expressive .attentive { opacity: 1; }
+  .portrait.unavailable { display: none; }
+  /* Speaking: a quiet, steady cue — no pulsing, no bobbing. */
+  .portrait.speaking { border-color: var(--live);
+    box-shadow: 0 0 0 1px #70cf8544, 0 5px 18px #0008; }
+  @media (prefers-reduced-motion: reduce) {
+    .portrait img { transition: none; }
+  }
+  .presence-copy { min-width: 0; }
+  .presence-state { color: var(--dim); font-size: 11px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
   h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .01em; flex: 1; }
   .dot { display: inline-block; width: 9px; height: 9px; margin-right: 7px;
     border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 3px #dc776d22; }
@@ -73,7 +106,20 @@
 </head>
 <body>
 <header>
-  <h1><span class="dot" id="dot"></span>Beatrice · OpenRSC</h1>
+  <div class="presence">
+    <div class="portrait" id="portrait" data-face-size="medium"
+        aria-label="Beatrice playing OpenRSC">
+      <img class="resting" data-face-base src="/openrsc/portrait/resting.png"
+        alt="Beatrice, calmly playing OpenRSC">
+      <img class="attentive" data-face-expr src="/openrsc/portrait/attentive.png"
+        alt="" aria-hidden="true">
+    </div>
+    <div class="presence-copy">
+      <h1><span class="dot" id="dot"></span>Beatrice · OpenRSC</h1>
+      <div class="presence-state" id="presence-state">at the game</div>
+    </div>
+  </div>
+  <button id="face-size" type="button">Face: Medium</button>
   <button id="pause" type="button">Pause</button>
   <button id="fullscreen" type="button">Fullscreen</button>
   <a class="button" href="/" aria-label="Back to Beatrice">Back</a>
@@ -93,6 +139,7 @@
   <p class="read-only"><b>Read-only spectator.</b> This page has no route for mouse,
     keyboard, or game commands. Watching cannot interrupt her play.</p>
 </main>
+<script src="/openrsc/face_card.js"></script>
 <script>
 "use strict";
 // The one-time share key has already become an HttpOnly, path-scoped cookie.
@@ -108,6 +155,8 @@ const thoughtText = document.getElementById("thought-text");
 const pause = document.getElementById("pause");
 const screen = document.getElementById("screen");
 const gamePointer = document.getElementById("game-pointer");
+const portrait = document.getElementById("portrait");
+const presenceState = document.getElementById("presence-state");
 let running = true, generation = 0, frameAbort = null, objectUrl = "";
 let frameStartPending = false;
 let pointerPosition = null;
@@ -253,6 +302,8 @@ async function refreshState() {
     });
     if (!res.ok) throw new Error("state unavailable");
     const st = await res.json();
+    gameActivity = st.activity || st.objective || "at the game";
+    updatePresence();
     const bits = [];
     if (st.activity) bits.push(chip("Activity", st.activity));
     if (st.objective && st.objective !== st.activity)
@@ -276,12 +327,47 @@ async function refreshState() {
     }
   } catch (_) {
     hud.innerHTML = chip("Game", "connection lost", "danger");
+    gameActivity = "game view unavailable";
+    updatePresence();
   }
 }
+
+// Her face, mirrored read-only from the shared broker through the same
+// spectator key as the frames (specs/face.md rules 33-35, and the
+// 2026-08-30 amendment). The shared FaceCard module carries the mechanics —
+// manifest frames, automatic expression, real-clip mouth motion, the
+// remembered three-step size; THIS page keeps the policy: the pause
+// expression stays the local truth and the caption uses only allowlisted
+// facts already on the HUD.
+let gameActivity = "at the game", faceSpeaking = false;
+function updatePresence() {
+  presenceState.textContent = (running ? gameActivity : "spectator paused")
+    + (faceSpeaking ? " · speaking" : "");
+}
+const faceCard = window.FaceCard && FaceCard.init({
+  root: portrait,
+  routes: {
+    manifest: "/openrsc/face/manifest.json",
+    state: "/openrsc/face/state",
+    asset: id => "/openrsc/face/asset/" + encodeURIComponent(id),
+  },
+  fetchOpts: {cache: "no-store", credentials: "same-origin"},
+  sizeKey: "deskcrab-face-size-openrsc",
+  sizes: ["compact", "medium", "large"],
+  defaultSize: "medium",
+  sizeButton: document.getElementById("face-size"),
+  onState(st) {
+    faceSpeaking = !!(st && st.speaking);
+    updatePresence();
+  },
+});
 
 pause.addEventListener("click", () => {
   running = !running;
   pause.textContent = running ? "Pause" : "Resume";
+  portrait.classList.toggle("paused", !running);
+  if (faceCard) faceCard.setHint(running ? null : "attentive");
+  presenceState.textContent = running ? "returning to the game" : "spectator paused";
   if (!running) {
     if (frameAbort) frameAbort.abort();
     notice.textContent = "Spectator paused";

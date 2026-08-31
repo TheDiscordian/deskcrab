@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Her expressive hand, and the broker it reaches: `crab face ...`.
+
+Verbs:
+  face-broker                      current state, one readable line
+  face-broker status               full diagnostics (activity, expression,
+                                   clip, cue position, connected surfaces)
+  face-broker <expression>         set an authored expression, held until
+                                   `rest` or a newer choice
+  face-broker <expression> --for N recover on its own after N seconds
+  face-broker pulse <expr> [N]     a short authored arc (default 45 s) that
+                                   outlives the reply boundary
+  face-broker rest                 put composure back (explicit recovery;
+                                   clears the automatic mood too)
+  face-broker activity <name> [detail]   presence facts, for runtime callers
+  face-broker event <name>         allowlisted confirmed events only
+  face-broker mood <name|neutral>  the standing automatic baseline — for the
+                                   out-of-band updater and for tests
+  face-broker auto <expr> [--for N]  an automatic flourish: below her hand
+                                   and events, always bounded
+  face-broker speak-stop           close the mouth now, clear queued cues
+  face-broker watch                stream state changes as JSON lines
+  face-broker serve                run the broker in the foreground
+
+Every state-changing verb answers whether the broker accepted it, and exits
+0 only on acceptance. This is her hand, in the same turn as her words — it
+must be fast, local, and plain about refusal.
+
+DESKCRAB_FACE_TURN, when set, rides along on activity, mood, and auto
+commands: activity registers it as the current turn, and an automatic
+result carrying an older token is turned away instead of repainting a turn
+it was never computed for.
+"""
+
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import face_state
+
+TURN = os.environ.get("DESKCRAB_FACE_TURN", "").strip()
+
+
+def with_turn(cmd):
+    if TURN:
+        cmd["turn"] = TURN
+    return cmd
+
+
+def say(text):
+    sys.stdout.write(text + "\n")
+
+
+def describe(state):
+    if not state:
+        return "face broker is not answering"
+    bits = ["activity=%s" % state.get("activity")]
+    if state.get("activity_detail"):
+        bits.append("(%s)" % state["activity_detail"])
+    bits.append("expression=%s" % state.get("expression"))
+    if state.get("expression_source"):
+        bits.append("[%s]" % state["expression_source"])
+    if state.get("mood"):
+        bits.append("mood=%s" % state["mood"])
+    if state.get("speaking"):
+        bits.append("speaking")
+    return " ".join(bits)
+
+
+def send_or_die(cmd):
+    if not face_state.ensure_broker():
+        say("face: the broker did not start — nothing was accepted")
+        sys.exit(1)
+    reply = face_state.send_cmd(cmd)
+    if reply is None:
+        say("face: the broker did not answer — nothing was accepted")
+        sys.exit(1)
+    if not reply.get("ok"):
+        say("face: refused — %s" % reply.get("error", "unknown error"))
+        sys.exit(1)
+    return reply
+
+
+def main(argv):
+    verb = argv[0] if argv else "state"
+
+    if verb == "serve":
+        return face_state.serve()
+
+    if verb in ("state", ""):
+        state = face_state.get_state(timeout=0.7)
+        say(describe(state))
+        return 0 if state else 1
+
+    if verb == "status":
+        reply = send_or_die({"cmd": "diag"})
+        say(json.dumps(reply["state"], indent=2, sort_keys=True))
+        return 0
+
+    if verb == "watch":
+        import socket
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(face_state.SOCKET_PATH)
+            s.sendall(b'{"cmd": "watch"}\n')
+            f = s.makefile("r")
+            for line in f:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        return 0
+
+    if verb == "rest":
+        reply = send_or_die({"cmd": "rest"})
+        say("face: composure back — " + describe(reply["state"]))
+        return 0
+
+    if verb == "activity":
+        if len(argv) < 2:
+            say("face: activity needs a name (%s)"
+                % ", ".join(face_state.ACTIVITIES))
+            return 1
+        reply = send_or_die(with_turn({"cmd": "activity", "name": argv[1],
+                                       "detail": " ".join(argv[2:])}))
+        say("face: " + describe(reply["state"]))
+        return 0
+
+    if verb == "mood":
+        if len(argv) < 2:
+            say("face: mood needs a name (%s, or neutral)"
+                % ", ".join(face_state.MOODS))
+            return 1
+        reply = send_or_die(with_turn({"cmd": "mood", "name": argv[1]}))
+        note = reply.get("note")
+        say("face: %s%s" % (describe(reply["state"]),
+                            (" — " + note) if note else ""))
+        return 0
+
+    if verb == "auto":
+        if len(argv) < 2:
+            say("face: auto needs an expression (%s)"
+                % ", ".join(face_state.EXPRESSIONS))
+            return 1
+        cmd = with_turn({"cmd": "expression", "name": argv[1],
+                         "source": "auto"})
+        if argv[2:3] == ["--for"] and len(argv) > 3:
+            try:
+                cmd["seconds"] = float(argv[3])
+            except ValueError:
+                say("face: --for needs seconds")
+                return 1
+        reply = send_or_die(cmd)
+        note = reply.get("note")
+        say("face: %s%s" % (describe(reply["state"]),
+                            (" — " + note) if note else ""))
+        return 0
+
+    if verb == "event":
+        if len(argv) < 2:
+            say("face: event needs a name (%s)"
+                % ", ".join(sorted(face_state.EVENT_MAP)))
+            return 1
+        reply = send_or_die({"cmd": "event", "name": argv[1]})
+        note = reply.get("note")
+        say("face: %s%s" % (describe(reply["state"]),
+                            (" — " + note) if note else ""))
+        return 0
+
+    if verb == "speak-stop":
+        reply = send_or_die({"cmd": "speak-stop"})
+        say("face: mouth closed, cues cleared")
+        return 0
+
+    if verb == "pulse":
+        if len(argv) < 2:
+            say("face: pulse needs an expression (%s)"
+                % ", ".join(face_state.EXPRESSIONS))
+            return 1
+        seconds = float(argv[2]) if len(argv) > 2 else 45.0
+        reply = send_or_die({"cmd": "expression", "name": argv[1],
+                             "seconds": seconds})
+        say("face: %s for %.0fs — accepted" % (argv[1], seconds))
+        return 0
+
+    # Bare expression name, optionally with --for N.
+    name, seconds = verb, None
+    rest_args = argv[1:]
+    if rest_args[:1] == ["--for"] and len(rest_args) > 1:
+        try:
+            seconds = float(rest_args[1])
+        except ValueError:
+            say("face: --for needs seconds")
+            return 1
+    if name not in face_state.EXPRESSIONS and name not in (
+            "resting", "rest", "none"):
+        say("face: unknown verb or expression %r (family: %s)"
+            % (name, ", ".join(face_state.EXPRESSIONS)))
+        return 1
+    cmd = {"cmd": "expression", "name": name}
+    if seconds:
+        cmd["seconds"] = seconds
+    reply = send_or_die(cmd)
+    say("face: %s accepted%s" % (reply["state"].get("expression"),
+                                 (" for %.0fs" % seconds) if seconds else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

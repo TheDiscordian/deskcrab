@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""The conversation portrait: an ordinary, persistent, placeable window.
+
+This is the surface the want chose on 2026-08-28: not a notification, not a
+panel glyph, not an overlay pasted above the games — a normal window with her
+own identity that the user may move, cover, minimize, or close, none of which
+resets the face. State belongs to the broker; this window only joins it,
+draws it, and leaves it alone.
+
+Rendering is layered exactly as the assets are authored (specs/face.md):
+the active expression frame IS the stable plate outside its declared masks,
+so a short cross-fade between frames is a local facial motion, never a
+whole-portrait dissolve. While speech clips play, the mouth patch for the
+current cue composites over the frame at the manifest's mouth rect; sentence
+gaps and clip ends return the expression's own mouth. Reduced motion (the
+GTK animations setting) swaps states directly with no fade.
+
+Failure behaviour: no broker — keep the last safe still and reconnect with
+bounded backoff; no manifest or no art — show the caption alone, never
+broken chrome; a missing overlay — fall back to the nearest stable frame.
+"""
+
+import json
+import os
+import socket
+import sys
+import threading
+import time
+
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, GLib, Gio, Gdk, GdkPixbuf  # noqa: E402
+
+STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
+SOCKET_PATH = os.environ.get("DESKCRAB_FACE_SOCKET",
+                             STATE_PREFIX + "-face.sock")
+PORTRAIT_DIR = os.environ.get(
+    "DESKCRAB_PORTRAIT_DIR",
+    os.path.expanduser("~/Beatrice/face/portraits"))
+GEOMETRY_FILE = os.path.join(
+    os.environ.get("XDG_STATE_HOME",
+                   os.path.expanduser("~/.local/state")),
+    "deskcrab", "face-window.json")
+TRANSITION_MS = 220
+
+
+def load_manifest():
+    try:
+        with open(os.path.join(PORTRAIT_DIR, "manifest.json")) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+class Assets:
+    """Every frame and mouth patch the manifest names, loaded once.
+    Anything missing simply is not in the maps — the drawing code falls
+    back to the nearest stable thing it still has."""
+
+    def __init__(self):
+        self.frames = {}
+        self.mouths = {}
+        self.size = (420, 420)
+        self.mouth_rect = None
+        m = load_manifest()
+        if not m:
+            return
+        self.size = tuple(m.get("size", [420, 420]))
+        assets = m.get("assets", {})
+
+        def pixbuf(aid):
+            entry = assets.get(aid) or {}
+            path = os.path.normpath(
+                os.path.join(PORTRAIT_DIR, entry.get("file", "")))
+            if not path.startswith(os.path.abspath(PORTRAIT_DIR) + os.sep):
+                return None
+            try:
+                return GdkPixbuf.Pixbuf.new_from_file(path)
+            except Exception:
+                return None
+
+        for name, spec in (m.get("expressions") or {}).items():
+            pb = pixbuf(spec.get("asset", ""))
+            if pb is not None:
+                self.frames[name] = pb
+        for name, spec in (m.get("visemes") or {}).items():
+            pb = pixbuf(spec.get("asset", ""))
+            if pb is not None:
+                self.mouths[name] = pb
+                self.mouth_rect = spec.get("rect", self.mouth_rect)
+
+    def frame(self, name):
+        return self.frames.get(name) or self.frames.get("resting")
+
+
+class FaceView(Gtk.DrawingArea):
+    def __init__(self, assets):
+        super().__init__()
+        self.assets = assets
+        self.state = {"activity": "resting", "expression": "resting",
+                      "clips": [], "speaking": False}
+        self.shown = "resting"      # the frame on screen
+        self.fading_from = None     # (name, started_at) during a cross-fade
+        self.current_viseme = "rest"
+        self._tick_id = None
+        self.set_draw_func(self._draw)
+        self.set_content_width(self.assets.size[0])
+        self.set_content_height(self.assets.size[1])
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+
+    # -- animation clock: runs only while something can move --------------
+    def _animations_on(self):
+        s = self.get_settings()
+        try:
+            return bool(s.get_property("gtk-enable-animations"))
+        except Exception:
+            return True
+
+    def _ensure_tick(self):
+        if self._tick_id is None and self.get_mapped():
+            self._tick_id = self.add_tick_callback(self._tick)
+
+    def _tick(self, *_a):
+        busy = False
+        now = time.time()
+        if self.fading_from:
+            _, t0 = self.fading_from
+            if (now - t0) * 1000 >= TRANSITION_MS:
+                self.fading_from = None
+            busy = busy or self.fading_from is not None
+        vis = self._viseme_at(now)
+        if vis != self.current_viseme:
+            self.current_viseme = vis
+        busy = busy or self._speaking_now(now)
+        self.queue_draw()
+        if not busy:
+            self._tick_id = None
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+    def _speaking_now(self, now):
+        for c in self.state.get("clips") or []:
+            if c["start"] + c["duration"] > now:
+                return True
+        return False
+
+    def _viseme_at(self, now):
+        """The cue standing at `now` across the scheduled clips. A late
+        joiner lands mid-track; gaps and ends are the expression's mouth."""
+        for c in self.state.get("clips") or []:
+            t = now - c["start"]
+            if 0 <= t < c["duration"]:
+                current = "rest"
+                for off, vis in c.get("cues") or []:
+                    if off <= t:
+                        current = vis
+                    else:
+                        break
+                return current
+        return "rest"
+
+    # -- state from the broker -------------------------------------------
+    def apply_state(self, st):
+        self.state = st
+        want = st.get("expression") or "resting"
+        if want not in self.assets.frames:
+            want = "resting"     # nearest stable state, never a hole
+        if want != self.shown:
+            if self._animations_on():
+                self.fading_from = (self.shown, time.time())
+            self.shown = want
+        self._ensure_tick()
+        self.queue_draw()
+
+    # -- drawing ----------------------------------------------------------
+    def _draw(self, _area, cr, w, h, *_):
+        pb = self.assets.frame(self.shown)
+        if pb is None:
+            return    # all art missing: the caption below still stands
+        aw, ah = self.assets.size
+        scale = min(w / aw, h / ah)
+        ox, oy = (w - aw * scale) / 2, (h - ah * scale) / 2
+        cr.save()
+        cr.translate(ox, oy)
+        cr.scale(scale, scale)
+
+        def paint(pixbuf, alpha=1.0, at=(0, 0)):
+            cr.save()
+            cr.translate(*at)
+            Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
+            cr.paint_with_alpha(alpha)
+            cr.restore()
+
+        now = time.time()
+        if self.fading_from and self._animations_on():
+            from_name, t0 = self.fading_from
+            a = min(max((now - t0) * 1000 / TRANSITION_MS, 0.0), 1.0)
+            old = self.assets.frame(from_name)
+            if old is not None:
+                paint(old, 1.0)
+            paint(pb, a)
+        else:
+            paint(pb, 1.0)
+
+        vis = self._viseme_at(now)
+        if vis != "rest" and self.assets.mouth_rect:
+            patch = self.assets.mouths.get(vis)
+            if patch is not None:
+                x0, y0 = self.assets.mouth_rect[:2]
+                paint(patch, 1.0, (x0, y0))
+        cr.restore()
+
+
+class BrokerLink(threading.Thread):
+    """One watch connection, reconnected with bounded backoff. Never
+    touches the UI thread directly."""
+
+    def __init__(self, on_state):
+        super().__init__(daemon=True)
+        self.on_state = on_state
+        self.stop = False
+
+    def run(self):
+        delay = 1.0
+        while not self.stop:
+            try:
+                with socket.socket(socket.AF_UNIX,
+                                   socket.SOCK_STREAM) as s:
+                    s.settimeout(30)
+                    s.connect(SOCKET_PATH)
+                    s.sendall(b'{"cmd": "watch"}\n')
+                    f = s.makefile("r")
+                    delay = 1.0
+                    for line in f:
+                        if self.stop:
+                            return
+                        try:
+                            st = json.loads(line)
+                        except ValueError:
+                            continue
+                        GLib.idle_add(self.on_state, st)
+            except Exception:
+                pass
+            time.sleep(delay)
+            delay = min(delay * 2, 8.0)   # bounded, never a spin
+
+
+CAPTIONS = {
+    "resting": "", "listening": "listening", "considering": "considering",
+    "speaking": "speaking", "chess": "at the chess table",
+    "openrsc-live": "in the game", "openrsc-paused": "the game is paused",
+    "unavailable": "away",
+}
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="beatrice.Face",
+                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+
+    def do_activate(self):
+        win = self.get_active_window()
+        if win is not None:
+            win.set_visible(True)
+            return
+        assets = Assets()
+        win = Gtk.ApplicationWindow(application=self, title="Beatrice")
+        win.set_icon_name("beatrice")
+        w, h = assets.size
+        try:
+            with open(GEOMETRY_FILE) as fh:
+                g = json.load(fh)
+            win.set_default_size(int(g["w"]), int(g["h"]))
+        except Exception:
+            win.set_default_size(w, h + 24)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        view = FaceView(assets)
+        caption = Gtk.Label(label="")
+        caption.add_css_class("dim-label")
+        box.append(view)
+        box.append(caption)
+        win.set_child(box)
+
+        css = Gtk.CssProvider()
+        css.load_from_data(b"window { background: #1b1719; } "
+                           b"label { color: #cbb8b0; padding: 3px; "
+                           b"font-size: 12px; }")
+        Gtk.StyleContext.add_provider_for_display(
+            win.get_display(), css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        def on_state(st):
+            view.apply_state(st)
+            speaking = st.get("speaking")
+            text = ("speaking" if speaking
+                    else CAPTIONS.get(st.get("activity", ""), ""))
+            caption.set_text(text)
+            return GLib.SOURCE_REMOVE
+
+        link = BrokerLink(on_state)
+        link.start()
+
+        def on_close(_w):
+            link.stop = True
+            try:
+                os.makedirs(os.path.dirname(GEOMETRY_FILE), exist_ok=True)
+                with open(GEOMETRY_FILE, "w") as fh:
+                    json.dump({"w": win.get_width(),
+                               "h": win.get_height()}, fh)
+            except Exception:
+                pass
+            return False
+        win.connect("close-request", on_close)
+        win.set_visible(True)
+
+
+if __name__ == "__main__":
+    sys.exit(App().run([]))

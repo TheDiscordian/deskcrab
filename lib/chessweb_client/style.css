@@ -36,11 +36,82 @@ body {
 /* ------------------------------------------------------------- header */
 .top {
 	display: flex;
-	align-items: baseline;
+	align-items: center;
+	justify-content: space-between;
 	gap: 1rem;
 	flex-wrap: wrap;
 	padding: 0.25rem 0.25rem 0.5rem;
 }
+
+.portrait-card {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	min-width: 15rem;
+}
+
+.portrait-stack {
+	position: relative;
+	width: 88px;
+	height: 88px;
+	flex: 0 0 88px;
+	border: 1px solid var(--accent-soft);
+	border-radius: 16px;
+	overflow: hidden;
+	background: radial-gradient(circle at 50% 32%, #2a2420, var(--panel) 78%);
+	box-shadow: 0 8px 26px #0006;
+}
+
+/* Three remembered sizes, cycled by the Face button and persisted locally.
+   The board stays primary at every one of them (face.md rule 32). */
+.portrait-stack[data-face-size="compact"] { width: 56px; height: 56px;
+	flex-basis: 56px; border-radius: 12px; }
+.portrait-stack[data-face-size="medium"] { width: 88px; height: 88px;
+	flex-basis: 88px; }
+.portrait-stack[data-face-size="large"] { width: 148px; height: 148px;
+	flex-basis: 148px; border-radius: 20px; }
+
+.portrait-stack img {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	transition: opacity 220ms ease;
+	/* legibility against the dark study — display treatment, not a repaint */
+	filter: brightness(1.09) contrast(1.03);
+}
+
+.portrait-stack [data-face-mouth] {
+	position: absolute;
+	inset: auto;
+	width: auto;
+	height: auto;
+	transition: none;
+	pointer-events: none;
+}
+
+#portrait-attentive { opacity: 0; }
+.portrait-stack.expressive #portrait-resting { opacity: 0; }
+.portrait-stack.expressive #portrait-attentive { opacity: 1; }
+.portrait-stack.unavailable { display: none; }
+
+/* Speaking: a quiet, steady cue — never pulsing. */
+.portrait-stack.speaking { border-color: var(--good, #7fbf7f); }
+
+.portrait-copy h1 { line-height: 1.15; }
+#portrait-state {
+	color: var(--text-dim);
+	font-size: 0.82rem;
+	margin-top: 0.15rem;
+}
+#face-size {
+	margin-top: 0.3rem;
+	font-size: 0.78rem;
+	padding: 0.15rem 0.5rem;
+}
+
+.table-state { text-align: right; }
 
 .top h1 {
 	margin: 0;
@@ -59,6 +130,26 @@ body {
 	color: var(--accent);
 	font-size: 0.95rem;
 	font-weight: 600;
+}
+
+@media (max-width: 560px) {
+	/* Narrow phones: every size steps down one notch so the face stays a
+	   compact head-and-caption row and never squeezes the board (rule 32). */
+	.portrait-stack,
+	.portrait-stack[data-face-size="medium"] { width: 54px; height: 54px;
+		flex-basis: 54px; border-radius: 12px; }
+	.portrait-stack[data-face-size="compact"] { width: 44px; height: 44px;
+		flex-basis: 44px; border-radius: 10px; }
+	.portrait-stack[data-face-size="large"] { width: 84px; height: 84px;
+		flex-basis: 84px; border-radius: 14px; }
+	.portrait-card { min-width: 0; }
+	.portrait-copy h1 { font-size: 1.05rem; }
+	.table-state { width: 100%; text-align: left; }
+}
+
+/* Reduced motion: the face swaps states directly, no fade at all. */
+@media (prefers-reduced-motion: reduce) {
+	.portrait-stack img { transition: none; }
 }
 
 /* ------------------------------------------------------------- connection */

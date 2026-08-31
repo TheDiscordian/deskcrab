@@ -32,6 +32,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 syslog.openlog("deskcrab-chessweb")
 
@@ -69,6 +70,71 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
 
 
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "The assistant")
+PORTRAIT_DIR = Path(os.environ.get(
+    "DESKCRAB_PORTRAIT_DIR",
+    str(Path.home() / "Beatrice/face/portraits")))
+PORTRAITS = {
+    "resting.png": "resting-2026-08-29.png",
+    "attentive.png": "interrupted-pixel-stable-2026-08-30.png",
+}
+
+
+def face_manifest():
+    """The portrait manifest, read at request time. Each server carries its
+    own copy of this lookup on purpose — one asset family, two servers,
+    never one proxying the other (the browser_voice_queue.js rule)."""
+    try:
+        with open(PORTRAIT_DIR / "manifest.json") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def face_asset_bytes(asset_id):
+    """Bytes of one manifest asset by id; never a caller-supplied path."""
+    doc = face_manifest()
+    entry = (doc or {}).get("assets", {}).get(asset_id)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        target = (PORTRAIT_DIR / str(entry.get("file", ""))).resolve()
+        if not str(target).startswith(str(PORTRAIT_DIR.resolve()) + os.sep):
+            return None
+        return target.read_bytes()
+    except Exception:
+        return None
+
+
+def face_state_doc(after=None):
+    """Read-only mirror of the local face broker, for expression, speaking
+    presence, and mouth cue clips. A dead broker answers unavailable and the
+    table falls back to its own /thinking activity. With `after`, the
+    broker's bounded long-poll holds the request until its seq moves, so
+    expression changes and clips land when they happen (this server is
+    threading; a waiting viewer costs one thread)."""
+    try:
+        import face_state
+        if after is None:
+            st = face_state.get_state(timeout=0.5)
+        else:
+            st = face_state.wait_state(int(after), timeout=20.0)
+        if st is not None:
+            st["available"] = True
+            return st
+    except Exception:
+        pass
+    return {"available": False}
+
+
+def face_activity(name, detail=""):
+    """Tell the broker what the table is doing — presence facts only, never
+    an expression, never derived from evaluation. Fire-and-forget."""
+    try:
+        import face_state
+        face_state.send_cmd({"cmd": "activity", "name": name,
+                             "detail": detail}, timeout=0.4)
+    except Exception:
+        pass
 
 # Injected into the stock client's index.html: a one-line clock over the board
 # saying whether she has been asked for a move, whether she has picked the
@@ -763,6 +829,10 @@ class Hub:
             self.think_key = key
             self.activity.update(poked_at=t0, started_at=time.time(),
                                  played_at=None, san=None)
+            # The shared face broker's presence layer, from the same fact
+            # (specs/face.md rule 15). Best-effort and never spawning: a
+            # missing broker costs one refused local connect.
+            face_activity("chess", "considering the position")
         log(f"{gid}: thinking about ply {ply}")
 
     def _post_model_move(self, job, move):
@@ -807,6 +877,7 @@ class Hub:
                 self.broadcast(m)
             self.activity.update(poked_at=None, started_at=None,
                                  played_at=time.time(), san=san)
+            face_activity("resting", "the move landed")
             key, desc, result = chess_cli.compute_state(g, board)
             log(f"{gid}: mover played {san} at ply {job['ply']} "
                 f"({took:.1f}s from detection)"
@@ -1538,6 +1609,43 @@ def make_handler(hub, client_dir):
             if path == "/browser_voice_queue.js":
                 self.shared_voice_queue()
                 return
+            if path.startswith("/portrait/"):
+                self.portrait(path.rsplit("/", 1)[-1])
+                return
+            if path == "/face/manifest.json":
+                doc = face_manifest()
+                if doc is None:
+                    self.send_error(404)
+                else:
+                    self.json_body(doc)
+                return
+            if path.startswith("/face/asset/"):
+                self.face_asset(path.rsplit("/", 1)[-1])
+                return
+            if path == "/face/state":
+                after = None
+                try:
+                    q = parse_qs(urlparse(self.path).query)
+                    raw = (q.get("after") or [None])[0]
+                    if raw is not None:
+                        after = max(0, int(raw))
+                except Exception:
+                    after = None
+                self.json_body(face_state_doc(after))
+                return
+            if path == "/face_card.js":
+                # The shared face renderer, exact bytes, same rule as
+                # /browser_voice_queue.js: one neutral asset, two servers,
+                # never one proxying the other.
+                body = (Path(__file__).resolve().parent
+                        / "face_card.js").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/javascript")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.static()
 
         def do_POST(self):
@@ -1647,6 +1755,40 @@ def make_handler(hub, client_dir):
             body = f.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "application/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def face_asset(self, asset_id):
+            """A manifest asset by id (specs/face.md rule 12): the id is
+            looked up, the path never comes from the wire, and a missing
+            family cannot take the board down."""
+            body = face_asset_bytes(asset_id)
+            if body is None:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def portrait(self, name):
+            """A fixed-name view onto my canonical portrait drawer.
+
+            The browser never supplies a filesystem path, and artwork remains
+            optional: a missing study cannot take the board down with it.
+            """
+            filename = PORTRAITS.get(name)
+            target = PORTRAIT_DIR / filename if filename else None
+            if target is None or not target.is_file():
+                self.send_error(404)
+                return
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

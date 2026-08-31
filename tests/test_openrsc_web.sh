@@ -29,6 +29,17 @@ check_eq "the generated key is owner-readable only" \
     "$(stat -c '%a' "$XDG_DATA_HOME/deskcrab/openrsc-secret")" "600"
 
 mkdir -p "$HEADLESS/run" "$GSTATE" "$GDATA"
+PORTRAITS="$T/portraits"
+mkdir -p "$PORTRAITS/living"
+printf '\211PNG\r\n\032\nresting' > "$PORTRAITS/resting-2026-08-29.png"
+printf '\211PNG\r\n\032\nattentive' > "$PORTRAITS/interrupted-pixel-stable-2026-08-30.png"
+printf '\211PNG\r\n\032\nframe' > "$PORTRAITS/living/face-resting.png"
+cat > "$PORTRAITS/manifest.json" <<'JSON'
+{"version": 1, "revision": "test0001", "size": [420, 420],
+ "expressions": {"resting": {"asset": "expr-resting"}},
+ "visemes": {},
+ "assets": {"expr-resting": {"file": "living/face-resting.png"}}}
+JSON
 printf '77\n' > "$HEADLESS/run/display"
 NOW_MS="$(($(date +%s%N) / 1000000))"
 python3 - "$GSTATE/state.json" "$NOW_MS" <<'PY'
@@ -71,6 +82,7 @@ DESKCRAB_OPENRSC_SOURCE=10,20,512,346 \
 DESKCRAB_OPENRSC_POINTER=133,65 \
 DESKCRAB_OPENRSC_FFMPEG="$T/fake-ffmpeg" \
 DESKCRAB_OPENRSC_IDLE_SECONDS=3 \
+DESKCRAB_PORTRAIT_DIR="$PORTRAITS" \
     python3 "$REPO_DIR/lib/serve.py" > "$T/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 100); do
@@ -108,6 +120,52 @@ check "the page consumes only the spectator frame and state routes" \
     bash -c '! grep -qE "fetch\\([^\n]*(walk|click|key|action|press|trade)" <<<"$1"' _ "$PAGE"
 check "the page contains no external assets or fetches" \
     bash -c '! grep -qiE "https?://|cdn\\.|integrity=" <<<"$1"' _ "$PAGE"
+check "the spectator shows her portrait and pause expression" \
+    bash -c 'grep -q "/openrsc/portrait/resting.png" <<<"$1" \
+        && grep -q "/openrsc/portrait/attentive.png" <<<"$1" \
+        && grep -q "portrait.classList.toggle" <<<"$1"' _ "$PAGE"
+check_eq "a portrait is hidden without the scoped key" \
+    "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/openrsc/portrait/resting.png")" "404"
+check_eq "the scoped spectator key can see a fixed portrait" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/portrait/resting.png?g=$WATCH_SECRET")" "200"
+check_eq "an unknown portrait name is refused" \
+    "$(curl -s -b "$T/watch.cookies" -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/portrait/unknown.png")" "404"
+check_eq "the face manifest is behind the same spectator key (face.md rule 33)" \
+    "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/openrsc/face/manifest.json")" "404"
+check_eq "…and answers to it" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/face/manifest.json?g=$WATCH_SECRET")" "200"
+check_eq "a manifest asset id is served under the key" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/face/asset/expr-resting?g=$WATCH_SECRET")" "200"
+check_eq "an id absent from the manifest is refused (face.md rule 12)" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/face/asset/nope?g=$WATCH_SECRET")" "404"
+check "a dead broker reads unavailable, and frames never notice (face.md rule 28)" \
+    bash -c 'curl -fsS "$1/openrsc/face/state?g=$2" \
+        | grep -q "\"available\": false"' _ "$BASE" "$WATCH_SECRET"
+check "a long-poll ask against a dead broker still answers at once (rule 50)" \
+    bash -c 'timeout 5 curl -fsS "$1/openrsc/face/state?g=$2&after=7" \
+        | grep -q "\"available\": false"' _ "$BASE" "$WATCH_SECRET"
+check "the spectator carries the remembered three-step size control (rule 46)" \
+    bash -c 'grep -q "id=\"face-size\"" <<<"$1" \
+        && grep -q "deskcrab-face-size-openrsc" <<<"$1" \
+        && grep -qE "data-face-size=.(compact|medium|large)" <<<"$1" \
+        && grep -q "/openrsc/face_card.js" <<<"$1"' _ "$PAGE"
+check_eq "the shared renderer is behind the same spectator key (rule 33)" \
+    "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/openrsc/face_card.js")" "404"
+check "…and serves the one FaceCard module under it (rule 46)" \
+    bash -c 'curl -fsS "$1/openrsc/face_card.js?g=$2" \
+        | grep -q "FaceCard"' _ "$BASE" "$WATCH_SECRET"
+check "the standalone viewer page rides the app key, not the spectator key (rule 49)" \
+    bash -c 'curl -fsS "$1/face?k=$2" | grep -q "deskcrab-face-size-viewer" \
+        && curl -fsS "$1/face_card.js?k=$2" | grep -q "FaceCard" \
+        && curl -fsS "$1/face/state?k=$2" | grep -q "\"available\": false"' \
+    _ "$BASE" "$SECRET"
+check_eq "the viewer page is hidden without any key" \
+    "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/face")" "404"
 check "the ordinary phone page links to the spectator" \
     grep -q 'href="/openrsc"' "$REPO_DIR/lib/webapp/index.html"
 

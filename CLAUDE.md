@@ -28,6 +28,12 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/wake-queue.sh` | the only module that touches the wakes directory and wake units |
 | `lib/nightly-judge` | the night judge's one walk: every sleep judgment call, both engines, no fallback |
 | `lib/tts-streamer` | speaks the stream sentence by sentence as it is written |
+| `lib/face_state.py` | the face-state broker and its client: one owner of what her portrait is doing |
+| `lib/face-broker` | her expressive hand (`crab face`) and the broker daemon's front door |
+| `lib/face-window` | the persistent conversation portrait window (`crab face-window`) |
+| `lib/face-auto` | the detached mood updater: one classifier question after a delivered turn |
+| `lib/face_card.js` | the shared browser face renderer every web surface loads: frames, mouth, remembered size |
+| `lib/viseme_cues.py` | mouth cue tracks from the synthesiser's own phoneme record |
 | `lib/sentence_stream.py` | the sentence chunker and replay registry both voices share (desk streamer, phone server) |
 | `lib/browser_voice_queue.js` | the browser clip queue both pages load (phone voice, chess table clips): one playback discipline, policy stays on the page |
 | `lib/extract-response` | pulls the reply out of a finished stream log |

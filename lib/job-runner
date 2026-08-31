@@ -24,6 +24,10 @@ START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
+# Builders may render or analyse sound, but they never get the desk's audio
+# devices.  This is deliberately inherited by every tool they launch.
+deskcrab_silence_tool_audio
+
 # The account log's session-kind column names the path that recorded the
 # refusal (specs/account-fallback.md rule 11). This runner never calls
 # session_register — nothing interactive to register — so without this the

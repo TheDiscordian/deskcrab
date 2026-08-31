@@ -29,6 +29,19 @@ printf '%s\n' '<html><input id="serveraddr" value="127.0.0.1:8181"></html>' \
     > "$CLIENT/index.html"
 printf 'stub-wasm' > "$CLIENT/chess.wasm"
 printf 'secret' > "$SANDBOX/secret"   # what traversal must never fetch
+PORTRAITS="$SANDBOX/portraits"
+mkdir -p "$PORTRAITS/living"
+printf '\211PNG\r\n\032\nresting' > "$PORTRAITS/resting-2026-08-29.png"
+printf '\211PNG\r\n\032\nattentive' > "$PORTRAITS/interrupted-pixel-stable-2026-08-30.png"
+printf '\211PNG\r\n\032\nframe' > "$PORTRAITS/living/face-resting.png"
+printf 'not-artwork' > "$SANDBOX/outside-drawer"   # what an escaping id must never fetch
+cat > "$PORTRAITS/manifest.json" <<'JSON'
+{"version": 1, "revision": "test0001", "size": [420, 420],
+ "expressions": {"resting": {"asset": "expr-resting"}},
+ "visemes": {},
+ "assets": {"expr-resting": {"file": "living/face-resting.png"},
+            "escape": {"file": "../outside-drawer"}}}
+JSON
 
 WAKE_STUB="$SANDBOX/wake-stub"
 cat > "$WAKE_STUB" <<'SH'
@@ -79,6 +92,7 @@ start_bridge() { # <chess dir> <wake log> [serve args...]
         CHESSWEB_MOVER_LOG="$MOVER_LOG" \
         CHESSWEB_MOVER_REPLIES="$REPLIES" \
         CHESSWEB_MOVER_DELAY="$DELAY" \
+        DESKCRAB_PORTRAIT_DIR="$PORTRAITS" \
         "$VENV_PY" -B "$REPO/lib/chessweb.py" serve --port 0 \
         --client "$CLIENT" --poll 0.2 --human-side white "$@" \
         >> "$SANDBOX/serve.log" 2>&1 &
@@ -128,6 +142,22 @@ printf '1. e4\te7e5\n' > "$REPLIES"
 DELAY=2   # holds the stub long enough to prove turn enforcement mid-think
 if start_bridge "$CH" "$SANDBOX/wake-fresh.log" --opponent guest; then
     scn http "$PORT"
+    check_eq "fixed resting portrait route is served" \
+        "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/portrait/resting.png")" "200"
+    check_eq "unknown portrait names are refused" \
+        "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/portrait/unknown.png")" "404"
+    check "the manifest names assets by id, never by dated filename (face.md rule 7)" \
+        bash -c 'curl -fsS "http://127.0.0.1:$1/face/manifest.json" \
+            | grep -q "expr-resting"' _ "$PORT"
+    check_eq "a manifest asset id is served" \
+        "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/face/asset/expr-resting")" "200"
+    check_eq "an id absent from the manifest is refused (face.md rule 12)" \
+        "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/face/asset/nope")" "404"
+    check_eq "an id whose file escapes the drawer is refused (face.md rule 12)" \
+        "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/face/asset/escape")" "404"
+    check "a dead broker answers unavailable, never an error (face.md rule 28)" \
+        bash -c 'curl -fsS "http://127.0.0.1:$1/face/state" \
+            | grep -q "\"available\": false"' _ "$PORT"
     scn fresh "$PORT" "$CH" "$SANDBOX/wake-fresh.log" "$MOVER_LOG"
     check "move-start stamped when e4 made the position hers (rule 17)" \
         chess_stamp move-start "guest-001 ply 1 after e4"
@@ -255,6 +285,27 @@ CH="$SANDBOX/chess-shipped"
 if start_bridge "$CH" "$SANDBOX/wake-shipped.log" --opponent guest \
         --client "$REPO/lib/chessweb_client"; then
     scn shipped "$PORT"
+    SHIPPED_PAGE="$(curl -fsS "http://127.0.0.1:$PORT/")"
+    check "the native page carries her portrait and semantic state" \
+        bash -c 'grep -q "/portrait/resting.png" <<<"$1" \
+            && grep -q "/portrait/attentive.png" <<<"$1" \
+            && grep -q "portrait-state" <<<"$1"' _ "$SHIPPED_PAGE"
+    check "the table carries the remembered three-step size control (face.md rule 46)" \
+        bash -c 'grep -q "id=\"face-size\"" <<<"$1" \
+            && grep -q "face_card.js" <<<"$1"' _ "$SHIPPED_PAGE"
+    check "the shared renderer is served with its size persistence" \
+        bash -c 'curl -fsS "http://127.0.0.1:$1/face_card.js" \
+            | grep -q "FaceCard" \
+            && curl -fsS "http://127.0.0.1:$1/face_card.js" \
+            | grep -q "localStorage"' _ "$PORT"
+    check "thinking state drives the local face hint (face.md rule 31)" \
+        bash -c 'grep -q "faceHint(" "$1/lib/chessweb_client/board.js" \
+            && grep -q "deskcrab-face-size-chess" "$1/lib/chessweb_client/board.js" \
+            && grep -q "classList.toggle(\"expressive\"" "$1/lib/face_card.js"' \
+        _ "$REPO"
+    check "a long-poll ask against a dead broker still answers at once (rule 50)" \
+        bash -c 'timeout 5 curl -fsS "http://127.0.0.1:$1/face/state?after=4" \
+            | grep -q "\"available\": false"' _ "$PORT"
 fi
 stop_bridge
 

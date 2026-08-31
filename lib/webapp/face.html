@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14100f">
+<title>Beatrice</title>
+<style>
+  /* The standalone portrait viewer (specs/face.md, 2026-08-30 amendment):
+     her face alone, meant to stay open on its own display or workspace.
+     Same broker mirror, same renderer, same remembered sizing as the game
+     surfaces — only the size presets are viewer-scale. */
+  :root {
+    color-scheme: dark;
+    --bg: #14100f; --card: #1d1715; --line: #3a2f2a; --ink: #eee5df;
+    --dim: #a4948b; --live: #86c98f; --warm: #d9a866;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body { font: 14px/1.4 system-ui, sans-serif; min-height: 100vh;
+    display: grid; place-items: center;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .portrait { position: relative; overflow: hidden;
+    width: 340px; height: 340px;
+    border: 1px solid var(--line); border-radius: 22px;
+    background: radial-gradient(circle at 50% 30%, #2c231e, var(--card) 75%);
+    box-shadow: 0 14px 48px #000a; }
+  .portrait[data-face-size="compact"] { width: 220px; height: 220px; border-radius: 16px; }
+  .portrait[data-face-size="medium"] { width: 340px; height: 340px; }
+  .portrait[data-face-size="large"] { width: min(86vmin, 560px); height: min(86vmin, 560px);
+    border-radius: 26px; }
+  .portrait img { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; transition: opacity .22s ease;
+    filter: brightness(1.07) contrast(1.02); }
+  .portrait [data-face-mouth] { position: absolute; inset: auto;
+    width: auto; height: auto; transition: none; pointer-events: none; }
+  .portrait .expr { opacity: 0; }
+  .portrait.expressive .base { opacity: 0; }
+  .portrait.expressive .expr { opacity: 1; }
+  .portrait.unavailable { display: none; }
+  .portrait.speaking { border-color: var(--live);
+    box-shadow: 0 0 0 1px #86c98f44, 0 14px 48px #000a; }
+  @media (prefers-reduced-motion: reduce) {
+    .portrait img { transition: none; }
+  }
+  .caption { color: var(--dim); min-height: 1.3em; text-align: center; }
+  .caption b { color: var(--ink); font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  button, a.button { appearance: none; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--card); color: var(--ink); padding: 7px 11px; font: inherit;
+    text-decoration: none; cursor: pointer; }
+  button:active, a.button:active { transform: translateY(1px); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="portrait" id="portrait" data-face-size="medium"
+      aria-label="Beatrice's portrait">
+    <img class="base" data-face-base src="/openrsc/portrait/resting.png"
+      alt="Beatrice, resting">
+    <img class="expr" data-face-expr src="/openrsc/portrait/attentive.png"
+      alt="" aria-hidden="true">
+  </div>
+  <div class="caption" id="caption">joining her…</div>
+  <div class="row">
+    <button id="face-size" type="button">Face: Medium</button>
+    <a class="button" href="/" aria-label="Back to Beatrice">Back</a>
+  </div>
+</div>
+<script src="/face_card.js"></script>
+<script>
+"use strict";
+if (new URLSearchParams(location.search).has("k"))
+  history.replaceState(null, "", location.pathname);
+const captionEl = document.getElementById("caption");
+const ACTIVITY_WORDS = {
+  resting: "", listening: "listening", considering: "considering",
+  speaking: "speaking", chess: "at the chess table",
+  "openrsc-live": "in the game", "openrsc-paused": "the game is paused",
+  unavailable: "away",
+};
+window.FaceCard && FaceCard.init({
+  root: document.getElementById("portrait"),
+  routes: {
+    manifest: "/face/manifest.json",
+    state: "/face/state",
+    asset: id => "/face/asset/" + encodeURIComponent(id),
+  },
+  fetchOpts: {cache: "no-store", credentials: "same-origin"},
+  sizeKey: "deskcrab-face-size-viewer",
+  sizes: ["compact", "medium", "large"],
+  defaultSize: "medium",
+  sizeButton: document.getElementById("face-size"),
+  onState(st) {
+    if (!st) { captionEl.textContent = "she is away from the broker"; return; }
+    const bits = [];
+    if (st.speaking) bits.push("<b>speaking</b>");
+    else if (ACTIVITY_WORDS[st.activity]) bits.push(ACTIVITY_WORDS[st.activity]);
+    if (st.expression && st.expression !== "resting")
+      bits.push(st.expression
+        + (st.expression_source && st.expression_source !== "explicit"
+           ? " (" + st.expression_source + ")" : ""));
+    captionEl.innerHTML = bits.join(" · ") || "resting";
+  },
+});
+</script>
+</body>
+</html>

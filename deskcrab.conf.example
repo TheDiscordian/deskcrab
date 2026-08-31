@@ -403,3 +403,21 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # how the push service's operators could reach the sender (mailto: or https:
 # URL). The default identifies this project on GitHub.
 # PUSH_SUBJECT="mailto:you@example.com"
+
+# --- The face (specs/face.md) ---
+# The living portrait: broker, mouth cues, and the automatic expression tier.
+# FACE_ENABLED gates only the automatic emitters (turn presence, speech cues,
+# the mood updater); `crab face` and `crab face-window` work regardless.
+# FACE_ENABLED=1
+# The out-of-band mood updater: one classifier-shaped call after a delivered
+# desk turn, on the cheapest reliable model. 0 turns inference off entirely;
+# the deterministic activity map and sentence acting still run unless also
+# disabled below.
+# FACE_AUTO_EXPRESSION=1
+# FACE_AUTO_MODEL="haiku"
+# FACE_AUTO_TIMEOUT=90
+# Broker knobs, exported to every face child:
+# FACE_MOOD_SECONDS=900          # how long an unrefreshed mood stands
+# FACE_SENTENCE_CUES=1           # per-sentence acting over her own words
+# FACE_EVENTS="game-win,failed-action"
+# FACE_ACTIVITY_EXPRESSIONS="listening=attentive,considering=focused,chess=focused"

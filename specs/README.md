@@ -61,6 +61,7 @@ The specs cite the defect dossier with these identifiers:
 | [metrics.md](metrics.md) | The token ledger: one record per CLI attempt parsed from artifacts the system already produces, backfill, `crab metrics`, and the phone server's metrics page |
 | [nightly.md](nightly.md) | Sleep (memory ingest), tidy (shelf maintenance), the self-change watcher and its canary |
 | [wants.md](wants.md) | The wants drawer: want records with state over the record spine, the shelf, `crab want`, migration |
+| [face.md](face.md) | The living portrait: the authored asset family and manifest, the face-state broker and `crab face`, mouth cues from real speech, the portrait window, and the chess/spectator mirrors |
 | [test-harness.md](test-harness.md) | The sandbox every test runs in, the four isolation gates, and the coverage the suite owes |
 
 ### System data flow
@@ -102,6 +103,7 @@ flowchart LR
     WN["wants.md + wants/"]
     CD["conduct/CONDUCT.md + conduct/"]
     EN["engineering/"]
+    FC["face.sock<br/>+ face-state.json"]
   end
   subgraph RD["READERS"]
     BP["prompt assembly"]
@@ -110,6 +112,7 @@ flowchart LR
     XR["extract-response"]
     WR["/watch"]
     ING["memory ingest"]
+    FW["face window<br/>+ chess/spectator mirrors"]
   end
   T & K & R --> CV & CS
   T & K & R --> SM
@@ -135,6 +138,7 @@ flowchart LR
   WN & CD & EN --> BP
   DJ --> ING --> MD --> BP
   MD & DJ & WN & CD & EN --> NS
+  T & TS --> FC --> FW
 ```
 
 ### Locks
@@ -151,7 +155,7 @@ flowchart LR
 | `notice-self.numb.lock` | `numb_set`, `numb_clear` | the numb ledger |
 
 Advisory records that never block: `crab claim`, `crab checkpoint`, `crab touching`, `live-turn`,
-`live-speech`, `last-origin`.
+`live-speech`, `last-origin`, the face broker's state snapshot (`face-state.json`).
 
 ### Numbing
 

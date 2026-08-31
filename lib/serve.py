@@ -47,6 +47,72 @@ from urllib.parse import urlparse, parse_qs
 
 LIB_DIR = Path(__file__).resolve().parent
 WEBAPP_DIR = LIB_DIR / "webapp"
+PORTRAIT_DIR = Path(os.environ.get(
+    "DESKCRAB_PORTRAIT_DIR",
+    str(Path.home() / "Beatrice/face/portraits")))
+OPENRSC_PORTRAITS = {
+    "resting.png": "resting-2026-08-29.png",
+    "attentive.png": "interrupted-pixel-stable-2026-08-30.png",
+}
+
+
+def face_manifest():
+    """The portrait manifest, read at request time (no-store on the wire, so
+    an approved replacement lands without a rebuild). None when the drawer
+    has none — the pages degrade to the fixed portrait pair."""
+    try:
+        with open(PORTRAIT_DIR / "manifest.json") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def face_asset_bytes(asset_id):
+    """Bytes of one manifest asset by its id. The browser never supplies a
+    path: the id is looked up in the manifest, and the resolved file must
+    still live inside the portrait drawer."""
+    doc = face_manifest()
+    entry = (doc or {}).get("assets", {}).get(asset_id)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        target = (PORTRAIT_DIR / str(entry.get("file", ""))).resolve()
+        if not str(target).startswith(str(PORTRAIT_DIR.resolve()) + os.sep):
+            return None
+        return target.read_bytes()
+    except Exception:
+        return None
+
+
+def face_state_doc(after=None):
+    """The face broker's snapshot for read-only mirroring, or a quiet
+    unavailable marker. Losing the broker never disturbs the page. With
+    `after`, the broker's own bounded long-poll holds the request until its
+    seq passes that mark, so a viewer's expression and mouth cues arrive
+    when they happen, not on the next poll tick. One thread per waiting
+    viewer (this server is threading); a dead broker still answers fast."""
+    try:
+        import face_state
+        if after is None:
+            st = face_state.get_state(timeout=0.5)
+        else:
+            st = face_state.wait_state(int(after), timeout=20.0)
+        if st is not None:
+            st["available"] = True
+            return st
+    except Exception:
+        pass
+    return {"available": False}
+
+
+def face_after_param(query):
+    raw = (query.get("after") or [None])[0]
+    if raw is None:
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return None
 
 # Local stdlib-only helpers keep the server's no-dependencies promise.
 sys.path.insert(0, str(LIB_DIR))
@@ -1593,6 +1659,39 @@ class Handler(BaseHTTPRequestHandler):
             headers = dict(extra)
             headers["Cache-Control"] = "no-store"
             return self._json(200, doc, headers)
+        if path.startswith("/openrsc/portrait/"):
+            name = path.rsplit("/", 1)[-1]
+            filename = OPENRSC_PORTRAITS.get(name)
+            target = PORTRAIT_DIR / filename if filename else None
+            if target is None or not target.is_file():
+                return self._send(404, "not found")
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, target.read_bytes(), "image/png", headers)
+        if path == "/openrsc/face/manifest.json":
+            doc = face_manifest()
+            if doc is None:
+                return self._send(404, "not found")
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._json(200, doc, headers)
+        if path.startswith("/openrsc/face/asset/"):
+            body = face_asset_bytes(path.rsplit("/", 1)[-1])
+            if body is None:
+                return self._send(404, "not found")
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, body, "image/png", headers)
+        if path == "/openrsc/face/state":
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._json(200, face_state_doc(face_after_param(query)),
+                              headers)
+        if path == "/openrsc/face_card.js":
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, (LIB_DIR / "face_card.js").read_bytes(),
+                              "application/javascript", headers)
         if path == "/openrsc/frame.jpg":
             raw = (query.get("after") or ["0"])[0]
             try:
@@ -1632,7 +1731,10 @@ class Handler(BaseHTTPRequestHandler):
 
         openrsc_route = path in (
             "/openrsc", "/openrsc/", "/openrsc/state",
-            "/openrsc/frame.jpg")
+            "/openrsc/frame.jpg", "/openrsc/face/manifest.json",
+            "/openrsc/face/state", "/openrsc/face_card.js") \
+            or path.startswith("/openrsc/portrait/") \
+            or path.startswith("/openrsc/face/asset/")
         if openrsc_route:
             spectator_key = (query.get("g") or [None])[0]
             if not self._openrsc_authed(query_key, spectator_key):
@@ -1667,6 +1769,40 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/context":
             return self._json(200, read_context(), extra)
+
+        # The standalone portrait viewer (specs/face.md, 2026-08-30
+        # amendment): her face alone, sized for its own display or
+        # workspace, behind the app's own auth. Same renderer, same broker
+        # mirror, same remembered-size mechanics as the spectator card.
+        if path in ("/face", "/face/"):
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, (WEBAPP_DIR / "face.html").read_bytes(),
+                              "text/html; charset=utf-8", headers)
+        if path == "/face/manifest.json":
+            doc = face_manifest()
+            if doc is None:
+                return self._send(404, "not found")
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._json(200, doc, headers)
+        if path.startswith("/face/asset/"):
+            body = face_asset_bytes(path.rsplit("/", 1)[-1])
+            if body is None:
+                return self._send(404, "not found")
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, body, "image/png", headers)
+        if path == "/face/state":
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._json(200, face_state_doc(face_after_param(query)),
+                              headers)
+        if path == "/face_card.js":
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-store"
+            return self._send(200, (LIB_DIR / "face_card.js").read_bytes(),
+                              "application/javascript", headers)
 
         if path == "/push/key":
             # The VAPID public key the browser subscribes against. Generated

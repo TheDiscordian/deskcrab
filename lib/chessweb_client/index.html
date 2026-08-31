@@ -11,6 +11,7 @@
 	     the same file the phone server serves, from the bridge's own route.
 	     Both deferred, in order, so board.js finds it built. -->
 	<script src="browser_voice_queue.js" defer></script>
+	<script src="face_card.js" defer></script>
 	<script src="board.js" defer></script>
 </head>
 
@@ -57,9 +58,23 @@
 	</svg>
 
 	<header class="top">
-		<h1>Chess</h1>
-		<div id="crab-thinking" hidden></div>
-		<div id="turnline"></div>
+		<div class="portrait-card" aria-label="Beatrice at the chess table">
+			<div class="portrait-stack">
+				<img id="portrait-resting" data-face-base src="/portrait/resting.png"
+					alt="Beatrice, resting at the chess table">
+				<img id="portrait-attentive" data-face-expr src="/portrait/attentive.png"
+					alt="" aria-hidden="true">
+			</div>
+			<div class="portrait-copy">
+				<h1>Chess with Beatrice</h1>
+				<div id="portrait-state">at the table</div>
+				<button id="face-size" type="button">Face: Medium</button>
+			</div>
+		</div>
+		<div class="table-state">
+			<div id="crab-thinking" hidden></div>
+			<div id="turnline"></div>
+		</div>
 	</header>
 
 	<details id="connbox" open>
