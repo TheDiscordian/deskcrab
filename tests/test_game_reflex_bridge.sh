@@ -53,6 +53,9 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["v"] == 1 and s["logged_in"] is False and "hits" not in s, s
 PY
+OUT="$(harness welcome)"
+check "the welcome overlay is dismissed before any ordinary bridge work" \
+    grep -Fxq "dismiss-welcome" <<<"$OUT"
 OUT="$(harness state-chat)"
 python3 - "$S/state.json" <<'PY' && ok "a logged-in snapshot carries the visible state, JSON-escaped" \
     || fail "a logged-in snapshot carries the visible state, JSON-escaped"
@@ -683,6 +686,13 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 t = s["terrain"]
 assert t["radius"] == 6
+assert t["default_surface"] == "natural-ground"
+assert t["underfoot"] == {"overlay": 1, "kind": "path"}
+assert t["surface_cells"] == [
+    {"x": 120, "z": 650, "overlay": 1, "kind": "path"},
+    {"x": 121, "z": 648, "overlay": 4, "kind": "bridge"},
+    {"x": 121, "z": 650, "overlay": 2, "kind": "water"},
+]
 assert t["blocked_cells"] == [{"x": 121, "z": 650, "projectiles_pass": True}]
 assert t["barriers"] and all(edge["projectiles_pass"] is True for edge in t["barriers"])
 PY

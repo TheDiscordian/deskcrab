@@ -35,6 +35,7 @@ public class ReflexBridgeHarness {
 
 	static class FakeHost implements ReflexBridge.Host {
 		boolean loggedIn = true;
+		boolean welcomeDialogOpen = false;
 		boolean failing = false;
 		boolean projectionsVisible = true;
 		boolean routeAvailable = true;
@@ -84,6 +85,15 @@ public class ReflexBridgeHarness {
 				throw new RuntimeException("scripted failure");
 			}
 			return loggedIn;
+		}
+
+		public boolean isWelcomeDialogOpen() {
+			return welcomeDialogOpen;
+		}
+
+		public void dismissWelcomeDialog() {
+			welcomeDialogOpen = false;
+			events.add("dismiss-welcome");
 		}
 
 		public int hits() {
@@ -812,6 +822,13 @@ public class ReflexBridgeHarness {
 			return absX == 121 && absZ == 650 ? 64 : 0;
 		}
 
+		public int terrainOverlayAt(int absX, int absZ) {
+			if (absX == 120 && absZ == 650) return 1;
+			if (absX == 121 && absZ == 648) return 4;
+			if (absX == 121 && absZ == 650) return 2;
+			return 0;
+		}
+
 		public boolean terrainProjectilesPassAt(int absX, int absZ) {
 			return absX == 121 && absZ == 650;
 		}
@@ -874,6 +891,9 @@ public class ReflexBridgeHarness {
 		if ("state-chat".equals(mode)) {
 			bridge.recordMessage("local", true, "Nearby Friend", "Try the east door");
 			bridge.recordMessage("private", true, "Far Friend", "I can help from here");
+		}
+		if ("welcome".equals(mode)) {
+			host.welcomeDialogOpen = true;
 		}
 		if ("state-active".equals(mode)) {
 			host.walking = true;

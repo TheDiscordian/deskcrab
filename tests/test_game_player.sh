@@ -2252,7 +2252,12 @@ snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":true,
   ],
   "inventory":[{"id":33,"name":"Air-Rune","count":12},{"id":35,"name":"Mind-Rune","count":12}],
   "skills":[{"id":6,"name":"Magic","level":3,"xp":275}],
-  "terrain":{"radius":6,"blocked_cells":[{"x":120,"z":647,"projectiles_pass":true}],
+  "terrain":{"radius":6,"default_surface":"natural-ground",
+    "underfoot":{"overlay":1,"kind":"path"},
+    "surface_cells":[{"x":120,"z":648,"overlay":1,"kind":"path"},
+      {"x":121,"z":648,"overlay":4,"kind":"bridge"},
+      {"x":120,"z":647,"overlay":2,"kind":"water"}],
+    "blocked_cells":[{"x":120,"z":647,"projectiles_pass":true}],
     "barriers":[{"a":[120,648],"b":[121,648],"projectiles_pass":true}]},
   "objects":[{"id":57,"name":"Fence","x":120,"z":647,"dir":0,
     "blocks_movement":true,"projectiles_pass":true}],"bounds":[],
@@ -2261,9 +2266,11 @@ snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":true,
 OUT="$(bash "$HEADLESS" terrain 2)"; CODE=$?
 check_eq "the terrain command reads semantic local topology" "$CODE" "0"
 contains "$OUT" "blocked-cell (120,647) projectiles_pass=True" \
+    && contains "$OUT" "underfoot: path overlay=1" \
+    && contains "$OUT" "legend: .=natural-ground p=path ~=water f=floor ==bridge" \
     && contains "$OUT" "clear_shot=True terrain_melee_reachable=False" \
     && contains "$OUT" "blocks_movement=True projectiles_pass=True" \
-    && ok "terrain presents movement, shots, and target reachability independently" \
+    && ok "terrain presents surfaces, movement, shots, and target reachability independently" \
     || fail "terrain must present all grounded relations" "$OUT"
 OUT="$(bash "$HEADLESS" hover)"; CODE=$?
 check_eq "the hover command reads the live top-left action hint" "$CODE" "0"

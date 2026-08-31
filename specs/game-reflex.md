@@ -102,11 +102,15 @@ Three parts:
    wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at
    12, with those same semantic fields plus `reachable`, collision-aware `path_distance` (null
    when unreachable), and `open_command` (1/2, or zero when it has no Open command); `dir` is which
-   wall of the tile the boundary stands on, so two doors sharing a tile stay distinct). `terrain` is a compact radius-6 topology centred on the player: fully
-   blocked cells and cardinal `barriers` are the only entries (empty floor is implicit), and every
-   entry independently says `projectiles_pass`; barrier endpoints are absolute `a:[x,z]` and
-   `b:[x,z]` tiles. It comes from the same loaded collision map used by ordinary walking and the
-   same projectile-permeability classifications used by ordinary client play. `ground_items`
+   wall of the tile the boundary stands on, so two doors sharing a tile stay distinct). `terrain`
+   is a compact radius-6 topology centred on the player. `default_surface` names the implicit
+   natural ground; `underfoot` names the player's current overlay and conservative surface kind;
+   and `surface_cells` gives every non-default tile's absolute `x/z`, raw client-cache `overlay`,
+   and kind (`path`, `water`, `floor`, `bridge`, or `surface-N` when no conservative semantic name
+   exists). Fully blocked cells and cardinal `barriers` are listed separately, and every such entry
+   independently says `projectiles_pass`; barrier endpoints are absolute `a:[x,z]` and `b:[x,z]`
+   tiles. It comes from the same loaded map and collision data used by ordinary client walking and
+   the same projectile-permeability classifications used by ordinary client play. `ground_items`
    (items currently visible on the ground, reachable items first by collision-aware walking steps,
    capped at 12: each carries client-cache `id`/`name`/`description`, world `x/z`, `reachable`, and
    `path_distance`). An unreachable
@@ -137,6 +141,11 @@ Three parts:
    same versioned bytes. The bridge suite pins all three properties: the launcher is under
    version control, the stock launcher never mentions the variable, and executing the committed
    bytes sets the exchange directory before handing over.
+
+4a. Once the opted-in client is logged in, the bridge dismisses the client-local post-login
+   welcome overlay before it publishes state or consumes any queued action. This close-first
+   precondition uses the overlay's own client state, never a remembered pointer coordinate, so
+   the window cannot obscure the player's sight or intercept ordinary play.
 
 ### Actions
 
