@@ -447,12 +447,46 @@ echo "a learned rule persists across player restarts (spec rules 1, 9, 11):"
 contains "$(python3 "$GP" rules)" "[on ] talk-cook" \
     && ok "a fresh process loads the durable table" \
     || fail "a fresh process loads the durable table"
+check "the objective can select a durable method" \
+    python3 "$GP" plan "Use the Al Kharid bank-and-range loop"
+check_eq "a fresh process reads the selected method" \
+    "$(python3 "$GP" plan)" "Use the Al Kharid bank-and-range loop"
+refute "a nearby alternative cannot silently replace a binding method" \
+    python3 "$GP" plan "Use the Lumbridge range"
+check "a grounded explicit revision can replace the method" \
+    python3 "$GP" plan --revise "the destination closed" \
+        "Use the Falador bank-and-range loop"
+check_eq "the revision becomes the current method" \
+    "$(python3 "$GP" plan)" "Use the Falador bank-and-range loop"
+python3 "$GP" objective tut-cooking >/dev/null
+check_eq "re-selecting the same objective preserves its method" \
+    "$(python3 "$GP" plan)" "Use the Falador bank-and-range loop"
 snap 101 '[{"sidx":77,"id":478,"x":121,"z":648}]'
 OUT="$(python3 "$GP" step)"; CODE=$?
 check_eq "the once-per-objective mark survived the restart: no refire" "$CODE" "4"
 contains "$OUT" "no-rule-matched" && ok "and the verdict says why nothing fired" \
     || fail "and the verdict says why nothing fired" "$OUT"
+contains "$OUT" "plan=Use the Falador bank-and-range loop" \
+    && ok "the binding method rides every ordinary fallback verdict" \
+    || fail "the ordinary fallback lost the selected method" "$OUT"
 python3 "$GP" objective tut-cooking-two >/dev/null
+check_eq "a genuinely new objective clears the stale method" \
+    "$(python3 "$GP" plan)" "(none)"
+python3 - "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl" \
+          "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
+    && ok "method selections, revisions, and objective clears are auditable" \
+    || fail "durable method changes must enter both evidence streams"
+import json, sys
+decisions = [json.loads(line) for line in open(sys.argv[1])]
+outcomes = [json.loads(line) for line in open(sys.argv[2])]
+assert any(e.get("kind") == "plan-selected" for e in decisions), decisions
+assert any(e.get("kind") == "plan-revised" and e.get("reason") == "the destination closed"
+           for e in decisions), decisions
+assert any(e.get("kind") == "plan-cleared"
+           and e.get("reason") == "objective-changed-to:tut-cooking-two"
+           for e in decisions), decisions
+assert sum(e.get("kind") == "plan-change" for e in outcomes) >= 3, outcomes
+PY
 python3 "$GP" set talk-cook trigger.objective_is tut-cooking-two >/dev/null
 snap 102 '[{"sidx":77,"id":478,"x":121,"z":648}]'
 fake_bridge done
@@ -2729,6 +2763,7 @@ echo 55 > "$OH2/run/display"
 printf 'BASE-PROMPT-MARKER\n' > "$PH/prompt.md"
 printf 'goal: fetch flour; step 7 of 9; next: walk to the mill\n' > "$PH/handoff.md"
 printf 'cooks-two\n' > "$DESKCRAB_GAME_DIR/objective"
+printf 'Use the Al Kharid bank-and-range loop\n' > "$DESKCRAB_GAME_DIR/plan"
 # Rules 18-19: her voice comes from a sheet, and what she knows about the
 # people standing there comes from her own store. Both are shimmed so the
 # suite reads a fixture instead of the installed user's files, and so no real
@@ -2775,6 +2810,10 @@ contains "$OUT" ":55" && ok "the display is discovered from run/display, not rem
     || fail "the display is discovered from run/display, not remembered" "$OUT"
 contains "$OUT" "cooks-two" && ok "the durable objective rides the composition" \
     || fail "the durable objective rides the composition" "$OUT"
+contains "$OUT" "binding plan: Use the Al Kharid bank-and-range loop" \
+    && contains "$OUT" 'play plan --revise "REASON" "NEW PLAN"' \
+    && ok "the selected method rides the composition with its revision gate" \
+    || fail "the composed player lost its binding method" "$OUT"
 contains "$OUT" "step 7 of 9" && ok "so does the handoff's exact state" \
     || fail "so does the handoff's exact state" "$OUT"
 contains "$OUT" "unresolved handoff statement" \
@@ -2969,6 +3008,7 @@ contains "$(cat "$PSD/codex-capture" 2>/dev/null)" "model_reasoning_effort=mediu
     || fail "at the pinned medium reasoning effort"
 printf 'goal: NEW-GOAL; step 8 of 9; next: buy the pot\n' > "$PH/handoff.md"
 printf 'resume-target\n' > "$DESKCRAB_GAME_DIR/objective"
+printf 'Keep using the selected bank-side range\n' > "$DESKCRAB_GAME_DIR/plan"
 printf 'Stop circling the village; continue south to the tower.\n' > "$DESKCRAB_GAME_DIR/steering.md"
 env "${POCENV[@]}" bash "$BOC" run-player </dev/null >/dev/null 2>&1 || true
 check_eq "the first run captured its durable Codex thread id" \
@@ -2978,6 +3018,10 @@ check_eq "the restarted process used Codex resume exactly once" \
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "resume-target" \
     && ok "the resumed thread receives current objective and snapshot facts" \
     || fail "the resumed thread receives current objective and snapshot facts"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "BINDING PLAN: Keep using the selected bank-side range" \
+    && ok "the resumed thread re-reads the binding method independently of handoff prose" \
+    || fail "the resumed thread lost the current objective method"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
     "Stop circling the village; continue south to the tower." \
     && ok "the resumed thread receives the assistant's newest self-steering direction" \
@@ -3639,6 +3683,8 @@ python3 "$GP" remove walk-legacy-pin >/dev/null
 echo
 echo "the resident runner, step's deferral, the queue and the note door (spec rules 15-16):"
 FRIEND0="$(decided friend-status-received)"
+python3 "$GP" objective runner-method-test >/dev/null
+python3 "$GP" plan "Keep using the selected bank-side range" >/dev/null
 snap 160 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}],"messages":[
     {"id":9300,"channel":"friend-status","incoming":false,"sender":"","text":"Gm Mitch has logged in"}
 ]}'
@@ -3657,6 +3703,9 @@ check_eq "and hands back the runner's own fallback licence: exit 4" "$CODE" "4"
 contains "$OUT" "ground_items=27" \
     && ok "the deferred fallback still exposes visible pickups" \
     || fail "the deferred fallback still exposes visible pickups" "$OUT"
+contains "$OUT" "plan=Keep using the selected bank-side range" \
+    && ok "the resident heartbeat preserves the binding method" \
+    || fail "the deferred fallback lost the objective method" "$OUT"
 contains "$OUT" 'friend_updates=[{"id":9300,"name":"Gm Mitch","status":"online"}]' \
     && ok "the deferred verdict makes an authoritative friend login visible to Sol" \
     || fail "the friend transition must ride ordinary play without stopping it" "$OUT"
@@ -3684,6 +3733,7 @@ check "gap deduplication waits for stable actionable state instead of waking Sol
 check "and preserves the candidate across same-tick polls while it settles" \
     grep -q 'gap_candidate_signature is not None' "$GP"
 kill "$RUNNER_PID" 2>/dev/null; wait "$RUNNER_PID" 2>/dev/null
+python3 "$GP" objective --clear >/dev/null
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 case "$OUT" in
     runner-*) fail "a dead runner defers nothing: step evaluates locally again" "$OUT" ;;

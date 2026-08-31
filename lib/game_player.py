@@ -113,6 +113,8 @@ EXIT_SESSION_OVER = 8
 SESSION_LIMIT_MS = 2 * 60 * 60 * 1000
 SESSION_GRACE_MS = 10 * 60 * 1000
 SESSION_MESSAGE_TOP_UP_MS = 20 * 60 * 1000
+PLAN_MAX_CHARS = 1200
+PLAN_REASON_MAX_CHARS = 500
 
 EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
 
@@ -131,6 +133,10 @@ def rules_path() -> Path:
 
 def objective_path() -> Path:
     return game_dir() / "objective"
+
+
+def plan_path() -> Path:
+    return game_dir() / "plan"
 
 
 def activity_path() -> Path:
@@ -924,6 +930,13 @@ def config_defaults(cfg: dict) -> dict:
 def read_objective() -> str:
     try:
         return objective_path().read_text().strip()
+    except OSError:
+        return ""
+
+
+def read_plan() -> str:
+    try:
+        return plan_path().read_text().strip()
     except OSError:
         return ""
 
@@ -2908,12 +2921,13 @@ def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
 # --------------------------------------------------------------------------
 def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
-                    activity: str = "", activity_xp: str = "",
+                    plan: str = "", activity: str = "", activity_xp: str = "",
                     activity_compare: str = "", friend_updates=None) -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
          "verdict": verdict, "detail": detail,
          "ground_items": ground_items or [],
+         "plan": plan or None,
          "activity": activity or None,
          "activity_xp": activity_xp or None,
          "activity_compare": activity_compare or None,
@@ -3292,6 +3306,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    activity=activity or None)
             return "repetition-review-hold", EXIT_NO_RULE
         report("no-rule-matched", objective=objective or None,
+               plan=read_plan() or None,
                activity=activity or None,
                activity_xp=xp_text or None,
                activity_compare=xp_compare or None,
@@ -3864,11 +3879,16 @@ def cmd_remove(args):
 
 
 def cmd_objective(args):
+    old_objective = read_objective()
+    old_plan = read_plan()
     if args.clear:
         try:
             objective_path().unlink()
         except FileNotFoundError:
             pass
+        if old_plan:
+            clear_plan_for_objective_change(
+                old_objective, "objective-cleared", old_plan)
         print("objective cleared")
         return
     if args.name is None:
@@ -3877,9 +3897,92 @@ def cmd_objective(args):
         return
     if "\n" in args.name or not args.name.strip():
         die("the objective is one non-empty line")
+    new_objective = args.name.strip()
     game_dir().mkdir(parents=True, exist_ok=True)
-    game_reflex.atomic_write(objective_path(), args.name.strip() + "\n")
-    print(f"objective: {args.name.strip()}")
+    game_reflex.atomic_write(objective_path(), new_objective + "\n")
+    if old_plan and old_objective != new_objective:
+        clear_plan_for_objective_change(
+            old_objective, f"objective-changed-to:{new_objective}", old_plan)
+    print(f"objective: {new_objective}")
+
+
+def validate_plan_line(value: str, label: str, maximum: int) -> str:
+    value = value.strip()
+    if not value or "\n" in value or "\r" in value:
+        die(f"the {label} must be one non-empty line")
+    if len(value) > maximum:
+        die(f"the {label} exceeds {maximum} characters")
+    return value
+
+
+def record_plan_change(change: str, old_plan: str, new_plan: str,
+                       reason: str) -> None:
+    event = {"ts": now_ms(), "kind": f"plan-{change}",
+             "objective": read_objective() or None,
+             "old_plan": old_plan or None, "new_plan": new_plan or None,
+             "reason": reason}
+    flush_events([event])
+    append_outcome(dict(event, kind="plan-change", change=change))
+
+
+def clear_plan_for_objective_change(old_objective: str, reason: str,
+                                    old_plan: str) -> None:
+    try:
+        plan_path().unlink()
+    except FileNotFoundError:
+        pass
+    event = {"ts": now_ms(), "kind": "plan-cleared",
+             "objective": old_objective or None, "old_plan": old_plan,
+             "new_plan": None, "reason": reason}
+    flush_events([event])
+    append_outcome(dict(event, kind="plan-change", change="cleared"))
+
+
+def cmd_plan(args):
+    objective = read_objective()
+    current = read_plan()
+    if args.clear is not None:
+        if args.text is not None:
+            die("plan --clear REASON does not accept plan text")
+        reason = validate_plan_line(
+            args.clear, "plan-clear reason", PLAN_REASON_MAX_CHARS)
+        if not current:
+            print("plan already clear")
+            return
+        try:
+            plan_path().unlink()
+        except FileNotFoundError:
+            pass
+        record_plan_change("cleared", current, "", reason)
+        print("plan cleared")
+        return
+    if args.text is None:
+        print(current if current else "(none)")
+        return
+    if not objective:
+        die("set an objective before selecting its plan")
+    proposed = validate_plan_line(args.text, "plan", PLAN_MAX_CHARS)
+    if args.revise is not None:
+        reason = validate_plan_line(
+            args.revise, "plan-revision reason", PLAN_REASON_MAX_CHARS)
+        if not current:
+            die("there is no current plan to revise; set the first plan without --revise")
+        if proposed == current:
+            print(f"plan unchanged: {current}")
+            return
+        game_reflex.atomic_write(plan_path(), proposed + "\n")
+        record_plan_change("revised", current, proposed, reason)
+        print(f"plan revised: {proposed}")
+        return
+    if current and current != proposed:
+        die("a different plan is already binding; use plan --revise REASON TEXT")
+    if current == proposed:
+        print(f"plan unchanged: {current}")
+        return
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(plan_path(), proposed + "\n")
+    record_plan_change("selected", "", proposed, "initial-selection")
+    print(f"plan: {proposed}")
 
 
 def print_activity_history(activity: str) -> None:
@@ -4557,7 +4660,8 @@ def cmd_run(args):
             live_friend_updates = pending_friend_status(load_player_state())
             write_heartbeat(last_verdict, detail,
                             [i.get("id") for i in latest.get("ground_items") or []],
-                            live_activity, live_xp, live_compare, live_friend_updates)
+                            read_plan(), live_activity, live_xp, live_compare,
+                            live_friend_updates)
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -4626,6 +4730,13 @@ def main():
     p.add_argument("name", nargs="?")
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_objective)
+
+    p = sub.add_parser("plan", help="show or deliberately revise the objective's method")
+    p.add_argument("text", nargs="?")
+    plan_change = p.add_mutually_exclusive_group()
+    plan_change.add_argument("--revise", metavar="REASON")
+    plan_change.add_argument("--clear", metavar="REASON")
+    p.set_defaults(fn=cmd_plan)
 
     p = sub.add_parser("activity", help="show, select or clear the current activity")
     p.add_argument("name", nargs="?")
@@ -4778,6 +4889,7 @@ def main():
                 else:
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
+                           plan=hb.get("plan") or read_plan() or None,
                            activity=hb.get("activity") or None,
                            activity_xp=hb.get("activity_xp") or None,
                            activity_compare=hb.get("activity_compare") or None,

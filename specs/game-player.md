@@ -25,10 +25,15 @@ deliberate-play channel.
 ### Files and places
 
 1. The durable table is `$DESKCRAB_GAME_DIR/learned-rules.json`; the current objective is
-   `$DESKCRAB_GAME_DIR/objective`, and the immediate activity is
-   `$DESKCRAB_GAME_DIR/activity` (each one line, empty or absent meaning none). The objective is
-   the longer-lived goal (for example `thieving-to-30`); the activity is what the player is doing
-   now (for example `thieving`, `banking`, or `trading`).
+   `$DESKCRAB_GAME_DIR/objective`, its chosen method is `$DESKCRAB_GAME_DIR/plan`, and the
+   immediate activity is `$DESKCRAB_GAME_DIR/activity` (each one line, empty or absent meaning
+   none). The objective is the longer-lived goal (for example `cooking-level-10`); the plan is
+   the currently chosen way to achieve it, including meaningful destination and method constraints
+   (for example `Use the Al Kharid bank-and-range loop; do not substitute Lumbridge's distant-bank
+   range`); the activity is what the player is doing now (for example `travelling`, `banking`, or
+   `cooking`). The plan remains binding across ordinary turns, process restarts, route trouble, and
+   activity changes. Proximity or convenience cannot silently replace it. A genuinely new
+   objective clears the old plan so a stale method never leaks into a different goal.
    `$DESKCRAB_GAME_DIR/activity-stats.json` is the selected activity's measured clock: its start
    time, per-skill cumulative-XP baselines, latest observed XP values, and the most recent positive
    XP delta. Selecting a different activity or `activity --restart` resets that baseline; selecting
@@ -242,11 +247,12 @@ deliberate-play channel.
      ordinary action. Fields include `cooldown_holds`, so a temporarily
      suppressed rule is visible to the falling-back mind, and `ground_items` names every visible
      ground-item id so a newly entered room cannot hide an actionable pickup behind another query.
-     The current `activity` and any positive `activity_xp` measurements ride the ordinary verdict;
-     the resident-runner heartbeat preserves them when a separate player process asks through
-     `play`, so performance feedback is ambient rather than a special inspection ritual. Once the
-     current sample is at least 60 seconds old and a comparable prior iteration exists, the verdict
-     also carries `activity_compare`, current XP/hour versus the best prior eligible iteration.
+     The current `plan`, `activity`, and any positive `activity_xp` measurements ride the ordinary
+     verdict; the resident-runner heartbeat preserves them when a separate player process asks
+     through `play`, so method continuity and performance feedback are ambient rather than special
+     inspection rituals. Once the current sample is at least 60 seconds old and a comparable prior
+     iteration exists, the verdict also carries `activity_compare`, current XP/hour versus the best
+     prior eligible iteration.
    - `sleeping-needs-wake` (exit 4): the sleep-word screen currently owns input. No objective,
      route, reflex, or reply action is emitted; solving the current word and verifying awake state
      is the sole licensed reasoning task. Invoking the sleeping bag again is never a wake-up action.
@@ -469,7 +475,13 @@ deliberate-play channel.
     rule 3's gate and persists. A learned rule arrives **enabled** — unlike game-reflex rule
     14's shipped defaults, learning is already the player's own explicit act on a verified
     moment, which is the arming criterion. `unfinished <name> <note…>` records what could not
-    be compiled. `objective [NAME|--clear]` sets or clears the durable objective;
+    be compiled. `objective [NAME|--clear]` sets or clears the durable objective. `plan [TEXT]`
+    shows or makes the first durable method selection. Repeating the same plan is idempotent, but
+    replacing it requires `plan --revise REASON TEXT`, and clearing it requires
+    `plan --clear REASON`; both the old/new method and grounded reason enter the decision and
+    outcome logs. A plain conflicting `plan TEXT` is refused, so a difficult route, nearby
+    alternative, restart, or momentary uncertainty cannot erase a prior decision without being
+    noticed. An objective change or clear removes its plan automatically and records why;
     `enable`/`disable`/`set`/`remove`/`rules` mirror `betty-game`'s. `init` writes an empty
     valid table if none exists, never overwrites. Selecting a genuinely new activity immediately
     prints the rules already eligible there, prior best XP/hour, and a bounded ranked list of
@@ -577,8 +589,10 @@ deliberate-play channel.
       correction uses `steer`, never stop, direct manual play, or a detached job.
     - The first player start composes its effective prompt from ground truth discovered at that
       moment (`run-player`, the unit's exec target): the live display read from the harness's
-      `run/display` (never hard-coded), the bridge state dir, the durable objective, a fresh
-      snapshot summary, the decision log's tail, and the handoff file's contents as they are NOW.
+      `run/display` (never hard-coded), the bridge state dir, the durable objective and plan, a
+      fresh snapshot summary, the decision log's tail, and the handoff file's contents as they are
+      NOW. Normal continuation prompts also re-read and prominently carry that plan; it is not
+      dependent on an old conversation turn or on rereading the emergency handoff.
       The Codex thread id is captured durably in the player home. A normal process boundary or
       service restart resumes that same Sol thread with a compact current-state continuation,
       instead of opening a new conversation that re-reads the standing instructions and audits
