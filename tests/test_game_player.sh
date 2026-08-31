@@ -1239,6 +1239,41 @@ refute "changing objective cancels the stale route" test -f "$DESKCRAB_GAME_DIR/
 check "route clear is idempotent" python3 "$GP" route --clear
 python3 "$GP" objective --clear >/dev/null
 
+python3 - "$GP" <<'PY' \
+    && ok "authoritative route legs retain the destination and stop at the real semantic portal" \
+    || fail "the authoritative route/portal handoff must remain durable"
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("game_player_under_test", sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+spec.loader.exec_module(gp)
+os.environ["DESKCRAB_NAVIGATION_ENDPOINT"] = "127.0.0.1:1"
+gp.save_route = lambda route: None
+gp.route_obstacle_signature = lambda snap: "fixture-topology"
+route = {"v": 1, "x": 80, "z": 675, "arrive": 2, "objective": "travel",
+         "status": "active", "visited": [], "nonclosing_legs": 0}
+portal = {"kind": "object", "id": 60, "x": 105, "z": 619, "dir": 0,
+          "from": [104, 619], "to": [105, 619]}
+gp.authoritative_route_plan = lambda *args: {
+    "status": "ok", "waypoints": [[104, 615], [104, 619], [105, 619]],
+    "steps": 12, "expanded": 30, "remaining_cost": None,
+    "portals": [portal]}
+planned, leg = gp.prepare_authoritative_route(route, {"x": 104, "z": 607})
+assert leg == (104, 615), (planned, leg)
+assert (planned["x"], planned["z"]) == (80, 675), planned
+assert planned["next_portal"] == portal, planned
+gp.authoritative_route_plan = lambda *args: {
+    "status": "ok", "waypoints": [[105, 619]], "steps": 1, "expanded": 2,
+    "remaining_cost": None, "portals": [portal]}
+blocked, leg = gp.prepare_authoritative_route(route, {"x": 104, "z": 619})
+assert leg is None, (blocked, leg)
+assert blocked["status"] == "blocked", blocked
+assert blocked["blocked_reason"] == "semantic-portal-needed", blocked
+assert blocked["blocked_signature"] == "fixture-topology", blocked
+assert (blocked["x"], blocked["z"]) == (80, 675), blocked
+PY
+
 echo
 echo "observed movement is timestamped and reversibly backtracked (spec rule 7f):"
 rm -f "$DESKCRAB_GAME_DIR/movement-trail.json" \
