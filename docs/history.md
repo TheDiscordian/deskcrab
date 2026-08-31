@@ -1384,4 +1384,6 @@ Explicit routes now hold learned walk fragments while leaving interactions avail
 pathfinder resolves the complete currently loaded collision path to the real destination and
 dispatches only a bounded prefix of that path. Prefixes may temporarily increase straight-line
 distance; repeated endpoints and a bounded non-closing-leg budget stop a genuine cycle and return a
-grounded navigation gap for semantic reasoning.
+grounded navigation gap for semantic reasoning. Recovery also loop-erases its boundary-bounded
+movement history before building reverse targets, so asking to backtrack cannot replay an
+oscillation already present in the recorded trail.

@@ -423,6 +423,11 @@ deliberate-play channel.
    An unexplained transition greater than twelve tiles marks a portal boundary rather than
    inventing a walkable edge. `backtrack [POINTS|all]` atomically replaces an ordinary route with
    the reverse of the recent boundary-bounded trail in `$DESKCRAB_GAME_DIR/backtrack.json`.
+   Before selecting recovery targets it loop-erases that segment: when a tile occurs again, the
+   intervening branch is known to have returned to its own start and is removed from the recovery
+   path. This applies to any cycle shape, not merely an alternating pair, is logged as
+   `backtrack-loop-erased`, and leaves the raw timestamped observation trail intact. Backtracking
+   therefore cannot faithfully replay an oscillation that already failed during forward play.
    With no count it selects at most eight checkpoints; replaying the whole segment requires the
    deliberate `all` argument. Those exact observed tiles become high-priority recovery targets,
    but a target farther than eight tiles is approached through separately verified local legs:

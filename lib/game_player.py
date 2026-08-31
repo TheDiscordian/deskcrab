@@ -518,6 +518,29 @@ def load_movement_trail() -> dict:
     return {"v": 1, "points": valid}
 
 
+def loop_erase_movement_segment(points: list) -> tuple:
+    """Return the useful connected path after removing observed cycles.
+
+    If a tile is visited again, every point after its earlier occurrence is a
+    branch that returned to where it began. Recovery should retrace the
+    remaining route, not replay that already-observed loop in reverse.
+    """
+    path = []
+    positions = {}
+    for point in points:
+        key = (point["x"], point["z"])
+        previous = positions.get(key)
+        if previous is None:
+            positions[key] = len(path)
+            path.append(point)
+            continue
+        abandoned = path[previous + 1:]
+        for old in abandoned:
+            positions.pop((old["x"], old["z"]), None)
+        path = path[:previous + 1]
+    return path, len(points) - len(path)
+
+
 def record_movement_trail(snap: dict, connected: bool = False) -> None:
     """Remember actual settled/observed tiles, including direct Sol movement.
 
@@ -4151,7 +4174,8 @@ def cmd_backtrack(args):
     for index, point in enumerate(trail):
         if point.get("break") is True:
             segment_start = index
-    segment = trail[segment_start:]
+    segment, loop_points_removed = loop_erase_movement_segment(
+        trail[segment_start:])
     current = [snap.get("x"), snap.get("z")]
     while segment and [segment[-1]["x"], segment[-1]["z"]] == current:
         segment = segment[:-1]
@@ -4174,8 +4198,13 @@ def cmd_backtrack(args):
                "index": 0, "points": targets, "set_ts": now_ms()}
     clear_route()
     save_backtrack(request)
+    if loop_points_removed:
+        flush_events([{"ts": now_ms(), "kind": "backtrack-loop-erased",
+                       "removed_points": loop_points_removed,
+                       "remaining_points": len(segment)}])
     print(f"backtrack-set points={len(targets)} next=({targets[0][0]},{targets[0][1]}) "
-          f"objective={request['objective'] or '(none)'}")
+          f"objective={request['objective'] or '(none)'}"
+          f"{(' loop_erased=' + str(loop_points_removed)) if loop_points_removed else ''}")
 
 
 def cmd_log(args):

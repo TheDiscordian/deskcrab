@@ -1201,6 +1201,33 @@ assert request["points"][0] == [109, 100], request
 PY
 python3 "$GP" backtrack clear >/dev/null
 
+# A recorded recovery path may contain the very loop that made forward play
+# fail. Recovery keeps the connected route while removing the closed branch.
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY'
+import json, sys, time
+now = int(time.time() * 1000)
+coords = [(90, 100), (100, 100), (107, 100), (100, 100), (107, 100)]
+json.dump({"v": 1, "points": [
+    {"x": x, "z": z, "ts": now + i, "break": False}
+    for i, (x, z) in enumerate(coords)
+]}, open(sys.argv[1], "w"))
+PY
+snap 105235 '[]' '{"x":107,"z":100}'
+OUT="$(python3 "$GP" backtrack all)"
+contains "$OUT" "loop_erased=2" \
+    && ok "recovery reports that it removed an observed cycle" \
+    || fail "recovery must make cycle removal visible" "$OUT"
+python3 - "$DESKCRAB_GAME_DIR/backtrack.json" <<'PY' \
+    && ok "backtracking never replays the loop from the forward trail" \
+    || fail "backtracking must loop-erase its targets"
+import json, sys
+request = json.load(open(sys.argv[1]))
+assert request["points"] == [[100, 100], [90, 100]], request
+PY
+check_eq "the recovery correction is durable evidence" \
+    "$(sandbox_count_in '"kind":"backtrack-loop-erased"' "$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl")" "1"
+python3 "$GP" backtrack clear >/dev/null
+
 # A discontinuity is evidence for a semantic stair/ladder/portal interaction,
 # never permission to issue one impossible walk across coordinate layers.
 rm -f "$DESKCRAB_GAME_DIR/movement-trail.json" \
