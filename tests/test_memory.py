@@ -394,13 +394,34 @@ class TestReconcile(StoreCase):
         b = self._directive("Keep spoken responses brief instead of "
                             "monologuing technical detail aloud.")
         self._directive("Water the tomato plants on Sunday mornings.")
-        pairs = self.store.scan_rule_overlaps()
+        pairs, excluded = self.store.scan_rule_overlaps()
         refs = {frozenset((p["a_ref"], p["b_ref"])) for p in pairs}
         self.assertIn(frozenset((a, b)), refs)
+        self.assertEqual(excluded, [])
         # The scan is evidence only: every row is exactly as active as before.
         statuses = {r[0] for r in self.store.db.execute(
             "SELECT status FROM memories")}
         self.assertEqual(statuses, {"active"})
+
+    def test_scan_excludes_template_clauses_by_name(self):
+        # One boilerplate heading shared by many conduct files produced 76
+        # perfect-similarity pairs on the first live scan. Verbatim clauses
+        # shared by three or more rules are scaffolding: excluded from the
+        # comparison, returned by name, never dropped silently.
+        template = ("The shelf line as this rule found it, kept verbatim "
+                    "for the record.")
+        ids = [self._directive(f"{template} {rule}")
+               for rule in ("Water the tomato plants before the sun is high.",
+                            "Restack the woodpile before the first frost.",
+                            "Return the neighbour's borrowed ladder by "
+                            "Friday.")]
+        pairs, excluded = self.store.scan_rule_overlaps()
+        self.assertEqual([template], excluded)
+        refs = {frozenset((p["a_ref"], p["b_ref"])) for p in pairs}
+        for i in ids:
+            for j in ids:
+                if i != j:
+                    self.assertNotIn(frozenset((i, j)), refs)
 
     def test_superseded_by_backfilled_for_rows_linked_before_the_column(self):
         old = self._directive("Wake him at seven on weekdays.")

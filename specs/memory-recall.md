@@ -167,9 +167,12 @@ life, and she re-reads that store every single turn.
     squashing a correction into the rule it corrects would keep the version the user rejected.
     `crab memory overlaps --scan` nominates stored active pairs — directives and conduct bodies
     both, at rule 28's floor — for exactly this three-way judgement, and prints pairs only:
-    similarity nominates, it never merges. Hiding duplicates at retrieval time alone is not
-    reconciliation, because the stored active set is what every future preflight measures
-    against.
+    similarity nominates, it never merges. A verbatim clause shared by three or more active
+    rules is template scaffolding, not a duplicated rule; the scan excludes those clauses and
+    names how many it excluded rather than dropping them silently (measured live: one shared
+    conduct heading alone produced 76 perfect-similarity pairs that drowned every real
+    nomination). Hiding duplicates at retrieval time alone is not reconciliation, because the
+    stored active set is what every future preflight measures against.
 29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
     would lose its earliest material to a tail-clamp, so the chunk list is split into successive
     windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a

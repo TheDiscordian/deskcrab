@@ -1005,10 +1005,21 @@ class Store:
         pairs that predate the write-time preflight. Same clause floor as
         rule 28, one best-similarity entry per record pair; the output is
         evidence for a merge / supersede / distinct judgement, never the
-        judgement itself."""
+        judgement itself. Returns (pairs, excluded_clauses): a verbatim
+        clause shared by three or more rules is template scaffolding, not a
+        duplicated rule — one shared conduct heading produced 76
+        perfect-similarity pairs on the first live scan — so those clauses
+        are excluded and returned by name, never dropped silently."""
         pool = self._rule_clause_pool(conduct_dir)
+        shared = {}
+        for drawer, ref, clause in pool:
+            shared.setdefault(normalize_rule(clause), set()).add((drawer, ref))
+        excluded = sorted({clause for _, _, clause in pool
+                           if len(shared[normalize_rule(clause)]) >= 3})
+        pool = [entry for entry in pool
+                if len(shared[normalize_rule(entry[2])]) < 3]
         if len(pool) < 2:
-            return []
+            return [], excluded
         vectors = embed([entry[2] for entry in pool])
         best = {}
         for i, (a_drawer, a_ref, a_clause) in enumerate(pool):
@@ -1028,7 +1039,7 @@ class Store:
                         "b_clause": b_clause,
                         "similarity": round(sim, 4)}
         return sorted(best.values(), key=lambda h: h["similarity"],
-                      reverse=True)
+                      reverse=True), excluded
 
     def _rule_clause_pool(self, conduct_dir=None):
         """Every clause of every active durable rule, across both drawers:
@@ -2862,14 +2873,19 @@ def cmd_supersede(store, args):
 
 def cmd_overlaps(store, args):
     if args.scan:
-        pairs = store.scan_rule_overlaps()
+        pairs, excluded = store.scan_rule_overlaps()
         for hit in pairs:
             print(f"{hit['similarity']:.3f} "
                   f"{hit['a_drawer']}:{hit['a_ref']} <-> "
                   f"{hit['b_drawer']}:{hit['b_ref']}")
             print(f"    {hit['a_clause'][:110]}")
             print(f"    {hit['b_clause'][:110]}")
-        print(f"-- {len(pairs)} stored overlap pairs at >= {RULE_OVERLAP_SIM}")
+        for clause in excluded:
+            print(f"   (template clause shared by 3+ rules, not compared: "
+                  f"{clause[:90]})")
+        print(f"-- {len(pairs)} stored overlap pairs at >= {RULE_OVERLAP_SIM}"
+              + (f", {len(excluded)} shared template clauses excluded"
+                 if excluded else ""))
         return 0
     path = os.path.join(store.dir, "pending-rule-overlaps.json")
     try:
