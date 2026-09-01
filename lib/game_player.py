@@ -37,7 +37,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "in_combat", "out_of_combat")
-ACTIONS = ("talk-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
+ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
@@ -1534,6 +1534,13 @@ def validate_config(cfg: dict) -> None:
         if atype == "talk-npc":
             if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
                 bad(f"{where}: talk-npc takes exactly npc=<type id>")
+        elif atype == "attack-npc":
+            if not set(action) <= {"type", "npc", "within"} \
+                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
+                bad(f"{where}: attack-npc takes npc=<type id> and optionally within")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: attack-npc within must be an integer 0..10")
         elif atype == "interact-npc":
             if not set(action) <= {"type", "npc", "cmd", "within"} \
                     or not isinstance(action.get("npc"), int) or action["npc"] < 0:
@@ -2408,10 +2415,21 @@ def oldest_pending_system_message(est: dict):
 
 
 def latest_system_feedback(snap: dict):
-    """Latest non-player game text, compact enough to ride a play verdict."""
+    """Latest fresh non-player game text, compact enough for a play verdict.
+
+    Bridge message ids carry their wall-clock millisecond in the high digits.
+    Old retained messages are history, not causal evidence for the current
+    action or location, and must not be presented to Sol as current feedback.
+    """
+    snap_ts = snap.get("ts")
     for message in reversed(snap.get("messages") or []):
         if not isinstance(message, dict) \
                 or message.get("channel") not in SYSTEM_FEEDBACK_CHANNELS:
+            continue
+        message_id = message.get("id")
+        if isinstance(snap_ts, int) and isinstance(message_id, int) \
+                and message_id >= 1_000_000_000_000 \
+                and snap_ts - message_id // 1000 > 10_000:
             continue
         text = " ".join(str(message.get("text", "")).split())
         if text:
@@ -2611,6 +2629,7 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "x": snap.get("x"), "z": snap.get("z"),
             "walking": snap.get("walking"),
             "in_combat": snap.get("in_combat"),
+            "opponent": snap.get("opponent"),
             "talking_to_npc": snap.get("talking_to_npc"),
             "right_click_menu_open": snap.get("right_click_menu_open"),
             "ui_panel_open": snap.get("ui_panel_open"),
@@ -2742,6 +2761,22 @@ def action_completion(observation: dict, snap: dict):
                 ui_changes.append(f"{key}:{str(snap[key]).lower()}")
         completed = bool(inventory_changes or xp_changes or message
                          or ui_changes or moved or failure)
+    if observation["type"] == "attack-npc":
+        combat_started = snap.get("in_combat") is True \
+            and before.get("in_combat") is not True
+        opponent_acquired = snap.get("opponent") is not None \
+            and snap.get("opponent") != before.get("opponent")
+        combat_skill_ids = {
+            skill_id for skill_id, skill in current_skills.items()
+            if str(skill.get("name", "")).casefold()
+            in {"attack", "defense", "strength", "hits"}
+        }
+        combat_xp = bool(changed_skill_ids & combat_skill_ids)
+        if combat_started:
+            ui_changes.append("in_combat:true")
+        if opponent_acquired:
+            ui_changes.append("opponent:acquired")
+        completed = bool(combat_started or opponent_acquired or combat_xp or failure)
     if observation["type"] == "use-item-object":
         # Pane/menu changes were the old two-click race, not evidence that the
         # server used the selected item. A furnace's start line also precedes
@@ -3183,6 +3218,22 @@ def compile_player_action(rule, snap, food, eat_pick):
         if npc is not None:
             return compiled_npc_action("talk-npc", npc, want), None
         return None, "npc-not-visible"
+    if action["type"] == "attack-npc":
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        npc = nearest_npc(snap, want)
+        if npc is None:
+            return None, "npc-not-visible"
+        if npc.get("attackable") is not True:
+            return None, "npc-not-attackable"
+        distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+        if within is not None and distance > within:
+            return None, "npc-not-within-range"
+        extra = {"target_distance": distance}
+        if within is not None:
+            extra["within"] = within
+        return compiled_npc_action("attack-npc", npc, want, **extra), None
     if action["type"] == "interact-npc":
         want = action["npc"]
         within = action.get("within")
@@ -4295,7 +4346,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "npc": action["npc"], "completion": completion_detail,
                            "feedback": latest_system_feedback(latest or snap)}])
     elif status == "done" and action["type"] in (
-            "use-item-npc", "click-inventory", "click-entity"):
+            "attack-npc", "use-item-npc", "click-inventory", "click-entity"):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
             "within", "button") if key in action]

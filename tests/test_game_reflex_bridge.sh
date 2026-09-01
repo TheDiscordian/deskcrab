@@ -33,6 +33,26 @@ mkdir -p "$JOUT"
     || die "the bridge no longer compiles against the harness: $(cat "$SANDBOX/javac.err")"
 ok "the game tree's ReflexBridge compiles against this repo's harness"
 
+python3 - "$GAME_TREE/Core-Framework/PC_Client/src/orsc/ScaledWindow.java" <<'PY' \
+    && ok "pointer move and click settle off the game thread" \
+    || fail "pointer settling must not block the game thread"
+import sys
+source = open(sys.argv[1]).read()
+start = source.index("public boolean clickPointer(")
+end = source.index("\n\tpublic int getWindowWidthInsets", start)
+method = source[start:end]
+thread = method.index("Thread clickThread = new Thread")
+move = method.index("robot.mouseMove", thread)
+delay = method.index("robot.delay(200)", move)
+press = method.index("robot.mousePress", delay)
+started = method.index("clickThread.start()", press)
+returned = method.index("return true", started)
+assert "pointerClickInFlight.compareAndSet(false, true)" in method
+assert "robot.mouseMove" not in method[:thread]
+assert thread < move < delay < press < started < returned
+assert "clickThread.setDaemon(true)" in method
+PY
+
 S="$SANDBOX/gstate"
 mkdir -p "$S"
 harness() { "$JAVA" -cp "$JOUT" ReflexBridgeHarness "$S" "$@"; }
@@ -370,10 +390,12 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["npcs"] == [
     {"sidx": 7, "id": 474, "name": "Farmer", "description": "A local farmer",
+     "commands": ["Pickpocket", ""],
      "attackable": True, "stats": {"attack": 2, "strength": 2, "defense": 2, "hits": 8},
      "x": 121, "z": 651, "distance": 1,
      "clear_shot": True, "terrain_melee_reachable": False},
     {"sidx": 9, "id": 485, "name": "Guard", "description": "A watchful guard",
+     "commands": ["Challenge", "Recruit"],
      "attackable": True, "stats": {"attack": 8, "strength": 7, "defense": 9, "hits": 15},
      "x": 122, "z": 650, "distance": 2,
      "clear_shot": False, "terrain_melee_reachable": True},
@@ -401,6 +423,27 @@ refute "a stale farther target is not talked to when an equivalent is nearer" \
     contains "$OUT" "talk sidx"
 check_eq "the nearer-equivalent refusal is explicit" "$(rstatus)" \
     "refused-nearer-equivalent"
+
+echo
+echo "attack-npc executes the native attack action (rules 5-7):"
+wact 622 "$(now_ms)" "type=attack-npc" "sidx=7" "npc=474"
+OUT="$(harness exec)"
+contains "$OUT" "attack sidx=7" \
+    && ok "an attackable NPC reaches the native attack host action" \
+    || fail "an attackable NPC must reach the native attack host action" "$OUT"
+check_eq "the native attack is receipted done" "$(rstatus)" "done"
+wact 623 "$(now_ms)" "type=attack-npc" "sidx=7" "npc=474"
+OUT="$(harness exec-not-attackable)"
+refute "a non-attackable NPC receives no attack action" contains "$OUT" "attack sidx="
+check_eq "the non-attackable refusal is explicit" "$(rstatus)" "refused-not-attackable"
+wact 624 "$(now_ms)" "type=attack-npc" "sidx=9" "npc=485" "within=1"
+OUT="$(harness exec)"
+refute "an attack target beyond the compiled range is not chased" contains "$OUT" "attack sidx="
+check_eq "the attack range refusal is explicit" "$(rstatus)" "refused-npc-out-of-range"
+wact 625 "$(now_ms)" "type=attack-npc" "sidx=7" "npc=999"
+OUT="$(harness exec)"
+refute "a swapped NPC receives no attack action" contains "$OUT" "attack sidx="
+check_eq "the attack type mismatch is explicit" "$(rstatus)" "refused-npc-mismatch"
 
 echo
 echo "interact-npc executes a definition-backed NPC command (rules 5-7):"

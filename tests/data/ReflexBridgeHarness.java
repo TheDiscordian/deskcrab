@@ -22,7 +22,7 @@ import orsc.ReflexBridge;
  * (every 12th tick) gives the engine a genuinely new tick to act on.
  *
  * Every host action the bridge executes is printed to stdout, one line each:
-	 * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N",
+	 * "eat slot=N", "walk x=N z=N", "shown <text>", "talk sidx=N", "attack sidx=N",
 	 * "npc sidx=N cmd=N", "cast spell=N sidx=N",
 	 * "object x=N z=N id=N cmd=N", "bound x=N z=N dir=N cmd=N",
 	 * "click x=N y=N button=N", "equip|unequip slot=N item=N",
@@ -59,6 +59,7 @@ public class ReflexBridgeHarness {
 		final int[] tradeTheirIds = {145, 10};
 		final int[] tradeTheirAmounts = {1, 50};
 		boolean npcDialogueOpen = false;
+		boolean npcAttackable = true;
 		boolean shopOpen = true;
 		boolean bankOpen = true;
 		final String[] menuOptions = {
@@ -605,8 +606,13 @@ public class ReflexBridgeHarness {
 			return npcSidx[i] == 7 ? "A local farmer" : "A watchful guard";
 		}
 
+		public String npcCommand(int i, int command) {
+			if (npcSidx[i] == 7) return command == 1 ? "Pickpocket" : "";
+			return command == 1 ? "Challenge" : "Recruit";
+		}
+
 		public boolean npcAttackable(int i) {
-			return true;
+			return npcAttackable;
 		}
 
 		public int npcAttack(int i) { return npcSidx[i] == 7 ? 2 : 8; }
@@ -639,6 +645,10 @@ public class ReflexBridgeHarness {
 
 		public void talkToNpc(int serverIndex) {
 			events.add("talk sidx=" + serverIndex);
+		}
+
+		public void attackNpc(int serverIndex) {
+			events.add("attack sidx=" + serverIndex);
 		}
 
 		public void interactNpc(int serverIndex, int command) {
@@ -968,6 +978,9 @@ public class ReflexBridgeHarness {
 			host.npcAbsZ[0] = 651;
 			host.npcAbsX[1] = 124;
 			host.npcAbsZ[1] = 650;
+		}
+		if ("exec-not-attackable".equals(mode)) {
+			host.npcAttackable = false;
 		}
 		if ("hurt".equals(mode)) {
 			host.hitsNow = 3;

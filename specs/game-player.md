@@ -125,7 +125,10 @@ deliberate-play channel.
    from the snapshot at fire time — nearest matching NPC by real walking steps, independently of
    input list order — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
-   click), `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
+   click), `attack-npc` (`npc`: the type id; optional `within` 0–10) resolves that same stable
+   identity, requires the live NPC to be explicitly attackable, and sends the game's native attack
+   action. Combat begins only when structured state observes combat, an opponent, or combat XP;
+   merely walking toward the NPC is not completion. `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
    `within` 0–10 caps the current Chebyshev tile distance and rides the action file for one final
    dispatch-time recheck), which
    resolves the same stable NPC identity and performs its definition-backed menu command without
@@ -623,7 +626,12 @@ deliberate-play channel.
     to identify one and then acts; a failed action is followed by a changed strategy in the same
     turn where practical. Waiting for player messages, keeping a spectator available, having no
     matching learned rule, or being uncertain are not blockers and cannot resolve the GAP to
-    deliberate idle. A genuinely unresolved prerequisite is named precisely together with the
+    deliberate idle. A common semantic intent with no valid inspector or action is a capability
+    gap, not permission to guess a numbered command or substitute a pixel. The playing hand records
+    the exact intent, observed state, missing semantic input/action, and required postcondition,
+    then dispatches an immediate detached builder through the supplied capability-improvement
+    door. It continues with another valid action while that builder works, and uses the new door
+    once it is deployed. A genuinely unresolved prerequisite is named precisely together with the
     corrective inspection or action it requires; it is not converted into a vague decision to
     stop playing. A newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player

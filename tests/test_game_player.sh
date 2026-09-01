@@ -122,6 +122,15 @@ for _ in range(100):
                                       if int(item.get("count", 0)) > 0]
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") == "attack-npc":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            state["in_combat"] = True
+            state["opponent"] = {"kind": "npc", "sidx": int(fields["sidx"]),
+                                 "id": int(fields["npc"])}
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         if delivered and fields.get("type") == "cast-npc":
             state_path = os.path.join(sd, "state.json")
             state = json.load(open(state_path))
@@ -470,6 +479,27 @@ refute "a reflex-channel action (warn) is refused" \
     python3 "$GP" learn bad2 --priority 1 --trigger npc_visible=478 --action warn --param text=x
 refute "talk-npc without its npc id is refused" \
     python3 "$GP" learn bad3 --priority 1 --trigger npc_visible=478 --action talk-npc
+refute "attack-npc without its npc id is refused" \
+    python3 "$GP" learn bad-attack --priority 1 --trigger npc_visible=478 --action attack-npc
+refute "attack-npc refuses a roaming cap beyond ten tiles" \
+    python3 "$GP" learn bad-attack-range --priority 1 --trigger npc_visible=11 \
+        --action attack-npc --param npc=11 --param within=11
+python3 - "$GP" <<'PY' \
+    && ok "old retained game messages are not presented as current causal feedback" \
+    || fail "stale game feedback must not be attached to the current decision"
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("game_player", sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+now = int(time.time() * 1000)
+old = {"id": (now - 60_000) * 1000, "channel": "quest",
+       "text": "The old guild door will not open"}
+fresh = {"id": (now - 500) * 1000, "channel": "game",
+         "text": "The Goblin attacks"}
+assert gp.latest_system_feedback({"ts": now, "messages": [old]}) is None
+assert gp.latest_system_feedback({"ts": now, "messages": [old, fresh]}) \
+    == "The Goblin attacks"
+PY
 refute "interact-npc refuses a command outside the NPC definition verbs" \
     python3 "$GP" learn bad-npc-command --priority 1 --trigger npc_visible=11 \
         --action interact-npc --param npc=11 --param cmd=3
@@ -1935,6 +1965,24 @@ check_eq "the range cap crosses ACTIONS for a live dispatch recheck" \
     "$(last_action 'within=2')" "1"
 python3 "$GP" remove pickpocket-man >/dev/null
 python3 "$GP" objective --clear >/dev/null
+python3 "$GP" objective gather-bones >/dev/null
+python3 "$GP" learn attack-nearby-goblin --priority 75 --cooldown-ms 0 \
+    --trigger objective_is=gather-bones --trigger npc_visible=62 \
+    --trigger out_of_combat=true --action attack-npc --param npc=62 --param within=4 >/dev/null
+snap 12961 '[{"sidx":92,"id":62,"name":"Goblin","x":121,"z":648,"attackable":true}]' \
+    '{"in_combat":false}'
+fake_bridge done
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the semantic NPC attack verifies actual combat" "$CODE" "0"
+check_eq "the action is attack-npc" "$(last_action 'type=attack-npc')" "1"
+check_eq "the attack carries the stable server index" "$(last_action 'sidx=92')" "1"
+check_eq "the attack range cap reaches the bridge" "$(last_action 'within=4')" "1"
+contains "$OUT" "status=done" \
+    && ok "combat state, not approach movement, completes the attack" \
+    || fail "the semantic attack needs grounded combat completion" "$OUT"
+python3 "$GP" remove attack-nearby-goblin >/dev/null
+python3 "$GP" objective --clear >/dev/null
 refute "a non-integer bound_visible is refused" \
     python3 "$GP" learn bad7 --priority 1 --trigger bound_visible=door \
         --action interact-bound --param obj=1
@@ -2265,7 +2313,7 @@ check_eq "panel close deliberately moves away and verifies live closure" "$CODE"
 contains "$OUT" "method=mouse-away verified=true" \
     && ok "the correction reports its method and proof" \
     || fail "the correction reports its method and proof" "$OUT"
-snap 11701 '[{"sidx":55,"id":11,"x":121,"z":648}]'
+snap 11701 '[{"sidx":55,"id":11,"x":121,"z":648,"commands":["Pickpocket",""]}]'
 fake_bridge done
 OUT="$(bash "$HEADLESS" npc 11 1)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -2276,6 +2324,17 @@ contains "$OUT" "npc=11 sidx=55 cmd=1" \
 check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
 refute "the NPC command door did not move the pointer" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 117010 '[{"sidx":56,"id":62,"name":"Goblin","x":121,"z":648,"attackable":true,"commands":["",""]}]'
+fake_bridge done
+OUT="$(bash "$HEADLESS" attack Goblin 2)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the attack door verifies combat through ACTIONS" "$CODE" "0"
+contains "$OUT" "attack(name=Goblin npc=62 sidx=56)" \
+    && ok "the attack door reports its stable NPC identity" \
+    || fail "the attack door must report its stable NPC identity" "$OUT"
+check_eq "the door wrote the native attack action" "$(last_action 'type=attack-npc')" "1"
+refute "the attack door did not move the pointer" \
+    grep -Eq '^(x|y|button|cmd)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":true,"terrain_melee_reachable":false}]' '{
   "hover_text":"Farmer: Cast Wind Strike on / 1 more option",
   "magic_level":3,"selected_spell":null,
@@ -3245,7 +3304,10 @@ contains "$OUT" '`route` alone reads the current durable route' \
     && ok "the fresh player receives exact route inspection and mutation syntax" \
     || fail "the fresh player must not guess route subcommands" "$OUT"
 contains "$OUT" '`use ITEM-ID npc NAME`' \
+    && contains "$OUT" '`attack NAME`' \
     && contains "$OUT" 'Never put a screenshot coordinate' \
+    && contains "$OUT" 'orsc-headless.sh improve' \
+    && contains "$OUT" 'immediately dispatches a detached builder' \
     && ok "the fresh player receives the semantic action and reflex hierarchy" \
     || fail "the fresh player needs the concrete semantic tool map" "$OUT"
 
@@ -3466,6 +3528,10 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
         'There is no `route status` form' \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
         '`use ITEM-ID npc NAME`' \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        '`attack NAME`' \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+        'orsc-headless.sh improve' \
     && ok "the resumed thread receives exact semantic tool spellings" \
     || fail "the resumed thread must not guess tool syntax"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "orsc-headless.sh hover" \

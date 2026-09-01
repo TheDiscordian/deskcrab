@@ -85,10 +85,10 @@ Three parts:
    `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
    client currently holds as loaded, nearest by ordinary walking steps to the player first,
    capped at 64: each
-   `{"sidx":…,"id":…,"name":…,"description":…,"attackable":…,"stats":{"attack":…,
+   `{"sidx":…,"id":…,"name":…,"description":…,"commands":[…],"attackable":…,"stats":{"attack":…,
    "strength":…,"defense":…,"hits":…},"x":…,"z":…,"distance":…,
    "clear_shot":…,"terrain_melee_reachable":…}` — the client's own index for that NPC, its
-   client-cache identity/stats and world tile, Chebyshev distance, the ordinary-game
+   client-cache identity, definition verbs, stats and world tile, Chebyshev distance, the ordinary-game
    projectile-line result, and whether the
    currently loaded movement topology contains a route from it into melee range), plus `npc_count`
    (the complete loaded count) and `npcs_truncated` (whether the 64-entry safety cap omitted
@@ -155,7 +155,8 @@ Three parts:
    server), `chat-local` (send public chat to nearby players), `chat-private` (send a private
    message to a named online player at any distance), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
    same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
-   NPCs only and structurally cannot message another player), `interact-npc`
+   NPCs only and structurally cannot message another player), `attack-npc` (walk to and attack an
+   attackable visible NPC by server/type identity through the native NPC attack packet), `interact-npc`
    (perform command 1 or 2 from a visible NPC's own definition — the same
    walk-and-command as its context-menu entry, without reconstructing that menu), `cast-npc`
    (cast one NPC/player-targeted spell by spell id on a visible NPC server/type identity after
@@ -168,7 +169,8 @@ Three parts:
    game's own menu, never an invented verb), and `interact-bound` (the same for a wall object —
    a door or other boundary — at a tile and wall direction; Open and Close are its usual
    commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
-   game object, or wall object identified by stable game identity, then click button 1, 2, or 3),
+   game object, or wall object identified by stable game identity, let the game loop process that
+   pointer position on a later frame, then click button 1, 2, or 3 without blocking that loop),
    `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
    current slot centre, and click button 1, 2, or 3), `equip-inventory` / `unequip-inventory`
    (idempotently request the named held item's equipped state, returning `already-equipped` or
@@ -192,7 +194,7 @@ Three parts:
    currently visible ground item identified by item id and world tile), and `retreat` (while in
    combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
    fallback direction, trying alternate directions and nearer tiles without sending failed path
-   probes). `talk-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
+   probes). `talk-npc`, `attack-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
    `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
    `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
@@ -212,11 +214,12 @@ Three parts:
    collision-path prefix length `route_step` for walk; `text` for warn and chat-local; `target`
    and `text` for chat-private; `sidx` and `npc` — the server index and the type id the emitter saw
    there, the latter deliberately NOT named `id` so it can never collide with the action id line —
-   for talk-npc and interact-npc (the latter also carries `cmd` 1 or 2 and may carry `within`
-   0–10), so a despawned or swapped NPC is refused as `refused-no-such-npc` or
+   for talk-npc, attack-npc, and interact-npc (attack-npc and interact-npc may carry `within`
+   0–10; interact-npc also carries `cmd` 1 or 2), so a despawned or swapped NPC is refused as `refused-no-such-npc` or
    `refused-npc-mismatch`, never talked to blind. Immediately before dispatch the bridge also
    refuses `refused-nearer-equivalent` when another currently loaded NPC of that type is strictly
-   fewer walking steps away; `interact-npc` rechecks `within` against the NPC's current tile and
+   fewer walking steps away; `attack-npc` additionally refuses `refused-not-attackable`; both it
+   and `interact-npc` recheck `within` against the NPC's current tile and
    refuses `refused-npc-out-of-range` if it roamed beyond the cap. `cast-npc` carries `spell`,
    `sidx`, and `npc`, plus optional `within` 0–10 and 0/1 `stationary`,
    `require_clear_shot`, and `require_melee_unreachable`; it refuses a missing spell, a non-NPC spell target, insufficient live Magic,
