@@ -34,8 +34,8 @@ ACTION_FRESH_MS = 1500  # the bridge's freshness window; spec rule 7
 DEFAULTS = {
     "stale_ms": 2000,
     "poll_ms": 150,
-    "min_action_interval_ms": 600,
-    "max_actions_per_min": 20,
+    "min_action_interval_ms": 0,
+    "max_actions_per_min": 0,
     "inflight_timeout_ms": 2000,
     "eat_pick": "min",
 }
@@ -61,9 +61,10 @@ DEFAULT_RULES = {
             "enabled": False,
             "channel": "game",
             "priority": 10,
-            "cooldown_ms": 1500,
+            "cooldown_ms": 0,
             "hold_ticks": 2,
-            "trigger": {"hp_below": 0.5, "requires_food": True},
+            "trigger": {"hp_below": 0.5, "requires_food": True,
+                        "in_combat": False},
             "action": {"type": "eat"},
         },
         {
@@ -71,7 +72,7 @@ DEFAULT_RULES = {
             "enabled": False,
             "channel": "game",
             "priority": 20,
-            "cooldown_ms": 5000,
+            "cooldown_ms": 0,
             "hold_ticks": 2,
             "trigger": {"hp_below": 0.35, "no_food": True},
             "action": {"type": "flee", "distance": 5, "dx": 0, "dz": 1},
@@ -166,6 +167,12 @@ def validate_config(cfg: dict) -> None:
         v = defaults.get(key, DEFAULTS[key])
         if not isinstance(v, int) or v < 0:
             bad(f"defaults.{key} must be a non-negative integer, not {v!r}")
+    if defaults.get("min_action_interval_ms", 0) != 0:
+        bad("defaults.min_action_interval_ms must be 0: gameplay eligibility "
+            "comes from observed state transitions")
+    if defaults.get("max_actions_per_min", 0) != 0:
+        bad("defaults.max_actions_per_min must be 0: the in-flight action and "
+            "its observed completion own sequencing")
     if defaults.get("eat_pick", "min") not in ("min", "max"):
         bad("defaults.eat_pick must be 'min' or 'max'")
 
@@ -191,6 +198,9 @@ def validate_config(cfg: dict) -> None:
             bad(f"{where}: priority must be an integer")
         if not isinstance(rule.get("cooldown_ms"), int) or rule["cooldown_ms"] < 0:
             bad(f"{where}: cooldown_ms must be a non-negative integer")
+        if channel == "game" and rule["cooldown_ms"] != 0:
+            bad(f"{where}: game-channel cooldown_ms must be 0: use an observed "
+                "trigger and completion transition")
         if not isinstance(rule.get("hold_ticks"), int) or rule["hold_ticks"] < 1:
             bad(f"{where}: hold_ticks must be an integer >= 1")
 
@@ -218,6 +228,8 @@ def validate_config(cfg: dict) -> None:
         if not isinstance(action, dict) or "type" not in action:
             bad(f"{where}: action must be an object with a type")
         atype = action["type"]
+        if atype == "eat" and trig.get("in_combat") is not False:
+            bad(f"{where}: eat requires trigger.in_combat=false; leave combat first")
         allowed = GAME_ACTIONS if channel == "game" else NOTICE_ACTIONS
         if atype not in allowed:
             bad(f"{where}: action '{atype}' is not allowed on the {channel} "
@@ -259,10 +271,30 @@ def load_config() -> dict:
         cfg = json.loads(path.read_text())
     except json.JSONDecodeError as e:
         die(f"rule table {path} is not valid JSON: {e}")
+    migrated = False
+    defaults = cfg.get("defaults") if isinstance(cfg, dict) else None
+    if isinstance(defaults, dict):
+        for key in ("min_action_interval_ms", "max_actions_per_min"):
+            if defaults.get(key) != 0:
+                defaults[key] = 0
+                migrated = True
+    for rule in cfg.get("rules", []) if isinstance(cfg, dict) else []:
+        if isinstance(rule, dict) and rule.get("channel") == "game" \
+                and isinstance(rule.get("cooldown_ms"), int) \
+                and rule["cooldown_ms"] != 0:
+            rule["cooldown_ms"] = 0
+            migrated = True
+        if isinstance(rule, dict) and (rule.get("action") or {}).get("type") == "eat" \
+                and isinstance(rule.get("trigger"), dict) \
+                and rule["trigger"].get("in_combat") is not False:
+            rule["trigger"]["in_combat"] = False
+            migrated = True
     try:
         validate_config(cfg)
     except ValueError as e:
         die(f"rule table {path}: {e}")
+    if migrated:
+        atomic_write(path, json.dumps(cfg, indent=2) + "\n")
     return cfg
 
 
@@ -306,6 +338,7 @@ def load_engine_state() -> dict:
     est.setdefault("fired", {})        # rule name -> last fired epoch ms
     est.setdefault("streak", {})       # rule name -> consecutive true snapshots
     est.setdefault("blocked", {})      # rule name -> currently in a logged cooldown episode
+    est.setdefault("gated", {})        # rule name -> currently in a logged combat-hold episode
     est.setdefault("inflight", None)   # {"id":…, "ts":…} while a game action awaits receipt
     est.setdefault("last_game_ms", 0)
     est.setdefault("window", [])       # recent game-action fire times, per-minute cap
@@ -363,7 +396,18 @@ def sweep_dead_notices(now: int) -> None:
                 pass  # the bridge consumed it first; that is fine
 
 
-def consume_receipt(est: dict, now: int, sink=None) -> None:
+def inventory_item_quantity(snap: dict, item_id: int) -> int:
+    return sum(int(item.get("count", 1)) for item in snap.get("inventory") or []
+               if isinstance(item, dict) and item.get("id") == item_id)
+
+
+def consume_receipt(est: dict, now: int, snap: dict = None, sink=None) -> None:
+    """Consume dispatch receipts; an eat receipt is not completion.
+
+    Eating owns the slot until newer visible state proves food consumption or
+    healing, or explicit server feedback proves success/failure. The ordinary
+    inflight timeout remains the maximum failure lease.
+    """
     path = state_dir() / "receipt.json"
     try:
         receipt = json.loads(path.read_text())
@@ -373,12 +417,40 @@ def consume_receipt(est: dict, now: int, sink=None) -> None:
     if receipt is not None and inflight and receipt.get("id") == inflight["id"]:
         log_event({"ts": now, "kind": "receipt", "id": receipt.get("id"),
                    "status": receipt.get("status")}, sink)
-        est["inflight"] = None
+        if inflight.get("type") == "eat" and receipt.get("status") == "done":
+            inflight["receipted"] = True
+        else:
+            est["inflight"] = None
         try:
             path.unlink()
         except OSError:
             pass
-    elif inflight and now - inflight["ts"] > est["_inflight_timeout_ms"]:
+    inflight = est.get("inflight")
+    if inflight and inflight.get("type") == "eat" \
+            and inflight.get("receipted") and isinstance(snap, dict):
+        baseline_hits = inflight.get("hits")
+        healed = isinstance(snap.get("hits"), int) \
+            and isinstance(baseline_hits, int) and snap["hits"] > baseline_hits
+        consumed = inventory_item_quantity(snap, inflight.get("item")) \
+            < inflight.get("item_quantity", 0)
+        old_ids = set(inflight.get("message_ids") or [])
+        messages = [m for m in snap.get("messages") or []
+                    if isinstance(m, dict) and m.get("id") not in old_ids]
+        success = next((str(m.get("text", "")) for m in messages
+                        if "you eat" in str(m.get("text", "")).casefold()
+                        or "heals some health" in str(m.get("text", "")).casefold()), None)
+        failure = next((str(m.get("text", "")) for m in messages
+                        if "can't do that whilst you are fighting"
+                        in str(m.get("text", "")).casefold()), None)
+        if healed or consumed or success or failure:
+            log_event({"ts": now,
+                       "kind": "action-complete" if not failure else "action-failed",
+                       "id": inflight["id"], "type": "eat",
+                       "healed": healed, "consumed": consumed,
+                       "message": success or failure}, sink)
+            est["inflight"] = None
+    inflight = est.get("inflight")
+    if inflight and now - inflight["ts"] > est["_inflight_timeout_ms"]:
         log_event({"ts": now, "kind": "inflight-timeout", "id": inflight["id"]}, sink)
         est["inflight"] = None
 
@@ -436,6 +508,8 @@ def compile_action(rule: dict, snap: dict, food: dict, eat_pick: str):
     action = rule["action"]
     atype = action["type"]
     if atype == "eat":
+        if snap.get("in_combat") is not False:
+            return None, "eat-requires-out-of-combat"
         slots = food_slots(snap, food)
         if not slots:
             return None, "no-food-in-inventory"
@@ -526,6 +600,7 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
             log_event({"ts": now, "kind": "logged-out"}, sink)
             est["was_out"] = True
         est["streak"] = {}
+        est["gated"] = {}
         return
     if est["was_out"]:
         log_event({"ts": now, "kind": "logged-in"}, sink)
@@ -545,20 +620,39 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
     est["last_tick"] = tick
 
     # Debounce streaks first, for every enabled rule, so the counters are
-    # honest whatever fires.
+    # honest whatever fires. On this engine's own vocabulary, a game rule's
+    # in_combat condition is a live dispatch gate (spec rule 10a): the need
+    # keeps its streak through a fight, and dispatch waits for the first
+    # snapshot whose combat state matches — combat defers a reflex, it never
+    # denies the observed need. The player layer plugs in its own trigger_fn
+    # and keeps its own combat vocabulary, so the split binds only here.
     rules = sorted((r for r in cfg["rules"] if r["enabled"]),
                    key=lambda r: -r["priority"])
+    gated = est.setdefault("gated", {})
     eligible = []
     for rule in rules:
         name = rule["name"]
-        if trigger_fn(rule["trigger"], snap, food):
+        trig = rule["trigger"]
+        combat_gated = (trigger_fn is trigger_true and rule["channel"] == "game"
+                        and "in_combat" in trig)
+        need = {k: v for k, v in trig.items() if k != "in_combat"} \
+            if combat_gated else trig
+        if trigger_fn(need, snap, food):
             est["streak"][name] = est["streak"].get(name, 0) + 1
         else:
             est["streak"][name] = 0
             est["blocked"].pop(name, None)
+            gated.pop(name, None)
             continue
         if est["streak"][name] < rule["hold_ticks"]:
             continue
+        if combat_gated and bool(snap.get("in_combat")) != trig["in_combat"]:
+            if not gated.get(name):
+                log_event({"ts": now, "kind": "combat-hold", "rule": name,
+                           "in_combat": bool(snap.get("in_combat"))}, sink)
+                gated[name] = True
+            continue
+        gated.pop(name, None)
         last = est["fired"].get(name, 0)
         if now - last < rule["cooldown_ms"]:
             if not est["blocked"].get(name):
@@ -606,7 +700,8 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
                    "rules": [r["name"] for r in game]}, sink)
         return
     est["window"] = [t for t in est["window"] if now - t < 60000]
-    if len(est["window"]) >= defaults["max_actions_per_min"]:
+    if defaults["max_actions_per_min"] > 0 \
+            and len(est["window"]) >= defaults["max_actions_per_min"]:
         log_event({"ts": now, "kind": "cap", "rules": [r["name"] for r in game],
                    "per_min": defaults["max_actions_per_min"]}, sink)
         return
@@ -627,7 +722,17 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
         est["fired"][rule["name"]] = now
         est["last_game_ms"] = now
         est["window"].append(now)
-        est["inflight"] = {"id": est["action_seq"], "ts": now}
+        est["inflight"] = {"id": est["action_seq"], "ts": now,
+                           "type": action.get("type")}
+        if action.get("type") == "eat":
+            est["inflight"].update({
+                "item": action["item"],
+                "item_quantity": inventory_item_quantity(snap, action["item"]),
+                "hits": snap.get("hits"),
+                "message_ids": [m.get("id") for m in snap.get("messages") or []
+                                if isinstance(m, dict) and m.get("id") is not None],
+                "receipted": False,
+            })
         log_event({"ts": now, "kind": "fired", "rule": rule["name"],
                    "id": est["action_seq"], "action": action,
                    "snap": snap_brief}, sink)
@@ -849,9 +954,9 @@ def cmd_run(args):
     try:
         while True:
             now = now_ms()
-            consume_receipt(est, now)
-            sweep_dead_notices(now)
             snap = read_snapshot()
+            consume_receipt(est, now, snap)
+            sweep_dead_notices(now)
             if snap is not None:
                 seen = (snap.get("tick"), snap.get("ts"))
                 if seen != last_seen:
@@ -885,7 +990,7 @@ def cmd_replay(args):
         else None
     # A fresh, in-memory engine state: replay never reads or writes the live one.
     est = {
-        "action_seq": 0, "fired": {}, "streak": {}, "blocked": {},
+        "action_seq": 0, "fired": {}, "streak": {}, "blocked": {}, "gated": {},
         "inflight": None, "last_game_ms": 0, "window": [], "last_tick": -1,
         "was_stale": False, "was_out": False, "was_held": False,
     }

@@ -34,7 +34,7 @@ Three parts:
    (engine → bridge, the notice queue — one file per notice firing), `receipt.json` (bridge → engine),
    `hold` (the override flag,
    either side may create it), `decisions.jsonl` (the engine's event log), `engine-state.json`
-   (the engine's own counters, so cooldowns survive a restart). Durable configuration lives in
+   (the engine's completion and debounce state). Durable configuration lives in
    `$DESKCRAB_GAME_DIR` (default `~/.local/share/deskcrab/game`): `reflex-rules.json` and
    `food-heals.xml`. Every path is overridable by those two variables alone; the test sandbox pins
    both.
@@ -394,13 +394,15 @@ Three parts:
 ### Rules
 
 9. `reflex-rules.json` holds `defaults` (`stale_ms` 2000, `poll_ms` 150, `min_action_interval_ms`
-   600, `max_actions_per_min` 20, `inflight_timeout_ms` 2000, `eat_pick` `min`) and `rules`, each:
+   0, `max_actions_per_min` 0, `inflight_timeout_ms` 2000, `eat_pick` `min`) and `rules`, each:
    `name` (unique), `enabled`, `channel` (`game` or `notice`), `priority` (higher wins),
-   `cooldown_ms`, `hold_ticks` (the trigger must be true on this many consecutive snapshots before
+   `cooldown_ms` (required to be 0 on the game channel; notices may throttle presentation),
+   `hold_ticks` (the trigger must be true on this many consecutive snapshots before
    firing — the debounce), `trigger` (a set of named conditions, all of which must hold), and
    `action` (`type` plus parameters). The trigger vocabulary is closed: `hp_below` (fraction of
    `hits_max`, 0–1), `requires_food` (inventory holds an item in the food table), `no_food` (it
-   holds none), `in_combat`, `fatigue_above` (fraction, 0–1). An unknown trigger key, action type,
+   holds none), `in_combat` (on a game-channel rule a live dispatch gate — rule 10a),
+   `fatigue_above` (fraction, 0–1). An unknown trigger key, action type,
    channel, or out-of-range value is refused loudly at load and by `betty-game set`/`add` — a rule
    that cannot be evaluated must not sit in the table looking armed.
 
@@ -410,10 +412,29 @@ Three parts:
     fire on one snapshot, both are delivered, neither overwritten. Game-channel rules compete for
     one slot: the highest-priority eligible rule
     fires; every other eligible game rule is logged as a conflict loss, not fired. A game action
-    fires only when no previous game action is in flight (receipt received, or
-    `inflight_timeout_ms` passed), at least `min_action_interval_ms` after the previous one, and
-    under the `max_actions_per_min` cap. Cooldown starts when a rule fires. A trigger that is true
-    while its cooldown runs is logged as suppressed once per blocked episode.
+    fires only when no previous game action is in flight. A receipt is dispatch evidence; the
+    action's observed postcondition releases the slot immediately. `inflight_timeout_ms` is only a
+    maximum failure lease when completion never arrives. Game cooldown, minimum-interval and
+    per-minute-cap fields are fixed at zero and legacy nonzero values are migrated on load.
+
+10a. Combat gates eating, and an eat completes only by its own observed effect. On a game-channel
+    rule the `in_combat` condition is a **live dispatch gate**, not part of the debounced need:
+    the `hold_ticks` streak accumulates on the rule's remaining conditions while the gate stays
+    unmatched, and the rule dispatches on the first fresh snapshot whose combat state matches —
+    the deferral is logged once per continuous episode as `combat-hold`. So during a fight the
+    reflex layer's answer to "low health with food in the bag" is to stand aside with its need
+    held, never to race the deliberate-play layer's retreat (which owns combat — game-player
+    rule 7b) for the one action slot, and the eat lands on the first out-of-combat snapshot.
+    An executable `eat` rule must declare `trigger.in_combat: false` — the loader refuses a table
+    whose eat rule lacks it and migrates a stored rule by adding it — and eat compilation refuses
+    an in-combat snapshot as `eat-requires-out-of-combat` whatever the table says, so no eat
+    action can reach the bridge while `in_combat` is true. An eat's `done` receipt is dispatch
+    evidence only (rule 10): the engine retains the slot until a newer snapshot proves the causal
+    postcondition — `hits` above the fired baseline (healing), the eaten item id's total
+    inventory quantity below its fired baseline (consumption), or a new server eating message —
+    logged as `action-complete` with what was observed; the server's own while-fighting refusal
+    message completes it as `action-failed`. Either way completion releases the slot at once, and
+    `inflight_timeout_ms` remains the maximum failure lease when no evidence ever arrives.
 
 11. Stale-state protection: a snapshot whose `ts` is older than `stale_ms` fires nothing, and the
     engine logs the transition into and out of staleness. A snapshot with `logged_in: false` fires
@@ -453,9 +474,14 @@ Three parts:
 ### Logging and replay
 
 16. Every engine decision is an event line in `decisions.jsonl`: fired actions (with the snapshot
-    values the trigger read), conflict losses, cooldown suppressions, stale and logged-out
+    values the trigger read), conflict losses, notice cooldown suppressions, combat deferrals
+    (once per episode, rule 10a), completions and failures as an action's observed postcondition
+    lands, stale and logged-out
     transitions, hold transitions, receipts as they are consumed, and refusals. `betty-game log`
-    tails it. `betty-game run --record <file>` additionally appends every snapshot evaluated, and
+    tails it. The game-player layer's reflex-fire ledger (game-player rule 10a) reads this log
+    read-only and presents this engine's firings to each model deliberation alongside its own,
+    tagged `engine: reflex`; nothing here changes for that — the log line format above is the
+    interface. `betty-game run --record <file>` additionally appends every snapshot evaluated, and
     `betty-game replay <file>` re-evaluates a recording through the current rule table, printing
     what would have fired, writing **no** action or notice files anywhere.
 

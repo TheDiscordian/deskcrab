@@ -77,6 +77,25 @@ for _ in range(100):
         fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
         os.remove(ap)
         delivered = status in ("done", "done-normalized", "done-server-refused")
+        if delivered and fields.get("type") in (
+                "talk-npc", "interact-npc", "interact-object", "interact-bound"):
+            # A dispatch receipt is not the semantic action's completion.
+            # Publish the same kind of newer state the real client would:
+            # dialogue ownership for Talk, or server feedback for a command.
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            if fields["type"] == "talk-npc":
+                state["talking_to_npc"] = True
+            else:
+                messages = state.setdefault("messages", [])
+                next_id = max([m.get("id", 0) for m in messages
+                               if isinstance(m, dict)] + [0]) + 1
+                messages.append({"id": next_id, "channel": "game",
+                                 "incoming": False, "sender": "",
+                                 "text": "The semantic interaction completes"})
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         if delivered and fields.get("type") in ("chat-local", "chat-private"):
             state_path = os.path.join(sd, "state.json")
             state = json.load(open(state_path))
@@ -238,6 +257,50 @@ for _ in range(100):
         os.replace(tmp, os.path.join(sd, "receipt.json"))
         break
     time.sleep(0.05)
+PY
+    FAKE_BRIDGE_PID=$!
+}
+
+# Server batch progression may be disabled, so an all-items semantic command
+# is deliberately a sequence of atomic amount=1 actions. Each member gets its
+# own receipt and observed inventory decrease before the next is accepted.
+fake_atomic_item_batch_bridge() {  # ITEM COUNT
+    python3 - "$DESKCRAB_GAME_STATE_DIR" "$1" "$2" <<'PY' &
+import json, os, sys, time
+sd, wanted, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+ap = os.path.join(sd, "action.json")
+for _member in range(count):
+    for _ in range(300):
+        if not os.path.exists(ap):
+            time.sleep(0.01)
+            continue
+        body = open(ap).read()
+        fields = dict(line.split("=", 1) for line in body.splitlines()
+                      if "=" in line)
+        assert fields.get("type") == "command-inventory", fields
+        assert int(fields.get("item", -1)) == wanted, fields
+        assert int(fields.get("amount", -1)) == 1, fields
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        with open(os.path.join(sd, "item-batch-actions"), "a") as fh:
+            fh.write(body.replace("\n", " ") + "\n")
+        os.remove(ap)
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        entry = next(item for item in state.get("inventory") or []
+                     if item.get("id") == wanted)
+        entry["count"] = int(entry.get("count", 0)) - 1
+        state["inventory"] = [item for item in state.get("inventory") or []
+                              if int(item.get("count", 0)) > 0]
+        state["tick"] = int(state.get("tick", 0)) + 1
+        state["ts"] = int(time.time() * 1000)
+        json.dump(state, open(state_path, "w"))
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    else:
+        raise AssertionError("no atomic batch member arrived")
 PY
     FAKE_BRIDGE_PID=$!
 }
@@ -565,6 +628,47 @@ refute "cast-npc terrain guards are strict booleans" \
 refute "out_of_combat is a literal condition, not an arbitrary value" \
     python3 "$GP" learn bad-combat-trigger --priority 1 --trigger out_of_combat=false \
         --action walk --param x=1 --param z=1
+refute "post-action cooldowns cannot pace learned play" \
+    python3 "$GP" learn bad-action-delay --priority 1 --cooldown-ms 1 \
+        --trigger npc_visible=11 --action interact-npc --param npc=11 --param cmd=1
+refute "millisecond combat-age triggers cannot be authored" \
+    python3 "$GP" learn bad-combat-clock --priority 1 \
+        --trigger in_combat_for_ms=5900 --action sidestep --param dx=0 --param dz=1
+python3 - "$DESKCRAB_GAME_DIR/learned-rules.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+cfg = json.load(open(path))
+cfg["rules"].append({
+    "name": "legacy-combat-clock", "enabled": True,
+    "priority": 1000, "cooldown_ms": 0, "hold_ticks": 1,
+    "trigger": {"in_combat": True, "in_combat_for_ms": 5900},
+    "action": {"type": "sidestep", "dx": 0, "dz": 1},
+})
+json.dump(cfg, open(path, "w"))
+PY
+python3 "$GP" rules >/dev/null
+python3 - "$DESKCRAB_GAME_DIR/learned-rules.json" <<'PY' \
+    && ok "old combat clocks migrate once to three opponent rounds" \
+    || fail "old combat clock did not migrate to semantic rounds"
+import json, sys
+rule = next(r for r in json.load(open(sys.argv[1]))["rules"]
+            if r["name"] == "legacy-combat-clock")
+assert rule["trigger"]["opponent_rounds_at_least"] == 3, rule
+assert "in_combat_for_ms" not in rule["trigger"], rule
+PY
+python3 "$GP" remove legacy-combat-clock >/dev/null
+python3 - "$GP" <<'PY' \
+    && ok "the semantic escape trigger consumes observed client rounds" \
+    || fail "the combat-round trigger did not use structured client state"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("game_player", sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+trigger = gp.make_trigger_fn("", "")
+rule = {"in_combat": True, "opponent_rounds_at_least": 3}
+assert trigger(rule, {"in_combat": True, "opponent_rounds": 2}, {}) is False
+assert trigger(rule, {"in_combat": True, "opponent_rounds": 3}, {}) is True
+PY
 refute "inventory capacity thresholds stop at the real 30-slot ceiling" \
     python3 "$GP" learn bad-inventory-cap --priority 1 --trigger inventory_slots_below=31 \
         --action walk --param x=1 --param z=1
@@ -575,17 +679,6 @@ refute "an impossible inventory capacity range is refused" \
 refute "fatigue thresholds stop beyond the observed percentage scale" \
     python3 "$GP" learn bad-fatigue-cap --priority 1 --trigger fatigue_below=102 \
         --action walk --param x=1 --param z=1
-python3 - "$GP" <<'PY' \
-    && ok "fatigue_below fails closed and admits only observed lower fatigue" \
-    || fail "fatigue_below must be a grounded semantic trigger"
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("game_player", sys.argv[1])
-gp = importlib.util.module_from_spec(spec); spec.loader.exec_module(gp)
-matches = gp.make_trigger_fn("Leaderboard competition", "thieving")
-assert matches({"fatigue_below": 100}, {"fatigue": 99}, None) is True
-assert matches({"fatigue_below": 100}, {"fatigue": 100}, None) is False
-assert matches({"fatigue_below": 100}, {}, None) is False
-PY
 refute "an empty activity scope is refused" \
     python3 "$GP" learn bad-activity --priority 1 --trigger activity_is= \
         --action walk --param x=1 --param z=1
@@ -783,17 +876,17 @@ check "the immediate activity can be cleared" python3 "$GP" activity --clear
 check_eq "a cleared activity reads as none" "$(python3 "$GP" activity)" "(none)"
 
 echo
-echo "exact repetition becomes a self-review event, not a silent loop (spec rule 16):"
+echo "repeated malfunction becomes a self-review event, not a silent loop (spec rule 16):"
 python3 "$GP" activity loop-review >/dev/null
 python3 "$GP" learn loop-review-probe --priority 97 --cooldown-ms 0 \
     --trigger near_tile='{"x":120,"z":648,"radius":2}' \
-    --action walk --param x=121 --param z=648 >/dev/null
+    --action walk --param x=125 --param z=648 >/dev/null
 for tick in 10331 10332 10333; do
     snap "$tick" '[]'
     fake_bridge done
     CODE=0; python3 "$GP" step >/dev/null || CODE=$?
     wait "$FAKE_BRIDGE_PID"
-    check_eq "repetition probe $tick executes before review" "$CODE" "0"
+    check_eq "failed repetition probe $tick executes before review" "$CODE" "2"
 done
 python3 - "$DESKCRAB_GAME_DIR/outcome-queue.jsonl" <<'PY' \
     && ok "the third exact play queues one self-contained loop candidate" \
@@ -805,6 +898,7 @@ matches = [e for e in events if e.get("kind") == "loop-candidate"
 assert len(matches) == 1, matches
 assert matches[0]["count"] == 3 and len(matches[0]["recent"]) == 3, matches[0]
 assert matches[0]["review_hold_ms"] == 30000, matches[0]
+assert all(item["status"] != "done" for item in matches[0]["recent"]), matches[0]
 PY
 snap 10334 '[]'
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
@@ -815,12 +909,33 @@ contains "$OUT" "repetition-review-hold" \
     || fail "the pause names the held reflex instead of silently stalling" "$OUT"
 refute "the review hold emits no fourth action" \
     test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+python3 - "$GP" <<'PY' \
+    && ok "successful routine repetition never creates a review hold" \
+    || fail "productive repetition was mistaken for malfunction"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("game_player", sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+est = {"recent_repetitions": [], "reported_repetitions": {},
+       "repetition_holds": []}
+rule = {"name": "productive-pick", "trigger": {"activity_is": "thieving"},
+        "action": {"type": "interact-npc", "npc": 63}, "enabled": True,
+        "priority": 1, "cooldown_ms": 0, "hold_ticks": 1}
+for tick in range(3):
+    outcome = {"ts": gp.now_ms() + tick, "rule": "productive-pick",
+               "status": "done", "activity": "thieving", "objective": "xp",
+               "action": {"type": "interact-npc", "npc": 63},
+               "completion": {"result": "done", "message": "You pick the pocket"},
+               "snap": {"x": 1, "z": 1}}
+    assert gp.repetition_candidate(est, rule, outcome) is None
+assert est["repetition_holds"] == [], est
+PY
 python3 "$GP" remove loop-review-probe >/dev/null
 python3 "$GP" activity --clear >/dev/null
 
 echo
 echo "an activity measures grounded action XP and elapsed rate (spec rules 1, 7):"
-python3 "$GP" learn man-thieving-template --priority 12 --cooldown-ms 2200 \
+python3 "$GP" learn man-thieving-template --priority 12 --cooldown-ms 0 \
     --trigger activity_is=man-thieving --trigger npc_visible=63 \
     --action interact-npc --param npc=63 --param cmd=1 >/dev/null
 ACTMEM="$SANDBOX/activity-memory"; mkdir -p "$ACTMEM"
@@ -920,7 +1035,7 @@ PY
 snap 10361 '[]' '{"skills":[{"id":17,"name":"Thieving","level":24,"xp":1024}]}'
 CODE=0; python3 "$GP" step --local >/dev/null || CODE=$?
 check_eq "the second iteration accumulates before its reflex revision" "$CODE" "4"
-python3 "$GP" learn farmer-thieving-fast-pick --priority 13 --cooldown-ms 1800 \
+python3 "$GP" learn farmer-thieving-fast-pick --priority 13 --cooldown-ms 0 \
     --trigger activity_is=farmer-thieving --trigger npc_visible=63 \
     --action interact-npc --param npc=63 --param cmd=1 >/dev/null
 python3 - "$DESKCRAB_GAME_DIR/activity-stats.json" \
@@ -945,6 +1060,31 @@ contains "$OUT" "created:farmer-thieving-fast-pick" \
     && contains "$OUT" "before=Thieving=12/hr" \
     && ok "the reflex itself remembers the measured performance before its revision" \
     || fail "the reflex itself remembers the measured performance before its revision" "$OUT"
+
+# A target change is one atomic operation over the already learned rules. It
+# must not make the player recreate their pacing, guards, or action structure.
+python3 "$GP" learn farmer-thieving-fast-retreat --priority 1000 --cooldown-ms 0 \
+    --trigger npc_visible=63 --trigger in_combat=true \
+    --action sidestep --param dx=0 --param dz=1 >/dev/null
+OUT="$(python3 "$GP" retarget-npc 63 86 \
+    farmer-thieving-fast-pick farmer-thieving-fast-retreat)"
+contains "$OUT" "retargeted 2 reflex(es)" \
+    && python3 - "$DESKCRAB_GAME_DIR/learned-rules.json" <<'PY' \
+    && ok "one retarget operation widens a whole reflex set without relearning it" \
+    || fail "one retarget operation widens a whole reflex set without relearning it" "$OUT"
+import json, sys
+rules = {r["name"]: r for r in json.load(open(sys.argv[1]))["rules"]}
+pick = rules["farmer-thieving-fast-pick"]
+retreat = rules["farmer-thieving-fast-retreat"]
+assert pick["trigger"]["npc_visible"] == [63, 86], pick
+assert pick["action"]["npc"] == [63, 86], pick
+assert pick["priority"] == 13 and pick["cooldown_ms"] == 0, pick
+assert pick["trigger"]["activity_is"] == "farmer-thieving", pick
+assert retreat["trigger"]["npc_visible"] == [63, 86], retreat
+assert retreat["action"] == {"type": "sidestep", "dx": 0, "dz": 1}, retreat
+assert retreat["priority"] == 1000 and retreat["cooldown_ms"] == 0, retreat
+PY
+python3 "$GP" remove farmer-thieving-fast-retreat >/dev/null
 
 # A productive activity left running gets a bounded three-minute checkpoint,
 # so optimization is proactive rather than waiting for the activity to end.
@@ -1471,6 +1611,17 @@ check "route records a destination" python3 "$GP" route 160 648 --arrive 1
 contains "$(python3 "$GP" route)" "status=active target=(160,648) arrive=1" \
     && ok "route status exposes its target and tolerance" \
     || fail "route status exposes its target and tolerance" "$(python3 "$GP" route)"
+# Ground one exact cardinal passage in the body's observed trail. Earlier
+# navigation fixtures intentionally use multi-tile settled jumps and therefore
+# cannot honestly stand in for this cache-override evidence.
+python3 - "$DESKCRAB_GAME_DIR/movement-trail.json" <<'PY'
+import json, sys, time
+now = int(time.time() * 1000)
+json.dump({"v": 1, "points": [
+    {"x": 119, "z": 648, "ts": now - 1, "break": False},
+    {"x": 120, "z": 648, "ts": now, "break": False},
+]}, open(sys.argv[1], "w"))
+PY
 snap 1046 '[]' '{"x":120,"z":648}'
 contains "$(python3 "$GP" route)" "current=(120,648) distance=40" \
     && ok "route status exposes current distance instead of a bare destination" \
@@ -1494,6 +1645,9 @@ check_eq "the route gives collision pathfinding its grounded arrival area" \
     "$(last_action 'arrive=1')" "1"
 check_eq "the cache query carries an observed non-openable blocker" \
     "$(grep -c '^learned_blockers=.*object,61,109,658,6' \
+        "$DESKCRAB_GAME_STATE_DIR/last-route-request")" "1"
+check_eq "the cache query carries cardinal edges this body actually walked" \
+    "$(grep -c '^learned_passages=' \
         "$DESKCRAB_GAME_STATE_DIR/last-route-request")" "1"
 check_eq "the local waypoint carries a bounded actual-path budget" \
     "$(last_action 'max_path=16')" "1"
@@ -1674,6 +1828,38 @@ compiled, refusal = gp.compile_player_action(
                  {"id": 60, "x": 105, "z": 619}]}, None, None)
 assert refusal is None, refusal
 assert (compiled["x"], compiled["z"]) == (105, 619), compiled
+
+# Full fatigue is a hard safety boundary for irreversible Prayer supplies,
+# independent of which learned rule requested the burial.
+bone_rule = {"action": {"type": "click-inventory", "item": 20, "button": 1}}
+compiled, refusal = gp.compile_player_action(
+    bone_rule,
+    {"fatigue": 100, "inventory": [{"id": 20, "name": "Bones", "count": 3}]},
+    None, None)
+assert compiled is None, compiled
+assert refusal == "bone-burial-blocked-at-full-fatigue", refusal
+compiled, refusal = gp.compile_player_action(
+    bone_rule,
+    {"fatigue": 99, "inventory": [{"id": 20, "name": "Bones", "count": 3}]},
+    None, None)
+assert compiled == {"type": "click-inventory", "item": 20, "button": 1}, compiled
+assert refusal is None, refusal
+
+# fatigue_below is a semantic trigger: missing and full-fatigue snapshots fail
+# closed, while the last productive fatigue value remains eligible.
+fatigue_rule = {"trigger": {"fatigue_below": 100}}
+matches = gp.make_trigger_fn("Leaderboard competition", "thieving")
+assert matches(fatigue_rule["trigger"], {"fatigue": 99}, None) is True
+assert matches(fatigue_rule["trigger"], {"fatigue": 100}, None) is False
+assert matches(fatigue_rule["trigger"], {}, None) is False
+
+# The same fatigue state must not block ordinary inventory clicks such as food.
+compiled, refusal = gp.compile_player_action(
+    {"action": {"type": "click-inventory", "item": 373, "button": 1}},
+    {"fatigue": 100, "inventory": [{"id": 373, "name": "Lobster", "count": 1}]},
+    None, None)
+assert compiled == {"type": "click-inventory", "item": 373, "button": 1}, compiled
+assert refusal is None, refusal
 
 portal2 = {"kind": "bound", "id": 21, "x": 148, "z": 533, "dir": 0,
            "from": [148, 533], "to": [148, 532]}
@@ -1921,15 +2107,11 @@ contains "$OUT" "fired rule=walk-high" && ok "and the next rule got the slot" \
 python3 "$GP" remove talk-ghost >/dev/null
 
 echo
-echo "cooldown (spec rule 8):"
-python3 "$GP" set walk-high cooldown_ms 60000 >/dev/null
+echo "post-action delays are refused (spec rule 8):"
+refute "a learned rule cannot be assigned a post-action cooldown" \
+    python3 "$GP" set walk-high cooldown_ms 60000
 python3 "$GP" disable walk-low >/dev/null
-snap 107
-OUT="$(python3 "$GP" step)"; CODE=$?
-check_eq "inside the cooldown nothing fires: fallback signalled" "$CODE" "4"
-contains "$OUT" "cooldown_holds=1" && ok "and the hold is visible on the verdict line" \
-    || fail "and the hold is visible on the verdict line" "$OUT"
-check_eq "the suppression is logged once" "$(decided cooldown-hold)" "1"
+python3 "$GP" disable walk-high >/dev/null
 
 echo
 echo "hold_ticks debounce (spec rule 8):"
@@ -1988,7 +2170,7 @@ rm -f "$DESKCRAB_GAME_STATE_DIR/hold"
 
 echo
 echo "a non-done receipt is a visible exit 2 (spec rule 7):"
-python3 "$GP" set walk-high cooldown_ms 0 >/dev/null
+python3 "$GP" enable walk-high >/dev/null
 snap 114
 fake_bridge refused-no-such-npc
 OUT="$(python3 "$GP" step)"; CODE=$?
@@ -2693,7 +2875,7 @@ refute "a direct stationary cast refuses a target whose shot is currently blocke
 refute "the refused stationary cast emits no packet action" \
     test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
 
-python3 "$GP" learn cast-wind-test --priority 900 --cooldown-ms 1000 \
+python3 "$GP" learn cast-wind-test --priority 900 --cooldown-ms 0 \
     --trigger objective_is=magic-reflex-test --trigger npc_visible=11 \
     --trigger out_of_combat=true --action cast-npc --param spell=0 --param npc=11 \
     --param within=3 --param stationary=1 --param require_clear_shot=1 \
@@ -2909,16 +3091,19 @@ wait "$FAKE_BRIDGE_PID"
 check_eq "unequip waits for the requested final state" "$CODE" "0"
 check_eq "unequip uses the idempotent bridge action" \
     "$(last_action 'type=unequip-inventory')" "1"
-fake_bridge done
+rm -f "$DESKCRAB_GAME_STATE_DIR/item-batch-actions"
+fake_atomic_item_batch_bridge 20 3
 OUT="$(bash "$HEADLESS" item 20 bury all)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "a named consumptive item command verifies inventory change" "$CODE" "0"
-contains "$OUT" "item-command-verified command=Bury item=20 before=3 after=0" \
+contains "$OUT" "item-command-batch-verified command=Bury item=20 before=3 after=0 actions=3" \
     && ok "bury all cannot confuse a hover with progress" \
     || fail "bury all cannot confuse a hover with progress" "$OUT"
 check_eq "the item door uses the definition-backed bridge action" \
     "$(last_action 'type=command-inventory')" "1"
-check_eq "bury all resolves the held quantity" "$(last_action 'amount=3')" "1"
+check_eq "bury all emits three observed atomic members" \
+    "$(sandbox_count_in 'type=command-inventory.*amount=1' "$DESKCRAB_GAME_STATE_DIR/item-batch-actions")" "3"
+check_eq "each atomic burial requests exactly one item" "$(last_action 'amount=1')" "1"
 snap 117201 '[]' '{"fatigue":0,"sleeping":false,"inventory":[{"id":1263,"name":"Sleeping Bag","count":1,"equipped":false,"wearable":false,"commands":["Sleep"]}]}'
 OUT="$(bash "$HEADLESS" item 1263 sleep)"; CODE=$?
 check_eq "sleep at zero fatigue is an idempotent success" "$CODE" "0"

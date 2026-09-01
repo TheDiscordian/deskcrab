@@ -122,6 +122,7 @@ assert s["spells"] == [
 ], s.get("spells")
 assert s["x"] == 120 and s["z"] == 650
 assert s["walking"] is False and s["in_combat"] is False
+assert s["opponent_rounds"] == 0
 assert s["hover_text"] == "Farmer: Pickpocket / 1 more option"
 assert s["talking_to_npc"] is False
 assert s["dialogue_open"] is False and s["dialogue_options"] == []
@@ -177,6 +178,7 @@ python3 - "$S/state.json" <<'PY' && ok "walking, combat, and open NPC dialogue a
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["walking"] is True and s["in_combat"] is True
+assert s["opponent_rounds"] == 0
 assert s["right_click_menu_open"] is True
 assert s["ui_panel_open"] is True and s["ui_panel"] == "inventory"
 assert s["hover_text"] == ""
@@ -202,6 +204,14 @@ assert s["dialogue_options"] == [
     "Can you tell me about this place?",
     "Goodbye",
 ]
+PY
+OUT="$(harness state-rounds3)"
+python3 - "$S/state.json" <<'PY' \
+    && ok "three local-player combat splats publish three opponent rounds" \
+    || fail "local combat splats were not exposed as opponent rounds"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["in_combat"] is True and s["opponent_rounds"] == 3, s
 PY
 OUT="$(harness state-sleeping)"
 python3 - "$S/state.json" <<'PY' && ok "sleep state is semantic, not screenshot-only" \
@@ -247,11 +257,23 @@ contains "$OUT" "eat slot=0" && ok "the bridge executed the engine's eat" \
     || fail "the bridge executed the engine's eat" "$OUT"
 refute "the action file was consumed" test -f "$S/action.json"
 check_eq "the receipt says done" "$(rstatus)" "done"
+# The bridge receipt proves only that the Eat command was dispatched. Publish
+# the visible result a real client tick would carry before asking the engine to
+# release its action slot.
+python3 - "$S/state.json" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+snap = json.load(open(path))
+snap["hits"] = 7
+snap["tick"] += 1
+snap["ts"] = int(time.time() * 1000)
+json.dump(snap, open(path, "w"))
+PY
 "$BG" run --once
 check_eq "the engine consumed the receipt" \
     "$(sandbox_count_in '"kind":"receipt"' "$S/decisions.jsonl")" "1"
-python3 - "$S/engine-state.json" <<'PY' && ok "and cleared the in-flight slot" \
-    || fail "and cleared the in-flight slot"
+python3 - "$S/engine-state.json" <<'PY' && ok "visible healing cleared the in-flight slot" \
+    || fail "visible healing must clear the in-flight slot"
 import json, sys
 assert json.load(open(sys.argv[1]))["inflight"] is None
 PY
@@ -1012,12 +1034,16 @@ check_eq "a non-wearable item cannot be equipped" "$(rstatus)" "refused-not-wear
 wact 92 "$(now_ms)" "type=unequip-inventory" "item=999"
 harness exec >/dev/null
 check_eq "equipment actions refuse an absent item" "$(rstatus)" "refused-no-such-item"
-wact 93 "$(now_ms)" "type=command-inventory" "item=81" "cmd=1" "amount=2"
+wact 93 "$(now_ms)" "type=command-inventory" "item=81" "cmd=1" "amount=1"
 OUT="$(harness exec)"
-contains "$OUT" 'item-command slot=1 item=81 command=Polish amount=2' \
-    && ok "a definition-backed item command resolves by identity" \
+contains "$OUT" 'item-command slot=1 item=81 command=Polish amount=1' \
+    && ok "one definition-backed item command resolves by identity" \
     || fail "a definition-backed item command resolves by identity" "$OUT"
 check_eq "the item command is receipted done" "$(rstatus)" "done"
+wact 931 "$(now_ms)" "type=command-inventory" "item=81" "cmd=1" "amount=2"
+harness exec >/dev/null
+check_eq "a fake multi-command packet is refused" "$(rstatus)" \
+    "refused-nonatomic-item-command"
 wact 94 "$(now_ms)" "type=command-inventory" "item=81" "cmd=3" "amount=1"
 harness exec >/dev/null
 check_eq "an unavailable item command is refused" "$(rstatus)" "refused-bad-command"

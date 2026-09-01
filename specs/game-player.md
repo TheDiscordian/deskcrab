@@ -13,9 +13,11 @@ applies or a rule needs refinement. The playing loop becomes: rules first, reaso
 the same shape the chess reflex layer already proved.
 
 This is the deliberate-play channel of specs/game-reflex.md, not a second reflex engine: the
-engine machinery is literally `lib/game_reflex.py`'s — the same priority competition, cooldowns,
-debounce, one receipted action in flight, pacing caps, stale/logged-out protection and hold
-override, invoked with this layer's own trigger and action vocabulary plugged in. What
+engine machinery is literally `lib/game_reflex.py`'s — the same priority competition,
+debounce, one receipted action in flight, stale/logged-out protection and hold override, invoked
+with this layer's own trigger and action vocabulary plugged in. Learned play fixes post-action
+cooldowns, minimum intervals, and per-minute caps at zero: observed completion and the next state
+trigger are its sequencing. What
 game-reflex forbids its rule table (starting conversations) this channel owns, because an action
 file written by the player's own hand or harness is exactly what rule 5 there means by the
 deliberate-play channel.
@@ -79,9 +81,10 @@ deliberate-play channel.
 
 ### The rule table
 
-3. `learned-rules.json` holds `defaults` (`stale_ms` 2000, `min_action_interval_ms` 600,
-   `max_actions_per_min` 20, `inflight_timeout_ms` 3000), `rules`, and `unfinished`. Each rule:
-   `name` (unique, lowercase-dash), `enabled`, `priority` (higher wins), `cooldown_ms`,
+3. `learned-rules.json` holds `defaults` (`stale_ms` 2000, `min_action_interval_ms` 0,
+   `max_actions_per_min` 0 meaning unlimited, `inflight_timeout_ms` 3000), `rules`, and
+   `unfinished`. Each rule: `name` (unique, lowercase-dash), `enabled`, `priority` (higher wins),
+   `cooldown_ms` (compatibility field, required to be 0),
    `hold_ticks`, `once_per_objective` (optional, default false), `note` (optional provenance —
    when and how the play verified), `trigger` (named conditions, all must hold), `action`
    (`type` plus parameters). Unknown keys, triggers, actions and out-of-range values are refused
@@ -95,7 +98,16 @@ deliberate-play channel.
    - `activity_is` (string): the activity file's line equals it exactly. Use it to keep a useful
      reflex armed for its own mode without letting it interrupt another immediate task. This is
      opt-in: a rule without `activity_is` remains activity-agnostic.
-   - `npc_visible` (int): the snapshot's `npcs` list holds that type id.
+   - `npc_visible` (int, or a non-empty list of distinct ints — the rule's **target set**):
+     the snapshot's `npcs` list holds that type id, or any of the listed ids. A list is ONE
+     behaviour over interchangeable target types, never a second rule. Expanding the set keeps
+     the learned triggers, completion gates, and escape behaviour instead of forking a
+     target-specific copy of them.
+   - `skill_at_least` (`{"name":…,"level":1–99}`): the snapshot's named skill (compared
+     case-insensitively) has at least that base level. This is how a rule states its own
+     eligibility floor — for example `{"name": "Thieving", "level": 25}` — so the table read in
+     isolation still says when its behaviour became valid; base levels
+     never fall, so the gate documents progression rather than toggling live behaviour.
    - `object_visible` (int): the snapshot's `objects` list holds that type id.
    - `bound_visible` (int): the snapshot's `bounds` list holds that type id.
    - `entity_visible` (`{"collection":…,"field":…,"value":…}`): a structured
@@ -124,6 +136,16 @@ deliberate-play channel.
    - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
      polarity. These conditions are mutually exclusive in live state and let global pickup or
      travel rules stay mechanically quiet during a fight.
+   - `opponent_rounds_at_least` (int, 1–100): the snapshot's `in_combat` is true AND the client has
+     rendered at least this many melee damage splats on the local player, including zero damage.
+     This is the observable counterpart of the server escape gate's
+     `player.getOpponent().getHitsMade() >= 3`: each ordinary opponent hit increments that counter
+     and produces the local-player damage update. NPC-target splats are deliberately excluded.
+     The bridge publishes the count directly; neither bridge nor engine reconstructs it from
+     elapsed time. `in_combat` false clears the episode. The old `in_combat_for_ms`
+     spelling is not part of the trigger vocabulary; loading an old durable escape reflex replaces
+     its known-bad 5900/6000 ms approximation with exactly three observed rounds and atomically
+     rewrites it. This lets an escape rule name the server lock directly.
 
 5. The action vocabulary is closed: `talk-npc` (`npc`: the type id; the server index is resolved
    from the snapshot at fire time — nearest matching NPC by real walking steps, independently of
@@ -136,7 +158,12 @@ deliberate-play channel.
    `within` 0–10 caps the current Chebyshev tile distance and rides the action file for one final
    dispatch-time recheck), which
    resolves the same stable NPC identity and performs its definition-backed menu command without
-   any pointer or context-menu reconstruction. Repeating reflexes use `within` so a wandering
+   any pointer or context-menu reconstruction. Its `npc` may also be that same non-empty list of
+   type ids (rule 4's target set): the nearest currently visible member — the same
+   real-walking-steps choice, across all listed types — is resolved at fire time, and the
+   compiled action carries that chosen NPC's own exact type id and server index, so the bridge's
+   despawn/mismatch re-checks are unchanged and no set ever crosses the action file.
+   Repeating reflexes use `within` so a wandering
    target cannot drag the player across the area; deliberate one-off NPC commands may still
    approach their chosen visible target. Every NPC action records the selected target's snapshot
    tile in its decision event, and the bridge refuses it if a strictly nearer equivalent exists by
@@ -166,7 +193,7 @@ deliberate-play channel.
    toward that entity's current tile. No coordinate is stored in the learned rule. Together with
    `entity_visible`, this is the declarative extension point for player-authored semantic actions:
    the behaviour receives its own meaningful rule name, activity/objective scope, priority,
-   cooldown, and replay tests while the primitive remains grounded and code-free. A moving player
+   completion gate, and replay tests while the primitive remains grounded and code-free. A moving player
    can therefore be approached by a learned behaviour, and future structured-state games can
    expose their own entity collections without admitting shell commands or remembered pixels.
    OpenRSC additionally exposes `follow-player` (`name`, `within` 1–10): it resolves the player's
@@ -175,7 +202,29 @@ deliberate-play channel.
    `retreat` (optional `distance`
    1–10, default 5, and fallback direction `dx`/`dz`; while fighting, the bridge prefers away from
    the identified opponent and tries alternate directions and nearer tiles until its collision
-   map finds one reachable ordinary walk), `interact-object` (`obj`: the object type id,
+   map finds one reachable ordinary walk), `sidestep` (optional preferred direction `dx`/`dz`,
+   default south `0/1` — the **one-tile combat break**. It exists because a learned `retreat`
+   displaces the body by its whole `distance`, while breaking provoked combat needs exactly one
+   accepted step. At fire time, only while
+   `in_combat` is true, the engine records the current tile as the pre-retreat origin, chooses
+   ONE cardinally adjacent tile that the snapshot's own `terrain` topology shows
+   collision-reachable — not a blocked cell, no barrier on the crossing edge — preferring the
+   candidate farthest from the visible opponent and breaking ties toward the rule's `dx`/`dz`,
+   and compiles to a single ordinary `walk` to that tile with `arrive` 0 and `max_path` 1, so
+   the client's own collision map re-proves the one-step path at dispatch. It never compiles to
+   the bridge's `retreat` action and never widens the distance. Exactly one tile of displacement
+   is STRUCTURAL, not aspirational: the action only compiles while `in_combat` is true, and the
+   one server-accepted step is what ends combat — so at most one dispatched step can ever
+   execute per fight. A dispatch the server's walk lock discarded, or the bridge refused,
+   provably moved nothing; the rule stays eligible and retries the same one-tile break on its
+   after a newer round/state observation (a refused tile is excluded for the rest of that episode) instead of pausing
+   productive play. No remaining candidate tile is the compile refusal
+   `sidestep-no-adjacent-tile`. This constraint binds ONLY the combat break: it never caps,
+   rejects, or reinterprets how far an ordinary rule may walk to reach a pickpocket target or
+   any other destination. An escape rule
+   built on this action triggers on `opponent_rounds_at_least: 3`, so
+   the single step is sent once the server can accept it rather than burned probing the lock),
+   `interact-object` (`obj`: the object type id,
    optional `cmd` 1 or 2 defaulting to 1 — the nearest matching entry in the snapshot's
    `objects` list is resolved at fire time and its tile rides the action file, so the bridge's
    unloaded/swapped re-checks protect the act; this is how a door-less fishing spot is fished
@@ -190,7 +239,24 @@ deliberate-play channel.
    the item id; optional `button` 1, 2, or 3 defaulting to 1). The compiled inventory action carries
    only that item identity. The bridge finds its current slot, opens the inventory tab, and resolves
    the slot centre immediately before clicking; a missing item is refused instead of allowing a
-   remembered slot to target its replacement), `click-shop` and `click-bank` (`item`: the item id;
+   remembered slot to target its replacement).
+   `click-inventory` alone may additionally declare `batch: "all"`. It requires a matching
+   `inventory_has` trigger and `out_of_combat: true`. The ordinary trigger initiates the batch
+   once; it is not incorrectly reused as the continuation condition. The player engine then
+   keeps a durable item-absence postcondition across runner passes, sending one ordinary
+   identity-based click at a time and authorizing the next only after a newer snapshot shows
+   that selected item's quantity decreased. Capacity, visibility, or other transient initiation
+   thresholds may become false after the first member without truncating the batch. Combat
+   pauses it; a Prayer-bone batch also pauses at 100 fatigue so sleep/recovery can act, and it
+   resumes from observed state. Removing, disabling, changing, or leaving the objective/activity
+   scope of the authored rule cancels the commitment. No batch count or wall-clock pacing crosses
+   the bridge.
+   Bone items are an action-safety exception: at exactly 100 fatigue an inventory click whose
+   item identity is any Prayer bone refuses to compile as
+   `bone-burial-blocked-at-full-fatigue`. This guard is global across learned rules, so an
+   activity-specific cleanup rule cannot irreversibly consume Prayer supplies after the server
+   has stopped awarding XP; food and other inventory actions remain available at full fatigue.
+   `click-shop` and `click-bank` take `item` (the item id) and an
    optional `button` 1, 2, or 3 defaulting to 1). The compiled action again carries only item
    identity. The bridge refuses a closed interface or missing item; otherwise it exposes the
    current page or scroll row containing the item and resolves that live slot immediately before
@@ -236,11 +302,39 @@ deliberate-play channel.
    `walk-short x=… z=…` (exit 2), naming where the body actually stopped. A
    `once_per_objective` mark is spent only on a VERIFIED `done` — a refused, short or
    unreceipted firing leaves the rule live for the objective.
-   `retreat` is verified against `in_combat`, not its dispatch receipt or an invented client
-   timer. OpenRSC permits escape only after the opponent's third hit, a server counter the client
-   is not sent. A still-fighting attempt becomes `retreat-locked` or `retreat-unconfirmed`
-   (exit 2), remains eligible, and retries on later runner passes; only a snapshot with
+   `retreat` is verified against `in_combat`, not its dispatch receipt. OpenRSC permits escape
+   only after the opponent's third hit, represented to rules as `opponent_rounds_at_least: 3`.
+   A still-fighting attempt becomes `retreat-locked` or `retreat-unconfirmed`
+   (exit 2), remains eligible, and retries after newer combat evidence; only a snapshot with
    `in_combat: false` is `done`.
+   `sidestep` has a stricter observed postcondition. `done` requires BOTH, from newer snapshots:
+   `in_combat` false AND the settled body standing exactly on the chosen adjacent tile — exactly
+   one tile from the recorded pre-retreat origin. The other ends are graded by what they prove,
+   and none of them widens the escape:
+   - combat persisting through the bounded observation window with the body still on its origin
+     is `sidestep-locked` when the server's own lock feedback is visible and
+     `sidestep-unconfirmed` otherwise. The discarded walk moved nothing, so the rule remains
+     eligible and retries the same one-tile break after newer evidence — thieving is not paused and
+     the body is not displaced.
+   - a bridge refusal (for example `refused-no-path` against `max_path` 1) likewise moved
+     nothing; the refused tile is excluded for the rest of the episode and the next firing
+     chooses another adjacent candidate.
+   - combat ending with the body still on its origin is `sidestep-combat-ended`: zero
+     displacement, nothing owed — ordinary out-of-combat rules resume immediately.
+   - a body that leaves combat but settles anywhere except the chosen tile is
+     `sidestep-displaced`, naming both tiles and the distance — something other than the
+     one-tile break moved the body. This, and `sidestep-no-adjacent-tile` with every candidate
+     blocked or exhausted mid-combat, are the two GROUNDED ANOMALIES: each writes ONE durable
+     pause record (`$DESKCRAB_GAME_DIR/sidestep-pause.json`: objective, rule, NPC scope,
+     origin, chosen tile, settled tile, status, feedback) and one self-contained diagnostic
+     into the outcome queue.
+   While the pause record exists for the current objective, rules that would resume the
+   provoking activity — a trigger scoped `activity_is: thieving`, or an action targeting the
+   paused NPC id — are held (`sidestep-pause-hold`), the `no-rule-matched` verdict and the
+   resident heartbeat carry the pause, and only the deliberate door `sidestep-pause --clear`
+   (or an objective change) re-arms them. The pause exists for those two anomalies alone: the
+   ordinary locked-then-accepted rhythm of provoked-combat escapes never pauses thieving and
+   never idles the seek loop.
    `take-ground` is likewise a commitment, not a dispatch receipt. Evaluation retains control
    while the bridge walks to the targeted item; `done` requires the matching ground entry at that
    exact tile to decrease and the same item id's inventory quantity to increase. A vanished pile
@@ -259,6 +353,11 @@ deliberate-play channel.
    inventory or XP deltas, new game/quest/inventory feedback, a relevant interface transition, or
    settled movement for a movement action. It reports the evidence and labels known refusal
    feedback `result=failed`; the receipt alone is never completion. The one-step
+   Learned `interact-npc` uses this same causal ownership: after a pickpocket packet is receipted,
+   the rule retains the action slot until a newer success/failure message, XP or inventory delta,
+   dialogue transition, or combat transition completes it. A success/failure message immediately
+   releases the slot for the next rules-first pass; no cooldown or guessed skill delay follows it.
+   The completion wait's timeout is only a maximum failure lease.
    `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]` door uses this verifier after resolving
    and dispatching both live identities atomically, so inventory-pane timing cannot separate item
    selection from the object use. For that action specifically, the selected input changing or XP
@@ -342,7 +441,13 @@ deliberate-play channel.
 7b. A settled incoming player-chat burst interrupts ordinary rule selection, except that an
    applicable `retreat` takes temporary precedence. A direct retreat retains that precedence through its post-combat
    clearance walk: escaping a fight or pack cannot wait for conversation, and the pending message
-   remains queued for the first spatially safe pass. Every structured snapshot message
+   remains queued for the first spatially safe pass. A `sidestep` rule holds that same urgent
+   precedence for its whole combat episode — including the pre-threshold span before
+   `opponent_rounds_at_least` is satisfied, which is judged with that condition set aside —
+   so combat owns movement from its first snapshot: no route leg, travel rule, or ambient pickup
+   can move the body while the one-tile break waits out the lock — while combat persists, the
+   escape rule alone may move the body, and each of its dispatches is the same provably-unmoved
+   one-tile step until the server accepts one and combat ends. Every structured snapshot message
    with `incoming: true` and channel `local` or `private` is copied into the existing
    `player-engine-state.json`, keyed by its bridge message id. Repeated snapshots cannot duplicate
    it, and it remains pending after it scrolls out of the snapshot. The first new message opens a
@@ -694,29 +799,58 @@ deliberate-play channel.
    falling-back mind is reminded what success currently means without a separate ritual.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
-   code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule
-   `cooldown_ms` with `cooldown-hold` logged once per blocked episode, `hold_ticks` debounce,
-   one action in flight until receipt or timeout, `min_action_interval_ms` and
-   `max_actions_per_min` pacing, stale and logged-out snapshots firing nothing, a logged-out
-   snapshot resetting streaks, no tick acted on twice, and the `hold` flag honoured at both
-   ends (game-reflex rule 15 — the same flag file; `hold`/`resume` here and in `betty-game`
-   move the same override). Pacing counters are per-engine (each engine paces its own hand);
-   the action slot is shared and guarded by `slot-busy`.
+   code: descending priority for one game slot, losers logged as `conflict-loss`, `hold_ticks`
+   debounce, one action in flight until its observed completion or failure lease, stale and
+   logged-out snapshots firing nothing, a logged-out snapshot resetting streaks, no tick acted
+   on twice, and the `hold` flag honoured at both ends (game-reflex rule 15 — the same flag file;
+   `hold`/`resume` here and in `betty-game` move the same override). Game cooldowns, minimum
+   intervals and per-minute caps are fixed at zero; the action slot is shared and guarded by
+   `slot-busy`.
 
 9. `once_per_objective`: a rule so marked fires once per (rule, objective) pair; the mark lives
    in `player-engine-state.json`, so it survives a player restart, and clears when the
    objective changes. This is what makes "talk to the instructor for this lesson" a rule
-   instead of a loop: cooldowns pace, the mark concludes.
+   instead of a loop: the observed objective mark concludes it.
 
 10. Every decision is an event line in `player-decisions.jsonl` — fired actions with the
     snapshot values read, conflict losses, cooldown holds, receipts, refusals (an action whose
     compilation fails, e.g. `talk-npc` with no such NPC visible, is logged `refused` and the
     next rule gets the slot), hold/stale/logged-out transitions. `log` tails it.
+    Additionally, every rule firing whose verification concludes appends ONE compact
+    `reflex-outcome` event to that same log: the rule name, its trigger (why it matched), the
+    compiled action and parameters, the verified status or refusal, and the player's before and
+    after coordinates — so a movement whose settled distance contradicts its intent is readable
+    from the record alone, without correlating separate lines.
+
+10a. **The reflex-fire ledger: reflexes report to deliberation.** A model deliberation must see
+    what the mechanical hands did since it last looked, or observed movement that contradicts
+    the current plan gets re-diagnosed from scratch every time. Every model-facing `step`/`play`
+    invocation therefore FIRST prints the reflex firings recorded since the previous
+    presentation, one `reflex-fire` line per firing in time order, before its verdict line. Each
+    line is one compact JSON object: order and timestamp, engine (`player` for this layer,
+    `reflex` for the game-reflex engine's own `decisions.jsonl`, which is read read-only), the
+    stable rule name, the trigger that matched, the chosen action and parameters, start and end
+    coordinates, the moved distance, the intended target when the action names one, and the
+    outcome or refusal. Suppressions and losses over the same span — `conflict-loss`,
+    `cooldown-hold`, `route-conflict-hold`, `sidestep-pause-hold` —
+    are aggregated into one `reflex-suppressed` line so a higher-priority rule that repeatedly
+    held a lower one is visible without scrolling the raw log.
+    The presentation cursor is durable and per player instance
+    (`$DESKCRAB_GAME_DIR/reflex-fire-cursor.json`, advanced under its own lock): a firing that
+    lands between two deliberations appears in exactly the next one, and never again — repeated
+    `play` calls cannot re-present consumed entries, and a rotated or restarted log falls back
+    to the last presented timestamp rather than replaying from the beginning. Presentation is
+    bounded (newest 40 records, an explicit `reflex-fires-omitted count=N` line when older ones
+    were dropped); the full underlying event history stays in the two decision logs for
+    diagnosis. The resident runner and direct action doors consume nothing — only the
+    deliberation door advances the cursor. The player prompt (rule 18's sheet carrier) requires
+    checking these lines FIRST whenever observed movement or actions contradict the intended
+    plan, and naming the interfering reflex from the record instead of guessing.
 
 ### Learning
 
 11. Rules are created durably by the player's own hand at the moment a play verifies:
-    `learn <name> --priority N [--cooldown-ms N] [--hold-ticks N] [--once-per-objective]
+    `learn <name> --priority N [--cooldown-ms 0] [--hold-ticks N] [--once-per-objective]
     [--disabled] [--note TEXT] --trigger k=v… --action TYPE [--param k=v…]` validates through
     rule 3's gate and persists. A learned rule arrives **enabled** — unlike game-reflex rule
     14's shipped defaults, learning is already the player's own explicit act on a verified
@@ -736,6 +870,26 @@ deliberate-play channel.
     activity is lexically related. These are templates to consider, never permission to copy an
     action without grounded evidence and the normal replay gate.
 
+    Activity selection itself is **catalog-first**. The catalog of existing activities is
+    derived, never guessed: every name observed in `activity-history.jsonl`, scoped by
+    `activity_is` in the current table, named by the current activity file or its measured
+    stats. `activity NAME` selects a catalog entry; a name outside the catalog is refused with
+    the catalog listed, and creation is a separate deliberate act — `activity NAME --new
+    REASON` — offered only when no existing entry fits. A name whose hyphenated words strictly
+    contain an existing entry's whole name is that entry's VARIANT and is refused even with
+    `--new`, naming the base entry: the target of an activity is a parameter — the objective,
+    the plan, and rule 4's target sets choose interchangeable entities — never a fork of the
+    activity's name. The
+    creation reason is recorded in the activity-start outcome, so a genuinely new mode of play
+    begins with its own justification on the record.
+
+    Retargeting an already learned NPC behaviour is likewise one catalog operation, never a
+    relearning exercise: `retarget-npc SOURCE TARGET RULE [RULE…]` atomically widens every named
+    rule's `npc_visible` and `interact-npc.npc` target parameters, preserves every other trigger,
+    action parameter, priority, zero cooldown, note and activity scope byte-for-byte, and runs the
+    replay gate once over the complete change. `--replace` is the explicit destructive form;
+    widening is the default so prior targets keep their learned behaviour.
+
 ### The entrypoint
 
 12. The playing harness invokes this layer first: `orsc-headless.sh play [args…]` in the game
@@ -746,7 +900,20 @@ deliberate-play channel.
     doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh panel [close]`,
     `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]`,
     `orsc-headless.sh object OBJ-NAME|TYPE-ID VERB [SECONDS]`, and
-    `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. Players are semantic
+    `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. While the resident runner
+    heartbeat is live, every enabled rule
+    in the current objective/activity scope reserves its semantic action identity, including its
+    target parameters, across the temporary false states between triggers. Direct semantic doors
+    ask `direct-owner ACTION --param KEY=VALUE…` before dispatch; a matching owner returns
+    `routine-owned ... next=play` and emits no second action. Ownership is not instantaneous
+    eligibility: fighting, waiting for completion, missing inventory, or another transient guard
+    cannot open a race for a competing direct hand. An unrelated target, out-of-scope rule, or
+    dead runner reserves nothing. `retreat` and `sidestep` are the same public escape identity for
+    this boundary. This mechanism applies uniformly to NPC interaction, combat, casting, held-item
+    NPC use, scenery, entity clicks, inventory clicks, pickups, and escape; it contains no
+    activity-, NPC-, or skill-specific exception.
+
+    Players are semantic
     targets exactly as NPCs are: `entity player PLAYER-NAME [BUTTON]` resolves the exact
     case-insensitive visible name to that player's stable server identity and clicks the
     player's own live rendered point; button 3 opens the ordinary context menu, whose exact live
@@ -980,16 +1147,14 @@ deliberate-play channel.
     its correction remain visible even when no learned rule fired. Screenshots, protocol chatter,
     and giant listings cannot consume the batch. Command strings and self-reports remain
     explicitly untrusted.
-    Because separate author turns cannot infer a
-    time-spanning loop from isolated outcomes, the player retains a compact three-minute
-    repetition history. Three exact firings of the same non-retreat rule against the same target
-    in one objective/activity emit one self-contained `loop-candidate` record with their span and
-    recent states. The exact unchanged rule is held for 30 seconds in that objective/activity
-    while the author reviews it; changing the rule, objective, or activity releases the hold, and
-    an unchanged productive routine resumes after the bounded pause. This is not a permanent
-    generic action cap: productive skilling and valuable finite loot stay repeatable, while a
-    fixed low-value respawn, stale dialogue, or other diversion cannot keep firing during its own
-    correction. Safety retreat is exempt.
+    Because separate author turns cannot infer a time-spanning malfunction from isolated outcomes,
+    the player retains a compact three-minute history of failures/non-progress only. Three exact
+    malfunctions of the same non-retreat rule against the same target in one objective/activity
+    emit one self-contained `loop-candidate` record with their span and recent states. The exact
+    unchanged malfunctioning rule is held for 30 seconds in that objective/activity while the
+    author reviews it; changing the rule, objective, or activity releases the hold. Successful
+    completions never enter repetition history, never emit a candidate, and never create a review
+    hold. Safety retreat is exempt.
     Selecting or restarting an activity adds one `activity-start` record carrying its current
     eligible reflexes, reusable candidates, and prior performance summary. While positive XP keeps
     arriving, one `activity-checkpoint` at most every three minutes carries the current iteration,
@@ -1034,6 +1199,28 @@ deliberate-play channel.
     suite against the WOULD-BE table first and refuses the write on any failure, so a broken
     rule is caught before it is armed, and a new rule that would steal an existing case's
     trigger state is caught the moment it is proposed.
+
+    A case may additionally pin the winning action's SEMANTICS, not only its rule's name:
+    `expect_action` is an object of parameter assertions checked against the action the
+    expected rule compiled for that snapshot. An asserted key must equal the compiled
+    parameter exactly; a key asserted `null` must be ABSENT from the compiled action — that is
+    how a case states that no cap rides an action. `expect_action` beside `expect: none` is
+    refused at load and at the door: no winner, no action to inspect; and a case whose
+    assertion does not hold against the live table is refused the moment it is proposed, the
+    same as a wrong `expect`. The assertion exists because a rule name cannot distinguish two
+    movements that displace the body alike: the 2026-09-01 live confusion read a multi-tile
+    thieving approach as if it were an escape, and the response briefly capped how far a
+    pickpocket seek may walk — a semantic inversion no name-only case could catch, because
+    displacement was the only signal under test. With the assertion, a seek case states its
+    observed postcondition directly — `interact-npc` toward the live target at its full
+    `target_distance`, with `within` and `max_path` asserted absent, so acquisition range
+    stays unrestricted and the gate refuses any mutation that would cap the seek or leave the
+    player idle before a viable distant target — while a combat-break case pins its own
+    bounded movement parameters without that bound ever leaking onto any other action: a
+    movement bound belongs to the action that owns it, never to the table. `test add` takes
+    the assertion as `--expect-action <JSON object>`; `test list` prints it beside the
+    expectation; the suite and the gate replay it through rule 7's own compile function,
+    unchanged.
 
 ### Her voice, and who she is playing with
 

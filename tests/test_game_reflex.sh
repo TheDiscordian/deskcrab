@@ -74,6 +74,9 @@ refute "warn on the game channel is refused" \
     "$BG" add bad2 --channel game --priority 1 --trigger hp_below=0.5 --action warn --param text=x
 refute "eat on the notice channel is refused" \
     "$BG" add bad3 --channel notice --priority 1 --trigger hp_below=0.5 --action eat
+refute "eat without an out-of-combat trigger is refused" \
+    "$BG" add bad-eat-combat --channel game --priority 1 \
+        --trigger hp_below=0.5 --trigger requires_food=true --action eat
 refute "requires_food and no_food together are refused" \
     "$BG" add bad4 --channel game --priority 1 --trigger requires_food=true --trigger no_food=true --action eat
 refute "an unknown rule name is refused" "$BG" enable no-such-rule
@@ -90,6 +93,25 @@ OUT="$("$BG" run --once 2>&1)" && fail "run must refuse without a food table" \
     || ok "run refuses while an enabled rule needs the missing food table"
 contains "$OUT" "food" && ok "the refusal names the food table" || fail "the refusal names the food table" "$OUT"
 "$BG" init --food-xml "$FOOD_XML" >/dev/null
+
+echo
+echo "eating is structurally out-of-combat (rule 10a):"
+rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" \
+      "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl" \
+      "$DESKCRAB_GAME_STATE_DIR/action.json"
+snap 11 4 '[{"id":132,"count":1}]' '{"in_combat":true}'
+"$BG" run --once
+snap 12 4 '[{"id":132,"count":1}]' '{"in_combat":true}'
+"$BG" run --once
+refute "low health cannot emit an eat action while fighting" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+check_eq "the combat deferral is logged once per episode" "$(decided combat-hold)" "1"
+snap 13 4 '[{"id":132,"count":1}]' '{"in_combat":false}'
+"$BG" run --once
+check "the held need dispatches on the first out-of-combat snapshot" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+check_eq "and it is the eat" "$(action_field 'type=eat')" "1"
+rm -f "$DESKCRAB_GAME_STATE_DIR/action.json" "$DESKCRAB_GAME_STATE_DIR/engine-state.json"
 
 echo
 echo "firing, debounce, and the slot (rules 10, 12):"
@@ -145,14 +167,16 @@ refute "no game action at 9/10" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 check_eq "no warn at 9/10" "$(notice_count)" "0"
 
 echo
-echo "cooldown and the in-flight gate (rule 10):"
+echo "observed completion and legacy pacing migration (rule 10):"
 rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl" \
       "$DESKCRAB_GAME_STATE_DIR/action.json"
-# A cooldown far longer than any scheduler pause, so a slow box cannot let it
-# lapse between the two snapshots and turn the assertion flaky.
+# Old tables are repaired on load: game cooldowns, minimum intervals and
+# per-minute caps cannot remain eligibility gates.
 python3 - "$DESKCRAB_GAME_DIR/reflex-rules.json" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
+cfg["defaults"]["min_action_interval_ms"] = 600
+cfg["defaults"]["max_actions_per_min"] = 20
 for r in cfg["rules"]:
     if r["name"] == "eat-low-health":
         r["cooldown_ms"] = 60000
@@ -161,54 +185,55 @@ PY
 snap 6 4
 "$BG" run --once
 check "fired once" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+check "legacy game pacing is rewritten to trigger-driven zeros" \
+    python3 - "$DESKCRAB_GAME_DIR/reflex-rules.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+assert cfg["defaults"]["min_action_interval_ms"] == 0
+assert cfg["defaults"]["max_actions_per_min"] == 0
+assert all(r["cooldown_ms"] == 0 for r in cfg["rules"] if r["channel"] == "game")
+PY
 snap 7 4
 "$BG" run --once
-check_eq "a second try inside the cooldown is logged, once" "$(decided cooldown-hold)" "2"  # eat + warn
-python3 - "$DESKCRAB_GAME_DIR/reflex-rules.json" <<'PY'
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-cfg["defaults"]["min_action_interval_ms"] = 0
-for r in cfg["rules"]:
-    if r["name"] == "eat-low-health":
-        r["cooldown_ms"] = 0
-json.dump(cfg, open(sys.argv[1], "w"))
-PY
-snap 8 4
-"$BG" run --once
-check_eq "cooldown 0 but no receipt yet: the in-flight gate holds" "$(decided inflight-hold)" "1"
+check_eq "without completion the in-flight gate holds" "$(decided inflight-hold)" "1"
 LAST_ID="$(python3 -c "import json;print(json.load(open('$DESKCRAB_GAME_STATE_DIR/engine-state.json'))['inflight']['id'])")"
 python3 -c "import json,time;json.dump({'id':$LAST_ID,'status':'done','ts':int(time.time()*1000)},open('$DESKCRAB_GAME_STATE_DIR/receipt.json','w'))"
-snap 9 4
+snap 8 7
 "$BG" run --once
 check_eq "the receipt was consumed and logged" "$(decided receipt)" "1"
-check_eq "and the slot freed: it fired again" "$(decided fired)" "3"  # warn once + eat twice
+check_eq "eat completes only after observed healing" "$(decided action-complete)" "1"
+check_eq "a receipt alone did not invent a second eat" "$(decided fired)" "2"  # warn + eat
+snap 9 4
+"$BG" run --once
+check_eq "the next low-health state fires immediately after completion" \
+    "$(decided fired)" "3"
+LAST_ID="$(python3 -c "import json;print(json.load(open('$DESKCRAB_GAME_STATE_DIR/engine-state.json'))['inflight']['id'])")"
+python3 -c "import json,time;json.dump({'id':$LAST_ID,'status':'done','ts':int(time.time()*1000)},open('$DESKCRAB_GAME_STATE_DIR/receipt.json','w'))"
+snap 10 4 '[{"id":10,"count":5}]'
+"$BG" run --once
+check_eq "a food-quantity decrease completes the eat without healing" \
+    "$(decided action-complete)" "2"
+check_eq "one completion was proven by healing" \
+    "$(sandbox_count_in '"healed":true' "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl")" "1"
+check_eq "one completion was proven by consumption" \
+    "$(sandbox_count_in '"consumed":true' "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl")" "1"
+snap 11 4
+"$BG" run --once
+check_eq "food back at low health fires again" "$(decided fired)" "4"
+LAST_ID="$(python3 -c "import json;print(json.load(open('$DESKCRAB_GAME_STATE_DIR/engine-state.json'))['inflight']['id'])")"
+python3 -c "import json,time;json.dump({'id':$LAST_ID,'status':'done','ts':int(time.time()*1000)},open('$DESKCRAB_GAME_STATE_DIR/receipt.json','w'))"
+snap 12 4 '[{"id":132,"count":1},{"id":10,"count":5}]' \
+    "{\"messages\":[{\"id\":9001,\"channel\":\"quest\",\"incoming\":false,\"sender\":\"\",\"text\":\"You can't do that whilst you are fighting!\"}]}"
+"$BG" run --once
+check_eq "the server's own fighting refusal completes the eat as failure" \
+    "$(decided action-failed)" "1"
 
 echo
-echo "the per-minute cap (rule 10):"
-rm -f "$DESKCRAB_GAME_STATE_DIR/engine-state.json" "$DESKCRAB_GAME_STATE_DIR/decisions.jsonl" \
-      "$DESKCRAB_GAME_STATE_DIR/action.json"
-python3 - "$DESKCRAB_GAME_DIR/reflex-rules.json" <<'PY'
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-cfg["defaults"]["max_actions_per_min"] = 2
-json.dump(cfg, open(sys.argv[1], "w"))
-PY
-for t in 10 11 12; do
-    snap "$t" 4
-    "$BG" run --once
-    ID="$(python3 -c "
-import json
-try: print(json.load(open('$DESKCRAB_GAME_STATE_DIR/engine-state.json'))['inflight']['id'])
-except Exception: print(0)")"
-    [ "$ID" != 0 ] && python3 -c "import json,time;json.dump({'id':$ID,'status':'done','ts':int(time.time()*1000)},open('$DESKCRAB_GAME_STATE_DIR/receipt.json','w'))"
-done
-check_eq "two fired, the third hit the cap" "$(decided cap)" "1"
-python3 - "$DESKCRAB_GAME_DIR/reflex-rules.json" <<'PY'
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-cfg["defaults"]["max_actions_per_min"] = 20
-json.dump(cfg, open(sys.argv[1], "w"))
-PY
+echo "new gameplay delays are refused (rule 10):"
+refute "a new game rule cannot add a post-action cooldown" \
+    "$BG" add delayed-walk --channel game --priority 10 --cooldown-ms 1 \
+        --hold-ticks 1 --trigger hp_below=0.5 \
+        --action walk --param x=121 --param z=650
 
 echo
 echo "stale state and logged-out protection (rule 11):"

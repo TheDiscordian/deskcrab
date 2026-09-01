@@ -6,7 +6,7 @@ hand wrote down at the moment a play verified, evaluated against the live
 bridge snapshot BEFORE any model reasoning, executed through the bridge's
 one action slot. The evaluation machinery is lib/game_reflex.py's evaluate —
 the same priorities, cooldowns, debounce, one receipted action in flight,
-pacing and hold override — with this layer's own trigger and action
+completion gating and hold override — with this layer's own trigger and action
 vocabulary plugged in. No model call is ever made anywhere in this module.
 
 Stdlib only, plain python3.
@@ -36,12 +36,20 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "ground_item_visible", "shop_item_visible", "bank_item_visible",
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
-                "inventory_slots_at_least", "fatigue_below", "in_combat", "out_of_combat")
-ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
+                "inventory_slots_at_least", "fatigue_below",
+                "in_combat", "out_of_combat",
+                "opponent_rounds_at_least",
+                "skill_at_least")
+ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
+# Bone burial is irreversible and awards no Prayer XP at full fatigue.  Keep
+# this as a hard action-safety invariant rather than asking every learned rule
+# to remember the same guard.  These are the bone item ids currently present
+# in the OpenRSC definitions and in the learned loot table.
+PRAYER_BONE_ITEM_IDS = frozenset((20, 413, 604, 814))
 FRIEND_STATUS_RE = re.compile(r"^(.+?)\s+has logged\s+(in|out)\s*$", re.IGNORECASE)
 WAIT_CONDITIONS = (
     "logged_in", "logged_out", "walking", "not_walking", "in_combat",
@@ -71,6 +79,26 @@ STOP_VERIFY_S = 6.0         # a stop's postcondition: a snapshot with walking fa
 TAKE_TIMEOUT_S = 25.0       # a pickup can include the same bounded pathing delay
 TAKE_MISSING_GRACE_S = 0.75 # let inventory follow a just-removed ground entry
 RETREAT_VERIFY_S = 1.25     # one server-round-sized observation before a retry
+# Spec rule 7a: the one-tile sidestep's bounded postcondition observation.
+# Eligibility comes from three observed damage splats on the local player,
+# never elapsed time;
+# after combat ends the body gets an ordinary settle before judgment.
+SIDESTEP_VERIFY_S = 4.0
+SIDESTEP_SETTLE_MAX_S = 5.0
+# WalkRequest opens the escape gate after opponent.getHitsMade() reaches three.
+# The bridge counts the corresponding damage splats on the local player; this
+# layer never reconstructs that server counter from elapsed time.
+SIDESTEP_REQUIRED_ROUNDS = 3
+# A fight causally following our own non-combat NPC interaction (pickpocket,
+# item use, talk) on the same NPC type is PROVOKED retaliation. The action and
+# combat episode identities establish that relation; elapsed time never does.
+PROVOKED_ACTION_TYPES = ("interact-npc", "use-item-npc", "talk-npc")
+# Spec rule 10a: the reflex-fire ledger's presentation bounds. History stays
+# complete in the decision logs; presentation is the newest slice, said so.
+REFLEX_FIRE_PRESENT_MAX = 40
+REFLEX_FIRE_TAIL_BYTES = 512 * 1024
+REFLEX_SUPPRESSION_KINDS = ("conflict-loss", "cooldown-hold",
+                            "route-conflict-hold", "sidestep-pause-hold")
 # Spec rule 7a: scenery transitions. The server's own floor arithmetic packs
 # each floor into one 944-tile band of the north-south axis (its Point
 # arithmetic: height = z / 944), so the snapshot's z names the current floor.
@@ -116,11 +144,14 @@ FOLLOW_RULE_NAME = "active-follow-player"
 FOLLOW_PRIORITY = 850_000  # an accepted guide beats routine work; escape still wins
 MANUAL_RETREAT_RULE_NAME = "manual-retreat-request"
 MANUAL_RETREAT_PRIORITY = 1_000_000
+RETREAT_TO_EAT_RULE_NAME = "low-health-retreat-to-eat"
+RETREAT_TO_EAT_PRIORITY = 1_100_000
+EAT_HEALTH_FRACTION = 0.5
 
 DEFAULTS = {
     "stale_ms": 2000,
-    "min_action_interval_ms": 600,
-    "max_actions_per_min": 20,
+    "min_action_interval_ms": 0,
+    "max_actions_per_min": 0,
     "inflight_timeout_ms": 3000,
 }
 
@@ -268,9 +299,11 @@ def load_retreat_request():
         request = json.loads(retreat_request_path().read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(request, dict) or request.get("v") != 2 \
+    if not isinstance(request, dict) or request.get("v") != 3 \
             or not isinstance(request.get("expires"), int) \
             or request["expires"] <= now_ms() \
+            or not isinstance(request.get("combat_id"), int) \
+            or request["combat_id"] < 1 \
             or not isinstance(request.get("distance"), int) \
             or not 1 <= request["distance"] <= 10 \
             or not isinstance(request.get("origin_x"), int) \
@@ -356,6 +389,212 @@ def retreat_clearance_target(snap: dict, request: dict) -> tuple[int, int]:
     every tick."""
     return (request["origin_x"] + request["dx"] * request["clearance"],
             request["origin_z"] + request["dz"] * request["clearance"])
+
+
+# --------------------------------------------------------------------------
+# The one-tile combat break (spec rules 4, 5, 7a, 7b): observed combat episode,
+# provocation evidence, and the sidestep compilation the escape selection
+# substitutes for a generic retreat in provoked, non-aggressive fights.
+# --------------------------------------------------------------------------
+def sidestep_pause_path() -> Path:
+    return game_dir() / "sidestep-pause.json"
+
+
+def load_sidestep_pause(objective: str):
+    try:
+        record = json.loads(sidestep_pause_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict) or record.get("v") != 1:
+        clear_sidestep_pause()
+        return None
+    # Scoped to the objective that provoked the fight: an objective change
+    # re-arms thieving without carrying a stale pause forward.
+    if (record.get("objective") or None) != (objective or None):
+        return None
+    return record
+
+
+def write_sidestep_pause(record: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(sidestep_pause_path(),
+                             json.dumps(record) + "\n")
+
+
+def clear_sidestep_pause() -> None:
+    try:
+        sidestep_pause_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def sidestep_tile_walkable(snap: dict, px: int, pz: int,
+                           tx: int, tz: int) -> bool:
+    """Collision-reachable adjacency from the snapshot's own terrain topology:
+    the candidate is not a fully blocked cell and no barrier stands on the
+    crossing edge. An absent terrain block means no known obstacle - the
+    compiled walk still carries max_path 1, so the client's collision map
+    re-proves the single step at dispatch."""
+    terrain = snap.get("terrain") or {}
+    for cell in terrain.get("blocked_cells") or []:
+        if isinstance(cell, dict) and cell.get("x") == tx and cell.get("z") == tz:
+            return False
+    for barrier in terrain.get("barriers") or []:
+        if not isinstance(barrier, dict):
+            continue
+        a, b = barrier.get("a"), barrier.get("b")
+        if isinstance(a, list) and isinstance(b, list) \
+                and {tuple(a), tuple(b)} == {(px, pz), (tx, tz)}:
+            return False
+    return True
+
+
+def choose_sidestep_tile(snap: dict, prefer_dx: int, prefer_dz: int):
+    """ONE cardinally adjacent collision-reachable tile: farthest from the
+    visible opponent first, ties broken toward the rule's preferred direction,
+    then a fixed north/east/south/west order. Deterministic and snapshot-only.
+    Tiles the bridge refused earlier in this combat episode (annotated as
+    _sidestep_excluded) are skipped, so a refusal picks a new candidate
+    instead of looping on the same doomed dispatch."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    excluded = {tuple(tile) for tile in snap.get("_sidestep_excluded") or []
+                if isinstance(tile, (list, tuple)) and len(tile) == 2}
+    cardinals = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    opponent = snap.get("opponent") or {}
+    ox, oz = opponent.get("x"), opponent.get("z")
+
+    def score(direction):
+        dx, dz = direction
+        tx, tz = px + dx, pz + dz
+        away = max(abs(tx - ox), abs(tz - oz)) \
+            if isinstance(ox, int) and isinstance(oz, int) else 0
+        return (-away, 0 if (dx, dz) == (prefer_dx, prefer_dz) else 1,
+                cardinals.index(direction))
+
+    for dx, dz in sorted(cardinals, key=score):
+        if (px + dx, pz + dz) in excluded:
+            continue
+        if sidestep_tile_walkable(snap, px, pz, px + dx, pz + dz):
+            return px + dx, pz + dz
+    return None
+
+
+def compile_sidestep_walk(snap: dict, prefer_dx: int, prefer_dz: int):
+    """The compiled one-tile break: a single ordinary walk to the chosen
+    adjacent tile, arrive 0 and max_path 1, carrying the recorded pre-retreat
+    origin for rule 7a's exact-displacement postcondition. Never the bridge's
+    retreat action, and nothing here can widen: the action only compiles in
+    combat, and the one accepted step is what ends combat."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    target = choose_sidestep_tile(snap, prefer_dx, prefer_dz)
+    if target is None:
+        return None
+    return {"type": "walk", "x": target[0], "z": target[1], "arrive": 0,
+            "max_path": 1, "sidestep": 1, "origin_x": px, "origin_z": pz}
+
+
+def opponent_npc_type(snap: dict):
+    """The type id of the NPC standing where the client says the fighting
+    opponent stands, or None when that cannot be resolved."""
+    opponent = snap.get("opponent") or {}
+    ox, oz = opponent.get("x"), opponent.get("z")
+    if not isinstance(ox, int) or not isinstance(oz, int):
+        return None
+    for npc in snap.get("npcs") or []:
+        if isinstance(npc, dict) and npc.get("x") == ox and npc.get("z") == oz \
+                and isinstance(npc.get("id"), int):
+            return npc["id"]
+    return None
+
+
+def read_direct_action_record():
+    """The direct doors' armed observation, as provocation evidence: a
+    non-combat NPC action a deliberate hand dispatched outside the runner."""
+    try:
+        observation = json.loads(action_observation_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(observation, dict) \
+            or observation.get("type") not in PROVOKED_ACTION_TYPES:
+        return None
+    fields = dict(field.split("=", 1) for field in observation.get("fields", [])
+                  if isinstance(field, str) and "=" in field)
+    try:
+        npc = int(fields.get("npc", ""))
+    except ValueError:
+        npc = None
+    baseline = observation.get("baseline") or {}
+    if baseline.get("in_combat") is not False:
+        return None
+    return {"id": observation.get("id"), "type": observation["type"],
+            "npc": npc, "awaiting_combat": True}
+
+
+def combat_provocation(est: dict, snap: dict):
+    """Classify a new combat from causal action identity, never elapsed time."""
+    opponent_npc = opponent_npc_type(snap)
+    candidates = [(est.get("last_npc_action"), False),
+                  (read_direct_action_record(), True)]
+    for recent, direct in candidates:
+        if not isinstance(recent, dict) or recent.get("awaiting_combat") is not True:
+            continue
+        if direct and recent.get("id") == est.get("last_direct_provocation_id"):
+            continue
+        if recent.get("type") not in PROVOKED_ACTION_TYPES:
+            continue
+        if opponent_npc is None or recent.get("npc") is None \
+                or recent["npc"] == opponent_npc:
+            return True, (opponent_npc if opponent_npc is not None
+                          else recent.get("npc")), (recent.get("id") if direct else None)
+    return False, opponent_npc, None
+
+
+def track_combat_state(snap: dict, est: dict, now: int) -> None:
+    """Assign each observed combat transition a durable causal episode id."""
+    if snap.get("logged_in") is not True or snap.get("in_combat") is not True:
+        if isinstance(est.get("combat_id"), int):
+            est["last_combat"] = {
+                "id": est["combat_id"],
+                "provoked": bool(est.get("combat_provoked")),
+                "opponent_npc": est.get("combat_opponent_npc"),
+                "origin": est.get("combat_origin"),
+                "sidestep": est.get("combat_sidestep"),
+                "ended_tick": snap.get("tick"),
+            }
+        est["combat_id"] = None
+        est["combat_origin"] = None
+        est["combat_sidestep"] = None
+        est["combat_provoked"] = False
+        est["combat_opponent_npc"] = None
+        return
+    if not isinstance(est.get("combat_id"), int):
+        provoked, opponent_npc, direct_id = combat_provocation(est, snap)
+        est["combat_sequence"] = int(est.get("combat_sequence") or 0) + 1
+        est["combat_id"] = est["combat_sequence"]
+        est["combat_origin"] = {"x": snap.get("x"), "z": snap.get("z")}
+        est["combat_sidestep"] = None
+        est["combat_provoked"] = provoked
+        est["combat_opponent_npc"] = opponent_npc
+        est["last_npc_action"] = None
+        if isinstance(direct_id, int):
+            est["last_direct_provocation_id"] = direct_id
+
+
+def annotate_combat_state(snap: dict, est: dict, now: int) -> None:
+    """Copy the engine-observed combat facts onto the snapshot, where the
+    trigger and compile vocabulary (and replay cases) can read them."""
+    if isinstance(est.get("combat_id"), int) and snap.get("in_combat") is True:
+        snap["_combat_provoked"] = bool(est.get("combat_provoked"))
+        snap["_combat_id"] = est["combat_id"]
+        if est.get("combat_opponent_npc") is not None:
+            snap["_combat_opponent_npc"] = est["combat_opponent_npc"]
+        attempt = est.get("combat_sidestep")
+        if isinstance(attempt, dict) and attempt.get("refused_tiles"):
+            snap["_sidestep_excluded"] = attempt["refused_tiles"]
 
 
 def route_path() -> Path:
@@ -847,6 +1086,40 @@ def learned_navigation_blockers(start_x: int, start_z: int, target_x: int,
         blocker.pop("last_seen", None)
     return sorted(blockers, key=lambda item: (
         item["kind"], item["x"], item["z"], item["id"], item["dir"]))
+
+
+def learned_navigation_passages(start_x: int, start_z: int, target_x: int,
+								target_z: int) -> list[tuple[int, int, int, int]]:
+    """Cardinal edges this body has already walked successfully.
+
+    The complete landscape cache contains the map's original closed scenery.
+    A live door or other dynamic boundary may therefore be passable even when
+    the archive says it is a wall. Only consecutive, one-tile observations are
+    strong enough to override that static edge; jumps and trail breaks are not.
+    """
+    low_x = min(start_x, target_x) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_x = max(start_x, target_x) + NAVIGATION_BLOCKER_MARGIN_TILES
+    low_z = min(start_z, target_z) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_z = max(start_z, target_z) + NAVIGATION_BLOCKER_MARGIN_TILES
+    passages = set()
+    previous = None
+    for point in load_movement_trail()["points"]:
+        if point.get("break") is True:
+            previous = None
+            continue
+        x, z = point.get("x"), point.get("z")
+        if not isinstance(x, int) or not isinstance(z, int):
+            previous = None
+            continue
+        if previous is not None:
+            px, pz = previous
+            if abs(x - px) + abs(z - pz) == 1 \
+                    and low_x <= x <= high_x and low_z <= z <= high_z \
+                    and low_x <= px <= high_x and low_z <= pz <= high_z:
+                passages.add((px, pz, x, z) if (px, pz) <= (x, z)
+                             else (x, z, px, pz))
+        previous = (x, z)
+    return sorted(passages)
 
 
 def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]:
@@ -1632,6 +1905,11 @@ def client_cache_route_plan(start_x: int, start_z: int, target_x: int,
                 lines.append("learned_blockers=" + ";".join(
                     f"{blocker['kind']},{blocker['id']},{blocker['x']},"
                     f"{blocker['z']},{blocker['dir']}" for blocker in blockers))
+            passages = learned_navigation_passages(
+                start_x, start_z, target_x, target_z)
+            if passages:
+                lines.append("learned_passages=" + ";".join(
+                    f"{x},{z},{nx},{nz}" for x, z, nx, nz in passages))
             game_reflex.atomic_write(request_path, "\n".join(lines) + "\n")
             deadline = time.monotonic() + CLIENT_ROUTE_TIMEOUT_S
             response = None
@@ -1901,6 +2179,12 @@ def validate_config(cfg: dict) -> None:
             bad(f"unknown defaults key '{key}' (known: {', '.join(sorted(DEFAULTS))})")
         if not isinstance(defaults[key], int) or defaults[key] < 0:
             bad(f"defaults.{key} must be a non-negative integer")
+    if defaults.get("min_action_interval_ms", 0) != 0:
+        bad("defaults.min_action_interval_ms must be 0: observed action "
+            "completion, not a post-action delay, sequences play")
+    if defaults.get("max_actions_per_min", 0) != 0:
+        bad("defaults.max_actions_per_min must be 0 (unlimited): the action "
+            "slot and observed completion bound execution")
 
     unfinished = cfg.get("unfinished", [])
     if not isinstance(unfinished, list):
@@ -1977,7 +2261,15 @@ def validate_config(cfg: dict) -> None:
             elif key in ("npc_visible", "object_visible", "bound_visible",
                          "ground_item_visible", "shop_item_visible", "bank_item_visible",
                          "inventory_has", "inventory_lacks"):
-                if not isinstance(val, int) or val < 0:
+                if key == "npc_visible" and isinstance(val, list):
+                    # Spec rule 4: the target set — one behaviour over
+                    # interchangeable target types, never a second rule.
+                    if (not val or len(set(val)) != len(val)
+                            or any(isinstance(v, bool) or not isinstance(v, int)
+                                   or v < 0 for v in val)):
+                        bad(f"{where}: trigger.npc_visible list must hold "
+                            "distinct non-negative type ids")
+                elif not isinstance(val, int) or val < 0:
                     bad(f"{where}: trigger.{key} must be a non-negative type/item id")
             elif key in ("inventory_slots_below", "inventory_slots_at_least"):
                 if not isinstance(val, int) or not 0 <= val <= 30:
@@ -1989,6 +2281,20 @@ def validate_config(cfg: dict) -> None:
             elif key in ("in_combat", "out_of_combat"):
                 if val is not True:
                     bad(f"{where}: trigger.{key} must be true when present")
+            elif key == "opponent_rounds_at_least":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1 <= val <= 100:
+                    bad(f"{where}: trigger.opponent_rounds_at_least must be "
+                        "an integer 1..100")
+            elif key == "skill_at_least":
+                if (not isinstance(val, dict) or set(val) != {"name", "level"}
+                        or not isinstance(val.get("name"), str)
+                        or not val["name"].strip() or "\n" in val["name"]
+                        or isinstance(val.get("level"), bool)
+                        or not isinstance(val.get("level"), int)
+                        or not 1 <= val["level"] <= 99):
+                    bad(f"{where}: trigger.skill_at_least must be "
+                        "{\"name\":<skill>,\"level\":1..99}")
         if "inventory_has" in trig and "inventory_lacks" in trig \
                 and trig["inventory_has"] == trig["inventory_lacks"]:
             bad(f"{where}: inventory_has and inventory_lacks name the same id")
@@ -2000,6 +2306,9 @@ def validate_config(cfg: dict) -> None:
         if not isinstance(action, dict) or action.get("type") not in ACTIONS:
             bad(f"{where}: action.type must be one of {', '.join(ACTIONS)}")
         atype = action["type"]
+        if rule["cooldown_ms"] != 0:
+            bad(f"{where}: cooldown_ms must be 0: use an observed trigger for "
+                "eligibility and an action verifier deadline for failure")
         if atype == "talk-npc":
             if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
                 bad(f"{where}: talk-npc takes exactly npc=<type id>")
@@ -2011,9 +2320,19 @@ def validate_config(cfg: dict) -> None:
                                         or not 0 <= action["within"] <= 10):
                 bad(f"{where}: attack-npc within must be an integer 0..10")
         elif atype == "interact-npc":
-            if not set(action) <= {"type", "npc", "cmd", "within"} \
-                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
-                bad(f"{where}: interact-npc takes npc=<type id> and optionally cmd/within")
+            npc_param = action.get("npc")
+            # Spec rule 5: npc may be one type id or rule 4's target set — a
+            # non-empty list of distinct ids resolved to ONE nearest visible
+            # member at fire time.
+            npc_ok = (isinstance(npc_param, int)
+                      and not isinstance(npc_param, bool) and npc_param >= 0) \
+                or (isinstance(npc_param, list) and npc_param
+                    and len(set(npc_param)) == len(npc_param)
+                    and all(isinstance(v, int) and not isinstance(v, bool)
+                            and v >= 0 for v in npc_param))
+            if not set(action) <= {"type", "npc", "cmd", "within"} or not npc_ok:
+                bad(f"{where}: interact-npc takes npc=<type id or list of "
+                    "distinct type ids> and optionally cmd/within")
             if "cmd" in action and action["cmd"] not in (1, 2):
                 bad(f"{where}: interact-npc cmd must be 1 or 2 (the def's menu commands)")
             if "within" in action and (not isinstance(action["within"], int)
@@ -2080,6 +2399,12 @@ def validate_config(cfg: dict) -> None:
                 bad(f"{where}: retreat distance must be an integer 1..10")
             if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
                 bad(f"{where}: retreat dx/dz must be -1, 0, or 1 and not both zero")
+        elif atype == "sidestep":
+            if set(action) - {"type", "dx", "dz"}:
+                bad(f"{where}: sidestep takes only an optional preferred dx/dz")
+            dx, dz = action.get("dx", 0), action.get("dz", 1)
+            if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
+                bad(f"{where}: sidestep dx/dz must be -1, 0, or 1 and not both zero")
         elif atype in ("interact-object", "interact-bound"):
             if not set(action) <= {"type", "obj", "cmd"} \
                     or not isinstance(action.get("obj"), int) or action["obj"] < 0:
@@ -2096,13 +2421,26 @@ def validate_config(cfg: dict) -> None:
             if "button" in action and action["button"] not in (1, 2, 3):
                 bad(f"{where}: click-entity button must be 1, 2, or 3")
         elif atype in ("click-inventory", "click-shop", "click-bank"):
-            if set(action) - {"type", "item", "button"} \
+            allowed = {"type", "item", "button"}
+            if atype == "click-inventory":
+                allowed.add("batch")
+            if set(action) - allowed \
                     or not isinstance(action.get("item"), int) \
                     or action["item"] < 0:
                 bad(f"{where}: {atype} takes item=<item id>, "
-                    "with optional button")
+                    "with optional button"
+                    + (" and batch=all" if atype == "click-inventory" else ""))
             if "button" in action and action["button"] not in (1, 2, 3):
                 bad(f"{where}: {atype} button must be 1, 2, or 3")
+            if "batch" in action:
+                if atype != "click-inventory" or action["batch"] != "all":
+                    bad(f"{where}: only click-inventory supports batch=all")
+                if trig.get("inventory_has") != action["item"]:
+                    bad(f"{where}: click-inventory batch=all requires an "
+                        "inventory_has trigger for the same item")
+                if trig.get("out_of_combat") is not True:
+                    bad(f"{where}: click-inventory batch=all requires "
+                        "out_of_combat=true; the batch pauses during combat")
         elif atype == "take-ground":
             if not set(action) <= {"type", "item", "within"} \
                     or not isinstance(action.get("item"), int) \
@@ -2121,10 +2459,47 @@ def load_config() -> dict:
         cfg = json.loads(path.read_text())
     except json.JSONDecodeError as e:
         die(f"learned table {path} is not valid JSON: {e}")
+    # One-way schema migration: the old wall-clock spelling represented the
+    # same fixed combat cadence.  Convert it before validation and persist the
+    # semantic trigger so no live reflex can continue to expose milliseconds.
+    migrated = []
+    defaults = cfg.get("defaults") if isinstance(cfg, dict) else None
+    if isinstance(defaults, dict):
+        if defaults.get("min_action_interval_ms") != 0:
+            defaults["min_action_interval_ms"] = 0
+            migrated.append("defaults.min_action_interval_ms")
+        if defaults.get("max_actions_per_min") != 0:
+            defaults["max_actions_per_min"] = 0
+            migrated.append("defaults.max_actions_per_min")
+    for rule in cfg.get("rules", []) if isinstance(cfg, dict) else []:
+        if isinstance(rule, dict) and isinstance(rule.get("cooldown_ms"), int) \
+                and rule["cooldown_ms"] != 0:
+            rule["cooldown_ms"] = 0
+            migrated.append(f"{rule.get('name')}.cooldown_ms")
+        trigger = rule.get("trigger") if isinstance(rule, dict) else None
+        if not isinstance(trigger, dict) or "in_combat_for_ms" not in trigger:
+            continue
+        value = trigger.pop("in_combat_for_ms")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            die(f"learned table {path}: rule '{rule.get('name')}' has an invalid "
+                "legacy combat-age trigger")
+        action_type = (rule.get("action") or {}).get("type")
+        if action_type not in ("retreat", "sidestep"):
+            die(f"learned table {path}: rule '{rule.get('name')}' used a legacy "
+                "combat-age trigger for a non-escape action; replace it with "
+                "an observed structured trigger")
+        # Every legacy escape-age rule approximated the same server lock.
+        # Migrate that intent, not the known-bad 5900/6000 ms delay.
+        rounds = SIDESTEP_REQUIRED_ROUNDS
+        trigger["opponent_rounds_at_least"] = max(
+            rounds, trigger.get("opponent_rounds_at_least", 0))
+        migrated.append(rule.get("name"))
     try:
         validate_config(cfg)
     except ValueError as e:
         die(f"learned table {path}: {e}")
+    if migrated:
+        game_reflex.atomic_write(path, json.dumps(cfg, indent=2) + "\n")
     cfg.setdefault("unfinished", [])
     return cfg
 
@@ -2596,6 +2971,28 @@ def load_player_state() -> dict:
     est.setdefault("recent_repetitions", [])
     est.setdefault("reported_repetitions", {})
     est.setdefault("repetition_holds", [])
+    est.setdefault("combat_sequence", 0)
+    if "combat_id" not in est:
+        # One-way state migration: preserve an active legacy episode without
+        # preserving its old timestamp semantics.
+        if isinstance(est.get("combat_since"), int):
+            est["combat_sequence"] = max(0, int(est["combat_sequence"])) + 1
+            est["combat_id"] = est["combat_sequence"]
+        else:
+            est["combat_id"] = None
+    est.pop("combat_since", None)
+    est.setdefault("combat_origin", None)
+    est.setdefault("combat_sidestep", None)
+    est.setdefault("combat_provoked", False)
+    est.setdefault("combat_opponent_npc", None)
+    est.setdefault("last_combat", None)
+    est.setdefault("last_npc_action", None)
+    est.setdefault("last_direct_provocation_id", None)
+    # One explicit semantic batch may outlive the transient condition that
+    # started it. Each member is still a separately dispatched and observed
+    # game action; this record preserves the all-items postcondition between
+    # runner passes and across a safe pause such as combat or full fatigue.
+    est.setdefault("action_batch", None)
     return est
 
 
@@ -3302,8 +3699,17 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
             and before.get("right_click_menu_open") is not True
         if selected_now:
             ui_changes.append(f"selected_inventory_item:{selected}")
-        completed = bool(selected_now or menu_opened or inventory_changes
-                         or xp_changes or message or failure)
+        if fields.get("batch") == "all":
+            # A batch member completes only when the selected item count
+            # actually falls. XP or a success line may arrive first and is
+            # useful evidence, but cannot authorize the next member by itself.
+            selected_key = str(selected)
+            old_selected = (old_inventory.get(selected_key) or {}).get("count", 0)
+            new_selected = (current_inventory.get(selected_key) or {}).get("count", 0)
+            completed = bool(new_selected < old_selected or failure)
+        else:
+            completed = bool(selected_now or menu_opened or inventory_changes
+                             or xp_changes or message or failure)
     if observation["type"] == "click-entity":
         for key in ("walking", "in_combat"):
             if isinstance(snap.get(key), bool) and snap.get(key) != before.get(key):
@@ -3589,6 +3995,40 @@ def cmd_wait_until(args):
             watch.wait(remaining)
 
 
+def cmd_sidestep_pause(args):
+    """Spec rule 7a: show or deliberately clear the standing sidestep pause.
+    Clearing is the re-arming door after the anomaly has been diagnosed."""
+    objective = read_objective()
+    pause = load_sidestep_pause(objective)
+    if getattr(args, "clear", False):
+        if pause is None and not sidestep_pause_path().exists():
+            report("sidestep-pause-none")
+            return
+        clear_sidestep_pause()
+        flush_events([{"ts": now_ms(), "kind": "sidestep-pause-cleared",
+                       "objective": objective or None}])
+        report("sidestep-pause-cleared", objective=objective or None)
+        return
+    if pause is None:
+        report("sidestep-pause-none")
+        return
+    origin = pause.get("origin") or {}
+    target = pause.get("target") or {}
+    settled = pause.get("settled") or {}
+    report("sidestep-pause", status=pause.get("status"),
+           rule=pause.get("rule"), npc=pause.get("npc"),
+           origin=(f"({origin.get('x')},{origin.get('z')})"
+                   if origin else None),
+           target=(f"({target.get('x')},{target.get('z')})"
+                   if target else None),
+           settled=(f"({settled.get('x')},{settled.get('z')})"
+                    if settled else None),
+           moved=pause.get("moved"), ts=pause.get("ts"),
+           feedback=pause.get("feedback"),
+           next="play sidestep-pause --clear")
+    sys.exit(EXIT_NOT_DONE)
+
+
 def cmd_retreat(args):
     """One bounded escape commitment. The resident runner owns it when
     present; otherwise this process uses the identical rules-first step path.
@@ -3616,9 +4056,18 @@ def cmd_retreat(args):
         report("retreated", status="already-safe", x=snap.get("x"), z=snap.get("z"))
         return
 
+    with player_state_lock():
+        combat_state = load_player_state()
+        track_combat_state(snap, combat_state, now_ms())
+        save_player_state(combat_state)
+    combat_id = combat_state.get("combat_id")
+    if not isinstance(combat_id, int):
+        report("retreat-not-ready", reason="combat-episode-unobserved")
+        sys.exit(EXIT_NOT_READY)
     dx, dz = choose_retreat_direction(snap, args.dx, args.dz)
     expires = now_ms() + int(args.timeout * 1000)
-    request = {"v": 2, "requested": now_ms(), "expires": expires,
+    request = {"v": 3, "requested": now_ms(), "expires": expires,
+               "combat_id": combat_id,
                "distance": args.distance, "dx": dx, "dz": dz,
                "origin_x": snap["x"], "origin_z": snap["z"],
                "clearance": RETREAT_CLEARANCE_TILES}
@@ -3641,6 +4090,18 @@ def cmd_retreat(args):
                        origin=f"({request['origin_x']},{request['origin_z']})",
                        clearance=request["clearance"])
                 return
+            if latest.get("in_combat") is False:
+                # A provoked, non-aggressive fight was broken by its one-tile
+                # step (spec 7b): the 12-tile clearance leg must not follow.
+                last = load_player_state().get("last_combat") or {}
+                if last.get("provoked") is True \
+                        and last.get("id") == request["combat_id"]:
+                    clear_retreat_request()
+                    report("retreated", status="one-tile-clear",
+                           tick=latest.get("tick"),
+                           x=latest.get("x"), z=latest.get("z"),
+                           origin=f"({request['origin_x']},{request['origin_z']})")
+                    return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 clear_retreat_request()
@@ -4060,8 +4521,24 @@ def make_trigger_fn(objective: str, activity: str = ""):
             if not activity or activity != trig["activity_is"]:
                 return False
         if "npc_visible" in trig:
-            if not any(n.get("id") == trig["npc_visible"]
+            # Spec rule 4: an int or the target set — any listed type visible.
+            wanted = trig["npc_visible"]
+            wanted_set = set(wanted) if isinstance(wanted, list) else {wanted}
+            if not any(n.get("id") in wanted_set
                        for n in snap.get("npcs") or []):
+                return False
+        if "skill_at_least" in trig:
+            # Spec rule 4: the rule's own eligibility floor, answered from the
+            # snapshot's base levels. Unpublished skills fail safe.
+            want = trig["skill_at_least"]
+            want_name = want["name"].strip().casefold()
+            level = next(
+                (s.get("level") for s in snap.get("skills") or []
+                 if isinstance(s, dict)
+                 and str(s.get("name", "")).strip().casefold() == want_name),
+                None)
+            if not isinstance(level, int) or isinstance(level, bool) \
+                    or level < want["level"]:
                 return False
         if "object_visible" in trig:
             if not any(o.get("id") == trig["object_visible"]
@@ -4123,17 +4600,28 @@ def make_trigger_fn(objective: str, activity: str = ""):
             return False
         if "out_of_combat" in trig and snap.get("in_combat") is not False:
             return False
+        if "opponent_rounds_at_least" in trig:
+            rounds = snap.get("opponent_rounds")
+            if snap.get("in_combat") is not True \
+                    or not isinstance(rounds, int) or isinstance(rounds, bool) \
+                    or rounds < trig["opponent_rounds_at_least"]:
+                return False
         return True
     return trigger_true
 
 
-def nearest_npc(snap: dict, wanted: int, predicate=None):
-    """Choose by actual walking steps, independently of snapshot list order."""
+def nearest_npc(snap: dict, wanted, predicate=None):
+    """Choose by actual walking steps, independently of snapshot list order.
+
+    `wanted` is one type id or rule 4's target set (a list of ids): the choice
+    runs across every listed type, so a set compiles to its nearest visible
+    member, never to a preferred-order first match."""
     px, pz = snap.get("x"), snap.get("z")
     if not isinstance(px, int) or not isinstance(pz, int):
         return None
+    wanted_set = set(wanted) if isinstance(wanted, (list, tuple)) else {wanted}
     candidates = [npc for npc in snap.get("npcs") or []
-                  if npc.get("id") == wanted
+                  if npc.get("id") in wanted_set
                   and all(isinstance(npc.get(key), int)
                           for key in ("sidx", "x", "z"))
                   and (predicate is None or predicate(npc))]
@@ -4147,6 +4635,19 @@ def nearest_npc(snap: dict, wanted: int, predicate=None):
 def compiled_npc_action(action_type: str, npc: dict, wanted: int, **extra):
     return {"type": action_type, "sidx": npc["sidx"], "npc": wanted,
             "target_x": npc["x"], "target_z": npc["z"], **extra}
+
+
+def npc_id_set(value) -> set:
+    """Rule 4's target parameter as a set: one id, a list of ids, or neither
+    (empty). Lets scope comparisons treat `63` and `[63, 86]` uniformly."""
+    if isinstance(value, bool) or value is None:
+        return set()
+    if isinstance(value, int):
+        return {value}
+    if isinstance(value, (list, tuple)):
+        return {v for v in value
+                if isinstance(v, int) and not isinstance(v, bool)}
+    return set()
 
 
 def compile_player_action(rule, snap, food, eat_pick):
@@ -4185,7 +4686,10 @@ def compile_player_action(rule, snap, food, eat_pick):
             extra = {"cmd": action.get("cmd", 1), "target_distance": distance}
             if within is not None:
                 extra["within"] = within
-            return compiled_npc_action("interact-npc", npc, want, **extra), None
+            # Spec rule 5: a target set compiles to the chosen member's own
+            # exact type id — no set ever crosses the action file.
+            return compiled_npc_action("interact-npc", npc, npc["id"],
+                                       **extra), None
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "use-item-npc":
         item_id = action["item"]
@@ -4281,9 +4785,28 @@ def compile_player_action(rule, snap, food, eat_pick):
                 "name": target.get("name") or action["name"],
                 "x": target["x"], "z": target["z"],
                 "arrive": action["within"]}, None
+    if action["type"] == "sidestep":
+        if snap.get("in_combat") is not True:
+            return None, "already-out-of-combat"
+        compiled = compile_sidestep_walk(snap, action.get("dx", 0),
+                                         action.get("dz", 1))
+        if compiled is None:
+            return None, "sidestep-no-adjacent-tile"
+        return compiled, None
     if action["type"] == "retreat":
         if snap.get("in_combat") is not True:
             return None, "already-out-of-combat"
+        if snap.get("_combat_provoked") is True:
+            # Runtime escape selection (spec rules 5, 7b): a provoked,
+            # non-aggressive fight ALWAYS breaks with the one-tile sidestep;
+            # the far clearance retreat stays reserved for unprovoked combat -
+            # the grounded evidence of an aggressive or pursuing monster.
+            compiled = compile_sidestep_walk(snap, action.get("dx", 0),
+                                             action.get("dz", 1))
+            if compiled is None:
+                return None, "sidestep-no-adjacent-tile"
+            compiled["retreat_suppressed"] = 1
+            return compiled, None
         compiled = {"type": "retreat", "distance": action.get("distance", 5),
                     "dx": action.get("dx", 0), "dz": action.get("dz", 1)}
         if action.get("committed_direction") == 1:
@@ -4342,9 +4865,17 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, f"{kind}-not-loaded"
     if action["type"] == "click-inventory":
         want = action["item"]
+        if want in PRAYER_BONE_ITEM_IDS and snap.get("fatigue") == 100:
+            return None, "bone-burial-blocked-at-full-fatigue"
         if any(entry.get("id") == want for entry in snap.get("inventory") or []):
-            return {"type": "click-inventory", "item": want,
-                    "button": action.get("button", 1)}, None
+            compiled = {"type": "click-inventory", "item": want,
+                        "button": action.get("button", 1)}
+            if action.get("batch") == "all":
+                # Evaluator metadata: emit_player_action deliberately does not
+                # serialize this field to the bridge. The client receives one
+                # ordinary click; the player engine owns the batch contract.
+                compiled["batch"] = "all"
+            return compiled, None
         return None, "item-not-held"
     if action["type"] in ("click-shop", "click-bank"):
         interface = action["type"].split("-", 1)[1]
@@ -4551,20 +5082,25 @@ def save_config_change(before: dict, after: dict, doing: str) -> None:
 
 
 def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | None:
-    """Aggregate exact repeated plays for the event-driven Sol author.
+    """Aggregate exact repeated malfunctions for the event-driven author.
 
-    One outcome at a time is normally enough to author a rule, but it cannot
-    reveal a time-spanning loop to an ephemeral author turn. Keep a compact
-    three-minute history and emit one self-contained candidate after the same
-    rule targets the same thing three times in the same objective/activity.
-    This is diagnostic, not a blanket loot cap: the author must distinguish a
-    productive routine or valuable finite drops from a fixed-spawn diversion.
+    Successful repetition is the purpose of a learned routine and never
+    enters this history. Three matching failures/non-progress outcomes expose
+    a malfunction which one isolated author turn could otherwise miss.
     """
     action = outcome.get("action") or {}
     if rule is None or action.get("type") == "retreat" \
+            or action.get("sidestep") == 1 \
             or outcome.get("rule") in (
                 ROUTE_RULE_NAME, BACKTRACK_RULE_NAME, FOLLOW_RULE_NAME,
                 MANUAL_RETREAT_RULE_NAME):
+        return None
+    completion = outcome.get("completion") or {}
+    malfunction = outcome.get("status") != "done" \
+        or completion.get("result") == "failed"
+    if not malfunction:
+        # Exact repetition is the definition of a productive learned routine.
+        # Review is for repeated failure/non-progress, never repeated success.
         return None
     now = int(outcome.get("ts") or now_ms())
     identity = {key: action.get(key) for key in (
@@ -4600,6 +5136,7 @@ def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | 
                   "objective": outcome.get("objective"),
                   "activity": outcome.get("activity"),
                   "fingerprint": fingerprint,
+                  "reason": "repeated-malfunction",
                   "until": now + REPETITION_REVIEW_HOLD_MS})
     est["repetition_holds"] = holds[-16:]
     return {"ts": now, "kind": "loop-candidate", "rule": outcome.get("rule"),
@@ -4610,9 +5147,8 @@ def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | 
             "review_hold_ms": REPETITION_REVIEW_HOLD_MS,
             "recent": [{k: v for k, v in item.items() if k != "key"}
                        for item in matches[-REPETITION_THRESHOLD:]],
-            "note": "Exact repetition needs review: preserve productive routines and valuable "
-                    "finite loot; prevent fixed low-value respawns or stale interactions from "
-                    "starving the current commitment."}
+            "note": "The same grounded malfunction repeated; repair its trigger, action, or "
+                    "completion transition before resuming it."}
 
 
 # --------------------------------------------------------------------------
@@ -4652,6 +5188,61 @@ def inventory_quantity(snap: dict, item_id: int) -> int:
         if isinstance(entry, dict) and entry.get("id") == item_id
         and isinstance(entry.get("count", entry.get("amount", 1)), int)
     )
+
+
+def continue_action_batch(cfg: dict, snap: dict, est: dict,
+                          objective: str, activity: str,
+                          events: list, now: int) -> list:
+    """Turn a started ``batch=all`` into an item-presence commitment.
+
+    A capacity threshold is an initiation condition, not a loop condition.
+    Once started, the authored rule keeps its priority but its transient
+    trigger is replaced with durable scope, item presence, and server safety
+    guards. Each pass still emits exactly one ordinary action and waits for
+    the selected item's observed decrease before another pass can fire.
+    """
+    rules = list(cfg.get("rules") or [])
+    batch = est.get("action_batch")
+    if not isinstance(batch, dict):
+        if batch is not None:
+            est["action_batch"] = None
+        return rules
+    rule = next((candidate for candidate in rules
+                 if candidate.get("name") == batch.get("rule")), None)
+    reason = None
+    if not isinstance(batch.get("item"), int) \
+            or isinstance(batch.get("item"), bool):
+        reason = "invalid-record"
+    elif rule is None or rule.get("enabled") is not True:
+        reason = "rule-disabled-or-removed"
+    elif rule_behavior_hash(rule) != batch.get("behavior"):
+        reason = "rule-changed"
+    elif batch.get("objective") != (objective or None) \
+            or batch.get("activity") != (activity or None):
+        reason = "scope-changed"
+    elif inventory_quantity(snap, batch.get("item", -1)) <= 0:
+        reason = "item-absent"
+    if reason is not None:
+        events.append({"ts": now, "kind": "action-batch-finished",
+                       "rule": batch.get("rule"), "item": batch.get("item"),
+                       "reason": reason})
+        est["action_batch"] = None
+        return rules
+
+    authored_trigger = rule.get("trigger") or {}
+    trigger = {
+        key: authored_trigger[key]
+        for key in ("objective_is", "activity_is")
+        if key in authored_trigger
+    }
+    trigger.update({"inventory_has": batch["item"], "out_of_combat": True})
+    if batch["item"] in PRAYER_BONE_ITEM_IDS:
+        # Burial is refused at 100 fatigue. Keep the commitment pending while
+        # a sleep action owns recovery, then resume from observed fatigue.
+        trigger["fatigue_below"] = 100
+    continuation = dict(rule, trigger=trigger)
+    return [continuation if candidate.get("name") == rule["name"] else candidate
+            for candidate in rules]
 
 
 def ground_quantity_at(snap: dict, item_id: int, x: int, z: int) -> int:
@@ -4706,6 +5297,43 @@ def verify_take_ground(item_id: int, x: int, z: int,
             if missing_since is not None:
                 wake_in = min(wake_in, TAKE_MISSING_GRACE_S - (now - missing_since))
             watch.wait(max(0.01, wake_in))
+
+
+def verify_sidestep(action: dict, timeout_s: float = SIDESTEP_VERIFY_S):
+    """Rule 7a's one-tile postcondition, observed and never widened: 'done'
+    only when a newer snapshot shows in_combat false AND the body settled
+    exactly on the chosen adjacent tile. Combat persisting on the origin is
+    the retryable lock ('sidestep-locked'/'sidestep-unconfirmed'); combat
+    ending on the origin is benign ('sidestep-combat-ended'); leaving combat
+    anywhere else is the anomaly 'sidestep-displaced'. Nothing here emits a
+    movement command."""
+    target = (action.get("x"), action.get("z"))
+    origin = (action.get("origin_x"), action.get("origin_z"))
+    deadline = time.monotonic() + timeout_s
+    hard_stop = deadline + SIDESTEP_SETTLE_MAX_S
+    latest = game_reflex.read_snapshot() or {}
+    last_pos, last_move = None, time.monotonic()
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "sidestep-unverified", latest.get("x"), latest.get("z")
+            px, pz = latest.get("x"), latest.get("z")
+            now = time.monotonic()
+            if (px, pz) != last_pos:
+                last_pos, last_move = (px, pz), now
+            if latest.get("in_combat") is False and isinstance(px, int):
+                if (px, pz) == target:
+                    return "done", px, pz
+                if now - last_move >= WALK_SETTLE_S or now >= hard_stop:
+                    if (px, pz) == origin:
+                        return "sidestep-combat-ended", px, pz
+                    return "sidestep-displaced", px, pz
+            elif now >= deadline:
+                status = "sidestep-locked" if retreat_lock_feedback(latest) \
+                    else "sidestep-unconfirmed"
+                return status, px, pz
+            watch.wait(max(0.05, min(0.5, hard_stop - now)))
 
 
 def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
@@ -4859,6 +5487,240 @@ def read_live_runner():
     return hb
 
 
+def direct_action_type_matches(requested: str, stored: str) -> bool:
+    """Compare semantic hand actions, including the two escape executors.
+
+    `retreat` is the public intent. A learned rule may implement that intent
+    with either the general clearance action or the exact one-tile sidestep;
+    both still own the same hand operation.
+    """
+    if requested == "retreat":
+        return stored in ("retreat", "sidestep")
+    return requested == stored
+
+
+def direct_action_parameter_matches(action: dict, key: str, value) -> bool:
+    """Match a caller's semantic selector against a stored action parameter."""
+    if key == "npc":
+        return value in npc_id_set(action.get("npc"))
+    if key in ("cmd", "button"):
+        return action.get(key, 1) == value
+    return action.get(key) == value
+
+
+def rules_own_direct_action(cfg: dict, requested: str, selectors: dict,
+                            objective: str, activity: str) -> list[str]:
+    """Return enabled in-scope routines reserving one semantic hand action.
+
+    Ownership deliberately does not mean "the trigger is true this instant".
+    A trigger is the routine's state transition guard; letting a second hand
+    act while that guard is temporarily false is precisely the race this
+    boundary prevents. Disable/change the routine or its scope to return the
+    action to direct control.
+    """
+    owners = []
+    for rule in cfg.get("rules") or []:
+        if not rule.get("enabled") \
+                or not rule_scope_applies(rule, objective, activity):
+            continue
+        action = rule.get("action") or {}
+        if not direct_action_type_matches(requested, action.get("type")):
+            continue
+        if not all(direct_action_parameter_matches(action, key, value)
+                   for key, value in selectors.items()):
+            continue
+        owners.append(str(rule.get("name")))
+    return sorted(owners)
+
+
+def cmd_direct_owner(args):
+    """Exit successfully iff the live resident routine owns this action.
+
+    This is the mechanical interlock used by direct semantic commands; it
+    emits no bridge action itself. Exit 1 with no output means direct control
+    is currently unreserved.
+    """
+    if read_live_runner() is None:
+        raise SystemExit(1)
+    selectors = parse_kv(args.param)
+    cfg = load_config()
+    owners = rules_own_direct_action(
+        cfg, args.action, selectors, read_objective(), read_activity())
+    if not owners:
+        raise SystemExit(1)
+    report("routine-owned", action=args.action,
+           selectors=",".join(f"{key}={selectors[key]}"
+                              for key in sorted(selectors)) or None,
+           rules=",".join(owners), next="play")
+
+
+# --------------------------------------------------------------------------
+# The reflex-fire ledger (spec rule 10a): what the mechanical hands did since
+# the previous deliberation, presented exactly once, cursor advanced under its
+# own lock. The full history stays in the two decision logs.
+# --------------------------------------------------------------------------
+def reflex_fire_cursor_path() -> Path:
+    return game_dir() / "reflex-fire-cursor.json"
+
+
+def reflex_fire_cursor_lock_path() -> Path:
+    return game_dir() / "reflex-fire-cursor.lock"
+
+
+class reflex_cursor_lock:
+    """Serialize concurrent deliberations: one presents, the other sees the
+    advanced cursor. Deliberately NOT player_state_lock - presentation may
+    run while another process holds that."""
+    def __enter__(self):
+        reflex_fire_cursor_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(reflex_fire_cursor_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def collect_reflex_events(log_path: Path, engine: str, entry: dict):
+    """New event lines from one decision log since the cursor entry.
+    Returns (events, new_entry). A rotated or replaced log falls back to the
+    bounded tail filtered by the last presented timestamp, so nothing is
+    replayed from the beginning and nothing recent is lost."""
+    entry = entry if isinstance(entry, dict) else {}
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return [], entry
+    min_ts = 0
+    with open(log_path, "rb") as fh:
+        first = fh.readline()
+        sha = hashlib.sha1(first).hexdigest() if first else None
+        offset = entry.get("offset")
+        if entry.get("sha") != sha or not isinstance(offset, int) \
+                or not 0 <= offset <= size:
+            # Unknown or rotated log: bounded tail, timestamp-filtered.
+            min_ts = entry.get("ts") if isinstance(entry.get("ts"), int) else 0
+            offset = max(0, size - REFLEX_FIRE_TAIL_BYTES)
+            fh.seek(offset)
+            if offset:
+                offset += len(fh.readline())  # drop the partial first line
+        fh.seek(offset)
+        data = fh.read(size - offset)
+    # Never advance past a line still being appended.
+    cut = data.rfind(b"\n")
+    if cut < 0:
+        return [], {"sha": sha, "offset": offset, "ts": entry.get("ts") or 0}
+    data = data[:cut + 1]
+    events = []
+    last_ts = entry.get("ts") if isinstance(entry.get("ts"), int) else 0
+    for line in data.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        ts = event.get("ts")
+        if min_ts and (not isinstance(ts, int) or ts <= min_ts):
+            continue
+        event["_engine"] = engine
+        events.append(event)
+        if isinstance(ts, int):
+            last_ts = max(last_ts, ts)
+    return events, {"sha": sha, "offset": offset + cut + 1, "ts": last_ts}
+
+
+def build_reflex_fire_records(events: list):
+    """(records, suppressed): one compact record per firing, in time order,
+    and per-rule counts of the suppression kinds over the same span."""
+    by_id = {}
+    records = []
+    suppressed = {}
+    for event in sorted(events, key=lambda e: (e.get("ts") or 0)):
+        kind = event.get("kind")
+        engine = event.get("_engine")
+        if kind == "fired":
+            snap = event.get("snap") or {}
+            record = {"ts": event.get("ts"), "engine": engine,
+                      "rule": event.get("rule"), "action": event.get("action"),
+                      "outcome": "in-flight",
+                      "start": {"x": snap.get("x"), "z": snap.get("z")},
+                      "end": None}
+            by_id[(engine, event.get("id"))] = record
+            records.append(record)
+        elif kind == "receipt":
+            record = by_id.get((engine, event.get("id")))
+            if record is not None and record.get("outcome") == "in-flight":
+                record["outcome"] = event.get("status")
+        elif kind == "reflex-outcome":
+            record = by_id.get((engine, event.get("id")))
+            if record is None:
+                record = {"ts": event.get("ts"), "engine": engine}
+                records.append(record)
+            record.update({
+                "rule": event.get("rule"), "trigger": event.get("trigger"),
+                "action": event.get("action"), "outcome": event.get("status"),
+                "start": event.get("start"), "end": event.get("end")})
+            if event.get("moved") is not None:
+                record["moved"] = event["moved"]
+        elif kind in REFLEX_SUPPRESSION_KINDS:
+            rules = suppressed.setdefault(kind, {})
+            for name in (event.get("rules")
+                         if isinstance(event.get("rules"), list)
+                         else [event.get("rule")]):
+                if isinstance(name, str):
+                    rules[name] = rules.get(name, 0) + 1
+    return records, suppressed
+
+
+def present_reflex_fires() -> None:
+    """Spec rule 10a: print the firings recorded since the previous
+    deliberation, newest-bounded, then advance the durable cursor - so each
+    firing appears in exactly one deliberation's context. A broken ledger
+    must never block play: any error leaves the cursor untouched."""
+    try:
+        with reflex_cursor_lock():
+            try:
+                cursor = json.loads(reflex_fire_cursor_path().read_text())
+            except (OSError, ValueError):
+                cursor = {}
+            if not isinstance(cursor, dict):
+                cursor = {}
+            player_events, player_entry = collect_reflex_events(
+                state_dir() / "player-decisions.jsonl", "player",
+                cursor.get("player") or {})
+            reflex_events, reflex_entry = collect_reflex_events(
+                state_dir() / "decisions.jsonl", "reflex",
+                cursor.get("reflex") or {})
+            records, suppressed = build_reflex_fire_records(
+                player_events + reflex_events)
+            shown = records[-REFLEX_FIRE_PRESENT_MAX:]
+            omitted = len(records) - len(shown)
+            for order, record in enumerate(shown, 1):
+                line = {"n": order}
+                line.update({k: v for k, v in record.items() if v is not None})
+                print("reflex-fire " + json.dumps(line, separators=(",", ":")),
+                      flush=True)
+            if omitted > 0:
+                print(f"reflex-fires-omitted count={omitted} "
+                      f"log={state_dir() / 'player-decisions.jsonl'}",
+                      flush=True)
+            if suppressed:
+                capped = {kind: dict(sorted(rules.items(),
+                                            key=lambda kv: -kv[1])[:12])
+                          for kind, rules in suppressed.items()}
+                print("reflex-suppressed "
+                      + json.dumps(capped, separators=(",", ":")), flush=True)
+            game_dir().mkdir(parents=True, exist_ok=True)
+            game_reflex.atomic_write(
+                reflex_fire_cursor_path(),
+                json.dumps({"v": 1, "player": player_entry,
+                            "reflex": reflex_entry}) + "\n")
+    except Exception as error:  # noqa: BLE001 - presentation never blocks play
+        print(f"reflex-ledger-error {error!r}", file=sys.stderr, flush=True)
+
+
 # --------------------------------------------------------------------------
 # step (spec rule 7): one rules-first evaluation and one report line.
 # --------------------------------------------------------------------------
@@ -4905,6 +5767,14 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         return "no-snapshot", EXIT_NOT_READY
     record_movement_trail(snap)
     record_navigation_observation(snap)
+    # The observed combat clock and provocation verdict (spec rule 4) are
+    # tracked BEFORE anything selects an escape, so the same pass that sees
+    # combat end can already refuse a stale far-clearance walk.
+    with player_state_lock():
+        est = load_player_state()
+        track_combat_state(snap, est, now)
+        save_player_state(est)
+    annotate_combat_state(snap, est, now)
     xp_metrics = activity_metrics(snap, activity)
     xp_text = activity_xp_metrics_text(xp_metrics)
     xp_compare = activity_comparison_text(xp_metrics)
@@ -4927,11 +5797,46 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                status=snap.get("sleep_status") or None,
                next="solve-current-word-then-wait-until-not_sleeping")
         return "sleeping-needs-wake", EXIT_NO_RULE
-    source_rules = list(cfg["rules"])
+    # A semantic batch survives the transient threshold that initiated it.
+    # Reconcile it before dynamic safety rules are added so combat escape,
+    # eating, and sleep can still take precedence whenever its continuation
+    # guard is paused.
+    source_rules = continue_action_batch(
+        cfg, snap, est, objective, activity, events, now)
+    save_player_state(est)
+    hits, hits_max = snap.get("hits"), snap.get("hits_max")
+    food = game_reflex.load_food()
+    low_health_with_food = isinstance(hits, int) and isinstance(hits_max, int) \
+        and hits_max > 0 and hits / hits_max < EAT_HEALTH_FRACTION \
+        and bool(game_reflex.food_slots(snap, food))
+    if low_health_with_food and snap.get("in_combat") is True:
+        # Eating is server-illegal in combat. This safety transition owns the
+        # fight until three client-observed splats make retreat legal; the
+        # normal out-of-combat eat reflex then owns and verifies consumption.
+        source_rules.append({
+            "name": RETREAT_TO_EAT_RULE_NAME, "enabled": True,
+            "priority": RETREAT_TO_EAT_PRIORITY, "cooldown_ms": 0,
+            "hold_ticks": 1, "once_per_objective": False,
+            "note": "leave combat before eating; never click food while fighting",
+            "trigger": {"in_combat": True,
+                        "opponent_rounds_at_least": SIDESTEP_REQUIRED_ROUNDS},
+            "action": {"type": "retreat", "distance": 5, "dx": 0, "dz": 1},
+        })
     retreat_request = load_retreat_request()
     if retreat_request is not None and retreat_has_clearance(snap, retreat_request):
         clear_retreat_request()
         retreat_request = None
+    if retreat_request is not None and snap.get("in_combat") is False:
+        # A provoked, non-aggressive fight is broken by its one-tile step; the
+        # request must not go on to walk the 12-tile clearance leg (spec 7b).
+        last = est.get("last_combat") or {}
+        if last.get("provoked") is True \
+                and last.get("id") == retreat_request["combat_id"]:
+            clear_retreat_request()
+            flush_events([{"ts": now, "kind": "retreat-request-satisfied",
+                           "reason": "provoked-combat-broken-one-tile",
+                           "x": snap.get("x"), "z": snap.get("z")}])
+            retreat_request = None
     if retreat_request is not None:
         if snap.get("in_combat") is True:
             retreat_action = {"type": "retreat",
@@ -4992,13 +5897,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                 "trigger": {}, "action": follow_action,
             })
     trigger_true = make_trigger_fn(objective, activity)
+    # Escape rules own combat from its FIRST snapshot (spec rule 7b). The
+    # readiness trigger is set aside only for this ownership calculation: the
+    # pre-third-round span already holds routes, travel and pickups still,
+    # while the one-tile break waits for observed server combat progress.
     urgent_retreat_names = {
         rule["name"] for rule in source_rules
         if rule.get("enabled")
-        and ((rule.get("action") or {}).get("type") == "retreat"
+        and ((rule.get("action") or {}).get("type") in ("retreat", "sidestep")
              and snap.get("in_combat") is True
              or rule.get("name") == MANUAL_RETREAT_RULE_NAME)
-        and trigger_true(rule.get("trigger") or {}, snap, {})
+        and trigger_true({key: value
+                          for key, value in (rule.get("trigger") or {}).items()
+                          if key != "opponent_rounds_at_least"}, snap, {})
     }
 
     # Spec rules 7b-7c: capture urgent messages before ordinary play.
@@ -5209,12 +6120,14 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
 
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
     # engine sees the table, so the machinery stays vocabulary-blind.
+    sidestep_pause = load_sidestep_pause(objective)
     live_rules = []
     active_repetition_holds = []
     est["repetition_holds"] = [
         hold for hold in est.get("repetition_holds") or []
         if isinstance(hold, dict) and isinstance(hold.get("until"), int)
         and hold["until"] > now
+        and hold.get("reason") == "repeated-malfunction"
     ]
     for rule in source_rules:
         if urgent_retreat_names and rule["name"] not in urgent_retreat_names:
@@ -5250,6 +6163,34 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if rule.get("once_per_objective") and rule["enabled"] \
                 and once_key(rule["name"], objective) in est["objective_fired"]:
             continue
+        # Spec rule 7a: a standing sidestep-pause holds ONLY the rules that
+        # would resume the provoking activity. Escape rules stay armed.
+        if sidestep_pause is not None and rule["enabled"] \
+                and rule["name"] not in urgent_retreat_names \
+                and ((rule.get("trigger") or {}).get("activity_is") == "thieving"
+                     or (npc_id_set(sidestep_pause.get("npc"))
+                         & npc_id_set((rule.get("action") or {}).get("npc")))):
+            logged = est.get("sidestep_pause_holds") or {}
+            if logged.get(rule["name"]) != sidestep_pause.get("ts"):
+                events.append({"ts": now, "kind": "sidestep-pause-hold",
+                               "rule": rule["name"],
+                               "pause_status": sidestep_pause.get("status"),
+                               "pause_ts": sidestep_pause.get("ts")})
+                logged[rule["name"]] = sidestep_pause.get("ts")
+                est["sidestep_pause_holds"] = logged
+            continue
+        # Runtime escape selection (spec rules 5, 7b): one-tile breaks and
+        # generic retreats in a PROVOKED fight wait for the third combat
+        # splat observed by the client.
+        atype = (rule.get("action") or {}).get("type")
+        if snap.get("in_combat") is True \
+                and "opponent_rounds_at_least" not in (rule.get("trigger") or {}) \
+                and (atype == "sidestep"
+                     or (atype == "retreat"
+                         and snap.get("_combat_provoked") is True)):
+            rule = dict(rule, trigger=dict(rule["trigger"],
+                                           opponent_rounds_at_least=
+                                           SIDESTEP_REQUIRED_ROUNDS))
         fingerprint = rule_fingerprint(rule)
         review_hold = next((hold for hold in est["repetition_holds"]
                             if hold.get("rule") == rule["name"]
@@ -5297,8 +6238,52 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
 
     fired = [e for e in events if e.get("kind") == "fired"]
     cooldown_holds = sum(1 for e in events if e.get("kind") == "cooldown-hold")
+    if fired and (fired[0].get("action") or {}).get("batch") == "all":
+        fired_rule = next((rule for rule in cfg.get("rules") or []
+                           if rule.get("name") == fired[0].get("rule")), None)
+        fired_action = fired[0]["action"]
+        if fired_rule is not None:
+            existing_batch = est.get("action_batch")
+            batch = {"rule": fired_rule["name"],
+                     "behavior": rule_behavior_hash(fired_rule),
+                     "objective": objective or None,
+                     "activity": activity or None,
+                     "item": fired_action["item"],
+                     "button": fired_action.get("button", 1),
+                     "started_ts": (existing_batch.get("started_ts", now)
+                                    if isinstance(existing_batch, dict) else now)}
+            if not isinstance(existing_batch, dict):
+                events.append({"ts": now, "kind": "action-batch-started",
+                               "rule": fired_rule["name"],
+                               "item": fired_action["item"],
+                               "postcondition": "item-absent"})
+            est["action_batch"] = batch
     save_player_state(est)
     flush_events(events)
+
+    # Rule 7a's second grounded anomaly: mid-combat, every adjacent candidate
+    # blocked or already refused. Written once per standing pause.
+    if snap.get("in_combat") is True and sidestep_pause is None \
+            and any(e.get("kind") == "refused"
+                    and e.get("why") == "sidestep-no-adjacent-tile"
+                    for e in events):
+        sidestep_pause = {
+            "v": 1, "ts": now, "objective": objective or None,
+            "rule": next(e.get("rule") for e in events
+                         if e.get("kind") == "refused"
+                         and e.get("why") == "sidestep-no-adjacent-tile"),
+            "npc": snap.get("_combat_opponent_npc"),
+            "origin": {"x": snap.get("x"), "z": snap.get("z")},
+            "target": None, "settled": None,
+            "status": "sidestep-no-adjacent-tile", "moved": 0,
+            "feedback": latest_system_feedback(snap)}
+        write_sidestep_pause(sidestep_pause)
+        flush_events([{"ts": now, "kind": "sidestep-failed", **sidestep_pause}])
+        append_outcome({"ts": now, "kind": "sidestep-diagnostic",
+                        **sidestep_pause,
+                        "next": "thieving-held; no collision-reachable "
+                                "adjacent tile remains; inspect terrain and "
+                                "clear with: play sidestep-pause --clear"})
 
     if not fired:
         if not snap.get("logged_in"):
@@ -5356,7 +6341,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if active_repetition_holds:
             held_names = ",".join(sorted({str(hold.get("rule"))
                                           for hold in active_repetition_holds}))
-            left = max(0, max(int(hold["until"]) for hold in active_repetition_holds) - now)
+            left = max(0, max(int(hold["until"])
+                              for hold in active_repetition_holds) - now)
             report("repetition-review-hold", rules=held_names,
                    hold_ms_left=left, objective=objective or None,
                    activity=activity or None)
@@ -5372,6 +6358,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                activity_compare=xp_compare or None,
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
+               sidestep_pause=(f"{sidestep_pause.get('status')}"
+                               " clear-with:play-sidestep-pause---clear"
+                               if sidestep_pause is not None else None),
                ground_items=",".join(str(i.get("id"))
                                      for i in snap.get("ground_items") or []) or None,
                feedback=latest_system_feedback(snap))
@@ -5412,8 +6401,21 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     final_x = final_z = None
     gained = 0
     completion_detail = None
-    is_retreat = rule is not None and rule["action"].get("type") == "retreat"
-    if status == "done" and is_retreat:
+    is_sidestep = action.get("sidestep") == 1
+    is_retreat = not is_sidestep and rule is not None \
+        and rule["action"].get("type") == "retreat"
+    if status == "done" and is_sidestep:
+        status, final_x, final_z = verify_sidestep(action)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id,
+                           "origin": {"x": action.get("origin_x"),
+                                      "z": action.get("origin_z")},
+                           "intended": {"x": action["x"], "z": action["z"]},
+                           "settled": {"x": final_x, "z": final_z},
+                           "feedback": latest_system_feedback(
+                               game_reflex.read_snapshot() or snap)}])
+    elif status == "done" and is_retreat:
         status, final_x, final_z = verify_retreat()
         if status != "done":
             flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
@@ -5464,10 +6466,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "npc": action["npc"], "completion": completion_detail,
                            "feedback": latest_system_feedback(latest or snap)}])
     elif status == "done" and action["type"] in (
-            "attack-npc", "use-item-npc", "click-inventory", "click-entity"):
+            "talk-npc", "attack-npc", "interact-npc", "use-item-npc",
+            "interact-object", "interact-bound",
+            "click-inventory", "click-entity"):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
-            "within", "button") if key in action]
+            "within", "button", "batch") if key in action]
         observation = make_action_observation(
             action_id, action["type"], fields, snap, event.get("ts"))
         completion_detail, latest = await_action_completion(
@@ -5934,6 +6938,56 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         est["objective_fired"][once_key(rule_name, objective)] = now
         save_player_state(est)
 
+    # The one-tile break's episode bookkeeping (spec rules 5, 7a): remember
+    # the attempt, exclude a bridge-refused tile for the rest of this fight,
+    # and write the durable pause ONLY for the two grounded anomalies.
+    if is_sidestep:
+        origin = {"x": action.get("origin_x"), "z": action.get("origin_z")}
+        intended = {"x": action.get("x"), "z": action.get("z")}
+        with player_state_lock():
+            side_est = load_player_state()
+            attempt = side_est.get("combat_sidestep") \
+                if isinstance(side_est.get("combat_sidestep"), dict) else {}
+            refused_tiles = [tile for tile in attempt.get("refused_tiles") or []
+                             if isinstance(tile, list) and len(tile) == 2]
+            if status.startswith("refused") \
+                    and [action.get("x"), action.get("z")] not in refused_tiles:
+                refused_tiles.append([action.get("x"), action.get("z")])
+            side_est["combat_sidestep"] = {
+                "ts": now_ms(), "rule": rule_name, "status": status,
+                "origin": origin, "target": intended,
+                "refused_tiles": refused_tiles}
+            save_player_state(side_est)
+        if status == "done":
+            flush_events([{"ts": now_ms(), "kind": "sidestep-clear",
+                           "rule": rule_name, "id": action_id,
+                           "origin": origin, "settled": {"x": final_x,
+                                                         "z": final_z},
+                           "moved": 1}])
+        elif status == "sidestep-displaced":
+            moved = max(abs((final_x or 0) - (origin.get("x") or 0)),
+                        abs((final_z or 0) - (origin.get("z") or 0))) \
+                if isinstance(final_x, int) and isinstance(origin.get("x"), int) \
+                else None
+            pause = {"v": 1, "ts": now_ms(), "objective": objective or None,
+                     "rule": rule_name,
+                     "npc": ((rule.get("trigger") or {}).get("npc_visible")
+                             if rule is not None else None)
+                     or snap.get("_combat_opponent_npc"),
+                     "origin": origin, "target": intended,
+                     "settled": {"x": final_x, "z": final_z},
+                     "status": status, "moved": moved,
+                     "feedback": latest_system_feedback(
+                         game_reflex.read_snapshot() or snap)}
+            write_sidestep_pause(pause)
+            flush_events([{"ts": now_ms(), "kind": "sidestep-failed",
+                           "id": action_id, **pause}])
+            append_outcome({"ts": now_ms(), "kind": "sidestep-diagnostic",
+                            **pause,
+                            "next": "thieving-held; read the reflex-fire "
+                                    "record to name what moved the body; "
+                                    "clear with: play sidestep-pause --clear"})
+
     # Every outcome feeds the background author (spec rule 16).
     outcome = {"ts": now_ms(), "kind": "outcome", "rule": rule_name,
                "id": action_id, "action": action, "status": status,
@@ -5952,11 +7006,57 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         outcome["gained"] = gained
     append_outcome(outcome)
     est = load_player_state()
+    latest_action_state = game_reflex.read_snapshot() or {}
+    batch = est.get("action_batch")
+    if isinstance(batch, dict) and batch.get("rule") == rule_name \
+            and inventory_quantity(latest_action_state,
+                                   batch.get("item", -1)) <= 0:
+        events_batch = [{"ts": now_ms(), "kind": "action-batch-finished",
+                         "rule": rule_name, "item": batch.get("item"),
+                         "reason": "item-absent"}]
+        est["action_batch"] = None
+        flush_events(events_batch)
     candidate = repetition_candidate(est, rule, outcome)
+    # Provocation evidence (spec rule 4) is a causal transition, not a
+    # freshness window: only an NPC action that began out of combat and whose
+    # observed outcome is already in combat may classify the next episode.
+    # Any concluded game action supersedes an older pending marker.
+    est["last_npc_action"] = None
+    if action["type"] in PROVOKED_ACTION_TYPES \
+            and action.get("npc") is not None \
+            and snap.get("in_combat") is False \
+            and latest_action_state.get("in_combat") is True:
+        est["last_npc_action"] = {
+            "id": action_id, "type": action["type"],
+            "npc": action.get("npc"), "awaiting_combat": True}
     save_player_state(est)
     if candidate is not None:
         append_outcome(candidate)
         flush_events([candidate])
+
+    # Spec rule 10: one compact self-describing record per concluded firing -
+    # rule, why it matched, the compiled action, and before/after coordinates,
+    # so a displacement that contradicts intent is readable from one line.
+    end_x, end_z = final_x, final_z
+    if end_x is None:
+        latest_end = game_reflex.read_snapshot() or {}
+        end_x, end_z = latest_end.get("x"), latest_end.get("z")
+    fire_record = {"ts": now_ms(), "kind": "reflex-outcome", "id": action_id,
+                   "rule": rule_name, "status": status,
+                   "objective": objective or None, "activity": activity or None,
+                   "trigger": (rule.get("trigger") if rule is not None else None),
+                   "action": {key: action[key] for key in (
+                       "type", "x", "z", "arrive", "max_path", "sidestep",
+                       "origin_x", "origin_z", "retreat_suppressed", "npc",
+                       "sidx", "obj", "item", "spell", "cmd", "within",
+                       "distance", "dx", "dz", "button", "kind", "batch",
+                       "target_x", "target_z") if key in action},
+                   "start": {"x": snap.get("x"), "z": snap.get("z")},
+                   "end": {"x": end_x, "z": end_z}}
+    if isinstance(snap.get("x"), int) and isinstance(end_x, int):
+        fire_record["moved"] = max(abs(end_x - snap["x"]),
+                                   abs(end_z - snap["z"]))
+    flush_events([fire_record])
 
     if action["type"] in ("walk", "take-ground") and final_x is not None:
         if backtrack_was_blocked and backtrack.get("status") == "diverged":
@@ -6072,6 +7172,13 @@ def load_tests() -> dict:
         if not isinstance(case, dict) or not case.get("name") \
                 or not isinstance(case.get("snapshot"), dict):
             die(f"test cases {path}: every case needs a name and a snapshot object")
+        if "expect_action" in case:
+            if not isinstance(case["expect_action"], dict):
+                die(f"test cases {path}: case '{case['name']}': expect_action "
+                    "must be an object of parameter assertions")
+            if case.get("expect") in (None, "", "none"):
+                die(f"test cases {path}: case '{case['name']}': expect_action "
+                    "needs a rule-name expect — no winner, no action to inspect")
     return tests
 
 
@@ -6106,6 +7213,29 @@ def lint_table(cfg: dict) -> list:
     return problems
 
 
+def action_assertion_failures(case: dict, action) -> list:
+    """Rule 17's semantic pin: each `expect_action` key must equal the
+    compiled parameter, and a key asserted null must be ABSENT — so a case
+    can state that no range cap rides a seek, or that a combat break carries
+    its own bounded movement, instead of inferring intent from displacement."""
+    problems = []
+    compiled = action if isinstance(action, dict) else {}
+    for key, want in (case.get("expect_action") or {}).items():
+        have = compiled.get(key)
+        if want is None:
+            if key in compiled:
+                problems.append(
+                    f"case '{case['name']}': action.{key} must stay absent, "
+                    f"the compiled action carries {json.dumps(have)}")
+        elif key not in compiled:
+            problems.append(f"case '{case['name']}': action.{key} is missing "
+                            f"— expected {json.dumps(want)}")
+        elif have != want:
+            problems.append(f"case '{case['name']}': action.{key} is "
+                            f"{json.dumps(have)} — expected {json.dumps(want)}")
+    return problems
+
+
 def run_suite(cfg: dict):
     """(failures, case-count) for lint plus every replay case."""
     failures = lint_table(cfg)
@@ -6114,11 +7244,13 @@ def run_suite(cfg: dict):
         want = case.get("expect")
         if want in (None, "", "none"):
             want = None
-        got, _action = predict(cfg, case["snapshot"], case.get("objective") or "",
-                               case.get("activity") or "")
+        got, action = predict(cfg, case["snapshot"], case.get("objective") or "",
+                              case.get("activity") or "")
         if got != want:
             failures.append(f"case '{case['name']}': expected "
                             f"{want or 'none'}, got {got or 'none'}")
+        elif got is not None:
+            failures.extend(action_assertion_failures(case, action))
     return failures, len(tests["cases"])
 
 
@@ -6285,6 +7417,74 @@ def cmd_set(args):
     gate_or_die(cfg, f"setting '{args.rule}' {key}")
     save_config_change(before, cfg, f"setting '{args.rule}' {key}")
     print(f"{args.rule}: {key} = {value!r}")
+
+
+def expanded_npc_target(value, source: int, target: int, replace: bool):
+    """Retarget one NPC parameter without reconstructing its rule.
+
+    The default widens the existing target set; --replace is the deliberate
+    destructive form.  Returning None means this parameter did not name the
+    source and therefore is not part of this retarget operation.
+    """
+    values = list(value) if isinstance(value, list) else [value]
+    if source not in values:
+        return None
+    if replace:
+        values = [target if item == source else item for item in values]
+    elif target not in values:
+        values.append(target)
+    values = list(dict.fromkeys(values))
+    return values[0] if len(values) == 1 else values
+
+
+def cmd_retarget_npc(args):
+    """Atomically reuse whole reflexes for another interchangeable NPC.
+
+    This is intentionally one table mutation and one replay gate: the player
+    must not rebuild triggers, completion, guards, priority, or the action by
+    hand merely because the interchangeable target type changed.
+    """
+    if args.source == args.target:
+        die("source and target NPC ids are identical")
+    cfg = load_config()
+    before = json.loads(json.dumps(cfg))
+    changed = []
+    for name in args.rules:
+        rule = find_rule(cfg, name)
+        trigger = rule.get("trigger") or {}
+        action = rule.get("action") or {}
+        touched = False
+        if "npc_visible" in trigger:
+            widened = expanded_npc_target(
+                trigger["npc_visible"], args.source, args.target, args.replace)
+            if widened is not None:
+                trigger["npc_visible"] = widened
+                touched = True
+        if "npc" in action:
+            widened = expanded_npc_target(
+                action["npc"], args.source, args.target, args.replace)
+            if widened is not None:
+                if action.get("type") != "interact-npc" and isinstance(widened, list):
+                    die(f"'{name}' uses {action.get('type')}, whose npc parameter cannot "
+                        "be a target set; split or generalize that action first")
+                action["npc"] = widened
+                touched = True
+        if not touched:
+            die(f"'{name}' does not target NPC {args.source}")
+        changed.append(name)
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        die(str(e))
+    operation = "replacing" if args.replace else "expanding"
+    gate_or_die(cfg, f"{operation} NPC {args.source} with {args.target} in "
+                + ", ".join(changed))
+    save_config_change(before, cfg,
+                       f"retarget-npc {args.source} {args.target} "
+                       f"{'replace' if args.replace else 'expand'}")
+    print(f"retargeted {len(changed)} reflex(es): NPC {args.source} "
+          f"{'replaced by' if args.replace else 'expanded with'} {args.target}; "
+          "all other behavior preserved")
 
 
 def cmd_remove(args):
@@ -6496,6 +7696,47 @@ def print_activity_history(activity: str) -> None:
             f"{skill.get('name')}={skill.get('xp_per_hour')}/hr "
             f"(iteration {skill.get('iteration')})"
             for skill in summary["best"]))
+
+
+def activity_catalog(cfg: dict) -> list:
+    """Spec rule 11: the derived catalog of existing activities — every name
+    observed in the activity history, scoped by activity_is in the current
+    table, or named by the current selection and its measured stats."""
+    names = set()
+    for row in load_jsonl(activity_history_path()):
+        name = str(row.get("activity") or "").strip()
+        if name:
+            names.add(name)
+    for rule in cfg.get("rules") or []:
+        name = str((rule.get("trigger") or {}).get("activity_is") or "").strip()
+        if name:
+            names.add(name)
+    current = read_activity()
+    if current:
+        names.add(current)
+    stats_name = str(load_activity_stats().get("activity") or "").strip()
+    if stats_name:
+        names.add(stats_name)
+    return sorted(names)
+
+
+def activity_name_tokens(name: str) -> set:
+    return {token for token in re.split(r"[^a-z0-9]+", name.casefold()) if token}
+
+
+def activity_variant_base(name: str, catalog: list):
+    """Spec rule 11: a name whose hyphenated words strictly contain an
+    existing entry's whole name is that entry's VARIANT — a fork of the mode,
+    not a new mode. The target belongs in the objective, plan, and target-set
+    rules instead."""
+    tokens = activity_name_tokens(name)
+    for entry in catalog:
+        if entry == name:
+            continue
+        entry_tokens = activity_name_tokens(entry)
+        if entry_tokens and entry_tokens < tokens:
+            return entry
+    return None
 
 
 def cmd_activity(args):
@@ -7189,20 +8430,36 @@ def cmd_test(args):
         if not tests["cases"]:
             print("no cases yet")
         for case in tests["cases"]:
-            print(f"{case['name']}: objective={case.get('objective') or '(none)'} "
-                  f"activity={case.get('activity') or '(none)'} "
-                  f"expect={case.get('expect') or 'none'}")
+            line = (f"{case['name']}: objective={case.get('objective') or '(none)'} "
+                    f"activity={case.get('activity') or '(none)'} "
+                    f"expect={case.get('expect') or 'none'}")
+            if case.get("expect_action"):
+                line += " action=" + json.dumps(case["expect_action"],
+                                                separators=(",", ":"))
+            print(line)
         return
     if args.action == "add":
         if not args.name or not args.snapshot or args.expect is None:
             die("test add <name> --expect <rule|none> --snapshot <file|-> "
-                "[--objective OBJ]")
+                "[--objective OBJ] [--expect-action JSON]")
         raw = sys.stdin.read() if args.snapshot == "-" \
             else Path(args.snapshot).read_text()
         try:
             snapshot = json.loads(raw)
         except json.JSONDecodeError as e:
             die(f"snapshot is not valid JSON: {e}")
+        assertion = None
+        if getattr(args, "expect_action", None):
+            try:
+                assertion = json.loads(args.expect_action)
+            except json.JSONDecodeError as e:
+                die(f"--expect-action is not valid JSON: {e}")
+            if not isinstance(assertion, dict):
+                die("--expect-action must be a JSON object of parameter "
+                    "assertions (a null value asserts the key is absent)")
+            if args.expect == "none":
+                die("--expect-action needs a rule-name --expect — "
+                    "no winner, no action to inspect")
         tests = load_tests()
         if any(c["name"] == args.name for c in tests["cases"]):
             die(f"a case named '{args.name}' already exists")
@@ -7210,14 +8467,22 @@ def cmd_test(args):
                 "activity": args.activity or "",
                 "expect": None if args.expect == "none" else args.expect,
                 "snapshot": snapshot}
+        if assertion is not None:
+            case["expect_action"] = assertion
         # A case must be true the moment it is added — the suite stays green
         # so the gate only trips when a MUTATION breaks something.
         cfg = load_config()
-        got, _ = predict(cfg, snapshot, case["objective"], case["activity"])
+        got, action = predict(cfg, snapshot, case["objective"], case["activity"])
         want = case["expect"]
         if got != want:
             die(f"case would fail right now: expected {want or 'none'}, "
                 f"the live table gives {got or 'none'} — learn/fix the rule first")
+        if got is not None:
+            problems = action_assertion_failures(case, action)
+            if problems:
+                die("case would fail right now: " + "; ".join(problems)
+                    + " — the assertion must describe the action the live "
+                      "table actually compiles")
         tests["cases"].append(case)
         save_tests(tests)
         print(f"case '{args.name}' added ({len(tests['cases'])} total)")
@@ -7306,6 +8571,12 @@ def cmd_run(args):
                 last_verdict = verdict
             latest = game_reflex.read_snapshot() or {}
             detail = latest_system_feedback(latest) or ""
+            live_pause = load_sidestep_pause(read_objective())
+            if live_pause is not None:
+                pause_detail = (f"sidestep-pause {live_pause.get('status')} "
+                                f"npc={live_pause.get('npc')}; thieving-held; "
+                                "clear with: play sidestep-pause --clear")
+                detail = f"{pause_detail}; {detail}" if detail else pause_detail
             active_route = load_route()
             if active_route is not None and active_route.get("status") != "invalid":
                 route_detail = (f"route {active_route['status']} to "
@@ -7362,7 +8633,7 @@ def main():
     p = sub.add_parser("learn", help="persist a verified play as an executable rule")
     p.add_argument("name")
     p.add_argument("--priority", type=int, required=True)
-    p.add_argument("--cooldown-ms", type=int, default=8000)
+    p.add_argument("--cooldown-ms", type=int, default=0)
     p.add_argument("--hold-ticks", type=int, default=1)
     p.add_argument("--once-per-objective", action="store_true")
     p.add_argument("--disabled", action="store_true")
@@ -7390,6 +8661,17 @@ def main():
     p.add_argument("key")
     p.add_argument("value")
     p.set_defaults(fn=cmd_set)
+
+    p = sub.add_parser(
+        "retarget-npc",
+        help="atomically reuse complete reflexes for another NPC type")
+    p.add_argument("source", type=int, help="NPC type id already targeted")
+    p.add_argument("target", type=int, help="interchangeable NPC type id to add")
+    p.add_argument("rules", nargs="+", metavar="RULE",
+                   help="one or more reflexes to retarget in the same gated change")
+    p.add_argument("--replace", action="store_true",
+                   help="replace SOURCE instead of preserving it in the target set")
+    p.set_defaults(fn=cmd_retarget_npc)
 
     p = sub.add_parser("remove", help="remove a rule or unfinished entry")
     p.add_argument("rule")
@@ -7426,6 +8708,12 @@ def main():
     p.add_argument("--limit-ms", type=int, dest="limit_ms")
     p.add_argument("--grace-ms", type=int, dest="grace_ms")
     p.set_defaults(fn=cmd_session)
+
+    p = sub.add_parser("sidestep-pause",
+                       help="the one-tile combat break's anomaly pause: "
+                            "show it, or --clear to re-arm thieving")
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_sidestep_pause)
 
     p = sub.add_parser("route", help="set, inspect, or clear the durable ACTIONS route")
     p.add_argument("x", nargs="?", type=int)
@@ -7495,6 +8783,13 @@ def main():
                    help="evaluate here even if the resident runner is live")
     p.set_defaults(fn=None)  # handled below: needs config-aware default
 
+    p = sub.add_parser(
+        "direct-owner",
+        help="test whether the live resident routine owns a semantic action")
+    p.add_argument("action", choices=ACTIONS)
+    p.add_argument("--param", action="append", metavar="KEY=VALUE")
+    p.set_defaults(fn=cmd_direct_owner)
+
     p = sub.add_parser("log", help="tail the player decision log")
     p.add_argument("-n", type=int, default=20)
     p.set_defaults(fn=cmd_log)
@@ -7551,6 +8846,9 @@ def main():
                    choices=["run", "list", "add", "remove"])
     p.add_argument("name", nargs="?")
     p.add_argument("--expect", help="the rule that must win, or 'none'")
+    p.add_argument("--expect-action", dest="expect_action", metavar="JSON",
+                   help="object of compiled-action parameter assertions; a "
+                        "null value asserts the key is absent (spec rule 17)")
     p.add_argument("--snapshot", help="snapshot JSON file, or - for stdin")
     p.add_argument("--objective", help="objective the case runs under")
     p.add_argument("--activity", help="current activity the case runs under")
@@ -7558,6 +8856,10 @@ def main():
 
     args = parser.parse_args()
     if args.cmd == "step":
+        # Spec rule 10a: a deliberation sees the reflexes that fired since it
+        # last looked, before anything else - so a movement contradicting the
+        # plan is named from the record, never guessed at.
+        present_reflex_fires()
         # Spec rule 15: while the resident runner is live it is the ONLY
         # evaluator — report ITS latest verdict under the same exit contract.
         if not args.local:

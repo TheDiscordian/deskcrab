@@ -45,6 +45,7 @@ public class ReflexBridgeHarness {
 		boolean boundRouteAvailable = true;
 		boolean walking = false;
 		boolean inCombat = false;
+		long combatSplatSequence = 0L;
 		boolean sleeping = false;
 		int sleepingFatigue = 0;
 		String sleepingStatus = "";
@@ -254,6 +255,10 @@ public class ReflexBridgeHarness {
 
 		public boolean inCombat() {
 			return inCombat;
+		}
+
+		public long combatSplatSequence() {
+			return combatSplatSequence;
 		}
 
 		public boolean isRightClickMenuOpen() {
@@ -1106,6 +1111,15 @@ public class ReflexBridgeHarness {
 				bridge.tick(host);
 			}
 			System.out.println("disabled=" + bridge.isDisabled());
+		} else if ("state-rounds3".equals(mode)) {
+			bridge.tick(host); // publish the non-combat baseline
+			host.inCombat = true;
+			// Three damage splats on the local player: the observable counterpart
+			// of WalkRequest's opponent.getHitsMade() >= 3 gate.
+			host.combatSplatSequence = 3L;
+			for (int i = 0; i < 12; i++) {
+				bridge.tick(host);
+			}
 		} else {
 			for (int i = 0; i < ticks; i++) {
 				bridge.tick(host);
