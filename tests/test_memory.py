@@ -18,6 +18,7 @@ import time
 import unittest
 from argparse import Namespace
 from datetime import datetime, timedelta
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location(
@@ -387,6 +388,22 @@ class TestReconcile(StoreCase):
         self.store.db.commit()
         with self.assertRaises(ValueError):
             self.store.link_supersede(new, old)
+
+    def test_cli_refuses_swapped_rows_created_in_the_same_second(self):
+        # Creation stamps have only second precision. The id must break the
+        # tie or the most common back-to-back correction bypasses the
+        # --older-wins guard.
+        with mock.patch.object(memory, "now_iso",
+                               return_value="2026-09-01T05:00:00-04:00"):
+            old = self._directive("The first version of the standing rule.")
+            new = self._directive("Correction: the standing rule changed.")
+        swapped = Namespace(new_id=old, old_id=new, older_wins=False)
+        with self.assertRaises(SystemExit):
+            memory.cmd_supersede(self.store, swapped)
+        self.assertEqual(
+            self.store.db.execute("SELECT status FROM memories WHERE id=?",
+                                  (new,)).fetchone(),
+            ("active",))
 
     def test_scan_nominates_stored_pairs_without_deciding(self):
         a = self._directive("Spoken replies stay short — no long monologues "

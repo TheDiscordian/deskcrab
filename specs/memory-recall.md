@@ -165,6 +165,7 @@ life, and she re-reads that store every single turn.
     authoritative and active, the older keeps full provenance and gains the same link; keeping
     a row created before the one it absorbs demands `--older-wins`, because mechanically
     squashing a correction into the rule it corrects would keep the version the user rejected.
+    Creation stamps have second precision, so insertion id breaks same-stamp ties for this guard.
     `crab memory overlaps --scan` nominates stored active pairs — directives and conduct bodies
     both, at rule 28's floor — for exactly this three-way judgement, and prints pairs only:
     similarity nominates, it never merges. A verbatim clause shared by three or more active

@@ -78,7 +78,6 @@ link="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
   'Night dispatch happens after his usual bedtime hour.' >/dev/null
 old="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
   "select max(id) from memories;")"
-sleep 1  # the created stamps carry seconds; the swapped-argument guard needs the correction visibly newer
 "$PY" "$ROOT/lib/memory.py" add --kind directive --distinct \
   'Correction: night dispatch waits for the machine to be idle, not for a clock hour.' \
   >/dev/null

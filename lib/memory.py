@@ -2858,7 +2858,13 @@ def cmd_supersede(store, args):
     # The audit's fear made mechanical: squashing a correction into the rule
     # it corrects keeps the version the user rejected. Keeping the OLDER row
     # is almost always swapped arguments, so it must be said out loud.
-    if rows[args.new_id] < rows[args.old_id] and not args.older_wins:
+    # `created` is second-granularity, so two sequential writes can share a
+    # stamp. Row ids preserve their insertion order for that tie; without the
+    # tie-break, swapped arguments could slip through whenever the correction
+    # was written in the same second as the rule it corrects.
+    new_order = (rows[args.new_id], args.new_id)
+    old_order = (rows[args.old_id], args.old_id)
+    if new_order < old_order and not args.older_wins:
         sys.exit(f"memory supersede: #{args.new_id} was created before "
                  f"#{args.old_id} — if the older row really is the "
                  "authoritative one, say --older-wins; otherwise the "
