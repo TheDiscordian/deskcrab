@@ -302,4 +302,13 @@ assert (verdict, code) == ("fired", gp.EXIT_FIRED), (verdict, code)
 assert "max_path=1" in captured[-1], captured[-1]
 log = open(os.path.join(state_dir, "player-decisions.jsonl")).read()
 assert '"rule":"low-health-retreat-to-eat"' in log, log[-1000:]
+
+# On the first safe snapshot, learned activity must yield the shared slot to
+# eat-low-health. This closes the cross-engine race in which pickpocketing
+# could immediately reacquire the NPC before the survival engine ate.
+verdict, code = step()
+assert (verdict, code) == ("healing-prerequisite", gp.EXIT_NOT_READY), \
+    (verdict, code)
+assert not os.path.exists(os.path.join(state_dir, "action.json")), \
+    "low-health out-of-combat state must not emit another learned activity action"
 PY

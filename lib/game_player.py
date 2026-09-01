@@ -2041,8 +2041,15 @@ def prepare_follow_navigation(request: dict, target: dict | None,
                        "controller": "self", "next": "current-plan"}])
         return None, None, reason
     leg_x, leg_z = waypoints[0]
+    # Spec rule 7e's final-leg narrowing, against this planner's `within`:
+    # an arrival area the body already occupies would no-op into
+    # refused-no-path at the live pathfinder.
+    leg_arrive = 0
+    if len(waypoints) == 1 \
+            and max(abs(px - leg_x), abs(pz - leg_z)) > request["within"]:
+        leg_arrive = request["within"]
     return request, {"type": "walk", "x": leg_x, "z": leg_z,
-                     "arrive": (request["within"] if len(waypoints) == 1 else 0),
+                     "arrive": leg_arrive,
                      "route_step": NAVIGATION_ROUTE_STEP_TILES,
                      "max_path": NAVIGATION_LEG_MAX_PATH_TILES}, None
 
@@ -5809,6 +5816,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     low_health_with_food = isinstance(hits, int) and isinstance(hits_max, int) \
         and hits_max > 0 and hits / hits_max < EAT_HEALTH_FRACTION \
         and bool(game_reflex.food_slots(snap, food))
+    if low_health_with_food and snap.get("in_combat") is False:
+        # The survival reflex engine and learned player are independent loops
+        # sharing one action slot. On the first safe snapshot the faster
+        # learned loop must not reacquire an NPC before eat-low-health can own
+        # and verify healing. This is a state prerequisite, not a delay: it
+        # vanishes on the observed HP/food transition that completes eating.
+        report("healing-prerequisite", hits=hits, hits_max=hits_max,
+               next="eat-low-health-observe-healing-or-food-decrease")
+        return "healing-prerequisite", EXIT_NOT_READY
     if low_health_with_food and snap.get("in_combat") is True:
         # Eating is server-illegal in combat. This safety transition owns the
         # fight until three client-observed splats make retreat legal; the
@@ -6212,6 +6228,21 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     elif route is not None and route_leg is not None \
             and not route_blocked and not urgent_retreat_names:
         leg_x, leg_z = route_leg
+        # Spec rule 7e: the plan's one remaining waypoint IS the planner's
+        # chosen arrival tile. When the body already stands inside that
+        # waypoint's arrive-box while the destination check is still unmet,
+        # re-offering the whole area makes the live walk a no-op that the
+        # collision search reports as refused-no-path, and an obstacle-free
+        # route blocks on the identical replanned waypoint forever (the
+        # 2026-09-01 Al Kharid bank stall). Narrow such a final leg to the
+        # exact waypoint.
+        body_x, body_z = snap.get("x"), snap.get("z")
+        leg_arrive = 0
+        if len(route.get("waypoints") or []) == 1 \
+                and not (isinstance(body_x, int) and isinstance(body_z, int)
+                         and max(abs(body_x - leg_x), abs(body_z - leg_z))
+                         <= route["arrive"]):
+            leg_arrive = route["arrive"]
         live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
                            "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
                            "hold_ticks": 1, "channel": "game", "trigger": {},
@@ -6219,9 +6250,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                                       "z": leg_z,
                                       "route_step": NAVIGATION_ROUTE_STEP_TILES,
                                       "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
-                                      "arrive": (route["arrive"]
-                                                 if len(route.get("waypoints") or []) == 1
-                                                 else 0)}})
+                                      "arrive": leg_arrive}})
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
