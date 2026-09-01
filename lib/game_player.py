@@ -66,6 +66,7 @@ NEAR_RADIUS_FLOOR = 2
 WALK_ARRIVE_DEFAULT = 1     # Chebyshev tiles
 WALK_SETTLE_S = 1.6         # no position change for this long = stopped
 WALK_TIMEOUT_S = 25.0       # hard ceiling on one walk's verification
+STOP_VERIFY_S = 6.0         # a stop's postcondition: a snapshot with walking false
 TAKE_TIMEOUT_S = 25.0       # a pickup can include the same bounded pathing delay
 TAKE_MISSING_GRACE_S = 0.75 # let inventory follow a just-removed ground entry
 RETREAT_VERIFY_S = 1.25     # one server-round-sized observation before a retry
@@ -1105,10 +1106,16 @@ def load_follow():
             or not isinstance(request.get("within"), int) \
             or not 1 <= request["within"] <= 10 \
             or not isinstance(request.get("objective"), str) \
-            or request.get("status") not in ("active", "blocked"):
+            or request.get("status") not in ("active", "blocked", "cancelling"):
         return {"status": "invalid"}
     for key in ("last_x", "last_z"):
         if key in request and not isinstance(request[key], int):
+            return {"status": "invalid"}
+    # The method binding (spec rule 7g) is optional in the schema so that a
+    # pre-binding record still LOADS — prepare_follow cancels it honestly
+    # instead of this validator quietly calling it invalid.
+    for key in ("plan", "activity", "cancel_reason"):
+        if key in request and not isinstance(request[key], str):
             return {"status": "invalid"}
     return request
 
@@ -1327,15 +1334,50 @@ def nearest_state_entity(snap: dict, selector: dict):
     return min(candidates, key=candidate_key)
 
 
-def prepare_follow(snap: dict, objective: str):
+def prepare_follow(snap: dict, objective: str, activity: str):
     request = load_follow()
     if request is None or request.get("status") == "invalid":
         return request, None
-    if request["objective"] != objective:
+    if request.get("status") == "cancelling":
+        # Already ending; step_once owns the stop's postcondition. Nothing
+        # here may reacquire the target or write the record back to active.
+        return request, None
+    # Spec rule 7g: the follow binds the method that chose it — objective,
+    # plan, and activity — and ends when any of them changes. A record
+    # without the binding predates the rule and cancels on first sight.
+    changed = None
+    for name, recorded, current in (
+            ("objective", request.get("objective"), objective),
+            ("plan", request.get("plan"), read_plan()),
+            ("activity", request.get("activity"), activity)):
+        if not isinstance(recorded, str):
+            changed = (name, "method-binding-missing", recorded, current)
+            break
+        if recorded != current:
+            changed = (name, f"{name}-changed", recorded, current)
+            break
+    if changed is not None:
+        name, reason, recorded, current = changed
+        events = [{"ts": now_ms(), "kind": "follow-cancelled",
+                   "reason": reason, "binding": name,
+                   "player": request["player"],
+                   "from": recorded, "to": current}]
+        if snap.get("logged_in") is True and snap.get("walking") is True:
+            # The native follow or its last walk still owns the body. Keep
+            # the record as a cancelling stub so every pass retries the stop
+            # and nothing — including a racing in-flight leg — refires it.
+            request = dict(request)
+            request.update({"status": "cancelling", "cancel_reason": reason,
+                            "cancel_ts": now_ms()})
+            save_follow(request)
+            flush_events(events)
+            return request, None
         clear_follow()
-        flush_events([{"ts": now_ms(), "kind": "follow-cancelled",
-                       "reason": "objective-changed", "player": request["player"],
-                       "from": request["objective"], "to": objective}])
+        events.append({"ts": now_ms(), "kind": "follow-stopped",
+                       "player": request["player"], "reason": reason,
+                       "walking": False,
+                       "x": snap.get("x"), "z": snap.get("z")})
+        flush_events(events)
         return None, None
     selector = {"collection": "players", "field": "name", "value": request["player"]}
     target = nearest_state_entity(snap, selector)
@@ -4252,6 +4294,81 @@ def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
             watch.wait(remaining)
 
 
+def dispatch_stop_walk(defaults: dict, slot_wait_s: float = 0.0):
+    """The game's own stop (spec rule 7g): one receipted walk to the body's
+    freshest current tile. The server answers WALK_TO_POINT by resetting the
+    native follow and replacing the walk queue with that tile, so this is how
+    an ended follow releases the body. Returns (status, x, z): 'done' only
+    after a LATER snapshot reports walking false; 'slot-busy', a bridge
+    refusal, or 'stop-unverified' leave the caller's cancelling record for
+    the next pass to retry."""
+    snap = game_reflex.read_snapshot() or {}
+    if snap.get("logged_in") is not True \
+            or not isinstance(snap.get("x"), int) \
+            or not isinstance(snap.get("z"), int):
+        return "stop-unverified", snap.get("x"), snap.get("z")
+    action = {"type": "walk", "x": snap["x"], "z": snap["z"], "arrive": 0}
+    action_id = None
+    slot_deadline = time.monotonic() + slot_wait_s
+    while True:
+        with player_state_lock():
+            if not (state_dir() / "action.json").exists():
+                est = load_player_state()
+                est["action_seq"] += 1
+                action_id = est["action_seq"]
+                sent_at = now_ms()
+                est["inflight"] = {"id": action_id, "ts": sent_at}
+                save_player_state(est)
+                emit_player_action("action.json", action, action_id, sent_at)
+                break
+        if time.monotonic() >= slot_deadline:
+            return "slot-busy", snap.get("x"), snap.get("z")
+        time.sleep(0.1)
+    flush_events([{"ts": now_ms(), "kind": "follow-stop", "id": action_id,
+                   "action": action}])
+    status = "no-receipt"
+    receipt_path = state_dir() / "receipt.json"
+    deadline = time.monotonic() + defaults["inflight_timeout_ms"] / 1000.0
+    try:
+        with SnapshotChangeWatch() as watch:
+            while time.monotonic() < deadline:
+                try:
+                    receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    receipt = None
+                if receipt and receipt.get("id") == action_id:
+                    status = receipt.get("status", "no-status")
+                    try:
+                        receipt_path.unlink()
+                    except OSError:
+                        pass
+                    flush_events([{"ts": now_ms(), "kind": "receipt",
+                                   "id": action_id, "status": status}])
+                    break
+                watch.wait(max(0.01, min(0.25, deadline - time.monotonic())))
+    finally:
+        with player_state_lock():
+            est = load_player_state()
+            if action_id is not None \
+                    and (est.get("inflight") or {}).get("id") == action_id:
+                est["inflight"] = None
+                save_player_state(est)
+    if status != "done":
+        return status, snap.get("x"), snap.get("z")
+    latest = snap
+    verify_deadline = time.monotonic() + STOP_VERIFY_S
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True \
+                    or latest.get("walking") is not True:
+                return "done", latest.get("x"), latest.get("z")
+            remaining = verify_deadline - time.monotonic()
+            if remaining <= 0:
+                return "stop-unverified", latest.get("x"), latest.get("z")
+            watch.wait(max(0.01, min(0.5, remaining)))
+
+
 # --------------------------------------------------------------------------
 # The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
@@ -4409,7 +4526,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "action": {"type": "walk", "x": leg_x, "z": leg_z,
                        "arrive": 0},
         })
-    follow, follow_target = prepare_follow(snap, objective)
+    follow, follow_target = prepare_follow(snap, objective, activity)
     if follow is not None and follow.get("status") == "active":
         if follow_target is not None:
             follow_action = {"type": "follow-player", "name": follow["player"],
@@ -4504,6 +4621,47 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                target_z=movement_progress.get("target_z"),
                next="wait-for-retrace-postcondition")
         return "movement-in-progress", EXIT_NOT_READY
+
+    # Spec rule 7g: a cancelled follow's stop owns the pass until a snapshot
+    # reports walking false. It runs BEFORE the walking gate below because a
+    # walking body is exactly the state it exists to end, and nothing here
+    # can refire the follow — a cancelling record never builds a follow
+    # action, and only a fresh `follow PLAYER` writes a new one.
+    if not urgent_retreat_names and follow is not None \
+            and follow.get("status") == "cancelling":
+        reason = follow.get("cancel_reason") or "cancelled"
+        if now - snap.get("ts", 0) > defaults["stale_ms"]:
+            report("stale", age_ms=now - snap.get("ts", 0))
+            return "stale", EXIT_NOT_READY
+        if snap.get("logged_in") is True and snap.get("in_combat") is True:
+            report("follow-stopping", player=json.dumps(follow["player"]),
+                   reason=reason, blocked="combat-owns-movement",
+                   next="retreat-then-the-stop-retries")
+            return "follow-stopping", EXIT_NOT_DONE
+        if snap.get("logged_in") is not True \
+                or snap.get("walking") is not True:
+            clear_follow()
+            flush_events([{"ts": now_ms(), "kind": "follow-stopped",
+                           "player": follow["player"], "reason": reason,
+                           "walking": False,
+                           "x": snap.get("x"), "z": snap.get("z")}])
+            report("follow-stopped", player=json.dumps(follow["player"]),
+                   reason=reason, walking="false",
+                   x=snap.get("x"), z=snap.get("z"))
+            return "follow-stopped", EXIT_FIRED
+        status, stop_x, stop_z = dispatch_stop_walk(defaults)
+        if status == "done":
+            clear_follow()
+            flush_events([{"ts": now_ms(), "kind": "follow-stopped",
+                           "player": follow["player"], "reason": reason,
+                           "walking": False, "x": stop_x, "z": stop_z}])
+            report("follow-stopped", player=json.dumps(follow["player"]),
+                   reason=reason, walking="false", x=stop_x, z=stop_z)
+            return "follow-stopped", EXIT_FIRED
+        report("follow-stopping", player=json.dumps(follow["player"]),
+               reason=reason, status=status,
+               next="the-stop-retries-next-pass")
+        return "follow-stopping", EXIT_NOT_DONE
 
     if snap.get("logged_in") and snap.get("tick", -1) == est["last_tick"]:
         report("same-tick", tick=snap.get("tick"))
@@ -5085,6 +5243,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             status = "route-needs-detour"
 
     is_follow = rule_name == FOLLOW_RULE_NAME and follow is not None
+    if is_follow:
+        # Spec rule 7g: a leg that settles after the record was cleared or
+        # marked cancelling performs no follow bookkeeping — a cancelled
+        # commitment cannot write itself back to active.
+        current_follow = load_follow()
+        if current_follow is None \
+                or current_follow.get("status") in ("invalid", "cancelling") \
+                or current_follow.get("set_ts") != follow.get("set_ts"):
+            is_follow = False
     follow_was_blocked = False
     if is_follow:
         latest = game_reflex.read_snapshot() or snap
@@ -6053,9 +6220,46 @@ def cmd_follow(args):
     if args.clear:
         if args.player:
             die("follow --clear takes no player name")
-        clear_follow()
-        print("follow cleared")
-        return
+        request = load_follow()
+        snap = game_reflex.read_snapshot() or {}
+        fresh = now_ms() - snap.get("ts", 0) <= WAIT_SNAPSHOT_FRESH_MS
+        walking = fresh and snap.get("logged_in") is True \
+            and snap.get("walking") is True
+        if request is None or request.get("status") == "invalid" or not walking:
+            clear_follow()
+            if request is not None and request.get("status") != "invalid":
+                flush_events([
+                    {"ts": now_ms(), "kind": "follow-cancelled",
+                     "reason": "cleared", "player": request.get("player")},
+                    {"ts": now_ms(), "kind": "follow-stopped",
+                     "player": request.get("player"), "reason": "cleared",
+                     "walking": False,
+                     "x": snap.get("x"), "z": snap.get("z")}])
+            print("follow cleared")
+            return
+        # Spec rule 7g: the body is still moving on this commitment. Mark
+        # the record cancelling FIRST — a live runner mid-pass can then
+        # neither refire nor resurrect it — and prove the stop: the
+        # postcondition is a later snapshot with walking false.
+        request = dict(request)
+        request.update({"status": "cancelling", "cancel_reason": "cleared",
+                        "cancel_ts": now_ms()})
+        save_follow(request)
+        flush_events([{"ts": now_ms(), "kind": "follow-cancelled",
+                       "reason": "cleared", "player": request["player"]}])
+        defaults = config_defaults(load_config())
+        status, stop_x, stop_z = dispatch_stop_walk(defaults, slot_wait_s=2.0)
+        if status == "done":
+            clear_follow()
+            flush_events([{"ts": now_ms(), "kind": "follow-stopped",
+                           "player": request["player"], "reason": "cleared",
+                           "walking": False, "x": stop_x, "z": stop_z}])
+            print(f"follow-stopped walking=false x={stop_x} z={stop_z}")
+            return
+        print(f"follow-stopping status={status} — the record stays "
+              "cancelling and the resident runner completes the stop; "
+              "postcondition walking=false")
+        sys.exit(EXIT_NOT_DONE)
     if not args.player:
         request = load_follow()
         if request is None:
@@ -6084,7 +6288,9 @@ def cmd_follow(args):
         die(f"follow cannot start: no visible player named {player!r}")
     canonical = str(target.get("name") or player)
     request = {"v": 1, "player": canonical, "within": args.within,
-               "objective": read_objective(), "status": "active",
+               "objective": read_objective(),
+               "plan": read_plan(), "activity": read_activity(),
+               "status": "active",
                "set_ts": now_ms(), "last_seen_ts": now_ms(),
                "last_sidx": target.get("sidx"),
                "last_x": target["x"], "last_z": target["z"]}

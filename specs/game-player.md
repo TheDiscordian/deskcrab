@@ -574,7 +574,8 @@ deliberate-play channel.
    rule 19's memory door preserves that durable lesson.
 
 7g. `follow PLAYER [--within N]` is the durable, direct form of the common guided-travel
-   behaviour. It starts only from an exact visible player name, stores the objective and last
+   behaviour. It starts only from an exact visible player name, stores the objective, the plan,
+   the activity, and the last
    observed identity/tile in `$DESKCRAB_GAME_DIR/follow.json`, cancels competing route/recovery,
    and makes the resident runner reacquire that player's current structured entry on every pass.
    Player messages and urgent retreat still outrank it; routine reflexes and ambient loot cannot
@@ -582,10 +583,35 @@ deliberate-play channel.
    automatically when the guide moves. If visibility is lost it approaches only the last observed
    tile, then reports `follow-target-lost`; a grounded unchanged obstruction reports
    `follow-needs-path` instead of retrying forever. `follow` reports the commitment and
-   `follow --clear` ends it. Objective changes and an explicitly selected route or recovery cancel
-   it. The direct door is implemented with the same authorable `follow-player` action available to
+   `follow --clear` ends it. The direct door is implemented with the same authorable `follow-player` action available to
    learned rules. The native game follow owns continuous movement; the durable wrapper reacquires
    the player by name if that game-side follow ends or visibility changes.
+
+   **A follow serves the method that chose it, and it ends with that method.** The record binds
+   the objective, plan, and activity current at `follow PLAYER` time, and every evaluation
+   compares all three against the live durable files: an objective change, a plan revision or
+   clear, or an activity change or clear cancels the commitment (`follow-cancelled`, naming the
+   changed binding), exactly as an explicitly selected route or recovery does. Following one
+   person cannot survive the decision to do something else. A record without the method binding —
+   written before this rule — cancels on its first evaluation as `method-binding-missing`.
+
+   **Cancellation has an observed postcondition: the body stops.** Removing the durable record
+   alone leaves the game-side follow or its last dispatched walk owning the body. Ending a follow
+   — by binding change or `follow --clear` — therefore dispatches the game's own stop: one
+   ordinary receipted `walk` to the body's freshest current tile, which the server answers by
+   clearing its native follow and walk queue. The stop is complete only when a LATER snapshot
+   reports `walking: false`; the record persists as status `cancelling` until that observation,
+   during which no follow action can fire (there is no refire) and every pass retries the stop,
+   reporting `follow-stopping` (exit 2). The verified stop clears the record and logs and reports
+   `follow-stopped` with the settled tile and `walking=false` (exit 0). A body already still
+   cancels without a dispatch. Combat defers the stop — a walk during combat means retreat, which
+   owns escape — and a stale snapshot defers it rather than arming a slot no bridge will consume.
+   `follow --clear` on a walking body marks the record `cancelling` FIRST (so a live runner
+   mid-pass cannot refire or resurrect it), then performs the same stop itself when it can take
+   the action slot, reporting `follow-stopped walking=false`; when it cannot, the resident
+   runner completes the stop on its next pass. A fired follow leg that settles after the record
+   was cleared or marked `cancelling` performs no follow bookkeeping: a cancelled commitment
+   cannot write itself back to `active`.
 
 7h. A goal is more than a coordinate, and reaching SOMETHING is not reaching IT.
    `$DESKCRAB_GAME_DIR/goal-invariants.json` holds the current goal's machine-checkable
