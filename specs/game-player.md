@@ -533,6 +533,42 @@ deliberate-play channel.
    and an unchanged obstruction records `backtrack-blocked` and licenses Sol rather than retrying
    or falling through to incidental work. A new explicit route replaces recovery; an objective
    change cancels it. `backtrack history`, `status`, and `clear` expose the evidence and request.
+
+   An obstruction is not the only failure shape: a leg can also settle AGAINST its own request —
+   the click was delivered, the body moved, and the movement opposed the requested direction,
+   because something other than the request owned the body. Every verified backtrack and route
+   leg therefore compares the requested displacement (leg target minus start tile) with the
+   observed settlement displacement. A settled leg that moved with no positive component along
+   its request is a movement contradiction, counted consecutively on the request
+   (`contradictions`, reset by any agreeing leg). This signal is deliberately coordinate-free:
+   no place, region, or direction is special-cased — the evidence is the disagreement between
+   what was asked and what the body did, wherever it happens. At three consecutive
+   contradictions the commitment stops re-dispatching: a route blocks with reason
+   `movement-contradiction`, and a backtrack becomes status `diverged`, reported as
+   `backtrack-diverged` (exit 4). Unlike `blocked`, `diverged` is never re-armed by a changed
+   obstacle signature — the obstacle was never the explanation, and the moving signature of a
+   dragged body is exactly what made the earlier blind retry loop possible. Only standing on the
+   pending point, an explicit new recovery or route, or an objective change moves it.
+
+   `retrace X Z [--arrive N]` is the deliberate single-target form of recovery: one movement
+   request whose postcondition is squared-distance progress toward one CHOSEN previously
+   occupied tile. The target must appear in the observed movement trail — choosing a recovery
+   point means choosing from evidence, and an arbitrary coordinate is refused as
+   `retrace-not-prior-tile` (exit 2), which names recent trail tiles instead. One invocation
+   performs one bounded local leg toward the chosen tile through the shared action slot,
+   publishes an in-progress movement record (the direct take door's discipline) so a live
+   resident runner stays out of the walk, verifies settlement per rule 7a, and reports the
+   squared distance to the chosen tile before and after: `done` within the arrive tolerance
+   (truncating the trail's abandoned branch past that tile), `retrace-progress` (exit 0) when
+   the settled squared distance is strictly below the starting one — the caller repeats the
+   door for the next leg — and `retrace-regressed` (exit 2) when it is not, carrying the
+   requested and observed displacements so the disagreement itself is the evidence. A regressed
+   retrace enters the outcome queue with `useful_substitute=false`: whatever else the walk
+   produced, the recovery failed, and repeating the identical request is not licensed. The door
+   refuses to run during combat (`retreat` owns that), while an explicit route is active, or
+   while a backtrack request is active or blocked; it replaces a `diverged` backtrack and
+   records the replacement.
+
    The trail is compact transient operational memory, not a claim that every coordinate is a
    reusable route fact. Once play verifies the correct landmark sequence or exit interaction,
    rule 19's memory door preserves that durable lesson.
@@ -550,6 +586,51 @@ deliberate-play channel.
    it. The direct door is implemented with the same authorable `follow-player` action available to
    learned rules. The native game follow owns continuous movement; the durable wrapper reacquires
    the player by name if that game-side follow ends or visibility changes.
+
+7h. A goal is more than a coordinate, and reaching SOMETHING is not reaching IT.
+   `$DESKCRAB_GAME_DIR/goal-invariants.json` holds the current goal's machine-checkable
+   invariants, declared by the deliberate hand at the moment it commits to a plan step:
+   `goal set TEXT --require k=v…` writes the goal line, the current objective, and at least one
+   requirement atomically; `goal` shows the record; `goal clear --reason TEXT` removes it with
+   the reason logged; an objective change clears it exactly as it clears the plan. The
+   `--require` vocabulary is closed and snapshot-answerable, the same discipline as rule 4's
+   triggers — nothing here is judged from a screenshot, a memory, or prose:
+   - `arrive=X,Z[,TOL]` — the body has settled within Chebyshev TOL (default 2) of the tile;
+   - `entity=collection:field:value[:within]` — rule 4's `entity_visible` selector, optionally
+     within a Chebyshev radius of the body: the semantic landmark that proves the RIGHT place
+     or target (the named quest NPC, the distinguishing scenery), not merely A place of the
+     same kind;
+   - `interface=bank|shop` — the respective interface is open;
+   - `inventory_has=ID` and `message=TEXT` — as in rule 4.
+   `goal check` evaluates every requirement against a fresh snapshot (`--snapshot FILE` replays
+   a captured one, which is how regression fixtures and offline reasoning run the same code) and
+   reports one line: `goal-met` only when ALL requirements hold, otherwise `goal-unmet` (exit 2)
+   naming each unsatisfied requirement. It is a pure inspector: no action slot, no model call,
+   no mutation beyond the outcome record below.
+
+   **Shared-resource access is not destination success.** When an `interface` requirement is
+   satisfied but a declared `arrive` or `entity` requirement is not, the more specific verdict
+   is `goal-unmet-shared-resource` with `useful_substitute=false`: the open interface is a
+   universally available resource — every bank teller opens the same bank — so its availability
+   HERE cannot convert being at the wrong place into success. That check appends an
+   `unintended-outcome` record to the outcome queue so the author sees the navigation failure
+   even when the banking itself succeeded.
+
+   **Incidental benefit never converts failure into success.** A movement or action whose own
+   postcondition failed (rules 7a, 7f) keeps its failure status even when something useful
+   arrived alongside it — XP, loot, an open interface, a nearer copy of a shared resource. No
+   door in this layer upgrades a failed verdict on incidental evidence, and the outcome records
+   of rule 7f's regressions and this rule's shared-resource verdicts carry
+   `useful_substitute=false` for the author and the playing hand to quote rather than re-judge
+   after the fact. Recovery from a failed or diverged movement is generic: replan from the
+   OBSERVED state — `goal check`, rule 7e's route (the destination stays binding), rule 7f's
+   `backtrack` and `retrace` — never a rationalisation of where the body happens to be.
+
+   With no goal declared, nothing in this rule gates anything: banking, shopping, and travel
+   behave exactly as before. Declared coordinates are evidence for ONE goal's invariants; no
+   rule in this layer treats any particular named place specially. The active goal line rides
+   the ordinary `no-rule-matched` verdict and the resident heartbeat beside the plan, so the
+   falling-back mind is reminded what success currently means without a separate ritual.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, per-rule

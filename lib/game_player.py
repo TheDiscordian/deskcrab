@@ -94,6 +94,7 @@ NAVIGATION_ATLAS_NPC_SITES = 128
 NAVIGATION_ATLAS_STATIC_SITES = 2048
 NAVIGATION_ATLAS_LINKS = 8192
 BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
+MOVEMENT_CONTRADICTION_LIMIT = 3  # consecutive settles against the request stop re-dispatching
 ROUTE_RULE_NAME = "active-route"
 ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
 BACKTRACK_RULE_NAME = "active-backtrack"
@@ -193,6 +194,43 @@ def foreign_take_in_progress() -> dict | None:
             pass
         return None
     return progress if progress["pid"] != os.getpid() else None
+
+
+def movement_progress_path() -> Path:
+    return state_dir() / "movement-in-progress.json"
+
+
+def foreign_movement_in_progress() -> dict | None:
+    """A direct hand's committed recovery walk (rule 7f's retrace). The
+    resident runner must not evaluate around it and cancel the leg midway."""
+    try:
+        progress = json.loads(movement_progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(progress, dict) or progress.get("v") != 1 \
+            or not isinstance(progress.get("pid"), int) \
+            or not isinstance(progress.get("expires"), int) \
+            or progress["expires"] <= now_ms():
+        try:
+            movement_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+        return None
+    return progress if progress["pid"] != os.getpid() else None
+
+
+def movement_agrees(start_x: int, start_z: int, leg_x: int, leg_z: int,
+                    settled_x: int, settled_z: int) -> bool:
+    """Did the observed settlement move WITH the request? Coordinate-free:
+    a settled displacement with a positive component along the requested
+    displacement agrees; no movement, or movement with no positive component
+    (opposite or purely sideways), is a contradiction — the click was
+    delivered but something else owned the body (spec rule 7f)."""
+    requested = (leg_x - start_x, leg_z - start_z)
+    observed = (settled_x - start_x, settled_z - start_z)
+    if observed == (0, 0) or requested == (0, 0):
+        return requested == observed
+    return requested[0] * observed[0] + requested[1] * observed[1] > 0
 
 
 def load_retreat_request():
@@ -1029,7 +1067,7 @@ def load_backtrack():
     points = request.get("points") if isinstance(request, dict) else None
     if not isinstance(request, dict) or request.get("v") != 1 \
             or not isinstance(request.get("objective"), str) \
-            or request.get("status") not in ("active", "blocked") \
+            or request.get("status") not in ("active", "blocked", "diverged") \
             or not isinstance(request.get("index"), int) \
             or not isinstance(points, list) or not points:
         return {"status": "invalid"}
@@ -1085,6 +1123,174 @@ def clear_follow() -> None:
         follow_path().unlink()
     except FileNotFoundError:
         pass
+
+
+def goal_invariants_path() -> Path:
+    return game_dir() / "goal-invariants.json"
+
+
+GOAL_REQUIREMENT_KINDS = ("arrive", "entity", "interface", "inventory_has", "message")
+GOAL_INTERFACES = ("bank", "shop")
+GOAL_ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
+GOAL_ARRIVE_DEFAULT_TOL = 2
+
+
+def load_goal():
+    try:
+        goal = json.loads(goal_invariants_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    if not isinstance(goal, dict) or goal.get("v") != 1 \
+            or not isinstance(goal.get("text"), str) or not goal["text"].strip() \
+            or not isinstance(goal.get("requires"), list) or not goal["requires"]:
+        return {"status": "invalid"}
+    return goal
+
+
+def save_goal(goal: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(goal_invariants_path(),
+                             json.dumps(goal, indent=2) + "\n")
+
+
+def clear_goal(reason: str) -> bool:
+    goal = load_goal()
+    if goal is None:
+        return False
+    try:
+        goal_invariants_path().unlink()
+    except FileNotFoundError:
+        return False
+    flush_events([{"ts": now_ms(), "kind": "goal-cleared", "reason": reason,
+                   "goal": goal.get("text")}])
+    return True
+
+
+def parse_goal_requirement(pair: str) -> dict:
+    """One --require k=v into a validated requirement (spec rule 7h). The
+    vocabulary is closed; anything else is refused loudly, never stored."""
+    if "=" not in pair:
+        die(f"goal requirement '{pair}' is not KIND=VALUE")
+    kind, value = pair.split("=", 1)
+    kind = kind.strip()
+    if kind == "arrive":
+        parts = value.split(",")
+        if len(parts) not in (2, 3):
+            die(f"arrive takes X,Z[,TOL]: '{value}'")
+        try:
+            numbers = [int(part) for part in parts]
+        except ValueError:
+            die(f"arrive coordinates must be integers: '{value}'")
+        tol = numbers[2] if len(numbers) == 3 else GOAL_ARRIVE_DEFAULT_TOL
+        if not 0 <= tol <= 10:
+            die(f"arrive tolerance must be 0..10: {tol}")
+        return {"kind": "arrive", "x": numbers[0], "z": numbers[1], "tol": tol}
+    if kind == "entity":
+        parts = value.split(":")
+        if len(parts) not in (3, 4):
+            die(f"entity takes collection:field:value[:within]: '{value}'")
+        collection, field, wanted = parts[0], parts[1], parts[2]
+        if collection not in GOAL_ENTITY_COLLECTIONS:
+            die(f"entity collection must be one of {GOAL_ENTITY_COLLECTIONS}: '{collection}'")
+        if field not in ("name", "id", "sidx"):
+            die(f"entity field must be name, id or sidx: '{field}'")
+        if not wanted:
+            die("entity value must be non-empty")
+        requirement = {"kind": "entity", "collection": collection,
+                       "field": field, "value": wanted}
+        if field in ("id", "sidx"):
+            try:
+                requirement["value"] = int(wanted)
+            except ValueError:
+                die(f"entity {field} must be an integer: '{wanted}'")
+        if len(parts) == 4:
+            try:
+                within = int(parts[3])
+            except ValueError:
+                die(f"entity within must be an integer: '{parts[3]}'")
+            if not 1 <= within <= 50:
+                die(f"entity within must be 1..50: {within}")
+            requirement["within"] = within
+        return requirement
+    if kind == "interface":
+        if value not in GOAL_INTERFACES:
+            die(f"interface must be one of {GOAL_INTERFACES}: '{value}'")
+        return {"kind": "interface", "interface": value}
+    if kind == "inventory_has":
+        try:
+            return {"kind": "inventory_has", "item": int(value)}
+        except ValueError:
+            die(f"inventory_has takes an item id: '{value}'")
+    if kind == "message":
+        if not value.strip() or "\n" in value:
+            die("message takes a non-empty single-line fragment")
+        return {"kind": "message", "text": value}
+    die(f"unknown goal requirement kind '{kind}' "
+        f"(the vocabulary is {GOAL_REQUIREMENT_KINDS})")
+
+
+def goal_requirement_met(requirement: dict, snap: dict) -> bool:
+    """Answerable from the snapshot alone, fail-safe like rule 4's triggers:
+    a field the snapshot does not carry makes the requirement false."""
+    kind = requirement.get("kind")
+    px, pz = snap.get("x"), snap.get("z")
+    if kind == "arrive":
+        return isinstance(px, int) and isinstance(pz, int) \
+            and max(abs(px - requirement["x"]),
+                    abs(pz - requirement["z"])) <= requirement["tol"]
+    if kind == "entity":
+        matches = matching_state_entities(snap, requirement)
+        within = requirement.get("within")
+        if within is None:
+            return bool(matches)
+        if not isinstance(px, int) or not isinstance(pz, int):
+            return False
+        return any(max(abs(entity["x"] - px), abs(entity["z"] - pz)) <= within
+                   for entity in matches)
+    if kind == "interface":
+        return snap.get(f"{requirement['interface']}_open") is True
+    if kind == "inventory_has":
+        return inventory_quantity(snap, requirement["item"]) > 0
+    if kind == "message":
+        wanted = requirement["text"].casefold()
+        return any(wanted in str(message.get("text", "")).casefold()
+                   for message in snap.get("messages") or []
+                   if isinstance(message, dict))
+    return False
+
+
+def describe_goal_requirement(requirement: dict) -> str:
+    kind = requirement.get("kind")
+    if kind == "arrive":
+        return f"arrive=({requirement['x']},{requirement['z']})±{requirement['tol']}"
+    if kind == "entity":
+        within = requirement.get("within")
+        suffix = f":within{within}" if within is not None else ""
+        return (f"entity={requirement['collection']}:{requirement['field']}:"
+                f"{requirement['value']}{suffix}")
+    if kind == "interface":
+        return f"interface={requirement['interface']}"
+    if kind == "inventory_has":
+        return f"inventory_has={requirement['item']}"
+    if kind == "message":
+        return f"message={requirement['text']}"
+    return json.dumps(requirement, separators=(",", ":"))
+
+
+def evaluate_goal(goal: dict, snap: dict) -> dict:
+    """All requirements against one snapshot. The shared-resource distinction
+    (spec rule 7h): an open interface plus an unmet place/target requirement is
+    the WRONG copy of a universal resource, never destination success."""
+    met, unmet = [], []
+    for requirement in goal["requires"]:
+        (met if goal_requirement_met(requirement, snap) else unmet) \
+            .append(requirement)
+    shared_resource = any(item.get("kind") == "interface" for item in met) \
+        and any(item.get("kind") in ("arrive", "entity") for item in unmet)
+    return {"met": met, "unmet": unmet, "all_met": not unmet,
+            "shared_resource": shared_resource}
 
 
 def state_entity_matches(entity: dict, field: str, value) -> bool:
@@ -3112,6 +3318,271 @@ def cmd_take(args):
         sys.exit(EXIT_NOT_DONE)
 
 
+def cmd_retrace(args):
+    """One movement request whose postcondition is squared-distance progress
+    toward one CHOSEN previously occupied tile (spec rule 7f). A receipt is
+    dispatch; the settled snapshot's distance to the chosen tile is the only
+    thing that can call this progress."""
+    cfg = load_config()
+    defaults = config_defaults(cfg)
+    target_x, target_z = args.x, args.z
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS \
+            or not isinstance(snap.get("x"), int) \
+            or not isinstance(snap.get("z"), int):
+        report("retrace-not-ready", target_x=target_x, target_z=target_z,
+               state=wait_state_brief(snap))
+        sys.exit(EXIT_NOT_READY)
+    if (state_dir() / "hold").exists():
+        report("retrace-held", reason="maintenance-hold")
+        sys.exit(EXIT_HELD)
+    if snap.get("in_combat") is True:
+        report("retrace-needs-retreat", reason="combat-owns-movement",
+               next="retreat")
+        sys.exit(EXIT_NOT_DONE)
+
+    trail_points = load_movement_trail()["points"]
+    if not any(point.get("x") == target_x and point.get("z") == target_z
+               for point in trail_points):
+        recent = ",".join(f"({p['x']},{p['z']})" for p in trail_points[-8:])
+        report("retrace-not-prior-tile", target_x=target_x, target_z=target_z,
+               recent_trail=recent or None,
+               reason="recovery-targets-come-from-observed-evidence")
+        sys.exit(EXIT_NOT_DONE)
+
+    route = load_route()
+    if route is not None:
+        report("retrace-conflicts-route",
+               route_status=route.get("status"),
+               route_x=route.get("x"), route_z=route.get("z"),
+               reason="the-explicit-route-is-the-movement-commitment",
+               next="route-completes-or-route-clear-deliberately")
+        sys.exit(EXIT_NOT_DONE)
+    backtrack = load_backtrack()
+    if backtrack is not None and backtrack.get("status") in (
+            "active", "blocked", "invalid"):
+        report("retrace-conflicts-backtrack",
+               backtrack_status=backtrack.get("status"),
+               next="backtrack-status-or-backtrack-clear")
+        sys.exit(EXIT_NOT_DONE)
+    if backtrack is not None and backtrack.get("status") == "diverged":
+        clear_backtrack()
+        flush_events([{"ts": now_ms(), "kind": "backtrack-replaced-by-retrace",
+                       "target_x": target_x, "target_z": target_z,
+                       "contradictions": backtrack.get("contradictions")}])
+
+    start_x, start_z = snap["x"], snap["z"]
+    d2_before = navigation_distance_sq(start_x, start_z, target_x, target_z)
+    if max(abs(start_x - target_x), abs(start_z - target_z)) <= args.arrive:
+        rewind_movement_trail(target_x, target_z)
+        report("done", target_x=target_x, target_z=target_z,
+               x=start_x, z=start_z, d2=f"{d2_before}->{d2_before}")
+        return
+
+    leg_x, leg_z = bounded_navigation_leg(start_x, start_z, target_x, target_z)
+    leg_arrive = args.arrive if (leg_x, leg_z) == (target_x, target_z) else 0
+    progress = {"v": 1, "pid": os.getpid(), "started": now_ms(),
+                "expires": now_ms() + int((WALK_TIMEOUT_S + 5) * 1000),
+                "x": start_x, "z": start_z,
+                "target_x": target_x, "target_z": target_z,
+                "leg_x": leg_x, "leg_z": leg_z}
+    game_reflex.atomic_write(movement_progress_path(),
+                             json.dumps(progress) + "\n")
+    action = {"type": "walk", "x": leg_x, "z": leg_z, "arrive": leg_arrive}
+    status = "no-receipt"
+    final_x = final_z = None
+    action_id = None
+    try:
+        with player_state_lock():
+            if (state_dir() / "action.json").exists():
+                report("retrace-not-ready", reason="slot-busy")
+                sys.exit(EXIT_NOT_READY)
+            est = load_player_state()
+            est["action_seq"] += 1
+            action_id = est["action_seq"]
+            sent_at = now_ms()
+            est["inflight"] = {"id": action_id, "ts": sent_at}
+            save_player_state(est)
+            emit_player_action("action.json", action, action_id, sent_at)
+
+        deadline = time.monotonic() + defaults["inflight_timeout_ms"] / 1000.0
+        receipt_path = state_dir() / "receipt.json"
+        with SnapshotChangeWatch() as watch:
+            while time.monotonic() < deadline:
+                try:
+                    receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    receipt = None
+                if receipt and receipt.get("id") == action_id:
+                    status = receipt.get("status", "no-status")
+                    try:
+                        receipt_path.unlink()
+                    except OSError:
+                        pass
+                    break
+                watch.wait(max(0.01, min(0.25, deadline - time.monotonic())))
+        if status == "done":
+            status, final_x, final_z = verify_walk(leg_x, leg_z, leg_arrive)
+    finally:
+        with player_state_lock():
+            est = load_player_state()
+            if action_id is not None \
+                    and (est.get("inflight") or {}).get("id") == action_id:
+                est["inflight"] = None
+                save_player_state(est)
+        try:
+            movement_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+
+    if final_x is None or final_z is None:
+        record = {"ts": now_ms(), "kind": "manual-retrace", "id": action_id,
+                  "target": {"x": target_x, "z": target_z},
+                  "leg": {"x": leg_x, "z": leg_z},
+                  "start": {"x": start_x, "z": start_z},
+                  "status": status, "d2_before": d2_before}
+        append_outcome(record)
+        flush_events([record])
+        report("retrace-not-dispatched", id=action_id, status=status,
+               target_x=target_x, target_z=target_z)
+        sys.exit(EXIT_NOT_DONE)
+
+    # The settled snapshot may already be beyond the leg endpoint; measure the
+    # postcondition against the CHOSEN tile, never the receipt or the leg.
+    latest = game_reflex.read_snapshot() or {}
+    if isinstance(latest.get("x"), int) and isinstance(latest.get("z"), int):
+        final_x, final_z = latest["x"], latest["z"]
+        record_movement_trail(latest, connected=True)
+    d2_after = navigation_distance_sq(final_x, final_z, target_x, target_z)
+    arrived = max(abs(final_x - target_x), abs(final_z - target_z)) <= args.arrive
+    if arrived:
+        verdict = "done"
+        rewind_movement_trail(target_x, target_z)
+    elif d2_after < d2_before:
+        verdict = "retrace-progress"
+    else:
+        verdict = "retrace-regressed"
+    record = {"ts": now_ms(), "kind": "manual-retrace", "id": action_id,
+              "target": {"x": target_x, "z": target_z},
+              "leg": {"x": leg_x, "z": leg_z},
+              "start": {"x": start_x, "z": start_z},
+              "settled": {"x": final_x, "z": final_z},
+              "status": verdict, "walk_status": status,
+              "d2_before": d2_before, "d2_after": d2_after}
+    if verdict == "retrace-regressed":
+        record["useful_substitute"] = False
+    append_outcome(record)
+    flush_events([record])
+    if verdict == "retrace-regressed":
+        report(verdict, id=action_id, target_x=target_x, target_z=target_z,
+               d2=f"{d2_before}->{d2_after}",
+               requested=f"({leg_x - start_x},{leg_z - start_z})",
+               observed=f"({final_x - start_x},{final_z - start_z})",
+               useful_substitute="false",
+               reason="settled-no-closer-to-chosen-prior-tile",
+               next="different-strategy;repeating-the-identical-request-"
+                    "is-not-licensed")
+        sys.exit(EXIT_NOT_DONE)
+    report(verdict, id=action_id, target_x=target_x, target_z=target_z,
+           x=final_x, z=final_z, d2=f"{d2_before}->{d2_after}",
+           next=(None if verdict == "done"
+                 else "repeat-retrace-for-the-next-leg"))
+
+
+def cmd_goal(args):
+    """Spec rule 7h: the current goal's machine-checkable invariants."""
+    if args.action == "clear":
+        if not args.reason or not args.reason.strip():
+            die("goal clear records why: --reason TEXT")
+        if clear_goal(args.reason.strip()):
+            print("goal cleared")
+        else:
+            print("goal: (none)")
+        return
+    if args.action == "set":
+        if not args.text or not args.text.strip():
+            die("goal set takes the goal line as TEXT")
+        text = " ".join(args.text.split())
+        if len(text) > 300:
+            die("the goal line stays under 300 characters")
+        requirements = [parse_goal_requirement(pair)
+                        for pair in args.require or []]
+        if not requirements:
+            die("goal set declares at least one --require KIND=VALUE "
+                f"(kinds: {', '.join(GOAL_REQUIREMENT_KINDS)})")
+        goal = {"v": 1, "text": text, "objective": read_objective() or None,
+                "requires": requirements, "set_ts": now_ms()}
+        save_goal(goal)
+        flush_events([{"ts": now_ms(), "kind": "goal-set", "goal": text,
+                       "requires": requirements}])
+        print(f"goal-set text={text!r} requires="
+              + ";".join(describe_goal_requirement(r) for r in requirements))
+        return
+    goal = load_goal()
+    if goal is None:
+        report("goal-none",
+               note="declare-one-with:goal-set-TEXT---require-KIND=VALUE")
+        return
+    if goal.get("status") == "invalid":
+        report("goal-invalid", file=str(goal_invariants_path()),
+               next="goal-clear-or-goal-set")
+        sys.exit(EXIT_NOT_DONE)
+    if args.action == "show":
+        print(f"goal: {goal['text']}")
+        print(f"objective: {goal.get('objective') or '(none)'}")
+        for requirement in goal["requires"]:
+            print(f"  require {describe_goal_requirement(requirement)}")
+        return
+    # check
+    objective = read_objective() or None
+    if goal.get("objective") != objective:
+        report("goal-stale", goal=goal["text"],
+               goal_objective=goal.get("objective"),
+               current_objective=objective,
+               next="goal-clear-or-goal-set-under-the-current-objective")
+        sys.exit(EXIT_NOT_DONE)
+    if args.snapshot:
+        source = sys.stdin.read() if args.snapshot == "-" \
+            else Path(args.snapshot).read_text()
+        try:
+            snap = json.loads(source)
+        except json.JSONDecodeError as error:
+            die(f"snapshot is not JSON: {error}")
+    else:
+        snap = game_reflex.read_snapshot()
+        if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+                or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+            report("goal-not-ready", state=wait_state_brief(snap))
+            sys.exit(EXIT_NOT_READY)
+    result = evaluate_goal(goal, snap)
+    met_text = ";".join(describe_goal_requirement(r) for r in result["met"])
+    unmet_text = ";".join(describe_goal_requirement(r) for r in result["unmet"])
+    if result["all_met"]:
+        report("goal-met", goal=goal["text"], satisfied=met_text or None)
+        return
+    if result["shared_resource"]:
+        # Spec rule 7h: the assessment is computed here, never composed after
+        # the fact — an open universal interface at an unproven place is a
+        # navigation failure even when the interface work itself succeeds.
+        append_outcome({
+            "ts": now_ms(), "kind": "unintended-outcome",
+            "goal": goal["text"], "objective": goal.get("objective"),
+            "met": result["met"], "unmet": result["unmet"],
+            "useful_substitute": False,
+            "assessment": "shared-resource-access-not-destination-success",
+            "snap": snap_brief(snap)})
+        report("goal-unmet-shared-resource", goal=goal["text"],
+               unmet=unmet_text, satisfied=met_text or None,
+               useful_substitute="false",
+               assessment="shared-resource-access-not-destination-success",
+               next="replan-toward-the-declared-goal-from-observed-state")
+        sys.exit(EXIT_NOT_DONE)
+    report("goal-unmet", goal=goal["text"], unmet=unmet_text,
+           satisfied=met_text or None)
+    sys.exit(EXIT_NOT_DONE)
+
+
 # --------------------------------------------------------------------------
 # The vocabulary plugged into game_reflex.evaluate (spec rules 4, 5, 8).
 # A field the snapshot does not carry makes the condition false, never an
@@ -3787,12 +4258,14 @@ def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
 # --------------------------------------------------------------------------
 def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
                     plan: str = "", activity: str = "", activity_xp: str = "",
-                    activity_compare: str = "", friend_updates=None) -> None:
+                    activity_compare: str = "", friend_updates=None,
+                    goal: str = "") -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
          "verdict": verdict, "detail": detail,
          "ground_items": ground_items or [],
          "plan": plan or None,
+         "goal": goal or None,
          "activity": activity or None,
          "activity_xp": activity_xp or None,
          "activity_compare": activity_compare or None,
@@ -4020,6 +4493,18 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                x=take_progress.get("x"), z=take_progress.get("z"))
         return "take-in-progress", EXIT_NOT_READY
 
+    # A direct hand's committed recovery leg (rule 7f's retrace) owns the
+    # body until its own postcondition is measured; evaluating around it
+    # would re-create the two-controller drag it exists to diagnose.
+    movement_progress = foreign_movement_in_progress()
+    if movement_progress is not None:
+        report("movement-in-progress", x=movement_progress.get("x"),
+               z=movement_progress.get("z"),
+               target_x=movement_progress.get("target_x"),
+               target_z=movement_progress.get("target_z"),
+               next="wait-for-retrace-postcondition")
+        return "movement-in-progress", EXIT_NOT_READY
+
     if snap.get("logged_in") and snap.get("tick", -1) == est["last_tick"]:
         report("same-tick", tick=snap.get("tick"))
         return "same-tick", EXIT_NOT_READY
@@ -4228,6 +4713,16 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if backtrack is not None and backtrack.get("status") == "invalid":
             report("backtrack-invalid", file=str(backtrack_path()))
             return "backtrack-blocked", EXIT_NO_RULE
+        if backtrack is not None and backtrack.get("status") == "diverged":
+            target_x, target_z = backtrack["points"][backtrack["index"]]
+            report("backtrack-diverged", x=snap.get("x"), z=snap.get("z"),
+                   target_x=target_x, target_z=target_z,
+                   contradictions=backtrack.get("contradictions"),
+                   reason=backtrack.get("diverged_reason",
+                                        "movement-opposed-request"),
+                   next="retrace-a-chosen-prior-tile-or-set-explicit-route-"
+                        "or-backtrack-clear")
+            return "backtrack-diverged", EXIT_NO_RULE
         if backtrack_blocked and backtrack is not None:
             target_x, target_z = backtrack["points"][backtrack["index"]]
             report("backtrack-blocked", x=snap.get("x"), z=snap.get("z"),
@@ -4247,8 +4742,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                    hold_ms_left=left, objective=objective or None,
                    activity=activity or None)
             return "repetition-review-hold", EXIT_NO_RULE
+        current_goal = load_goal()
         report("no-rule-matched", objective=objective or None,
                plan=read_plan() or None,
+               goal=(current_goal.get("text")
+                     if current_goal is not None
+                     and current_goal.get("status") != "invalid" else None),
                activity=activity or None,
                activity_xp=xp_text or None,
                activity_compare=xp_compare or None,
@@ -4413,29 +4912,62 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             # move away from the destination for much longer than an arbitrary
             # straight-line detour budget would allow. Replan from the body's
             # observed settlement while retaining the original destination.
-            status = "route-progress"
-            progressed = {key: value for key, value in route.items()
-                          if key not in ("waypoints", "planned_from", "planner",
-                                         "graph_link")
-                          and not key.startswith("planner_")
-                          and not key.startswith("blocked_")}
-            visited.append(endpoint)
-            nonclosing = 0 if made_best_progress \
-                else int(route.get("nonclosing_legs") or 0) + 1
-            progressed.update({"status": "active", "last_x": lx, "last_z": lz,
-                               "last_distance_sq": current_distance,
-                               "best_distance_sq": min(route_best_distance,
-                                                       current_distance),
+            # A settle that moved AGAINST the requested leg is different from
+            # a legitimate away-leg: the planner asked for that direction, the
+            # body went the other way (spec rule 7f). Count it; enough stop
+            # the route rather than replanning a drag forever.
+            leg_agrees = movement_agrees(snap["x"], snap["z"],
+                                         action["x"], action["z"], lx, lz)
+            contradictions = 0 if leg_agrees \
+                else int(route.get("contradictions") or 0) + 1
+            if contradictions >= MOVEMENT_CONTRADICTION_LIMIT:
+                route_was_blocked = True
+                route_block_reason = "movement-contradiction"
+                block_route(dict(route, contradictions=contradictions),
+                            latest, route_block_reason)
+                append_outcome({
+                    "ts": now_ms(), "kind": "movement-contradiction",
+                    "id": action_id, "commitment": "route",
+                    "contradictions": contradictions,
+                    "requested": {"x": action["x"], "z": action["z"]},
+                    "settled": {"x": lx, "z": lz},
+                    "start": {"x": snap.get("x"), "z": snap.get("z")},
+                    "target": {"x": route["x"], "z": route["z"]},
+                    "useful_substitute": False})
+                flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                               "id": action_id, "reason": route_block_reason,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"], "leg_x": action["x"],
+                               "leg_z": action["z"],
+                               "contradictions": contradictions,
+                               "planner": route_planner}])
+                status = "route-needs-detour"
+            else:
+                status = "route-progress"
+                progressed = {key: value for key, value in route.items()
+                              if key not in ("waypoints", "planned_from", "planner",
+                                             "graph_link")
+                              and not key.startswith("planner_")
+                              and not key.startswith("blocked_")}
+                visited.append(endpoint)
+                nonclosing = 0 if made_best_progress \
+                    else int(route.get("nonclosing_legs") or 0) + 1
+                progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                                   "last_distance_sq": current_distance,
+                                   "best_distance_sq": min(route_best_distance,
+                                                           current_distance),
+                                   "nonclosing_legs": nonclosing,
+                                   "contradictions": contradictions,
+                                   "visited": visited[-NAVIGATION_VISITED_MAX:],
+                                   "last_ts": now_ms()})
+                save_route(progressed)
+                flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"], "leg_x": action["x"],
+                               "leg_z": action["z"],
                                "nonclosing_legs": nonclosing,
-                               "visited": visited[-NAVIGATION_VISITED_MAX:],
-                               "last_ts": now_ms()})
-            save_route(progressed)
-            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
-                           "x": lx, "z": lz, "target_x": route["x"],
-                           "target_z": route["z"], "leg_x": action["x"],
-                           "leg_z": action["z"],
-                           "nonclosing_legs": nonclosing,
-                           "planner": route_planner}])
+                               "contradictions": contradictions or None,
+                               "planner": route_planner}])
         elif route_planner == "verified-links":
             # A remembered edge is only a hint. If today's live collision
             # state rejects it, retire that edge and mechanically fall back to
@@ -4594,6 +5126,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             rewind_movement_trail(lx, lz)
             backtrack["index"] += 1
             backtrack["status"] = "active"
+            backtrack["contradictions"] = 0
             if backtrack["index"] >= len(backtrack["points"]):
                 clear_backtrack()
                 status = "backtrack-complete"
@@ -4613,6 +5146,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             # leg. Keep approaching it without pretending the checkpoint was
             # reached or consuming it from the recovery request.
             backtrack["status"] = "active"
+            backtrack["contradictions"] = 0
             save_backtrack(backtrack)
             status = "backtrack-progress"
             flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
@@ -4621,15 +5155,50 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "target_x": target_x, "target_z": target_z,
                            "leg_x": action["x"], "leg_z": action["z"]}])
         else:
+            # Spec rule 7f: a settle that MOVED against its own request is a
+            # movement contradiction — something other than the request owned
+            # the body. Counted consecutively; enough of them stop the blind
+            # obstacle-signature retry loop entirely.
+            moved_against = status in ("done", "walk-short") \
+                and isinstance(lx, int) and isinstance(lz, int) \
+                and (lx, lz) != (snap.get("x"), snap.get("z")) \
+                and not movement_agrees(snap["x"], snap["z"],
+                                        action["x"], action["z"], lx, lz)
+            contradictions = int(backtrack.get("contradictions") or 0)
+            if moved_against:
+                contradictions += 1
             backtrack_was_blocked = True
             blocked = dict(backtrack)
-            blocked.update({"status": "blocked", "blocked_reason": status,
-                            "blocked_signature": route_obstacle_signature(latest),
-                            "blocked_ts": now_ms()})
-            save_backtrack(blocked)
-            flush_events([{"ts": now_ms(), "kind": "backtrack-blocked",
-                           "id": action_id, "reason": status, "x": lx, "z": lz,
-                           "target_x": target_x, "target_z": target_z}])
+            if contradictions >= MOVEMENT_CONTRADICTION_LIMIT:
+                blocked.update({"status": "diverged",
+                                "contradictions": contradictions,
+                                "diverged_reason": "movement-opposed-request",
+                                "diverged_ts": now_ms()})
+                save_backtrack(blocked)
+                backtrack["status"] = "diverged"
+                append_outcome({
+                    "ts": now_ms(), "kind": "movement-contradiction",
+                    "id": action_id, "commitment": "backtrack",
+                    "contradictions": contradictions,
+                    "requested": {"x": action["x"], "z": action["z"]},
+                    "settled": {"x": lx, "z": lz},
+                    "start": {"x": snap.get("x"), "z": snap.get("z")},
+                    "target": {"x": target_x, "z": target_z},
+                    "useful_substitute": False})
+                flush_events([{"ts": now_ms(), "kind": "backtrack-diverged",
+                               "id": action_id, "x": lx, "z": lz,
+                               "target_x": target_x, "target_z": target_z,
+                               "contradictions": contradictions}])
+            else:
+                blocked.update({"status": "blocked", "blocked_reason": status,
+                                "contradictions": contradictions,
+                                "blocked_signature": route_obstacle_signature(latest),
+                                "blocked_ts": now_ms()})
+                save_backtrack(blocked)
+                flush_events([{"ts": now_ms(), "kind": "backtrack-blocked",
+                               "id": action_id, "reason": status, "x": lx, "z": lz,
+                               "target_x": target_x, "target_z": target_z,
+                               "contradictions": contradictions or None}])
 
     # The once-per-objective mark is spent only on a VERIFIED done (rule 7a).
     if rule is not None and rule.get("once_per_objective") and status == "done":
@@ -4662,7 +5231,14 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         flush_events([candidate])
 
     if action["type"] in ("walk", "take-ground") and final_x is not None:
-        if backtrack_was_blocked:
+        if backtrack_was_blocked and backtrack.get("status") == "diverged":
+            report("backtrack-diverged", id=action_id, x=final_x, z=final_z,
+                   target_x=action["x"], target_z=action["z"],
+                   contradictions=backtrack.get("contradictions"),
+                   reason="movement-opposed-request",
+                   next="retrace-a-chosen-prior-tile-or-set-explicit-route-"
+                        "or-backtrack-clear")
+        elif backtrack_was_blocked:
             report("backtrack-blocked", id=action_id, x=final_x, z=final_z,
                    target_x=action["x"], target_z=action["z"])
         elif route_was_blocked:
@@ -5035,6 +5611,7 @@ def cmd_objective(args):
         if old_plan:
             clear_plan_for_objective_change(
                 old_objective, "objective-cleared", old_plan)
+        clear_goal("objective-cleared")
         print("objective cleared")
         return
     if args.name is None:
@@ -5056,6 +5633,8 @@ def cmd_objective(args):
     if old_plan and old_objective != new_objective:
         clear_plan_for_objective_change(
             old_objective, f"objective-changed-to:{new_objective}", old_plan)
+    if old_objective != new_objective:
+        clear_goal(f"objective-changed-to:{new_objective}")
     print(f"objective: {new_objective}")
 
 
@@ -5550,7 +6129,8 @@ def cmd_backtrack(args):
         return
 
     existing = load_backtrack()
-    if existing is not None and existing.get("status") in ("active", "blocked"):
+    if existing is not None and existing.get("status") in ("active", "blocked",
+                                                           "diverged"):
         remaining = len(existing["points"]) - existing["index"]
         die(f"backtrack is already {existing['status']} with {remaining} point(s) "
             "remaining; use status or clear before replacing it")
@@ -5952,10 +6532,14 @@ def cmd_run(args):
             live_xp = activity_xp_metrics_text(live_metrics)
             live_compare = activity_comparison_text(live_metrics)
             live_friend_updates = pending_friend_status(load_player_state())
+            live_goal = load_goal()
             write_heartbeat(last_verdict, detail,
                             [i.get("id") for i in latest.get("ground_items") or []],
                             read_plan(), live_activity, live_xp, live_compare,
-                            live_friend_updates)
+                            live_friend_updates,
+                            (live_goal.get("text")
+                             if live_goal is not None
+                             and live_goal.get("status") != "invalid" else ""))
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -6088,6 +6672,27 @@ def main():
     p.add_argument("--reason",
                    help="required evidence for the exceptional whole-history replay")
     p.set_defaults(fn=cmd_backtrack)
+
+    p = sub.add_parser("retrace",
+                       help="one verified movement request toward one chosen "
+                            "previously occupied tile (spec rule 7f)")
+    p.add_argument("x", type=int)
+    p.add_argument("z", type=int)
+    p.add_argument("--arrive", type=int, default=0, choices=range(0, 11),
+                   metavar="N", help="Chebyshev arrival tolerance (default 0)")
+    p.set_defaults(fn=cmd_retrace)
+
+    p = sub.add_parser("goal",
+                       help="the current goal's machine-checkable invariants "
+                            "(spec rule 7h)")
+    p.add_argument("action", nargs="?", default="show",
+                   choices=["show", "set", "check", "clear"])
+    p.add_argument("text", nargs="?")
+    p.add_argument("--require", action="append", metavar="KIND=VALUE")
+    p.add_argument("--reason", help="required by goal clear")
+    p.add_argument("--snapshot",
+                   help="check against a captured snapshot JSON file, or - for stdin")
+    p.set_defaults(fn=cmd_goal)
 
     p = sub.add_parser("step",
                        help="one rules-first evaluation; exit 4 = model may reason")
