@@ -95,15 +95,19 @@ anything page-side.
     disableable, after which the pre-amendment behaviour is exactly what
     remains.
 15. The presence/activity layer comes only from trustworthy runtime facts:
-    push-to-talk capture (`listening`), a turn forming a reply
-    (`considering`), scheduled speech clips (`speaking`), a chess think
-    (`chess`), and the delivered turn (`resting`). The spectator's
+    push-to-talk capture (`listening`), a turn or autonomous wake forming a
+    reply (`considering`), validated live job records, scheduled speech clips
+    (`speaking`), a chess think (`chess`), a fresh logged-in OpenRSC bridge,
+    and their absence (`sleeping`, after the settling delay). The spectator's
     pause/resume stays the page's own local activity truth.
 16. Expression sources are ranked: `explicit` > `event` > `auto`. A new
     record lands only when its rank is at least the standing record's, so
     her explicit choice outranks everything until she releases it or its
     chosen lifetime ends, and a confirmed event outranks anything
-    automatic. A new choice at equal-or-higher rank supersedes the old one.
+    automatic. A bare explicit choice has a bounded default lifetime
+    (`DESKCRAB_FACE_EXPLICIT_SECONDS`, default 120 s); `--for N` chooses a
+    different lifetime, and only an explicit `--hold` makes it indefinite.
+    A new choice at equal-or-higher rank supersedes the old one.
 17. The event allowlist maps a confirmed game win to `pleased`, a confirmed
     failed action to `annoyed`, an incoming player message or NPC quest line
     to `attentive`, and the start of combat to `focused`, nothing else. A
@@ -113,10 +117,11 @@ anything page-side.
     and an event-sourced expression always carries a bounded lifetime.
 18. Activity changes never erase an expression record. A record ends only
     by her explicit recovery, a newer choice at equal-or-higher rank, or
-    the lifetime chosen when it was set. Her explicit `rest` clears the
-    standing mood too — an automatic baseline repainting the face seconds
-    after she asked for composure would make her hand weaker than the
-    machinery under it.
+    the lifetime chosen when it was set. `release` removes only the standing
+    expression and reveals the automatic layers underneath. Her explicit
+    `rest` clears the standing mood too — an automatic baseline repainting
+    the face seconds after she asked for composure would make her hand
+    weaker than the machinery under it.
 19. The broker is one small local process on one unix socket (mode 0600),
     one per state prefix. It retains state across a viewer being covered,
     moved, or reloaded (a snapshot file under the state prefix), streams
@@ -306,9 +311,12 @@ These rules define the ONLY automatic paths, all below her hand.
     broker's existing record: it runs no classifier and starts no broker while
     the prompt waits.
 43. Resolution order, in the broker's snapshot so every surface agrees:
-    expression record (`explicit` > `event` > `auto`) > mood > activity
-    map > `resting`. Failure of anything automatic defaults to `resting` —
-    never a guess, never a hold.
+    explicit/event expression > true-idle `sleeping` > automatic expression
+    > mood > activity map > `resting`. Sleep's special position is rule 59:
+    her hand and confirmed events still stand, while an old automatic layer
+    cannot keep her awake. Failure of emotional automation defaults to
+    `resting`; a stale presence observer follows rule 61 and sleeps — never a
+    guessed mood, never a permanent hold.
 44. Privacy boundary: the mood updater reads only the conversation she is
     already party to, through the same model route and account walk every
     other out-of-band judge uses; nothing new leaves the machine. Browser
@@ -426,6 +434,32 @@ or scolding.
     mechanically explicit failure/success feedback, and combat start. It
     never steers the game, never reads hit points as emotion, and its service
     may be stopped without changing play or the portrait's other layers.
+57. Whole-person presence. One local observer aggregates the live session
+    registry (desktop turns, phone turns, and autonomous wakes), validated
+    running job sidecars, and a fresh logged-in OpenRSC bridge. It replaces one
+    broker layer atomically; a finishing hand can never write `resting` over a
+    different hand that is still working. Chess, listening, and speech retain
+    their immediate runtime edges above the aggregate.
+58. Meaningful activity only. Pending timers, status reads, filesystem churn,
+    and the observer's own polling never count as activity. A brief gap after
+    the final live source settles before sleep, so bookkeeping edges cannot
+    make the eyelids twitch. Any new source wakes the face on the next poll.
+59. True idle resolves to `sleeping`, with a registered authored frame whose
+    eyes are fully closed. Explicit and event expressions remain above sleep;
+    sleep is above automatic flourishes, mood, and the ordinary activity map,
+    so a stale baseline cannot hold the eyes open through genuine idleness.
+60. Sleep motion is grounded: low energy, deep droop, slower breathing, reduced
+    sway, and damped ornament/ringlet lag in the same root stage as every other
+    state. It is not a card bob or a sleep-symbol effect. Reduced motion yields
+    the closed-eye still directly.
+61. Stale safety is two-sided. Direct runtime edges expire if their emitter
+    disappears; the aggregate heartbeat also expires, failing safe to sleep.
+    `crab face status` exposes the resolved activity, aggregate sources, direct
+    edge, aggregate edge, and their times.
+62. The sleeping frame obeys the family invariant mechanically: generated art
+    supplies the closed-eye features, then deterministic compositing restores
+    exact resting pixels outside the declared brow, eye, and mouth masks. The
+    build record must report zero changes outside those masks.
 
 ## DATA
 
@@ -443,6 +477,7 @@ or scolding.
 | `DESKCRAB_FACE_SENTENCE_CUES` | broker+streamer | rule 40's on/off switch |
 | `DESKCRAB_FACE_CUE_LINGER` | streamer | rule 40's flourish tail |
 | `DESKCRAB_FACE_MOOD_SECONDS` | broker | rule 41's mood decay clock |
+| `DESKCRAB_FACE_EXPLICIT_SECONDS` | broker | rule 16's default lifetime for a bare manual expression |
 | `DESKCRAB_FACE_FAILED_ACTION_SECONDS` | broker | rule 17's short mechanical-failure recovery (default 8 s) |
 | `DESKCRAB_FACE_AUTO_SECONDS` | broker | default lifetime of an `auto` record |
 | `FACE_AUTO_EXPRESSION`, `FACE_AUTO_MODEL`, `FACE_AUTO_TIMEOUT` | conf, read by common.sh and `lib/face-auto` | rule 42's updater knobs |
@@ -454,10 +489,14 @@ or scolding.
 | `<portrait drawer>/motion-build-record.json` | drawer build script | rule 51/55's stated amplitudes and before/after extents |
 | `${STATE_PREFIX}-game/state.json` | OpenRSC bridge writes; `face-openrsc` reads | rule 56's confirmed game transitions |
 | `${STATE_PREFIX}-face-openrsc.json` | `face-openrsc` | replay-safe cursor for rule 56 |
+| `${STATE_PREFIX}-sessions/` | turn/wake registration | live hands read by rule 57's observer |
+| `<jobs drawer>/*.json` | job runner | validated live builder facts for rule 57 |
+| `<portrait drawer>/sleep-build-record.json` | deterministic asset build | sleeping-frame source, method, and pixel invariant |
+| `DESKCRAB_FACE_SLEEP_AFTER` | `face-presence` | settling delay before true-idle sleep (default 20 s) |
 
 ## INTERACTIONS
 
-**May call:** the broker calls nothing; `lib/face-broker`, the streamer's
+**May call:** the broker calls nothing; `lib/face-broker`, `lib/face-presence`, the streamer's
 cue plumbing, the turn pipeline's `face_touch`, `lib/face-auto`, and both
 web servers connect to the broker socket; `lib/face-auto` calls
 `claude_classify` (and through it the account walk); the window reads the
@@ -493,7 +532,9 @@ scope (rule 33); write game controls (rule 35).
 
 ## TESTS
 
-**Existing:** `tests/test_chessweb.sh` (fixed portrait routes, native page
+**Existing:** `tests/test_face_presence.sh` (validated all-hand aggregation,
+sleep precedence, stale safety, and both renderers' sleeping motion map);
+`tests/test_chessweb.sh` (fixed portrait routes, native page
 markup, thinking-driven attentive class); `tests/test_openrsc_web.sh`
 (spectator-key gating of portrait routes, unknown names refused, pause
 expression markup).

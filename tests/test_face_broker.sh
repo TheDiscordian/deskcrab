@@ -13,6 +13,9 @@ REPO_DIR="$SANDBOX_REPO"
 T="$SANDBOX"
 export DESKCRAB_FACE_SOCKET="$T/face.sock"
 export DESKCRAB_FACE_STATE="$T/face-state.json"
+# This suite exercises the pre-presence layers in isolation. Its broker has no
+# observer process; retain the fresh neutral aggregate while those cases run.
+export DESKCRAB_FACE_AMBIENT_ACTIVITY_STALE=3600
 
 FB() { python3 "$REPO_DIR/lib/face-broker" "$@"; }
 
@@ -130,12 +133,34 @@ check "a lifetime chosen at set time recovers on its own (rule 18)" \
     bash -c 'python3 "$0/lib/face-broker" pleased --for 1 >/dev/null
         sleep 1.3
         python3 "$0/lib/face-broker" | grep -q "expression=resting"' "$REPO_DIR"
+EX_SOCK="$T/face-explicit.sock"
+check "a bare manual choice is bounded instead of masking automation all day (rule 16)" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_EXPLICIT_SECONDS=1
+        python3 "$0/lib/face-broker" mood tired >/dev/null
+        python3 "$0/lib/face-broker" attentive \
+            | grep -q "attentive accepted for 1s" || exit 1
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=tired \[mood\]"' \
+    "$REPO_DIR" "$EX_SOCK" "$T/face-explicit-state.json"
+check "an intentional hold persists, and release reveals mood without erasing it" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_EXPLICIT_SECONDS=1
+        python3 "$0/lib/face-broker" focused --hold \
+            | grep -q "until released" || exit 1
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=focused \[explicit\]" \
+            || exit 1
+        python3 "$0/lib/face-broker" release >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=tired \[mood\]"' \
+    "$REPO_DIR" "$EX_SOCK" "$T/face-explicit-state.json"
 check "the diagnostics name the allowlist, the tier, and the surfaces (rule 19)" \
     bash -c 'python3 "$0/lib/face-broker" status | grep -q "event_map" \
         && python3 "$0/lib/face-broker" status | grep -q "watchers" \
         && python3 "$0/lib/face-broker" status | grep -q "sentence_cues" \
         && python3 "$0/lib/face-broker" status | grep -q "activity_expressions" \
-        && python3 "$0/lib/face-broker" status | grep -q "mood_seconds"' "$REPO_DIR"
+        && python3 "$0/lib/face-broker" status | grep -q "mood_seconds" \
+        && python3 "$0/lib/face-broker" status | grep -q "explicit_seconds"' "$REPO_DIR"
 
 echo
 echo "OpenRSC reactions — confirmed bridge changes, no history replay (rule 56):"
@@ -420,7 +445,7 @@ done
     || fail "background mood never landed" "$(FB status 2>/dev/null | head -40)"
 
 for pidfile in "$DESKCRAB_FACE_SOCKET.pid" "$DIS_SOCK.pid" \
-        "$DK_SOCK.pid" "$AM_SOCK.pid"; do
+        "$DK_SOCK.pid" "$AM_SOCK.pid" "$EX_SOCK.pid"; do
     [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null
 done
 true

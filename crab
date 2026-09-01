@@ -133,6 +133,10 @@ case "${1:-}" in
         turn_metric capture-transcribed "${#TEXT} chars"
 
         if [ -z "$TEXT" ]; then
+            # A cancelled/silent capture has no turn to replace listening
+            # with considering. Release the direct edge so the whole-person
+            # observer can reveal another hand or settle to sleep.
+            face_touch activity resting
             notify-send -t 3000 -i beatrice "$NOTIFY_NAME" "No speech detected"
             exit 1
         fi

@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Aggregate meaningful activity from every live hand into the face broker.
+
+The registry, durable job sidecars, and the OpenRSC bridge are facts already
+owned by this machine.  This observer only reads them and replaces one broker
+layer atomically.  It does not infer emotion and it never steers any work.
+"""
+
+import argparse
+import json
+import os
+import time
+from pathlib import Path
+import sys
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import face_state  # noqa: E402
+
+STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
+SESSIONS = Path(os.environ.get("DESKCRAB_SESSIONS_DIR",
+                               STATE_PREFIX + "-sessions"))
+JOBS = Path(os.environ.get(
+    "JOBS_DIR", str(Path.home() / ".local/share/deskcrab/jobs")))
+GAME = Path(os.environ.get("DESKCRAB_GAME_STATE",
+                           STATE_PREFIX + "-game/state.json"))
+POLL = float(os.environ.get("DESKCRAB_FACE_PRESENCE_POLL", "0.5"))
+GAME_STALE = float(os.environ.get("DESKCRAB_FACE_GAME_STALE", "3"))
+SLEEP_AFTER = float(os.environ.get("DESKCRAB_FACE_SLEEP_AFTER", "20"))
+
+
+def proc_start(pid):
+    try:
+        text = Path("/proc") / str(pid) / "stat"
+        # The command may contain spaces and parentheses. Everything after
+        # its final ') ' starts at kernel field three; starttime is field 22.
+        tail = text.read_text().rsplit(") ", 1)[1].split()
+        return int(tail[19])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def live_sessions():
+    out = []
+    try:
+        entries = list(SESSIONS.iterdir())
+    except OSError:
+        return out
+    for path in entries:
+        if not path.name.isdigit():
+            continue
+        try:
+            fields = path.read_text().rstrip("\n").split("\t")
+            kind, pid, started, _epoch, start = fields[:5]
+            pid, start = int(pid), int(start)
+        except (OSError, ValueError, IndexError):
+            continue
+        if proc_start(pid) == start:
+            out.append({"type": "session", "kind": kind,
+                        "pid": pid, "started": started})
+    return out
+
+
+def live_jobs():
+    out = []
+    try:
+        entries = list(JOBS.glob("*.json"))
+    except OSError:
+        return out
+    for path in entries:
+        try:
+            row = json.loads(path.read_text())
+            pid = int(row.get("pid") or 0)
+            start = int(row.get("pidstart") or 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        if row.get("state") == "running" and pid > 1 \
+                and proc_start(pid) == start:
+            out.append({"type": "job", "id": path.stem,
+                        "pid": pid, "started": row.get("started")})
+    return out
+
+
+def openrsc_live(now=None):
+    now = time.time() if now is None else now
+    try:
+        st = json.loads(GAME.read_text())
+        fresh = now - GAME.stat().st_mtime <= GAME_STALE
+        return bool(st.get("logged_in")) and fresh
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def observe(now=None):
+    sessions, jobs = live_sessions(), live_jobs()
+    game = openrsc_live(now)
+    sources = (["%s:%s" % (x["type"], x.get("kind") or x.get("id"))
+                for x in sessions + jobs]
+               + (["openrsc:live"] if game else []))
+    if sessions or jobs:
+        count = len(sources)
+        return "considering", "%d active source%s" % (
+            count, "" if count == 1 else "s"), sources
+    if game:
+        return "openrsc-live", "playing OpenRSC", sources
+    return "sleeping", "all hands idle", sources
+
+
+def publish(name, detail, sources):
+    if not face_state.ensure_broker():
+        return False
+    reply = face_state.send_cmd({"cmd": "presence", "name": name,
+                                 "detail": detail, "sources": sources})
+    return bool(reply and reply.get("ok"))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--once", action="store_true")
+    args = ap.parse_args(argv)
+    if args.once:
+        name, detail, sources = observe()
+        print(json.dumps({"activity": name, "detail": detail,
+                          "sources": sources}, sort_keys=True))
+        return 0 if publish(name, detail, sources) else 1
+
+    last_busy = 0.0
+    while True:
+        name, detail, sources = observe()
+        mono = time.monotonic()
+        if name != "sleeping":
+            last_busy = mono
+        elif last_busy and mono - last_busy < SLEEP_AFTER:
+            name, detail = "resting", "settling after activity"
+        publish(name, detail, sources)
+        time.sleep(max(0.1, POLL))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

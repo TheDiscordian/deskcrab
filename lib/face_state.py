@@ -25,8 +25,8 @@ State is layered rather than flattened (specs/face.md rule 3):
                   amendment: the user asked for automatic expression; the
                   old authored-only ban is deliberately superseded);
   4. speech     — transient viseme cue tracks tied to real TTS clips;
-  5. recovery   — explicit (`crab face rest`) or the lifetime the record
-                  was set with; mood decays on its own clock.
+  5. recovery   — explicit (`crab face release` / `rest`) or the lifetime the
+                  record was set with; mood decays on its own clock.
 
 Expression records carry a source, and sources are ranked: her explicit
 hand outranks the confirmed-event allowlist, which outranks the automatic
@@ -63,8 +63,18 @@ EXPRESSIONS = ("attentive", "caught", "pleased", "annoyed",
                "focused", "tired", "startled")
 
 # The presence/activity layer's whole vocabulary (specs/face.md rule 3).
-ACTIVITIES = ("resting", "listening", "considering", "speaking",
+ACTIVITIES = ("sleeping", "resting", "listening", "considering", "speaking",
               "chess", "openrsc-live", "openrsc-paused", "unavailable")
+
+# A short runtime edge (capture, turn, speech, chess) and the whole-person
+# observer are separate registers.  One finishing turn must not be able to
+# say `resting` over another hand that is still working.  Both registers are
+# stale-bounded so a dead emitter fails safe to sleep rather than leaving a
+# permanently busy portrait.
+DIRECT_ACTIVITY_STALE = float(os.environ.get(
+    "DESKCRAB_FACE_DIRECT_ACTIVITY_STALE", "120"))
+AMBIENT_ACTIVITY_STALE = float(os.environ.get(
+    "DESKCRAB_FACE_AMBIENT_ACTIVITY_STALE", "5"))
 
 # The compact viseme family the mouth cue tracks speak in
 # (specs/face.md rule 20). `rest` is the expression's own mouth.
@@ -100,6 +110,12 @@ EVENT_LIFETIMES = {"failed-action": FAILED_ACTION_SECONDS}
 # her explicit hand > the confirmed-event allowlist > the automatic tier.
 # A new record lands only when its rank is at least the standing record's.
 SOURCE_RANK = {"explicit": 3, "event": 2, "auto": 1}
+
+# Her authored choice gets room to read without silently disabling the
+# automatic system for the rest of the day. An indefinite choice exists, but
+# only when the caller says `--hold` explicitly.
+EXPLICIT_EXPRESSION_SECONDS = float(
+    os.environ.get("DESKCRAB_FACE_EXPLICIT_SECONDS", "120"))
 
 # The automatic tier's bounded lifetimes. A per-sentence flourish carries the
 # clip's own length from the streamer; anything automatic that arrives
@@ -279,6 +295,13 @@ class Broker:
         self.seq = 0
         self.activity = "resting"
         self.activity_detail = ""
+        self.activity_set_at = 0.0
+        # A fresh broker gets a short neutral grace while the observer joins;
+        # if no heartbeat arrives, stale safety below resolves to sleep.
+        self.ambient_activity = "resting"
+        self.ambient_detail = "waiting for activity observer"
+        self.ambient_sources = []
+        self.ambient_updated = _now()
         self.expression = None   # {"name", "source", "set_at", "expires_at"}
         self.mood = None         # name, reason, source, origin/ref, times
         self.turn = ""           # the live turn's token; stale autos bounce
@@ -296,9 +319,26 @@ class Broker:
             if d.get("activity") in ACTIVITIES:
                 self.activity = d["activity"]
             self.activity_detail = str(d.get("activity_detail", ""))[:120]
+            self.activity_set_at = float(d.get("activity_set_at", 0) or 0)
+            if d.get("ambient_activity") in ACTIVITIES:
+                self.ambient_activity = d["ambient_activity"]
+            self.ambient_detail = str(d.get("ambient_detail", ""))[:120]
+            self.ambient_sources = list(d.get("ambient_sources") or [])[:32]
+            self.ambient_updated = float(d.get("ambient_updated", 0) or 0)
             exp = d.get("expression")
             if isinstance(exp, dict) and exp.get("name") in EXPRESSIONS:
-                self.expression = exp
+                self.expression = dict(exp)
+                # Before explicit choices had a default lifetime, a bare
+                # `crab face attentive` persisted forever. Old records carry
+                # no deliberate hold marker, so give them the same bounded
+                # lifetime a new bare choice receives. A real `--hold`
+                # survives restarts through its explicit marker.
+                if (self.expression.get("source", "explicit") == "explicit"
+                        and self.expression.get("expires_at") is None
+                        and not self.expression.get("hold")):
+                    self.expression["expires_at"] = (
+                        float(self.expression.get("set_at", 0))
+                        + EXPLICIT_EXPRESSION_SECONDS)
             mood = d.get("mood")
             if isinstance(mood, dict) and mood.get("name") in MOODS:
                 mood.setdefault("reason", "")
@@ -331,6 +371,11 @@ class Broker:
             with open(tmp, "w") as fh:
                 json.dump({"seq": self.seq, "activity": self.activity,
                            "activity_detail": self.activity_detail,
+                           "activity_set_at": self.activity_set_at,
+                           "ambient_activity": self.ambient_activity,
+                           "ambient_detail": self.ambient_detail,
+                           "ambient_sources": self.ambient_sources,
+                           "ambient_updated": self.ambient_updated,
                            "expression": self.expression,
                            "mood": self.mood, "turn": self.turn,
                            "clips": self.clips, "updated": _now()}, fh)
@@ -361,30 +406,50 @@ class Broker:
                 # An unrefreshed mood decays back to nothing on its own.
                 self.mood = None
                 self._bump()
-            # The face shown is resolved HERE, once, so every surface agrees:
-            # an expression record (explicit > event > auto) wins; then the
-            # standing mood; then the deterministic activity default; then
-            # resting. Lower layers keep standing underneath — an explicit
-            # choice released early falls back to the mood, not to a blank.
-            shown, source = "resting", ""
-            if exp:
-                shown, source = exp["name"], exp.get("source", "explicit")
-            elif self.mood:
-                shown, source = self.mood["name"], "mood"
-            elif ACTIVITY_EXPRESSIONS.get(self.activity):
-                shown, source = ACTIVITY_EXPRESSIONS[self.activity], "activity"
+            direct_fresh = (self.activity != "resting"
+                            and now - self.activity_set_at
+                            <= DIRECT_ACTIVITY_STALE)
+            ambient_fresh = (now - self.ambient_updated
+                             <= AMBIENT_ACTIVITY_STALE)
+            if direct_fresh:
+                activity, detail = self.activity, self.activity_detail
+            elif ambient_fresh:
+                activity, detail = self.ambient_activity, self.ambient_detail
+            else:
+                activity, detail = "sleeping", "activity observer stale"
             clips = self._live_clips(now)
             speaking = any(c.get("start", 0) <= now
                            < c.get("start", 0) + c.get("duration", 0)
                            or c.get("start", 0) > now for c in clips)
+            if speaking:
+                activity, detail = "speaking", "speech is playing"
+
+            # The face shown is resolved HERE, once, so every surface agrees.
+            # Her explicit hand and confirmed events outrank sleep. True idle
+            # outranks old automatic flourishes and mood, which remain intact
+            # underneath and can reappear when meaningful activity resumes.
+            shown, source = "resting", ""
+            if exp and exp.get("source") in ("explicit", "event"):
+                shown, source = exp["name"], exp.get("source", "explicit")
+            elif activity == "sleeping":
+                shown, source = "sleeping", "activity"
+            elif exp:
+                shown, source = exp["name"], exp.get("source", "auto")
+            elif self.mood:
+                shown, source = self.mood["name"], "mood"
+            elif ACTIVITY_EXPRESSIONS.get(activity):
+                shown, source = ACTIVITY_EXPRESSIONS[activity], "activity"
             return {
                 "seq": self.seq,
                 "now": now,
-                "activity": self.activity,
-                "activity_detail": self.activity_detail,
+                "activity": activity,
+                "activity_detail": detail,
+                "activity_sources": self.ambient_sources,
                 "expression": shown,
                 "expression_source": source,
                 "expression_set_at": (exp or {}).get("set_at"),
+                "expression_expires_at": (exp or {}).get("expires_at"),
+                "expression_held": bool((exp or {}).get("hold")),
                 "mood": (self.mood or {}).get("name", ""),
                 "mood_reason": (self.mood or {}).get("reason", ""),
                 "mood_source": (self.mood or {}).get("source", ""),
@@ -404,11 +469,32 @@ class Broker:
             # Activity never erases an authored expression (rule 18).
             self.activity = name
             self.activity_detail = str(detail or "")[:120]
+            self.activity_set_at = _now()
             if turn:
                 # The turn machinery names the turn it is working; automatic
                 # results carrying an older token will be turned away.
                 self.turn = str(turn)[:80]
             self._bump()
+        return {"ok": True, "state": self.snapshot()}
+
+    def set_ambient(self, name, detail="", sources=None):
+        """Replace the observer-owned aggregate in one atomic write."""
+        if name not in ACTIVITIES:
+            return {"ok": False, "error": "unknown activity %r" % name}
+        detail = str(detail or "")[:120]
+        sources = [str(s)[:120] for s in (sources or [])][:32]
+        with self.lock:
+            changed = (name != self.ambient_activity
+                       or detail != self.ambient_detail
+                       or sources != self.ambient_sources)
+            self.ambient_activity = name
+            self.ambient_detail = detail
+            self.ambient_sources = sources
+            self.ambient_updated = _now()
+            if changed:
+                self._bump()
+            else:
+                self._save()
         return {"ok": True, "state": self.snapshot()}
 
     def _stale(self, turn):
@@ -418,7 +504,7 @@ class Broker:
         return bool(turn) and bool(self.turn) and str(turn) != self.turn
 
     def set_expression(self, name, source="explicit", seconds=None,
-                      turn=None):
+                       turn=None, hold=False):
         if name in ("resting", "rest", "none", ""):
             return self.rest()
         if name not in EXPRESSIONS:
@@ -427,12 +513,24 @@ class Broker:
                              % (name, ", ".join(EXPRESSIONS))}
         if source not in SOURCE_RANK:
             return {"ok": False, "error": "unknown source %r" % source}
+        if hold and source != "explicit":
+            return {"ok": False,
+                    "error": "only an explicit expression may be held"}
+        if source == "explicit" and not hold and seconds is None:
+            seconds = EXPLICIT_EXPRESSION_SECONDS
         if source == "event":
             seconds = seconds or EVENT_EXPRESSION_SECONDS
         if source == "auto":
             # The automatic tier is never permanent (2026-08-30 amendment).
             seconds = seconds or AUTO_EXPRESSION_SECONDS
-        expires = (_now() + float(seconds)) if seconds else None
+        try:
+            seconds = float(seconds) if seconds is not None else None
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "expression lifetime is invalid"}
+        if seconds is not None and seconds <= 0:
+            return {"ok": False,
+                    "error": "expression lifetime must be greater than zero"}
+        expires = (_now() + seconds) if seconds is not None else None
         with self.lock:
             if source == "auto" and self._stale(turn):
                 return {"ok": True, "state": self.snapshot(),
@@ -447,6 +545,8 @@ class Broker:
                         "note": "%s expression stands" % cur.get("source")}
             self.expression = {"name": name, "source": source,
                                "set_at": _now(), "expires_at": expires}
+            if hold:
+                self.expression["hold"] = True
             self._bump()
         return {"ok": True, "state": self.snapshot()}
 
@@ -493,6 +593,15 @@ class Broker:
         with self.lock:
             self.expression = None
             self.mood = None
+            self._bump()
+        return {"ok": True, "state": self.snapshot()}
+
+    def release(self):
+        """Release the standing expression without erasing the automatic
+        baseline underneath it. This is the ordinary end of a manual hold;
+        `rest` remains the stronger request for full composure."""
+        with self.lock:
+            self.expression = None
             self._bump()
         return {"ok": True, "state": self.snapshot()}
 
@@ -566,11 +675,16 @@ class Broker:
                          "activities": list(ACTIVITIES),
                          "visemes": list(VISEMES),
                          "moods": list(MOODS),
+                         "explicit_seconds": EXPLICIT_EXPRESSION_SECONDS,
                          "mood_seconds": MOOD_SECONDS,
                          "mood_record": self.mood,
                          "turn": self.turn,
                          "source_rank": SOURCE_RANK,
                          "activity_expressions": ACTIVITY_EXPRESSIONS,
+                         "direct_activity": self.activity,
+                         "direct_activity_set_at": self.activity_set_at,
+                         "ambient_activity": self.ambient_activity,
+                         "ambient_updated": self.ambient_updated,
                          "sentence_cues": ([[p, n] for p, n in SENTENCE_CUES]
                                            if SENTENCE_CUES_ENABLED else []),
                          "uptime": _now() - self.started})
@@ -591,11 +705,16 @@ class Broker:
             return self.set_activity(cmd.get("name", ""),
                                      cmd.get("detail", ""),
                                      turn=cmd.get("turn"))
+        if verb == "presence":
+            return self.set_ambient(cmd.get("name", ""),
+                                    cmd.get("detail", ""),
+                                    cmd.get("sources"))
         if verb == "expression":
             return self.set_expression(cmd.get("name", ""),
                                        source=cmd.get("source", "explicit"),
                                        seconds=cmd.get("seconds"),
-                                       turn=cmd.get("turn"))
+                                       turn=cmd.get("turn"),
+                                       hold=bool(cmd.get("hold", False)))
         if verb == "mood":
             return self.set_mood(cmd.get("name", ""), turn=cmd.get("turn"),
                                  reason=cmd.get("reason", ""),
@@ -604,6 +723,8 @@ class Broker:
                                  source_ref=cmd.get("source_ref", ""))
         if verb == "rest":
             return self.rest()
+        if verb == "release":
+            return self.release()
         if verb == "event":
             return self.event(cmd.get("name", ""))
         if verb == "speak":

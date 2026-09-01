@@ -2,13 +2,13 @@
 # face-auto — the out-of-band mood updater (specs/face.md, the 2026-08-30
 # amendment that deliberately superseded the authored-only ban).
 #
-# After a turn is DELIVERED, this reads the exchange that just happened, the
-# recent conversation, and the standing mood, and asks one classifier-shaped
-# question on the cheapest configured model: where does her standing mood sit
-# now? The answer moves the broker's mood BASELINE — the slow layer under
-# everything. It is continuity, not per-line acting: the immediate flourishes
-# ride the speech streamer's sentence cues, and her explicit hand and the
-# event allowlist outrank both.
+# After a desk or phone turn, or a successful wake, this reads the exchange or
+# completed work, the recent conversation, and the standing mood, and asks one
+# classifier-shaped question on the cheapest configured model: where does her
+# standing mood sit now? The answer moves the broker's mood BASELINE — the
+# slow layer under everything. It is continuity, not per-line acting: the
+# immediate flourishes ride the speech streamer's sentence cues, and her
+# explicit hand and the event allowlist outrank both.
 #
 # Guarantees, in order of importance:
 #   - never on the speech or reply path: dispatched detached, nobody waits;

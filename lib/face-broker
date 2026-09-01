@@ -5,11 +5,14 @@ Verbs:
   face-broker                      current state, one readable line
   face-broker status               full diagnostics (activity, expression,
                                    clip, cue position, connected surfaces)
-  face-broker <expression>         set an authored expression, held until
-                                   `rest` or a newer choice
+  face-broker <expression>         set an authored expression for the bounded
+                                   default lifetime (120 s unless configured)
   face-broker <expression> --for N recover on its own after N seconds
+  face-broker <expression> --hold  hold until `release`, `rest`, or a newer
+                                   authored choice
   face-broker pulse <expr> [N]     a short authored arc (default 45 s) that
                                    outlives the reply boundary
+  face-broker release              release the expression, preserving mood
   face-broker rest                 put composure back (explicit recovery;
                                    clears the automatic mood too)
   face-broker activity <name> [detail]   presence facts, for runtime callers
@@ -121,6 +124,11 @@ def main(argv):
         say("face: composure back — " + describe(reply["state"]))
         return 0
 
+    if verb == "release":
+        reply = send_or_die({"cmd": "release"})
+        say("face: expression released — " + describe(reply["state"]))
+        return 0
+
     if verb == "activity":
         if len(argv) < 2:
             say("face: activity needs a name (%s)"
@@ -198,8 +206,8 @@ def main(argv):
         say("face: %s for %.0fs — accepted" % (argv[1], seconds))
         return 0
 
-    # Bare expression name, optionally with --for N.
-    name, seconds = verb, None
+    # Bare expression name, optionally with --for N or an intentional hold.
+    name, seconds, hold = verb, None, False
     rest_args = argv[1:]
     if rest_args[:1] == ["--for"] and len(rest_args) > 1:
         try:
@@ -207,17 +215,30 @@ def main(argv):
         except ValueError:
             say("face: --for needs seconds")
             return 1
+        if seconds <= 0:
+            say("face: --for needs a positive number of seconds")
+            return 1
+    elif rest_args[:1] == ["--hold"]:
+        hold = True
+    elif rest_args:
+        say("face: expected --for N or --hold")
+        return 1
     if name not in face_state.EXPRESSIONS and name not in (
             "resting", "rest", "none"):
         say("face: unknown verb or expression %r (family: %s)"
             % (name, ", ".join(face_state.EXPRESSIONS)))
         return 1
     cmd = {"cmd": "expression", "name": name}
-    if seconds:
+    if seconds is not None:
         cmd["seconds"] = seconds
+    if hold:
+        cmd["hold"] = True
     reply = send_or_die(cmd)
-    say("face: %s accepted%s" % (reply["state"].get("expression"),
-                                 (" for %.0fs" % seconds) if seconds else ""))
+    lifetime = seconds
+    if lifetime is None and not hold:
+        lifetime = face_state.EXPLICIT_EXPRESSION_SECONDS
+    suffix = " until released" if hold else " for %.0fs" % lifetime
+    say("face: %s accepted%s" % (reply["state"].get("expression"), suffix))
     return 0
 
 

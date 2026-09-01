@@ -294,6 +294,7 @@ class Voice(threading.Thread):
         self._pho_partial = {}
         self._burst_end = 0.0
         self._clip_n = 0
+        self._phoneme_thread = None
         # Per-sentence acting timers (specs/face.md, 2026-08-30 amendment):
         # a flourish waits for ITS clip's modelled playback start, never for
         # synthesis, so the face acts when the words sound. All side-thread,
@@ -342,9 +343,10 @@ class Voice(threading.Thread):
                 stdin=self.piper.stdout, stderr=subprocess.DEVNULL)
             self.piper.stdout.close()   # aplay owns the read end now
             if face_here:
-                threading.Thread(target=self._drain_phonemes,
-                                 args=(self.piper.stderr,),
-                                 daemon=True).start()
+                self._phoneme_thread = threading.Thread(
+                    target=self._drain_phonemes, args=(self.piper.stderr,),
+                    daemon=True)
+                self._phoneme_thread.start()
         except Exception as exc:
             self.error = "cannot start the voice: %s" % exc
             speech_log("SPEECH FAILED — %s (piper=%s)" % (self.error, PIPER))
@@ -367,6 +369,13 @@ class Voice(threading.Thread):
             self.piper.wait(timeout=10)
         except Exception:
             pass
+        # Piper can exit while the stderr drainer still holds its final
+        # phoneme/duration lines. Let that finite pipe reach EOF before
+        # speak-stop clears the clips; otherwise a late drainer can reopen
+        # the mouth after playback has already ended.
+        if self._phoneme_thread is not None:
+            self._phoneme_thread.join(timeout=1.0)
+            self._phoneme_thread = None
         self.piper = self.aplay = None
         # The device has drained: whatever the mouth schedule believed, the
         # audio is over. Close the mouth rather than trusting the model.
@@ -710,12 +719,20 @@ class Voice(threading.Thread):
                 continue
             try:
                 piper_lines = item.splitlines()
-                self.piper.stdin.write(("\n".join(piper_lines) + "\n").encode())
-                self.piper.stdin.flush()
+                # Register text before Piper can emit its matching debug
+                # record. Fast synthesis (and the test stub) can otherwise
+                # win the flush/append race, leaving the clip with no words
+                # from which to derive its sentence flourish.
                 with self._pho_lock:
-                    # Piper reports one phoneme/duration record per input line,
-                    # so the face cue queue follows the same pause boundaries.
                     self._pho_expect.extend(piper_lines)
+                    try:
+                        self.piper.stdin.write(
+                            ("\n".join(piper_lines) + "\n").encode())
+                        self.piper.stdin.flush()
+                    except Exception:
+                        if piper_lines:
+                            del self._pho_expect[-len(piper_lines):]
+                        raise
             except Exception as exc:
                 self.error = "piper stopped accepting text: %s" % exc
                 speech_log("SPEECH INTERRUPTED — %s" % self.error)

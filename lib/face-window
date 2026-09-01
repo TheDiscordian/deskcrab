@@ -60,6 +60,7 @@ EXPR_MOTION = {
     "annoyed": {"energy": 0.6, "agitation": 0.18, "droop": 0.0},
     "startled": {"energy": 0.8, "agitation": 0.45, "droop": 0.0},
     "tired": {"energy": 0.35, "agitation": 0.0, "droop": 0.7},
+    "sleeping": {"energy": 0.12, "agitation": 0.0, "droop": 0.9},
 }
 EXPR_GESTURE = {"annoyed": "shake", "pleased": "bounce", "startled": "perk"}
 GESTURE_KICKS = {"shake": (34.0, 7.0), "bounce": (9.0, -16.0),
@@ -546,7 +547,8 @@ class BrokerLink(threading.Thread):
 
 
 CAPTIONS = {
-    "resting": "", "listening": "listening", "considering": "considering",
+    "sleeping": "asleep", "resting": "", "listening": "listening",
+    "considering": "considering",
     "speaking": "speaking", "chess": "at the chess table",
     "openrsc-live": "in the game", "openrsc-paused": "the game is paused",
     "unavailable": "away",
