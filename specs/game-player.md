@@ -981,8 +981,29 @@ deliberate-play channel.
     target parameters, across the temporary false states between triggers. Direct semantic doors
     ask `direct-owner ACTION --param KEY=VALUE…` before dispatch; a matching owner returns
     `routine-owned ... next=play` and emits no second action. Ownership is not instantaneous
-    eligibility: fighting, waiting for completion, missing inventory, or another transient guard
-    cannot open a race for a competing direct hand. An unrelated target, out-of-scope rule, or
+    eligibility: fighting, waiting for completion, a missing prerequisite item, or another
+    transient guard cannot open a race for a competing direct hand. But ownership reaches no
+    further than the rule's own declared scope, and live structured state can prove a request
+    outside it. For the acquisition request `take-ground` with a caller item id, one fresh
+    logged-in snapshot supports exactly two scope proofs, each releasing only the rules it
+    convicts:
+    - the **stack-only proof**: a trigger `inventory_has` naming the very item the rule's own
+      take acquires is a stock-extension scope, not a transition guard — no routine transition
+      can satisfy it except the acquisition it would reserve. While the snapshot shows that item
+      unheld, the rule has scoped itself away from initial acquisition and does not own the
+      direct take.
+    - the **locality proof**: the action's `within` cap is a declared local boundary. While
+      every visible matching ground pile lies strictly beyond that many Chebyshev tiles from
+      the body, the rule cannot lawfully act on any pile now visible and does not own the
+      direct take of one; a single matching pile inside the cap keeps the capture.
+    A guard on a *different* item, a missing, stale, or logged-out snapshot, or an unresolvable
+    body tile proves nothing and releases nothing — the interlock fails closed to capture. A
+    release is not silent: `direct-owner` records one `direct-scope-release` decision event
+    naming the released rules, each rule's proof, the item, and the snapshot tick, then reports
+    the action unreserved so the direct door proceeds. The released direct take is rule 7a's
+    ordinary take commitment, and its observed postcondition is unchanged: the targeted ground
+    entry decreases and the same item id's inventory quantity increases. An unrelated target,
+    out-of-scope rule, or
     dead runner reserves nothing. `retreat` and `sidestep` are the same public escape identity for
     this boundary. This mechanism applies uniformly to NPC interaction, combat, casting, held-item
     NPC use, scenery, entity clicks, inventory clicks, pickups, and escape; it contains no

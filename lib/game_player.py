@@ -5517,17 +5517,60 @@ def direct_action_parameter_matches(action: dict, key: str, value) -> bool:
     return action.get(key) == value
 
 
+def direct_scope_release_proof(rule: dict, requested: str, selectors: dict,
+                               snap) -> str:
+    """The live proof, if any, that this request lies outside the rule's own
+    declared scope (spec rule 12). Returns the proof name or None.
+
+    Only the `take-ground` acquisition request has scope proofs, and only a
+    fresh logged-in snapshot supplies them; everything unprovable keeps the
+    capture, so the interlock fails closed.
+    """
+    if not isinstance(snap, dict) or requested != "take-ground":
+        return None
+    item = selectors.get("item")
+    if not isinstance(item, int):
+        return None
+    trigger = rule.get("trigger") or {}
+    action = rule.get("action") or {}
+    # The stack-only proof: a guard requiring the very item this take would
+    # acquire cannot be satisfied by any routine transition except the
+    # acquisition it reserves. Unheld, the rule scopes itself away from
+    # initial acquisition. A guard on a different item proves nothing.
+    if trigger.get("inventory_has") == item \
+            and inventory_quantity(snap, item) == 0:
+        return "stack-only-guard-item-unheld"
+    # The locality proof: a `within` cap owns only piles inside it. When
+    # every visible matching pile is strictly beyond the cap, the rule
+    # cannot lawfully act on any pile now visible.
+    within = action.get("within")
+    px, pz = snap.get("x"), snap.get("z")
+    if isinstance(within, int) and isinstance(px, int) and isinstance(pz, int):
+        piles = [entry for entry in snap.get("ground_items") or []
+                 if isinstance(entry, dict) and entry.get("id") == item
+                 and isinstance(entry.get("x"), int)
+                 and isinstance(entry.get("z"), int)]
+        if piles and all(max(abs(entry["x"] - px), abs(entry["z"] - pz))
+                         > within for entry in piles):
+            return "all-visible-piles-beyond-within"
+    return None
+
+
 def rules_own_direct_action(cfg: dict, requested: str, selectors: dict,
-                            objective: str, activity: str) -> list[str]:
-    """Return enabled in-scope routines reserving one semantic hand action.
+                            objective: str, activity: str,
+                            snap=None) -> tuple[list[str], list[dict]]:
+    """Return (owners, released) for one semantic hand action.
 
     Ownership deliberately does not mean "the trigger is true this instant".
     A trigger is the routine's state transition guard; letting a second hand
     act while that guard is temporarily false is precisely the race this
     boundary prevents. Disable/change the routine or its scope to return the
-    action to direct control.
+    action to direct control. The one narrowing is spec rule 12's scope
+    proofs: a fresh snapshot proving the request outside a rule's own
+    declared scope releases that rule alone, and the release is reported so
+    the caller can record it.
     """
-    owners = []
+    owners, released = [], []
     for rule in cfg.get("rules") or []:
         if not rule.get("enabled") \
                 or not rule_scope_applies(rule, objective, activity):
@@ -5538,24 +5581,40 @@ def rules_own_direct_action(cfg: dict, requested: str, selectors: dict,
         if not all(direct_action_parameter_matches(action, key, value)
                    for key, value in selectors.items()):
             continue
+        proof = direct_scope_release_proof(rule, requested, selectors, snap)
+        if proof is not None:
+            released.append({"rule": str(rule.get("name")), "proof": proof})
+            continue
         owners.append(str(rule.get("name")))
-    return sorted(owners)
+    return sorted(owners), sorted(released, key=lambda r: r["rule"])
 
 
 def cmd_direct_owner(args):
     """Exit successfully iff the live resident routine owns this action.
 
     This is the mechanical interlock used by direct semantic commands; it
-    emits no bridge action itself. Exit 1 with no output means direct control
-    is currently unreserved.
+    emits no bridge action itself. Exit 1 means direct control is currently
+    unreserved; a scope-proof release additionally logs one
+    `direct-scope-release` decision event before releasing.
     """
     if read_live_runner() is None:
         raise SystemExit(1)
     selectors = parse_kv(args.param)
     cfg = load_config()
-    owners = rules_own_direct_action(
-        cfg, args.action, selectors, read_objective(), read_activity())
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+        snap = None
+    owners, released = rules_own_direct_action(
+        cfg, args.action, selectors, read_objective(), read_activity(), snap)
     if not owners:
+        if released:
+            flush_events([{
+                "ts": now_ms(), "kind": "direct-scope-release",
+                "action": args.action, "selectors": selectors,
+                "released": released,
+                "tick": snap.get("tick") if isinstance(snap, dict) else None,
+            }])
         raise SystemExit(1)
     report("routine-owned", action=args.action,
            selectors=",".join(f"{key}={selectors[key]}"
