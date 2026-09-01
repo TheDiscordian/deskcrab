@@ -312,7 +312,11 @@ Three parts:
    and `route_step` truncates that proven regional path to the same bounded prefix. A later action
    re-plans from the resulting live region; no guessed intermediate coordinates cross the action
    file. If the destination is already loaded, an ordinary walk remains exact while a route-step
-   walk follows only its grounded prefix. A walk for which no progressive local path exists is
+   walk follows only its grounded prefix. A visible NPC currently standing on the destination tile
+   does not pre-refuse that walk: NPCs move, are not static collision landmarks, and the client's
+   own pathfinder remains authoritative. Semantic NPC actions express an intended interaction, but
+   NPC presence cannot turn an otherwise valid navigation request into a prohibition. A walk for
+   which no progressive local path exists is
    `refused-no-path`, never `done`. A retreat tries the requested distance first in its preferred
    direction, then alternate directions and shorter nonzero distances, and sends only the first
    pathfinder-approved ordinary walk. With no reachable candidate it reports
