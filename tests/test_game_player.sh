@@ -2335,6 +2335,15 @@ contains "$OUT" "attack(name=Goblin npc=62 sidx=56)" \
 check_eq "the door wrote the native attack action" "$(last_action 'type=attack-npc')" "1"
 refute "the attack door did not move the pointer" \
     grep -Eq '^(x|y|button|cmd)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 1170101 '[{"sidx":56,"id":62,"name":"Goblin","x":121,"z":648,"attackable":true,"commands":["",""]}]'
+fake_bridge held
+OUT="$(bash "$HEADLESS" attack Goblin 2 2>&1)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a held attack receipt fails at the door" "$CODE" "1"
+contains "$OUT" "bridge returned status held" \
+    && refute "a held engine is not misreported as stale NPC state" \
+        contains "$OUT" "refresh npcs" \
+    || fail "a held attack must preserve the bridge status" "$OUT"
 snap 117011 '[{"sidx":55,"id":11,"x":121,"z":648,"distance":1,"clear_shot":true,"terrain_melee_reachable":false}]' '{
   "hover_text":"Farmer: Cast Wind Strike on / 1 more option",
   "magic_level":3,"selected_spell":null,

@@ -444,6 +444,16 @@ wact 625 "$(now_ms)" "type=attack-npc" "sidx=7" "npc=999"
 OUT="$(harness exec)"
 refute "a swapped NPC receives no attack action" contains "$OUT" "attack sidx="
 check_eq "the attack type mismatch is explicit" "$(rstatus)" "refused-npc-mismatch"
+wact 626 "$(now_ms)" "type=attack-npc" "sidx=7" "npc=474"
+OUT="$(harness exec-nearer-npc)"
+refute "a stale farther target is not attacked when an equivalent is nearer" \
+    contains "$OUT" "attack sidx="
+check_eq "the attack nearer-equivalent refusal is explicit" "$(rstatus)" \
+    "refused-nearer-equivalent"
+wact 627 "$(now_ms)" "type=attack-npc" "sidx=7" "npc=474" "within=11"
+OUT="$(harness exec)"
+refute "an invalid attack range reaches no host action" contains "$OUT" "attack sidx="
+check_eq "the attack bad-range refusal is explicit" "$(rstatus)" "refused-bad-range"
 
 echo
 echo "interact-npc executes a definition-backed NPC command (rules 5-7):"
