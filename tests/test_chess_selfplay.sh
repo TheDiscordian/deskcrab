@@ -711,17 +711,26 @@ from collections import Counter
 p = json.load(open(sys.argv[1]))
 models = ["sonnet", "haiku", "opus", "fable"]
 efforts = ["low", "medium", "high", "xhigh", "max"]
-codex_efforts = efforts + ["ultra"]
+codex = {"sol": efforts + ["ultra"],
+         "gpt-5.6-terra": efforts + ["ultra"],
+         "gpt-5.6-luna": efforts,
+         "gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"]}
 controls = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
 cfgs = p["configs"]
-print("configs:", len(cfgs) == 26
+print("configs:", len(cfgs) == 41
       and all("%s-%s" % (m, e) in cfgs for m in models for e in efforts)
-      and all("sol-%s" % e in cfgs for e in codex_efforts))
+      and all("%s-%s" % (m, e) in cfgs
+              for m, es in codex.items() for e in es))
+print("slugs:", all(cfgs["%s-%s" % (m, es[0])]["model"] == m
+                    for m, es in codex.items()))
+print("own-lists:", "gpt-5.6-luna-ultra" not in cfgs
+      and "gpt-5.3-codex-spark-max" not in cfgs
+      and "gpt-5.3-codex-spark-ultra" not in cfgs)
 print("uniform:", all(c["quiet"] == c["sharp"] for c in cfgs.values()))
-print("games:", len(p["games"]) == 312)
+print("games:", len(p["games"]) == 492)
 print("controls:", sorted(Counter(g["control"]
                                   for g in p["games"]).items()) ==
-      sorted((c, 52) for c in controls))
+      sorted((c, 82) for c in controls))
 print("ids:", all(g["id"].startswith("selfplay-benchmtx-")
                   for g in p["games"]))
 cells = {}
@@ -737,11 +746,14 @@ print("noprobe:", "probe" not in p)
 PYEOF
 )"
 contains "$MP" "configs: True" && contains "$MP" "uniform: True" \
-    && ok "every model at every effort — the codex candidate at its own effort list — each a uniform pair" \
+    && ok "every model at every effort — each codex candidate at its own effort list — each a uniform pair" \
+    || fail "matrix plan: $MP"
+contains "$MP" "slugs: True" && contains "$MP" "own-lists: True" \
+    && ok "codex candidates carry their exact slugs, and no cell escapes a model's own effort list (rule 20, 2026-08-31)" \
     || fail "matrix plan: $MP"
 contains "$MP" "games: True" && contains "$MP" "controls: True" \
     && contains "$MP" "ids: True" \
-    && ok "312 games: 52 per control, every id inside the selfplay prefix" \
+    && ok "492 games: 82 per control, every id inside the selfplay prefix" \
     || fail "matrix plan: $MP"
 contains "$MP" "colours: True mirror: True" \
     && ok "every cell colour-rotated against the reference; the reference mirrored" \
@@ -766,29 +778,29 @@ json.dump(p, open(sys.argv[2], "w"))
 print(len(p["games"]))
 PYEOF
 )"
-check_eq "the pre-amendment plan holds the 240 Claude-family games" \
-    "$XSTRIP" "240"
+check_eq "the pre-amendment plan holds the 420 sol-free games" \
+    "$XSTRIP" "420"
 XOUT="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
         --bench-extend-matrix "$XP" --reps 2 2>&1)"
-contains "$XOUT" "added 72 game(s); the plan now schedules 312" \
-    && ok "--bench-extend-matrix appends the 72 codex cells and says so" \
+contains "$XOUT" "added 72 game(s); the plan now schedules 492" \
+    && ok "--bench-extend-matrix appends the 72 missing sol cells and says so" \
     || fail "extend: $XOUT"
 XV="$("$PY" - "$XP" <<'PYEOF'
 import json, sys
 from collections import Counter
 p = json.load(open(sys.argv[1]))
 games = p["games"]
-print("total:", len(games) == 312)
-print("unique-ids:", len({g["id"] for g in games}) == 312)
+print("total:", len(games) == 492)
+print("unique-ids:", len({g["id"] for g in games}) == 492)
 print("controls:", sorted(Counter(g["control"] for g in games).items())
-      == sorted((c, 52) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
+      == sorted((c, 82) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
                                   "15+10"]))
 sol = [g for g in games if "sol-" in g["white"] or "sol-" in g["black"]]
 print("sol-per-control:",
       sorted(Counter(g["control"] for g in sol).items())
       == sorted((c, 12) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
                                   "15+10"]))
-print("sol-ids-continue:", all(int(g["id"].rsplit("-", 1)[1]) > 240
+print("sol-ids-continue:", all(int(g["id"].rsplit("-", 1)[1]) > 420
                                for g in sol))
 seen, grouped = [], True
 for g in games:
@@ -801,7 +813,7 @@ print("grouped:", grouped and seen == ["1+0", "2+1", "3+2", "5+0",
 old = [g for g in games if int(g["id"].rsplit("-", 1)[1]) <= 240]
 print("old-order-kept:", [int(g["id"].rsplit("-", 1)[1]) for g in old]
       == sorted(int(g["id"].rsplit("-", 1)[1]) for g in old))
-print("configs:", len(p["configs"]) == 26)
+print("configs:", len(p["configs"]) == 41)
 PYEOF
 )"
 contains "$XV" "total: True" && contains "$XV" "unique-ids: True" \
@@ -820,7 +832,7 @@ contains "$XV" "configs: True" \
     || fail "extended plan: $XV"
 XOUT2="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
          --bench-extend-matrix "$XP" --reps 2 2>&1)"
-contains "$XOUT2" "added 0 game(s); the plan now schedules 312" \
+contains "$XOUT2" "added 0 game(s); the plan now schedules 492" \
     && ok "a second run appends nothing — the extend mode is idempotent" \
     || fail "extend rerun: $XOUT2"
 

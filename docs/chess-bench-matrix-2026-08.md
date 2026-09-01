@@ -1,14 +1,14 @@
 # Chess benchmark matrix — matrix-20260828
 
-Generated 2026-08-31 21:34 EDT by matrix_report.py (analysis only; selection discipline imported from matrix_selection.py).
+Generated 2026-08-31 23:17 EDT by matrix_report.py (analysis only; selection discipline imported from matrix_selection.py).
 
-**Status: COMPLETE under rule 20a elimination (274 scheduled game(s) pruned with reasons, listed below) (2 recorded game(s) excluded as pause artifacts, slots replayed or cancelled) (244 recorded game(s) INVALID under rule 20b — manufactured moves or retired-ceiling outcomes — slots replayed or pruned, listed below).** Every verdict below is FINAL only when its speed's cells are all complete with no top-ups owed; otherwise PROVISIONAL. Top-ups are decided only once a control completes — an incomplete control's top-ups are undecided, never claimed owed.
+**Status: COMPLETE under rule 20a elimination (451 scheduled game(s) pruned with reasons, listed below) (2 recorded game(s) excluded as pause artifacts, slots replayed or cancelled) (244 recorded game(s) INVALID under rule 20b — manufactured moves or retired-ceiling outcomes — slots replayed or pruned, listed below).** Every verdict below is FINAL only when its speed's cells are all complete with no top-ups owed; otherwise PROVISIONAL. Top-ups are decided only once a control completes — an incomplete control's top-ups are undecided, never claimed owed.
 
 Speed classes (chess_cli.TIME_CONTROLS): bullet = 1+0, 2+1; blitz = 3+2, 5+0; rapid = 10+0, 15+10; untimed is its own routed class. Reference opponent: sonnet-low. Reliability, ranking, tie-breaks, and top-up rules are specs/chess-selfplay.md rule 20 as implemented in matrix_selection.py (failure events: flag, stall, retry storm >= 10 excess attempts, account-limit death). A recorded game carrying any manufactured fallback move, or named in the invalid sidecar, is rule-20b INVALID: excluded from strength and reliability alike, its slot replayed or pruned.
 
 ## Speed: bullet (2+1, 1+0)
 
-### 2+1 — 26/26 cells complete
+### 2+1 — 41/41 cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -17,31 +17,46 @@ Speed classes (chess_cli.TIME_CONTROLS): bullet = 1+0, 2+1; blitz = 3+2, 5+0; ra
 | sonnet-medium | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 3.4 | 21.1 | unreliable (2 invalid excluded — rule 20b) |
 | fable-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 4.8 | 7.6 | unreliable (2 invalid excluded — rule 20b) |
 | haiku-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 
 Control ranking: no reliable finisher.
 
-### 1+0 — 26/26 cells complete
+### 1+0 — 41/41 cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -50,39 +65,55 @@ Control ranking: no reliable finisher.
 | opus-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 4.4 | 9.9 | unreliable (2 invalid excluded — rule 20b) |
 | fable-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 4.9 | 7.2 | unreliable (2 invalid excluded — rule 20b) |
 | haiku-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 
 Control ranking: no reliable finisher.
 
 ### bullet verdict (FINAL)
 
-No config reliably finishes this speed: every complete cell carries failure events, so no pair is eligible under rule 20's reliable-finisher discipline.
+Unmeasured at this speed (no valid game at one or both of its controls — eliminated under rule 20a with reasons listed below, or below the evidence floor; the verdict does not speak for these): fable-high, fable-max, fable-medium, fable-xhigh, gpt-5.3-codex-spark-high, gpt-5.3-codex-spark-low, gpt-5.3-codex-spark-medium, gpt-5.3-codex-spark-xhigh, gpt-5.6-luna-high, gpt-5.6-luna-low, gpt-5.6-luna-max, gpt-5.6-luna-medium, gpt-5.6-luna-xhigh, gpt-5.6-terra-high, gpt-5.6-terra-low, gpt-5.6-terra-max, gpt-5.6-terra-medium, gpt-5.6-terra-ultra, gpt-5.6-terra-xhigh, haiku-high, haiku-low, haiku-max, haiku-medium, haiku-xhigh, opus-high, opus-max, opus-medium, opus-xhigh, sol-high, sol-low, sol-max, sol-medium, sol-ultra, sol-xhigh, sonnet-high, sonnet-max, sonnet-xhigh
+No MEASURED config reliably finishes this speed: every complete measured cell carries failure events, so no measured pair is eligible under rule 20's reliable-finisher discipline. No claim is made that no configuration CAN finish it — the unmeasured cells named above were never played under the corrected regime, and the benchmark does not speak for them.
 Rule 20a measured order (fewest flags/game, fewest event games/game, rate, tail, cost): sonnet-low > sonnet-medium > opus-low > fable-low
 - Best measured: sonnet-low — 3 flag(s), 3 event game(s) over 8 games, rate 0.50, tail 12.0s. The route this backs is a least-failure choice, not a reliable finisher; the failure record above is part of the verdict.
 
 ## Speed: blitz (5+0, 3+2)
 
-### 5+0 — 26/26 cells complete
+### 5+0 — 41/41 cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -91,31 +122,46 @@ Rule 20a measured order (fewest flags/game, fewest event games/game, rate, tail,
 | fable-low | 3/3 | 0-3-0 | 1.5 | 0.50 | - | 4.2 | 15.3 | RELIABLE (1 game pruned) |
 | sonnet-medium | 4/4 | 0-4-0 | 2 | 0.50 | - | 3.5 | 31.7 | RELIABLE |
 | haiku-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 
 Control ranking (reliable): sonnet-low > opus-low > fable-low > sonnet-medium
 
-### 3+2 — 26/26 cells complete
+### 3+2 — 41/41 cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -125,31 +171,47 @@ Control ranking (reliable): sonnet-low > opus-low > fable-low > sonnet-medium
 | sonnet-medium | 3/3 | 0-2-1 | 1 | 0.33 | flag | 4.3 | 28.7 | unreliable (1 game pruned) (1 invalid excluded — rule 20b) |
 | opus-low | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 6.4 | 10.8 | unreliable (2 games pruned) (1 invalid excluded — rule 20b) |
 | haiku-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 
 Control ranking (reliable): sonnet-low > fable-low > opus-medium
 
 ### blitz verdict (FINAL)
 
+Unmeasured at this speed (no valid game at one or both of its controls — eliminated under rule 20a with reasons listed below, or below the evidence floor; the verdict does not speak for these): fable-high, fable-max, fable-medium, fable-xhigh, gpt-5.3-codex-spark-high, gpt-5.3-codex-spark-low, gpt-5.3-codex-spark-medium, gpt-5.3-codex-spark-xhigh, gpt-5.6-luna-high, gpt-5.6-luna-low, gpt-5.6-luna-max, gpt-5.6-luna-medium, gpt-5.6-luna-xhigh, gpt-5.6-terra-high, gpt-5.6-terra-low, gpt-5.6-terra-max, gpt-5.6-terra-medium, gpt-5.6-terra-ultra, gpt-5.6-terra-xhigh, haiku-high, haiku-low, haiku-max, haiku-medium, haiku-xhigh, opus-high, opus-max, opus-medium, opus-xhigh, sol-high, sol-low, sol-max, sol-medium, sol-ultra, sol-xhigh, sonnet-high, sonnet-max, sonnet-xhigh
 Below the rule-20a evidence floor (no colour-rotated valid pair at every control of this class) — named as uncertainty, never routed: opus-medium
 Pooled reliable ranking: sonnet-low (rate 0.50 over 4 games) > fable-low (rate 0.50 over 6 games)
 - Winner sonnet-low: 4 games, rate 0.50; one game swings the rate by 0.25.
@@ -157,7 +219,7 @@ Pooled reliable ranking: sonnet-low (rate 0.50 over 4 games) > fable-low (rate 0
 
 ## Speed: rapid (15+10, 10+0)
 
-### 15+10 — 26/26 cells complete
+### 15+10 — 41/41 cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -166,31 +228,46 @@ Pooled reliable ranking: sonnet-low (rate 0.50 over 4 games) > fable-low (rate 0
 | sonnet-low | 2/2 | 0-2-0 | 1 | 0.50 | - | 2.9 | 6.2 | RELIABLE (1 game pruned) |
 | sonnet-medium | 4/4 | 0-4-0 | 2 | 0.50 | - | 3.5 | 36.5 | RELIABLE (1 invalid excluded — rule 20b) |
 | haiku-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-low | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 
 Control ranking (reliable): opus-low > fable-low > sonnet-low > sonnet-medium
 
-### 10+0 — 25/25 cells complete
+### 10+0 — 41/41 cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -199,31 +276,48 @@ Control ranking (reliable): opus-low > fable-low > sonnet-low > sonnet-medium
 | fable-low | 4/4 | 0-4-0 | 2 | 0.50 | - | 5.2 | 10.7 | RELIABLE (1 invalid excluded — rule 20b) |
 | fable-medium | 1/1 | 0-1-0 | 0.5 | 0.50 | - | 6.4 | 27.9 | RELIABLE (1 game pruned) |
 | sonnet-medium | 4/4 | 0-3-1 | 1.5 | 0.38 | - | 3.9 | 165.5 | RELIABLE |
+| gpt-5.3-codex-spark-low | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 11.1 | 64.5 | unreliable |
+| gpt-5.6-terra-low | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 14.2 | 60.6 | unreliable |
 | haiku-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 74.0 | 110.9 | unreliable (2 invalid excluded — rule 20b) |
+| gpt-5.6-luna-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 12.8 | 44.6 | unreliable |
 | sol-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 20.4 | 62.8 | unreliable (1 game pruned) (1 invalid excluded — rule 20b) |
 | haiku-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| sol-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-medium | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-high | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.3-codex-spark-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-xhigh | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | haiku-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sonnet-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | opus-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | fable-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-luna-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-max | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 | sol-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
+| gpt-5.6-terra-ultra | 0/0 | 0-0-0 | 0 | - | - | - | - | pruned (rule 20a) |
 
 Control ranking (reliable): opus-low > fable-low > sonnet-low > fable-medium > sonnet-medium
 
 ### rapid verdict (FINAL)
 
+Unmeasured at this speed (no valid game at one or both of its controls — eliminated under rule 20a with reasons listed below, or below the evidence floor; the verdict does not speak for these): fable-high, fable-max, fable-medium, fable-xhigh, gpt-5.3-codex-spark-high, gpt-5.3-codex-spark-low, gpt-5.3-codex-spark-medium, gpt-5.3-codex-spark-xhigh, gpt-5.6-luna-high, gpt-5.6-luna-low, gpt-5.6-luna-max, gpt-5.6-luna-medium, gpt-5.6-luna-xhigh, gpt-5.6-terra-high, gpt-5.6-terra-low, gpt-5.6-terra-max, gpt-5.6-terra-medium, gpt-5.6-terra-ultra, gpt-5.6-terra-xhigh, haiku-high, haiku-low, haiku-max, haiku-medium, haiku-xhigh, opus-high, opus-max, opus-medium, opus-xhigh, sol-high, sol-low, sol-max, sol-medium, sol-ultra, sol-xhigh, sonnet-high, sonnet-max, sonnet-xhigh
 Below the rule-20a evidence floor (no colour-rotated valid pair at every control of this class) — named as uncertainty, never routed: fable-medium
 Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.56 over 8 games) > sonnet-low (rate 0.50 over 4 games) > sonnet-medium (rate 0.44 over 8 games)
 - Winner opus-low: 4 games, rate 0.75; one game swings the rate by 0.25.
@@ -231,6 +325,9 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 
 ## Exclusions (complete but unreliable cells, with the events that disqualify them)
 
+- 10+0 gpt-5.3-codex-spark-low: flag
+- 10+0 gpt-5.6-luna-low: flag,flag
+- 10+0 gpt-5.6-terra-low: flag
 - 10+0 haiku-low: flag,flag
 - 10+0 sol-low: flag,flag
 - 3+2 opus-low: flag
@@ -507,6 +604,37 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-310 (15+10 sonnet-low vs sol-max): conditional ladder slot: played only if every lower sol effort through sol-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-311 (15+10 sol-ultra vs sonnet-low): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-312 (15+10 sonnet-low vs sol-ultra): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
+- selfplay-benchmatrix-20260828-518 (15+10 sonnet-low vs sol-medium): restored matrix cell, eliminated on arrival: sol-low flagged both corrected-regime 10+0 gate games (336, 355), so rule 20a's effort ladder eliminates sol-medium at 10+0 and every shorter control without play, and class arithmetic (rapid routes 10+0 and 15+10 together) settles its 15+10 seats — no outcome of this game can change any routed class's selection
+- selfplay-benchmatrix-20260828-519 (15+10 gpt-5.6-terra-low vs sonnet-low): conditional ladder slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together) and monotone elimination (a 10+0 clock failure eliminates every shorter control, leaving no routed class this pair could still enter)
+- selfplay-benchmatrix-20260828-520 (15+10 sonnet-low vs gpt-5.6-terra-low): conditional ladder slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together) and monotone elimination (a 10+0 clock failure eliminates every shorter control, leaving no routed class this pair could still enter)
+- selfplay-benchmatrix-20260828-521 (15+10 gpt-5.6-terra-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-522 (15+10 sonnet-low vs gpt-5.6-terra-medium): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-523 (15+10 gpt-5.6-terra-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-524 (15+10 sonnet-low vs gpt-5.6-terra-high): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-525 (15+10 gpt-5.6-terra-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-526 (15+10 sonnet-low vs gpt-5.6-terra-xhigh): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-527 (15+10 gpt-5.6-terra-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-528 (15+10 sonnet-low vs gpt-5.6-terra-max): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-529 (15+10 gpt-5.6-terra-ultra vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-530 (15+10 sonnet-low vs gpt-5.6-terra-ultra): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-531 (15+10 gpt-5.6-luna-low vs sonnet-low): conditional ladder slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together) and monotone elimination (a 10+0 clock failure eliminates every shorter control, leaving no routed class this pair could still enter)
+- selfplay-benchmatrix-20260828-532 (15+10 sonnet-low vs gpt-5.6-luna-low): conditional ladder slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together) and monotone elimination (a 10+0 clock failure eliminates every shorter control, leaving no routed class this pair could still enter)
+- selfplay-benchmatrix-20260828-533 (15+10 gpt-5.6-luna-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-534 (15+10 sonnet-low vs gpt-5.6-luna-medium): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-535 (15+10 gpt-5.6-luna-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-536 (15+10 sonnet-low vs gpt-5.6-luna-high): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-537 (15+10 gpt-5.6-luna-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-538 (15+10 sonnet-low vs gpt-5.6-luna-xhigh): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-539 (15+10 gpt-5.6-luna-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-540 (15+10 sonnet-low vs gpt-5.6-luna-max): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-541 (15+10 gpt-5.3-codex-spark-low vs sonnet-low): conditional ladder slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together) and monotone elimination (a 10+0 clock failure eliminates every shorter control, leaving no routed class this pair could still enter)
+- selfplay-benchmatrix-20260828-542 (15+10 sonnet-low vs gpt-5.3-codex-spark-low): conditional ladder slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together) and monotone elimination (a 10+0 clock failure eliminates every shorter control, leaving no routed class this pair could still enter)
+- selfplay-benchmatrix-20260828-543 (15+10 gpt-5.3-codex-spark-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-544 (15+10 sonnet-low vs gpt-5.3-codex-spark-medium): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-545 (15+10 gpt-5.3-codex-spark-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-546 (15+10 sonnet-low vs gpt-5.3-codex-spark-high): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-547 (15+10 gpt-5.3-codex-spark-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
+- selfplay-benchmatrix-20260828-548 (15+10 sonnet-low vs gpt-5.3-codex-spark-xhigh): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control)
 - selfplay-benchmatrix-20260828-293 (10+0 sol-high vs sonnet-low): conditional ladder slot: played only if every lower sol effort through sol-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-294 (10+0 sonnet-low vs sol-high): conditional ladder slot: played only if every lower sol effort through sol-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-295 (10+0 sol-xhigh vs sonnet-low): conditional ladder slot: played only if every lower sol effort through sol-high passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
@@ -515,6 +643,32 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-298 (10+0 sonnet-low vs sol-max): conditional ladder slot: played only if every lower sol effort through sol-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-299 (10+0 sol-ultra vs sonnet-low): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-300 (10+0 sonnet-low vs sol-ultra): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
+- selfplay-benchmatrix-20260828-486 (10+0 sol-medium vs sonnet-low): restored matrix cell, eliminated on arrival: sol-low flagged both corrected-regime 10+0 gate games (336, 355), so rule 20a's effort ladder eliminates sol-medium at 10+0 and every shorter control without play, and class arithmetic (rapid routes 10+0 and 15+10 together) settles its 15+10 seats — no outcome of this game can change any routed class's selection
+- selfplay-benchmatrix-20260828-487 (10+0 sonnet-low vs sol-medium): restored matrix cell, eliminated on arrival: sol-low flagged both corrected-regime 10+0 gate games (336, 355), so rule 20a's effort ladder eliminates sol-medium at 10+0 and every shorter control without play, and class arithmetic (rapid routes 10+0 and 15+10 together) settles its 15+10 seats — no outcome of this game can change any routed class's selection
+- selfplay-benchmatrix-20260828-490 (10+0 gpt-5.6-terra-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-491 (10+0 sonnet-low vs gpt-5.6-terra-medium): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-492 (10+0 gpt-5.6-terra-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-493 (10+0 sonnet-low vs gpt-5.6-terra-high): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-494 (10+0 gpt-5.6-terra-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-495 (10+0 sonnet-low vs gpt-5.6-terra-xhigh): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-496 (10+0 gpt-5.6-terra-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-497 (10+0 sonnet-low vs gpt-5.6-terra-max): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-498 (10+0 gpt-5.6-terra-ultra vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-499 (10+0 sonnet-low vs gpt-5.6-terra-ultra): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-502 (10+0 gpt-5.6-luna-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-503 (10+0 sonnet-low vs gpt-5.6-luna-medium): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-504 (10+0 gpt-5.6-luna-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-505 (10+0 sonnet-low vs gpt-5.6-luna-high): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-506 (10+0 gpt-5.6-luna-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-507 (10+0 sonnet-low vs gpt-5.6-luna-xhigh): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-508 (10+0 gpt-5.6-luna-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-509 (10+0 sonnet-low vs gpt-5.6-luna-max): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-512 (10+0 gpt-5.3-codex-spark-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-513 (10+0 sonnet-low vs gpt-5.3-codex-spark-medium): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-514 (10+0 gpt-5.3-codex-spark-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-515 (10+0 sonnet-low vs gpt-5.3-codex-spark-high): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-516 (10+0 gpt-5.3-codex-spark-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
+- selfplay-benchmatrix-20260828-517 (10+0 sonnet-low vs gpt-5.3-codex-spark-xhigh): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) — rule 20a: a strictly slower effort cannot pass a clock a faster one failed
 - selfplay-benchmatrix-20260828-201 (15+10 sonnet-low vs sonnet-low): a reference mirror's points are arithmetically pinned (1.0 over 2 seats) and the reference's reliability at this control is already evidenced by clean valid seats; no outcome of this slot can change any routed selection (rule 20a)
 - selfplay-benchmatrix-20260828-203 (15+10 haiku-low vs sonnet-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-204 (15+10 sonnet-low vs haiku-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
@@ -633,6 +787,36 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-327 (5+0 fable-medium vs sonnet-low): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
 - selfplay-benchmatrix-20260828-328 (5+0 sonnet-low vs fable-medium): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
 - selfplay-benchmatrix-20260828-329 (5+0 sonnet-low vs sol-high): conditional ladder slot: played only if every lower sol effort through sol-medium passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
+- selfplay-benchmatrix-20260828-456 (5+0 gpt-5.6-terra-low vs sonnet-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-457 (5+0 sonnet-low vs gpt-5.6-terra-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-458 (5+0 gpt-5.6-terra-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-459 (5+0 sonnet-low vs gpt-5.6-terra-medium): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-460 (5+0 gpt-5.6-terra-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-461 (5+0 sonnet-low vs gpt-5.6-terra-high): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-462 (5+0 gpt-5.6-terra-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-463 (5+0 sonnet-low vs gpt-5.6-terra-xhigh): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-464 (5+0 gpt-5.6-terra-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-465 (5+0 sonnet-low vs gpt-5.6-terra-max): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-466 (5+0 gpt-5.6-terra-ultra vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-467 (5+0 sonnet-low vs gpt-5.6-terra-ultra): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-468 (5+0 gpt-5.6-luna-low vs sonnet-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-469 (5+0 sonnet-low vs gpt-5.6-luna-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-470 (5+0 gpt-5.6-luna-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-471 (5+0 sonnet-low vs gpt-5.6-luna-medium): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-472 (5+0 gpt-5.6-luna-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-473 (5+0 sonnet-low vs gpt-5.6-luna-high): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-474 (5+0 gpt-5.6-luna-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-475 (5+0 sonnet-low vs gpt-5.6-luna-xhigh): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-476 (5+0 gpt-5.6-luna-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-477 (5+0 sonnet-low vs gpt-5.6-luna-max): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-478 (5+0 gpt-5.3-codex-spark-low vs sonnet-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-479 (5+0 sonnet-low vs gpt-5.3-codex-spark-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-480 (5+0 gpt-5.3-codex-spark-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-481 (5+0 sonnet-low vs gpt-5.3-codex-spark-medium): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-482 (5+0 gpt-5.3-codex-spark-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-483 (5+0 sonnet-low vs gpt-5.3-codex-spark-high): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-484 (5+0 gpt-5.3-codex-spark-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-485 (5+0 sonnet-low vs gpt-5.3-codex-spark-xhigh): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 5+0 — rule 20a monotone elimination along both the clock and effort axes
 - selfplay-benchmatrix-20260828-082 (3+2 sonnet-low vs sonnet-low): a reference mirror's points are arithmetically pinned (1.0 over 2 seats) and the reference's reliability at this control is already evidenced by clean valid seats; no outcome of this slot can change any routed selection (rule 20a)
 - selfplay-benchmatrix-20260828-083 (3+2 haiku-low vs sonnet-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-084 (3+2 sonnet-low vs haiku-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
@@ -684,6 +868,36 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-320 (3+2 sonnet-low vs opus-medium): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
 - selfplay-benchmatrix-20260828-321 (3+2 fable-high vs sonnet-low): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
 - selfplay-benchmatrix-20260828-322 (3+2 sonnet-low vs fable-high): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
+- selfplay-benchmatrix-20260828-426 (3+2 gpt-5.6-terra-low vs sonnet-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-427 (3+2 sonnet-low vs gpt-5.6-terra-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-428 (3+2 gpt-5.6-terra-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-429 (3+2 sonnet-low vs gpt-5.6-terra-medium): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-430 (3+2 gpt-5.6-terra-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-431 (3+2 sonnet-low vs gpt-5.6-terra-high): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-432 (3+2 gpt-5.6-terra-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-433 (3+2 sonnet-low vs gpt-5.6-terra-xhigh): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-434 (3+2 gpt-5.6-terra-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-435 (3+2 sonnet-low vs gpt-5.6-terra-max): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-436 (3+2 gpt-5.6-terra-ultra vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-437 (3+2 sonnet-low vs gpt-5.6-terra-ultra): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-438 (3+2 gpt-5.6-luna-low vs sonnet-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-439 (3+2 sonnet-low vs gpt-5.6-luna-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-440 (3+2 gpt-5.6-luna-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-441 (3+2 sonnet-low vs gpt-5.6-luna-medium): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-442 (3+2 gpt-5.6-luna-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-443 (3+2 sonnet-low vs gpt-5.6-luna-high): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-444 (3+2 gpt-5.6-luna-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-445 (3+2 sonnet-low vs gpt-5.6-luna-xhigh): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-446 (3+2 gpt-5.6-luna-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-447 (3+2 sonnet-low vs gpt-5.6-luna-max): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-448 (3+2 gpt-5.3-codex-spark-low vs sonnet-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-449 (3+2 sonnet-low vs gpt-5.3-codex-spark-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-450 (3+2 gpt-5.3-codex-spark-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-451 (3+2 sonnet-low vs gpt-5.3-codex-spark-medium): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-452 (3+2 gpt-5.3-codex-spark-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-453 (3+2 sonnet-low vs gpt-5.3-codex-spark-high): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-454 (3+2 gpt-5.3-codex-spark-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-455 (3+2 sonnet-low vs gpt-5.3-codex-spark-xhigh): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 3+2 — rule 20a monotone elimination along both the clock and effort axes
 - selfplay-benchmatrix-20260828-043 (2+1 haiku-low vs sonnet-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-044 (2+1 sonnet-low vs haiku-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-051 (2+1 haiku-medium vs sonnet-low): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
@@ -728,6 +942,36 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-262 (2+1 sonnet-low vs sol-max): conditional ladder slot: played only if every lower sol effort through sol-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-263 (2+1 sol-ultra vs sonnet-low): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-264 (2+1 sonnet-low vs sol-ultra): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
+- selfplay-benchmatrix-20260828-396 (2+1 gpt-5.6-terra-low vs sonnet-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-397 (2+1 sonnet-low vs gpt-5.6-terra-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-398 (2+1 gpt-5.6-terra-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-399 (2+1 sonnet-low vs gpt-5.6-terra-medium): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-400 (2+1 gpt-5.6-terra-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-401 (2+1 sonnet-low vs gpt-5.6-terra-high): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-402 (2+1 gpt-5.6-terra-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-403 (2+1 sonnet-low vs gpt-5.6-terra-xhigh): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-404 (2+1 gpt-5.6-terra-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-405 (2+1 sonnet-low vs gpt-5.6-terra-max): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-406 (2+1 gpt-5.6-terra-ultra vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-407 (2+1 sonnet-low vs gpt-5.6-terra-ultra): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-408 (2+1 gpt-5.6-luna-low vs sonnet-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-409 (2+1 sonnet-low vs gpt-5.6-luna-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-410 (2+1 gpt-5.6-luna-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-411 (2+1 sonnet-low vs gpt-5.6-luna-medium): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-412 (2+1 gpt-5.6-luna-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-413 (2+1 sonnet-low vs gpt-5.6-luna-high): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-414 (2+1 gpt-5.6-luna-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-415 (2+1 sonnet-low vs gpt-5.6-luna-xhigh): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-416 (2+1 gpt-5.6-luna-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-417 (2+1 sonnet-low vs gpt-5.6-luna-max): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-418 (2+1 gpt-5.3-codex-spark-low vs sonnet-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-419 (2+1 sonnet-low vs gpt-5.3-codex-spark-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-420 (2+1 gpt-5.3-codex-spark-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-421 (2+1 sonnet-low vs gpt-5.3-codex-spark-medium): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-422 (2+1 gpt-5.3-codex-spark-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-423 (2+1 sonnet-low vs gpt-5.3-codex-spark-high): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-424 (2+1 gpt-5.3-codex-spark-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-425 (2+1 sonnet-low vs gpt-5.3-codex-spark-xhigh): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 2+1 — rule 20a monotone elimination along both the clock and effort axes
 - selfplay-benchmatrix-20260828-003 (1+0 haiku-low vs sonnet-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-004 (1+0 sonnet-low vs haiku-low): conditional ladder slot: played only if haiku-low passes its 10+0 gate cleanly — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-011 (1+0 haiku-medium vs sonnet-low): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed
@@ -772,6 +1016,36 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-250 (1+0 sonnet-low vs sol-max): conditional ladder slot: played only if every lower sol effort through sol-xhigh passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-251 (1+0 sol-ultra vs sonnet-low): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
 - selfplay-benchmatrix-20260828-252 (1+0 sonnet-low vs sol-ultra): conditional ladder slot: played only if every lower sol effort through sol-max passes 10+0 cleanly (effort ladder) — rule 20a class arithmetic (rapid routes 10+0 and 15+10 together), the effort ladder (a strictly slower effort cannot pass a clock a faster one failed), and monotone elimination (a 10+0 clock failure eliminates every shorter control); appended back the moment that evidence lands
+- selfplay-benchmatrix-20260828-366 (1+0 gpt-5.6-terra-low vs sonnet-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-367 (1+0 sonnet-low vs gpt-5.6-terra-low): conditional slot: played only if gpt-5.6-terra-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-368 (1+0 gpt-5.6-terra-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-369 (1+0 sonnet-low vs gpt-5.6-terra-medium): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-low passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-medium itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-370 (1+0 gpt-5.6-terra-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-371 (1+0 sonnet-low vs gpt-5.6-terra-high): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-high itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-372 (1+0 gpt-5.6-terra-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-373 (1+0 sonnet-low vs gpt-5.6-terra-xhigh): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-high passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-xhigh itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-374 (1+0 gpt-5.6-terra-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-375 (1+0 sonnet-low vs gpt-5.6-terra-max): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-max itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-376 (1+0 gpt-5.6-terra-ultra vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-377 (1+0 sonnet-low vs gpt-5.6-terra-ultra): conditional ladder slot: played only if every lower gpt-5.6-terra effort through gpt-5.6-terra-max passes 10+0 cleanly (effort ladder) and gpt-5.6-terra-ultra itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-378 (1+0 gpt-5.6-luna-low vs sonnet-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-379 (1+0 sonnet-low vs gpt-5.6-luna-low): conditional slot: played only if gpt-5.6-luna-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-380 (1+0 gpt-5.6-luna-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-381 (1+0 sonnet-low vs gpt-5.6-luna-medium): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-low passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-medium itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-382 (1+0 gpt-5.6-luna-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-383 (1+0 sonnet-low vs gpt-5.6-luna-high): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-medium passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-high itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-384 (1+0 gpt-5.6-luna-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-385 (1+0 sonnet-low vs gpt-5.6-luna-xhigh): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-high passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-xhigh itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-386 (1+0 gpt-5.6-luna-max vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-387 (1+0 sonnet-low vs gpt-5.6-luna-max): conditional ladder slot: played only if every lower gpt-5.6-luna effort through gpt-5.6-luna-xhigh passes 10+0 cleanly (effort ladder) and gpt-5.6-luna-max itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-388 (1+0 gpt-5.3-codex-spark-low vs sonnet-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-389 (1+0 sonnet-low vs gpt-5.3-codex-spark-low): conditional slot: played only if gpt-5.3-codex-spark-low passes its 10+0 gate cleanly — rule 20a monotone elimination (a 10+0 clock failure eliminates every shorter control without play); a clean gate reopens this cell for its own class's measurement
+- selfplay-benchmatrix-20260828-390 (1+0 gpt-5.3-codex-spark-medium vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-391 (1+0 sonnet-low vs gpt-5.3-codex-spark-medium): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-low passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-medium itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-392 (1+0 gpt-5.3-codex-spark-high vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-393 (1+0 sonnet-low vs gpt-5.3-codex-spark-high): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-medium passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-high itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-394 (1+0 gpt-5.3-codex-spark-xhigh vs sonnet-low): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
+- selfplay-benchmatrix-20260828-395 (1+0 sonnet-low vs gpt-5.3-codex-spark-xhigh): conditional ladder slot: played only if every lower gpt-5.3-codex-spark effort through gpt-5.3-codex-spark-high passes 10+0 cleanly (effort ladder) and gpt-5.3-codex-spark-xhigh itself passes each longer control down to 1+0 — rule 20a monotone elimination along both the clock and effort axes
 
 ## Pending cells (0)
 

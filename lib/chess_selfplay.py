@@ -746,14 +746,25 @@ def bench_default_plan(run):
 # against one common reference, colours rotated, every timed control,
 # fastest first. Probes are never selection evidence; these games are.
 # The matrix crosses model FAMILY as well as effort (rule 20, amended
-# 2026-08-29 on the user's acceptance criterion): the codex-family
-# candidates ride the same matrix at every effort the codex engine accepts
-# — the shared five plus its own `ultra` — behind rule 15's explicit
-# allowlisting and codex-only attempt list.
+# 2026-08-29 on the user's acceptance criterion, and 2026-08-31 on the
+# user's ruling that the ChatGPT subscription's other models were omitted):
+# the codex-family candidates ride the same matrix, each at ITS OWN effort
+# list — exactly what the authenticated codex catalogue supports per model,
+# because an effort outside a model's own list is a call the catalogue
+# refuses, not a cell. Every candidate but the aliased `sol` is named by
+# its exact slug, and rule 15's explicit allowlisting and codex-only
+# attempt list bind every call: the move comes from that exact model
+# through the one codex login or it does not come at all — never a Claude
+# fallback, never a substituted model.
 MATRIX_MODELS = ["sonnet", "haiku", "opus", "fable"]
 MATRIX_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
-MATRIX_CODEX_MODELS = ["sol"]
-MATRIX_CODEX_EFFORTS = MATRIX_EFFORTS + ["ultra"]
+MATRIX_CODEX_MODELS = {
+    "sol": MATRIX_EFFORTS + ["ultra"],
+    "gpt-5.6-terra": MATRIX_EFFORTS + ["ultra"],
+    "gpt-5.6-luna": list(MATRIX_EFFORTS),
+    "gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"],
+}
+MATRIX_CODEX_EFFORTS = MATRIX_CODEX_MODELS["sol"]  # sol's own list (compat)
 MATRIX_REFERENCE = "sonnet-low"
 MATRIX_CONTROLS = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
 
@@ -765,8 +776,8 @@ def bench_matrix_configs():
         for effort in MATRIX_EFFORTS:
             configs["%s-%s" % (model, effort)] = {
                 "model": model, "quiet": effort, "sharp": effort}
-    for model in MATRIX_CODEX_MODELS:
-        for effort in MATRIX_CODEX_EFFORTS:
+    for model, efforts in MATRIX_CODEX_MODELS.items():
+        for effort in efforts:
             configs["%s-%s" % (model, effort)] = {
                 "model": model, "quiet": effort, "sharp": effort}
     return configs
@@ -791,8 +802,8 @@ def bench_matrix_cells(reps=2):
         for effort in MATRIX_EFFORTS:
             for model in MATRIX_MODELS:
                 cell(control, model, effort)
-        for model in MATRIX_CODEX_MODELS:
-            for effort in MATRIX_CODEX_EFFORTS:
+        for model, efforts in MATRIX_CODEX_MODELS.items():
+            for effort in efforts:
                 cell(control, model, effort)
     return cells
 

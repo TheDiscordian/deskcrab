@@ -183,11 +183,19 @@ the finished games feed the pattern store exactly as every self-play game does.
     (`sonnet-low`, the measured steadiest), colours rotated within every cell, across every
     concrete standard timed control, fastest first. The reference's own cell is its mirror
     game. The matrix crosses model FAMILY as well as effort (amended 2026-08-29, on the
-    user's 2026-08-28 acceptance criterion): the codex-family candidate `sol` — the ChatGPT
-    login's chess-capable model, resolved per [model-backends.md](model-backends.md) rule 2 —
-    rides the same matrix at every effort the codex engine accepts (the shared five plus its
-    own `ultra`), uniform cells against the same reference, with rule 15's explicit listing
-    and codex-only attempt list binding every call. `--bench-extend-matrix <plan>` appends
+    user's 2026-08-28 acceptance criterion): the codex-family candidates ride the same
+    matrix, each at ITS OWN effort list, uniform cells against the same reference, with rule
+    15's explicit listing and codex-only attempt list binding every call — a codex
+    candidate's benchmark move comes from its own exact model through the one codex login or
+    it does not come at all, never a Claude fallback and never a substituted model. The
+    candidates and their effort lists (amended 2026-08-31, on the user's ruling that the
+    ChatGPT subscription's other models were omitted from the matrix) are exactly what the
+    authenticated codex catalogue supports: `sol` — the login's conversation model, resolved
+    per [model-backends.md](model-backends.md) rule 2 — at the shared five plus its own
+    `ultra`; and the remaining subscription models by exact slug, never an alias:
+    `gpt-5.6-terra` at the shared five plus `ultra`, `gpt-5.6-luna` at the shared five,
+    `gpt-5.3-codex-spark` at `low`/`medium`/`high`/`xhigh`. An effort outside a model's own
+    list is not a cell at all — scheduling one would benchmark a call the catalogue refuses. `--bench-extend-matrix <plan>` appends
     whatever matrix cells an existing plan is missing — grouped at the end of their control's
     block so play order stays fastest-first, colours still rotated, ids continuing the plan's
     numbering, existing games untouched — so a matrix widened after play began extends the
@@ -237,7 +245,11 @@ the finished games feed the pattern store exactly as every self-play game does.
     finisher, the route is still chosen from the measured evidence rather than by feel:
     among complete cells — fewest flags per game, then fewest event games per game, then
     the higher score rate, then the lower latency tail, then the cheaper pair — with the
-    failure record stated beside the applied verdict wherever it lands. Either way, a
+    failure record stated beside the applied verdict wherever it lands. Such a verdict claims
+    exactly what was measured and no more: while any cell of a control stays unmeasured under
+    the corrected regime, the report says no MEASURED configuration finishes it, names the
+    unmeasured cells, and never claims that no configuration can — a benchmark that did not
+    play a cell cannot speak for it. Either way, a
     pair is ELIGIBLE for a speed-class verdict only with a colour-rotated pair of valid
     games at each of the class's controls — rule 16's even-colours discipline applied to
     the evidence, not just the schedule; a pair short of that floor is named as
