@@ -169,8 +169,10 @@ Three parts:
    game's own menu, never an invented verb), and `interact-bound` (the same for a wall object —
    a door or other boundary — at a tile and wall direction; Open and Close are its usual
    commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
-   game object, or wall object identified by stable game identity, let the game loop process that
-   pointer position on a later frame, then click button 1, 2, or 3 without blocking that loop),
+   player, game object, or wall object identified by stable game identity, let the game loop
+   process that pointer position on a later frame, then click button 1, 2, or 3 without blocking
+   that loop; a player is identified by server index plus exact visible name, and button 3 opens
+   that player's own live context menu exactly as the ordinary right-click does),
    `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
    current slot centre, and click button 1, 2, or 3), `equip-inventory` / `unequip-inventory`
    (idempotently request the named held item's equipped state, returning `already-equipped` or
@@ -233,8 +235,11 @@ Three parts:
    object is refused as `refused-no-such-object` or `refused-object-mismatch` and a `cmd` outside
    1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on
    tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
-   `refused-bad-command` the same way; `kind` (`npc`, `object`, or `bound`) and `button` for
-   click-entity, plus the same identity fields as that entity's normal action; `item` and `button`
+   `refused-bad-command` the same way; `kind` (`player`, `npc`, `object`, or `bound`) and `button` for
+   click-entity, plus the same identity fields as that entity's normal action — for
+   `kind=player` those are `sidx` and the exact visible `name`, both of which must still match
+   one currently visible non-local player, refused as `refused-no-such-player` when the index
+   has vanished and `refused-player-mismatch` when a different name now holds it; `item` and `button`
    for click-inventory, click-shop, and click-bank; `item`, `x`, `z`, and `obj` for
    use-item-object; `item`, `sidx`, and `npc`, plus optional `within` 0–10, for use-item-npc;
    `item` for equip-inventory and
@@ -271,7 +276,11 @@ Three parts:
    inventory), clamps an overlarge request to that quantity, and then sends the
    ordinary client transaction. Amount zero or negative is refused.
    `trade-player` re-matches the server index against the current visible player list and refuses
-   a vanished player. `choose-menu` strips client colour tags, normalizes case and whitespace,
+   a vanished player. Player-targeted clicks re-match both the server index and the exact visible
+   name the emitter saw there — an index now held by someone else is refused as
+   `refused-player-mismatch`, never clicked. They resolve that player's latest rendered screen point inside the client immediately before
+   moving and clicking; no pixel coordinate crosses the action file, so a walking player cannot
+   leave a stale point behind. `choose-menu` strips client colour tags, normalizes case and whitespace,
    prefers one exact full-label match, and otherwise requires exactly one containing match; it
    never guesses between two options.
    `choose-dialogue` applies that same matching contract to the current server-authored NPC reply

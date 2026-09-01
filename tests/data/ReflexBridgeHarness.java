@@ -569,6 +569,10 @@ public class ReflexBridgeHarness {
 			return playerAbsZ[i];
 		}
 
+		public int[] playerScreenPoint(int i) {
+			return projectionsVisible ? new int[]{510 + i, 260 + i} : null;
+		}
+
 		public void tradePlayer(int serverIndex) {
 			events.add("trade-player sidx=" + serverIndex);
 		}
@@ -949,6 +953,9 @@ public class ReflexBridgeHarness {
 		}
 		if ("exec-offscreen".equals(mode)) {
 			host.projectionsVisible = false;
+		}
+		if ("exec-player-mismatch".equals(mode)) {
+			host.playerNames[2] = "Replacement Player";
 		}
 		if ("exec-no-route".equals(mode) || "exec-combat-no-route".equals(mode)) {
 			host.routeAvailable = false;

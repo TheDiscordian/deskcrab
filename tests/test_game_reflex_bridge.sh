@@ -831,6 +831,22 @@ check_eq "the unreachable door is refused before dispatch" "$(rstatus)" \
 
 echo
 echo "click-entity resolves stable identities at execution time (rules 5-7):"
+wact 779 "$(now_ms)" "type=click-entity" "kind=player" "sidx=11" \
+    "name=Nearby Friend" "button=3"
+OUT="$(harness exec)"
+contains "$OUT" "click x=512 y=262 button=3" \
+    && ok "a player identity resolves to its latest rendered point" \
+    || fail "a player identity resolves to its latest rendered point" "$OUT"
+check_eq "the player click is receipted done" "$(rstatus)" "done"
+wact 7791 "$(now_ms)" "type=click-entity" "kind=player" "sidx=11" \
+    "name=Nearby Friend" "button=3"
+harness exec-player-mismatch >/dev/null
+check_eq "a reused player index with a different name is refused" "$(rstatus)" \
+    "refused-player-mismatch"
+wact 7792 "$(now_ms)" "type=click-entity" "kind=player" "sidx=999" \
+    "name=Nearby Friend" "button=3"
+harness exec >/dev/null
+check_eq "a vanished player is refused" "$(rstatus)" "refused-no-such-player"
 wact 78 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=474" "button=1"
 OUT="$(harness exec)"
 contains "$OUT" "click x=411 y=211 button=1" \

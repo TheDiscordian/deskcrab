@@ -2288,6 +2288,24 @@ refute "the entity door did not write a screen x coordinate" \
     grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 refute "the entity door did not write a screen y coordinate" \
     grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 1172 '[]' '{"players":[
+    {"sidx":2,"name":"Discordian","x":232,"z":517},
+    {"sidx":0,"name":"Gm Mitch","x":234,"z":515}
+]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" entity player 'Gm Mitch' 3)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the player entity door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "entity(player name=Gm Mitch button=3)" \
+    && ok "the player entity door reports the selected name" \
+    || fail "the player entity door reports the selected name" "$OUT"
+check_eq "the player door wrote click-entity" "$(last_action 'type=click-entity')" "1"
+check_eq "the player door carries the stable server index" "$(last_action 'sidx=0')" "1"
+check_eq "the player door carries the exact visible name" "$(last_action 'name=Gm Mitch')" "1"
+refute "the player entity door did not write a screen x coordinate" \
+    grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+refute "the player entity door did not write a screen y coordinate" \
+    grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 snap 11700 '[]' '{"ui_panel_open":true,"ui_panel":"inventory"}'
 OUT="$(bash "$HEADLESS" panel)"; CODE=$?
 check_eq "the panel door reads hover-open UI state without acting" "$CODE" "0"

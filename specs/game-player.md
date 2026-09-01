@@ -684,7 +684,11 @@ deliberate-play channel.
     has one door for stepping, state-based waiting, learning and objectives. The direct harness
     doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh panel [close]`,
     `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]`, and
-    `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. `panel` names the hover-open
+    `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. Players are semantic
+    targets exactly as NPCs are: `entity player PLAYER-NAME [BUTTON]` resolves the exact
+    case-insensitive visible name to that player's stable server identity and clicks the
+    player's own live rendered point; button 3 opens the ordinary context menu, whose exact live
+    option text is then selectable through `menu TEXT`. `panel` names the hover-open
     side panel; `panel close` deliberately moves the private pointer outside it and accepts success
     only after `ui_panel_closed` is observed. A world `entity` click never hides the mistake: the
     bridge returns `refused-ui-panel-open` until the player notices and performs that correction.
