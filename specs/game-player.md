@@ -456,11 +456,12 @@ deliberate-play channel.
    Open ground is preferred when the alternative is genuinely comparable, but one ordinary door
    can never be priced like hundreds of walking tiles and cause a huge regional detour. A building
    or pen with one real exit yields a route to that exact portal instead of to the piece of wall
-   geometrically closest to the goal. The runner stops before crossing that edge,
-   persists its kind/id/tile/direction, and reports `route-needs-local-interaction` at exit 4.
-   Loaded semantic object/boundary actions open it; a changed obstacle signature resumes the SAME
-   destination and replans from the new side. Stairs, ladders, and cross-floor transitions remain
-   semantic portal actions rather than fabricated walk edges.
+   geometrically closest to the goal. At the portal's observed approach tile, the runner persists
+   its kind/id/tile/direction and opens that exact loaded object or boundary through the ordinary
+   semantic action. It continues only after a newer snapshot proves the obstacle no longer blocks
+   movement; a refusal or unchanged portal reports `route-needs-local-interaction` once and keeps
+   the SAME destination without retrying the interaction. Stairs, ladders, and cross-floor
+   transitions remain deliberate semantic portal actions rather than fabricated walk edges.
 
    If the client planner is unavailable or returns malformed data, the route fails closed and
    remains binding: the player never silently resumes straight-line coordinate probes. An
@@ -585,11 +586,14 @@ deliberate-play channel.
    Player messages and urgent retreat still outrank it; routine reflexes and ambient loot cannot
    interrupt it. While inside the chosen 1–10 tile radius it waits without clicking, then resumes
    automatically when the guide moves. If visibility is lost it approaches only the last observed
-   tile, then reports `follow-target-lost`; a grounded unchanged obstruction reports
-   `follow-needs-path` instead of retrying forever. `follow` reports the commitment and
-   `follow --clear` ends it. The direct door is implemented with the same authorable `follow-player` action available to
-   learned rules. The native game follow owns continuous movement; the durable wrapper reacquires
-   the player by name if that game-side follow ends or visibility changes.
+   tile through the same client-cache waypoints and exact semantic portals as an ordinary route;
+   it never sends the distant remembered tile directly to the loaded-region pathfinder. Every leg
+   must agree with its requested direction and settle on a new endpoint. A repeated endpoint,
+   refused portal, or non-progressing leg ends this optional method as `follow-abandoned`, names
+   the player's own stale commitment as the controller, and immediately hands control back to the
+   current plan instead of blaming the guide or game. `follow` reports the commitment and
+   `follow --clear` ends it. The lower-level authorable `follow-player` action remains available to
+   learned rules; the durable wrapper reacquires the player by name on every bounded leg.
 
    **A follow serves the method that chose it, and it ends with that method.** The record binds
    the objective, plan, and activity current at `follow PLAYER` time, and every evaluation

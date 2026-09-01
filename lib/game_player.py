@@ -346,6 +346,23 @@ def follow_path() -> Path:
     return game_dir() / "follow.json"
 
 
+def follow_lock_path() -> Path:
+    return game_dir() / "follow.lock"
+
+
+class follow_state_lock:
+    """Serialize direct follow changes with the resident runner's settlement."""
+    def __enter__(self):
+        follow_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(follow_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
 def navigation_atlas_path() -> Path:
     return game_dir() / "navigation-atlas.json"
 
@@ -1118,19 +1135,51 @@ def load_follow():
     for key in ("plan", "activity", "cancel_reason"):
         if key in request and not isinstance(request[key], str):
             return {"status": "invalid"}
+    if "rev" in request and (not isinstance(request["rev"], int)
+                              or request["rev"] < 1):
+        return {"status": "invalid"}
     return request
 
 
 def save_follow(request: dict) -> None:
-    game_dir().mkdir(parents=True, exist_ok=True)
-    game_reflex.atomic_write(follow_path(), json.dumps(request, indent=2) + "\n")
+    with follow_state_lock():
+        request.setdefault("rev", 1)
+        game_reflex.atomic_write(follow_path(), json.dumps(request, indent=2) + "\n")
 
 
 def clear_follow() -> None:
-    try:
-        follow_path().unlink()
-    except FileNotFoundError:
-        pass
+    with follow_state_lock():
+        try:
+            follow_path().unlink()
+        except FileNotFoundError:
+            pass
+
+
+def replace_follow_if_current(expected: dict, replacement: dict | None) -> bool:
+    """Compare and mutate under one cross-process lock.
+
+    `set_ts` is the commitment generation and `rev` is its update generation.
+    A route selection, direct clear, target refresh, or newer follow can
+    therefore win while an older action is in flight without that older
+    settlement resurrecting or rewinding itself afterwards.
+    """
+    with follow_state_lock():
+        current = load_follow()
+        if current is None or current.get("status") == "invalid" \
+                or current.get("set_ts") != expected.get("set_ts") \
+                or current.get("status") != expected.get("status") \
+                or current.get("rev") != expected.get("rev"):
+            return False
+        if replacement is None:
+            try:
+                follow_path().unlink()
+            except FileNotFoundError:
+                return False
+        else:
+            replacement["rev"] = int(current.get("rev") or 0) + 1
+            game_reflex.atomic_write(
+                follow_path(), json.dumps(replacement, indent=2) + "\n")
+        return True
 
 
 def goal_invariants_path() -> Path:
@@ -1367,13 +1416,16 @@ def prepare_follow(snap: dict, objective: str, activity: str):
             # The native follow or its last walk still owns the body. Keep
             # the record as a cancelling stub so every pass retries the stop
             # and nothing — including a racing in-flight leg — refires it.
+            previous = request
             request = dict(request)
             request.update({"status": "cancelling", "cancel_reason": reason,
                             "cancel_ts": now_ms()})
-            save_follow(request)
+            if not replace_follow_if_current(previous, request):
+                return load_follow(), None
             flush_events(events)
             return request, None
-        clear_follow()
+        if not replace_follow_if_current(request, None):
+            return load_follow(), None
         events.append({"ts": now_ms(), "kind": "follow-stopped",
                        "player": request["player"], "reason": reason,
                        "walking": False,
@@ -1383,21 +1435,35 @@ def prepare_follow(snap: dict, objective: str, activity: str):
     selector = {"collection": "players", "field": "name", "value": request["player"]}
     target = nearest_state_entity(snap, selector)
     if target is not None:
+        previous = dict(request)
         target_changed = (request.get("last_x"), request.get("last_z")) \
             != (target["x"], target["z"])
         request.update({"last_x": target["x"], "last_z": target["z"],
                         "last_sidx": target.get("sidx"), "last_seen_ts": now_ms()})
+        if target_changed and isinstance(snap.get("x"), int) \
+                and isinstance(snap.get("z"), int):
+            request = {key: value for key, value in request.items()
+                       if key not in ("waypoints", "next_portal")
+                       and not key.startswith("planner_")}
+            request.update({
+                "visited": [[snap["x"], snap["z"]]],
+                "best_distance_sq": navigation_distance_sq(
+                    snap["x"], snap["z"], target["x"], target["z"]),
+                "nonclosing_legs": 0})
         if request.get("status") == "blocked" and target_changed:
             request = {key: value for key, value in request.items()
                        if not key.startswith("blocked_")}
             request["status"] = "active"
-        save_follow(request)
+        if not replace_follow_if_current(previous, request):
+            return load_follow(), target
     elif request.get("status") == "blocked" \
             and route_obstacle_signature(snap) != request.get("blocked_signature"):
+        previous = request
         request = {key: value for key, value in request.items()
                    if not key.startswith("blocked_")}
         request["status"] = "active"
-        save_follow(request)
+        if not replace_follow_if_current(previous, request):
+            return load_follow(), target
     return request, target
 
 
@@ -1553,6 +1619,77 @@ def distinct_route_portals(portals: list[dict]) -> list[dict]:
     return list(distinct.values())
 
 
+def semantic_portal_action(portal: dict) -> dict:
+    """The exact loaded portal named by the client-cache path.
+
+    x/z/dir are internal selector guards. Learned interact rules still accept
+    only an object identity; the route/follow planner must never substitute a
+    different nearby gate with the same definition id.
+    """
+    action = {"type": ("interact-object" if portal["kind"] == "object"
+                       else "interact-bound"),
+              "obj": portal["id"], "cmd": 1,
+              "x": portal["x"], "z": portal["z"]}
+    if portal["kind"] == "bound":
+        action["dir"] = portal["dir"]
+    return action
+
+
+def prepare_follow_navigation(request: dict, target: dict | None,
+                              snap: dict) -> tuple[dict | None, dict | None, str | None]:
+    """Return one client-grounded action toward the current/last-seen player.
+
+    The optional follow method is abandoned on planning or causal failure so
+    it can never mask the binding current plan. It does not own a second route
+    file and it never hands a far remembered tile to the live-region walker.
+    """
+    px, pz = snap.get("x"), snap.get("z")
+    tx = target.get("x") if target is not None else request.get("last_x")
+    tz = target.get("z") if target is not None else request.get("last_z")
+    if not all(isinstance(value, int) for value in (px, pz, tx, tz)):
+        return request, None, None
+    if max(abs(px - tx), abs(pz - tz)) <= request["within"]:
+        return request, None, None
+    plan = client_cache_route_plan(px, pz, tx, tz, request["within"])
+    if plan.get("status") != "ok":
+        reason = str(plan.get("reason") or "client-cache-planner-error")
+        replace_follow_if_current(request, None)
+        flush_events([{"ts": now_ms(), "kind": "follow-abandoned",
+                       "player": request["player"], "reason": reason,
+                       "controller": "self", "next": "current-plan"}])
+        return None, None, reason
+    portals = plan.get("portals") or []
+    next_portal = portals[0] if portals else None
+    updated = {key: value for key, value in request.items()
+               if key not in ("waypoints", "next_portal")
+               and not key.startswith("planner_")}
+    updated.update({"planner": "client-cache",
+                    "planner_ts": now_ms(),
+                    "planner_target_x": tx, "planner_target_z": tz,
+                    "waypoints": plan.get("waypoints") or []})
+    if next_portal is not None:
+        updated["next_portal"] = next_portal
+    if not replace_follow_if_current(request, updated):
+        return load_follow(), None, "commitment-replaced"
+    request = updated
+    if next_portal is not None and next_portal.get("from") == [px, pz] \
+            and _observed_closed_portal(snap, next_portal):
+        return request, semantic_portal_action(next_portal), None
+    waypoints = plan.get("waypoints") or []
+    if not waypoints:
+        replace_follow_if_current(request, None)
+        reason = "client-cache-route-empty"
+        flush_events([{"ts": now_ms(), "kind": "follow-abandoned",
+                       "player": request["player"], "reason": reason,
+                       "controller": "self", "next": "current-plan"}])
+        return None, None, reason
+    leg_x, leg_z = waypoints[0]
+    return request, {"type": "walk", "x": leg_x, "z": leg_z,
+                     "arrive": (request["within"] if len(waypoints) == 1 else 0),
+                     "route_step": NAVIGATION_ROUTE_STEP_TILES,
+                     "max_path": NAVIGATION_LEG_MAX_PATH_TILES}, None
+
+
 def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
     """Plan the next local leg without replacing the final destination."""
     px, pz = snap.get("x"), snap.get("z")
@@ -1585,17 +1722,17 @@ def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | N
     next_portal = portals[0] if portals else None
     if next_portal is not None and next_portal["from"] == [px, pz] \
             and _observed_closed_portal(snap, next_portal):
-        blocked = {key: value for key, value in route.items()
-                   if key != "next_portal"}
-        blocked.update({"status": "blocked",
-                        "blocked_reason": "semantic-portal-needed",
-                        "blocked_ts": now_ms(), "planner": "client-cache",
+        planned = {key: value for key, value in route.items()
+                   if key != "next_portal" and not key.startswith("blocked_")}
+        planned.update({"status": "active", "planner": "client-cache",
                         "planner_status": plan["status"],
                         "planned_from": [px, pz], "waypoints": waypoints,
                         "next_portal": next_portal,
-                        "blocked_signature": route_obstacle_signature(snap)})
-        save_route(blocked)
-        return blocked, None
+                        "planner_steps": plan.get("steps"),
+                        "planner_expanded": plan.get("expanded"),
+                        "planner_ts": now_ms()})
+        save_route(planned)
+        return planned, None
     if not waypoints:
         blocked = dict(route)
         reason = "client-cache-route-empty"
@@ -3880,18 +4017,27 @@ def compile_player_action(rule, snap, food, eat_pick):
         return compiled, None
     if action["type"] == "interact-object":
         want = action["obj"]
+        exact_x, exact_z = action.get("x"), action.get("z")
         for obj in snap.get("objects") or []:    # already nearest-first (rule 3 there)
             if obj.get("id") == want and isinstance(obj.get("x"), int) \
-                    and isinstance(obj.get("z"), int):
+                    and isinstance(obj.get("z"), int) \
+                    and (not isinstance(exact_x, int) or obj["x"] == exact_x) \
+                    and (not isinstance(exact_z, int) or obj["z"] == exact_z):
                 return {"type": "interact-object", "x": obj["x"], "z": obj["z"],
                         "obj": want, "cmd": action.get("cmd", 1)}, None
         return None, "object-not-loaded"
     if action["type"] == "interact-bound":
         want = action["obj"]
+        exact_x, exact_z, exact_dir = (action.get("x"), action.get("z"),
+                                       action.get("dir"))
         blocked = False
         for bnd in snap.get("bounds") or []:     # already nearest-first
             if bnd.get("id") == want and isinstance(bnd.get("x"), int) \
-                    and isinstance(bnd.get("z"), int):
+                    and isinstance(bnd.get("z"), int) \
+                    and (not isinstance(exact_x, int) or bnd["x"] == exact_x) \
+                    and (not isinstance(exact_z, int) or bnd["z"] == exact_z) \
+                    and (not isinstance(exact_dir, int)
+                         or bnd.get("dir") == exact_dir):
                 if bnd.get("reachable") is False:
                     blocked = True
                     continue
@@ -4384,6 +4530,23 @@ def dispatch_stop_walk(defaults: dict, slot_wait_s: float = 0.0):
             watch.wait(max(0.01, min(0.5, remaining)))
 
 
+def verify_semantic_portal_open(portal: dict, timeout_s: float = STOP_VERIFY_S):
+    """Observe the exact planned obstacle cease blocking movement."""
+    latest = game_reflex.read_snapshot() or {}
+    deadline = time.monotonic() + timeout_s
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "portal-open-unverified", latest
+            if not _observed_closed_portal(latest, portal):
+                return "done", latest
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "portal-open-unverified", latest
+            watch.wait(max(0.01, min(0.5, remaining)))
+
+
 # --------------------------------------------------------------------------
 # The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
@@ -4542,16 +4705,10 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                        "arrive": 0},
         })
     follow, follow_target = prepare_follow(snap, objective, activity)
+    follow_abandoned_reason = None
     if follow is not None and follow.get("status") == "active":
-        if follow_target is not None:
-            follow_action = {"type": "follow-player", "name": follow["player"],
-                             "within": follow["within"]}
-        elif isinstance(follow.get("last_x"), int) \
-                and isinstance(follow.get("last_z"), int):
-            follow_action = {"type": "walk", "x": follow["last_x"],
-                             "z": follow["last_z"], "arrive": follow["within"]}
-        else:
-            follow_action = None
+        follow, follow_action, follow_abandoned_reason = \
+            prepare_follow_navigation(follow, follow_target, snap)
         if follow_action is not None:
             source_rules.append({
                 "name": FOLLOW_RULE_NAME, "enabled": True,
@@ -4655,7 +4812,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             return "follow-stopping", EXIT_NOT_DONE
         if snap.get("logged_in") is not True \
                 or snap.get("walking") is not True:
-            clear_follow()
+            if not replace_follow_if_current(follow, None):
+                return "follow-replaced", EXIT_NOT_READY
             flush_events([{"ts": now_ms(), "kind": "follow-stopped",
                            "player": follow["player"], "reason": reason,
                            "walking": False,
@@ -4666,7 +4824,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             return "follow-stopped", EXIT_FIRED
         status, stop_x, stop_z = dispatch_stop_walk(defaults)
         if status == "done":
-            clear_follow()
+            if not replace_follow_if_current(follow, None):
+                return "follow-replaced", EXIT_NOT_READY
             flush_events([{"ts": now_ms(), "kind": "follow-stopped",
                            "player": follow["player"], "reason": reason,
                            "walking": False, "x": stop_x, "z": stop_z}])
@@ -4736,6 +4895,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     route = None if backtrack is not None or follow is not None else load_route()
     route_blocked = False
     route_leg = None
+    route_portal_action = None
     if route is not None and route.get("status") == "invalid":
         report("route-invalid", file=str(route_path()))
         return "route-needs-detour", EXIT_NO_RULE
@@ -4766,6 +4926,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if route is not None and route.get("status") == "active":
             route, route_leg = prepare_navigation_route(route, snap)
             route_blocked = route.get("status") == "blocked"
+            portal = route.get("next_portal")
+            if not route_blocked and route_leg is None \
+                    and isinstance(portal, dict) \
+                    and portal.get("from") == [px, pz] \
+                    and _observed_closed_portal(snap, portal):
+                route_portal_action = semantic_portal_action(portal)
 
     # Rules spent for this objective (spec rule 9) step aside BEFORE the
     # engine sees the table, so the machinery stays vocabulary-blind.
@@ -4822,7 +4988,13 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         # Every player rule is game-channel by construction (spec rule 5);
         # the shared engine wants the key spelled out.
         live_rules.append(dict(rule, channel="game"))
-    if route is not None and route_leg is not None \
+    if route is not None and route_portal_action is not None \
+            and not route_blocked and not urgent_retreat_names:
+        live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
+                           "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
+                           "hold_ticks": 1, "channel": "game", "trigger": {},
+                           "action": route_portal_action})
+    elif route is not None and route_leg is not None \
             and not route_blocked and not urgent_retreat_names:
         leg_x, leg_z = route_leg
         live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
@@ -5037,6 +5209,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                            "completion": completion_detail,
                            "feedback": latest_system_feedback(latest or snap)}])
 
+    commitment_portal = None
+    if rule_name == ROUTE_RULE_NAME and route is not None:
+        commitment_portal = route.get("next_portal")
+    elif rule_name == FOLLOW_RULE_NAME and follow is not None:
+        commitment_portal = follow.get("next_portal")
+    if status == "done" and action["type"] in ("interact-object", "interact-bound") \
+            and isinstance(commitment_portal, dict):
+        status, latest = verify_semantic_portal_open(commitment_portal)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status,
+                           "rule": rule_name, "id": action_id,
+                           "portal": commitment_portal}])
+
     if action["type"] == "walk" and final_x is not None and final_z is not None \
             and rule_name != BACKTRACK_RULE_NAME:
         # Preserve the settled end of a verified player-owned walk even while
@@ -5047,7 +5232,32 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     is_route = rule_name == ROUTE_RULE_NAME and route is not None
     route_was_blocked = False
     route_block_reason = None
-    if is_route:
+    is_route_portal = is_route \
+        and action["type"] in ("interact-object", "interact-bound") \
+        and isinstance(commitment_portal, dict)
+    if is_route_portal:
+        latest = game_reflex.read_snapshot() or snap
+        if status == "done":
+            progressed = {key: value for key, value in route.items()
+                          if key not in ("next_portal", "waypoints", "planned_from")
+                          and not key.startswith("planner_")
+                          and not key.startswith("blocked_")}
+            progressed.update({"status": "active", "last_ts": now_ms()})
+            save_route(progressed)
+            status = "route-portal-opened"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "portal": commitment_portal,
+                           "target_x": route["x"], "target_z": route["z"]}])
+        else:
+            route_was_blocked = True
+            route_block_reason = status or "portal-open-unverified"
+            block_route(route, latest, route_block_reason)
+            status = "route-needs-local-interaction"
+            flush_events([{"ts": now_ms(), "kind": "route-portal-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "portal": commitment_portal,
+                           "target_x": route["x"], "target_z": route["z"]}])
+    elif is_route:
         latest = game_reflex.read_snapshot() or snap
         lx, lz = latest.get("x"), latest.get("z")
         start_distance = navigation_distance_sq(
@@ -5271,30 +5481,92 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     if is_follow:
         latest = game_reflex.read_snapshot() or snap
         lx, lz = latest.get("x"), latest.get("z")
-        moved = isinstance(lx, int) and isinstance(lz, int) \
-            and (lx, lz) != (snap.get("x"), snap.get("z"))
-        if status == "done" or status == "walk-short" and moved:
-            status = "follow-progress"
-            follow = {key: value for key, value in follow.items()
-                      if not key.startswith("blocked_")}
-            follow.update({"status": "active", "last_move_ts": now_ms()})
-            save_follow(follow)
-            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
-                           "player": follow["player"], "x": lx, "z": lz,
-                           "target_x": action["x"], "target_z": action["z"],
-                           "within": follow["within"]}])
+        if action["type"] in ("interact-object", "interact-bound") \
+                and isinstance(commitment_portal, dict):
+            if status == "done":
+                progressed = {key: value for key, value in follow.items()
+                              if key not in ("next_portal", "waypoints")
+                              and not key.startswith("planner_")}
+                progressed.update({"status": "active", "last_move_ts": now_ms()})
+                if replace_follow_if_current(follow, progressed):
+                    follow = progressed
+                    status = "follow-portal-opened"
+                    flush_events([{"ts": now_ms(), "kind": status,
+                                   "id": action_id, "player": follow["player"],
+                                   "portal": commitment_portal}])
+                else:
+                    is_follow = False
+            else:
+                follow_abandoned_reason = status or "portal-open-unverified"
+        elif action["type"] == "walk":
+            moved = isinstance(lx, int) and isinstance(lz, int) \
+                and (lx, lz) != (snap.get("x"), snap.get("z"))
+            endpoint = [lx, lz] if isinstance(lx, int) and isinstance(lz, int) else None
+            visited = [point for point in follow.get("visited") or []
+                       if isinstance(point, list) and len(point) == 2]
+            if not visited and isinstance(snap.get("x"), int) \
+                    and isinstance(snap.get("z"), int):
+                visited.append([snap["x"], snap["z"]])
+            repeated_endpoint = endpoint is not None and endpoint in visited
+            leg_agrees = moved and movement_agrees(
+                snap["x"], snap["z"], action["x"], action["z"], lx, lz)
+            target_x = follow.get("planner_target_x", action["x"])
+            target_z = follow.get("planner_target_z", action["z"])
+            start_distance = navigation_distance_sq(
+                snap["x"], snap["z"], target_x, target_z)
+            current_distance = navigation_distance_sq(lx, lz, target_x, target_z) \
+                if endpoint is not None else None
+            best_distance = int(follow.get("best_distance_sq", start_distance))
+            made_best_progress = current_distance is not None \
+                and current_distance < best_distance
+            nonclosing = 0 if made_best_progress \
+                else int(follow.get("nonclosing_legs") or 0) + 1
+            if status in ("done", "walk-short") and moved and leg_agrees \
+                    and not repeated_endpoint \
+                    and nonclosing <= NAVIGATION_MAX_NONCLOSING_LEGS:
+                status = "follow-progress"
+                progressed = {key: value for key, value in follow.items()
+                              if key not in ("waypoints", "next_portal")
+                              and not key.startswith("planner_")
+                              and not key.startswith("blocked_")}
+                visited.append(endpoint)
+                progressed.update({
+                    "status": "active", "last_move_ts": now_ms(),
+                    "last_distance_sq": current_distance,
+                    "best_distance_sq": min(best_distance, current_distance),
+                    "nonclosing_legs": nonclosing,
+                    "visited": visited[-NAVIGATION_VISITED_MAX:]})
+                if replace_follow_if_current(follow, progressed):
+                    follow = progressed
+                    flush_events([{"ts": now_ms(), "kind": status,
+                                   "id": action_id, "player": follow["player"],
+                                   "x": lx, "z": lz,
+                                   "leg_x": action["x"], "leg_z": action["z"],
+                                   "target_x": target_x, "target_z": target_z,
+                                   "nonclosing_legs": nonclosing,
+                                   "within": follow["within"]}])
+                else:
+                    is_follow = False
+            elif repeated_endpoint:
+                follow_abandoned_reason = "follow-cycle"
+            elif moved and not leg_agrees:
+                follow_abandoned_reason = "movement-contradiction"
+            elif nonclosing > NAVIGATION_MAX_NONCLOSING_LEGS:
+                follow_abandoned_reason = "detour-budget"
+            else:
+                follow_abandoned_reason = ("no-progress" if status in
+                                           ("done", "walk-short") else status)
         else:
-            follow_was_blocked = True
-            follow = dict(follow)
-            follow.update({"status": "blocked",
-                           "blocked_reason": status if status else "no-progress",
-                           "blocked_signature": route_obstacle_signature(latest),
-                           "blocked_ts": now_ms()})
-            save_follow(follow)
-            flush_events([{"ts": now_ms(), "kind": "follow-blocked",
-                           "id": action_id, "player": follow["player"],
-                           "reason": follow["blocked_reason"], "x": lx, "z": lz,
-                           "target_x": action["x"], "target_z": action["z"]}])
+            follow_abandoned_reason = status or "unsupported-follow-action"
+        if is_follow and follow_abandoned_reason:
+            if replace_follow_if_current(follow, None):
+                flush_events([{"ts": now_ms(), "kind": "follow-abandoned",
+                               "id": action_id, "player": follow["player"],
+                               "reason": follow_abandoned_reason,
+                               "controller": "self", "x": lx, "z": lz,
+                               "next": "current-plan"}])
+            else:
+                follow_abandoned_reason = None
 
     is_backtrack = rule_name == BACKTRACK_RULE_NAME and backtrack is not None
     backtrack_was_blocked = False
@@ -5423,6 +5695,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         elif backtrack_was_blocked:
             report("backtrack-blocked", id=action_id, x=final_x, z=final_z,
                    target_x=action["x"], target_z=action["z"])
+        elif follow_abandoned_reason:
+            report("follow-abandoned", id=action_id,
+                   player=json.dumps(follow["player"]),
+                   reason=follow_abandoned_reason, controller="self",
+                   x=final_x, z=final_z, next="current-plan")
         elif route_was_blocked:
             cache_planned = route.get("planner") == "client-cache"
             report(("route-needs-local-interaction" if cache_planned else
@@ -5452,6 +5729,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         if backtrack_was_blocked:
             report("backtrack-blocked", id=action_id, target_x=action["x"],
                    target_z=action["z"], reason=status)
+        elif follow_abandoned_reason:
+            report("follow-abandoned", id=action_id,
+                   player=json.dumps(follow["player"]),
+                   reason=follow_abandoned_reason, controller="self",
+                   next="current-plan")
         elif route_was_blocked:
             cache_planned = route.get("planner") == "client-cache"
             report(("route-needs-local-interaction" if cache_planned else
@@ -5481,11 +5763,13 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         return ("route-needs-local-interaction"
                 if route is not None and route.get("planner") == "client-cache"
                 else "route-needs-detour"), EXIT_NO_RULE
+    if follow_abandoned_reason:
+        return "follow-abandoned", EXIT_NO_RULE
     if follow_was_blocked:
         return "follow-needs-path", EXIT_NO_RULE
     return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
-                                               "route-replanning",
-                                               "follow-progress",
+                                               "route-replanning", "route-portal-opened",
+                                               "follow-progress", "follow-portal-opened",
                                                "backtrack-progress", "backtrack-complete")
                      else EXIT_NOT_DONE)
 
@@ -6241,7 +6525,10 @@ def cmd_follow(args):
         walking = fresh and snap.get("logged_in") is True \
             and snap.get("walking") is True
         if request is None or request.get("status") == "invalid" or not walking:
-            clear_follow()
+            if request is None or request.get("status") == "invalid":
+                clear_follow()
+            else:
+                replace_follow_if_current(request, None)
             if request is not None and request.get("status") != "invalid":
                 flush_events([
                     {"ts": now_ms(), "kind": "follow-cancelled",
@@ -6256,16 +6543,19 @@ def cmd_follow(args):
         # the record cancelling FIRST — a live runner mid-pass can then
         # neither refire nor resurrect it — and prove the stop: the
         # postcondition is a later snapshot with walking false.
+        previous = request
         request = dict(request)
         request.update({"status": "cancelling", "cancel_reason": "cleared",
                         "cancel_ts": now_ms()})
-        save_follow(request)
+        if not replace_follow_if_current(previous, request):
+            die("follow changed while clear was taking ownership; inspect it again")
         flush_events([{"ts": now_ms(), "kind": "follow-cancelled",
                        "reason": "cleared", "player": request["player"]}])
         defaults = config_defaults(load_config())
         status, stop_x, stop_z = dispatch_stop_walk(defaults, slot_wait_s=2.0)
         if status == "done":
-            clear_follow()
+            if not replace_follow_if_current(request, None):
+                die("follow changed while its stop was settling; the newer follow remains")
             flush_events([{"ts": now_ms(), "kind": "follow-stopped",
                            "player": request["player"], "reason": "cleared",
                            "walking": False, "x": stop_x, "z": stop_z}])
@@ -6308,7 +6598,13 @@ def cmd_follow(args):
                "status": "active",
                "set_ts": now_ms(), "last_seen_ts": now_ms(),
                "last_sidx": target.get("sidx"),
-               "last_x": target["x"], "last_z": target["z"]}
+               "last_x": target["x"], "last_z": target["z"],
+               "visited": [], "nonclosing_legs": 0}
+    if isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int):
+        request.update({
+            "visited": [[snap["x"], snap["z"]]],
+            "best_distance_sq": navigation_distance_sq(
+                snap["x"], snap["z"], target["x"], target["z"])})
     clear_route()
     clear_backtrack()
     save_follow(request)
@@ -7048,6 +7344,12 @@ def main():
                 acknowledge_friend_status(friend_updates)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
                           "route-needs-detour": EXIT_NO_RULE,
+                          "route-needs-local-interaction": EXIT_NO_RULE,
+                          "follow-needs-path": EXIT_NO_RULE,
+                          "follow-target-lost": EXIT_NO_RULE,
+                          "follow-abandoned": EXIT_NO_RULE,
+                          "backtrack-blocked": EXIT_NO_RULE,
+                          "backtrack-diverged": EXIT_NO_RULE,
                           "held": EXIT_HELD,
                           "fired": EXIT_FIRED,
                           "player-message": EXIT_PLAYER_MESSAGE,

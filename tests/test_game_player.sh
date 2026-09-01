@@ -1230,14 +1230,14 @@ check "a visible guide can become one durable follow commitment" \
 contains "$(python3 "$GP" follow)" 'status=active player="Guide" within=2' \
     && ok "follow status exposes the semantic commitment" \
     || fail "follow status must expose the semantic commitment" "$(python3 "$GP" follow)"
-fake_bridge done
+fake_route_bridge 128 648
 OUT="$(python3 "$GP" step --local)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
-check_eq "following sends one grounded native request for the live guide: exit 0" "$CODE" "0"
+check_eq "following sends one client-grounded leg for the live guide: exit 0" "$CODE" "0"
 contains "$OUT" 'status=follow-progress' \
     && ok "follow progress is explicit" || fail "follow progress must be explicit" "$OUT"
-check_eq "the durable commitment uses RuneScape's native follow action" \
-    "$(last_action 'type=follow-player')" "1"
+check_eq "the durable commitment uses a bounded ordinary walk" \
+    "$(last_action 'type=walk')" "1"
 snap 10432 '[]' '{"x":128,"z":648,"players":[{"sidx":7,"name":"Guide","x":130,"z":648}]}'
 CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
 check_eq "standing near the guide waits without clicking: exit 3" "$CODE" "3"
@@ -1248,7 +1248,7 @@ refute "stand-near following emits no game action" \
     test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 10433 '[]' '{"x":128,"z":648,"players":[{"sidx":7,"name":"Guide","x":140,"z":648}]}'
 rm -f "$DESKCRAB_GAME_STATE_DIR/player-engine-state.json"
-fake_bridge done
+fake_route_bridge 138 648
 OUT="$(python3 "$GP" step --local)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the same commitment reacquires the guide after they move: exit 0" "$CODE" "0"
@@ -1475,8 +1475,8 @@ check "route clear is idempotent" python3 "$GP" route --clear
 python3 "$GP" objective --clear >/dev/null
 
 python3 - "$GP" <<'PY' \
-    && ok "client-cache route legs retain the destination and stop at an observed semantic portal" \
-    || fail "the client-cache route/portal handoff must remain durable"
+    && ok "client-cache routes retain the destination and select the exact observed portal" \
+    || fail "the client-cache route/portal action must remain identity-safe"
 import importlib.util, os, sys
 
 spec = importlib.util.spec_from_file_location("game_player_under_test", sys.argv[1])
@@ -1500,15 +1500,24 @@ assert planned["next_portal"] == portal, planned
 gp.client_cache_route_plan = lambda *args: {
     "status": "ok", "waypoints": [[105, 619]], "steps": 1, "expanded": 2,
     "remaining_cost": None, "portals": [portal]}
-blocked, leg = gp.prepare_client_cache_route(route, {
+planned, leg = gp.prepare_client_cache_route(route, {
     "x": 104, "z": 619,
     "objects": [{"id": 60, "x": 105, "z": 619, "dir": 0,
                  "blocks_movement": True}]})
-assert leg is None, (blocked, leg)
-assert blocked["status"] == "blocked", blocked
-assert blocked["blocked_reason"] == "semantic-portal-needed", blocked
-assert blocked["blocked_signature"] == "fixture-topology", blocked
-assert (blocked["x"], blocked["z"]) == (80, 675), blocked
+assert leg is None, (planned, leg)
+assert planned["status"] == "active", planned
+assert planned["next_portal"] == portal, planned
+assert (planned["x"], planned["z"]) == (80, 675), planned
+action = gp.semantic_portal_action(portal)
+assert action == {"type": "interact-object", "obj": 60, "cmd": 1,
+                  "x": 105, "z": 619}, action
+compiled, refusal = gp.compile_player_action(
+    {"action": action},
+    {"x": 104, "z": 619,
+     "objects": [{"id": 60, "x": 103, "z": 619},
+                 {"id": 60, "x": 105, "z": 619}]}, None, None)
+assert refusal is None, refusal
+assert (compiled["x"], compiled["z"]) == (105, 619), compiled
 
 portal2 = {"kind": "bound", "id": 21, "x": 148, "z": 533, "dir": 0,
            "from": [148, 533], "to": [148, 532]}

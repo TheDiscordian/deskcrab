@@ -184,4 +184,103 @@ contains "$OUT" 'no-rule-matched' \
     || fail "a cleared follow must stay cleared" "$OUT"
 refute "no action rides the slot after the stop" \
     test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
+
+# --- lost-player navigation is bounded, portal-safe, and cycle-ending ------
+python3 - "$GP" <<'PY' \
+    && ok "lost-player movement uses local cache legs, exact portals, and abandons cycles" \
+    || fail "follow recovery must be bounded and self-correcting"
+import importlib.util, json, os, sys, threading, time
+
+spec = importlib.util.spec_from_file_location("game_player_under_test", sys.argv[1])
+gp = importlib.util.module_from_spec(spec)
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+spec.loader.exec_module(gp)
+
+now = gp.now_ms()
+request = {"v": 1, "player": "Guide", "within": 2,
+           "objective": gp.read_objective(), "plan": gp.read_plan(),
+           "activity": gp.read_activity(), "status": "active",
+           "set_ts": now, "last_seen_ts": now,
+           "last_x": 200, "last_z": 648,
+           "visited": [[120, 648], [128, 648]],
+           "nonclosing_legs": 0, "best_distance_sq": 80 * 80}
+gp.save_follow(request)
+gp.client_cache_route_plan = lambda *args: {
+    "status": "ok", "waypoints": [[128, 648], [136, 648]],
+    "steps": 80, "expanded": 20, "portals": []}
+snap = json.load(open(os.path.join(os.environ["DESKCRAB_GAME_STATE_DIR"],
+                                   "state.json")))
+snap.update({"tick": 200, "ts": gp.now_ms(), "x": 120, "z": 648,
+             "walking": False, "players": []})
+json.dump(snap, open(os.path.join(os.environ["DESKCRAB_GAME_STATE_DIR"],
+                                  "state.json"), "w"))
+planned, action, reason = gp.prepare_follow_navigation(request, None, snap)
+assert reason is None, reason
+assert (action["x"], action["z"]) == (128, 648), action
+assert (action["x"], action["z"]) != (200, 648), action
+
+portal = {"kind": "object", "id": 60, "x": 121, "z": 648, "dir": 0,
+          "from": [120, 648], "to": [121, 648]}
+gp.client_cache_route_plan = lambda *args: {
+    "status": "ok", "waypoints": [[121, 648]], "steps": 1,
+    "expanded": 2, "portals": [portal]}
+portal_snap = dict(snap, objects=[
+    {"id": 60, "x": 119, "z": 648, "blocks_movement": True},
+    {"id": 60, "x": 121, "z": 648, "blocks_movement": True}])
+current = gp.load_follow()
+planned, action, reason = gp.prepare_follow_navigation(current, None, portal_snap)
+assert reason is None, reason
+assert action == {"type": "interact-object", "obj": 60, "cmd": 1,
+                  "x": 121, "z": 648}, action
+compiled, refusal = gp.compile_player_action(
+    {"action": action}, portal_snap, None, None)
+assert refusal is None, refusal
+assert (compiled["x"], compiled["z"]) == (121, 648), compiled
+
+# Re-arm the repeated endpoint and let the real settlement path observe it.
+request["set_ts"] = gp.now_ms() + 1
+gp.save_follow(request)
+gp.client_cache_route_plan = lambda *args: {
+    "status": "ok", "waypoints": [[128, 648]], "steps": 8,
+    "expanded": 10, "portals": []}
+json.dump(snap, open(os.path.join(os.environ["DESKCRAB_GAME_STATE_DIR"],
+                                  "state.json"), "w"))
+
+def bridge():
+    state_dir = os.environ["DESKCRAB_GAME_STATE_DIR"]
+    action_path = os.path.join(state_dir, "action.json")
+    for _ in range(200):
+        if os.path.exists(action_path):
+            fields = dict(line.split("=", 1) for line in
+                          open(action_path).read().splitlines() if "=" in line)
+            os.remove(action_path)
+            json.dump({"id": int(fields["id"]), "ts": gp.now_ms(),
+                       "status": "done"},
+                      open(os.path.join(state_dir, "receipt.json"), "w"))
+            settled = dict(snap, tick=201, ts=gp.now_ms(), x=128, z=648,
+                           walking=False, players=[])
+            json.dump(settled, open(os.path.join(state_dir, "state.json"), "w"))
+            return
+        time.sleep(0.02)
+    raise AssertionError("no follow action was emitted")
+
+worker = threading.Thread(target=bridge)
+worker.start()
+verdict, code = gp.step_once(gp.load_config(), gp.read_objective(),
+                             gp.read_activity(), 3000)
+worker.join()
+assert (verdict, code) == ("follow-abandoned", gp.EXIT_NO_RULE), (verdict, code)
+assert gp.load_follow() is None
+events = open(os.path.join(os.environ["DESKCRAB_GAME_STATE_DIR"],
+                           "player-decisions.jsonl")).read()
+assert '"reason":"follow-cycle"' in events, events[-2000:]
+assert '"controller":"self"' in events, events[-2000:]
+
+# A late old settlement cannot overwrite a newer generation.
+gp.save_follow(dict(request, set_ts=request["set_ts"] + 10))
+assert not gp.replace_follow_if_current(request, dict(request, status="blocked"))
+assert gp.load_follow()["set_ts"] == request["set_ts"] + 10
+gp.clear_follow()
+PY
+
 refute "no model call leaked from any pass" test -f "$SANDBOX/model-called"
