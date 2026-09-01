@@ -229,6 +229,20 @@ which fails silently is worse than one that does not exist.
     daemon.
 23. The watcher MUST seed silently on first run, so an existing tree never fires.
 24. The watcher MUST settle a burst of changes into one wake.
+
+24a. One pending re-check, never a chain per trigger. The settle is a single named unit, so a burst
+    leaves ONE re-check armed however many triggers arrive; a trigger that finds it armed is already
+    covered by it and leaves. Minting a unit per trigger instead does not merely waste units: each
+    chain re-defers on its own counter, so a busy minute leaves dozens alive at once — 82 on
+    2026-09-01 — every one of them landing at the same moment to run the whole tree scan and
+    attribution walk in parallel, on a laptop, over the same changes.
+24b. Judgement is single-threaded. Between reading the tree and advancing the snapshot the watcher
+    does the entire attribution walk, and two runs inside that window read the SAME change set and
+    each book their own wake — rule 24's one wake per burst broken by concurrency rather than by
+    counting, which is how one change woke her twice on 2026-08-28 20:30:00 and again twice on
+    2026-08-30. A run that finds another judging MUST NOT judge beside it: it books the one re-check
+    and leaves. Where it cannot book, it waits for the lock and then re-reads the tree against the
+    snapshot the other run advanced, so what it judges is only what is genuinely still new.
 25. Her own writes MUST NEVER wake her. A change is dropped when a write declaration covers it, or a
     live session's claim names it, or its mtime falls inside one of her own run windows (rule 25b),
     or it lands under a detached job's workdir inside that job's window (rule 25c), or it is a
@@ -850,7 +864,7 @@ reaches her through an event wake or through a record she reads.
 
 ## TESTS
 
-**Existing:** `tests/test_notice_selfchange.sh` — 90 assertions in the most hermetic sandbox in the
+**Existing:** `tests/test_notice_selfchange.sh` — 100 assertions in the most hermetic sandbox in the
 suite, and the model for every other test; among them, `.git` internals under a watched drawer and
 under an extra watch directory fire nothing (rule 25a), and the run window both ways (rule 25b): a
 write whose mtime sits inside her own window — a live registration, a finished session's log line,
@@ -863,7 +877,10 @@ stdout; a report that cannot land keeps the old shadow, logs the failure, and th
 the whole distance across both edits; a quiet write of her own advances the shadow with no report; a
 deletion names the retained shadow and keeps it; an over-cap file is named too large and never
 copied; a binary file and an unreadable one are each named for what they are, the prior shadow
-retained.
+retained; and the settle's two singletons (rules 24a, 24b): the tail of a burst books the one named
+re-check and no stamped per-trigger unit, a trigger arriving while that re-check is armed books
+nothing at all, and a run that finds the judgement lock held folds into the re-check and wakes
+nobody, while the same change is judged in full the moment the lock is free.
 `tests/test_notice_jobclaim.sh` — rules 25c and 25d both ways, against a fabricated jobs ledger and
 a scratch tree: a running job's save, three successive saves, a committed change, and two concurrent
 jobs' writes all stay quiet with the job id on the quiet line; a deletion under a live claim still

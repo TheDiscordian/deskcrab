@@ -433,3 +433,70 @@ REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
 check "named unreadable" grep -q "unreadable (permissions); no diff" "$REPORT"
 check "the readable-era shadow is retained" grep -q "readable era" "$SHADOWS$T/library/dark.md"
 chmod 644 "$T/library/dark.md"
+
+echo "== a burst leaves ONE re-check armed, not a chain per trigger (rule 24a) =="
+# Bookings are accepted from here: the pileup only shows when the deferral
+# actually books something. Every trigger used to mint its own stamped unit,
+# so a busy minute left dozens armed at once, all landing together.
+sandbox_systemd_rc 0
+: > "$STATE/notice-self.suppress"   # this block is about the timers, not attribution
+: > "$SANDBOX_SYSTEMD_LOG"
+BURST="$T/data/deskcrab/wants/burst-want.md"
+echo "an outside hand" > "$BURST"
+run
+check "the head of the burst fires at once" [ "$(wakes)" = 23 ]
+echo "and again" >> "$BURST"
+run 0   # the tail of a burst already reported: this is the deferring case
+check "the tail books the one named re-check" \
+    grep -q -- "--unit=deskcrab-notice-self-defer " "$SANDBOX_SYSTEMD_LOG"
+check "the tail wakes nobody" [ "$(wakes)" = 23 ]
+check_eq "no unit is minted per trigger" \
+    "$(grep -cE -- '--unit=deskcrab-notice-self-[0-9]+-[0-9]+' "$SANDBOX_SYSTEMD_LOG")" 0
+
+echo "== a re-check already armed absorbs the next trigger (rule 24a) =="
+sandbox_stub systemctl <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${SANDBOX_SYSTEMCTL_LOG:-/dev/null}"
+case "$*" in
+    *"is-active deskcrab-notice-self-defer.timer"*) echo active; exit 0 ;;
+    *list-units*|*list-timers*)                     exit 0 ;;
+    *is-active*)                                    exit 1 ;;
+    *show*)                                         exit 0 ;;
+esac
+exit 0
+STUB
+: > "$SANDBOX_SYSTEMD_LOG"
+echo "a third time" >> "$BURST"
+run 0
+check_eq "nothing is booked beside the armed re-check" \
+    "$(wc -l < "$SANDBOX_SYSTEMD_LOG")" 0
+check "and still nobody is woken" [ "$(wakes)" = 23 ]
+sandbox_stub systemctl <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${SANDBOX_SYSTEMCTL_LOG:-/dev/null}"
+case "$*" in
+    *list-units*|*list-timers*) exit 0 ;;
+    *is-active*)                exit 1 ;;
+    *show*)                     exit 0 ;;
+esac
+exit 0
+STUB
+
+echo "== a second judgement never runs beside the first (rule 24b) =="
+# The emitter's own lock, held by the test: between reading the tree and
+# advancing the snapshot two runs see the SAME changes, and each used to book
+# its own wake — one change, two wakes.
+: > "$SANDBOX_SYSTEMD_LOG"
+exec 7>>"$STATE/notice-self.judge.lock"
+flock -n 7 || die "the test could not take the judgement lock"
+echo "while another judges" >> "$BURST"
+run 99
+check "the change is not judged twice" [ "$(wakes)" = 23 ]
+check "the second run folds into the re-check" \
+    grep -q -- "--unit=deskcrab-notice-self-defer " "$SANDBOX_SYSTEMD_LOG"
+check "and says so in the log" \
+    grep -q "another judgement is running" "$STATE/notice-self.log"
+exec 7>&-
+run 99
+check "nothing was lost: the change is judged once the lock is free" \
+    [ "$(wakes)" = 24 ]

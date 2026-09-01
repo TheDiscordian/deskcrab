@@ -91,6 +91,12 @@ JOBS_DIR="${JOBS_DIR:-$DATA_DIR/jobs}"
 # PathChanged= lines in a local drop-in for inotify to see them promptly.
 SELF_WATCH_EXTRA="${SELF_WATCH_EXTRA:-}"
 
+# The one deferral unit and the one judgement lock (rules 24a, 24b). Both are
+# single by name on purpose: a burst may leave at most one re-check armed, and
+# at most one run may be judging.
+DEFER_UNIT="deskcrab-notice-self-defer"
+JUDGE_LOCK="$STATE_DIR/notice-self.judge.lock"
+
 SETTLE="${NOTICE_SELF_SETTLE:-60}"            # post-fire cooldown, seconds
 MAX_DEFERRALS="${NOTICE_SELF_DEFERRALS:-15}"  # live-session pushbacks before judging anyway
 RECENT="${NOTICE_SELF_RECENT:-600}"           # "a session ran recently", for memory.db
@@ -267,14 +273,20 @@ if [ ! -f "$SNAP" ]; then
     exit 0
 fi
 
-CHANGES="$(awk -F'\t' '
-    NR==FNR { old[$2]=$1; next }
-    { new[$2]=$1 }
-    END {
-        for (p in new) if (!(p in old))               print "created\t"  p
-        for (p in old) if (!(p in new))               print "deleted\t"  p
-        for (p in new) if ((p in old) && old[p]!=new[p]) print "modified\t" p
-    }' "$SNAP" "$CUR" | sort)"
+# A function because it is read TWICE: once here, and again by a run that had
+# to wait for the judgement lock, against whatever the run ahead of it left in
+# the snapshot (rule 24b).
+snapshot_diff() {
+    awk -F'\t' '
+        NR==FNR { old[$2]=$1; next }
+        { new[$2]=$1 }
+        END {
+            for (p in new) if (!(p in old))               print "created\t"  p
+            for (p in old) if (!(p in new))               print "deleted\t"  p
+            for (p in new) if ((p in old) && old[p]!=new[p]) print "modified\t" p
+        }' "$SNAP" "$CUR" | sort
+}
+CHANGES="$(snapshot_diff)"
 
 if [ -z "$CHANGES" ]; then
     ensure_shadows "$CUR"
@@ -307,11 +319,32 @@ unreported_paths() {
     return 1
 }
 
+defer_armed() {
+    local u
+    for u in "$DEFER_UNIT.timer" "$DEFER_UNIT.service"; do
+        [ "$(systemctl --user is-active "$u" 2>/dev/null)" = active ] && return 0
+    done
+    return 1
+}
+
 defer() {
+    # ONE pending re-check for the whole burst (rule 24a). Every trigger used
+    # to mint a unit of its own, each with its own deferral counter, so a busy
+    # minute left dozens armed at once and every one of them landed at the same
+    # moment to scan the whole tree in parallel over the same changes. An armed
+    # re-check already covers this trigger: it reads the tree when it FIRES, so
+    # what arrived after it was booked is in the reading it will take.
+    if defer_armed; then
+        date +%s > "$PENDING"
+        rm -f "$CUR"
+        exit 0
+    fi
+    # A unit left behind failed would refuse the name for ever.
+    systemctl --user reset-failed "$DEFER_UNIT.timer" "$DEFER_UNIT.service" 2>/dev/null
     # If the timer can't be placed there may never be another directory change
     # to re-trigger on, so a failure here falls through and judges now rather
     # than dropping the event on the floor.
-    if systemd-run --user --quiet --unit="deskcrab-notice-self-$NOW-$$" \
+    if systemd-run --user --quiet --unit="$DEFER_UNIT" \
         --on-active="$SETTLE" "$0" "$(( ATTEMPT + 1 ))" 2>/dev/null; then
         date +%s > "$PENDING"
         rm -f "$CUR"
@@ -336,6 +369,36 @@ elif live_sessions && [ "$ATTEMPT" -lt "$MAX_DEFERRALS" ]; then
     # Bounded on purpose: a wedged session must not silence this for ever.
     defer
 fi
+# --- one judgement at a time (rule 24b) --------------------------------------
+# Everything from the diff above to the snapshot advance below is one reading
+# of the tree: the diff is taken against the snapshot at the top, the snapshot
+# only moves at the bottom, and the whole attribution walk sits in between.
+# Two runs inside that window see the SAME changes and each book their own
+# wake — one change, two wakes, which is rule 24 broken by concurrency rather
+# than by counting. So a run that finds another judging does not judge beside
+# it: it folds itself into the one re-check and leaves.
+# Opened only once the file is known writable: a failed `exec` redirection ends
+# a non-interactive shell outright, and a watcher that cannot lock must still
+# report.
+: >> "$JUDGE_LOCK" 2>/dev/null
+[ -w "$JUDGE_LOCK" ] && exec 8>>"$JUDGE_LOCK"
+if [ -w "$JUDGE_LOCK" ] && ! flock -n 8 2>/dev/null; then
+    log "another judgement is running; folding this trigger into the re-check"
+    defer
+    # Only reached when the re-check could not be booked at all. Waiting is
+    # then the honest move — but what the run ahead advanced past is no longer
+    # news, so the tree is re-read against the snapshot it left behind and only
+    # what is still new is judged.
+    flock 8 2>/dev/null
+    CHANGES="$(snapshot_diff)"
+    if [ -z "$CHANGES" ]; then
+        ensure_shadows "$CUR"
+        rm -f "$CUR"
+        printf '%s\n' "$NOW" > "$JUDGED"
+        exit 0
+    fi
+fi
+
 # Stamp the fire time and the paths it covers: this is what the cooldown above
 # measures from, and the only set it is allowed to silence.
 date +%s > "$PENDING"
@@ -847,6 +910,10 @@ for k in deleted created modified; do
 done
 
 log "waking: $SUMMARY (report: $REPORT)"
+# The snapshot has already advanced, so nothing is left to race on: drop the
+# judgement lock rather than handing it to the exec'd process, which would keep
+# it for as long as the booking takes.
+exec 8>&- 2>/dev/null
 # Through book(), with this watcher's name on the record: it is one of the
 # hands that book wakes in her name, and until each of them stamped
 # its own identity, "nothing scheduled by me" was unanswerable. Booking rather
