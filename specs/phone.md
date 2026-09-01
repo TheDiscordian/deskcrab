@@ -457,14 +457,24 @@ against the shipped CLI before this rule was written.
     newest frame, pairs it with a read-only query of the private virtual pointer, starts on the
     first frame request, and stops after the viewers go idle. ffmpeg draws no platform cursor; the
     page maps the paired crop-local position onto its scaled/letterboxed image as the desktop
-    spectator's magenta ring and crosshair. No HTTP method or route may send mouse, keyboard,
-    bridge actions, or game commands.
+    spectator's magenta ring and crosshair. The producer is tied to the discovered private-display
+    incarnation, not merely its reusable display number: replacing the Xvfb/client underneath a
+    still-running phone server invalidates the old capture and reconnects it, rather than emitting
+    an advancing sequence of frozen frames from the departed display. No HTTP method or route may
+    send mouse, keyboard, bridge actions, or game commands.
 55. `/openrsc/state` is an allowlist, not a mirror of `state.json`: login/freshness, tile, HP,
     fatigue, movement/combat/sleep, objective, its deliberately selected plan, activity, and
     positive activity XP/hour only.
     Inventory, chat, credentials, routes, memory, and engine internals never leave the machine.
     The self-contained page is mobile-first, reconnects after game/server transitions, pauses when
     hidden, offers fullscreen and an explicit spectator pause, and labels the view read-only.
+56. The spectator is its own installable mobile app on the same authenticated origin. Its scoped
+    manifest, icons, and network-only service worker live entirely below `/openrsc/`; an installed
+    launch uses the narrow spectator credential and then returns to the clean path-scoped-cookie
+    URL. The worker never caches frames, HUD state, portrait state, credentials, or an offline copy
+    of the game. HTTPS provides full PWA installation (including the existing Tailscale route),
+    while the Apple mobile-app metadata continues to support Add to Home Screen on a trusted-LAN
+    page. Installation does not add a control route or broaden spectator authentication.
 
 ## DATA
 

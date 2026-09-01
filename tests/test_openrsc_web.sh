@@ -104,6 +104,38 @@ check_eq "a wrong spectator key reveals nothing" \
 PAGE="$(curl -fsS "$BASE/openrsc?k=$SECRET")"
 check "the authenticated mobile spectator page is served" \
     contains "$PAGE" "Beatrice · OpenRSC"
+check "the spectator is installable with its own icon and manifest" \
+    bash -c 'grep -q "/openrsc/manifest.webmanifest" <<<"$1" \
+        && grep -q "/openrsc/icon.svg" <<<"$1" \
+        && grep -q "/openrsc/apple-touch-icon.png" <<<"$1" \
+        && grep -q "serviceWorker.register(\"/openrsc/sw.js\"" <<<"$1"' \
+    _ "$PAGE"
+check_eq "the spectator manifest is hidden without the scoped key" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/manifest.webmanifest")" "404"
+MANIFEST="$(curl -fsS \
+    "$BASE/openrsc/manifest.webmanifest?g=$WATCH_SECRET")"
+check "the spectator manifest launches the spectator as a standalone app" \
+    bash -c 'jq -e --arg key "$2" '\''
+        (.name == "Beatrice · OpenRSC")
+        and (.id == "/openrsc/")
+        and (.start_url == ("/openrsc/?g=" + $key))
+        and (.scope == "/openrsc/")
+        and (.display == "standalone")'\'' <<<"$1" >/dev/null' \
+    _ "$MANIFEST" "$WATCH_SECRET"
+check_eq "the spectator worker is hidden without the scoped key" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/sw.js")" "404"
+WORKER="$(curl -fsS "$BASE/openrsc/sw.js?g=$WATCH_SECRET")"
+check "the installed spectator stays network-only" \
+    bash -c 'grep -q "respondWith(fetch(event.request))" <<<"$1" \
+        && ! grep -qi "cache\.open\|caches\.match" <<<"$1"' _ "$WORKER"
+check_eq "the polished icon is hidden without the scoped key" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/icon-192.png")" "404"
+check_eq "the scoped spectator key can fetch the polished icon" \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        "$BASE/openrsc/icon-192.png?g=$WATCH_SECRET")" "200"
 check "the page identifies itself as read-only" contains "$PAGE" "Read-only spectator"
 check "the page has a fullscreen affordance" contains "$PAGE" "Fullscreen"
 check "the page overlays the private game pointer" \
@@ -236,6 +268,27 @@ GEN2="$(sed -n 's/^X-Frame-Generation: *//Ip' "$T/frame2.hdr" | tr -d '\r')"
     || fail "after=N waits for a genuinely newer frame" "$GEN -> $GEN2"
 check_eq "subsequent viewers share the same ffmpeg producer" \
     "$(cat "$T/fake-ffmpeg.pid")" "$FFMPEG_PID"
+
+# Reusing :77 for a replacement Xvfb/client used to leave this old ffmpeg
+# alive and advancing generations from one frozen framebuffer. Rewriting the
+# launch marker stands in for that replacement and must retire the producer.
+printf '77\n' > "$HEADLESS/run/display"
+RECONNECT_CODE=""
+for _ in $(seq 1 30); do
+    RECONNECT_CODE="$(curl -sS --max-time 3 -D "$T/frame3.hdr" \
+        -o "$T/frame3.jpg" -w '%{http_code}' -b "$T/watch.cookies" \
+        "$BASE/openrsc/frame.jpg?after=$GEN2")"
+    [ "$RECONNECT_CODE" = 200 ] && break
+    sleep 0.1
+done
+check_eq "the frame route recovers after its private display is replaced" \
+    "$RECONNECT_CODE" "200"
+NEW_FFMPEG_PID="$(cat "$T/fake-ffmpeg.pid")"
+[ "$NEW_FFMPEG_PID" != "$FFMPEG_PID" ] \
+    && ok "a replacement display gets a fresh frame producer" \
+    || fail "a replacement display gets a fresh frame producer" \
+            "producer $FFMPEG_PID survived"
+FFMPEG_PID="$NEW_FFMPEG_PID"
 
 sleep 4
 if kill -0 "$FFMPEG_PID" 2>/dev/null; then

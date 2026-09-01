@@ -1768,6 +1768,46 @@ class Handler(BaseHTTPRequestHandler):
             headers["Cache-Control"] = "no-store"
             return self._send(200, (WEBAPP_DIR / "openrsc.html").read_bytes(),
                               "text/html; charset=utf-8", headers)
+        if path == "/openrsc/manifest.webmanifest":
+            doc = json.loads(
+                (WEBAPP_DIR / "openrsc-manifest.webmanifest").read_text())
+            # An installed browser context is not guaranteed to inherit the
+            # tab's cookie. Bootstrap it with the narrow spectator credential,
+            # just as the phone PWA bootstraps its own authenticated launch.
+            doc["start_url"] = "/openrsc/?g=" + OPENRSC_SECRET
+            return self._send(
+                200,
+                json.dumps(doc),
+                "application/manifest+json",
+                extra,
+            )
+        if path == "/openrsc/sw.js":
+            headers = dict(extra)
+            headers["Cache-Control"] = "no-cache"
+            headers["Service-Worker-Allowed"] = "/openrsc/"
+            return self._send(
+                200,
+                (WEBAPP_DIR / "openrsc-sw.js").read_bytes(),
+                "application/javascript",
+                headers,
+            )
+        openrsc_icons = {
+            "/openrsc/icon.svg": ("openrsc-icon.svg", "image/svg+xml"),
+            "/openrsc/icon-192.png": ("openrsc-icon-192.png", "image/png"),
+            "/openrsc/icon-512.png": ("openrsc-icon-512.png", "image/png"),
+            "/openrsc/apple-touch-icon.png":
+                ("openrsc-apple-touch-icon.png", "image/png"),
+            "/openrsc/icon-maskable-192.png":
+                ("openrsc-icon-maskable-192.png", "image/png"),
+            "/openrsc/icon-maskable-512.png":
+                ("openrsc-icon-maskable-512.png", "image/png"),
+        }
+        if path in openrsc_icons:
+            name, content_type = openrsc_icons[path]
+            headers = dict(extra)
+            headers["Cache-Control"] = "public, max-age=86400"
+            return self._send(200, (WEBAPP_DIR / name).read_bytes(),
+                              content_type, headers)
         if path == "/openrsc/state":
             doc = openrsc_spectator.spectator_state()
             headers = dict(extra)
@@ -1846,7 +1886,13 @@ class Handler(BaseHTTPRequestHandler):
         openrsc_route = path in (
             "/openrsc", "/openrsc/", "/openrsc/state",
             "/openrsc/frame.jpg", "/openrsc/face/manifest.json",
-            "/openrsc/face/state", "/openrsc/face_card.js") \
+            "/openrsc/face/state", "/openrsc/face_card.js",
+            "/openrsc/manifest.webmanifest", "/openrsc/sw.js",
+            "/openrsc/icon.svg",
+            "/openrsc/icon-192.png", "/openrsc/icon-512.png",
+            "/openrsc/apple-touch-icon.png",
+            "/openrsc/icon-maskable-192.png",
+            "/openrsc/icon-maskable-512.png") \
             or path.startswith("/openrsc/portrait/") \
             or path.startswith("/openrsc/face/asset/")
         if openrsc_route:

@@ -192,6 +192,31 @@ def _display_number():
     return value
 
 
+def _path_incarnation(path):
+    """A cheap identity for a live-process marker or Unix socket."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _display_incarnation(display):
+    """Identify one headless client/display lifetime, even when :N is reused.
+
+    ffmpeg can keep producing the last framebuffer after Xvfb is replaced at
+    the same display number.  The launch markers and X11 socket are rewritten
+    for every such replacement, so their identities let the spectator retire
+    that deceptively healthy but frozen producer.
+    """
+    run = HEADLESS_DIR / "run"
+    return (
+        _path_incarnation(run / "display"),
+        _path_incarnation(run / "client.pid"),
+        _path_incarnation(Path(f"/tmp/.X11-unix/X{display}")),
+    )
+
+
 def _source_override():
     """Test-only deterministic source rectangle, absent in normal service."""
     raw = os.environ.get("DESKCRAB_OPENRSC_SOURCE", "")
@@ -318,6 +343,7 @@ class FrameSource:
         try:
             display = _display_number()
             source = _discover_source(display)
+            incarnation = _display_incarnation(display)
             x, y, width, height = source
             pointer_override = _pointer_override()
             if pointer_override is None:
@@ -363,6 +389,8 @@ class FrameSource:
                         break
                     jpeg = bytes(buf[start:end + 2])
                     del buf[:end + 2]
+                    if _display_incarnation(display) != incarnation:
+                        raise RuntimeError("OpenRSC private display restarted")
                     absolute_pointer = pointer_override
                     if pointer_source is not None:
                         try:
