@@ -450,17 +450,17 @@ class WSConn:
 # ------------------------------------------------------------- the store
 
 def mover_model_for(g):
-    """The per-speed model (rule 16b): the explicit
-    DESKCRAB_CHESS_MOVER_MODEL_<SPEED> knob first, then the
-    benchmark-chosen chess_effort.SPEED_MODELS default — which, for a speed
-    the corrective matrix has routed, outranks the global mover-model knob
-    (the user's 2026-08-28 directive). None means no `model` rides the job
-    and the mover's own environment chain stands exactly as before the
-    routing existed; an untimed game reads the "untimed" route."""
-    speed = ((g or {}).get("time_control") or {}).get("speed")
+    """The routed model for a game's exact control and speed (rule 16b).
+
+    None means no `model` rides the job and the mover's own environment
+    chain applies.
+    """
+    time_control = (g or {}).get("time_control") or {}
+    speed = time_control.get("speed")
+    control = time_control.get("name")
     try:
         import chess_effort
-        return chess_effort.model_for(speed)
+        return chess_effort.model_for(speed, control)
     except Exception:
         if not speed:
             return None
@@ -548,7 +548,7 @@ class Store:
              "created": chess_cli.now()}
         if player:
             g["player"] = player
-        tc, ck = chess_cli.make_time_control(
+        tc, ck = chess_cli.make_live_time_control(
             self.time_control if time_control is None else time_control)
         if tc:
             g["time_control"] = tc
@@ -750,13 +750,14 @@ class Hub:
             return "low"
         try:
             import chess_effort
-            # The clock picks the pair (rule 16b, 2026-08-27): a timed game
-            # reads its speed's own quiet/sharp levels; an untimed one keeps
-            # the uniform pair exactly as adjudicated.
-            speed = (g.get("time_control") or {}).get("speed")
+            # The exact control picks its measured pair before the broader
+            # speed fallback; an untimed game keeps the uniform module pair.
+            time_control = g.get("time_control") or {}
+            speed = time_control.get("speed")
+            control = time_control.get("name")
             level, reasons = chess_effort.classify(
                 board, novel=chess_effort.novelty(board.fen()),
-                pair=chess_effort.pair_for(speed))
+                pair=chess_effort.pair_for(speed, control))
             why = ",".join(reasons) if reasons else "quiet"
             chess_cli.metric("effort", f"{g['id']} ply {ply} {level} {why}")
             log(f"{g['id']}: her move will think at {level} ({why})")
@@ -1249,7 +1250,7 @@ class Hub:
                              "names — the clock is never trusted from the "
                              "client"}, 400
         try:
-            chess_cli.make_time_control(control)
+            chess_cli.make_live_time_control(control)
             # Rule 23: the sitter's name, validated server-side exactly
             # like the control; an omitted or empty one is an unlabeled
             # game, recorded as absence and never guessed.
@@ -2021,7 +2022,8 @@ def main(argv=None):
                                            "untimed"),
                     metavar="NAME",
                     help="the clock for NEW games (chessweb.md rule 22): "
-                         f"one of {', '.join(chess_cli.TIME_CONTROLS)}, or "
+                         f"one of {', '.join(chess_cli.LIVE_TIME_CONTROLS)}, "
+                         "or "
                          "untimed (the default)")
     sp.add_argument("--client", default=None,
                     help="the SpeedyChess client directory")
@@ -2035,7 +2037,7 @@ def main(argv=None):
     try:
         # Validated at serve start, not at the first New Game click hours
         # later: a typo in the knob must refuse the serve, out loud.
-        chess_cli.make_time_control(args.time_control)
+        chess_cli.make_live_time_control(args.time_control)
     except chess_cli.CliError as e:
         sys.exit(f"chessweb: {e}")
     store = Store(args.opponent, her_side, args.game,

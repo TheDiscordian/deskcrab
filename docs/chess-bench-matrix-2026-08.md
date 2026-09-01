@@ -1,10 +1,25 @@
 # Chess benchmark matrix — matrix-20260828
 
-Generated 2026-08-31 23:17 EDT by matrix_report.py (analysis only; selection discipline imported from matrix_selection.py).
+Base matrix generated 2026-09-01 00:21 EDT by matrix_report.py. The adaptive-pair and direct-finalist review below incorporates the completed ledger through 2026-09-01 10:35 EDT.
 
-**Status: COMPLETE under rule 20a elimination (451 scheduled game(s) pruned with reasons, listed below) (2 recorded game(s) excluded as pause artifacts, slots replayed or cancelled) (244 recorded game(s) INVALID under rule 20b — manufactured moves or retired-ceiling outcomes — slots replayed or pruned, listed below).** Every verdict below is FINAL only when its speed's cells are all complete with no top-ups owed; otherwise PROVISIONAL. Top-ups are decided only once a control completes — an incomplete control's top-ups are undecided, never claimed owed.
+**Status: COMPLETE under rule 20a elimination (451 scheduled game(s) pruned with reasons, listed below) (2 recorded game(s) excluded as pause artifacts, slots replayed or cancelled) (245 recorded game(s) INVALID under rule 20b — manufactured moves or retired-ceiling outcomes — slots replayed or pruned, listed below).** Every verdict below is FINAL only when its speed's cells are all complete with no top-ups owed; otherwise PROVISIONAL. Top-ups are decided only once a control completes — an incomplete control's top-ups are undecided, never claimed owed.
 
 Speed classes (chess_cli.TIME_CONTROLS): bullet = 1+0, 2+1; blitz = 3+2, 5+0; rapid = 10+0, 15+10; untimed is its own routed class. Reference opponent: sonnet-low. Reliability, ranking, tie-breaks, and top-up rules are specs/chess-selfplay.md rule 20 as implemented in matrix_selection.py (failure events: flag, stall, retry storm >= 10 excess attempts, account-limit death). A recorded game carrying any manufactured fallback move, or named in the invalid sidecar, is rule-20b INVALID: excluded from strength and reliability alike, its slot replayed or pruned.
+
+## Final exact-control selection
+
+The broad speed label is not used to hide a difference between its controls. The final adaptive-pair ladder and colour-swapped direct games select these live routes:
+
+| Control | Live state | Model | Quiet/sharp effort | Decisive evidence |
+| --- | --- | --- | --- | --- |
+| 1+0 | disabled | — | — | No measured configuration reliably finished Bullet. Spark is permanently excluded from benchmark play. |
+| 2+1 | disabled | — | — | No measured configuration reliably finished Bullet. Spark is permanently excluded from benchmark play. |
+| 3+2 | enabled | `sonnet` | `low`/`low` | Corrected full-game Blitz winner. |
+| 5+0 | enabled | `sonnet` | `low`/`low` | Corrected full-game Blitz winner. |
+| 10+0 | enabled | `opus` | `low`/`low` | Valid games 166 and 334: one draw and one win, with no Opus clock failure. Fable `low`/`medium` flagged in game 561. |
+| 15+10 | enabled | `fable` | `low`/`medium` | Fable beat the common reference twice in games 552–553; Opus `low`/`medium` scored one win and one draw in 550–551; their direct games 601–602 were draws. Fable then drew and won against Luna `low`/`low` in 613–614. |
+
+At 15+10, `medium`/`high` produced a valid flag for Opus, Fable, Sonnet, Terra, and Luna. Sol `low`/`low` also flagged. Terra's otherwise promising pairs failed longer valid games. Luna `medium`/`medium` flagged in direct play, while Luna `low`/`low` survived the clock but lost the direct match to Fable. These results leave no unfinished finalist game that can change the routes above.
 
 ## Speed: bullet (2+1, 1+0)
 
@@ -276,7 +291,7 @@ Control ranking (reliable): opus-low > fable-low > sonnet-low > sonnet-medium
 | fable-low | 4/4 | 0-4-0 | 2 | 0.50 | - | 5.2 | 10.7 | RELIABLE (1 invalid excluded — rule 20b) |
 | fable-medium | 1/1 | 0-1-0 | 0.5 | 0.50 | - | 6.4 | 27.9 | RELIABLE (1 game pruned) |
 | sonnet-medium | 4/4 | 0-3-1 | 1.5 | 0.38 | - | 3.9 | 165.5 | RELIABLE |
-| gpt-5.3-codex-spark-low | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 11.1 | 64.5 | unreliable |
+| gpt-5.3-codex-spark-low | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 11.0 | 36.2 | unreliable (1 invalid excluded — rule 20b) |
 | gpt-5.6-terra-low | 2/2 | 0-1-1 | 0.5 | 0.25 | flag | 14.2 | 60.6 | unreliable |
 | haiku-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 74.0 | 110.9 | unreliable (2 invalid excluded — rule 20b) |
 | gpt-5.6-luna-low | 2/2 | 0-0-2 | 0 | 0.00 | flag,flag | 12.8 | 44.6 | unreliable |
@@ -592,6 +607,7 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 - selfplay-benchmatrix-20260828-326: manufactured move(s): fallback×11 on black [slot pruned (rule 20a): surplus retired-regime slot beyond the colour-rotated valid pair the rule-20a evidence floor requires (its recording, if any, is rule-20b invalid); fresh top-ups are decided only at control completion, one round, by the live discipline]
 - selfplay-benchmatrix-20260828-327: manufactured move(s): fallback×6 on white [slot pruned (rule 20a): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed]
 - selfplay-benchmatrix-20260828-328: manufactured move(s): fallback×11 on black [slot pruned (rule 20a): rule-20b voids this pair's retired-regime evidence (fallback/ceiling contamination); not re-played: outside the corrected benchmark's candidate scope (the user's 2026-08-31 corrections kept the measured low-effort candidates, the reference mirror, and the sol/haiku ladder in contention); unmeasured under the corrected rules — below the rule-20a evidence floor, named as uncertainty in the report, never routed]
+- selfplay-benchmatrix-20260828-511: wrong-login account interruption (rule 20b, user ruling 2026-08-31 23:3x): the gate pair ran through the regular codex account because the detached builder never inherited the conf's CODEX_BIN/CODEX_HOME; the completed games of that pair stand as valid play, but 511's flag fell only after THAT account's Spark subscription limit ran dry mid-game at 23:16:26 — an account-specific interruption that cannot establish whether the required second-login account could finish, so the outcome is not clock evidence; the ledger line stands, the slot is owed a replacement through the configured login [replaced by selfplay-benchmatrix-20260828-549]
 
 ### Eliminated games (rule 20a — longest-clock-first elimination, each with its reason)
 
@@ -1053,11 +1069,14 @@ none — every scheduled cell is complete.
 
 ## Applied routing (live lib/chess_effort.py tables)
 
-- SPEED_MODELS: {'bullet': 'sonnet', 'blitz': 'sonnet', 'rapid': 'opus'}
+- CONTROL_MODELS: {'3+2': 'sonnet', '5+0': 'sonnet', '10+0': 'opus', '15+10': 'fable'}
+- CONTROL_PAIRS: {'3+2': ('low', 'low'), '5+0': ('low', 'low'), '10+0': ('low', 'low'), '15+10': ('low', 'medium')}
+- SPEED_MODELS: {'bullet': 'gpt-5.3-codex-spark', 'blitz': 'sonnet', 'rapid': 'opus'}
 - SPEED_PAIRS: {'bullet': ('low', 'low'), 'blitz': ('low', 'low'), 'rapid': ('low', 'low')}
-- bullet: rule 20a least-failure winner sonnet-low -> APPLIED (model 'sonnet', pair ('low', 'low'))
-- blitz: computed winner sonnet-low -> APPLIED (model 'sonnet', pair ('low', 'low'))
-- rapid: computed winner opus-low -> APPLIED (model 'opus', pair ('low', 'low'))
+- bullet: disabled for live play; the dormant Spark speed fallback is not benchmark evidence and cannot be offered through the live control list
+- 3+2 and 5+0: Sonnet `low`/`low`
+- 10+0: Opus `low`/`low`
+- 15+10: Fable `low`/`medium`
 
 ## Raw evidence
 

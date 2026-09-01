@@ -4,7 +4,7 @@
 # shipped green on paths nobody clicks — a per-serve flag and a per-CLI flag —
 # and the user, sat at the real browser page on 2026-08-25, found no clock
 # options on screen at all. This file pins the other half: the served markup
-# carries a visible selector offering exactly the standard set, POST /new
+# carries a visible selector offering exactly the enabled live set, POST /new
 # creates the game through the SAME path as every other door so the record,
 # the reflex ledger and betty-chess list split by variant with no second
 # implementation, the server refuses an out-of-set or forged control with
@@ -112,7 +112,7 @@ PY
 
 # The serve carries its own default control on purpose: the page's choice —
 # and the endpoint's untimed default — must be provably independent of it.
-echo "the page the opponent loads offers the clock — the standard set, nothing else:"
+echo "the page the opponent loads offers the enabled clocks, nothing else:"
 if ! start_bridge "$SANDBOX/wake.log" --opponent guest --human-side white \
         --time-control 5+0; then
     die "no bridge, nothing else can run"
@@ -121,10 +121,17 @@ page="$(http_get /)"
 contains "$page" 'id="timecontrol"' \
     && ok "the served markup carries the clock selector (rule 22h)" \
     || fail "no clock selector in the served page"
-for c in untimed 1+0 2+1 3+2 5+0 10+0 15+10; do
+for c in untimed 3+2 5+0 10+0 15+10; do
     contains "$page" "value=\"$c\"" \
         && ok "the selector offers $c" \
         || fail "the selector does not offer $c"
+done
+for c in 1+0 2+1; do
+    if contains "$page" "value=\"$c\""; then
+        fail "the selector still offers disabled Bullet $c"
+    else
+        ok "the selector does not offer disabled Bullet $c"
+    fi
 done
 n="$(PAGE="$page" pyrun <<'PY'
 import os, re
@@ -132,7 +139,7 @@ m = re.search(r'<select id="timecontrol".*?</select>', os.environ["PAGE"], re.S)
 print(len(re.findall(r"<option", m.group(0))) if m else -1)
 PY
 )"
-check_eq "and exactly the standard set — no invented control" "$n" "7"
+check_eq "and exactly the enabled live set — no invented control" "$n" "5"
 
 echo "POST /new creates through the one path and syncs the joined seat:"
 PORT="$PORT" REPO="$REPO" pyrun <<'PY'
@@ -185,6 +192,19 @@ check_eq "the live game stayed, nothing was created" "$(game_count)" "1"
 
 echo "enforcement is server-side only: out-of-set and forged controls refuse:"
 chess resign guest-001 >/dev/null 2>&1 || true
+res="$(http_post /new '{"control": "1+0"}')"
+check_eq "disabled Bullet is HTTP 400" "${res%%|*}" "400"
+contains "$res" "not yet fast enough for Bullet" \
+    && ok "the Bullet refusal explains why the mode is disabled" \
+    || fail "Bullet refusal body: $res"
+check_eq "and nothing was created for disabled Bullet" "$(game_count)" "1"
+if out="$(chess new cli-bullet --time-control 2+1 2>&1)"; then
+    fail "the CLI created disabled Bullet: $out"
+else
+    contains "$out" "not yet fast enough for Bullet" \
+        && ok "the CLI enforces the same Bullet gate" \
+        || fail "CLI Bullet refusal: $out"
+fi
 res="$(http_post /new '{"control": "7+7"}')"
 check_eq "an out-of-set name is HTTP 400" "${res%%|*}" "400"
 contains "$res" "unknown time control" \
@@ -230,7 +250,14 @@ c.join()
 c.expect(cs.PLAYER)
 c.expect(cs.OPPONENT_JOINED)
 c.send(cs.NEWGAME, b"")
-c.expect(cs.TEAM, timeout=10)
+# The poll can announce the preceding CLI resignation just after this fresh
+# connection joins. That settled game's GameComplete may arrive before the
+# new game's Team; it is not the NewGame response and may be skipped here.
+while True:
+    mtype, fields = c.recv(timeout=10)
+    if mtype == cs.TEAM:
+        break
+    assert mtype == cs.GAME_COMPLETE, (mtype, fields)
 gs = [json.load(open(p)) for p in glob.glob(os.path.join(
     os.environ["DESKCRAB_CHESS_DIR"], "games", "*.json"))]
 g = max(gs, key=lambda x: x["id"])

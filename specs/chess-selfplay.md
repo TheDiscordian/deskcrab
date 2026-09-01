@@ -43,8 +43,12 @@ are actually made.
    a second budget at 00:00. At most `$DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES` (default 150)
    calls per night, counted at the mover's choke point — one appended line per attempt in
    `$DESKCRAB_CHESS_DIR/selfplay/model-calls-YYYYMMDD.log` (YYYYMMDD the night key), written
-   with O_APPEND so concurrent movers count truly. Reflex moves cost nothing and are never
-   counted: the budget bounds spend, not play.
+   with O_APPEND. Concurrent movers serialize the count-and-append reservation on that file,
+   so exactly one attempt can claim the final available slot and no worker can spend past the
+   cap. Reflex moves cost nothing and are never counted: the budget bounds spend, not play.
+   An explicitly attended `--live-session` has no call ceiling: it keeps appending every attempt
+   to the same audit log, but the count never refuses a call. This mode is for a live operator
+   session only; unattended invocations retain the nightly ceiling.
 5. A self-play position arriving at the mover after the budget is spent is refused WITHOUT booting
    the CLI: the position resolves `failed` with a cause naming the budget and the count, loudly,
    through the mover's normal failure channels. This is the backstop that binds whatever loop is
@@ -74,7 +78,9 @@ are actually made.
     the pattern store is fed by the same choke point that feeds it for real games.
 11. The driver MUST refuse to contend with a person: while any live browser game's file has moved
     inside the hot window (15 minutes) it makes no model call and creates no game. It never touches
-    `browser-*` games, never books a wake, never notifies, never speaks.
+    `browser-*` games, never books a wake, never notifies, never speaks. A timed benchmark's clock
+    balances stand during this harness pause: after each hot wait the driver restarts the current
+    turn timestamp before it can judge or offer the benchmark position again.
 12. Games the driver plays are kept moving by rule, not by patience: rules-legal draws (threefold,
     fifty-move) are claimed, and a hard ply cap (240) agrees a draw rather than shuffle forever.
 13. The driver ends every chunk with one machine-readable `STATUS {...}` line naming why it
@@ -90,12 +96,13 @@ different model-and-effort configurations on each side, colours rotated, so the 
 game should think at can be chosen per control from measured games rather than by feel — while
 the finished games feed the pattern store exactly as every self-play game does.
 
-14. A benchmark is driven by THIS driver (rule 7), in `--bench <plan.json>` mode. Every rule
-    above binds it unchanged: the nightly move budget (rules 4-5, 9) counts every benchmark
-    model call, the games budget (rule 6) counts every benchmark game, the hot window (rule 11)
-    pauses it, and it books nothing, notifies nobody, and never speaks. A benchmark at real
-    scale is run by deliberately raising the budget knobs for that run — an operator's explicit
-    config line, never a new default.
+14. A benchmark is driven by THIS driver (rule 7), in `--bench <plan.json>` mode. The games
+    budget (rule 6), hot window (rule 11), silent operation, and audit log all bind it. An
+    unattended benchmark also obeys the nightly move budget (rules 4-5, 9). Its
+    `nightly_move_budget` is pinned in the benchmark plan and overrides each worker's inherited
+    environment, so parallel unattended workers cannot silently enforce different ceilings.
+    An attended benchmark uses `--live-session`; every worker then records every call without a
+    ceiling, irrespective of the plan's unattended budget.
 15. **Per-side configuration.** The plan names configurations — `{model, quiet, sharp}` — and
     each scheduled game assigns one per colour. The effort still comes from the rule-16b
     classifier per move, read against the SIDE'S OWN pair (`quiet` when no alarm fired, `sharp`
@@ -112,17 +119,23 @@ the finished games feed the pattern store exactly as every self-play game does.
     ([model-backends.md](model-backends.md) rule 15) — because a benchmark cell that silently
     substituted engines would measure nothing, and because the fallback would let a grind spend
     Claude allowance under a codex flag. Every attempt is budget-counted exactly as rule 4
-    demands; a cooling codex login yields no attempt at all, so the move fails loudly — in a
-    timed game the clock keeps running and the flag, when it falls, is the recorded result
-    (rule 17: no move is ever manufactured); a capacity interruption with time still standing
-    rule 20 resumes rather than excludes. Real games feel
+    demands. A subscription-limit refusal or unavailable login cancels the benchmark worker
+    immediately and leaves the game resumable; neither is converted into a flag or selection
+    evidence. A transient server-capacity interruption also leaves the game resumable and does
+    not eliminate the configuration. These cases are detected before the wall clock is judged,
+    while an actual slow model answer remains bound by rule 17's clock. Real games feel
     none of this: their model comes from rule 16b's own knobs ([chessweb.md](chessweb.md)),
     never from this allowlist.
 16. **The schedule.** The plan lists games with an id (`selfplay-bench*-NNN` — inside rule 1's
     prefix, so every guard keys on it), a time control from the standard set, and the two
     configurations. Each matchup appears an even number of times with colours swapped, so
-    colour never confounds the comparison. The driver plays the plan in order, one game at a
-    time; a game already finished on disk is skipped, so the plan file plus the game files ARE
+    colour never confounds the comparison. One driver plays the plan in order, one game at a
+    time. Independent driver workers may run in parallel only when each is assigned an
+    explicit, disjoint `--bench-game` id; every assigned id is also protected by a non-blocking
+    process lock, so an accidental duplicate worker refuses instead of touching the same game.
+    Parallel batches are kept small enough that shared-account contention does not become the
+    reason a configuration loses on time. A game already finished on disk is skipped, so the
+    plan file plus the game files ARE
     the resumable state — a killed chunk resumes mid-game from the store, and re-running a
     finished plan replays nothing.
 17. **The clock is real.** A benchmark game is created WITH its scheduled time control, charged
@@ -174,12 +187,11 @@ the finished games feed the pattern store exactly as every self-play game does.
     `--bench-report` renders the ledger and game records into the results table — per control:
     each configuration's score, flags, failures, and latency split by source — and recommends
     nothing by itself: choosing is the reader's job.
-20. **The corrective matrix** (adopted 2026-08-28, on the user's rejection of the probe-based
-    verdict). `--bench-init-matrix` writes a full-matrix plan: every supported live mover
+20. **The corrective matrix.** `--bench-init-matrix` writes a full-matrix plan: every supported live mover
     model (`sonnet`, `haiku`, `opus`, `fable` — the Claude families the account walk serves)
-    at every effort the CLI accepts (`low`, `medium`, `high`, `xhigh`, `max`), each as a
-    UNIFORM configuration (quiet == sharp == the effort, so a cell measures exactly one
-    model-and-effort pair playing whole games), against ONE common reference configuration
+    at every chess effort (`low`, `medium`, `high`, `xhigh`), each as a
+    uniform configuration (quiet == sharp == the effort, so a cell measures exactly one
+    model-and-effort level playing whole games), against ONE common reference configuration
     (`sonnet-low`, the measured steadiest), colours rotated within every cell, across every
     concrete standard timed control, fastest first. The reference's own cell is its mirror
     game. The matrix crosses model FAMILY as well as effort (amended 2026-08-29, on the
@@ -191,11 +203,33 @@ the finished games feed the pattern store exactly as every self-play game does.
     candidates and their effort lists (amended 2026-08-31, on the user's ruling that the
     ChatGPT subscription's other models were omitted from the matrix) are exactly what the
     authenticated codex catalogue supports: `sol` — the login's conversation model, resolved
-    per [model-backends.md](model-backends.md) rule 2 — at the shared five plus its own
-    `ultra`; and the remaining subscription models by exact slug, never an alias:
-    `gpt-5.6-terra` at the shared five plus `ultra`, `gpt-5.6-luna` at the shared five,
-    `gpt-5.3-codex-spark` at `low`/`medium`/`high`/`xhigh`. An effort outside a model's own
-    list is not a cell at all — scheduling one would benchmark a call the catalogue refuses. `--bench-extend-matrix <plan>` appends
+    per [model-backends.md](model-backends.md) rule 2 — at the shared four; and the remaining
+    benchmarkable subscription models by exact slug, never an alias: `gpt-5.6-terra` and
+    `gpt-5.6-luna` at the same four,
+    while `gpt-5.3-codex-spark` is permanently excluded from every self-play and benchmark
+    call. An effort outside a model's own list is not a cell at all — scheduling one would
+    benchmark a call the catalogue refuses.
+    The uniform matrix is the family and clock gate. A routed winner is not selected while a
+    stronger adaptive pair remains untested. Each clock-safe model climbs this ordered
+    quiet/sharp ladder, starting at the longest control:
+    `low/medium`, `medium/medium`, `medium/high`, `high/high`, `high/xhigh`, then
+    `xhigh/xhigh`. The quiet effort never exceeds the sharp effort. XHigh is the absolute
+    chess ceiling; Max and Ultra are neither scheduled nor accepted by a benchmark worker.
+    Each pair is a distinct configuration and plays two colour-swapped games against the
+    same reference. A pair must reliably finish a longer control before its shorter-control
+    games are scheduled. A clock failure eliminates that pair and every later pair for the
+    same model at that control and all shorter controls; a clean pass advances the model one
+    rung. The controls retain independent winners: passing 15+10 does not imply passing 10+0.
+    Selection remains open until every eligible model has either completed the ladder or been
+    eliminated by the clock rule. `gpt-5.3-codex-spark` is excluded from every benchmark
+    call. Once the ladder leaves one best clock-safe configuration per model and control,
+    those finalists play a colour-swapped round against every other finalist at that control.
+    This direct round is required even when the common-reference scores are not tied: it
+    settles ambiguous cross-model results instead of inferring them through the reference.
+    A finalist that fails either clock is eliminated; among the finishers, direct score is
+    the first strength comparison, followed by the common-reference score and the existing
+    reliability, latency-tail, and cost tie-breaks.
+    `--bench-extend-matrix <plan>` appends
     whatever matrix cells an existing plan is missing — grouped at the end of their control's
     block so play order stays fastest-first, colours still rotated, ids continuing the plan's
     numbering, existing games untouched — so a matrix widened after play began extends the
@@ -204,17 +238,16 @@ the finished games feed the pattern store exactly as every self-play game does.
     storms, or account-limit deaths — those are failures to finish, never noise; among
     reliable finishers the strongest measured result wins, tie-broken by head-to-head where
     played, then fewer failure events, then the lower latency tail, then the cheaper pair
-    (lower effort, then cheaper model). A cell interrupted by capacity limits is RESUMED,
-    never excluded — the plan file plus the game files are the resumable state, exactly rule
-    16. The untimed route stays on the uniform pair (chessweb.md rule 16b): the second,
-    untimed round this rule once scheduled is retired by the user's 2026-08-31 correction
-    (rule 20a) — a timed elimination benchmark owes no untimed play. The verdict lands as
-    `chess_effort.SPEED_PAIRS` and `chess_effort.SPEED_MODELS` values
-    (chessweb.md rule 16b), with the full matrix, the exclusion and uncertainty statements,
-    and the raw ledger locations written into the run's report in `docs/`.
-20a. **Longest-clock-first elimination** (adopted 2026-08-31, on the user's correction of the
-    matrix ask: a timed elimination benchmark, not an exhaustive round robin and never an
-    untimed round). Controls are judged longest clock first. A pair that fails a longer
+    (lower effort, then cheaper model). A cell interrupted by server capacity is RESUMED,
+    never excluded; a subscription-limit refusal cancels its worker and is resumed only after
+    allowance is available — the plan file plus the game files are the resumable state, exactly rule
+    16. Untimed play is outside this timed elimination benchmark and keeps its uniform
+    default pair (chessweb.md rule 16b). A verdict may differ between two controls carrying
+    the same speed label, so exact-control winners land in `chess_effort.CONTROL_PAIRS` and
+    `chess_effort.CONTROL_MODELS`; broader fallbacks land in `SPEED_PAIRS` and
+    `SPEED_MODELS`. The run's report in `docs/` records the full matrix, exclusions,
+    uncertainty statements, and raw ledger locations.
+20a. **Longest-clock-first elimination.** Controls are judged longest clock first. A pair that fails a longer
     control for CLOCK reasons — a flag, a retry storm or account-limit death that burned the
     clock away, or otherwise proving too slow to finish — is eliminated from every shorter
     control without playing those games: less clock can only fail harder. The same monotone
@@ -249,7 +282,9 @@ the finished games feed the pattern store exactly as every self-play game does.
     exactly what was measured and no more: while any cell of a control stays unmeasured under
     the corrected regime, the report says no MEASURED configuration finishes it, names the
     unmeasured cells, and never claims that no configuration can — a benchmark that did not
-    play a cell cannot speak for it. Either way, a
+    play a cell cannot speak for it. The same honesty binds every shipped restatement of a
+    verdict, not just the report: no routing comment or UI message may turn a measured result
+    into a claim about unmeasured configurations. Either way, a
     pair is ELIGIBLE for a speed-class verdict only with a colour-rotated pair of valid
     games at each of the class's controls — rule 16's even-colours discipline applied to
     the evidence, not just the schedule; a pair short of that floor is named as

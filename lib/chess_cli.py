@@ -182,6 +182,14 @@ TIME_CONTROLS = {  # name -> (speed, base ms, Fischer increment ms per move)
     "15+10": ("rapid", 900_000, 10_000),
 }
 
+# Bullet remains a readable and benchmarkable clock, but it is not currently
+# offered for live games: even Spark Low cannot answer 2+1 reliably. Keeping
+# the definitions above preserves every existing record and makes the future
+# re-enable a deliberate gate change rather than a file-format change.
+DISABLED_LIVE_TIME_CONTROLS = {"1+0", "2+1"}
+LIVE_TIME_CONTROLS = tuple(
+    name for name in TIME_CONTROLS if name not in DISABLED_LIVE_TIME_CONTROLS)
+
 
 def make_time_control(name):
     """(time_control, clock) fields for a NEW game, or (None, None) for
@@ -194,6 +202,15 @@ def make_time_control(name):
     speed, base, inc = TIME_CONTROLS[name]
     return ({"name": name, "speed": speed, "base_ms": base, "inc_ms": inc},
             {"white_ms": base, "black_ms": base, "turn_started": None})
+
+
+def make_live_time_control(name):
+    """Clock fields for a new live game, subject to the current mode gate."""
+    if name in DISABLED_LIVE_TIME_CONTROLS:
+        raise CliError(
+            f"time control '{name}' is disabled — Beatrice is not yet fast "
+            "enough for Bullet. Choose Blitz, Rapid, or untimed")
+    return make_time_control(name)
 
 
 def _clock_armed(g: dict) -> bool:
@@ -768,7 +785,7 @@ def print_position(g: dict, board: chess.Board) -> None:
 # ---------------------------------------------------------------- commands
 
 def cmd_new(args):
-    tc, ck = make_time_control(args.time_control)
+    tc, ck = make_live_time_control(args.time_control)
     player = clean_player(getattr(args, "player", None))
     slug = slugify(args.opponent)
     taken = {g["id"] for g in load_all()}
@@ -1169,7 +1186,8 @@ def main(argv=None):
     sp.add_argument("--time-control", default="untimed",
                     metavar="NAME",
                     help="a chess clock for the game: one of "
-                         f"{', '.join(TIME_CONTROLS)} (base+increment), or "
+                         f"{', '.join(LIVE_TIME_CONTROLS)} "
+                         "(base+increment), or "
                          "untimed (the default, no clock at all)")
     sp.add_argument("--player", default=None, metavar="NAME",
                     help="who is actually sitting across the board "

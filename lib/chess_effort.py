@@ -23,81 +23,68 @@ import os
 
 import chess
 
-# The two levels, each its own knob because the pair has been adjudicated
-# more than once. Quiet ran at medium and alarmed at high from 2026-08-10's
-# adjudication — the per-move minutes were the queue in front of the call,
-# not the thinking inside it. On 2026-08-15 the user lowered the pair to
-# low/medium, and the game-id-parity A/B that then interleaved the lowered
-# pair with the old one was rejected by him outright (docs/history.md,
-# 2026-08-26): one uniform pair for every game, no arms, no parity — and the
-# pair he reaffirmed that day is the lowered low/medium; the cleanup removed
-# the alternation, never the lowering. The knobs make the next adjudication
-# a config line, not an edit (specs/chessweb.md rule 16b).
+# The untimed/default pair. Timed games use the control and speed tables
+# below. Each level remains independently configurable.
 QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "low")
 SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 
-# The clock picks the pair (specs/chessweb.md rule 16b, adopted 2026-08-27):
-# a timed game reads its SPEED's pair, so a bullet game stops paying rapid
-# thinking prices and a rapid game with increment can afford real thought.
-# The defaults are the corrected 2026-08 full-game matrix benchmark's verdict
-# (docs/chess-bench-matrix-2026-08.md, specs/chess-selfplay.md rules 20-20b):
-# each speed carries its measured winner's own uniform pair, and every winner
-# of the corrected matrix is a low pair — under the clock-is-the-only-ceiling
-# regime (rule 16g) every measured higher effort either flagged or fell below
-# the rule-20a evidence floor. The 2026-08-27 probe-era rapid low/medium is
-# history: its evidence was rule-20b invalidated with the retired fixed
-# ceiling. Each level is overridable by its own knob, so the next
-# adjudication is a config line here too. An untimed game — and any speed
-# outside this table — keeps the uniform pair above, exactly as the
-# 2026-08-26 adjudication left it.
+# Exact controls may have different measured winners even when they share a
+# speed label. A control table therefore wins over the broader speed default;
+# the speed table remains the fallback for timed controls not named here.
+CONTROL_PAIRS = {
+    "3+2": ("low", "low"),
+    "5+0": ("low", "low"),
+    "10+0": ("low", "low"),
+    "15+10": ("low", "medium"),
+}
+
 SPEED_PAIRS = {
     "bullet": ("low", "low"),
     "blitz": ("low", "low"),
     "rapid": ("low", "low"),
 }
 
-# The clock picks the MODEL too (specs/chessweb.md rule 16b, adopted
-# 2026-08-28): once the corrective full-game matrix benchmark
-# (specs/chess-selfplay.md rule 20) has chosen a model for a routed class,
-# its name lives here — and for that speed it OUTRANKS the global
-# DESKCRAB_CHESS_MOVER_MODEL knob, because the user's directive that night
-# was exactly that a global model selection must not survive a control
-# merely because it predates the measurement. The corrected 2026-08 matrix
-# (docs/chess-bench-matrix-2026-08.md, specs/chess-selfplay.md rules
-# 20-20b) filled the timed entries: rapid opus (reliable winner opus-low,
-# pooled rate 0.75 over 10+0 and 15+10, zero failure events), blitz sonnet
-# (reliable winner sonnet-low at both 3+2 and 5+0), bullet sonnet (a
-# LEAST-FAILURE verdict, not a reliable finisher — no configuration
-# physically finishes bullet under the clock-only regime; sonnet-low
-# carried the fewest flags per game, 3 in 8, and that failure record is
-# part of the verdict). "untimed" stays unrouted: the user's 2026-08-31
-# correction retired the untimed round, so no untimed verdict exists and
-# the mover's own chain remains untimed's whole answer. The per-speed env
-# knob (DESKCRAB_CHESS_MOVER_MODEL_<SPEED>) outranks the table, so the
-# next adjudication is a config line.
+# The exact-control model defaults are the corrected full-game benchmark
+# winners. Bullet remains disabled in live play; its dormant speed fallback
+# preserves the selected Spark trial without claiming benchmark reliability.
+CONTROL_MODELS = {
+    "3+2": "sonnet",
+    "5+0": "sonnet",
+    "10+0": "opus",
+    "15+10": "fable",
+}
+
 SPEED_MODELS = {
-    "bullet": "sonnet",
+    "bullet": "gpt-5.3-codex-spark",
     "blitz": "sonnet",
     "rapid": "opus",
 }
 
 
-def model_for(speed):
-    """The model a game of `speed` should think with, or None for the
-    mover's own environment chain: the explicit per-speed knob first, then
-    the benchmark-chosen default in SPEED_MODELS. No speed reads as
-    "untimed" — an untimed game is a routed class of its own."""
+def model_for(speed, control=None):
+    """The model for a speed/control, or None for the mover's own chain.
+
+    The explicit per-speed knob wins, then the exact-control benchmark
+    default, then the broader speed fallback.
+    """
     speed = speed or "untimed"
     return (os.environ.get("DESKCRAB_CHESS_MOVER_MODEL_" + speed.upper())
+            or CONTROL_MODELS.get(control)
             or SPEED_MODELS.get(speed) or None)
 
 
-def pair_for(speed):
-    """(quiet, sharp) for a game of `speed` — the per-speed knobs first,
-    then the benchmark-chosen defaults; (QUIET, SHARP) for no speed."""
-    if not speed or speed not in SPEED_PAIRS:
+def pair_for(speed, control=None):
+    """(quiet, sharp) for a speed/control.
+
+    Per-speed knobs win, then the exact-control benchmark default, then the
+    broader speed fallback. Untimed and unknown speeds use (QUIET, SHARP).
+    """
+    if not speed:
         return (QUIET, SHARP)
-    dq, ds = SPEED_PAIRS[speed]
+    pair = CONTROL_PAIRS.get(control) or SPEED_PAIRS.get(speed)
+    if pair is None:
+        return (QUIET, SHARP)
+    dq, ds = pair
     return (os.environ.get("DESKCRAB_CHESS_EFFORT_%s_QUIET" % speed.upper(),
                            dq),
             os.environ.get("DESKCRAB_CHESS_EFFORT_%s_SHARP" % speed.upper(),

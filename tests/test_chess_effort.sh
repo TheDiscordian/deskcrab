@@ -379,25 +379,30 @@ grep -q "a move landed in game" "$WAKE_LOG" \
   || fail "wake log" "$(cat "$WAKE_LOG")"
 
 echo
-echo "the clock picks the pair (rule 16b, adopted 2026-08-27):"
-pairfor() { local sp="$1"; shift; env "$@" "$PY" -B - "$sp" <<EOF
+echo "the exact control picks the pair before its speed fallback (rule 16b):"
+pairfor() { local sp="$1" ctl="$2"; shift 2; env "$@" "$PY" -B - "$sp" "$ctl" <<EOF
 import sys; sys.path.insert(0, "$REPO/lib")
 import chess_effort
 speed = sys.argv[1] if sys.argv[1] != "-" else None
-q, s = chess_effort.pair_for(speed)
+control = sys.argv[2] if sys.argv[2] != "-" else None
+q, s = chess_effort.pair_for(speed, control)
 print(q, s)
 EOF
 }
-check_eq "no speed keeps the adjudicated uniform pair" "$(pairfor -)" "low medium"
-check_eq "an unknown speed keeps it too" "$(pairfor correspondence)" "low medium"
-check_eq "bullet reads its own benchmark-chosen pair" "$(pairfor bullet)" "low low"
-check_eq "blitz reads its own" "$(pairfor blitz)" "low low"
-check_eq "rapid reads its own" "$(pairfor rapid)" "low low"
+check_eq "no speed keeps the adjudicated uniform pair" "$(pairfor - -)" "low medium"
+check_eq "an unknown speed keeps it too" "$(pairfor correspondence -)" "low medium"
+check_eq "bullet reads its dormant speed fallback" "$(pairfor bullet 1+0)" "low low"
+check_eq "blitz reads its speed fallback" "$(pairfor blitz -)" "low low"
+check_eq "rapid reads its speed fallback" "$(pairfor rapid -)" "low low"
+check_eq "10+0 uses the measured Opus low/low pair" \
+    "$(pairfor rapid 10+0)" "low low"
+check_eq "15+10 uses the measured Fable low/medium pair" \
+    "$(pairfor rapid 15+10)" "low medium"
 check_eq "a per-speed knob overrides by env alone" \
-    "$(pairfor rapid DESKCRAB_CHESS_EFFORT_RAPID_QUIET=medium \
+    "$(pairfor rapid 15+10 DESKCRAB_CHESS_EFFORT_RAPID_QUIET=medium \
        DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "medium max"
 check_eq "and leaves the other speeds where they were" \
-    "$(pairfor bullet DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "low low"
+    "$(pairfor bullet 1+0 DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "low low"
 
 PAIRED="$("$PY" -B - <<EOF
 import sys; sys.path.insert(0, "$REPO/lib")
@@ -422,18 +427,30 @@ MM="$("$PY" -B - <<EOF
 import sys, os; sys.path.insert(0, "$REPO/lib")
 import chessweb
 timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
+rapid10 = {"time_control": {"name": "10+0", "speed": "rapid"}}
+rapid15 = {"time_control": {"name": "15+10", "speed": "rapid"}}
 print("unset:", chessweb.mover_model_for(timed))
+print("rapid:", chessweb.mover_model_for(rapid10),
+      chessweb.mover_model_for(rapid15))
 os.environ["DESKCRAB_CHESS_MOVER_MODEL_BULLET"] = "haiku"
 print("set:", chessweb.mover_model_for(timed))
+os.environ["DESKCRAB_CHESS_MOVER_MODEL_RAPID"] = "sonnet"
+print("rapid-override:", chessweb.mover_model_for(rapid15))
 print("untimed:", chessweb.mover_model_for({}))
 print("none-game:", chessweb.mover_model_for(None))
 EOF
 )"
-contains "$MM" "unset: sonnet" \
-    && ok "no per-speed knob means the shipped benchmark default rides the job" \
+contains "$MM" "unset: gpt-5.3-codex-spark" \
+    && ok "no per-speed knob means the shipped routed default rides the job" \
     || fail "mover_model_for: $MM"
 contains "$MM" "set: haiku" \
     && ok "the per-speed knob rides the job for its speed" \
+    || fail "mover_model_for: $MM"
+contains "$MM" "rapid: opus fable" \
+    && ok "the two Rapid controls carry their independently measured winners" \
+    || fail "mover_model_for: $MM"
+contains "$MM" "rapid-override: sonnet" \
+    && ok "the per-speed knob overrides an exact-control default" \
     || fail "mover_model_for: $MM"
 contains "$MM" "untimed: None" && contains "$MM" "none-game: None" \
     && ok "an untimed game and a missing game read as no offer" \
@@ -446,7 +463,9 @@ import sys, os; sys.path.insert(0, "$REPO/lib")
 import chess_effort, chessweb
 timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
 print("shipped:", chess_effort.model_for("bullet"),
-      chess_effort.model_for("blitz"), chess_effort.model_for("rapid"),
+      chess_effort.model_for("blitz", "3+2"),
+      chess_effort.model_for("rapid", "10+0"),
+      chess_effort.model_for("rapid", "15+10"),
       chess_effort.model_for("untimed"))
 chess_effort.SPEED_MODELS["bullet"] = "sonnet"
 chess_effort.SPEED_MODELS["untimed"] = "haiku"
@@ -463,8 +482,8 @@ chess_effort.SPEED_MODELS.clear()
 print("cleared:", chessweb.mover_model_for(timed))
 EOF
 )"
-contains "$RT" "shipped: sonnet sonnet opus None" \
-    && ok "the corrected matrix verdict ships in the table — bullet and blitz sonnet, rapid opus, untimed unrouted" \
+contains "$RT" "shipped: gpt-5.3-codex-spark sonnet opus fable None" \
+    && ok "the shipped tables route each exact live control to its measured winner" \
     || fail "SPEED_MODELS: $RT"
 contains "$RT" "routed: sonnet" \
     && ok "a routed speed's default rides the job over the global knob" \
@@ -478,3 +497,24 @@ contains "$RT" "knob-beats-table: opus" \
 contains "$RT" "cleared: None" \
     && ok "and clearing the table restores the old behaviour exactly" \
     || fail "SPEED_MODELS: $RT"
+
+echo
+echo "shipped routing documentation claims only what was measured (rule 20a honesty):"
+# The spec's honesty clause (chess-selfplay.md rule 20a) binds every shipped
+# restatement of a verdict, not just the report: routing documentation may
+# claim only what was measured. An absolute "no configuration finishes"
+# claim about unmeasured configurations may never appear, and the MEASURED
+# qualifier must stay beside the least-failure verdict.
+check_eq "no absolute physically-finishes claim in lib/chess_effort.py" \
+    "$(grep -ci "physically finishes" "$REPO/lib/chess_effort.py")" "0"
+check_eq "no 'no configuration ... finishes' absolute outside a MEASURED qualifier" \
+    "$(grep -ci "no configuration[^.]*finishes" "$REPO/lib/chess_effort.py")" "0"
+check "the dormant Bullet route is explicitly marked disabled" \
+    grep -q "Bullet remains disabled" "$REPO/lib/chess_effort.py"
+if [ -f "$REPO/docs/chess-bench-matrix-2026-08.md" ]; then
+    check_eq "the rendered report carries no absolute physically-finishes claim either" \
+        "$(grep -ci "physically finishes" "$REPO/docs/chess-bench-matrix-2026-08.md")" "0"
+    check "the rendered report disclaims the unmeasured cells" \
+        grep -q "No claim is made that no configuration CAN finish" \
+        "$REPO/docs/chess-bench-matrix-2026-08.md"
+fi

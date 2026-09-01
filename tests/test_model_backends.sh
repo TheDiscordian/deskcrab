@@ -475,7 +475,7 @@ check_eq "a codex classify answers with the bare text" "$OUT" "codex stub reply.
 rm -f "$CODEX_STATE"
 printf 'the question' | sb "CODEX_BIN='$SANDBOX_BIN/codex' CODEX_STUB_LIMIT=1 \
     claude_classify sol 'sys'" >/dev/null 2>&1 || true
-check "a classifier capacity refusal cools the one codex login" \
+check "a classifier subscription-limit refusal cools the one codex login" \
     test -s "$CODEX_STATE"
 
 echo

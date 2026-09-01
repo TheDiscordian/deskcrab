@@ -30,6 +30,7 @@ Usage: chess_selfplay.py [--budget SECONDS] [--games N] [--deadline HH:MM]
 """
 
 import argparse
+import fcntl
 import json
 import os
 import random
@@ -72,6 +73,17 @@ def nightly_games():
                                   "4"))
     except ValueError:
         return 4
+
+
+def pin_bench_move_budget(plan):
+    """Make every worker on one benchmark plan share one call ceiling."""
+    raw = plan.get("nightly_move_budget")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise ValueError("nightly_move_budget must be a positive integer")
+    os.environ["DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES"] = str(raw)
+    return raw
 
 
 def log(msg):
@@ -246,11 +258,11 @@ def try_reflex(g, board, t0):
 
 def play_one_move(g, movers, bench=None):
     """One ply, whoever's turn it is. Returns 'moved', 'over', 'hot',
-    'budget-spent', 'failed', or 'stalled'. `bench` is (plan, spec) in
-    benchmark mode: openings come from the book at random for the first
-    plies (rule 18), and the side to move thinks with its OWN configuration
-    — its model on the job, its quiet/sharp pair through the classifier
-    (rule 15)."""
+    'budget-spent', 'subscription-limit', 'account-unavailable', 'capacity',
+    'failed', or 'stalled'. `bench` is (plan, spec) in benchmark mode:
+    openings come from the book at random for the first plies (rule 18), and
+    the side to move thinks with its OWN configuration — its model on the
+    job, its quiet/sharp pair through the classifier (rule 15)."""
     board = chess_cli.build_board(g)
     state, desc, result = chess_cli.compute_state(g, board)
     if state != "active":
@@ -324,6 +336,22 @@ def play_one_move(g, movers, bench=None):
             g.clear()
             g.update(g2)
             return "moved"
+        n, stalled, why = mover.failure_state(key)
+        # Account allowance and provider capacity are operating conditions,
+        # not chess strength. Detect them before judging the wall clock so
+        # neither can be transformed into a flag and eliminate a model.
+        if chess_mover.subscription_limit_failure(why):
+            log(f"{g['id']} ply {ply}: {side} subscription limit — "
+                "cancelling this worker, game remains resumable")
+            return "subscription-limit"
+        if chess_mover.account_auth_failure(why):
+            log(f"{g['id']} ply {ply}: {side} account unavailable — "
+                "cancelling this worker, game remains resumable")
+            return "account-unavailable"
+        if chess_mover.server_capacity_failure(why):
+            log(f"{g['id']} ply {ply}: {side} server capacity interruption "
+                "— game remains resumable")
+            return "capacity"
         # A clock may have run out while the think was in flight: a fallen
         # flag is a finished game, never a failed move (rule 17).
         if chess_cli.compute_state(g2, chess_cli.build_board(g2))[0] \
@@ -331,7 +359,6 @@ def play_one_move(g, movers, bench=None):
             g.clear()
             g.update(g2)
             return "over"
-        n, stalled, why = mover.failure_state(key)
         if why and "budget spent" in why:
             return "budget-spent"
         if stalled:
@@ -448,6 +475,29 @@ def bench_recorded(plan):
     return {e["game"] for e in bench_ledger_lines(plan) if "game" in e}
 
 
+def bench_claim_games(game_ids):
+    """Hold non-blocking process locks for explicit parallel game ids.
+
+    Claims are all-or-nothing so a worker never silently runs a partial
+    assignment. Closing the returned handles releases every claim, including
+    after a crash or a bounded chunk exit.
+    """
+    claim_dir = SP_DIR / "claims"
+    claim_dir.mkdir(parents=True, exist_ok=True)
+    handles = []
+    for gid in game_ids:
+        fh = open(claim_dir / (gid + ".lock"), "a+", encoding="utf-8")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            for held in handles:
+                held.close()
+            return [], gid
+        handles.append(fh)
+    return handles, None
+
+
 def bench_resume_clock(g, board, started):
     """Rule 17's boundary: the wall clock binds under a live driver — mover
     queueing, retries and failures included — but the pause BETWEEN driver
@@ -467,6 +517,29 @@ def bench_resume_clock(g, board, started):
     chess_cli.save_game(g)
     log(f"{g['id']}: picked up mid-game — turn clock restarted, balances "
         f"stand (white {ck.get('white_ms')}ms, black {ck.get('black_ms')}ms)")
+    return True
+
+
+def bench_end_hot_pause(g):
+    """Restart a benchmark turn after yielding to a live browser game.
+
+    The live game's hot window belongs to the harness, not either measured
+    configuration. Reset only the running-turn timestamp; both clock
+    balances stand exactly where they were before the wait.
+    """
+    ck = g.get("clock")
+    if (not ck or ck.get("turn_started") is None
+            or g.get("resigned_by") or g.get("draw_agreed")
+            or g.get("flag_fell")):
+        return False
+    board = chess_cli.build_board(g)
+    if board.is_game_over():
+        return False
+    ck["turn_started"] = time.time()
+    chess_cli.save_game(g)
+    log(f"{g['id']}: live-game pause ended — turn clock restarted, "
+        f"balances stand (white {ck.get('white_ms')}ms, "
+        f"black {ck.get('black_ms')}ms)")
     return True
 
 
@@ -626,9 +699,16 @@ def run_bench(args, plan, started, deadline_ts):
                         f"/{chess_mover.selfplay_nightly_moves()}) "
                         "— stopping")
                     return "budget-spent", moved
+                elif outcome == "subscription-limit":
+                    return "subscription-limit", moved
+                elif outcome == "account-unavailable":
+                    return "account-unavailable", moved
+                elif outcome == "capacity":
+                    return "capacity", moved
                 elif outcome == "hot":
                     log("live browser game is hot — pausing the grind")
                     time.sleep(60)
+                    bench_end_hot_pause(g)
                 elif outcome in ("failed", "stalled"):
                     consecutive_failures += 1
                     if outcome == "stalled" or consecutive_failures >= 2:
@@ -732,6 +812,7 @@ def bench_default_plan(run):
                               "control": control,
                               "white": white, "black": black})
     return {"run": run,
+            "nightly_move_budget": chess_mover.selfplay_nightly_moves(),
             "probe": {"configs": [["haiku", "low"], ["haiku", "medium"],
                                   ["sonnet", "low"], ["sonnet", "medium"],
                                   ["sonnet", "high"]],
@@ -745,9 +826,7 @@ def bench_default_plan(run):
 # cell measures exactly one model-and-effort pair playing whole games,
 # against one common reference, colours rotated, every timed control,
 # fastest first. Probes are never selection evidence; these games are.
-# The matrix crosses model FAMILY as well as effort (rule 20, amended
-# 2026-08-29 on the user's acceptance criterion, and 2026-08-31 on the
-# user's ruling that the ChatGPT subscription's other models were omitted):
+# The matrix crosses model FAMILY as well as effort (rule 20):
 # the codex-family candidates ride the same matrix, each at ITS OWN effort
 # list — exactly what the authenticated codex catalogue supports per model,
 # because an effort outside a model's own list is a call the catalogue
@@ -755,16 +834,16 @@ def bench_default_plan(run):
 # its exact slug, and rule 15's explicit allowlisting and codex-only
 # attempt list bind every call: the move comes from that exact model
 # through the one codex login or it does not come at all — never a Claude
-# fallback, never a substituted model.
+# fallback, never a substituted model. Spark is permanently excluded from
+# every benchmark plan.
 MATRIX_MODELS = ["sonnet", "haiku", "opus", "fable"]
-MATRIX_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+MATRIX_EFFORTS = ["low", "medium", "high", "xhigh"]
 MATRIX_CODEX_MODELS = {
-    "sol": MATRIX_EFFORTS + ["ultra"],
-    "gpt-5.6-terra": MATRIX_EFFORTS + ["ultra"],
+    "sol": list(MATRIX_EFFORTS),
+    "gpt-5.6-terra": list(MATRIX_EFFORTS),
     "gpt-5.6-luna": list(MATRIX_EFFORTS),
-    "gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"],
 }
-MATRIX_CODEX_EFFORTS = MATRIX_CODEX_MODELS["sol"]  # sol's own list (compat)
+MATRIX_CODEX_EFFORTS = MATRIX_CODEX_MODELS["sol"]  # compatibility alias
 MATRIX_REFERENCE = "sonnet-low"
 MATRIX_CONTROLS = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
 
@@ -816,7 +895,9 @@ def bench_matrix_plan(run, reps=2):
               "control": control, "white": white, "black": black}
              for n, (control, white, black)
              in enumerate(bench_matrix_cells(reps))]
-    return {"run": run, "configs": bench_matrix_configs(), "games": games}
+    return {"run": run,
+            "nightly_move_budget": chess_mover.selfplay_nightly_moves(),
+            "configs": bench_matrix_configs(), "games": games}
 
 
 def bench_extend_matrix(plan, reps=2):
@@ -989,8 +1070,16 @@ def main():
     ap.add_argument("--day", action="store_true",
                     help="a deliberate daytime chunk: run even when the "
                          "start is nowhere near the night's wall")
+    ap.add_argument("--live-session", action="store_true",
+                    help="an attended operator session: keep counting every "
+                         "model call, but do not enforce the unattended "
+                         "nightly call ceiling")
     ap.add_argument("--bench", metavar="PLAN",
                     help="play the benchmark plan (JSON) for this chunk")
+    ap.add_argument("--bench-game", action="append", default=[],
+                    metavar="GAME_ID",
+                    help="with --bench, run only this explicitly claimed "
+                         "game; repeat for a disjoint worker assignment")
     ap.add_argument("--bench-init", action="store_true",
                     help="write the default benchmark plan and exit")
     ap.add_argument("--bench-init-matrix", action="store_true",
@@ -1009,6 +1098,12 @@ def main():
     ap.add_argument("--run", default=time.strftime("%Y%m%d"),
                     help="benchmark run name for --bench-init")
     args = ap.parse_args()
+
+    if args.live_session:
+        os.environ["DESKCRAB_CHESS_SELFPLAY_LIVE_SESSION"] = "1"
+
+    if args.bench_game and not args.bench:
+        ap.error("--bench-game requires --bench")
 
     if args.bench_init or args.bench_init_matrix:
         SP_DIR.mkdir(parents=True, exist_ok=True)
@@ -1059,6 +1154,10 @@ def main():
     if args.bench_probe:
         with open(args.bench_probe, encoding="utf-8") as fh:
             plan = json.load(fh)
+        try:
+            pin_bench_move_budget(plan)
+        except ValueError as e:
+            ap.error(str(e))
         done = bench_probe(args, plan)
         print("STATUS " + json.dumps({
             "status": "probe-done", "probe_calls": done}), flush=True)
@@ -1067,8 +1166,38 @@ def main():
     if args.bench:
         with open(args.bench, encoding="utf-8") as fh:
             plan = json.load(fh)
-        status, moved = run_bench(args, plan, started, deadline_ts)
-        recorded = bench_recorded(plan)
+        try:
+            pin_bench_move_budget(plan)
+        except ValueError as e:
+            ap.error(str(e))
+        claims = []
+        if args.bench_game:
+            if len(set(args.bench_game)) != len(args.bench_game):
+                ap.error("each --bench-game id must be unique")
+            by_id = {g["id"]: g for g in plan["games"]}
+            missing = [gid for gid in args.bench_game if gid not in by_id]
+            if missing:
+                ap.error("unknown --bench-game id(s): " + " ".join(missing))
+            eliminated = [gid for gid in args.bench_game
+                          if by_id[gid].get("pruned")]
+            if eliminated:
+                ap.error("pruned --bench-game id(s): "
+                         + " ".join(eliminated))
+            claims, busy = bench_claim_games(args.bench_game)
+            if busy:
+                log(f"{busy}: already claimed by another benchmark worker")
+                sys.exit(3)
+            chosen = set(args.bench_game)
+            plan = dict(plan)
+            plan["games"] = [g for g in plan["games"]
+                             if g["id"] in chosen]
+        try:
+            status, moved = run_bench(args, plan, started, deadline_ts)
+        finally:
+            for claim in claims:
+                claim.close()
+        plan_ids = {g["id"] for g in plan["games"]}
+        recorded = bench_recorded(plan) & plan_ids
         games = selfplay_games()
         done = sum(1 for g in games if chess_cli.compute_state(
             g, chess_cli.build_board(g))[0] != "active")
@@ -1134,6 +1263,15 @@ def main():
                 f"({chess_mover.selfplay_calls_tonight()}"
                 f"/{chess_mover.selfplay_nightly_moves()}) — stopping")
             status = "budget-spent"
+            break
+        elif outcome == "subscription-limit":
+            status = "subscription-limit"
+            break
+        elif outcome == "account-unavailable":
+            status = "account-unavailable"
+            break
+        elif outcome == "capacity":
+            status = "capacity"
             break
         elif outcome == "hot":
             log("live browser game is hot — pausing the grind")

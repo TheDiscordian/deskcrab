@@ -5979,6 +5979,14 @@ claude_limit_rebook_delay() {  # [model] -> seconds
 # here and the path falls back to the Claude walk (rules 12-13).
 CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || echo "$HOME/.local/bin/codex")}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+# Exported, deliberately, right here where their values settle
+# (specs/model-backends.md rule 5a): every detached child — a job's builder
+# session and everything it launches, a self-play or benchmark driver, the
+# chess mover's codex subprocess — must inherit the CONF's engine and login,
+# not rediscover stock `codex` and `~/.codex` because a shell variable never
+# left this process; that is how a conf naming a dedicated second binary and
+# login home silently authenticates the wrong account.
+export CODEX_BIN CODEX_HOME
 CODEX_MODEL_SOL="${CODEX_MODEL_SOL:-gpt-5.6-sol}"
 CODEX_LIMIT_COOLDOWN="${CODEX_LIMIT_COOLDOWN:-1800}"
 CODEX_PROMPT_MODE="${CODEX_PROMPT_MODE:-instructions}"

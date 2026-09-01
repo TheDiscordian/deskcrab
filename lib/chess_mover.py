@@ -22,6 +22,8 @@ never silently lost.
 """
 
 import json
+import fcntl
+import hashlib
 import os
 import re
 import shlex
@@ -58,8 +60,9 @@ SYSTEM_PROMPT = (_persona() +
                  "You are a strong chess player making a move in a live "
                  "game. Never leave a piece where the exchange on its square "
                  "loses material — count the attackers and the defenders "
-                 "before you choose. Reply with your chosen move in UCI "
-                 "notation (like e2e4 or e7e8q) and nothing else.")
+                 "before you choose. Choose exactly one token from the final "
+                 "UCI whitelist in the prompt. Reply with that token in UCI "
+                 "notation and nothing else.")
 
 # Rb6 on 2026-08-09 was played because it looked forcing; nobody counted who
 # was looking at b6. The counting is the machine's job now, not a resolution:
@@ -486,6 +489,16 @@ def selfplay_nightly_moves():
         return 150
 
 
+def selfplay_live_session():
+    """Whether an attended run may continue past the nightly call ceiling.
+
+    Calls remain serialized and recorded in the normal audit log; only the
+    unattended spending refusal is disabled.
+    """
+    return os.environ.get("DESKCRAB_CHESS_SELFPLAY_LIVE_SESSION", "").lower() \
+        in {"1", "true", "yes", "on"}
+
+
 def selfplay_models():
     """The models a self-play job may name for itself (specs/chess-selfplay.md
     rule 15): the benchmark's allowlist, cheap Claude names by default. The
@@ -535,21 +548,33 @@ def selfplay_calls_tonight():
 
 
 def selfplay_budget_spent():
-    return selfplay_calls_tonight() >= selfplay_nightly_moves()
+    return (not selfplay_live_session()
+            and selfplay_calls_tonight() >= selfplay_nightly_moves())
 
 
 def _selfplay_charge(detail):
-    """One appended line per self-play model attempt. Best-effort: a counter
-    that cannot be written must not stop a move, but it fails loud enough to
-    read (the line lands in the caller's log via the alert path when the
-    refusal side later fires)."""
+    """Atomically record one self-play attempt and reserve its budget slot.
+
+    An unattended run returns False when another worker has already claimed
+    the final nightly slot. An attended live session always appends the call
+    and returns True. An unreadable counter remains best-effort and returns
+    True: failure to record a metric must not turn into a lost chess move.
+    """
     try:
         path = _selfplay_calls_file()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a+", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.seek(0)
+            if (not selfplay_live_session()
+                    and sum(1 for _ in fh) >= selfplay_nightly_moves()):
+                return False
+            fh.seek(0, os.SEEK_END)
             fh.write("%s\t%s\n" % (time.strftime("%F %T"), detail))
+            fh.flush()
+        return True
     except OSError:
-        pass
+        return True
 
 
 def _env_secs(name, default):
@@ -620,6 +645,46 @@ _CAUSE_MARKERS = ("session limit", "usage limit", "rate limit", "not logged",
                   "please run /login", "overloaded", "credit balance",
                   "api error", "billing")
 
+_SUBSCRIPTION_LIMIT_MARKERS = (
+    "usage limit", "session limit", "weekly limit", "5-hour limit",
+    "5h limit", "out of usage credits", "credit balance",
+    "insufficient credit", "credits depleted", "credits exhausted",
+    "spend control", "plan limit", "quota exhausted",
+)
+_SERVER_CAPACITY_MARKERS = (
+    "serveroverloaded", "server overloaded", "at capacity",
+    "model is currently overloaded", "model overloaded", "http 529",
+)
+_ACCOUNT_AUTH_MARKERS = (
+    "not logged in", "login required", "please run /login",
+    "failed to authenticate", "oauth session expired", "token expired",
+    "401 unauthorized",
+)
+
+
+def server_capacity_failure(text):
+    """Whether a failure names transient provider/server capacity."""
+    low = (text or "").lower()
+    return any(marker in low for marker in _SERVER_CAPACITY_MARKERS)
+
+
+def subscription_limit_failure(text):
+    """Whether a failure names exhausted account/subscription allowance.
+
+    Capacity is explicitly excluded even if a provider wraps it in generic
+    retry wording: capacity is resumable infrastructure state, not allowance.
+    """
+    low = (text or "").lower()
+    return (not server_capacity_failure(low)
+            and any(marker in low
+                    for marker in _SUBSCRIPTION_LIMIT_MARKERS))
+
+
+def account_auth_failure(text):
+    """Whether the configured account cannot authenticate."""
+    low = (text or "").lower()
+    return any(marker in low for marker in _ACCOUNT_AUTH_MARKERS)
+
 
 # --- The codex engine (specs/model-backends.md rule 15) ---------------------
 # The engine follows the model name, here as everywhere: a codex-family
@@ -640,6 +705,13 @@ def _codex_resolve(model):
     if m == "sol":
         m = os.environ.get("CODEX_MODEL_SOL") or "gpt-5.6-sol"
     return m
+
+
+def _selfplay_model_forbidden(model):
+    """Models reserved for live play and permanently barred from grinds."""
+    return _codex_resolve(model or "") in {
+        "spark", "gpt-5.3-codex-spark",
+    }
 
 
 def _codex_cooling():
@@ -700,6 +772,32 @@ def _codex_jsonl_answer(out):
     return (text, usage) if saw else (None, None)
 
 
+def _move_schema(legal_uci):
+    """A closed structured-output schema for this exact position."""
+    legal = list(dict.fromkeys(legal_uci or ()))
+    if not legal:
+        raise ValueError("a move schema requires at least one legal move")
+    return {
+        "type": "object",
+        "properties": {
+            "move": {"type": "string", "enum": legal},
+        },
+        "required": ["move"],
+        "additionalProperties": False,
+    }
+
+
+def _structured_move(doc):
+    """The move field emitted by a structured Claude result, if present."""
+    if not isinstance(doc, dict):
+        return None
+    for key in ("structured_output", "structuredOutput"):
+        value = doc.get(key)
+        if isinstance(value, dict) and isinstance(value.get("move"), str):
+            return value["move"]
+    return None
+
+
 class Mover:
     """One background thread, one slot. submit() places the newest position
     in the slot and kills any in-flight call it supersedes; the thread drains
@@ -721,6 +819,7 @@ class Mover:
         self.resolved = {}        # key -> (outcome, epoch): the dedup memory
         self.fails = {}           # key -> consecutive failed rounds
         self.fail_why = {}        # key -> the last round's best failure cause
+        self.rejected = {}        # key -> short invalid reply for retry wording
         threading.Thread(target=self._run, daemon=True,
                          name="chess-mover").start()
 
@@ -772,12 +871,14 @@ class Mover:
         else:
             self.fails.pop(key, None)
             self.fail_why.pop(key, None)
+            self.rejected.pop(key, None)
         if len(self.resolved) > 64:
             for k in sorted(self.resolved,
                             key=lambda k: self.resolved[k][1])[:32]:
                 del self.resolved[k]
                 self.fails.pop(k, None)
                 self.fail_why.pop(k, None)
+                self.rejected.pop(k, None)
         return self.fails.get(key, 0)
 
     def failure_state(self, key):
@@ -810,6 +911,7 @@ class Mover:
             self.resolved.clear()
             self.fails.clear()
             self.fail_why.clear()
+            self.rejected.clear()
             self._abandon_locked()
 
     def _abandon_locked(self):
@@ -869,6 +971,18 @@ class Mover:
         cause when the outcome is failed."""
         board = chess.Board(job["fen"])
         selfplay = is_selfplay(job)
+        if selfplay and _selfplay_model_forbidden(job.get("model")):
+            why = ("model %r is permanently excluded from self-play and "
+                   "benchmark calls" % job.get("model"))
+            self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
+            return "failed", why
+        effort = job.get("effort") or os.environ.get(
+            "DESKCRAB_CHESS_MOVER_EFFORT", "low")
+        if selfplay and effort in {"max", "ultra"}:
+            why = ("effort %r is above chess's permanent xhigh ceiling"
+                   % effort)
+            self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
+            return "failed", why
         # The nightly budget binds BEFORE anything boots: a self-play
         # position past the cap is refused without a CLI call, whoever is
         # driving (specs/chess-selfplay.md rule 5).
@@ -877,9 +991,6 @@ class Mover:
                    % (selfplay_calls_tonight(), selfplay_nightly_moves()))
             self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
             return "failed", why
-        prompt = self._prompt(job, board)
-        effort = job.get("effort") or os.environ.get(
-            "DESKCRAB_CHESS_MOVER_EFFORT", "low")
         # The job's own model, when it may carry one: a self-play job's is
         # allowlist-bound (specs/chess-selfplay.md rule 15); a real game's is
         # the bridge's per-speed offer (chessweb.md rule 16b), passed as-is.
@@ -887,6 +998,13 @@ class Mover:
             job_model = selfplay_job_model(job, alert=self.alert)
         else:
             job_model = (job.get("model") or "").strip() or None
+        if (selfplay and job_model and _codex_backend(job_model)
+                and _codex_cooling()):
+            why = "subscription limit: configured codex login is cooling"
+            self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
+            return "failed", why
+        prior_rejection = self.rejected.get(job["key"])
+        prompt = self._prompt(job, board, prior_rejection)
         move = None
         last_why = ""
         # The clock is the only ceiling (rule 16g, rewritten 2026-08-31): a
@@ -895,7 +1013,17 @@ class Mover:
         # walk cannot spend what the first attempt already burned. An
         # untimed job's attempt has no ceiling at all.
         clocked = _job_remaining(job) is not None
-        for label, cmd, env in self._attempts(effort, selfplay, job_model):
+        legal_uci = [move.uci() for move in board.legal_moves]
+        # Structured output measurably adds latency at Low. Keep the normal
+        # legal-list path fast; once a backend ignores that list, every later
+        # attempt for the position gets the closed enum schema. The mutable
+        # state is read lazily by _attempts, so account 2 is constrained when
+        # account 1 has just returned an illegal token.
+        schema_state = {
+            "legal_uci": legal_uci if prior_rejection else None,
+        }
+        for label, cmd, env in self._attempts(
+                effort, selfplay, job_model, schema_state=schema_state):
             timeout = None
             if clocked:
                 remaining = _job_remaining(job)
@@ -904,8 +1032,12 @@ class Mover:
                     break
                 timeout = remaining
             t0 = time.time()
-            if selfplay:
-                _selfplay_charge(f"{job['gid']} ply {job['ply']} {label}")
+            if (selfplay and not _selfplay_charge(
+                    f"{job['gid']} ply {job['ply']} {label}")):
+                last_why = ("selfplay nightly move budget spent (%d/%d)"
+                            % (selfplay_calls_tonight(),
+                               selfplay_nightly_moves()))
+                break
             self.metric("model-start",
                         f"{job['gid']} ply {job['ply']} effort {effort} "
                         f"{label}")
@@ -919,11 +1051,17 @@ class Mover:
                          f"after {dt:.1f}s — answering the newer position")
                 return None, None
             move = self._parse(board, out) if out else None
-            outcome = "ok" if move else (why or "no-legal-move")
+            rejected = self._reply_label(out) if out and not why else ""
+            outcome = "ok" if move else (why or (
+                "no-legal-move" + (f" ({rejected})" if rejected else "")))
             self.metric("model-end",
                         f"{job['gid']} ply {job['ply']} {dt:.1f}s {outcome}")
             if move:
                 break
+            if rejected:
+                self.rejected[job["key"]] = rejected
+                schema_state["legal_uci"] = legal_uci
+                prompt = self._prompt(job, board, rejected)
             last_why = f"{label}: {outcome}"
             self.alert(f"mover: {job['gid']} ply {job['ply']} attempt "
                        f"{label} came back {outcome} after {dt:.1f}s")
@@ -945,7 +1083,13 @@ class Mover:
         return ("posted" if self.play(job, move) else "stale"), None
 
     # -- the call ----------------------------------------------------------
-    def _attempts(self, effort, selfplay=False, job_model=None):
+    def _attempts(self, effort, selfplay=False, job_model=None,
+                  legal_uci=None, schema_state=None):
+        def schema_moves():
+            if schema_state is not None:
+                return schema_state.get("legal_uci")
+            return legal_uci
+
         override = os.environ.get("DESKCRAB_CHESS_MOVER_CMD")
         if override:
             yield "stub", shlex.split(override), self._env(None)
@@ -958,9 +1102,9 @@ class Mover:
                 # cell that silently substituted engines would measure
                 # nothing, and the fallback walk would let a grind spend
                 # Claude allowance under a codex flag. A cooling login
-                # yields no attempt at all — the move fails loudly, and in
-                # a timed game the clock fallback records the capacity
-                # interruption against the configuration.
+                # yields no attempt at all — the benchmark driver cancels
+                # the worker without turning the account refusal into clock
+                # evidence.
                 if _codex_cooling():
                     self.alert("mover: codex login is cooling — no attempt "
                                "for self-play model %r" % model)
@@ -968,18 +1112,40 @@ class Mover:
                 env = self._env(None)
                 env.pop("OPENAI_API_KEY", None)
                 yield ("codex",
-                       self._codex_cmd(effort, selfplay, model=model), env)
+                       self._codex_cmd(effort, selfplay, model=model,
+                                       legal_uci=schema_moves()), env)
                 return
-            # specs/model-backends.md rule 15: the one codex login first —
-            # unless it is already cooling — then the Claude accounts at the
-            # fallback model, so a game in flight never stalls on a dry
-            # engine. `ultra` is codex's own top effort; the Claude CLI
-            # refuses the word, so the fallback attempts clamp it.
+            # A ROUTED offer — a real-game job carrying the bridge's
+            # per-speed model (chessweb.md rule 16b) — preserves EXACT
+            # model identity (model-backends.md rule 15): the routed codex
+            # model or nothing, never a Claude substitute. Refused or
+            # cooling yields no further attempt; the move stays unplayed
+            # and rule 16e's alert/stall machinery makes the failure
+            # visible while the position is re-offered on its cooldown.
+            if job_model:
+                if _codex_cooling():
+                    self.alert("mover: codex login is cooling — no attempt "
+                               "for routed model %r; identity preserved, "
+                               "no substitute engine" % model)
+                    return
+                env = self._env(None)
+                env.pop("OPENAI_API_KEY", None)
+                yield ("codex",
+                       self._codex_cmd(effort, selfplay, model=model,
+                                       legal_uci=schema_moves()), env)
+                return
+            # specs/model-backends.md rule 15: an ENV-CHAIN codex model
+            # tries the one codex login first — unless it is already
+            # cooling — then the Claude accounts at the fallback model, so
+            # a game in flight never stalls on a dry engine. `ultra` is
+            # codex's own top effort; the Claude CLI refuses the word, so
+            # the fallback attempts clamp it.
             if not _codex_cooling():
                 env = self._env(None)
                 env.pop("OPENAI_API_KEY", None)
                 yield ("codex",
-                       self._codex_cmd(effort, selfplay, model=model), env)
+                       self._codex_cmd(effort, selfplay, model=model,
+                                       legal_uci=schema_moves()), env)
             model = os.environ.get("CODEX_FALLBACK_MODEL") or "sonnet"
             if _codex_backend(model):
                 model = "sonnet"
@@ -987,7 +1153,8 @@ class Mover:
                 effort = "max"
         for number, conf in self._accounts(model):
             yield (f"account {number}",
-                   self._claude_cmd(effort, selfplay, model=model),
+                   self._claude_cmd(effort, selfplay, model=model,
+                                    legal_uci=schema_moves()),
                    self._env(conf))
 
     @staticmethod
@@ -1091,7 +1258,8 @@ class Mover:
         return [(n, dirs[n - 1]) for n in free]
 
     @classmethod
-    def _claude_cmd(cls, effort, selfplay=False, model=None):
+    def _claude_cmd(cls, effort, selfplay=False, model=None,
+                    legal_uci=None):
         # A conf-set CLAUDE_BIN can arrive with $HOME still in it: systemd's
         # EnvironmentFile hands values through unexpanded, where every shell
         # path expanded them on the way in.
@@ -1111,6 +1279,10 @@ class Mover:
                "--output-format", "json",
                "--disable-slash-commands",
                "--system-prompt", SYSTEM_PROMPT]
+        if legal_uci:
+            schema = json.dumps(_move_schema(legal_uci),
+                                separators=(",", ":"))
+            cmd += ["--json-schema", schema]
         empty_mcp = Path(__file__).resolve().parent / "empty-mcp.json"
         if not empty_mcp.is_file():
             # Fail CLOSED (specs/chessweb.md rule 24f): --tools "" is what
@@ -1128,7 +1300,8 @@ class Mover:
         return cmd
 
     @classmethod
-    def _codex_cmd(cls, effort, selfplay=False, model=None):
+    def _codex_cmd(cls, effort, selfplay=False, model=None,
+                   legal_uci=None):
         """The codex spelling of the same call (specs/model-backends.md
         rules 5-7, 15): the one login's auth from CODEX_HOME, the user's own
         config held out, the mover's system prompt as the session's base
@@ -1158,6 +1331,25 @@ class Mover:
                "-c", "model_reasoning_effort=%s" % effort]
         if instr:
             cmd += ["-c", "model_instructions_file=%s" % instr]
+        if legal_uci:
+            payload = json.dumps(_move_schema(legal_uci),
+                                 separators=(",", ":")) + "\n"
+            digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+            schema_path = os.path.join(
+                cls._sterile_cwd(), "move-schema-%s.json" % digest)
+            if not os.path.exists(schema_path):
+                tmp = "%s.%d.tmp" % (schema_path, os.getpid())
+                try:
+                    with open(tmp, "w", encoding="utf-8") as fh:
+                        fh.write(payload)
+                    os.replace(tmp, schema_path)
+                except OSError:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise RuntimeError("could not write the Codex move schema")
+            cmd += ["--output-schema", schema_path]
         cmd.append("-")
         return cmd
 
@@ -1256,6 +1448,10 @@ class Mover:
                 self._ledger(cmd, env, doc, "")
                 return text, None
             return out or "", None
+        structured = _structured_move(doc)
+        if structured is not None:
+            self._ledger(cmd, env, doc, "")
+            return structured, None
         if isinstance(doc, dict) and "result" in doc:
             self._ledger(cmd, env, doc, "")
             return str(doc.get("result") or ""), None
@@ -1283,7 +1479,7 @@ class Mover:
             pass
 
     # -- the words ---------------------------------------------------------
-    def _prompt(self, job, board):
+    def _prompt(self, job, board, rejected=None):
         mem_lines, endorsed, stamp = memory_sections(board)
         if stamp is not None:
             self.metric("similar-context",
@@ -1391,9 +1587,21 @@ class Mover:
         note = (job.get("note") or "").strip()
         if note:
             lines.append(note)
-        lines.append("Answer with one legal move in UCI notation, "
-                     "nothing else.")
+        if rejected:
+            lines.append(f"Your previous answer {rejected!r} was rejected "
+                         "because it is not one of the allowed tokens below.")
+        lines.append("Answer with exactly one token from this UCI whitelist, "
+                     "nothing else:")
+        lines.append(" ".join(m.uci() for m in board.legal_moves))
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _reply_label(text):
+        """A safe, short move-like label for logs and the retry prompt."""
+        one = " ".join((text or "").split())
+        if re.fullmatch(r"[A-Za-z0-9+#=.-]{1,16}", one):
+            return one
+        return "non-move-text"
 
     @staticmethod
     def _parse(board, text):

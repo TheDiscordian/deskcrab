@@ -48,6 +48,11 @@ AHEAD="3q1rk1/pp6/8/8/8/8/PP6/R2Q1RK1 w - - 0 1"
 # Constructed: after Qd4 the c3 knight lands Ne2+, forking king and queen
 # from a square nothing white covers.
 FORK="6k1/5ppp/8/8/8/2n5/5PPP/3Q2K1 w - - 0 1"
+# selfplay-benchmatrix-20260828-554 before black's 34th: Sonnet answered
+# h6h3 and h8h8 by combining squares it saw in SAN-labelled analysis. Neither
+# token is legal. The final prompt boundary must expose only exact legal UCI
+# tokens, after every analytical label and after the retry explanation.
+WHITELIST="4r3/Nbrnq1k1/1p1b1p1p/1B1p2pP/3PPnP1/1PN2P2/1B1Q4/2R1R1K1 b - - 0 34"
 
 # --- worst_reply itself ----------------------------------------------------
 out="$("$PY" -B - <<EOF
@@ -147,6 +152,65 @@ printf '%s\n' "$pun_line" | grep -q "f5g6.*Qxc5" \
 printf '%s\n' "$pun_line" | grep -q "f7f6.*checkmate" \
   && ok "the f6 self-mate is named as checkmate, not priced as a pawn count" \
   || fail "f6 mate entry missing: $pun_line"
+
+# --- the final UCI-only boundary ------------------------------------------
+out="$("$PY" -B - <<EOF
+import json, sys; sys.path.insert(0, "$REPO/lib")
+import chess, chess_mover
+board = chess.Board("$WHITELIST")
+mover = chess_mover.Mover(play=lambda job, mv: True, log=lambda *a: None)
+job = {"side": "black", "opponent": "fixture", "gid": "fixture-554",
+       "ply": board.ply(), "fen": board.fen(), "history": "(fixture)",
+       "key": "fixture"}
+legal = [move.uci() for move in board.legal_moves]
+prompt = mover._prompt(job, board)
+lines = prompt.rstrip("\n").splitlines()
+assert lines[-2] == ("Answer with exactly one token from this UCI whitelist, "
+                     "nothing else:"), lines[-2:]
+assert lines[-1].split() == legal, (lines[-1], legal)
+assert len(legal) == len(set(legal)), legal
+assert "h6h3" not in legal and "h8h8" not in legal, legal
+
+schema = chess_mover._move_schema(legal)
+assert schema["properties"]["move"]["enum"] == legal, schema
+assert schema["additionalProperties"] is False, schema
+claude_cmd = mover._claude_cmd("low", model="sonnet", legal_uci=legal)
+assert "--json-schema" in claude_cmd, claude_cmd
+assert json.loads(claude_cmd[claude_cmd.index("--json-schema") + 1]) == schema
+codex_cmd = mover._codex_cmd("low", model="sol", legal_uci=legal)
+assert "--output-schema" in codex_cmd, codex_cmd
+with open(codex_cmd[codex_cmd.index("--output-schema") + 1]) as fh:
+    assert json.load(fh) == schema
+assert chess_mover._structured_move(
+    {"structured_output": {"move": legal[0]}}) == legal[0]
+assert chess_mover._structured_move({"result": legal[0]}) is None
+
+# The normal attempt stays fast; changing the shared retry state before the
+# generator advances makes the very next account schema-constrained.
+mover._accounts = lambda model: [(1, "/tmp/fixture-a"),
+                                 (2, "/tmp/fixture-b")]
+state = {"legal_uci": None}
+attempts = mover._attempts("low", job_model="sonnet", schema_state=state)
+_, first_cmd, _ = next(attempts)
+assert "--json-schema" not in first_cmd, first_cmd
+state["legal_uci"] = legal
+_, retry_cmd, _ = next(attempts)
+assert "--json-schema" in retry_cmd, retry_cmd
+assert json.loads(retry_cmd[retry_cmd.index("--json-schema") + 1]) == schema
+
+retry = mover._prompt(job, board, "h8h8")
+retry_lines = retry.rstrip("\n").splitlines()
+assert retry_lines[-3] == ("Your previous answer 'h8h8' was rejected because "
+                           "it is not one of the allowed tokens below."), retry_lines[-3:]
+assert retry_lines[-2:] == lines[-2:], retry_lines[-3:]
+assert mover._reply_label("h8h8") == "h8h8"
+assert mover._reply_label("I think Rh8 is best here.") == "non-move-text"
+print("checked")
+EOF
+)"
+[ "$out" = "checked" ] \
+  && ok "the Game 554 prompt ends at an exact legal UCI-only whitelist" \
+  || fail "Game 554 UCI whitelist boundary: $out"
 
 # --- the chooser no longer picks the blunder -------------------------------
 # The stub is the obedient model of the incidents: it plays the recorded

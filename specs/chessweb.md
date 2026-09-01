@@ -270,6 +270,14 @@ cannot be changed.
        means a bare prompt, `DESKCRAB_CHESS_SIMILAR=0` switches the neighbour section off,
        `DESKCRAB_CHESS_MEMORY_PROMPT=0` likewise). Nothing of deskcrab's prompt assembly
        rides along: no state block, no memory retrieval, no conduct sheet, no persona. The
+       final prompt lines are a UCI-only whitelist of every legal move and an instruction to
+       return exactly one token from it; no SAN label, history, memory example, or analysis
+       follows that whitelist, and the normal board-legality parser checks the returned token
+       again before posting it. Structured output adds measurable latency at Low, so the first
+       attempt stays on this fast path. If a backend returns another token, every later attempt
+       for that position carries a closed structured-output schema whose `move` enum is the
+       exact whitelist, and names the rejected token immediately above the same whitelist.
+       The
        invocation is the measured minimal shape (tools/context-probe-results.md): `--tools ""`
        with `--strict-mcp-config --mcp-config lib/empty-mcp.json`, `--disable-slash-commands`,
        a two-line `--system-prompt`, `-p` with the prompt on stdin, a sterile cwd, auto-memory
@@ -289,6 +297,8 @@ cannot be changed.
        checked legal, and posted under the hub lock only after the store has been re-read and
        still stands at the ply the call was answering — rule 15's photograph guard, applied
        in-process. A stale answer is discarded and the newest position stands to be answered.
+       An invalid reply is logged with its short move-like token, then remembered only for the
+       retry wording; it can never become a move.
     e. A failed attempt — a limit refusal, a timeout, no legal move in the reply — walks the
        flat account list of [account-fallback.md](account-fallback.md): the current account
        first, then the rest in numbered order, cooling accounts skipped, read from the shared
@@ -337,61 +347,48 @@ cannot be changed.
        rounds — an honest stall beats a move nobody chose), but no move is ever manufactured
        for it. No knob restores the retired behaviour; the retired
        `$DESKCRAB_CHESS_MOVER_CLOCK_*` knobs are dead names.
-16b. When rule 16a has missed and the model call is about to be made, the bridge asks the effort
-    pre-check (`lib/chess_effort.py`) how hard that call should think — pure python-chess
-    arithmetic, **no engine, ever**, here as everywhere in her chess — and passes the answer as
-    the call's `--effort`. The classifier is consulted by default: a quiet position goes at
-    `low` and an alarming one at `medium` — ONE uniform pair for every game. Each level is
-    its own knob — `DESKCRAB_CHESS_EFFORT_QUIET` (default `low`) and
-    `DESKCRAB_CHESS_EFFORT_SHARP` (default `medium`), both predating and surviving every
-    adjudication — so the next adjudication is a config line, not an edit. The pair's
-    history: quiet ran at `medium` from 2026-08-10's adjudication (the per-move minutes were
-    the queue in front of the call, not the thinking inside it); on 2026-08-15 the user
-    lowered the pair to `low`/`medium`; the game-id-parity A/B that then briefly interleaved
-    the lowered pair with the old one was rejected by the user outright and is withdrawn —
-    no arms, no parity, the same pair whichever game is on the board — and on 2026-08-26 he
-    reaffirmed the lowered `low`/`medium` as that one uniform pair: the permanent cleanup
-    was the removal of the alternation, never of the lowering (docs/history.md,
-    2026-08-26). Setting `DESKCRAB_CHESS_ALWAYS_LOW=1` pins every
-    move to `low` instead, skipping the classifier — for when reply latency matters more than
-    the move.
-    **The clock now picks the pair** (adopted 2026-08-27, the user's design: tighter clocks
-    think cheaper, looser clocks or meaningful increment can afford more): for a game
-    carrying a time control, the pair read is the game's SPEED's own —
-    `DESKCRAB_CHESS_EFFORT_<BULLET|BLITZ|RAPID>_QUIET` / `_SHARP`, defaults in
-    `chess_effort.SPEED_PAIRS`, chosen from the corrected 2026-08 full-game matrix
-    benchmark (chess-selfplay.md rules 20-20b; docs/chess-bench-matrix-2026-08.md carries
-    the measured results and every exclusion): bullet `low`/`low`, blitz `low`/`low`,
-    rapid `low`/`low` — each speed carries its measured winner's own uniform pair, and
-    every winner of the corrected matrix is a `low` pair, because under the
-    clock-is-the-only-ceiling regime (rule 16g) every higher effort that was measured
-    either flagged or fell below the rule-20a evidence floor. The 2026-08-27 probe-era
-    defaults (rapid `low`/`medium`, docs/chess-bench-2026-08-27.md) are history: that
-    rapid `medium` predated the corrected regime and its evidence was rule-20b
-    invalidated. An untimed game keeps the uniform pair above, exactly as adjudicated —
-    the corrected benchmark is a timed elimination and owes untimed nothing.
-    The game's speed picks the model the same way (`chess_effort.model_for`, read by
-    `answer_position` onto the job's `model`; the mover prefers a real-game job's `model`
-    over its environment chain): the explicit `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` knob
-    first — `UNTIMED` is a routable speed here, because the untimed route is selected from
-    complete games too — then the benchmark-chosen per-speed default in
-    `chess_effort.SPEED_MODELS`. That table is filled ONLY from the corrective full-game
-    matrix benchmark (chess-selfplay.md rule 20, the user's 2026-08-28 directive: the prior
-    probe-only run could not choose a model per clock, and a global model selection must not
-    survive a control merely because it predates the measurement); while a speed has no
-    entry, nothing changes — the mover-model knob stands for that speed exactly as before.
-    The corrected 2026-08 matrix filled the timed entries
-    (docs/chess-bench-matrix-2026-08.md): bullet `sonnet` (a least-failure verdict — NO
-    configuration reliably finishes bullet under the corrected regime; sonnet-low carried
-    the fewest flags per game), blitz `sonnet` (reliable winner sonnet-low), rapid `opus`
-    (reliable winner opus-low, rate 0.75 pooled over 10+0 and 15+10). `untimed` stays
-    unrouted: the user's 2026-08-31 correction retired the untimed round, so no untimed
-    verdict exists and the global knob remains untimed's whole answer.
-    Once a speed HAS an entry, that entry outranks the global mover-model knob for games of
-    that speed: the global knob remains the whole answer for any unrouted speed, and the
-    per-speed env knob outranks everything, so the next adjudication is a config line here
-    too. Self-play jobs never read any of this; their model is chess-selfplay.md's business
-    (rules 2 and 15). The alarms, when it is consulted: the side to move in check; a check available to either side that also wins
+16b. When rule 16a misses and a model call is required, the bridge asks the effort pre-check
+    (`lib/chess_effort.py`) how hard that call should think. The pre-check uses pure
+    python-chess arithmetic — **no engine, ever** — and returns the call's `--effort`. A
+    quiet position uses the first effort in the routed pair; any alarm uses the second.
+    `DESKCRAB_CHESS_ALWAYS_LOW=1` bypasses the classifier and pins every move to `low`.
+
+    The exact time-control name selects both model and effort pair before the broader speed
+    fallback:
+
+    | Control | Model | Quiet | Sharp |
+    | --- | --- | --- | --- | --- |
+    | 3+2 | `sonnet` | `low` | `low` |
+    | 5+0 | `sonnet` | `low` | `low` |
+    | 10+0 | `opus` | `low` | `low` |
+    | 15+10 | `fable` | `low` | `medium` |
+
+    `chess_effort.CONTROL_MODELS` and `CONTROL_PAIRS` hold these corrected full-game
+    benchmark winners. `SPEED_MODELS` and `SPEED_PAIRS` are fallbacks for timed controls
+    outside that exact table. Untimed games use
+    `DESKCRAB_CHESS_EFFORT_QUIET` / `DESKCRAB_CHESS_EFFORT_SHARP` (defaults
+    `low`/`medium`) and have no routed model.
+
+    `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` and
+    `DESKCRAB_CHESS_EFFORT_<SPEED>_{QUIET,SHARP}` override both exact-control and speed
+    defaults. A routed model outranks the global `DESKCRAB_CHESS_MOVER_MODEL`; an unrouted
+    game uses the mover's normal environment chain.
+
+    Bullet controls 1+0 and 2+1 are disabled for live games. Their dormant speed fallback
+    remains `gpt-5.3-codex-spark` at `low`/`low`, but Spark is excluded from benchmarks and
+    this fallback makes no claim that Spark can finish either clock.
+
+    A routed offer preserves EXACT model identity end to end: the mover may rotate
+    same-model Claude accounts (identity-preserving), but it never substitutes another
+    model or engine for a routed offer — a routed codex model that refuses over usage, is
+    cooling, or cannot run yields NO attempt at all, making zero Claude calls: the move
+    stays unplayed, the failure is visible through rule 16e's alert and stall machinery,
+    and the position is re-offered on its cooldown. The engine-fallback walk
+    (model-backends.md rule 15) applies only to a model chosen by the mover's own
+    environment chain, never to a routed offer. Self-play jobs never read any of this;
+    their model is chess-selfplay.md's business (rules 2 and 15).
+
+    The alarms, when the classifier is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
     prise by a simple attackers-versus-defenders count; a capture worth a rook or more available
     to either side; a pawn on its seventh rank, either side; her king's pawn shield broken or an
@@ -509,6 +506,11 @@ cannot be changed.
     recorded like `resigned_by`). A bridge that dies mid-think in a timed game comes back to a
     clock that kept running, because the clock IS the stored stamps read against the wall
     clock — that is the honest reading of a chess clock, not a defect.
+    Bullet remains a recognised clock for existing records and benchmark evidence, but new live
+    `1+0` and `2+1` games are disabled: Spark Low/Low is not reliably fast enough for 2+1. The
+    live creation gate offers only Blitz, Rapid, and untimed until Bullet is deliberately
+    re-enabled; the page, HTTP endpoint, stock-wire creation, CLI creation, and serve default all
+    enforce the same gate.
     a. The clock is charged where the move is recorded, by ONE implementation for every path
        (`chess_cli.clock_move`, called by `betty-chess move`, the engine command, and all four
        of the bridge's record paths — user move, promotion, reflex, model): the mover's elapsed
@@ -560,7 +562,7 @@ cannot be changed.
        a per-serve and per-CLI knob only, green in tests on a path nobody clicks: the user sat
        at the real browser page on 2026-08-25 and found no clock options on screen at all. So
        the shipped client carries a visible clock selector beside New Game, offering exactly
-       the standard set of this rule plus `untimed` (the selector's default) and nothing
+       the currently enabled live set plus `untimed` (the selector's default) and nothing
        invented, and its New Game button posts the pick to **`POST /new`** instead of the wire
        NewGame. The endpoint, under the hub lock: while the stored game is still active it
        refuses (HTTP 409, `{"error": ...}` naming the way out — Resign ends it, then New Game

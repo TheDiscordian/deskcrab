@@ -46,6 +46,13 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 5. The codex engine MUST run on the logged-in ChatGPT subscription: auth comes from `CODEX_HOME`
    (default `~/.codex`), and `OPENAI_API_KEY` is stripped from the child environment so a stray
    key in the user's session can never silently move her onto metered API billing.
+5a. The configured `CODEX_BIN` and `CODEX_HOME` MUST be exported by the shared config layer
+   (`lib/common.sh`, right where their defaults are resolved) so every detached child inherits
+   the conf's answer: a job's builder session and everything that builder launches, a self-play
+   or benchmark driver, and the chess mover's codex subprocess. A child that reads only its
+   environment must find the configured engine and login — never the stock `codex` on PATH and
+   `~/.codex` by the accident of an unexported shell variable, which is how a conf pointing at
+   a dedicated second binary and login home silently authenticates the wrong account.
 6. Her sessions load none of the user's own Codex configuration: `--ignore-user-config` keeps his
    `config.toml` (MCP servers, plugins, hooks, trust grants) out of every run — the codex
    counterpart of the empty MCP config — while auth still reads `CODEX_HOME`. Everything a run
@@ -143,8 +150,15 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     rule 5a holds across engines): the runner records the refusal and the block machinery holds
     and re-dispatches exactly as it does when every Claude account refuses. A genuine failure
     (non-limit) stays a failure, on either engine.
-15. The chess mover on a codex model tries codex first and, refused or cooling, falls through to
-    its own Claude account walk unchanged — a game in flight must not stall on a dry engine.
+15. The chess mover on a codex model from its own ENVIRONMENT CHAIN tries codex first and,
+    refused or cooling, falls through to its own Claude account walk unchanged — a game in
+    flight must not stall on a dry engine. A ROUTED model — a real-game job carrying the
+    bridge's per-speed offer ([chessweb.md](chessweb.md) rule 16b) — preserves exact model
+    identity instead: a routed codex model that refuses, is cooling, or cannot run yields no
+    attempt and no substitute of any kind (zero Claude calls); the move stays unplayed and the
+    failure is visible through the mover's alert and stall machinery. Same-model Claude
+    account rotation preserves identity and stays. Self-play is stricter still
+    (chess-selfplay.md rule 15): the selected configuration or nothing.
 16. The classifier path routes by the same rule: a codex-named classifier model runs one
     `codex exec` in the sterile cwd and prints the
     answer text; refused or failed, it returns non-zero exactly as a failed Claude classify does.
@@ -159,8 +173,8 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 
 | Source | Used by | Notes |
 |---|---|---|
-| `CODEX_BIN` | every codex launch | default `codex` on PATH, else `~/.local/bin/codex` |
-| `CODEX_HOME` | auth, the wrap's writable set | default `~/.codex`; never copied, never symlinked |
+| `CODEX_BIN` | every codex launch | default `codex` on PATH, else `~/.local/bin/codex`; exported to every detached child (rule 5a) |
+| `CODEX_HOME` | auth, the wrap's writable set | default `~/.codex`; never copied, never symlinked; exported to every detached child (rule 5a) |
 | `CODEX_MODEL_SOL` | `codex_model_resolve` | default `gpt-5.6-sol` |
 | `CODEX_LIMIT_RE` | `codex_stream_refusal` | liberal on purpose: only codex-owned error text is ever tested |
 | `CODEX_CAPACITY_RE` | `codex_stream_capacity` and the speech streamer | fallback recognition when structured `serverOverloaded` metadata is unavailable |
