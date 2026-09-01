@@ -497,7 +497,9 @@ Three parts:
     parameters), `enable <rule>` / `disable <rule>`, `set <rule> <key> <value>` (dotted keys reach
     trigger and action parameters), `add` / `remove`, `hold` / `resume`, `run`, `replay`, `log`,
     and `init` (write the default table if absent, install the food table). Every mutation is
-    validated by rule 9's loader before it is written. The installed door is
+    validated by rule 9's loader before it is written. `add` defaults `cooldown_ms` by channel:
+    a game rule arrives at 0 — the only value rule 10 admits, so a plain valid add never needs
+    the override — and a notice rule keeps the 1500 ms presentation throttle. The installed door is
     `~/.local/bin/betty-game`, a symlink to the deployed `~/.local/lib/deskcrab/betty-game`, so
     the command resolves by name from an ordinary shell like the other `betty-*` doors — and the
     suite pins the door itself, resolved off the user's own `bin` and executed, never only the

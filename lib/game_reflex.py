@@ -887,12 +887,17 @@ def parse_kv(pairs):
 
 def cmd_add(args):
     cfg = load_config()
+    cooldown_ms = args.cooldown_ms
+    if cooldown_ms is None:
+        # Channel-aware default (spec rule 17): a plain valid game add must
+        # not arrive pre-refused by a presentation throttle rule 10 forbids.
+        cooldown_ms = 0 if args.channel == "game" else 1500
     rule = {
         "name": args.name,
         "enabled": False,
         "channel": args.channel,
         "priority": args.priority,
-        "cooldown_ms": args.cooldown_ms,
+        "cooldown_ms": cooldown_ms,
         "hold_ticks": args.hold_ticks,
         "trigger": parse_kv(args.trigger),
         "action": {"type": args.action, **parse_kv(args.param)},
@@ -1042,7 +1047,10 @@ def main():
     p.add_argument("name")
     p.add_argument("--channel", required=True, choices=CHANNELS)
     p.add_argument("--priority", type=int, required=True)
-    p.add_argument("--cooldown-ms", type=int, default=1500)
+    # The default follows the channel (spec rule 17): game rules only admit 0
+    # (rule 10), notices keep the presentation throttle. Resolved in cmd_add,
+    # where the channel is known.
+    p.add_argument("--cooldown-ms", type=int, default=None)
     p.add_argument("--hold-ticks", type=int, default=2)
     p.add_argument("--trigger", action="append", metavar="COND=VALUE")
     p.add_argument("--action", required=True)

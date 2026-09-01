@@ -15,6 +15,21 @@ export DESKCRAB_GAME_DIR="$SANDBOX/gdata"
 
 refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
 
+# refuse <desc> <diagnostic-fragment> <cmd...> — the command must fail AND the
+# refusal must name the intended validator. A bare failure is not enough: the
+# 2026-09-01 review found four validation cases passing on the add command's
+# old game-hostile cooldown default rather than on the gate they claim to pin.
+refuse() {
+    local desc="$1" want="$2" out; shift 2
+    if out="$("$@" 2>&1)"; then
+        fail "$desc" "succeeded: $out"
+    elif contains "$out" "$want"; then
+        ok "$desc"
+    else
+        fail "$desc" "refused for another reason: $out"
+    fi
+}
+
 # A small food table of our own: id 132 heals 3, id 373 heals 5.
 FOOD_XML="$SANDBOX/food.xml"
 cat > "$FOOD_XML" <<'EOF'
@@ -66,24 +81,48 @@ check "the food table landed" test -f "$DESKCRAB_GAME_DIR/food-heals.xml"
 
 echo
 echo "the validation gate (rule 9):"
-refute "an unknown trigger key is refused" \
-    "$BG" add bad1 --channel game --priority 1 --trigger hp_under=0.5 --action eat
+# Each refusal here is otherwise a valid add, and the diagnostic is asserted:
+# a case that fails on some earlier field never proves the validator it names.
+refuse "an unknown trigger key is refused" "unknown trigger 'hp_under'" \
+    "$BG" add bad1 --channel game --priority 1 --trigger hp_under=0.5 \
+        --action walk --param x=121 --param z=650
 refute "an out-of-range threshold is refused" \
     "$BG" set warn-low-health trigger.hp_below 1.5
-refute "warn on the game channel is refused" \
+refuse "warn on the game channel is refused" "not allowed on the game channel" \
     "$BG" add bad2 --channel game --priority 1 --trigger hp_below=0.5 --action warn --param text=x
-refute "eat on the notice channel is refused" \
-    "$BG" add bad3 --channel notice --priority 1 --trigger hp_below=0.5 --action eat
-refute "eat without an out-of-combat trigger is refused" \
+refuse "eat on the notice channel is refused" "not allowed on the notice channel" \
+    "$BG" add bad3 --channel notice --priority 1 --trigger hp_below=0.5 \
+        --trigger in_combat=false --action eat
+refuse "eat without an out-of-combat trigger is refused" "eat requires trigger.in_combat=false" \
     "$BG" add bad-eat-combat --channel game --priority 1 \
         --trigger hp_below=0.5 --trigger requires_food=true --action eat
-refute "requires_food and no_food together are refused" \
-    "$BG" add bad4 --channel game --priority 1 --trigger requires_food=true --trigger no_food=true --action eat
+refuse "requires_food and no_food together are refused" "requires_food and no_food cannot both hold" \
+    "$BG" add bad4 --channel game --priority 1 --trigger requires_food=true \
+        --trigger no_food=true --trigger in_combat=false --action eat
 refute "an unknown rule name is refused" "$BG" enable no-such-rule
 refute "a second rule with a taken name is refused" \
     "$BG" add warn-low-health --channel notice --priority 1 --trigger hp_below=0.5 --action warn --param text=x
 check "enable flips a rule on" "$BG" enable eat-low-health
 contains "$("$BG" rules)" "[on ] eat-low-health" && ok "rules shows eat armed" || fail "rules shows eat armed"
+
+echo
+echo "add's cooldown default follows the channel (rule 17):"
+rule_cooldown() {
+    python3 -c "import json,sys;print([r['cooldown_ms'] for r in json.load(open(sys.argv[1]))['rules'] if r['name']==sys.argv[2]][0])" \
+        "$DESKCRAB_GAME_DIR/reflex-rules.json" "$1"
+}
+check "a valid game add succeeds with no cooldown override" \
+    "$BG" add plain-walk --channel game --priority 2 --hold-ticks 1 \
+        --trigger hp_below=0.5 --action walk --param x=121 --param z=650
+check_eq "and it landed at zero, the only lawful game cooldown" \
+    "$(rule_cooldown plain-walk)" "0"
+"$BG" remove plain-walk >/dev/null
+check "a valid notice add succeeds with no cooldown override" \
+    "$BG" add gentle-warn --channel notice --priority 2 --hold-ticks 1 \
+        --trigger fatigue_above=0.9 --action warn --param "text=tired"
+check_eq "and it kept the notice presentation throttle" \
+    "$(rule_cooldown gentle-warn)" "1500"
+"$BG" remove gentle-warn >/dev/null
 
 echo
 echo "the food-table refusal (rule 12):"
