@@ -1408,3 +1408,20 @@ shape. The final leg now narrows to the planner's exact arrival tile when the bo
 brackets it. Both fixes require immediate deployment because the runner and client read their
 source once. After the focused and full suites pass, rebuild the client JAR and restart the live
 stack in the same repair session; leaving a half-deployed stack would make the fixed bug look live.
+
+### 2026-09-01 — combat cleared at 11/24, and the pickpocket beat the eat to the one slot
+
+The survival reflex engine holds its eat need through a fight as a live dispatch gate, and the
+learned player's out-of-combat rules become eligible on the same first safe snapshot. Both loops
+poll at 150 ms and share one action file. In the leaderboard thieving session the retaliation
+sidestep cleared combat at 11/24 with cooked shrimp held; the learned pickpocket rule fired 148 ms
+after the eat dispatched — before any healing or consumption was observed — and its failed
+pickpocket re-entered combat, twice, each re-entry making eating server-illegal again and
+re-arming the whole cycle. No priority number can fix a race between two independent engines: the
+learned table's priorities only order rules inside one evaluation. The repair is the healing
+prerequisite (game-player rule 7i): a pure state inspector that keeps every ordinary learned
+firing off the shared slot while the reflex table arms an eat, food is held, and the hits
+fraction sits below the armed threshold, releasing only on the observed heal, the exhausted food
+table, resumed combat, or a disarmed eat — never on a timer. The yield is one `healing-hold` /
+`healing-hold-clear` episode pair in the decision log, aggregated into the reflex-fire ledger, so
+a deliberation that finds the body standing still at low health reads why from the record.

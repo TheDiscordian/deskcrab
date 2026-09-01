@@ -809,6 +809,43 @@ deliberate-play channel.
    the ordinary `no-rule-matched` verdict and the resident heartbeat beside the plan, so the
    falling-back mind is reminded what success currently means without a separate ritual.
 
+7i. **Healing outranks routine interaction.** The survival reflex engine (specs/game-reflex.md)
+   and this layer are independent loops sharing the ONE action slot, and the reflex engine holds
+   its eat need through a fight as a live dispatch gate (game-reflex rule 10a). On the first
+   out-of-combat snapshot both engines are eligible at once, and the 2026-09-01 leaderboard
+   incident is what that race does: combat cleared at 11/24 with food held, the learned pickpocket
+   rule reacquired its target on the very next snapshot — 148 ms after the eat dispatched, before
+   any healing or consumption was observed — and the failed pickpocket re-entered combat, twice,
+   each re-entry making eating server-illegal again. Evaluation therefore owns a **healing
+   prerequisite**, a pure state inspector checked before any ordinary rule, batch continuation,
+   or route leg may take the slot:
+   - The premise, answered from live structured state and the durable tables alone: the snapshot
+     is out of combat; the reflex table currently ARMS an eat — an enabled game-channel `eat`
+     rule in `reflex-rules.json`, which this layer reads tolerantly and never rewrites or
+     validates; the inventory holds an item in the food table; and `hits/hits_max` is strictly
+     below that armed rule's `hp_below` (the widest threshold when several eat rules are armed).
+     A missing, unreadable, or eat-disarmed reflex table never holds: yielding to a hand that
+     cannot move would starve play on the false premise that healing is coming.
+   - While the premise holds, evaluation reports `healing-prerequisite` (the not-ready exit
+     class) and emits NOTHING — the slot stays free for the reflex engine's eat, which no
+     learned firing can race for the slot or cancel by re-provoking the target. In-combat
+     behaviour is unchanged: escape rules own the fight, and the low-health retreat-to-eat
+     transition still makes leaving combat possible at three observed rounds.
+   - The release is the observed postcondition, never a timer: a newer snapshot in which the
+     hits fraction is no longer below the armed threshold (healing observed), or the food-table
+     items are gone from the bag (the last portion was consumed — low-health/no-food survival is
+     game-reflex's `flee-starved` territory, not a licence to resume interaction), or combat
+     resumed (escape owns the body), or the eat became disarmed. So after combat clears at low
+     health, a verified heal or food decrease completes before any pickpocket — or any other
+     routine learned action — can dispatch.
+   - The yield is a durable decision, not just a live verdict: entering the hold appends ONE
+     `healing-hold` event per continuous episode to `player-decisions.jsonl`, carrying the hits
+     baseline, the armed threshold, and the held food quantity; the release appends one
+     `healing-hold-clear` naming what was observed (`healed`, `food-exhausted`, `combat`, or
+     `disarmed`) with the before/after hits. `healing-hold` is one of rule 10a's aggregated
+     suppression kinds, so a deliberation that finds the body standing still at low health reads
+     the yield from the ledger instead of re-diagnosing it.
+
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, `hold_ticks`
    debounce, one action in flight until its observed completion or failure lease, stale and

@@ -435,6 +435,10 @@ Three parts:
     logged as `action-complete` with what was observed; the server's own while-fighting refusal
     message completes it as `action-failed`. Either way completion releases the slot at once, and
     `inflight_timeout_ms` remains the maximum failure lease when no evidence ever arrives.
+    Out of combat the deliberate-play layer returns the courtesy: game-player rule 7i's healing
+    prerequisite keeps learned rules off the shared slot while this armed eat need is unmet, so
+    the first safe snapshot's eat is neither raced for the slot nor cancelled by a learned
+    action re-provoking the fight before healing is observed.
 
 11. Stale-state protection: a snapshot whose `ts` is older than `stale_ms` fires nothing, and the
     engine logs the transition into and out of staleness. A snapshot with `logged_in: false` fires

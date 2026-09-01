@@ -31,6 +31,22 @@ open(os.path.join(game_dir, "objective"), "w").write("leaderboard-test\n")
 open(os.path.join(game_dir, "activity"), "w").write("thieving\n")
 open(os.path.join(game_dir, "food-heals.xml"), "w").write(
     "<map><entry><int>10</int><int>3</int></entry></map>\n")
+# Spec rule 7i: the healing prerequisite holds only for an eat the reflex
+# table actually ARMS; the fixture arms one the way the live table does.
+REFLEX_TABLE = {
+    "v": 1,
+    "defaults": {"stale_ms": 2000, "poll_ms": 150,
+                 "min_action_interval_ms": 0, "max_actions_per_min": 0,
+                 "inflight_timeout_ms": 2000, "eat_pick": "min"},
+    "rules": [
+        {"name": "eat-low-health", "enabled": True, "channel": "game",
+         "priority": 10, "cooldown_ms": 0, "hold_ticks": 2,
+         "trigger": {"hp_below": 0.5, "requires_food": True,
+                     "in_combat": False},
+         "action": {"type": "eat"}},
+    ],
+}
+json.dump(REFLEX_TABLE, open(os.path.join(game_dir, "reflex-rules.json"), "w"))
 
 TABLE = {
     "v": 1,
@@ -311,4 +327,57 @@ assert (verdict, code) == ("healing-prerequisite", gp.EXIT_NOT_READY), \
     (verdict, code)
 assert not os.path.exists(os.path.join(state_dir, "action.json")), \
     "low-health out-of-combat state must not emit another learned activity action"
+
+# The yield is a durable decision: exactly one healing-hold episode record,
+# naming the reflex rule it stood aside for and the baselines it read.
+log = open(os.path.join(state_dir, "player-decisions.jsonl")).read()
+assert log.count('"kind":"healing-hold"') == 1, log[-1000:]
+hold_event = [json.loads(line) for line in log.splitlines()
+              if '"kind":"healing-hold"' in line][-1]
+assert hold_event["rule"] == "eat-low-health", hold_event
+assert hold_event["hits"] == 5 and hold_event["threshold"] == 0.5, hold_event
+verdict, code = step()   # unchanged state: held again, but no second record
+assert (verdict, code) == ("healing-prerequisite", gp.EXIT_NOT_READY), \
+    (verdict, code)
+log = open(os.path.join(state_dir, "player-decisions.jsonl")).read()
+assert log.count('"kind":"healing-hold"') == 1, "one record per episode"
+
+# --- 9. The release is the OBSERVED postcondition: a healed snapshot clears
+# the hold in the same pass and ordinary pickpocketing resumes immediately.
+healed = snapshot(False, 95, 98, 95, 100)
+healed["hits"] = 15
+healed["hits_max"] = 23
+put_snapshot(healed)
+worker = threading.Thread(target=bridge,
+                          args=(snapshot(False, 95, 98, 95, 100),))
+worker.start()
+verdict, code = step()
+worker.join()
+assert (verdict, code) == ("fired", gp.EXIT_FIRED), (verdict, code)
+assert "type=interact-npc" in captured[-1], captured[-1]
+log = open(os.path.join(state_dir, "player-decisions.jsonl")).read()
+assert log.count('"kind":"healing-hold-clear"') == 1, log[-1000:]
+clear_event = [json.loads(line) for line in log.splitlines()
+               if '"kind":"healing-hold-clear"' in line][-1]
+assert clear_event["observed"] == "healed", clear_event
+assert clear_event["from_hits"] == 5 and clear_event["hits"] == 15, clear_event
+
+# --- 10. A DISARMED eat never holds: yielding to a hand that cannot move
+# would starve play on the false premise that healing is coming.
+REFLEX_TABLE["rules"][0]["enabled"] = False
+json.dump(REFLEX_TABLE, open(os.path.join(game_dir, "reflex-rules.json"), "w"))
+starved = snapshot(False, 95, 98, 95, 100)
+starved["hits"] = 5
+starved["hits_max"] = 23
+put_snapshot(starved)
+worker = threading.Thread(target=bridge,
+                          args=(snapshot(False, 95, 98, 95, 100),))
+worker.start()
+verdict, code = step()
+worker.join()
+assert (verdict, code) == ("fired", gp.EXIT_FIRED), (verdict, code)
+assert "type=interact-npc" in captured[-1], captured[-1]
+log = open(os.path.join(state_dir, "player-decisions.jsonl")).read()
+assert log.count('"kind":"healing-hold"') == 1, \
+    "a disarmed eat must not open a healing episode"
 PY

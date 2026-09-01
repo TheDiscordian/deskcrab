@@ -98,7 +98,8 @@ PROVOKED_ACTION_TYPES = ("interact-npc", "use-item-npc", "talk-npc")
 REFLEX_FIRE_PRESENT_MAX = 40
 REFLEX_FIRE_TAIL_BYTES = 512 * 1024
 REFLEX_SUPPRESSION_KINDS = ("conflict-loss", "cooldown-hold",
-                            "route-conflict-hold", "sidestep-pause-hold")
+                            "route-conflict-hold", "sidestep-pause-hold",
+                            "healing-hold")
 # Spec rule 7a: scenery transitions. The server's own floor arithmetic packs
 # each floor into one 944-tile band of the north-south axis (its Point
 # arithmetic: height = z / 944), so the snapshot's z names the current floor.
@@ -2995,6 +2996,7 @@ def load_player_state() -> dict:
     est.setdefault("last_combat", None)
     est.setdefault("last_npc_action", None)
     est.setdefault("last_direct_provocation_id", None)
+    est.setdefault("healing_hold", None)
     # One explicit semantic batch may outlive the transient condition that
     # started it. Each member is still a separately dispatched and observed
     # game action; this record preserves the all-items postcondition between
@@ -5751,6 +5753,90 @@ def once_key(rule_name: str, objective: str) -> str:
     return f"{rule_name}\t{objective}"
 
 
+# Spec rule 7i: the healing prerequisite reads the reflex engine's OWN durable
+# table to learn whether an eat is currently armed — tolerantly and read-only,
+# because an invalid or eat-disarmed table must never hold play for a hand
+# that cannot move. Cached by file identity so the runner pays one stat per
+# pass, not one parse.
+_armed_eat_cache = {"key": None, "threshold": None}
+
+
+def reflex_armed_eat_threshold():
+    """The widest hp_below among enabled game-channel eat rules in
+    reflex-rules.json, or None when no eat is armed there."""
+    path = game_reflex.rules_path()
+    try:
+        meta = path.stat()
+        key = (str(path), meta.st_mtime_ns, meta.st_size)
+    except OSError:
+        _armed_eat_cache["key"] = None
+        _armed_eat_cache["threshold"] = None
+        return None
+    if _armed_eat_cache["key"] == key:
+        return _armed_eat_cache["threshold"]
+    threshold = None
+    try:
+        cfg = json.loads(path.read_text())
+        rules = cfg.get("rules") if isinstance(cfg, dict) else None
+        for rule in rules if isinstance(rules, list) else []:
+            if not isinstance(rule, dict) or rule.get("enabled") is not True \
+                    or rule.get("channel") != "game" \
+                    or (rule.get("action") or {}).get("type") != "eat":
+                continue
+            hp_below = (rule.get("trigger") or {}).get("hp_below")
+            if isinstance(hp_below, (int, float)) and 0 < hp_below <= 1:
+                threshold = hp_below if threshold is None \
+                    else max(threshold, hp_below)
+    except (OSError, ValueError, AttributeError):
+        threshold = None
+    _armed_eat_cache["key"] = key
+    _armed_eat_cache["threshold"] = threshold
+    return threshold
+
+
+def held_food_quantity(snap: dict, food: dict) -> int:
+    total = 0
+    for item in snap.get("inventory") or []:
+        if isinstance(item, dict) and item.get("id") in food:
+            count = item.get("count")
+            total += count if isinstance(count, int) and count > 0 else 1
+    return total
+
+
+def update_healing_hold(est: dict, snap: dict, active: bool, threshold,
+                        food: dict, now: int) -> None:
+    """Spec rule 7i: one durable healing-hold / healing-hold-clear pair per
+    continuous yield episode, so the ledger explains a body standing still
+    at low health instead of leaving deliberation to re-diagnose it."""
+    episode = est.get("healing_hold")
+    hits, hits_max = snap.get("hits"), snap.get("hits_max")
+    food_quantity = held_food_quantity(snap, food)
+    if active and not episode:
+        est["healing_hold"] = {"since": now, "hits": hits,
+                               "hits_max": hits_max, "threshold": threshold,
+                               "food_quantity": food_quantity}
+        flush_events([{"ts": now, "kind": "healing-hold",
+                       "rule": "eat-low-health", "hits": hits,
+                       "hits_max": hits_max, "threshold": threshold,
+                       "food_quantity": food_quantity}])
+    elif not active and episode:
+        if snap.get("in_combat") is True:
+            observed = "combat"
+        elif threshold is None:
+            observed = "disarmed"
+        elif food_quantity <= 0:
+            observed = "food-exhausted"
+        else:
+            observed = "healed"
+        flush_events([{"ts": now, "kind": "healing-hold-clear",
+                       "rule": "eat-low-health", "observed": observed,
+                       "from_hits": episode.get("hits"), "hits": hits,
+                       "hits_max": hits_max,
+                       "from_food_quantity": episode.get("food_quantity"),
+                       "food_quantity": food_quantity}])
+        est["healing_hold"] = None
+
+
 def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     """One evaluation. Returns (verdict, exit_code)."""
     defaults = config_defaults(cfg)
@@ -5813,16 +5899,31 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     save_player_state(est)
     hits, hits_max = snap.get("hits"), snap.get("hits_max")
     food = game_reflex.load_food()
-    low_health_with_food = isinstance(hits, int) and isinstance(hits_max, int) \
-        and hits_max > 0 and hits / hits_max < EAT_HEALTH_FRACTION \
-        and bool(game_reflex.food_slots(snap, food))
-    if low_health_with_food and snap.get("in_combat") is False:
-        # The survival reflex engine and learned player are independent loops
-        # sharing one action slot. On the first safe snapshot the faster
-        # learned loop must not reacquire an NPC before eat-low-health can own
-        # and verify healing. This is a state prerequisite, not a delay: it
-        # vanishes on the observed HP/food transition that completes eating.
+    health_known = isinstance(hits, int) and isinstance(hits_max, int) \
+        and hits_max > 0
+    has_food = bool(game_reflex.food_slots(snap, food))
+    low_health_with_food = health_known and has_food \
+        and hits / hits_max < EAT_HEALTH_FRACTION
+    # Spec rule 7i: the healing prerequisite. The survival reflex engine and
+    # learned player are independent loops sharing one action slot. On the
+    # first safe snapshot the faster learned loop must not reacquire an NPC
+    # before the reflex table's ARMED eat can own and verify healing. This is
+    # a state prerequisite, not a delay: it vanishes on the observed HP/food
+    # transition that completes eating, and it never holds for a disarmed eat.
+    armed_eat = reflex_armed_eat_threshold()
+    snap_fresh = isinstance(snap.get("ts"), int) \
+        and now - snap["ts"] <= defaults["stale_ms"]
+    healing_need = snap_fresh and snap.get("in_combat") is False \
+        and health_known and has_food and armed_eat is not None \
+        and hits / hits_max < armed_eat
+    if snap_fresh and (healing_need or est.get("healing_hold")):
+        with player_state_lock():
+            est = load_player_state()
+            update_healing_hold(est, snap, healing_need, armed_eat, food, now)
+            save_player_state(est)
+    if healing_need:
         report("healing-prerequisite", hits=hits, hits_max=hits_max,
+               threshold=armed_eat,
                next="eat-low-health-observe-healing-or-food-decrease")
         return "healing-prerequisite", EXIT_NOT_READY
     if low_health_with_food and snap.get("in_combat") is True:
