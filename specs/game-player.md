@@ -422,6 +422,11 @@ deliberate-play channel.
      body. Ordinary learned rules emit nothing until `walking` becomes false, so incidental loot
      cannot cancel an approach to an NPC or another deliberate destination. A currently applicable
      combat-retreat rule remains the safety exception.
+   - `healing-prerequisite` (exit 3): health is below the survival threshold, usable food is held,
+     and combat has already cleared. The learned player emits no skilling, travel, loot, or batch
+     action while the independent survival engine owns the shared slot and verifies either healing
+     or food loss. This is released by that observed state transition, not a delay; it prevents a
+     faster activity loop from re-engaging an NPC in the safe snapshot between retreat and eating.
    - `npc-dialogue-in-progress` (exit 3): an NPC exchange is between speech/choice states. Ordinary
      learned rules emit nothing; in particular, visible or respawning loot cannot walk the player
      out of the conversation.
