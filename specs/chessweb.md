@@ -359,14 +359,17 @@ cannot be changed.
     think cheaper, looser clocks or meaningful increment can afford more): for a game
     carrying a time control, the pair read is the game's SPEED's own —
     `DESKCRAB_CHESS_EFFORT_<BULLET|BLITZ|RAPID>_QUIET` / `_SHARP`, defaults in
-    `chess_effort.SPEED_PAIRS`, chosen from the 2026-08-27 self-play benchmark
-    (chess-selfplay.md rules 14-19; docs/chess-bench-2026-08-27.md carries the measured
-    results): bullet `low`/`low`, blitz `low`/`low`, rapid `low`/`medium` — bullet and
-    blitz drop the `medium` sharp because a sonnet `medium` call's in-game tail (p90 ~15s
-    against a ~3s `low`) is what the measured flag losses at 2+1 and 3+2 died of, and 0-2s
-    of increment cannot cover it; rapid keeps `medium` because the pair never flagged in
-    six rapid games and 10+0/15+10 clocks absorb the tail — and an untimed game keeps the
-    uniform pair above, exactly as adjudicated.
+    `chess_effort.SPEED_PAIRS`, chosen from the corrected 2026-08 full-game matrix
+    benchmark (chess-selfplay.md rules 20-20b; docs/chess-bench-matrix-2026-08.md carries
+    the measured results and every exclusion): bullet `low`/`low`, blitz `low`/`low`,
+    rapid `low`/`low` — each speed carries its measured winner's own uniform pair, and
+    every winner of the corrected matrix is a `low` pair, because under the
+    clock-is-the-only-ceiling regime (rule 16g) every higher effort that was measured
+    either flagged or fell below the rule-20a evidence floor. The 2026-08-27 probe-era
+    defaults (rapid `low`/`medium`, docs/chess-bench-2026-08-27.md) are history: that
+    rapid `medium` predated the corrected regime and its evidence was rule-20b
+    invalidated. An untimed game keeps the uniform pair above, exactly as adjudicated —
+    the corrected benchmark is a timed elimination and owes untimed nothing.
     The game's speed picks the model the same way (`chess_effort.model_for`, read by
     `answer_position` onto the job's `model`; the mover prefers a real-game job's `model`
     over its environment chain): the explicit `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` knob
@@ -377,6 +380,13 @@ cannot be changed.
     probe-only run could not choose a model per clock, and a global model selection must not
     survive a control merely because it predates the measurement); while a speed has no
     entry, nothing changes — the mover-model knob stands for that speed exactly as before.
+    The corrected 2026-08 matrix filled the timed entries
+    (docs/chess-bench-matrix-2026-08.md): bullet `sonnet` (a least-failure verdict — NO
+    configuration reliably finishes bullet under the corrected regime; sonnet-low carried
+    the fewest flags per game), blitz `sonnet` (reliable winner sonnet-low), rapid `opus`
+    (reliable winner opus-low, rate 0.75 pooled over 10+0 and 15+10). `untimed` stays
+    unrouted: the user's 2026-08-31 correction retired the untimed round, so no untimed
+    verdict exists and the global knob remains untimed's whole answer.
     Once a speed HAS an entry, that entry outranks the global mover-model knob for games of
     that speed: the global knob remains the whole answer for any unrouted speed, and the
     per-speed env knob outranks everything, so the next adjudication is a config line here

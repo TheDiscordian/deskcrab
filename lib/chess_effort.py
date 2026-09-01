@@ -39,19 +39,21 @@ SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 # The clock picks the pair (specs/chessweb.md rule 16b, adopted 2026-08-27):
 # a timed game reads its SPEED's pair, so a bullet game stops paying rapid
 # thinking prices and a rapid game with increment can afford real thought.
-# The defaults are the 2026-08-27 self-play benchmark's verdict
-# (docs/chess-bench-2026-08-27.md): bullet and blitz go low/low because the
-# medium sharp call's in-game tail (p90 ~15s against low's steady ~3s) is
-# exactly what the measured 2+1 and 3+2 flag losses died of and 0-2s of
-# increment cannot cover it; rapid keeps low/medium because that pair never
-# flagged in six rapid games — 10+0/15+10 clocks absorb the tail. Each level
-# is overridable by its own knob, so the next adjudication is a config line
-# here too. An untimed game — and any speed outside this table — keeps the
-# uniform pair above, exactly as the 2026-08-26 adjudication left it.
+# The defaults are the corrected 2026-08 full-game matrix benchmark's verdict
+# (docs/chess-bench-matrix-2026-08.md, specs/chess-selfplay.md rules 20-20b):
+# each speed carries its measured winner's own uniform pair, and every winner
+# of the corrected matrix is a low pair — under the clock-is-the-only-ceiling
+# regime (rule 16g) every measured higher effort either flagged or fell below
+# the rule-20a evidence floor. The 2026-08-27 probe-era rapid low/medium is
+# history: its evidence was rule-20b invalidated with the retired fixed
+# ceiling. Each level is overridable by its own knob, so the next
+# adjudication is a config line here too. An untimed game — and any speed
+# outside this table — keeps the uniform pair above, exactly as the
+# 2026-08-26 adjudication left it.
 SPEED_PAIRS = {
     "bullet": ("low", "low"),
     "blitz": ("low", "low"),
-    "rapid": ("low", "medium"),
+    "rapid": ("low", "low"),
 }
 
 # The clock picks the MODEL too (specs/chessweb.md rule 16b, adopted
@@ -60,13 +62,24 @@ SPEED_PAIRS = {
 # its name lives here — and for that speed it OUTRANKS the global
 # DESKCRAB_CHESS_MOVER_MODEL knob, because the user's directive that night
 # was exactly that a global model selection must not survive a control
-# merely because it predates the measurement. Until the matrix completes
-# the table stays EMPTY, and an empty entry changes nothing: the mover's
-# own environment chain stands for that speed exactly as before. "untimed"
-# is a routable speed here — the untimed route is selected from complete
-# games too. The per-speed env knob (DESKCRAB_CHESS_MOVER_MODEL_<SPEED>)
-# outranks the table, so the next adjudication is a config line.
-SPEED_MODELS = {}
+# merely because it predates the measurement. The corrected 2026-08 matrix
+# (docs/chess-bench-matrix-2026-08.md, specs/chess-selfplay.md rules
+# 20-20b) filled the timed entries: rapid opus (reliable winner opus-low,
+# pooled rate 0.75 over 10+0 and 15+10, zero failure events), blitz sonnet
+# (reliable winner sonnet-low at both 3+2 and 5+0), bullet sonnet (a
+# LEAST-FAILURE verdict, not a reliable finisher — no configuration
+# physically finishes bullet under the clock-only regime; sonnet-low
+# carried the fewest flags per game, 3 in 8, and that failure record is
+# part of the verdict). "untimed" stays unrouted: the user's 2026-08-31
+# correction retired the untimed round, so no untimed verdict exists and
+# the mover's own chain remains untimed's whole answer. The per-speed env
+# knob (DESKCRAB_CHESS_MOVER_MODEL_<SPEED>) outranks the table, so the
+# next adjudication is a config line.
+SPEED_MODELS = {
+    "bullet": "sonnet",
+    "blitz": "sonnet",
+    "rapid": "opus",
+}
 
 
 def model_for(speed):

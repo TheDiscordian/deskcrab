@@ -392,7 +392,7 @@ check_eq "no speed keeps the adjudicated uniform pair" "$(pairfor -)" "low mediu
 check_eq "an unknown speed keeps it too" "$(pairfor correspondence)" "low medium"
 check_eq "bullet reads its own benchmark-chosen pair" "$(pairfor bullet)" "low low"
 check_eq "blitz reads its own" "$(pairfor blitz)" "low low"
-check_eq "rapid reads its own" "$(pairfor rapid)" "low medium"
+check_eq "rapid reads its own" "$(pairfor rapid)" "low low"
 check_eq "a per-speed knob overrides by env alone" \
     "$(pairfor rapid DESKCRAB_CHESS_EFFORT_RAPID_QUIET=medium \
        DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "medium max"
@@ -429,8 +429,8 @@ print("untimed:", chessweb.mover_model_for({}))
 print("none-game:", chessweb.mover_model_for(None))
 EOF
 )"
-contains "$MM" "unset: None" \
-    && ok "no per-speed knob means no model on the job — the mover chain stands" \
+contains "$MM" "unset: sonnet" \
+    && ok "no per-speed knob means the shipped benchmark default rides the job" \
     || fail "mover_model_for: $MM"
 contains "$MM" "set: haiku" \
     && ok "the per-speed knob rides the job for its speed" \
@@ -445,7 +445,9 @@ RT="$("$PY" -B - <<EOF
 import sys, os; sys.path.insert(0, "$REPO/lib")
 import chess_effort, chessweb
 timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
-print("empty:", chess_effort.model_for("bullet"))
+print("shipped:", chess_effort.model_for("bullet"),
+      chess_effort.model_for("blitz"), chess_effort.model_for("rapid"),
+      chess_effort.model_for("untimed"))
 chess_effort.SPEED_MODELS["bullet"] = "sonnet"
 chess_effort.SPEED_MODELS["untimed"] = "haiku"
 # The table outranks the global mover-model knob for a routed speed: the
@@ -461,8 +463,8 @@ chess_effort.SPEED_MODELS.clear()
 print("cleared:", chessweb.mover_model_for(timed))
 EOF
 )"
-contains "$RT" "empty: None" \
-    && ok "an unfilled table changes nothing — no offer, the chain stands" \
+contains "$RT" "shipped: sonnet sonnet opus None" \
+    && ok "the corrected matrix verdict ships in the table — bullet and blitz sonnet, rapid opus, untimed unrouted" \
     || fail "SPEED_MODELS: $RT"
 contains "$RT" "routed: sonnet" \
     && ok "a routed speed's default rides the job over the global knob" \
