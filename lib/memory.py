@@ -22,6 +22,7 @@
 # the embedder down it emits the pinned tier plus a loud warning and exits 0.
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -185,6 +186,11 @@ DECAY_RETIRE_FLOOR = 0.3
 # record is simply added; true conflicts below 0.92 wait for the ingest
 # session's judgement.
 SUPERSEDE_SIM = 0.92
+# A durable rule is held for judgement well below the automatic fact-flip
+# threshold.  This cut comes from the 2026-08-28 audit of all 156 active
+# directives: every observed duplicate cluster reached 0.86, while the two
+# false pairs at that cut proved why similarity may nominate but never decide.
+RULE_OVERLAP_SIM = 0.86
 # The hidden kinds (memory-recall.md rules 42-45). An `observation` is the
 # shape of one night; a `miss` is one question about the user that a record
 # could have answered and none did. Neither is ever returned by the
@@ -277,6 +283,40 @@ def _same_day(a, b):
     collapse a dated evening into an undated one, or the reverse."""
     pa, pb = parse_iso(a) if a else None, parse_iso(b) if b else None
     return bool(pa and pb and pa.date() == pb.date())
+
+
+def normalize_rule(text):
+    return " ".join((text or "").split()).casefold()
+
+
+def rule_clauses(text):
+    """The independently meaningful pieces of a durable rule.
+
+    Paragraphs, Markdown list items and sentence stops are deliberate split
+    points.  Headings are useful rule names and stay; boilerplate fences and
+    very short fragments do not.  This is intentionally conservative: a
+    nomination can inconvenience a write, while a missed clause multiplies
+    the active rule set.
+    """
+    cleaned = re.sub(r"```.*?```", " ", text or "", flags=re.S)
+    pieces = re.split(
+        r"(?:\n\s*\n|\n(?=\s*(?:[-*+] |\d+[.)] ))|;\s+|(?<=[.!?])\s+)",
+        cleaned)
+    clauses = []
+    for piece in pieces:
+        piece = re.sub(r"^\s*(?:[-*+] |\d+[.)] )", "", piece)
+        piece = re.sub(r"^\s*#{1,6}\s*", "", piece).strip()
+        piece = re.sub(r"\s+", " ", piece)
+        if len(piece) >= 20:
+            clauses.append(piece)
+    return clauses or ([" ".join((text or "").split())] if text.strip() else [])
+
+
+def cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
 
 
 # Rule 48's date parse: only shapes that need no guessing. The ISO form, and
@@ -824,6 +864,17 @@ class Store:
                                 (occurred, best[0]))
             self.db.commit()
             return "duplicate", best[0]
+        if kind == "directive":
+            overlaps = self.rule_overlaps(text)
+            if overlaps:
+                self.queue_rule_overlap(text, source, topics, occurred, overlaps)
+                # An overlap is neither a duplicate nor a supersession until
+                # somebody judges it.  Returning the nominated memory id (or
+                # zero for conduct) gives CLI callers a useful reference
+                # without pretending the machine made that judgement.
+                ref = next((h["ref"] for h in overlaps
+                            if h["drawer"] == "memory"), 0)
+                return "overlap", ref
         if best and best[9] >= SUPERSEDE_SIM and (
                 kind != "episodic" or _same_day(occurred, best[12])):
             new_id = self.insert(text, kind, pinned, source, topics, vec=vec,
@@ -838,6 +889,125 @@ class Store:
         return "added", self.insert(text, kind, pinned, source, topics, vec=vec,
                                     occurred=occurred, participants=participants,
                                     opinion=opinion)
+
+    def add_distinct_directive(self, text, pinned=False, source="self",
+                               topics="", occurred=None):
+        """Admit a preflight-nominated rule after an explicit judgement."""
+        rec_id = self.insert(text, "directive", pinned, source, topics,
+                             occurred=occurred)
+        self.resolve_rule_overlap(text, "distinct", rec_id)
+        return rec_id
+
+    def supersede_directive(self, old_id, text, pinned=False, source="self",
+                            topics="", occurred=None):
+        old = self.db.execute(
+            "SELECT kind, status FROM memories WHERE id=?", (old_id,)).fetchone()
+        if old != ("directive", "active"):
+            raise ValueError(f"#{old_id} is not an active directive")
+        new_id = self.insert(text, "directive", pinned, source, topics,
+                             occurred=occurred)
+        self.db.execute("UPDATE memories SET status='superseded' WHERE id=?",
+                        (old_id,))
+        self.db.execute("UPDATE memories SET supersedes=? WHERE id=?",
+                        (old_id, new_id))
+        self.db.commit()
+        self.resolve_rule_overlap(text, "superseded", new_id)
+        return new_id
+
+    def rule_overlaps(self, text, conduct_dir=None):
+        """Nominate clause-level overlaps across both durable-rule drawers.
+
+        Whole-record embeddings let a novel clause hide a copied one.  Each
+        candidate and each active rule is therefore split and embedded by
+        clause.  The result is evidence for one of three explicit decisions
+        (duplicate, supersede, distinct), never the decision itself.
+        """
+        candidates = rule_clauses(text)
+        existing = []
+        for rec_id, body in self.db.execute(
+                "SELECT id, text FROM memories"
+                " WHERE kind='directive' AND status='active'"):
+            for clause in rule_clauses(body):
+                existing.append(("memory", rec_id, clause))
+        conduct_dir = conduct_dir or os.environ.get("DESKCRAB_CONDUCT_DIR")
+        if not conduct_dir:
+            if os.path.abspath(self.dir) in _live_memory_dirs():
+                conduct_dir = os.path.expanduser(
+                    "~/.local/share/deskcrab/conduct")
+            else:
+                # A scratch memory store must never inspect the live conduct
+                # drawer; the two instance redirects travel together.
+                conduct_dir = os.path.join(os.path.dirname(self.dir), "conduct")
+        if os.path.isdir(conduct_dir):
+            for name in sorted(os.listdir(conduct_dir)):
+                if not name.endswith(".md") or name == "CONDUCT.md":
+                    continue
+                try:
+                    with open(os.path.join(conduct_dir, name), errors="replace") as f:
+                        body = f.read()
+                except OSError:
+                    continue
+                for clause in rule_clauses(body):
+                    existing.append(("conduct", name[:-3], clause))
+        if not candidates or not existing:
+            return []
+        vectors = embed(candidates + [e[2] for e in existing])
+        cvecs, evecs = vectors[:len(candidates)], vectors[len(candidates):]
+        hits = []
+        for clause, cv in zip(candidates, cvecs):
+            for (drawer, ref, old), ev in zip(existing, evecs):
+                sim = cosine(cv, ev)
+                if sim >= RULE_OVERLAP_SIM:
+                    hits.append({"drawer": drawer, "ref": ref,
+                                 "similarity": round(sim, 4),
+                                 "candidate_clause": clause,
+                                 "existing_clause": old})
+        hits.sort(key=lambda h: h["similarity"], reverse=True)
+        return hits
+
+    def queue_rule_overlap(self, text, source, topics, occurred, hits):
+        """Keep a rejected candidate durable so preflight cannot lose it."""
+        path = os.path.join(self.dir, "pending-rule-overlaps.json")
+        try:
+            with open(path) as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            rows = []
+        key = hashlib.sha256(normalize_rule(text).encode()).hexdigest()[:16]
+        now = now_iso()
+        for row in rows:
+            if row.get("id") == key and row.get("status") == "pending":
+                row["last_seen"] = now
+                row["hits"] = hits
+                break
+        else:
+            rows.append({"id": key, "status": "pending", "created": now,
+                         "last_seen": now, "text": text, "source": source,
+                         "topics": topics, "occurred": occurred, "hits": hits})
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "w") as f:
+            json.dump(rows, f, indent=2)
+        os.replace(tmp, path)
+
+    def resolve_rule_overlap(self, text, outcome, ref):
+        path = os.path.join(self.dir, "pending-rule-overlaps.json")
+        try:
+            with open(path) as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            return
+        key = hashlib.sha256(normalize_rule(text).encode()).hexdigest()[:16]
+        changed = False
+        for row in rows:
+            if row.get("id") == key and row.get("status") == "pending":
+                row.update(status="resolved", resolved=now_iso(),
+                           outcome=outcome, resolved_as=ref)
+                changed = True
+        if changed:
+            tmp = path + f".tmp.{os.getpid()}"
+            with open(tmp, "w") as f:
+                json.dump(rows, f, indent=2)
+            os.replace(tmp, path)
 
     def pinned_rows(self):
         # The hidden kinds are excluded even here: every caller of this tier
@@ -2058,7 +2228,8 @@ def cmd_ingest(store, args):
             candidates += extract_candidates(jmaterial, args.model,
                                              effort=args.effort)
 
-    counts = {"added": 0, "duplicate": 0, "superseded": 0, "rejected": 0}
+    counts = {"added": 0, "duplicate": 0, "superseded": 0,
+              "overlap": 0, "rejected": 0}
     would = 0
     for cand in candidates:
         text = (cand.get("text") or "").strip()
@@ -2084,7 +2255,8 @@ def cmd_ingest(store, args):
             # only exists on the far side of add_deduped's writes, so the
             # rehearsal names the surviving candidate and withholds the store.
             would += 1
-            print(f"  would add [{kind}]"
+            overlaps = store.rule_overlaps(text) if kind == "directive" else []
+            print(f"  would {'hold overlap' if overlaps else 'add'} [{kind}]"
                   + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
             continue
         action, rec_id = store.add_deduped(
@@ -2103,7 +2275,8 @@ def cmd_ingest(store, args):
     with open(cursor_path, "w") as f:
         json.dump(cursor, f, indent=1)
     print(f"ingest: {counts['added']} added, {counts['superseded']} superseded, "
-          f"{counts['duplicate']} duplicates, {counts['rejected']} rejected")
+          f"{counts['duplicate']} duplicates, {counts['overlap']} overlaps held, "
+          f"{counts['rejected']} rejected")
     return 0
 
 
@@ -2427,7 +2600,26 @@ def cmd_add(store, args):
     if (participants or opinion) and args.kind != "episodic":
         sys.exit("memory add: --participants and --opinion belong to "
                  "--kind episodic only")
-    if args.no_dedup:
+    if args.distinct and args.supersedes:
+        sys.exit("memory add: choose --distinct or --supersedes, not both")
+    if args.kind != "directive" and (args.distinct or args.supersedes):
+        sys.exit("memory add: --distinct and --supersedes are directive routes")
+    if args.kind == "directive" and args.no_dedup:
+        sys.exit("memory add: directives cannot bypass durable-rule preflight; "
+                 "use --distinct after judging the overlap")
+    if args.supersedes:
+        try:
+            rec_id = store.supersede_directive(
+                args.supersedes, text, args.pin, args.source, args.topics,
+                occurred)
+        except ValueError as exc:
+            sys.exit(f"memory add: {exc}")
+        action = "superseded"
+    elif args.distinct:
+        rec_id = store.add_distinct_directive(
+            text, args.pin, args.source, args.topics, occurred)
+        action = "added-distinct"
+    elif args.no_dedup:
         rec_id = store.insert(text, args.kind, args.pin, args.source,
                               args.topics, occurred=occurred,
                               participants=participants, opinion=opinion)
@@ -2440,6 +2632,10 @@ def cmd_add(store, args):
                                            opinion=opinion)
     print(f"{action} #{rec_id} [{args.kind}]"
           + (f" occurred={occurred}" if occurred else ""))
+    if action == "overlap":
+        print("held in pending-rule-overlaps.json; judge it, then rerun with "
+              "--distinct or --supersedes ID", file=sys.stderr)
+        return 3
     return 0
 
 
@@ -2500,6 +2696,27 @@ def cmd_list(store, args):
         mark = "*" if r[2] else " "
         print(f"#{r[0]:<4}{mark}{r[1]:<10} {r[3]:<10} {r[5][:10]}  {text}")
     print(f"-- {len(rows)} records")
+    return 0
+
+
+def cmd_overlaps(store, args):
+    path = os.path.join(store.dir, "pending-rule-overlaps.json")
+    try:
+        with open(path) as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        rows = []
+    if not args.all:
+        rows = [r for r in rows if r.get("status") == "pending"]
+    for row in rows:
+        print(f"{row.get('id')} [{row.get('status', 'pending')}] "
+              f"source={row.get('source', '')} topics={row.get('topics', '')}  "
+              f"{row.get('text', '')}")
+        for hit in row.get("hits", [])[:8]:
+            print(f"  {hit.get('similarity', 0):.3f} "
+                  f"{hit.get('drawer')}:{hit.get('ref')}  "
+                  f"{hit.get('existing_clause', '')}")
+    print(f"-- {len(rows)} overlap candidates")
     return 0
 
 
@@ -2623,6 +2840,12 @@ def main():
                    help="episodic only: her own first-person take on the "
                         "moment")
     p.add_argument("--no-dedup", action="store_true")
+    p.add_argument("--distinct", action="store_true",
+                   help="after inspecting a nominated overlap, admit it as a "
+                        "distinct rule")
+    p.add_argument("--supersedes", type=int, metavar="ID",
+                   help="after inspecting a nominated overlap, replace this "
+                        "active directive and preserve its provenance")
     p.add_argument("text", nargs="+")
     p.set_defaults(fn=cmd_add)
 
@@ -2640,6 +2863,11 @@ def main():
     p.add_argument("--kind", choices=RECORD_KINDS)
     p.add_argument("--all", action="store_true", help="include superseded/retired")
     p.set_defaults(fn=cmd_list)
+
+    p = sub.add_parser("overlaps", help="durable-rule candidates held for "
+                       "duplicate/supersede/distinct judgement")
+    p.add_argument("--all", action="store_true", help="include resolved")
+    p.set_defaults(fn=cmd_overlaps)
 
     p = sub.add_parser("dump", help="whole store as readable text")
     p.set_defaults(fn=cmd_dump)

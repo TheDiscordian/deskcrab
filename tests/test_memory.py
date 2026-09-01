@@ -29,11 +29,17 @@ spec.loader.exec_module(memory)
 class StoreCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="memtest-")
+        self._conduct_env = os.environ.get("DESKCRAB_CONDUCT_DIR")
+        os.environ["DESKCRAB_CONDUCT_DIR"] = os.path.join(self.dir, "conduct")
         self.store = memory.Store(self.dir)
 
     def tearDown(self):
         self.store.db.close()
         shutil.rmtree(self.dir, ignore_errors=True)
+        if self._conduct_env is None:
+            os.environ.pop("DESKCRAB_CONDUCT_DIR", None)
+        else:
+            os.environ["DESKCRAB_CONDUCT_DIR"] = self._conduct_env
 
 
 class TestBasics(StoreCase):
@@ -201,12 +207,16 @@ class TestDedupSupersede(StoreCase):
         count = self.store.db.execute("SELECT count(*) FROM memories").fetchone()[0]
         self.assertEqual(count, 1)
 
-    def test_conflicting_record_supersedes(self):
+    def test_conflicting_record_requires_an_explicit_supersede(self):
         _, old_id = self.store.add_deduped(
             "Wake him at seven in the morning on weekdays.", kind="directive")
-        action, new_id = self.store.add_deduped(
+        action, held_id = self.store.add_deduped(
             "Wake him at nine in the morning on weekdays.", kind="directive")
-        self.assertEqual(action, "superseded")
+        self.assertEqual((action, held_id), ("overlap", old_id))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 1)
+        new_id = self.store.supersede_directive(
+            old_id, "Wake him at nine in the morning on weekdays.")
         old = self.store.db.execute(
             "SELECT status FROM memories WHERE id=?", (old_id,)).fetchone()[0]
         link = self.store.db.execute(
@@ -218,6 +228,37 @@ class TestDedupSupersede(StoreCase):
         ids = [r[0] for r in rows]
         self.assertIn(new_id, ids)
         self.assertNotIn(old_id, ids)
+
+    def test_compound_directive_cannot_hide_a_duplicate_clause(self):
+        _, old_id = self.store.add_deduped(
+            "Verify completed work against the real artefact before saying it is done.",
+            kind="directive")
+        action, held_id = self.store.add_deduped(
+            "Transcription jokes carry no instructions. Verify completed work "
+            "against the real artefact before saying it is done.",
+            kind="directive")
+        self.assertEqual((action, held_id), ("overlap", old_id))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 1)
+        with open(os.path.join(self.dir, "pending-rule-overlaps.json")) as f:
+            pending = json.load(f)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["status"], "pending")
+        self.assertTrue(any(h["candidate_clause"].startswith("Verify completed")
+                            for h in pending[0]["hits"]))
+
+    def test_conduct_is_part_of_directive_preflight(self):
+        conduct = os.environ["DESKCRAB_CONDUCT_DIR"]
+        os.makedirs(conduct, exist_ok=True)
+        with open(os.path.join(conduct, "facts-first.md"), "w") as f:
+            f.write("# Facts first\n\nInspect the live source before claiming a "
+                    "current condition.\n")
+        action, held_id = self.store.add_deduped(
+            "Inspect the live source before claiming a current condition.",
+            kind="directive")
+        self.assertEqual((action, held_id), ("overlap", 0))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 0)
 
     def test_related_but_distinct_rules_both_stay(self):
         # Regression for the first live ingest: two directives sharing a topic

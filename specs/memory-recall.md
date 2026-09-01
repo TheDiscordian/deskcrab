@@ -139,9 +139,21 @@ life, and she re-reads that store every single turn.
     records: the directive holds his rule, the note holds that SHE owed the work and the day
     closed without it. A fulfilled or lapsed commitment note then fades on rule 26's own clock —
     nothing keeps it alive but the judge crediting it.)
-28. Deduplication MUST be by measured thresholds: an exact normalised match of the same kind bumps
-    last-seen; a very close match with different text supersedes, newer winning, with the old record
-    left readable and excluded from retrieval; anything below simply adds.
+28. Durable-rule deduplication is a three-way judgement, fed by measured thresholds. An exact
+    normalised same-kind match bumps last-seen. Every clause of a proposed `directive` is embedded
+    separately and compared at `0.86` against every clause of every active directive **and every
+    conduct body**: a hit is held, not written, in `pending-rule-overlaps.json` until the caller
+    explicitly admits it as distinct or names the active directive it supersedes. Supersession
+    preserves the old row and its provenance while excluding it from retrieval. The threshold
+    nominates; it never decides — the measured corpus has two related-but-distinct pairs above it,
+    and a later correction must not be mistaken for a duplicate. Clause embeddings are
+    load-bearing: whole-record similarity allowed a novel clause to hide a copied rule. Notes keep
+    the narrower existing exact/very-close behaviour, and episodic records obey rule 51.
+28a. Conduct creation uses `crab conduct add`, the same cross-drawer clause preflight and the same
+    explicit routes. A nominated overlap is not a new file or index entry. `--distinct` records the
+    judgement and admits it; `--supersedes SLUG` removes the old rule from the active index while
+    retaining its body under `conduct/archive/`. Direct file creation is unsupported because it
+    cannot prove the active memory and conduct sets were checked first.
 29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
     would lose its earliest material to a tail-clamp, so the chunk list is split into successive
     windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a
@@ -309,6 +321,7 @@ life, and she re-reads that store every single turn.
 | Path | Role |
 |---|---|
 | `~/.local/share/deskcrab/memory/memory.db` | the store; override with the memory directory variable |
+| `~/.local/share/deskcrab/memory/pending-rule-overlaps.json` | directive or conduct candidates held by rule 28 until an explicit distinct/supersede judgement resolves them |
 | `~/.local/share/deskcrab/memory/ingest-cursor.json` | byte offsets and sizes per ingested source |
 | `~/.local/share/deskcrab/memory/archive-cursor.json` | the episodic backfill's durable cursor: name and size per archive file already ingested (rule 52) |
 | `~/.local/share/deskcrab/venv` | the interpreter with the vector extension |
@@ -377,7 +390,10 @@ judge), `crab memory`, and the nightly sleep.
 
 ## TESTS
 
-**Existing:** `tests/test_sleep_sol_judgment.sh` — the two-stage boundary of rules 27 and 30 end
+**Existing:** `tests/test_durable_rules.sh` — rules 28/28a across both write doors: a clear conduct
+creation lands in body and index; a copied clause hidden behind a novel clause is held with no
+file; a memory directive is checked against conduct and leaves no row; an explicit distinct
+judgement admits the candidate. `tests/test_sleep_sol_judgment.sh` — the two-stage boundary of rules 27 and 30 end
 to end through `crab memory ingest --dry-run` at the shipped defaults: the summariser (stub
 claude, `--model sonnet`) receives the raw day, the judge (stub codex, `-m gpt-5.6-sol`,
 `model_reasoning_effort=high`) receives the labelled summaries and not one byte of the raw

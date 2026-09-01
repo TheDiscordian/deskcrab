@@ -1,6 +1,6 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | status | tired | shutup | face <verb> | play <file> | job <desc> | jobs | memory <verb> | eng <verb> | want <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | openrsc-link [base-url] | remote <text> | <text>
+# Usage: crab start | stop | status | tired | shutup | face <verb> | play <file> | job <desc> | jobs | memory <verb> | conduct <verb> | eng <verb> | want <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | openrsc-link [base-url] | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -889,6 +889,16 @@ What you did tonight is journaled from your tool activity without your help, so 
         export ACCOUNT_STATE_FILE
         export CLAUDE_CONFIG_DIR="$(claude_child_login)"
         exec "$SCRIPT_DIR/lib/memory.py" "$@"
+        ;;
+
+    conduct)
+        # Durable conduct creation shares memory's clause-level semantic
+        # preflight.  Direct file creation bypasses the three-way judgement
+        # (duplicate / supersede / distinct) and is unsupported.
+        shift
+        export DESKCRAB_MEMORY_DIR="${DESKCRAB_MEMORY_DIR:-$(deskcrab_home)/memory}"
+        export DESKCRAB_CONDUCT_DIR="${DESKCRAB_CONDUCT_DIR:-$(deskcrab_home)/conduct}"
+        exec "$SCRIPT_DIR/lib/conduct_rules.py" "$@"
         ;;
 
     eng)
