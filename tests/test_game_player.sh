@@ -1743,6 +1743,66 @@ contains "$OUT" "reason=route-cycle" \
     || fail "a grounded prefix must still be cycle-bounded" "$OUT"
 python3 "$GP" route --clear >/dev/null
 
+# The plan's one remaining waypoint may sit within the route's arrival
+# tolerance of the body itself while the destination check is still unmet
+# (2026-09-01: the Al Kharid bank stall — (86,687) bracketing waypoint
+# (86,686), the counter two tiles on). Handing the bridge that whole arrival
+# area again is a no-op walk the live pathfinder answers refused-no-path,
+# blocking a route no obstacle blocks. Spec rule 7e: such a final leg
+# narrows to the planner's exact arrival tile.
+snap 104902 '[]' '{"x":86,"z":687}'
+check "a near-tolerance route can be set" python3 "$GP" route 87 685 --arrive 1
+python3 - "$DESKCRAB_GAME_STATE_DIR" <<'PY' &
+import json, os, sys, time
+sd = sys.argv[1]
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    rp = os.path.join(sd, "route-request.json")
+    if os.path.exists(rp):
+        fields = dict(line.split("=", 1) for line in open(rp).read().splitlines()
+                      if "=" in line)
+        os.remove(rp)
+        plan = {"status": "ok", "source": "client-cache", "steps": 1,
+                "expanded": 2, "waypoints": [[86, 686]], "portals": []}
+        tmp_route = os.path.join(sd, ".route-result.tmp")
+        json.dump({"id": int(fields["id"]), "ts": int(time.time() * 1000),
+                   "plan": plan}, open(tmp_route, "w"))
+        os.replace(tmp_route, os.path.join(sd, "route-result.json"))
+    if os.path.exists(ap):
+        body = open(ap).read()
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        os.remove(ap)
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        state.update({"x": 86, "z": 686, "walking": False,
+                      "tick": state.get("tick", 0) + 1,
+                      "ts": int(time.time() * 1000)})
+        tmp_state = os.path.join(sd, ".state.tmp")
+        json.dump(state, open(tmp_state, "w"))
+        os.replace(tmp_state, state_path)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        break
+    time.sleep(0.05)
+PY
+FAKE_BRIDGE_PID=$!
+CODE=0; OUT="$(python3 "$GP" step --local)" || CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a final leg the body already brackets still succeeds: exit 0" "$CODE" "0"
+check_eq "the bracketed final leg narrows to the planner's exact arrival tile" \
+    "$(last_action 'arrive=0')" "1"
+check_eq "the narrowed leg still walks the planned waypoint" \
+    "$(last_action 'z=686')" "1"
+contains "$OUT" "status=route-complete" \
+    && ok "one exact step finishes a route no obstacle ever blocked" \
+    || fail "an already-bracketed final waypoint must not strand its route" "$OUT"
+refute "the completed route leaves no durable commitment behind" \
+    test -f "$DESKCRAB_GAME_DIR/route.json"
+python3 "$GP" route --clear >/dev/null
+
 check "an obstructed route can be set" python3 "$GP" route 200 648
 snap 10491 '[]' '{"x":120,"z":648}'
 fake_bridge refused-no-path

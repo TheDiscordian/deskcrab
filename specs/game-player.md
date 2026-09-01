@@ -579,7 +579,13 @@ deliberate-play channel.
    every leg. A 16-step `max_path` guard and `route_step=8` still protect each local live dispatch;
    neither can replace the final destination. `arrive` is planner input for the destination area
    as well as verification, so an occupied landmark may settle on truthful nearby floor. No
-   model-authored intermediate coordinate crosses the action file.
+   model-authored intermediate coordinate crosses the action file. A plan's one remaining
+   waypoint is the planner's own chosen arrival tile. When the body already stands within
+   `arrive` of that waypoint while the destination check is still unmet, the leg MUST dispatch
+   to the exact waypoint (`arrive` 0): re-offering the live pathfinder an arrival area the body
+   already occupies makes the walk a no-op that its collision search answers `refused-no-path`,
+   and the runner then blocks a route no obstacle blocks and replans the identical waypoint
+   forever. The follow planner's final leg carries the same narrowing against its `within`.
 
    A complete map path may move farther from the destination for arbitrarily many legs while going
    around real terrain. Those legs are `route-progress`; straight-line progress budgets and the

@@ -1387,3 +1387,24 @@ distance; repeated endpoints and a bounded non-closing-leg budget stop a genuine
 grounded navigation gap for semantic reasoning. Recovery also loop-erases its boundary-bounded
 movement history before building reverse targets, so asking to backtrack cannot replay an
 oscillation already present in the recorded trail.
+
+### 2026-09-01 — the bank was reachable all along: an archive of closed doors, and a no-op walk read as a wall
+
+For hours the player kept concluding she could not reach the Al Kharid bank across visibly open
+ground, then arrived anyway. Two independent defects produced one belief. First, the client-cache
+planner plans against the static landscape archive, which still holds scenery the live server has
+opened or removed: from the recorded stall, planning (67,687)→(90,691) arrive 2 was
+`unreachable-in-client-cache` with or without the 116 observed blockers, so the blocker overlay was
+exonerated by direct probe. The repair sends `learned_passages` — cardinal edges this body has
+actually walked, from consecutive movement-trail points — with every route query; the planner
+treats a walked edge as open while still naming any portal on it, so a live-closed door stays a
+semantic interaction rather than a silent walk-through. Second, the final client-planned waypoint
+was dispatched with the route's whole `arrive` box around it. Standing already inside that box but
+outside the destination's, the live pathfinder found a zero-step path, and the bridge's route-step
+walk reports a self-tile prefix as `refused-no-path` — so a no-op arrival read as an obstacle,
+the route blocked, and replanning regenerated the identical waypoint. Every refused leg in the
+stall window ((92,693) leg (92,691) arrive 2; (86,687) leg (86,686) arrive 1, twice) fits this
+shape. The final leg now narrows to the planner's exact arrival tile when the body already
+brackets it. Both fixes require immediate deployment because the runner and client read their
+source once. After the focused and full suites pass, rebuild the client JAR and restart the live
+stack in the same repair session; leaving a half-deployed stack would make the fixed bug look live.
