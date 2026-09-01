@@ -713,7 +713,8 @@ deliberate-play channel.
     test sandbox pins its own copy), and passes any other subcommand through, so the sitting
     has one door for stepping, state-based waiting, learning and objectives. The direct harness
     doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh panel [close]`,
-    `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]`, and
+    `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]`,
+    `orsc-headless.sh object OBJ-NAME|TYPE-ID VERB [SECONDS]`, and
     `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. Players are semantic
     targets exactly as NPCs are: `entity player PLAYER-NAME [BUTTON]` resolves the exact
     case-insensitive visible name to that player's stable server identity and clicks the
@@ -732,6 +733,21 @@ deliberate-play channel.
     only after `ui_panel_closed` is observed. A world `entity` click never hides the mistake: the
     bridge returns `refused-ui-panel-open` until the player notices and performs that correction.
     `use` sends one identity-checked item-on-object action and waits for rule 7a's causal outcome.
+    `object` is the definition-verb scenery door: it names a loaded object (name or type id) and
+    one of that object's OWN published verbs by text — never a guessed command number, a tile, or
+    a pixel. Resolution is verb-first over the snapshot's nearest-first `objects`: among identity
+    matches, only an object that itself publishes the requested verb (case-insensitive exact
+    text, else one unambiguous fragment) is actionable, nearest such object first — so the one
+    searchable `bookcase` (67, WalkTo/Search) in the palace library is chosen over its eleven
+    nearer decorative `Bookcase` twins (47, WalkTo/Examine), which is how the Shield of Arrav
+    book search is expressible at journal stage 1 without a context menu. A matching name none
+    of whose objects publishes the verb is refused, naming each match's actual verbs; a verb
+    fragment matching two commands on one object, or carriers under two distinct names, is
+    refused rather than guessed. The chosen object's live tile, type id, and the matched verb's
+    own 1/2 index compile to the bridge's ordinary `interact-object` (rechecked at execution),
+    and the door then waits for rule 7a's causal outcome, reporting the observed postcondition —
+    a new inventory item, XP, or server feedback; explicit `Nothing interesting happens`
+    feedback is `result=failed`, never success.
     `retreat` creates one bounded request which the
     resident runner owns (or the caller evaluates through the identical step path if no runner
     exists), retries through the server lock, and does not release the action slot at the first

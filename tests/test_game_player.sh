@@ -2231,6 +2231,8 @@ check_eq "the harness carries the identity-based inventory door" \
     "$(sandbox_count_in '^    inventory)' "$HEADLESS")" "1"
 check_eq "the harness carries the atomic item-on-object door" \
     "$(sandbox_count_in '^    use)' "$HEADLESS")" "1"
+check_eq "the harness carries the definition-verb scenery door" \
+    "$(sandbox_count_in '^    object).*cmd_object' "$HEADLESS")" "1"
 check "the client bridge accepts semantic held-item-on-NPC actions" \
     grep -q '"use-item-npc".equals(type)' \
         "$GAME_TREE/Core-Framework/Client_Base/src/orsc/ReflexBridge.java"
@@ -2366,6 +2368,64 @@ contains "$OUT" "npc=11 sidx=55 cmd=1" \
 check_eq "the door wrote interact-npc" "$(last_action 'type=interact-npc')" "1"
 refute "the NPC command door did not move the pointer" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+# The definition-verb scenery door (spec rule 12): the verb selects the object
+# among same-named twins — the one searchable shelf, never the nearest
+# decoration — and the grounded causal outcome, not the receipt, is the report.
+snap 117013 '[]' '{"x":128,"z":458,"objects":[
+    {"id":47,"name":"Bookcase","commands":["WalkTo","Examine"],"x":129,"z":458,"dir":4},
+    {"id":47,"name":"Bookcase","commands":["WalkTo","Examine"],"x":126,"z":455,"dir":4},
+    {"id":67,"name":"bookcase","commands":["WalkTo","Search"],"x":132,"z":455,"dir":4}]}'
+python3 - "$DESKCRAB_GAME_STATE_DIR" <<'PY' &
+import json, os, sys, time
+sd = sys.argv[1]
+ap = os.path.join(sd, "action.json")
+for _ in range(100):
+    if os.path.exists(ap):
+        body = open(ap).read()
+        open(os.path.join(sd, "last-action"), "w").write(body)
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        os.remove(ap)
+        tmp = os.path.join(sd, ".receipt.tmp")
+        json.dump({"id": int(fields["id"]), "status": "done",
+                   "ts": int(time.time() * 1000)}, open(tmp, "w"))
+        os.replace(tmp, os.path.join(sd, "receipt.json"))
+        state_path = os.path.join(sd, "state.json")
+        state = json.load(open(state_path))
+        state.setdefault("inventory", []).append(
+            {"id": 28, "name": "Book", "count": 1})
+        state.setdefault("messages", []).append(
+            {"id": 117013001, "channel": "game", "incoming": False,
+             "sender": "", "text": "You take the book from the bookcase"})
+        state["tick"] = int(state.get("tick", 0)) + 1
+        state["ts"] = int(time.time() * 1000)
+        json.dump(state, open(state_path, "w"))
+        break
+    time.sleep(0.05)
+PY
+SEARCH_BRIDGE_PID=$!
+OUT="$(bash "$HEADLESS" object bookcase search 5 2>&1)"; CODE=$?
+wait "$SEARCH_BRIDGE_PID"
+check_eq "the scenery verb door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "object(name=bookcase obj=67 at=(132,455) verb=Search cmd=2)" \
+    && ok "the verb selected the one searchable shelf over nearer twins" \
+    || fail "the verb must select the one searchable shelf over nearer twins" "$OUT"
+contains "$OUT" "result=done" && contains "$OUT" "Book(28):+1" \
+    && ok "the door reports the grounded postcondition, not the dispatch" \
+    || fail "the door reports the grounded postcondition, not the dispatch" "$OUT"
+check_eq "the door wrote interact-object" "$(last_action 'type=interact-object')" "1"
+check_eq "the action addresses the searchable object's type" "$(last_action 'obj=67')" "1"
+check_eq "the action carries that verb's own definition index" "$(last_action 'cmd=2')" "1"
+check_eq "the action addresses the shelf's live tile" "$(last_action 'x=132')" "1"
+refute "no pointer button crosses the scenery verb door" \
+    grep -q '^button=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+CODE=0; OUT="$(bash "$HEADLESS" object bookcase read 2>&1)" || CODE=$?
+check_eq "a verb no matching object publishes is refused" "$CODE" "1"
+contains "$OUT" "publishes 'read'" && contains "$OUT" "Bookcase(47): WalkTo, Examine" \
+    && contains "$OUT" "bookcase(67): WalkTo, Search" \
+    && ok "the refusal teaches each matching object's actual menu" \
+    || fail "the refusal must teach each matching object's actual menu" "$OUT"
+refute "the refused verb emits no action" \
+    test -e "$DESKCRAB_GAME_STATE_DIR/action.json"
 snap 117010 '[{"sidx":56,"id":62,"name":"Goblin","x":121,"z":648,"attackable":true,"commands":["",""]}]'
 fake_bridge done
 OUT="$(bash "$HEADLESS" attack Goblin 2)"; CODE=$?
