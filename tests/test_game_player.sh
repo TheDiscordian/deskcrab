@@ -1122,6 +1122,58 @@ contains "$OUT" "reason=expired" \
 refute "the expired causal baseline is removed" \
     test -e "$DESKCRAB_GAME_STATE_DIR/last-action-observation.json"
 
+# --- Spec rule 7a's scenery transitions: the identity-checked object action
+# --- owns a grounded postcondition — floor bands, portal jumps, scenery
+# --- reloads — and an approach walk is never its result.
+snap 104570 '[]' '{"x":106,"z":533,"objects":[{"id":6,"name":"Ladder","x":106,"z":534,"commands":["Climb-Down","Examine"]}]}'
+python3 "$GP" action-arm 904 interact-object x=106 z=534 obj=6 cmd=1 >/dev/null
+snap 104571 '[]' '{"x":106,"z":3369,"walking":false,"objects":[{"id":5,"name":"Ladder","x":106,"z":3368,"commands":["Climb-Up","Examine"]}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "a floor-band change completes a scenery action" "$CODE" "0"
+contains "$OUT" "type=interact-object result=done" && contains "$OUT" "floor:0->3" \
+    && ok "the climb reports the observed floor transition" \
+    || fail "the climb reports the observed floor transition" "$OUT"
+
+snap 104572 '[]' '{"x":108,"z":537,"objects":[{"id":6,"name":"Ladder","x":106,"z":534,"commands":["Climb-Down","Examine"]}]}'
+python3 "$GP" action-arm 905 interact-object x=106 z=534 obj=6 cmd=1 >/dev/null
+snap 104573 '[]' '{"x":112,"z":537,"walking":true,"objects":[{"id":6,"name":"Ladder","x":106,"z":534,"commands":["Climb-Down","Examine"]}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "an approach walk alone leaves a scenery action unresolved" "$CODE" "2"
+contains "$OUT" "action-timeout id=905 type=interact-object" \
+    && ok "walking is never a scenery action's completion" \
+    || fail "walking is never a scenery action's completion" "$OUT"
+python3 "$GP" wait-until action_done --timeout 2 > "$SANDBOX/settle-away-out" &
+WAIT_PID=$!
+sleep .1
+snap 104574 '[]' '{"x":120,"z":537,"walking":true,"objects":[{"id":6,"name":"Ladder","x":106,"z":534,"commands":["Climb-Down","Examine"]}]}'
+sleep .15
+snap 104575 '[]' '{"x":128,"z":537,"walking":false,"objects":[{"id":15,"name":"Bed","x":130,"z":538,"commands":["rest","Examine"]}]}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+check_eq "a body that walked away settles into grounded failure" "$CODE" "0"
+OUT="$(cat "$SANDBOX/settle-away-out")"
+contains "$OUT" "type=interact-object result=failed" \
+    && contains "$OUT" "settled-away:(128,537)-target:(106,534)-distance:22" \
+    && ok "the missed climb names where the body actually stopped" \
+    || fail "the missed climb names where the body actually stopped" "$OUT"
+
+snap 104576 '[]' '{"x":120,"z":648,"objects":[{"id":1187,"name":"Ladder","x":121,"z":648,"commands":["Climb-Down","Examine"]}]}'
+python3 "$GP" action-arm 906 interact-object x=121 z=648 obj=1187 cmd=1 >/dev/null
+snap 104577 '[]' '{"x":150,"z":700,"walking":false,"objects":[]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "an unexplained settled jump is a portal transition" "$CODE" "0"
+contains "$OUT" "result=done" && contains "$OUT" "portal-jump:(120,648)->(150,700)" \
+    && ok "a same-floor portal proves itself by the twelve-tile boundary" \
+    || fail "a same-floor portal proves itself by the twelve-tile boundary" "$OUT"
+
+snap 104578 '[]' '{"x":120,"z":648,"objects":[{"id":57,"name":"Cavern entrance","x":121,"z":648,"commands":["enter","Examine"]}]}'
+python3 "$GP" action-arm 907 interact-object x=121 z=648 obj=57 cmd=1 >/dev/null
+snap 104579 '[]' '{"x":120,"z":648,"walking":false,"objects":[{"id":63,"name":"rocks","x":123,"z":650,"commands":["WalkTo","Examine"]}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "a still body watching its target vanish observed the reload" "$CODE" "0"
+contains "$OUT" "result=done" && contains "$OUT" "scenery-reloaded:obj-57-gone" \
+    && ok "the reloaded scenery set is the transition's own evidence" \
+    || fail "the reloaded scenery set is the transition's own evidence" "$OUT"
+
 snap 104568 '[]' '{"right_click_menu_open":true,"inventory":[{"id":150,"name":"copper ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":104568000,"channel":"game","text":"Ready"}]}'
 python3 "$GP" action-arm 903 use-item-object item=150 x=120 z=648 obj=118 >/dev/null
 snap 104569 '[]' '{"right_click_menu_open":false,"inventory":[{"id":150,"name":"copper ore","count":1}],"skills":[{"id":13,"name":"Smithing","xp":0}],"messages":[{"id":104568000,"channel":"game","text":"Ready"}]}'

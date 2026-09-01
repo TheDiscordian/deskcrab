@@ -71,6 +71,15 @@ STOP_VERIFY_S = 6.0         # a stop's postcondition: a snapshot with walking fa
 TAKE_TIMEOUT_S = 25.0       # a pickup can include the same bounded pathing delay
 TAKE_MISSING_GRACE_S = 0.75 # let inventory follow a just-removed ground entry
 RETREAT_VERIFY_S = 1.25     # one server-round-sized observation before a retry
+# Spec rule 7a: scenery transitions. The server's own floor arithmetic packs
+# each floor into one 944-tile band of the north-south axis (its Point
+# arithmetic: height = z / 944), so the snapshot's z names the current floor.
+FLOOR_BAND_TILES = 944
+OBJECT_SETTLE_AWAY_TILES = 3  # walked and settled farther than this from the
+                              # target with no evidence = the click missed it
+OBJECT_VANISH_NEAR_TILES = 3  # a still body watching its target vanish = the
+                              # scenery set reloaded (a transition happened)
+PORTAL_JUMP_TILES = 12        # rule 7f's unexplained-transition boundary, reused
 RETREAT_CLEARANCE_TILES = 12  # leaving one combat flag is not clearing a pack
 RETREAT_SAFE_NPC_RADIUS = 8   # Classic aggression is local; leave visible threats behind
 RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) means the
@@ -3005,6 +3014,17 @@ def _spell_rune_ids(snap: dict, spell_id: int) -> list:
             if isinstance(rune, dict) and isinstance(rune.get("id"), int)]
 
 
+def floor_band(z):
+    """The floor the north-south coordinate encodes (spec rule 7a).
+
+    The server's own Point arithmetic packs each floor into one 944-tile band
+    (height = z / 944); the snapshot's z therefore names the current floor
+    without any new bridge field."""
+    if isinstance(z, int) and z >= 0:
+        return z // FLOOR_BAND_TILES
+    return None
+
+
 def make_action_observation(action_id: int, action_type: str, fields: list,
                             snap: dict, sent_ts: int = None) -> dict:
     parsed = dict(field.split("=", 1) for field in fields
@@ -3071,8 +3091,12 @@ def load_action_observation():
     return observation
 
 
-def action_completion(observation: dict, snap: dict):
-    """Return grounded postcondition details, or None while still unresolved."""
+def action_completion(observation: dict, snap: dict, context: dict = None):
+    """Return grounded postcondition details, or None while still unresolved.
+
+    `context` is the awaiting loop's memory across polls (currently whether
+    any polled snapshot showed the body walking); a caller replaying a single
+    captured snapshot may omit it."""
     if not isinstance(snap, dict) or snap.get("logged_in") is not True \
             or not isinstance(snap.get("ts"), int) \
             or now_ms() - snap["ts"] > WAIT_SNAPSHOT_FRESH_MS:
@@ -3184,6 +3208,62 @@ def action_completion(observation: dict, snap: dict):
         # failure feedback may terminate it without either delta.
         completed = bool(fields.get("item") in changed_item_ids
                          or xp_changes or failure)
+    if observation["type"] == "interact-object":
+        # Spec rule 7a: a scenery action's walk is only the approach, never
+        # the result. The floor-band arithmetic (the server's own z / 944) is
+        # the transition witness for ladders and stairs; a still body watching
+        # its target vanish is a scenery reload; an unexplained twelve-tile
+        # settled jump with no walking observed is a portal. A body that
+        # WALKED and settled away from the target with none of that evidence
+        # is the grounded failure — dispatch was never a climb.
+        band_before = floor_band(before.get("z"))
+        band_now = floor_band(snap.get("z"))
+        band_changed = band_before is not None and band_now is not None \
+            and band_now != band_before
+        if band_changed:
+            ui_changes.append(f"floor:{band_before}->{band_now}")
+        try:
+            target_x = int(fields.get("x", ""))
+            target_z = int(fields.get("z", ""))
+            target_obj = int(fields.get("obj", ""))
+        except ValueError:
+            target_x = target_z = target_obj = None
+        px, pz = snap.get("x"), snap.get("z")
+        bx, bz = before.get("x"), before.get("z")
+        here = isinstance(px, int) and isinstance(pz, int)
+        settled = snap.get("walking") is False
+        saw_walking = bool(context and context.get("saw_walking"))
+        displacement = max(abs(px - bx), abs(pz - bz)) \
+            if here and isinstance(bx, int) and isinstance(bz, int) else None
+        portal_jump = settled and not band_changed and not saw_walking \
+            and displacement is not None and displacement >= PORTAL_JUMP_TILES
+        if portal_jump:
+            ui_changes.append(f"portal-jump:({bx},{bz})->({px},{pz})")
+        vanished = False
+        settled_distance = None
+        if target_x is not None and here:
+            target_present = any(
+                isinstance(entity, dict) and entity.get("id") == target_obj
+                and entity.get("x") == target_x and entity.get("z") == target_z
+                for entity in snap.get("objects") or [])
+            settled_distance = max(abs(px - target_x), abs(pz - target_z))
+            vanished = settled and not target_present and not band_changed \
+                and not portal_jump and displacement is not None \
+                and displacement <= OBJECT_VANISH_NEAR_TILES
+            if vanished:
+                ui_changes.append(f"scenery-reloaded:obj-{target_obj}-gone")
+        settled_away = settled and saw_walking and not band_changed \
+            and not vanished and not failure \
+            and not (inventory_changes or xp_changes or message or ui_changes) \
+            and settled_distance is not None \
+            and settled_distance > OBJECT_SETTLE_AWAY_TILES
+        if settled_away:
+            failure = True
+            ui_changes.append(
+                f"settled-away:({px},{pz})-target:({target_x},{target_z})"
+                f"-distance:{settled_distance}")
+        completed = bool(inventory_changes or xp_changes or message
+                         or ui_changes or failure)
     if observation["type"] == "cast-npc":
         rune_ids = {str(item) for item in before.get("spell_runes") or []}
         magic_ids = {skill_id for skill_id, skill in current_skills.items()
@@ -3208,10 +3288,16 @@ def action_completion(observation: dict, snap: dict):
 def await_action_completion(observation: dict, timeout: float):
     deadline = time.monotonic() + timeout
     latest = None
+    # The loop's memory across polls: whether the body was ever observed
+    # walking. It separates a pedestrian settle-away from a portal's
+    # instantaneous jump (spec rule 7a's scenery transitions).
+    context = {"saw_walking": False}
     with SnapshotChangeWatch() as watch:
         while True:
             latest = game_reflex.read_snapshot()
-            completion = action_completion(observation, latest)
+            if isinstance(latest, dict) and latest.get("walking") is True:
+                context["saw_walking"] = True
+            completion = action_completion(observation, latest, context)
             if completion is not None:
                 return completion, latest
             remaining = deadline - time.monotonic()

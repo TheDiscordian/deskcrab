@@ -271,6 +271,25 @@ deliberate-play channel.
    Identity-based NPC, object, and bound clicks follow the same rule. Movement, combat, dialogue,
    a context menu, grounded feedback, or another causal game-state change can verify the click;
    pointer placement and hover text alone cannot.
+   A dispatched `interact-object` is a scenery commitment whose walk is only the approach, never
+   the result. The world's own floor arithmetic is the transition witness: the server stores each
+   floor as one 944-tile band of the north-south axis (its own Point arithmetic,
+   `height = z / 944`), so the snapshot's `z` already names the current floor and no new bridge
+   field is needed. The causal verifier for a direct identity-checked scenery action therefore
+   accepts, besides the ordinary evidence above, a floor-band change (`floor:0->3` — a climbed
+   ladder or staircase proving itself), an unexplained settled displacement of twelve or more
+   tiles with no walking observed anywhere in the wait (`portal-jump` — the same boundary rule
+   7f's movement trail already marks), or the targeted object identity vanishing from a newer
+   snapshot while the settled body stayed within three tiles of where it stood
+   (`scenery-reloaded` — the local object set reloaded around a still body). A body observed
+   walking that then settles more than three Chebyshev tiles from the target's tile with none of
+   that evidence is the grounded FAILURE `settled-away`, naming the settled tile, the target
+   tile, and the distance: the click moved the body somewhere, and reaching SOMEWHERE is not
+   acting on IT. `walking: true`, hover text, or ordinary movement alone never completes a
+   scenery action. The wait may still time out while the body legitimately walks its approach;
+   the armed observation survives that timeout inside this rule's 60-second window, so the
+   caller re-waits rather than re-clicks, and an expired unverified approach licenses
+   repositioning, never a claim of success.
    `cast-npc` uses the same causal verifier for direct and learned casts, narrowed to the selected
    spell's required rune ids, Magic XP, and explicit spell feedback. An unrelated inventory,
    interface, or message transition cannot make a cast successful, and routine work cannot resume
@@ -750,8 +769,13 @@ deliberate-play channel.
     refused rather than guessed. The chosen object's live tile, type id, and the matched verb's
     own 1/2 index compile to the bridge's ordinary `interact-object` (rechecked at execution),
     and the door then waits for rule 7a's causal outcome, reporting the observed postcondition —
-    a new inventory item, XP, or server feedback; explicit `Nothing interesting happens`
-    feedback is `result=failed`, never success.
+    a new inventory item, XP, server feedback, a floor-band transition (`floor:0->3` — how a
+    climbed ladder or staircase proves itself under rule 7a's scenery-transition arithmetic), a
+    `portal-jump`, or the scenery set reloading around a still body; explicit `Nothing
+    interesting happens` feedback is `result=failed`, never success, and a body that walked and
+    settled away from the target with no such evidence is `result=failed` with `settled-away`
+    naming where it actually stopped — this is how a ladder clicked from behind a sealed wall
+    reports the failed approach instead of quoting its own dispatch receipt as a climb.
     `retreat` creates one bounded request which the
     resident runner owns (or the caller evaluates through the identical step path if no runner
     exists), retries through the server lock, and does not release the action slot at the first
