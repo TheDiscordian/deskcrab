@@ -3004,6 +3004,25 @@ def _inventory_totals(snap: dict) -> dict:
     return totals
 
 
+def _trade_offer_totals(snap: dict) -> dict:
+    trade = snap.get("trade")
+    if not isinstance(trade, dict):
+        return {}
+    totals = {}
+    for entry in trade.get("my_offer") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), int):
+            continue
+        count = entry.get("count", entry.get("amount", 1))
+        if not isinstance(count, int):
+            continue
+        key = str(entry["id"])
+        current = totals.setdefault(key, {"count": 0, "name": ""})
+        current["count"] += count
+        if entry.get("name"):
+            current["name"] = " ".join(str(entry["name"]).split())[:80]
+    return totals
+
+
 def _skill_totals(snap: dict) -> dict:
     totals = {}
     for skill in snap.get("skills") or []:
@@ -3066,6 +3085,13 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "ui_panel": snap.get("ui_panel"),
             "selected_inventory_item": snap.get("selected_inventory_item"),
             "trade_open": snap.get("trade_open"),
+            "trade_stage": snap["trade"].get("stage")
+            if isinstance(snap.get("trade"), dict) else None,
+            "trade_partner": snap["trade"].get("partner")
+            if isinstance(snap.get("trade"), dict) else None,
+            "trade_my_accepted": snap["trade"].get("my_accepted")
+            if isinstance(snap.get("trade"), dict) else None,
+            "trade_my_offer": _trade_offer_totals(snap),
             "duel_open": snap.get("duel_open"),
             "duel_stage": snap["duel"].get("stage")
             if isinstance(snap.get("duel"), dict) else None,
@@ -3250,6 +3276,58 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         # failure feedback may terminate it without either delta.
         completed = bool(fields.get("item") in changed_item_ids
                          or xp_changes or failure)
+    trade_give = None
+    trade_stage = None
+    if observation["type"] in ("trade-offer", "trade-remove"):
+        try:
+            item = int(fields.get("item", ""))
+            amount = int(fields.get("amount", ""))
+        except ValueError:
+            item = amount = -1
+        item_key = str(item)
+        before_offer = before.get("trade_my_offer") or {}
+        current_offer = _trade_offer_totals(snap)
+        old_count = (before_offer.get(item_key) or {}).get("count", 0)
+        current_count = (current_offer.get(item_key) or {}).get("count", 0)
+        expected = old_count + amount \
+            if observation["type"] == "trade-offer" else old_count - amount
+        trade = snap.get("trade")
+        same_offer = isinstance(trade, dict) \
+            and trade.get("stage") == "offer" \
+            and trade.get("partner") == before.get("trade_partner")
+        exact_change = item >= 0 and amount > 0 and expected >= 0 \
+            and same_offer and current_count == expected
+        if exact_change:
+            name = (current_offer.get(item_key)
+                    or before_offer.get(item_key) or {}).get("name") or f"item-{item}"
+            trade_give = f"id={item} {name} x{current_count}"
+            ui_changes.append(f"trade-give:{item}:{old_count}->{current_count}")
+        completed = bool(exact_change or failure)
+    if observation["type"] == "trade-accept":
+        wanted_stage = fields.get("stage")
+        trade = snap.get("trade")
+        same_partner = isinstance(trade, dict) \
+            and trade.get("partner") == before.get("trade_partner")
+        offer_accepted = wanted_stage == "offer" and same_partner \
+            and (trade.get("stage") == "confirm"
+                 or trade.get("my_accepted") is True)
+        completed_feedback = "trade completed" in message.casefold()
+        confirm_completed = wanted_stage == "confirm" \
+            and not isinstance(trade, dict) and completed_feedback
+        trade_failed = failure or (bool(message) and any(
+            needle in message.casefold() for needle in (
+                "trade declined", "trade cancelled", "trade canceled",
+                "other player declined",
+            )))
+        if offer_accepted:
+            live_stage = trade.get("stage")
+            trade_stage = f"offer->{live_stage or 'accepted'}"
+            ui_changes.append(f"trade-stage:{trade_stage}")
+        if confirm_completed:
+            trade_stage = "confirm->closed"
+            ui_changes.append("trade-stage:confirm->closed")
+        failure = trade_failed
+        completed = bool(offer_accepted or confirm_completed or trade_failed)
     if observation["type"] == "interact-object":
         # Spec rule 7a: a scenery action's walk is only the approach, never
         # the result. The floor-band arithmetic (the server's own z / 944) is
@@ -3324,6 +3402,8 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         "xp": ",".join(xp_changes) or None,
         "message": message or None,
         "state": ",".join(ui_changes) or ("movement-settled" if movement_done else None),
+        "trade_give": trade_give,
+        "trade_stage": trade_stage,
     }
 
 

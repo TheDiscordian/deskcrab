@@ -63,8 +63,10 @@ Three parts:
    (its live visible entries as colour-free text, otherwise empty), `ui_panel_open` and `ui_panel`
    (whether a hover-open side panel currently covers the world and its semantic name—inventory,
    minimap, skills/quests, magic/prayer, friends, or options—otherwise false and `null`),
-   `trade_open` (either ordinary
-   player-trade screen is visible),
+   `trade_open` (either ordinary player-trade screen is visible) and `trade` (`null` while no
+   trade is open; otherwise the structured state of the open screen: `stage` (`offer` or
+   `confirm`), `partner`, `my_accepted`, `their_accepted`, and `my_offer`/`their_offer` as
+   id/name/count arrays),
    `duel_open` (either ordinary duel screen — the stake-and-options setup or the final
    confirmation — is visible) and `duel` (`null` while no duel screen is open; otherwise the
    structured state of the open screen: `stage` (`setup` or `confirm`), `opponent` (the exact
@@ -184,7 +186,9 @@ Three parts:
    that loop; a player is identified by server index plus exact visible name, and button 3 opens
    that player's own live context menu exactly as the ordinary right-click does),
    `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
-   current slot centre, and click button 1, 2, or 3), `equip-inventory` / `unequip-inventory`
+   current slot centre, and click button 1, 2, or 3, but refuse while a trade or duel owns the
+   interface because those screens place different item grids over the same pixels),
+   `equip-inventory` / `unequip-inventory`
    (idempotently request the named held item's equipped state, returning `already-equipped` or
    `already-unequipped` without sending a second toggle), `command-inventory` (run one of the
    held item's published definition-backed commands by one-based command number and positive
@@ -199,7 +203,10 @@ Three parts:
    `bank-deposit` / `bank-withdraw` and `shop-buy` / `shop-sell` (send the
    open interface's ordinary transaction by item identity and positive amount,
    without selecting a row or an amount button), `trade-player` (send the ordinary Trade-with
-   request to a currently visible non-local player by server identity), `duel-accept` (accept the
+   request to a currently visible non-local player by server identity), `trade-offer` /
+   `trade-remove` (change the open offer by item identity and positive amount without using
+   either interface grid), `trade-accept` (accept the currently open offer or confirmation stage
+   after rechecking that exact stage), `duel-accept` (accept the
    currently open duel stage — the setup screen's Accept or the confirmation screen's final
    Accept — through the same ordinary packet its own button sends, only after proving at
    execution time that the emitter and the client agree on which stage is open and on the exact
@@ -214,7 +221,8 @@ Three parts:
    probes). `talk-npc`, `attack-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
    `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
-   `click-bank`, the four bank/shop transaction actions, `trade-player`, `duel-accept`,
+   `click-bank`, the four bank/shop transaction actions, `trade-player`, `trade-offer`,
+   `trade-remove`, `trade-accept`, `duel-accept`,
    `duel-decline`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
@@ -263,7 +271,9 @@ Three parts:
    `item` for equip-inventory and
    unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
    `item` and `amount` for the
-   four transaction actions; `sidx` for trade-player; `stage` (`setup` or `confirm`) and `name`
+   four transaction actions; `sidx` for trade-player; `item` and positive `amount` for
+   trade-offer and trade-remove; `stage` (`offer` or `confirm`) for trade-accept; `stage`
+   (`setup` or `confirm`) and `name`
    — the exact opponent the emitter saw on the open duel screen — for duel-accept, and an
    optional `stage` for duel-decline; `text` for choose-menu and
    choose-dialogue; `x`, `z`, and
@@ -276,7 +286,9 @@ Three parts:
    and retry deliberately. Interface-targeting actions are not blocked by this guard. No screen
    coordinates cross the action file. For click-inventory it
    finds the first matching current item id, opens the inventory tab, and calculates the slot
-   centre from the current client UI; a missing item is `refused-no-such-item`. The snapshot's
+   centre from the current client UI; a missing item is `refused-no-such-item`. An open trade or
+   duel instead yields `refused-trade-open` or `refused-duel-open` before any pointer movement,
+   because those modal interfaces own different item grids. The snapshot's
    `selected_inventory_item` is the item id currently selected for a later Use-with action, or
    null. It distinguishes a consumed click from a pointer that merely reached the item. No slot or
    screen coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a
@@ -296,7 +308,15 @@ Three parts:
    inventory), clamps an overlarge request to that quantity, and then sends the
    ordinary client transaction. Amount zero or negative is refused.
    `trade-player` re-matches the server index against the current visible player list and refuses
-   a vanished player. `duel-accept` reads the live duel screens at execution time, never a
+   a vanished player. Trade offer/remove actions require the structured offer stage, re-resolve
+   the requested id in the live inventory or current offer, clamp nothing beyond the caller's
+   already validated positive amount, and send the ordinary offer/remove packet without moving
+   the pointer. Trade accept requires the named live stage and refuses a closed, changed, or
+   already-accepted stage. The playing harness does not treat any of those dispatch receipts as
+   completion: offer/remove must produce the exact expected count for that id in a newer
+   `my_offer`, offer acceptance must expose this client's acceptance or the confirmation stage,
+   and final acceptance must close with explicit successful-trade feedback. `duel-accept` reads
+   the live duel screens at execution time, never a
    remembered stage: a malformed `stage` is `refused-bad-duel-stage`, no open duel screen is
    `refused-duel-closed`, a live stage other than the named one is `refused-duel-stage-changed`,
    a missing `name` or one that is not exactly the live opponent's is

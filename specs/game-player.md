@@ -752,7 +752,16 @@ deliberate-play channel.
     execution time rather than accepted blind; `duel decline` closes the open screen through
     its own ordinary Decline. Stage progress is waited on with `wait-until duel-open`,
     `duel-confirm`, and `duel-closed` (rule 7d), and no coordinate or pixel is ever part of the
-    flow. `panel` names the hover-open
+    flow. Player trade has the same structured discipline: `trade PLAYER-NAME` requests by
+    visible identity; `trade status` prints the exact partner, stage, acceptance, and both named
+    offers; `trade offer|remove ITEM-ID [AMOUNT|all]` changes the give stack by live item
+    identity; and `trade accept` accepts the currently observed offer or confirmation stage.
+    Offer/remove returns only after a newer `my_offer` contains the exact expected count for that
+    id and reports that resulting give stack. Offer acceptance returns only when this client is
+    accepted or the confirmation stage appears; final acceptance requires the trade to close
+    with explicit successful-trade feedback. An ordinary `inventory ITEM-ID` click is refused
+    while a trade or duel screen owns its different item grid; neither trade items nor either
+    Accept button is ever selected by pixels. `panel` names the hover-open
     side panel; `panel close` deliberately moves the private pointer outside it and accepts success
     only after `ui_panel_closed` is observed. A world `entity` click never hides the mistake: the
     bridge returns `refused-ui-panel-open` until the player notices and performs that correction.

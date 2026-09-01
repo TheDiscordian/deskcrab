@@ -168,6 +168,51 @@ for _ in range(100):
             state["tick"] = int(state.get("tick", 0)) + 1
             state["ts"] = int(time.time() * 1000)
             json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") in ("trade-offer", "trade-remove"):
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            trade = state.get("trade")
+            if isinstance(trade, dict) and trade.get("stage") == "offer":
+                item_id = int(fields["item"])
+                amount = int(fields["amount"])
+                offer = trade.setdefault("my_offer", [])
+                entry = next((item for item in offer if item.get("id") == item_id), None)
+                if fields["type"] == "trade-offer":
+                    if entry is None:
+                        held = next((item for item in state.get("inventory") or []
+                                     if item.get("id") == item_id), {})
+                        entry = {"id": item_id, "name": held.get("name", f"item-{item_id}"),
+                                 "count": 0}
+                        offer.append(entry)
+                    entry["count"] = int(entry.get("count", 0)) + amount
+                elif entry is not None:
+                    entry["count"] = max(0, int(entry.get("count", 0)) - amount)
+                    trade["my_offer"] = [item for item in offer
+                                         if int(item.get("count", 0)) > 0]
+                trade["my_accepted"] = False
+                trade["their_accepted"] = False
+                state["tick"] = int(state.get("tick", 0)) + 1
+                state["ts"] = int(time.time() * 1000)
+                json.dump(state, open(state_path, "w"))
+        if delivered and fields.get("type") == "trade-accept":
+            state_path = os.path.join(sd, "state.json")
+            state = json.load(open(state_path))
+            trade = state.get("trade")
+            if isinstance(trade, dict) and fields.get("stage") == "offer":
+                trade["stage"] = "confirm"
+                trade["my_accepted"] = False
+                trade["their_accepted"] = None
+            elif isinstance(trade, dict) and fields.get("stage") == "confirm":
+                state["trade"] = None
+                state["trade_open"] = False
+                messages = state.setdefault("messages", [])
+                next_id = max([m.get("id", 0) for m in messages
+                               if isinstance(m, dict)] + [0]) + 1
+                messages.append({"id": next_id, "channel": "game",
+                                 "text": "Trade completed successfully"})
+            state["tick"] = int(state.get("tick", 0)) + 1
+            state["ts"] = int(time.time() * 1000)
+            json.dump(state, open(state_path, "w"))
         if delivered and fields.get("type") == "use-item-npc":
             state_path = os.path.join(sd, "state.json")
             state = json.load(open(state_path))
@@ -1121,6 +1166,52 @@ contains "$OUT" "reason=expired" \
     || fail "an expired action asks for a fresh causal dispatch" "$OUT"
 refute "the expired causal baseline is removed" \
     test -e "$DESKCRAB_GAME_STATE_DIR/last-action-observation.json"
+
+# --- Structured trade actions own their exact offer/stage postconditions.
+snap 1045691 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Player","my_accepted":false,"their_accepted":false,"my_offer":[],"their_offer":[]},"inventory":[{"id":48,"name":"Key","count":1}]}'
+python3 "$GP" action-arm 9031 trade-offer item=48 amount=1 >/dev/null
+snap 1045692 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Player","my_accepted":false,"their_accepted":false,"my_offer":[{"id":104,"name":"Medium Bronze Helmet","count":1}],"their_offer":[]},"inventory":[{"id":48,"name":"Key","count":1}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "a different item entering the offer cannot verify the requested item" "$CODE" "2"
+contains "$OUT" "action-timeout id=9031 type=trade-offer" \
+    && ok "trade offer completion remains narrowed to the requested item id" \
+    || fail "trade offer completion remains narrowed to the requested item id" "$OUT"
+snap 1045693 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Player","my_accepted":false,"their_accepted":false,"my_offer":[{"id":48,"name":"Key","count":1}],"their_offer":[]},"inventory":[{"id":48,"name":"Key","count":1}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "the exact requested give stack completes a trade offer" "$CODE" "0"
+contains "$OUT" "type=trade-offer result=done" \
+    && contains "$OUT" "trade_give=id=48 Key x1" \
+    && ok "the trade offer reports its exact resulting give stack" \
+    || fail "the trade offer reports its exact resulting give stack" "$OUT"
+
+snap 1045694 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Player","my_accepted":false,"their_accepted":true,"my_offer":[{"id":48,"name":"Key","count":1}],"their_offer":[]}}'
+python3 "$GP" action-arm 9032 trade-remove item=48 amount=1 >/dev/null
+snap 1045695 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Player","my_accepted":false,"their_accepted":false,"my_offer":[],"their_offer":[]}}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "removing the exact requested give stack completes" "$CODE" "0"
+contains "$OUT" "type=trade-remove result=done" \
+    && contains "$OUT" "trade_give=id=48 Key x0" \
+    && ok "trade remove reports the exact resulting give stack" \
+    || fail "trade remove reports the exact resulting give stack" "$OUT"
+
+snap 1045696 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Player","my_accepted":false,"their_accepted":true,"my_offer":[{"id":48,"name":"Key","count":1}],"their_offer":[]}}'
+python3 "$GP" action-arm 9033 trade-accept stage=offer >/dev/null
+snap 1045697 '[]' '{"trade_open":true,"trade":{"stage":"confirm","partner":"Player","my_accepted":false,"their_accepted":null,"my_offer":[{"id":48,"name":"Key","count":1}],"their_offer":[]}}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "offer acceptance waits for the confirmation stage" "$CODE" "0"
+contains "$OUT" "trade_stage=offer->confirm" \
+    && ok "offer acceptance reports its observed stage transition" \
+    || fail "offer acceptance reports its observed stage transition" "$OUT"
+
+snap 1045698 '[]' '{"trade_open":true,"trade":{"stage":"confirm","partner":"Player","my_accepted":false,"their_accepted":null,"my_offer":[{"id":48,"name":"Key","count":1}],"their_offer":[]},"messages":[{"id":1045698000,"channel":"game","text":"Waiting"}]}'
+python3 "$GP" action-arm 9034 trade-accept stage=confirm >/dev/null
+snap 1045699 '[]' '{"trade_open":false,"trade":null,"messages":[{"id":1045698000,"channel":"game","text":"Waiting"},{"id":1045699000,"channel":"game","text":"Trade completed successfully"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "final acceptance requires successful close feedback" "$CODE" "0"
+contains "$OUT" "trade_stage=confirm->closed" \
+    && contains "$OUT" "message=Trade completed successfully" \
+    && ok "final trade acceptance reports the grounded successful close" \
+    || fail "final trade acceptance reports the grounded successful close" "$OUT"
 
 # --- Spec rule 7a's scenery transitions: the identity-checked object action
 # --- owns a grounded postcondition — floor bands, portal jumps, scenery
