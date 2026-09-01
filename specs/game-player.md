@@ -276,6 +276,33 @@ deliberate-play channel.
    that do not name a rendered game entity or current inventory, shop, or bank item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.
 
+5a. **Escape selection is provocation-aware, and provocation is causal action identity that
+   SURVIVES the provoking action's conclusion.** Every combat episode is classified exactly once,
+   at its first in-combat snapshot: the fight is PROVOKED when the last CONCLUDED out-of-combat
+   NPC action of a provoking type (`interact-npc`, `use-item-npc`, `talk-npc`) names the NPC type
+   now resolved as the opponent — the tolerant branch stands when either identity cannot be
+   resolved from the snapshot — and UNPROVOKED otherwise. The evidence marker is armed whenever
+   such an action concludes with the body out of combat, whether or not retaliation is already
+   visible: a provoked, non-aggressive NPC retaliates on the server's own combat timer, routinely
+   AFTER the failure message that completed the pickpocket, so requiring combat to be observable
+   at the action's own conclusion is exactly what read the 2026-09-01 leaderboard retaliation
+   fights (Warrior 86, every one a failed pickpocket's answer) as unprovoked. The marker remains
+   causal, never a freshness window: the NEXT concluded game action of any type supersedes it,
+   the combat episode it classifies consumes it, and elapsed time alone never expires or arms
+   anything. The classification is durable state — the episode's `combat_provoked` and the
+   archived `last_combat` in `player-engine-state.json` — because rule 7b's escape precedence and
+   the retreat door's one-tile-clear short-circuit read it after the fight ends.
+   While the current episode is provoked, EVERY compile of the `retreat` action — a learned
+   escape rule, the injected `low-health-retreat-to-eat` safety transition, or a manual retreat
+   request — substitutes the `sidestep` compile: the one-tile combat break with its strict
+   rule-7a postcondition (a newer snapshot out of combat with the body settled exactly one tile
+   from the recorded pre-retreat origin), marked `retreat_suppressed: 1` in the fired record. The
+   far `distance` retreat stays reserved for unprovoked combat — the grounded evidence of an
+   aggressive or pursuing monster. So the low-health transition out of a provoked fight ends one
+   tile from the combat origin with combat verifiably broken, and rule 7i's healing prerequisite
+   owns the next action — instead of a five-tile displacement that abandons the thieving spot and
+   hands the first safe snapshot to routine reacquisition.
+
 6. `unfinished` is the honesty ledger of migration: entries (`name`, `note`) for learned plays
    whose trigger or action cannot yet be grounded in rules 4–5 — camera-dependent screen
    presses, scenery the bridge does not expose. They are listed by `rules`, never evaluated,

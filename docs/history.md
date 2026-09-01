@@ -1425,3 +1425,21 @@ fraction sits below the armed threshold, releasing only on the observed heal, th
 table, resumed combat, or a disarmed eat — never on a timer. The yield is one `healing-hold` /
 `healing-hold-clear` episode pair in the decision log, aggregated into the reflex-fire ledger, so
 a deliberation that finds the body standing still at low health reads why from the record.
+
+### 2026-09-01 — the retaliation fight read as unprovoked, and the low-health escape walked five tiles
+
+Same leaderboard thieving session, the other half of the low-health story. The escape selection
+that substitutes the one-tile sidestep for a provoked fight's `retreat` was already live, but the
+provocation marker was only armed when the pickpocket's own completion observation ALREADY showed
+combat. A provoked Warrior answers a failed pickpocket on the server's combat timer — routinely
+seconds after the failure message that completed the action — so three retaliation fights in a
+row (07:33, 07:43, 07:50) classified `provoked: false`, and the injected
+`low-health-retreat-to-eat` transition compiled the bridge's far retreat, `distance=5`. The
+ledger's own `moved: 1` was measured 431 ms after dispatch while the body was still walking; the
+next fired snapshot showed it five tiles from the combat origin, with the pickpocket rule paying
+four tiles to walk back. The repair is spec rule 5a: the marker is causal action identity that
+survives the provoking action's out-of-combat conclusion — superseded by the next concluded game
+action, consumed by the episode it classifies, never expired or armed by elapsed time. The direct
+doors' provocation record already had exactly these delayed-evidence semantics; the runner's
+marker was the one place that demanded instant retaliation. Unprovoked combat keeps the far
+clearance retreat untouched.

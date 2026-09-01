@@ -4806,7 +4806,7 @@ def compile_player_action(rule, snap, food, eat_pick):
         if snap.get("in_combat") is not True:
             return None, "already-out-of-combat"
         if snap.get("_combat_provoked") is True:
-            # Runtime escape selection (spec rules 5, 7b): a provoked,
+            # Runtime escape selection (spec rule 5a): a provoked,
             # non-aggressive fight ALWAYS breaks with the one-tile sidestep;
             # the far clearance retreat stays reserved for unprovoked combat -
             # the grounded evidence of an aggressive or pursuing monster.
@@ -7147,15 +7147,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         est["action_batch"] = None
         flush_events(events_batch)
     candidate = repetition_candidate(est, rule, outcome)
-    # Provocation evidence (spec rule 4) is a causal transition, not a
-    # freshness window: only an NPC action that began out of combat and whose
-    # observed outcome is already in combat may classify the next episode.
-    # Any concluded game action supersedes an older pending marker.
+    # Provocation evidence (spec rule 5a) is causal action identity, never a
+    # freshness window — and it SURVIVES this action's own conclusion. A
+    # provoked, non-aggressive NPC retaliates on the server's combat timer,
+    # routinely after the failure message that completed the pickpocket, so
+    # requiring combat to be visible here already is what read the 2026-09-01
+    # leaderboard retaliation fights as unprovoked and sent the low-health
+    # escape five tiles instead of one. The marker stands until the next
+    # concluded game action supersedes it (the unconditional clear below) or
+    # the combat episode it explains consumes it (track_combat_state).
     est["last_npc_action"] = None
     if action["type"] in PROVOKED_ACTION_TYPES \
             and action.get("npc") is not None \
-            and snap.get("in_combat") is False \
-            and latest_action_state.get("in_combat") is True:
+            and snap.get("in_combat") is False:
         est["last_npc_action"] = {
             "id": action_id, "type": action["type"],
             "npc": action.get("npc"), "awaiting_combat": True}
