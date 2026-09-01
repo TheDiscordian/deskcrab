@@ -572,6 +572,20 @@ refute "an impossible inventory capacity range is refused" \
     python3 "$GP" learn bad-inventory-range --priority 1 \
         --trigger inventory_slots_at_least=28 --trigger inventory_slots_below=28 \
         --action walk --param x=1 --param z=1
+refute "fatigue thresholds stop beyond the observed percentage scale" \
+    python3 "$GP" learn bad-fatigue-cap --priority 1 --trigger fatigue_below=102 \
+        --action walk --param x=1 --param z=1
+python3 - "$GP" <<'PY' \
+    && ok "fatigue_below fails closed and admits only observed lower fatigue" \
+    || fail "fatigue_below must be a grounded semantic trigger"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("game_player", sys.argv[1])
+gp = importlib.util.module_from_spec(spec); spec.loader.exec_module(gp)
+matches = gp.make_trigger_fn("Leaderboard competition", "thieving")
+assert matches({"fatigue_below": 100}, {"fatigue": 99}, None) is True
+assert matches({"fatigue_below": 100}, {"fatigue": 100}, None) is False
+assert matches({"fatigue_below": 100}, {}, None) is False
+PY
 refute "an empty activity scope is refused" \
     python3 "$GP" learn bad-activity --priority 1 --trigger activity_is= \
         --action walk --param x=1 --param z=1

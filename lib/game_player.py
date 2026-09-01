@@ -36,7 +36,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "ground_item_visible", "shop_item_visible", "bank_item_visible",
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
-                "inventory_slots_at_least", "in_combat", "out_of_combat")
+                "inventory_slots_at_least", "fatigue_below", "in_combat", "out_of_combat")
 ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
@@ -1982,6 +1982,10 @@ def validate_config(cfg: dict) -> None:
             elif key in ("inventory_slots_below", "inventory_slots_at_least"):
                 if not isinstance(val, int) or not 0 <= val <= 30:
                     bad(f"{where}: trigger.{key} must be an integer from 0 to 30")
+            elif key == "fatigue_below":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1 <= val <= 101:
+                    bad(f"{where}: trigger.fatigue_below must be an integer from 1 to 101")
             elif key in ("in_combat", "out_of_combat"):
                 if val is not True:
                     bad(f"{where}: trigger.{key} must be true when present")
@@ -4110,6 +4114,11 @@ def make_trigger_fn(objective: str, activity: str = ""):
         if "inventory_slots_at_least" in trig \
                 and len(inventory) < trig["inventory_slots_at_least"]:
             return False
+        if "fatigue_below" in trig:
+            fatigue = snap.get("fatigue")
+            if not isinstance(fatigue, (int, float)) or isinstance(fatigue, bool) \
+                    or fatigue >= trig["fatigue_below"]:
+                return False
         if "in_combat" in trig and snap.get("in_combat") is not True:
             return False
         if "out_of_combat" in trig and snap.get("in_combat") is not False:

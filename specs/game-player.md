@@ -117,6 +117,10 @@ deliberate-play channel.
      inventory slots is respectively below / at least the threshold. Acquisition rules use
      `inventory_slots_below: 30` so a full bag mechanically stops them instead of letting the
      player notice the problem and continue the same loop.
+   - `fatigue_below` (int, 1–101): the snapshot's observed fatigue is present and strictly below
+     the threshold. A snapshot without a numeric fatigue value fails closed. Irreversible
+     experience-bearing inventory actions use `fatigue_below: 100` when the server stops awarding
+     experience at full fatigue, so the eligibility record itself explains why the action fired.
    - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
      polarity. These conditions are mutually exclusive in live state and let global pickup or
      travel rules stay mechanically quiet during a fight.
