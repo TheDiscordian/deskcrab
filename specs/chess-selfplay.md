@@ -209,8 +209,8 @@ the finished games feed the pattern store exactly as every self-play game does.
     while `gpt-5.3-codex-spark` is permanently excluded from every self-play and benchmark
     call. An effort outside a model's own list is not a cell at all — scheduling one would
     benchmark a call the catalogue refuses.
-    The uniform matrix is the family and clock gate. A routed winner is not selected while a
-    stronger adaptive pair remains untested. Each clock-safe model climbs this ordered
+    The uniform matrix is the family and clock gate. A routed winner is not selected while an
+    eligible adaptive pair remains untested. Each clock-safe model climbs this ordered
     quiet/sharp ladder, starting at the longest control:
     `low/medium`, `medium/medium`, `medium/high`, `high/high`, `high/xhigh`, then
     `xhigh/xhigh`. The quiet effort never exceeds the sharp effort. XHigh is the absolute
@@ -222,13 +222,28 @@ the finished games feed the pattern store exactly as every self-play game does.
     rung. The controls retain independent winners: passing 15+10 does not imply passing 10+0.
     Selection remains open until every eligible model has either completed the ladder or been
     eliminated by the clock rule. `gpt-5.3-codex-spark` is excluded from every benchmark
-    call. Once the ladder leaves one best clock-safe configuration per model and control,
+    call. Every clock-safe configuration for one model, including its uniform `low`/`low`
+    baseline, remains a contender until it has played a colour-swapped direct round against
+    every other clock-safe configuration for that model at that control. Common-reference
+    results do not substitute for these same-model games: two draws against the reference do
+    not prove a configuration weaker than one that beat the reference. A common-reference game
+    counts as a direct game only when its exact two configurations are the contenders being
+    compared. A tied direct round receives rule 20a's one colour-swapped top-up round before
+    the reliability, latency-tail, and cost tie-breaks may resolve it.
+    Once these rounds leave one resolved clock-safe configuration per model and control,
     those finalists play a colour-swapped round against every other finalist at that control.
     This direct round is required even when the common-reference scores are not tied: it
     settles ambiguous cross-model results instead of inferring them through the reference.
     A finalist that fails either clock is eliminated; among the finishers, direct score is
     the first strength comparison, followed by the common-reference score and the existing
     reliability, latency-tail, and cost tie-breaks.
+    A control is COMPLETE only when every required ladder cell has valid colour-swapped
+    evidence, every surviving same-model comparison is resolved, and every surviving
+    cross-model finalist comparison is resolved. An invalid or missing game is explicitly
+    `NOT RUN — REPLACEMENT OWED` unless separate valid evidence has already eliminated that
+    exact configuration; pruning it merely as outside the candidate scope cannot satisfy this
+    completion gate. A report that still lists one of these obligations is INCOMPLETE,
+    regardless of whether every older matrix row has been played or pruned.
     `--bench-extend-matrix <plan>` appends
     whatever matrix cells an existing plan is missing — grouped at the end of their control's
     block so play order stays fastest-first, colours still rotated, ids continuing the plan's

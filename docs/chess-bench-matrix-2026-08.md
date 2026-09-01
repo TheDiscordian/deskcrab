@@ -1,29 +1,69 @@
 # Chess benchmark matrix — matrix-20260828
 
-Base matrix generated 2026-09-01 00:21 EDT by matrix_report.py. The adaptive-pair and direct-finalist review below incorporates the completed ledger through 2026-09-01 10:35 EDT.
+Base matrix generated 2026-09-01 00:21 EDT by matrix_report.py. The adaptive-pair and direct-finalist review below incorporates the ledger through 2026-09-01 10:35 EDT.
 
-**Status: COMPLETE under rule 20a elimination (451 scheduled game(s) pruned with reasons, listed below) (2 recorded game(s) excluded as pause artifacts, slots replayed or cancelled) (245 recorded game(s) INVALID under rule 20b — manufactured moves or retired-ceiling outcomes — slots replayed or pruned, listed below).** Every verdict below is FINAL only when its speed's cells are all complete with no top-ups owed; otherwise PROVISIONAL. Top-ups are decided only once a control completes — an incomplete control's top-ups are undecided, never claimed owed.
+**Status: INCOMPLETE. The earlier completion declaration was false. Required adaptive-ladder games, same-model contender games, and cross-model finalist games were never run. Invalid older games do not satisfy those obligations, and pruning them did not finish the benchmark. Bullet is settled as disabled; every enabled control remains provisional. No benchmark worker is running. The current selection script still proposes common-reference top-ups and does not enforce the new same-model completion gate, so it must be corrected before this queue is scheduled.**
 
-Speed classes (chess_cli.TIME_CONTROLS): bullet = 1+0, 2+1; blitz = 3+2, 5+0; rapid = 10+0, 15+10; untimed is its own routed class. Reference opponent: sonnet-low. Reliability, ranking, tie-breaks, and top-up rules are specs/chess-selfplay.md rule 20 as implemented in matrix_selection.py (failure events: flag, stall, retry storm >= 10 excess attempts, account-limit death). A recorded game carrying any manufactured fallback move, or named in the invalid sidecar, is rule-20b INVALID: excluded from strength and reliability alike, its slot replayed or pruned.
+Speed classes (chess_cli.TIME_CONTROLS): bullet = 1+0, 2+1; blitz = 3+2, 5+0; rapid = 10+0, 15+10; untimed is its own routed class. Reference opponent: sonnet-low. `matrix_selection.py` computes the existing reliability and result statistics (failure events: flag, stall, retry storm >= 10 excess attempts, account-limit death), but it does not yet implement rule 20's same-model completion gate. A recorded game carrying any manufactured fallback move, or named in the invalid sidecar, is rule-20b INVALID: excluded from strength and reliability alike, its slot replayed or validly eliminated.
 
-## Final exact-control selection
+## Current provisional routing — not a final selection
 
-The broad speed label is not used to hide a difference between its controls. The final adaptive-pair ladder and colour-swapped direct games select these live routes:
+These are the routes currently applied to live play. They are not final benchmark winners:
 
 | Control | Live state | Model | Quiet/sharp effort | Decisive evidence |
 | --- | --- | --- | --- | --- |
 | 1+0 | disabled | — | — | No measured configuration reliably finished Bullet. Spark is permanently excluded from benchmark play. |
 | 2+1 | disabled | — | — | No measured configuration reliably finished Bullet. Spark is permanently excluded from benchmark play. |
-| 3+2 | enabled | `sonnet` | `low`/`low` | Corrected full-game Blitz winner. |
-| 5+0 | enabled | `sonnet` | `low`/`low` | Corrected full-game Blitz winner. |
-| 10+0 | enabled | `opus` | `low`/`low` | Valid games 166 and 334: one draw and one win, with no Opus clock failure. Fable `low`/`medium` flagged in game 561. |
-| 15+10 | enabled | `fable` | `low`/`medium` | Fable beat the common reference twice in games 552–553; Opus `low`/`medium` scored one win and one draw in 550–551; their direct games 601–602 were draws. Fable then drew and won against Luna `low`/`low` in 613–614. |
+| 3+2 | enabled, provisional | `sonnet` | `low`/`low` | Sonnet's eligible adaptive ladder was not run at this control. |
+| 5+0 | enabled, provisional | `sonnet` | `low`/`low` | Opus and Sonnet have eligible adaptive pairs that were not run at this control. |
+| 10+0 | enabled, provisional | `opus` | `low`/`low` | Opus `low`/`medium` also finished cleanly, but never played Opus `low`/`low`; Opus and Sonnet `medium`/`medium` were not run. |
+| 15+10 | enabled, provisional | `fable` | `low`/`medium` | Same-model contender rounds are missing, Haiku's clean baseline gate is missing, Luna's `low`/`medium` rung is missing, and the cross-model final cannot be settled first. |
 
-At 15+10, `medium`/`high` produced a valid flag for Opus, Fable, Sonnet, Terra, and Luna. Sol `low`/`low` also flagged. Terra's otherwise promising pairs failed longer valid games. Luna `medium`/`medium` flagged in direct play, while Luna `low`/`low` survived the clock but lost the direct match to Fable. These results leave no unfinished finalist game that can change the routes above.
+At 15+10, `medium`/`high` produced a valid flag for Opus, Fable, Sonnet, Terra, and Luna. Sol `low`/`low` also flagged. These failures validly eliminate slower descendants; they do not erase the missing gates and direct comparisons below.
+
+## Required tests that were never run
+
+The following is the resumption checklist. Every named round is two colour-swapped games. A clean pass opens the indented conditional work; a clock failure validly closes that branch. Drawn direct rounds receive one colour-swapped top-up round and remain unresolved until that round or the specified tie-break resolves them.
+
+Before scheduling any game, update the selection and reporting tools to derive this checklist from the plan, recognise same-model direct rounds, and refuse `COMPLETE` while a listed gate or round remains. Their existing common-reference top-up output is not an authoritative run queue.
+
+### 15+10
+
+- Run Haiku `low`/`low` against Sonnet `low`. No corrected-regime colour-swapped baseline exists. If it passes, continue Haiku through `low`/`medium`, `medium`/`medium`, `medium`/`high`, `high`/`high`, `high`/`xhigh`, and `xhigh`/`xhigh` until the first clock failure.
+- Run Luna `low`/`medium` against Sonnet `low`. The benchmark skipped directly from Luna `low`/`low` to `medium`/`medium`. If `low`/`medium` passes, include it in Luna's same-model contender round; if it fails, the later rungs are eliminated.
+- Resolve Opus `low`/`low`, `low`/`medium`, and `medium`/`medium` through colour-swapped same-model games. None of the three pairings was run.
+- Resolve Fable `low`/`low`, `low`/`medium`, and `medium`/`medium` through colour-swapped same-model games. None of the three pairings was run.
+- Resolve Sonnet `low`/`low`, `low`/`medium`, and `medium`/`medium`. The common-reference rounds between `low`/`low` and each challenger were draws, so both require their one top-up round; `low`/`medium` versus `medium`/`medium` was never run.
+- After every model has one resolved configuration, run every missing colour-swapped cross-model finalist pairing. Existing games count only when their exact configurations survive as finalists; the current partial set is not a final round.
+
+### 10+0
+
+- Run Opus `medium`/`medium` against Sonnet `low`. Opus `low`/`medium` passed cleanly, so this next rung is owed. Opus `medium`/`high` and later pairs are already eliminated by the valid 15+10 clock failure.
+- Run Sonnet `medium`/`medium` against Sonnet `low`. Sonnet `low`/`medium` passed cleanly, so this next rung is owed. Sonnet `medium`/`high` and later pairs are already eliminated by the valid 15+10 clock failure.
+- Run Opus `low`/`low` directly against Opus `low`/`medium`. If Opus `medium`/`medium` passes its gate, include it in the same-model direct round as well.
+- Top up the drawn Sonnet `low`/`low` versus `low`/`medium` direct round. If Sonnet `medium`/`medium` passes its gate, compare it with both surviving Sonnet configurations.
+- After the same-model rounds identify one Opus and one Sonnet configuration, run every missing colour-swapped pairing among those finalists and Fable `low`/`low`. Fable `low`/`medium` is eliminated here by game 561's valid clock loss.
+
+### 5+0
+
+- Run Opus `low`/`medium` against Sonnet `low`; if it passes, continue the Opus ladder only through pairs that passed 10+0, and resolve the surviving Opus configurations directly.
+- Run Sonnet `low`/`medium` against Sonnet `low`; if it passes, continue the Sonnet ladder only through pairs that passed 10+0, and resolve the surviving Sonnet configurations directly.
+- Once each model has one resolved configuration, run every missing colour-swapped cross-model finalist pairing. Fable and every model eliminated at 10+0 do not reopen here.
+
+### 3+2
+
+- If Sonnet `low`/`medium` passes 5+0, run it against Sonnet `low`; continue only with Sonnet pairs that passed every longer control, then resolve the surviving Sonnet configurations directly.
+- Run every missing cross-model finalist pairing after the Sonnet ladder closes. Opus's `low`/`low` clock failure at 3+2 eliminates its slower adaptive pairs here, and Fable `low`/`medium` was eliminated at 10+0.
+
+### 2+1 and 1+0
+
+- No games are owed. Every model's lowest eligible effort has a valid clock failure at this control or a longer one, so the effort and shorter-clock rules settle Bullet as disabled. Spark remains permanently excluded.
+
+Two abandoned partial files are not pending tests: game 554 was replaced by completed game 556, and game 582 was replaced by completed games 596 and 583. They must remain skipped so a resumed driver does not charge their long pause to either clock.
 
 ## Speed: bullet (2+1, 1+0)
 
-### 2+1 — 41/41 cells complete
+### 2+1 — 41/41 legacy scheduled cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -71,7 +111,7 @@ At 15+10, `medium`/`high` produced a valid flag for Opus, Fable, Sonnet, Terra, 
 
 Control ranking: no reliable finisher.
 
-### 1+0 — 41/41 cells complete
+### 1+0 — 41/41 legacy scheduled cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -128,7 +168,7 @@ Rule 20a measured order (fewest flags/game, fewest event games/game, rate, tail,
 
 ## Speed: blitz (5+0, 3+2)
 
-### 5+0 — 41/41 cells complete
+### 5+0 — 41/41 legacy scheduled cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -176,7 +216,7 @@ Rule 20a measured order (fewest flags/game, fewest event games/game, rate, tail,
 
 Control ranking (reliable): sonnet-low > opus-low > fable-low > sonnet-medium
 
-### 3+2 — 41/41 cells complete
+### 3+2 — 41/41 legacy scheduled cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -224,7 +264,7 @@ Control ranking (reliable): sonnet-low > opus-low > fable-low > sonnet-medium
 
 Control ranking (reliable): sonnet-low > fable-low > opus-medium
 
-### blitz verdict (FINAL)
+### blitz verdict (INCOMPLETE)
 
 Unmeasured at this speed (no valid game at one or both of its controls — eliminated under rule 20a with reasons listed below, or below the evidence floor; the verdict does not speak for these): fable-high, fable-max, fable-medium, fable-xhigh, gpt-5.3-codex-spark-high, gpt-5.3-codex-spark-low, gpt-5.3-codex-spark-medium, gpt-5.3-codex-spark-xhigh, gpt-5.6-luna-high, gpt-5.6-luna-low, gpt-5.6-luna-max, gpt-5.6-luna-medium, gpt-5.6-luna-xhigh, gpt-5.6-terra-high, gpt-5.6-terra-low, gpt-5.6-terra-max, gpt-5.6-terra-medium, gpt-5.6-terra-ultra, gpt-5.6-terra-xhigh, haiku-high, haiku-low, haiku-max, haiku-medium, haiku-xhigh, opus-high, opus-max, opus-medium, opus-xhigh, sol-high, sol-low, sol-max, sol-medium, sol-ultra, sol-xhigh, sonnet-high, sonnet-max, sonnet-xhigh
 Below the rule-20a evidence floor (no colour-rotated valid pair at every control of this class) — named as uncertainty, never routed: opus-medium
@@ -234,7 +274,7 @@ Pooled reliable ranking: sonnet-low (rate 0.50 over 4 games) > fable-low (rate 0
 
 ## Speed: rapid (15+10, 10+0)
 
-### 15+10 — 41/41 cells complete
+### 15+10 — 41/41 legacy scheduled cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -282,7 +322,7 @@ Pooled reliable ranking: sonnet-low (rate 0.50 over 4 games) > fable-low (rate 0
 
 Control ranking (reliable): opus-low > fable-low > sonnet-low > sonnet-medium
 
-### 10+0 — 41/41 cells complete
+### 10+0 — 41/41 legacy scheduled cells complete
 
 | config | games | W-D-L | pts | rate | events | med s | tail s | status |
 |---|---|---|---|---|---|---|---|---|
@@ -330,7 +370,7 @@ Control ranking (reliable): opus-low > fable-low > sonnet-low > sonnet-medium
 
 Control ranking (reliable): opus-low > fable-low > sonnet-low > fable-medium > sonnet-medium
 
-### rapid verdict (FINAL)
+### rapid verdict (INCOMPLETE)
 
 Unmeasured at this speed (no valid game at one or both of its controls — eliminated under rule 20a with reasons listed below, or below the evidence floor; the verdict does not speak for these): fable-high, fable-max, fable-medium, fable-xhigh, gpt-5.3-codex-spark-high, gpt-5.3-codex-spark-low, gpt-5.3-codex-spark-medium, gpt-5.3-codex-spark-xhigh, gpt-5.6-luna-high, gpt-5.6-luna-low, gpt-5.6-luna-max, gpt-5.6-luna-medium, gpt-5.6-luna-xhigh, gpt-5.6-terra-high, gpt-5.6-terra-low, gpt-5.6-terra-max, gpt-5.6-terra-medium, gpt-5.6-terra-ultra, gpt-5.6-terra-xhigh, haiku-high, haiku-low, haiku-max, haiku-medium, haiku-xhigh, opus-high, opus-max, opus-medium, opus-xhigh, sol-high, sol-low, sol-max, sol-medium, sol-ultra, sol-xhigh, sonnet-high, sonnet-max, sonnet-xhigh
 Below the rule-20a evidence floor (no colour-rotated valid pair at every control of this class) — named as uncertainty, never routed: fable-medium
