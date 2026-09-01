@@ -34,6 +34,42 @@ check_eq "the same inputs give the same track" \
     "$OUT" "$(python3 "$REPO_DIR/lib/viseme_cues.py" 'həlˈoʊ wˈɜːld' 1.4)"
 check_eq "no audio means no lip movement (rule 21)" \
     "$(python3 "$REPO_DIR/lib/viseme_cues.py" 'həlˈoʊ' 0)" '[[0.0, "rest"]]'
+check "the wake debug drain keeps consuming after its 64-track broker bound" \
+    python3 - "$REPO_DIR/lib" "$T/drain-count" <<'PY'
+import sys
+import types
+
+sys.path.insert(0, sys.argv[1])
+import viseme_cues
+
+calls = []
+sys.modules["face_state"] = types.SimpleNamespace(
+    send_cmd=lambda cmd, timeout: calls.append(cmd) or {"ok": True})
+
+class CountingLines:
+    def __init__(self, lines):
+        self.lines = lines
+        self.seen = 0
+    def __iter__(self):
+        for line in self.lines:
+            self.seen += 1
+            yield line
+
+lines = CountingLines([
+    part
+    for _ in range(65)
+    for part in (
+        "Converting 2 phoneme(s) to ids: ˈɑː\n",
+        "Synthesized 0.280 second(s)\n",
+    )
+])
+count = viseme_cues.stream_debug_to_broker(
+    lines, "bounded", lead=0, count_path=sys.argv[2])
+assert count == 64, count
+assert len(calls) == 64, len(calls)
+assert lines.seen == 130, lines.seen
+assert open(sys.argv[2]).read().strip() == "64"
+PY
 
 echo
 echo "the sentence-cue table — fixed, public, and only over her own words (rule 40):"
@@ -330,6 +366,76 @@ check "…and the drain still closed the mouth underneath it (rule 23)" \
     bash -c 'python3 "$0/lib/face-broker" status \
         | grep -q "\"speaking\": false"' "$REPO_DIR"
 FB rest >/dev/null
+
+echo
+echo "one-shot wake speech — the same Piper phonemes drive its live mouth:"
+sandbox_stub piper-tts <<'EOF'
+#!/usr/bin/env bash
+DEBUG=0
+for a in "$@"; do [ "$a" = "--debug" ] && DEBUG=1; done
+while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "$WAKE_PHONEME_TEXT"
+    if [ "$DEBUG" = 1 ]; then
+        printf '[piper] [debug] Converting 5 phoneme(s) to ids: həlˈoʊ\n' >&2
+        printf '[piper] [debug] Synthesized 0.800 second(s) of audio in 0.1 second(s)\n' >&2
+    fi
+    head -c 44100 /dev/zero
+done
+EOF
+sandbox_stub aplay <<EOF
+#!/usr/bin/env bash
+sleep 0.15
+DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET" \
+    python3 "$REPO_DIR/lib/face-broker" status > "$T/wake-playing.json"
+cat >/dev/null
+EOF
+: > "$T/wake-phoneme-text"
+python3 - "$REPO_DIR" <<'PY'
+import sys
+import time
+sys.path.insert(0, sys.argv[1] + "/lib")
+import face_state
+reply = face_state.send_cmd({"cmd": "speak", "clips": [{
+    "id": "other-voice", "start": time.time(), "duration": 10.0,
+    "cues": [[0.0, "slight"], [9.5, "rest"]],
+}]})
+assert reply and reply["ok"], reply
+PY
+sandbox_bash 'FACE_ENABLED=1
+    TTS_FIXES="s/—/\\n/g"
+    DESKCRAB_FACE_AUDIO_LEAD=0
+    export WAKE_PHONEME_TEXT="'$T'/wake-phoneme-text"
+    speak_once "Ah—eight of fifteen."' >/dev/null 2>&1
+check "the one-shot wake fed both pause-bounded lines to Piper" \
+    bash -c '[ "$(wc -l < "$1")" -eq 2 ]' _ "$T/wake-phoneme-text"
+check "the one-shot wake was visibly speaking while its audio played" \
+    python3 - "$T/wake-playing.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as fh:
+    state = json.load(fh)
+assert state["speaking"], state
+assert state["clips"], state
+assert any(clip["id"] == "other-voice" for clip in state["clips"]), state
+assert any(clip["id"].startswith("wake-desk-") and
+           any(cue[1] != "rest" for cue in clip["cues"])
+           for clip in state["clips"]), state
+PY
+check "the one-shot wake closes only its own finished mouth track" \
+    python3 - "$REPO_DIR" <<'PY'
+import json
+import subprocess
+import sys
+state = json.loads(subprocess.check_output(
+    [sys.executable, sys.argv[1] + "/lib/face-broker", "status"]))
+assert [clip["id"] for clip in state["clips"]] == ["other-voice"], state
+PY
+python3 - "$REPO_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/lib")
+import face_state
+face_state.send_cmd({"cmd": "speak-end", "id": "other-voice"})
+PY
 
 # A streamer that outlived its turn: its flourish carries the dead turn's
 # token and must bounce off the broker (rule 38).

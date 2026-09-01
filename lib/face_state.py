@@ -658,6 +658,21 @@ class Broker:
                 self._bump()
         return {"ok": True, "state": self.snapshot()}
 
+    def speak_end_many(self, clip_ids):
+        """Remove one finished local burst without erasing another voice."""
+        if not isinstance(clip_ids, list):
+            return {"ok": False, "error": "clip ids must be a list"}
+        ids = {str(clip_id or "")[:64]
+               for clip_id in clip_ids if str(clip_id or "")}
+        if not ids or len(ids) > 64:
+            return {"ok": False, "error": "one to 64 clip ids are required"}
+        with self.lock:
+            kept = [c for c in self.clips if c.get("id") not in ids]
+            if len(kept) != len(self.clips):
+                self.clips = kept
+                self._bump()
+        return {"ok": True, "state": self.snapshot()}
+
     def diag(self):
         snap = self.snapshot()
         with self.lock:
@@ -733,6 +748,8 @@ class Broker:
             return self.speak_stop()
         if verb == "speak-end":
             return self.speak_end(cmd.get("id", ""))
+        if verb == "speak-end-many":
+            return self.speak_end_many(cmd.get("ids"))
         if verb == "diag":
             return self.diag()
         return {"ok": False, "error": "unknown cmd %r" % verb}

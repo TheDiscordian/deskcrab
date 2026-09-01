@@ -138,16 +138,21 @@ anything page-side.
 21. Mouth cues derive from the actual outgoing speech path: the
     synthesiser's own per-clip record of the audio it produced — never from
     the written reply, and never from a page timer guessing. The desk
-    streamer reads that record directly from Piper's debug drain. Phone and
-    phone-routed wake synthesis retain the same phoneme records, measured
-    duration, and derived cue track in a private sidecar beside the generated
-    Opus file; the browser receives only an opaque cue id. No audio means no
-    lip movement, even if text claims she is speaking.
+    streamer reads that record directly from Piper's debug drain. A one-shot
+    wake drains the same live record beside its untouched Piper-to-`aplay`
+    pipe, publishes each utterance as playback begins, and removes only that
+    wake's burst when playback ends. Phone and phone-routed wake synthesis retain the same
+    phoneme records, measured duration, and derived cue track in a private
+    sidecar beside the generated Opus file; the browser receives only an
+    opaque cue id. No audio means no lip movement, even if text claims she is
+    speaking.
 22. Cue time zero is the clip's playback start. With the long-lived desk
     synthesiser pipe, playback start is modelled: a clip begins either when
     the audio scheduled before it drains, or one pipe-and-device lead
     (`DESKCRAB_FACE_AUDIO_LEAD`, documented beside the manifest) after its
-    synthesis lands. For phone audio, the media element's real `playing`
+    synthesis lands. A one-shot local wake uses the same modelled lead and
+    Piper-reported per-utterance durations beside its live `aplay` pipe. For
+    phone audio, the media element's real `playing`
     report is time zero: the server looks up its own retained cue document
     by opaque id and publishes that clip to the broker then, never when the
     file was generated or merely requested. Sentence gaps return toward the
@@ -526,7 +531,6 @@ scope (rule 33); write game controls (rule 35).
 | Id | What implementation must fix |
 |---|---|
 | FACE-1 | Playback start is modelled (rule 22), not measured from the device; the lead constant has not been calibrated against live audio hardware. |
-| FACE-3 | Wake speech (`speak_once`) bypasses the streamer and schedules no cues and no `speaking` presence. |
 | FACE-4 | Opening the window under a focus-follows-new-window compositor may still focus it; no client-side fix exists under Wayland. |
 | FACE-6 | Web mouth mirrors assume the square 420×420 family: a future non-square plate would need crop-aware mouth-rect math in `face_card.js`. |
 

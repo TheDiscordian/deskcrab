@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import time
 
 # Multi-character IPA sequences first, longest match wins.
 _MULTI = (
@@ -265,11 +266,107 @@ def write_cue_document(debug_path, measured_duration, output_path):
         return False
 
 
+def stream_debug_to_broker(lines, clip_prefix, lead=0.25,
+                           sentence_silence=0.2, count_path=""):
+    """Drain a live Piper debug stream and publish each utterance's cues.
+
+    The caller keeps Piper's raw stdout connected straight to playback.  This
+    independent stderr drain therefore cannot put cue preparation in front of
+    a spoken sample.  After the first broker failure it keeps draining but
+    stops connecting, so an absent face cannot back-pressure the voice.
+    """
+    ipa = ""
+    count = 0
+    burst_end = 0.0
+    broker_available = True
+    try:
+        lead = max(0.0, float(lead))
+        sentence_silence = max(0.0, float(sentence_silence))
+    except (TypeError, ValueError):
+        lead, sentence_silence = 0.25, 0.2
+    for raw_line in lines:
+        line = str(raw_line or "").rstrip("\n")
+        match = _PIPER_PHONEMES.search(line)
+        if match:
+            ipa = match.group(1).strip()[:4096]
+            continue
+        match = _PIPER_DURATION.search(line)
+        if not match or not ipa:
+            continue
+        try:
+            duration = float(match.group(1))
+        except ValueError:
+            ipa = ""
+            continue
+        if not math.isfinite(duration) or duration <= 0:
+            ipa = ""
+            continue
+        # The broker bounds one voice burst to 64 utterances. Keep draining
+        # Piper after that bound: closing its stderr reader can SIGPIPE the
+        # synthesiser and would turn a face limit into lost speech.
+        if count >= 64:
+            ipa = ""
+            continue
+        count += 1
+        now = time.time()
+        start = max(burst_end, now + lead)
+        burst_end = start + duration + sentence_silence
+        if broker_available:
+            try:
+                import face_state
+                reply = face_state.send_cmd({
+                    "cmd": "speak",
+                    "clips": [{
+                        "id": "%s-%d" % (str(clip_prefix)[:56], count),
+                        "start": start,
+                        "duration": duration,
+                        "cues": cue_track(ipa, duration),
+                    }],
+                }, timeout=0.08)
+                broker_available = bool(reply and reply.get("ok"))
+            except Exception:
+                broker_available = False
+        ipa = ""
+    if count_path:
+        try:
+            tmp = "%s.%d.tmp" % (count_path, os.getpid())
+            with open(tmp, "w") as fh:
+                fh.write(str(count) + "\n")
+            os.replace(tmp, count_path)
+        except Exception:
+            pass
+    return count
+
+
+def end_burst(clip_prefix, count):
+    """Close one local utterance burst with a single bounded broker call."""
+    try:
+        count = max(0, min(64, int(count)))
+        if count == 0:
+            return True
+        import face_state
+        reply = face_state.send_cmd({
+            "cmd": "speak-end-many",
+            "ids": ["%s-%d" % (str(clip_prefix)[:56], i)
+                    for i in range(1, count + 1)],
+        }, timeout=0.08)
+        return bool(reply and reply.get("ok"))
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
     import sys
     if sys.argv[1:2] == ["--piper-debug"] and len(sys.argv) == 5:
         raise SystemExit(0 if write_cue_document(
             sys.argv[2], sys.argv[3], sys.argv[4]) else 1)
+    if sys.argv[1:2] == ["--stream-broker"] and len(sys.argv) in (4, 5):
+        count_path = sys.argv[4] if len(sys.argv) == 5 else ""
+        stream_debug_to_broker(sys.stdin, sys.argv[2], sys.argv[3],
+                               count_path=count_path)
+        raise SystemExit(0)
+    if sys.argv[1:2] == ["--end-burst"] and len(sys.argv) == 4:
+        raise SystemExit(0 if end_burst(sys.argv[2], sys.argv[3]) else 1)
     ipa = sys.argv[1] if len(sys.argv) > 1 else "həlˈoʊ wˈɜːld"
     dur = float(sys.argv[2]) if len(sys.argv) > 2 else 1.4
     print(json.dumps(cue_track(ipa, dur)))

@@ -3385,6 +3385,11 @@ speak_once() {
     local CMD=(piper-tts --model "$PIPER_VOICE" --output-raw)
     [ -n "${PIPER_LENGTH_SCALE:-}" ] && CMD+=(--length-scale "$PIPER_LENGTH_SCALE")
     [ -n "${PIPER_SPEAKER:-}" ] && CMD+=(--speaker "$PIPER_SPEAKER")
+    local FACE_HERE=0
+    if [ "${FACE_ENABLED:-0}" = 1 ] && [ -f "$LIB_DIR/viseme_cues.py" ]; then
+        FACE_HERE=1
+        CMD+=(--debug)
+    fi
     # Speech mutex: queue behind any voice already on the speakers rather than
     # talking over it. Held for the whole utterance. It does not decide WHAT is
     # said — the regroup block did that while this reply was being written; it
@@ -3401,10 +3406,49 @@ speak_once() {
         live_speech_begin "desk" "$TEXT"
         # PIPESTATUS, not $?: the exit status of a pipeline is aplay's, so a
         # piper that never produced a sample used to look like a clean run.
-        printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
-        local ST=("${PIPESTATUS[@]}")
-        [ "${ST[1]}" = 0 ] && [ "${ST[2]}" = 0 ] || \
-            speech_log "speak_once failed (piper=${ST[1]} aplay=${ST[2]}) on ${#TEXT} chars: $(printf '%.60s' "$TEXT")"
+        if [ "$FACE_HERE" = 1 ]; then
+            # Keep raw stdout connected directly to aplay. A separate debug
+            # drain reads Piper's phoneme/duration record as each utterance is
+            # produced and publishes finite cue tracks beside playback. If
+            # that drain or the broker fails, the audio pipe is untouched.
+            local FACE_TMP DEBUG_FIFO COUNT_FILE CLIP PUB_PID COUNT
+            FACE_TMP="$(mktemp -d -t crab-wake-face.XXXXXX)" || FACE_TMP=""
+            if [ -n "$FACE_TMP" ] && mkfifo "$FACE_TMP/debug"; then
+                DEBUG_FIFO="$FACE_TMP/debug"
+                COUNT_FILE="$FACE_TMP/count"
+                CLIP="wake-desk-$$-$(date +%s%N)"
+                DESKCRAB_FACE_SOCKET="$FACE_SOCKET" \
+                    python3 "$LIB_DIR/viseme_cues.py" --stream-broker \
+                        "$CLIP" "${DESKCRAB_FACE_AUDIO_LEAD:-0.25}" \
+                        "$COUNT_FILE" <"$DEBUG_FIFO" >/dev/null 2>&1 &
+                PUB_PID=$!
+                printf '%s' "$TEXT" | "${CMD[@]}" 2>"$DEBUG_FIFO" \
+                    | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+                local ST=("${PIPESTATUS[@]}")
+                wait "$PUB_PID" 2>/dev/null || true
+                COUNT="$(cat "$COUNT_FILE" 2>/dev/null)" || COUNT=0
+                case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+                DESKCRAB_FACE_SOCKET="$FACE_SOCKET" \
+                    python3 "$LIB_DIR/viseme_cues.py" --end-burst \
+                        "$CLIP" "$COUNT" >/dev/null 2>&1 || true
+                rm -f "$DEBUG_FIFO" "$COUNT_FILE"
+                rmdir "$FACE_TMP" 2>/dev/null || true
+                [ "${ST[1]}" = 0 ] && [ "${ST[2]}" = 0 ] || \
+                    speech_log "speak_once failed (piper=${ST[1]} aplay=${ST[2]}) on ${#TEXT} chars: $(printf '%.60s' "$TEXT")"
+            else
+                [ -n "$FACE_TMP" ] && rmdir "$FACE_TMP" 2>/dev/null || true
+                printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null \
+                    | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+                local ST=("${PIPESTATUS[@]}")
+                [ "${ST[1]}" = 0 ] && [ "${ST[2]}" = 0 ] || \
+                    speech_log "speak_once failed (piper=${ST[1]} aplay=${ST[2]}) on ${#TEXT} chars: $(printf '%.60s' "$TEXT")"
+            fi
+        else
+            printf '%s' "$TEXT" | "${CMD[@]}" 2>/dev/null | aplay -r 22050 -c 1 -f S16_LE -t raw 2>/dev/null
+            local ST=("${PIPESTATUS[@]}")
+            [ "${ST[1]}" = 0 ] && [ "${ST[2]}" = 0 ] || \
+                speech_log "speak_once failed (piper=${ST[1]} aplay=${ST[2]}) on ${#TEXT} chars: $(printf '%.60s' "$TEXT")"
+        fi
         live_speech_end
     } 7>"$SPEECHLOCK"
 }

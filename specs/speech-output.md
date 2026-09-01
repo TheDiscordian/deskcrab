@@ -384,6 +384,13 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     reaches the phone, or is reported as played. The sidecar expires under the same scoped hourly
     cleanup as its clip and is never served by the audio route.
 
+53b. When the face is enabled, one-shot wake speech drains Piper's live debug phoneme and duration
+    records beside the untouched Piper-to-`aplay` pipe and publishes the same finite viseme tracks
+    as each utterance is produced. The debug drain is independent of raw stdout, abandons broker
+    calls after its first failure, and continues consuming Piper's stderr, so cue creation or broker
+    failure cannot delay, change, or suppress the spoken words. Playback completion removes that
+    wake's clip ids in one bounded call without clearing another voice's track.
+
 54. A repair MUST NOT costume the line. The mirror call's prompt MUST forbid adding a verbal tic
     or catchphrase the draft did not already carry. A rewrite model handed one isolated sentence
     reaches for a signature phrase to prove whose voice it is speaking in, and because that phrase
