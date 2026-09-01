@@ -154,6 +154,22 @@ life, and she re-reads that store every single turn.
     judgement and admits it; `--supersedes SLUG` removes the old rule from the active index while
     retaining its body under `conduct/archive/`. Direct file creation is unsupported because it
     cannot prove the active memory and conduct sets were checked first.
+28b. **Reconciliation reaches the stored set, not just new writes.** A judged true-duplicate
+    family among active directives is merged by explicit command (`crab memory merge`): one
+    survivor stays active — a named existing row (`--into ID`), or a composed union (`--text`)
+    when no single copy carries every clause — while each absorbed row keeps its text, source
+    and dates, gains a `superseded_by` link to the survivor, and leaves retrieval. The survivor
+    inherits the family's earned reinforcement (summed `use_count`, latest `last_used_at`) and
+    any pin, so merging never costs a rule the standing its copies earned. A stored
+    later-correction is linked with `crab memory supersede NEW OLD`: the newer row stays
+    authoritative and active, the older keeps full provenance and gains the same link; keeping
+    a row created before the one it absorbs demands `--older-wins`, because mechanically
+    squashing a correction into the rule it corrects would keep the version the user rejected.
+    `crab memory overlaps --scan` nominates stored active pairs — directives and conduct bodies
+    both, at rule 28's floor — for exactly this three-way judgement, and prints pairs only:
+    similarity nominates, it never merges. Hiding duplicates at retrieval time alone is not
+    reconciliation, because the stored active set is what every future preflight measures
+    against.
 29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
     would lose its earliest material to a tail-clamp, so the chunk list is split into successive
     windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a
@@ -390,10 +406,16 @@ judge), `crab memory`, and the nightly sleep.
 
 ## TESTS
 
-**Existing:** `tests/test_durable_rules.sh` — rules 28/28a across both write doors: a clear conduct
-creation lands in body and index; a copied clause hidden behind a novel clause is held with no
-file; a memory directive is checked against conduct and leaves no row; an explicit distinct
-judgement admits the candidate. `tests/test_sleep_sol_judgment.sh` — the two-stage boundary of rules 27 and 30 end
+**Existing:** `tests/test_durable_rules.sh` — rules 28/28a/28b across both write doors and the
+stored set: a clear conduct creation lands in body and index; a copied clause hidden behind a
+novel clause is held with no file; a memory directive is checked against conduct and leaves no
+row; an explicit distinct judgement admits the candidate; `memory merge` absorbs a judged
+duplicate with `superseded_by` provenance; `memory supersede` keeps the newer correction
+authoritative and refuses swapped arguments. `tests/test_memory.py` carries the measured
+2026-08-28 audit families as fixtures: every family that multiplied live is nominated, the pair
+sharing only a subject stays two rules, a later correction supersedes instead of merging, and
+reconciliation keeps provenance, summed reinforcement, and pins across a merge.
+`tests/test_sleep_sol_judgment.sh` — the two-stage boundary of rules 27 and 30 end
 to end through `crab memory ingest --dry-run` at the shipped defaults: the summariser (stub
 claude, `--model sonnet`) receives the raw day, the judge (stub codex, `-m gpt-5.6-sol`,
 `model_reasoning_effort=high`) receives the labelled summaries and not one byte of the raw

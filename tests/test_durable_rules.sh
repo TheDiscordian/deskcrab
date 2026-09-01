@@ -55,5 +55,47 @@ count="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
   && ok 'an explicit distinct judgement admits the nominated rule' \
   || bad 'an explicit distinct judgement admits the nominated rule'
 
+# Rule 28b: the stored set reconciles through the same CLI. A judged
+# duplicate pair merges into one survivor with provenance kept ...
+"$PY" "$ROOT/lib/memory.py" add --kind directive --distinct \
+  'Inspect the live source before you claim any current remote game condition.' \
+  >/dev/null
+keep="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select min(id) from memories where kind='directive' and status='active';")"
+dup="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select max(id) from memories where kind='directive' and status='active';")"
+"$PY" "$ROOT/lib/memory.py" merge --into "$keep" "$dup" >/dev/null
+active="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select count(*) from memories where kind='directive' and status='active';")"
+link="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select status || ':' || superseded_by from memories where id=$dup;")"
+[ "$active" = 1 ] && [ "$link" = "superseded:$keep" ] \
+  && ok 'memory merge absorbs a judged duplicate, provenance kept' \
+  || bad 'memory merge absorbs a judged duplicate, provenance kept'
+
+# ... and a stored later correction is linked, newer row authoritative.
+"$PY" "$ROOT/lib/memory.py" add --kind directive --distinct \
+  'Night dispatch happens after his usual bedtime hour.' >/dev/null
+old="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select max(id) from memories;")"
+sleep 1  # the created stamps carry seconds; the swapped-argument guard needs the correction visibly newer
+"$PY" "$ROOT/lib/memory.py" add --kind directive --distinct \
+  'Correction: night dispatch waits for the machine to be idle, not for a clock hour.' \
+  >/dev/null
+new="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select max(id) from memories;")"
+set +e
+"$PY" "$ROOT/lib/memory.py" supersede "$old" "$new" >/dev/null 2>&1
+swapped=$?
+set -e
+"$PY" "$ROOT/lib/memory.py" supersede "$new" "$old" >/dev/null
+row="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select status || ':' || superseded_by from memories where id=$old;")"
+newstat="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select status || ':' || supersedes from memories where id=$new;")"
+[ "$swapped" != 0 ] && [ "$row" = "superseded:$new" ] && [ "$newstat" = "active:$old" ] \
+  && ok 'memory supersede keeps the newer correction authoritative and refuses swapped arguments' \
+  || bad 'memory supersede keeps the newer correction authoritative and refuses swapped arguments'
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -283,6 +283,296 @@ class TestDedupSupersede(StoreCase):
         self.assertEqual((a1, a2), ("added", "added"))
 
 
+class TestReconcile(StoreCase):
+    """Rule 28b: reconciliation reaches the STORED active set. These rows are
+    inserted directly — the judged shape of a store whose duplicates predate
+    the write-time preflight."""
+
+    def _directive(self, text, use=0, pinned=False):
+        rec_id = self.store.insert(text, "directive", pinned=pinned)
+        if use:
+            self.store.db.execute(
+                "UPDATE memories SET use_count=?, last_used_at=? WHERE id=?",
+                (use, memory.now_iso(), rec_id))
+            self.store.db.commit()
+        return rec_id
+
+    def test_merge_into_named_survivor_keeps_provenance_and_standing(self):
+        a = self._directive("Never report work done without a real test run "
+                            "proving it is wired.", use=9)
+        b = self._directive("Completion claims need an actual grep or test "
+                            "run behind them before being reported.", use=4)
+        c = self._directive("Verify with a real command before saying a task "
+                            "is finished.", use=2, pinned=True)
+        keep = self.store.merge_directives([b, c], keep_id=a)
+        self.assertEqual(keep, a)
+        rows = {r[0]: r for r in self.store.db.execute(
+            "SELECT id, status, superseded_by, text, use_count, pinned"
+            " FROM memories")}
+        self.assertEqual(rows[a][1], "active")
+        self.assertEqual((rows[b][1], rows[b][2]), ("superseded", a))
+        self.assertEqual((rows[c][1], rows[c][2]), ("superseded", a))
+        # Nothing lost: the absorbed rows keep their text, readable forever.
+        self.assertIn("actual grep", rows[b][3])
+        # Standing consolidates: reinforcement sums, a sibling's pin travels.
+        self.assertEqual(rows[a][4], 15)
+        self.assertEqual(rows[a][5], 1)
+        # And retrieval no longer serves the absorbed copies.
+        vec = self.store.embed_text("verify before reporting done")
+        served = [r[0] for r in self.store.knn(vec, 10)]
+        self.assertIn(a, served)
+        self.assertNotIn(b, served)
+        self.assertNotIn(c, served)
+
+    def test_merge_composes_union_when_no_copy_carries_every_clause(self):
+        a = self._directive("Never ask permission on something already "
+                            "decided — act, then report.", use=5)
+        b = self._directive("Her own wants are taken, not requested; asking "
+                            "permission first is refused.", use=7)
+        keep = self.store.merge_directives(
+            [a, b], text="Never ask permission — not on something already "
+                         "decided, and never before pursuing her own wants; "
+                         "act, then report what was done.")
+        rows = {r[0]: r for r in self.store.db.execute(
+            "SELECT id, status, superseded_by, use_count FROM memories")}
+        self.assertEqual(rows[keep][1], "active")
+        self.assertEqual((rows[a][1], rows[a][2]), ("superseded", keep))
+        self.assertEqual((rows[b][1], rows[b][2]), ("superseded", keep))
+        self.assertEqual(rows[keep][3], 12)
+
+    def test_merge_refuses_bad_shapes(self):
+        a = self._directive("Rule one about the build lights.")
+        b = self._directive("Rule two about the garden gate.")
+        note = self.store.insert("A note, not a rule.", "note")
+        with self.assertRaises(ValueError):
+            self.store.merge_directives([a], keep_id=a)
+        with self.assertRaises(ValueError):
+            self.store.merge_directives([note], keep_id=a)
+        with self.assertRaises(ValueError):
+            self.store.merge_directives([b])          # neither keep nor text
+        with self.assertRaises(ValueError):
+            self.store.merge_directives([b], keep_id=a,
+                                        text="both routes at once")
+        self.store.db.execute(
+            "UPDATE memories SET status='retired' WHERE id=?", (b,))
+        self.store.db.commit()
+        with self.assertRaises(ValueError):
+            self.store.merge_directives([b], keep_id=a)
+
+    def test_link_supersede_makes_the_newer_correction_authoritative(self):
+        old = self._directive("The night pipeline's judging stays on engine "
+                              "A; engine B only summarises the day.", use=6)
+        new = self._directive("Correction: engine C orchestrates the night "
+                              "and makes the judgments; engine B only "
+                              "produces summaries and engine A is not part "
+                              "of the sifting.", use=2)
+        self.store.link_supersede(new, old)
+        rows = {r[0]: r for r in self.store.db.execute(
+            "SELECT id, status, supersedes, superseded_by FROM memories")}
+        self.assertEqual(rows[new][1], "active")
+        self.assertEqual(rows[new][2], old)
+        self.assertEqual((rows[old][1], rows[old][3]), ("superseded", new))
+        vec = self.store.embed_text("which engine judges the night pipeline")
+        served = [r[0] for r in self.store.knn(vec, 10)]
+        self.assertIn(new, served)
+        self.assertNotIn(old, served)
+
+    def test_link_supersede_refuses_inactive_rows(self):
+        old = self._directive("The stale rule.")
+        new = self._directive("The correction of the stale rule.")
+        with self.assertRaises(ValueError):
+            self.store.link_supersede(new, new)
+        self.store.db.execute(
+            "UPDATE memories SET status='retired' WHERE id=?", (old,))
+        self.store.db.commit()
+        with self.assertRaises(ValueError):
+            self.store.link_supersede(new, old)
+
+    def test_scan_nominates_stored_pairs_without_deciding(self):
+        a = self._directive("Spoken replies stay short — no long monologues "
+                            "reciting technical detail out loud.")
+        b = self._directive("Keep spoken responses brief instead of "
+                            "monologuing technical detail aloud.")
+        self._directive("Water the tomato plants on Sunday mornings.")
+        pairs = self.store.scan_rule_overlaps()
+        refs = {frozenset((p["a_ref"], p["b_ref"])) for p in pairs}
+        self.assertIn(frozenset((a, b)), refs)
+        # The scan is evidence only: every row is exactly as active as before.
+        statuses = {r[0] for r in self.store.db.execute(
+            "SELECT status FROM memories")}
+        self.assertEqual(statuses, {"active"})
+
+    def test_superseded_by_backfilled_for_rows_linked_before_the_column(self):
+        old = self._directive("Wake him at seven on weekdays.")
+        new = self.store.supersede_directive(
+            old, "Wake him at eight on weekdays.")
+        self.store.db.execute(
+            "UPDATE memories SET superseded_by=NULL WHERE id=?", (old,))
+        self.store.db.commit()
+        self.store.db.close()
+        # Reopen as a store that never had the column: the ALTER-time
+        # backfill derives the link from the survivor's supersedes pointer.
+        db = memory.sqlite3.connect(os.path.join(self.dir, "memory.db"))
+        db.executescript("""
+            ALTER TABLE memories DROP COLUMN superseded_by;
+        """)
+        db.close()
+        self.store = memory.Store(self.dir)
+        got = self.store.db.execute(
+            "SELECT superseded_by FROM memories WHERE id=?", (old,)).fetchone()
+        self.assertEqual(got, (new,))
+
+
+class TestRuleFamilies(unittest.TestCase):
+    """The measured duplicate families from the 2026-08-28 live audit, as
+    name-free paraphrase fixtures: every family that multiplied must be
+    nominated by preflight, the pair sharing only a subject must survive as
+    two rules, and a later correction must supersede rather than merge."""
+
+    # (family, the stored rule, the restatement that must NOT slip past).
+    # Wordings are name-stripped adaptations of the live siblings: the real
+    # duplicates accumulated as close restatements sharing scaffolding, and
+    # the fixtures keep that shape — every pair measures at or above the
+    # 0.86 nomination floor with the shipped embedder (0.88-0.94 measured).
+    TRUE_DUPLICATES = [
+        ("verification-before-done",
+         "Never report a task done without verifying with a real grep or "
+         "test that it is actually wired — name any blocked or unfinished "
+         "piece explicitly rather than reporting a quiet success.",
+         "He wants nothing reported done without real verification — an "
+         "actual grep or test run proving it is wired — and any blocked or "
+         "unfinished piece named explicitly rather than a quiet success."),
+        ("settled-decisions",
+         "He never wants to be asked for permission or confirmation on "
+         "something already decided — decide and act, then report what was "
+         "done.",
+         "He wants her to act immediately on decisions already made "
+         "without asking for permission first — if she wants to do "
+         "something, she should just do it, not ask."),
+        ("night-only-dispatch",
+         "Builders and jobs are dispatched only during the nightly sleep "
+         "step, never mid-conversation on the fly.",
+         "Never launch a builder mid-conversation; work found while "
+         "talking is shelved and dispatched during the nightly sleep step."),
+        ("short-spoken-replies",
+         "Spoken responses stay short and normal length — no long "
+         "monologues reciting technical detail out loud; detail goes in "
+         "writing.",
+         "Keep spoken replies brief instead of monologuing technical "
+         "detail out loud; put the detail in writing."),
+        ("no-silent-truncation",
+         "He wants no silent truncation of anything given to her — "
+         "prompts, memory ingest, engineering threads — if something "
+         "exceeds a size budget, show a visible warning naming the excess "
+         "rather than trimming silently.",
+         "He has a standing rule against silently truncating anything fed "
+         "to her — if something must be cut for size, it must emit a "
+         "visible over-budget warning rather than quietly trimming."),
+        ("same-run-commits",
+         "He requires that any work dispatched to a builder be committed "
+         "in the same run — never leave finished work parked with only an "
+         "intention to commit later, because ending a session on that "
+         "unfulfilled intention counts as a failure.",
+         "He wants finished builder work committed within the same run — "
+         "never deferred with an intention to commit later, and he has "
+         "called out builders for ending a session on that unfulfilled "
+         "promise."),
+        ("banned-drain-word",
+         "He dislikes pairing the word 'drain' with her threads metaphor "
+         "for nightly work — she now says the night takes up the threads "
+         "or does the night's work instead.",
+         "He has repeatedly corrected her for calling her nightly "
+         "thread-processing cycle 'a drain' — he wants plain language like "
+         "the night's work or taking up the threads instead."),
+        ("nothing-exempt-from-decay",
+         "Nothing in her memory is exempt from scoring and decay — no "
+         "exceptions, no floor — a wrongly saved lesson must be able to "
+         "fade, and durable rules live in the conduct drawer, not in "
+         "memory.",
+         "He corrected the memory design: nothing should be exempt from "
+         "scoring or decay, directives and lessons included — a wrongly "
+         "saved rule needs to be able to fade like anything else, and "
+         "permanent standing rules belong in conduct files, not memory."),
+    ]
+
+    def _fresh_store(self):
+        d = tempfile.mkdtemp(prefix="memfam-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        old = os.environ.get("DESKCRAB_CONDUCT_DIR")
+        os.environ["DESKCRAB_CONDUCT_DIR"] = os.path.join(d, "conduct")
+        def restore():
+            if old is None:
+                os.environ.pop("DESKCRAB_CONDUCT_DIR", None)
+            else:
+                os.environ["DESKCRAB_CONDUCT_DIR"] = old
+        self.addCleanup(restore)
+        store = memory.Store(d)
+        self.addCleanup(store.db.close)
+        return store
+
+    def test_every_multiplied_family_is_nominated_not_admitted(self):
+        for family, stored, paraphrase in self.TRUE_DUPLICATES:
+            with self.subTest(family=family):
+                store = self._fresh_store()
+                first, _ = store.add_deduped(stored, kind="directive")
+                self.assertEqual(first, "added")
+                action, ref = store.add_deduped(paraphrase, kind="directive")
+                self.assertEqual(action, "overlap",
+                                 f"{family}: the paraphrase slipped past "
+                                 "preflight — this family multiplied to "
+                                 "seven copies live")
+                count = store.db.execute(
+                    "SELECT count(*) FROM memories").fetchone()[0]
+                self.assertEqual(count, 1)
+
+    def test_rules_sharing_only_a_subject_stay_two_rules(self):
+        # Live pair measured 0.865: one rule keeps people straight at the
+        # chess board, the other is about the guest's own asking-after.
+        # Similarity may nominate; the explicit judgement must keep both.
+        store = self._fresh_store()
+        a = ("Keep people straight in conversation — the guest at the chess "
+             "board is the one making the moves, not the user.")
+        b = ("Whenever the guest is at the chess board, genuinely ask him "
+             "how he is doing, worked into the between-move banter.")
+        first, _ = store.add_deduped(a, kind="directive")
+        self.assertEqual(first, "added")
+        action, _ = store.add_deduped(b, kind="directive")
+        if action == "overlap":
+            store.add_distinct_directive(b)
+        else:
+            self.assertEqual(action, "added")
+        active = store.db.execute(
+            "SELECT count(*) FROM memories WHERE status='active'"
+        ).fetchone()[0]
+        self.assertEqual(active, 2)
+
+    def test_later_correction_supersedes_instead_of_merging(self):
+        # The live #14/#596 shape: a newer correction of the same design
+        # must never be squashed into the rule it corrects — the newer row
+        # wins and the older keeps provenance.
+        store = self._fresh_store()
+        _, old_id = store.add_deduped(
+            "We decided the nightly sleep pipeline's model allocation "
+            "together: summarising runs on engine A at high effort and the "
+            "judgment-heavy sifting stays on engine B.", kind="directive")
+        correction = ("He corrected the nightly sleep pipeline's model "
+                      "allocation: engine C should orchestrate and make the "
+                      "judgments, engine A should only produce summaries, "
+                      "and engine B should not perform the judgment-heavy "
+                      "sifting.")
+        action, ref = store.add_deduped(correction, kind="directive")
+        self.assertEqual((action, ref), ("overlap", old_id),
+                         "the correction must be held for judgement, not "
+                         "admitted beside the rule it corrects")
+        new_id = store.supersede_directive(old_id, correction)
+        rows = {r[0]: r for r in store.db.execute(
+            "SELECT id, status, supersedes, superseded_by FROM memories")}
+        self.assertEqual(rows[new_id][1], "active")
+        self.assertEqual(rows[new_id][2], old_id)
+        self.assertEqual((rows[old_id][1], rows[old_id][3]),
+                         ("superseded", new_id))
+
+
 class TestRecallBlock(StoreCase):
     def test_block_groups_by_kind(self):
         self.store.insert("Stay silent during his meetings.", kind="directive")

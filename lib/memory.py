@@ -234,6 +234,11 @@ MEMORIES_COLUMNS_SQL = """
     status     TEXT NOT NULL DEFAULT 'active'
                CHECK (status IN ('active','superseded','retired')),
     supersedes INTEGER REFERENCES memories(id),
+    -- Reconciliation provenance (memory-recall.md rule 28b): which
+    -- surviving record absorbed this one. `supersedes` can only carry
+    -- one id on the survivor's side, so a merged family of several
+    -- copies records its history here, one link per absorbed row.
+    superseded_by INTEGER REFERENCES memories(id),
     created    TEXT NOT NULL,
     last_seen  TEXT NOT NULL,
     -- Reinforcement (13:15 design revision): bumped by `memory
@@ -608,6 +613,19 @@ class Store:
             self.db.execute("ALTER TABLE memories ADD COLUMN opinion"
                             " TEXT NOT NULL DEFAULT ''")
             self.db.commit()
+        # Stores born before active-set reconciliation (rule 28b): the
+        # provenance link from an absorbed row to its survivor, added in
+        # place exactly as `occurred` was. The one-time backfill derives
+        # the link for rows superseded before the column existed, from
+        # the surviving row's own `supersedes` pointer.
+        if "superseded_by" not in cols:
+            self.db.execute("ALTER TABLE memories ADD COLUMN superseded_by"
+                            " INTEGER REFERENCES memories(id)")
+            self.db.execute(
+                "UPDATE memories SET superseded_by ="
+                " (SELECT n.id FROM memories n WHERE n.supersedes = memories.id)"
+                " WHERE status='superseded'")
+            self.db.commit()
         self._widen_kind_check()
 
     def _widen_kind_check(self):
@@ -626,8 +644,8 @@ class Store:
         if "'episodic'" in sql:
             return
         cols = ("id, text, kind, pinned, source, topics, confidence, status,"
-                " supersedes, created, last_seen, last_used_at, use_count,"
-                " occurred, participants, opinion")
+                " supersedes, superseded_by, created, last_seen, last_used_at,"
+                " use_count, occurred, participants, opinion")
         self.db.executescript(f"""
             BEGIN;
             CREATE TABLE memories_migrate ({MEMORIES_COLUMNS_SQL});
@@ -881,7 +899,8 @@ class Store:
                                  occurred=occurred, participants=participants,
                                  opinion=opinion)
             self.db.execute(
-                "UPDATE memories SET status='superseded' WHERE id=?", (best[0],))
+                "UPDATE memories SET status='superseded', superseded_by=?"
+                " WHERE id=?", (new_id, best[0]))
             self.db.execute(
                 "UPDATE memories SET supersedes=? WHERE id=?", (best[0], new_id))
             self.db.commit()
@@ -906,23 +925,116 @@ class Store:
             raise ValueError(f"#{old_id} is not an active directive")
         new_id = self.insert(text, "directive", pinned, source, topics,
                              occurred=occurred)
-        self.db.execute("UPDATE memories SET status='superseded' WHERE id=?",
-                        (old_id,))
+        self.db.execute("UPDATE memories SET status='superseded',"
+                        " superseded_by=? WHERE id=?", (new_id, old_id))
         self.db.execute("UPDATE memories SET supersedes=? WHERE id=?",
                         (old_id, new_id))
         self.db.commit()
         self.resolve_rule_overlap(text, "superseded", new_id)
         return new_id
 
-    def rule_overlaps(self, text, conduct_dir=None):
-        """Nominate clause-level overlaps across both durable-rule drawers.
+    def _active_directive(self, rec_id):
+        row = self.db.execute(
+            "SELECT kind, status FROM memories WHERE id=?", (rec_id,)).fetchone()
+        if row != ("directive", "active"):
+            raise ValueError(f"#{rec_id} is not an active directive")
 
-        Whole-record embeddings let a novel clause hide a copied one.  Each
-        candidate and each active rule is therefore split and embedded by
-        clause.  The result is evidence for one of three explicit decisions
-        (duplicate, supersede, distinct), never the decision itself.
-        """
-        candidates = rule_clauses(text)
+    def merge_directives(self, dup_ids, keep_id=None, text=None, pinned=False,
+                         source="self", topics=""):
+        """Reconcile a judged true-duplicate family in the STORED active set
+        (rule 28b). One survivor stays active: the named existing row, or a
+        composed union when no single copy carries every clause. Every
+        absorbed row keeps its text, source and dates, gains a superseded_by
+        link, and leaves retrieval; the survivor inherits the family's earned
+        reinforcement and any pin, so merging never costs a rule the standing
+        its copies earned. This is the judged outcome applied to rows that
+        predate the write-time preflight — similarity nominated the family,
+        somebody decided it."""
+        if (keep_id is None) == (text is None):
+            raise ValueError("name a surviving row (keep_id) or compose one "
+                             "(text), exactly one of the two")
+        dup_ids = list(dict.fromkeys(dup_ids))
+        if not dup_ids:
+            raise ValueError("nothing to absorb")
+        if keep_id is not None and keep_id in dup_ids:
+            raise ValueError(f"#{keep_id} cannot absorb itself")
+        for rec_id in ([keep_id] if keep_id is not None else []) + dup_ids:
+            self._active_directive(rec_id)
+        if keep_id is None:
+            keep_id = self.insert(text, "directive", pinned, source, topics)
+        marks = ",".join("?" * len(dup_ids))
+        absorbed_use, absorbed_last, absorbed_pin = self.db.execute(
+            f"SELECT coalesce(sum(use_count),0), max(last_used_at),"
+            f" max(pinned) FROM memories WHERE id IN ({marks})",
+            dup_ids).fetchone()
+        for rec_id in dup_ids:
+            self.db.execute(
+                "UPDATE memories SET status='superseded', superseded_by=?"
+                " WHERE id=?", (keep_id, rec_id))
+        keep_use, keep_last, keep_pin = self.db.execute(
+            "SELECT use_count, last_used_at, pinned FROM memories WHERE id=?",
+            (keep_id,)).fetchone()
+        self.db.execute(
+            "UPDATE memories SET use_count=?, last_used_at=?, pinned=?,"
+            " last_seen=? WHERE id=?",
+            (keep_use + (absorbed_use or 0),
+             max(filter(None, [keep_last, absorbed_last]), default=None),
+             1 if (keep_pin or absorbed_pin) else 0, now_iso(), keep_id))
+        self.db.commit()
+        return keep_id
+
+    def link_supersede(self, new_id, old_id):
+        """Record that one STORED directive is the later correction of
+        another (rule 28b). The newer row stays authoritative and active;
+        the older keeps its text and provenance, gains the superseded_by
+        link, and leaves retrieval. The survivor's own supersedes pointer is
+        filled only when empty — it carries one id, and an existing link is
+        older provenance, not something to overwrite."""
+        if new_id == old_id:
+            raise ValueError("a directive cannot supersede itself")
+        for rec_id in (new_id, old_id):
+            self._active_directive(rec_id)
+        self.db.execute("UPDATE memories SET status='superseded',"
+                        " superseded_by=? WHERE id=?", (new_id, old_id))
+        self.db.execute("UPDATE memories SET supersedes=coalesce(supersedes,?)"
+                        " WHERE id=?", (old_id, new_id))
+        self.db.commit()
+
+    def scan_rule_overlaps(self, conduct_dir=None):
+        """Nominate overlap pairs inside the STORED active rule set — the
+        pairs that predate the write-time preflight. Same clause floor as
+        rule 28, one best-similarity entry per record pair; the output is
+        evidence for a merge / supersede / distinct judgement, never the
+        judgement itself."""
+        pool = self._rule_clause_pool(conduct_dir)
+        if len(pool) < 2:
+            return []
+        vectors = embed([entry[2] for entry in pool])
+        best = {}
+        for i, (a_drawer, a_ref, a_clause) in enumerate(pool):
+            for j in range(i + 1, len(pool)):
+                b_drawer, b_ref, b_clause = pool[j]
+                if (a_drawer, a_ref) == (b_drawer, b_ref):
+                    continue
+                sim = cosine(vectors[i], vectors[j])
+                if sim < RULE_OVERLAP_SIM:
+                    continue
+                key = (a_drawer, a_ref, b_drawer, b_ref)
+                if key not in best or sim > best[key]["similarity"]:
+                    best[key] = {
+                        "a_drawer": a_drawer, "a_ref": a_ref,
+                        "a_clause": a_clause,
+                        "b_drawer": b_drawer, "b_ref": b_ref,
+                        "b_clause": b_clause,
+                        "similarity": round(sim, 4)}
+        return sorted(best.values(), key=lambda h: h["similarity"],
+                      reverse=True)
+
+    def _rule_clause_pool(self, conduct_dir=None):
+        """Every clause of every active durable rule, across both drawers:
+        (drawer, ref, clause) triples for active directives and conduct
+        bodies. The one collection the write-time preflight and the stored-set
+        scan both measure against."""
         existing = []
         for rec_id, body in self.db.execute(
                 "SELECT id, text FROM memories"
@@ -949,6 +1061,18 @@ class Store:
                     continue
                 for clause in rule_clauses(body):
                     existing.append(("conduct", name[:-3], clause))
+        return existing
+
+    def rule_overlaps(self, text, conduct_dir=None):
+        """Nominate clause-level overlaps across both durable-rule drawers.
+
+        Whole-record embeddings let a novel clause hide a copied one.  Each
+        candidate and each active rule is therefore split and embedded by
+        clause.  The result is evidence for one of three explicit decisions
+        (duplicate, supersede, distinct), never the decision itself.
+        """
+        candidates = rule_clauses(text)
+        existing = self._rule_clause_pool(conduct_dir)
         if not candidates or not existing:
             return []
         vectors = embed(candidates + [e[2] for e in existing])
@@ -2699,7 +2823,54 @@ def cmd_list(store, args):
     return 0
 
 
+def cmd_merge(store, args):
+    text = args.text.strip() if args.text else None
+    try:
+        keep_id = store.merge_directives(args.ids, keep_id=args.into,
+                                         text=text, source=args.source,
+                                         topics=args.topics)
+    except ValueError as exc:
+        sys.exit(f"memory merge: {exc}")
+    absorbed = ", ".join(f"#{i}" for i in args.ids)
+    print(f"merged {absorbed} into #{keep_id}")
+    return 0
+
+
+def cmd_supersede(store, args):
+    rows = {}
+    for rec_id in (args.new_id, args.old_id):
+        row = store.db.execute(
+            "SELECT created FROM memories WHERE id=?", (rec_id,)).fetchone()
+        if not row:
+            sys.exit(f"memory supersede: no record #{rec_id}")
+        rows[rec_id] = row[0]
+    # The audit's fear made mechanical: squashing a correction into the rule
+    # it corrects keeps the version the user rejected. Keeping the OLDER row
+    # is almost always swapped arguments, so it must be said out loud.
+    if rows[args.new_id] < rows[args.old_id] and not args.older_wins:
+        sys.exit(f"memory supersede: #{args.new_id} was created before "
+                 f"#{args.old_id} — if the older row really is the "
+                 "authoritative one, say --older-wins; otherwise the "
+                 "arguments are swapped")
+    try:
+        store.link_supersede(args.new_id, args.old_id)
+    except ValueError as exc:
+        sys.exit(f"memory supersede: {exc}")
+    print(f"#{args.new_id} now supersedes #{args.old_id}")
+    return 0
+
+
 def cmd_overlaps(store, args):
+    if args.scan:
+        pairs = store.scan_rule_overlaps()
+        for hit in pairs:
+            print(f"{hit['similarity']:.3f} "
+                  f"{hit['a_drawer']}:{hit['a_ref']} <-> "
+                  f"{hit['b_drawer']}:{hit['b_ref']}")
+            print(f"    {hit['a_clause'][:110]}")
+            print(f"    {hit['b_clause'][:110]}")
+        print(f"-- {len(pairs)} stored overlap pairs at >= {RULE_OVERLAP_SIM}")
+        return 0
     path = os.path.join(store.dir, "pending-rule-overlaps.json")
     try:
         with open(path) as f:
@@ -2726,7 +2897,7 @@ def cmd_dump(store, args):
     rows = store.db.execute(
         "SELECT id, text, kind, pinned, source, topics, confidence, status,"
         "       supersedes, created, last_seen, occurred, participants,"
-        "       opinion"
+        "       opinion, superseded_by"
         " FROM memories ORDER BY id").fetchall()
     for r in rows:
         print(f"#{r[0]} [{r[2]}]{' PINNED' if r[3] else ''} "
@@ -2735,6 +2906,8 @@ def cmd_dump(store, args):
             print(f"  topics: {r[5]}")
         if r[8]:
             print(f"  supersedes: #{r[8]}")
+        if r[14]:
+            print(f"  superseded by: #{r[14]}")
         print(f"  created {r[9]}  last_seen {r[10]}"
               + (f"  occurred {r[11]}" if r[11] else ""))
         if r[12]:
@@ -2867,7 +3040,35 @@ def main():
     p = sub.add_parser("overlaps", help="durable-rule candidates held for "
                        "duplicate/supersede/distinct judgement")
     p.add_argument("--all", action="store_true", help="include resolved")
+    p.add_argument("--scan", action="store_true",
+                   help="nominate overlap pairs inside the STORED active "
+                        "set (directives and conduct) instead of listing "
+                        "held candidates")
     p.set_defaults(fn=cmd_overlaps)
+
+    p = sub.add_parser("merge", help="reconcile a judged true-duplicate "
+                       "family: absorb the listed active directives into "
+                       "one survivor, provenance kept")
+    grp = p.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--into", type=int, metavar="ID",
+                     help="the existing row that survives")
+    grp.add_argument("--text",
+                     help="compose a union survivor when no single copy "
+                          "carries every clause")
+    p.add_argument("--source", default="reconcile")
+    p.add_argument("--topics", default="")
+    p.add_argument("ids", type=int, nargs="+",
+                   help="the active directives being absorbed")
+    p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("supersede", help="link a stored later correction "
+                       "over the stored row it corrects; the newer row "
+                       "stays authoritative")
+    p.add_argument("new_id", type=int, help="the correction that wins")
+    p.add_argument("old_id", type=int, help="the row it replaces")
+    p.add_argument("--older-wins", action="store_true",
+                   help="keep a row created before the one it absorbs")
+    p.set_defaults(fn=cmd_supersede)
 
     p = sub.add_parser("dump", help="whole store as readable text")
     p.set_defaults(fn=cmd_dump)
