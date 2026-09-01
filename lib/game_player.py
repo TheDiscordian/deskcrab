@@ -48,7 +48,8 @@ WAIT_CONDITIONS = (
     "out_of_combat", "talking_to_npc", "not_talking_to_npc",
     "right_click_menu_open", "right_click_menu_closed",
     "ui_panel_open", "ui_panel_closed",
-    "trade_open", "trade_closed", "sleeping", "not_sleeping", "fatigue_zero",
+    "trade_open", "trade_closed", "duel_open", "duel_confirm", "duel_closed",
+    "sleeping", "not_sleeping", "fatigue_zero",
     "action_done",
 )
 WAIT_DEFAULT_S = 15.0
@@ -2794,6 +2795,13 @@ def wait_condition_met(condition: str, snap: dict) -> bool:
         return snap.get("trade_open") is True
     if condition == "trade_closed":
         return snap.get("trade_open") is False
+    if condition == "duel_open":
+        return snap.get("duel_open") is True
+    if condition == "duel_confirm":
+        duel = snap.get("duel")
+        return isinstance(duel, dict) and duel.get("stage") == "confirm"
+    if condition == "duel_closed":
+        return snap.get("duel_open") is False
     if condition == "sleeping":
         return snap.get("sleeping") is True
     if condition == "not_sleeping":
@@ -2809,7 +2817,7 @@ def wait_state_brief(snap: dict) -> str:
     parts = []
     for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
                 "right_click_menu_open", "ui_panel_open", "ui_panel",
-                "trade_open", "sleeping", "fatigue"):
+                "trade_open", "duel_open", "sleeping", "fatigue"):
         value = snap.get(key)
         if isinstance(value, bool):
             value = str(value).lower()
@@ -2884,6 +2892,9 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "ui_panel": snap.get("ui_panel"),
             "selected_inventory_item": snap.get("selected_inventory_item"),
             "trade_open": snap.get("trade_open"),
+            "duel_open": snap.get("duel_open"),
+            "duel_stage": snap["duel"].get("stage")
+            if isinstance(snap.get("duel"), dict) else None,
             "bank_open": snap.get("bank_open"),
             "shop_open": snap.get("shop_open"),
             "sleeping": snap.get("sleeping"),
@@ -2973,9 +2984,13 @@ def action_completion(observation: dict, snap: dict):
 
     ui_changes = []
     for key in ("talking_to_npc", "right_click_menu_open", "trade_open",
-                "bank_open", "shop_open", "sleeping"):
+                "duel_open", "bank_open", "shop_open", "sleeping"):
         if isinstance(snap.get(key), bool) and snap.get(key) != before.get(key):
             ui_changes.append(f"{key}:{str(snap[key]).lower()}")
+    live_duel_stage = snap["duel"].get("stage") \
+        if isinstance(snap.get("duel"), dict) else None
+    if live_duel_stage != before.get("duel_stage"):
+        ui_changes.append(f"duel_stage:{live_duel_stage or 'closed'}")
     moved = isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int) \
         and (snap.get("x"), snap.get("z")) != (before.get("x"), before.get("z"))
     movement_done = observation["type"] in ("walk", "retreat") \

@@ -990,6 +990,30 @@ contains "$(cat "$SANDBOX/wait-trade-out")" "condition-met condition=trade_open"
 snap 10459 '[]' '{"trade_open":false}'
 CODE=0; OUT="$(python3 "$GP" wait-until trade_closed --timeout 1)" || CODE=$?
 check_eq "an already closed trade UI satisfies trade_closed" "$CODE" "0"
+snap 104591 '[]' '{"duel_open":false,"duel":null}'
+python3 "$GP" wait-until duel_open --timeout 1 > "$SANDBOX/wait-duel-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 104592 '[]' '{"duel_open":true,"duel":{"stage":"setup","opponent":"Nearby Friend","my_accepted":false,"their_accepted":false,"options":{},"my_stake":[],"their_stake":[]}}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+check_eq "a duel wait exits only after the bridge sees the duel UI" "$CODE" "0"
+contains "$(cat "$SANDBOX/wait-duel-out")" "condition-met condition=duel_open" \
+    && ok "the duel wait reports its grounded condition" \
+    || fail "the duel wait reports its grounded condition" "$(cat "$SANDBOX/wait-duel-out")"
+CODE=0; OUT="$(python3 "$GP" wait-until duel_confirm --timeout 0.2)" || CODE=$?
+check_eq "the setup stage does not satisfy duel_confirm" "$CODE" "2"
+python3 "$GP" wait-until duel-confirm --timeout 1 > "$SANDBOX/wait-duel-confirm-out" &
+WAIT_PID=$!
+sleep 0.05
+snap 104593 '[]' '{"duel_open":true,"duel":{"stage":"confirm","opponent":"Nearby Friend","my_accepted":false,"their_accepted":null,"options":{},"my_stake":[],"their_stake":[]}}'
+CODE=0; wait "$WAIT_PID" || CODE=$?
+check_eq "the confirmation stage satisfies duel_confirm" "$CODE" "0"
+contains "$(cat "$SANDBOX/wait-duel-confirm-out")" "condition-met condition=duel_confirm" \
+    && ok "the stage wait reports the confirmation transition" \
+    || fail "the stage wait reports the confirmation transition" "$(cat "$SANDBOX/wait-duel-confirm-out")"
+snap 104594 '[]' '{"duel_open":false,"duel":null}'
+CODE=0; OUT="$(python3 "$GP" wait-until duel_closed --timeout 1)" || CODE=$?
+check_eq "a closed duel UI satisfies duel_closed" "$CODE" "0"
 snap 104561 '[]' '{"sleeping":false,"fatigue":52}'
 python3 "$GP" wait-until sleeping --timeout 1 > "$SANDBOX/wait-sleep-out" &
 WAIT_PID=$!
@@ -2289,19 +2313,19 @@ refute "the entity door did not write a screen x coordinate" \
 refute "the entity door did not write a screen y coordinate" \
     grep -q '^y=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 snap 1172 '[]' '{"players":[
-    {"sidx":2,"name":"Discordian","x":232,"z":517},
-    {"sidx":0,"name":"Gm Mitch","x":234,"z":515}
+    {"sidx":2,"name":"Passing Traveller","x":232,"z":517},
+    {"sidx":0,"name":"Nearby Friend","x":234,"z":515}
 ]}'
 fake_bridge done
-OUT="$(bash "$HEADLESS" entity player 'Gm Mitch' 3)"; CODE=$?
+OUT="$(bash "$HEADLESS" entity player 'Nearby Friend' 3)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the player entity door completes through ACTIONS" "$CODE" "0"
-contains "$OUT" "entity(player name=Gm Mitch button=3)" \
+contains "$OUT" "entity(player name=Nearby Friend button=3)" \
     && ok "the player entity door reports the selected name" \
     || fail "the player entity door reports the selected name" "$OUT"
 check_eq "the player door wrote click-entity" "$(last_action 'type=click-entity')" "1"
 check_eq "the player door carries the stable server index" "$(last_action 'sidx=0')" "1"
-check_eq "the player door carries the exact visible name" "$(last_action 'name=Gm Mitch')" "1"
+check_eq "the player door carries the exact visible name" "$(last_action 'name=Nearby Friend')" "1"
 refute "the player entity door did not write a screen x coordinate" \
     grep -q '^x=' "$DESKCRAB_GAME_STATE_DIR/last-action"
 refute "the player entity door did not write a screen y coordinate" \
@@ -2476,21 +2500,21 @@ check_eq "the learned reflex rechecks terrain melee reachability" \
     "$(last_action 'require_melee_unreachable=1')" "1"
 python3 "$GP" remove cast-wind-test >/dev/null
 python3 "$GP" objective --clear >/dev/null
-snap 11702 '[]' '{"players":[{"sidx":55,"name":"Discordian","x":121,"z":648}]}'
+snap 11702 '[]' '{"players":[{"sidx":55,"name":"Passing Traveller","x":121,"z":648}]}'
 fake_bridge done
-OUT="$(bash "$HEADLESS" trade Discordian)"; CODE=$?
+OUT="$(bash "$HEADLESS" trade Passing Traveller)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the direct trade door completes through ACTIONS" "$CODE" "0"
-contains "$OUT" "trade(Discordian sidx=55)" \
+contains "$OUT" "trade(Passing Traveller sidx=55)" \
     && ok "and reports the player identity it targeted" \
     || fail "and reports the player identity it targeted" "$OUT"
 check_eq "the trade door wrote trade-player" "$(last_action 'type=trade-player')" "1"
 refute "the trade door did not move the pointer" \
     grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
-snap 117021 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Discordian","my_accepted":false,"their_accepted":true,"my_offer":[],"their_offer":[{"id":145,"name":"Tinderbox","count":1}]}}'
+snap 117021 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Passing Traveller","my_accepted":false,"their_accepted":true,"my_offer":[],"their_offer":[{"id":145,"name":"Tinderbox","count":1}]}}'
 OUT="$(bash "$HEADLESS" trade status)"; CODE=$?
 check_eq "trade status reads the structured trade screen" "$CODE" "0"
-contains "$OUT" "stage=offer partner=Discordian" \
+contains "$OUT" "stage=offer partner=Passing Traveller" \
     && contains "$OUT" "receive: id=145 Tinderbox x1" \
     && ok "trade status exposes partner, acceptance, and offers" \
     || fail "trade status exposes partner, acceptance, and offers" "$OUT"
@@ -2503,7 +2527,7 @@ contains "$OUT" "trade-offer(item=376 amount=1)" \
     || fail "the trade offer reports the inventory identity it selected" "$OUT"
 check_eq "the offer door wrote trade-offer" "$(last_action 'type=trade-offer')" "1"
 check_eq "the offer door carries the requested item identity" "$(last_action 'item=376')" "1"
-snap 117022 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Discordian","my_accepted":false,"their_accepted":false,"my_offer":[{"id":81,"name":"Lobster","count":2}],"their_offer":[]}}'
+snap 117022 '[]' '{"trade_open":true,"trade":{"stage":"offer","partner":"Passing Traveller","my_accepted":false,"their_accepted":false,"my_offer":[{"id":81,"name":"Lobster","count":2}],"their_offer":[]}}'
 fake_bridge done
 OUT="$(bash "$HEADLESS" trade remove 81 all)"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
@@ -2518,17 +2542,61 @@ wait "$FAKE_BRIDGE_PID"
 check_eq "trade accept completes through ACTIONS" "$CODE" "0"
 check_eq "the accept door wrote trade-accept" "$(last_action 'type=trade-accept')" "1"
 check_eq "the accept door grounds the stage it saw" "$(last_action 'stage=offer')" "1"
-snap 11703 '[]' '{"right_click_menu_open":true,"menu_options":["Trade with Discordian","Follow Discordian"]}'
+snap 117025 '[]' '{"duel_open":true,"duel":{"stage":"setup","opponent":"Passing Traveller","my_accepted":false,"their_accepted":true,"options":{"no_retreat":true,"no_magic":false,"no_prayer":false,"no_weapons":false},"my_stake":[{"id":33,"name":"Cheese","count":5}],"their_stake":[]}}'
+OUT="$(bash "$HEADLESS" duel status)"; CODE=$?
+check_eq "duel status reads the structured duel screen" "$CODE" "0"
+contains "$OUT" "stage=setup opponent=Passing Traveller" \
+    && contains "$OUT" "options=no_retreat" \
+    && contains "$OUT" "my stake: id=33 Cheese x5" \
+    && ok "duel status exposes stage, opponent, options, and stakes" \
+    || fail "duel status exposes stage, opponent, options, and stakes" "$OUT"
 fake_bridge done
-OUT="$(bash "$HEADLESS" menu 'Trade with Discordian')"; CODE=$?
+OUT="$(bash "$HEADLESS" duel accept 'passing traveller')"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the duel accept door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "duel-accept(stage=setup opponent=Passing Traveller)" \
+    && ok "the accept door resolves the exact live opponent name" \
+    || fail "the accept door resolves the exact live opponent name" "$OUT"
+check_eq "the accept door wrote duel-accept" "$(last_action 'type=duel-accept')" "1"
+check_eq "the accept door grounds the stage it saw" "$(last_action 'stage=setup')" "1"
+check_eq "the accept door carries the exact opponent name" \
+    "$(last_action 'name=Passing Traveller')" "1"
+refute "the duel door did not move the pointer" \
+    grep -Eq '^(x|y|button)=' "$DESKCRAB_GAME_STATE_DIR/last-action"
+rm -f "$DESKCRAB_GAME_STATE_DIR/last-action"
+OUT="$(bash "$HEADLESS" duel accept 'Somebody Else')"; CODE=$?
+check_eq "a different intended opponent is refused before any action" "$CODE" "1"
+contains "$OUT" "the open duel is with Passing Traveller, not Somebody Else" \
+    && ok "the mismatch names the live opponent instead of accepting" \
+    || fail "the mismatch names the live opponent instead of accepting" "$OUT"
+refute "no action file was written for the mismatch" \
+    test -f "$DESKCRAB_GAME_STATE_DIR/last-action"
+snap 117026 '[]' '{"duel_open":false,"duel":null}'
+OUT="$(bash "$HEADLESS" duel accept 'Passing Traveller')"; CODE=$?
+check_eq "accepting with no duel screen open is refused locally" "$CODE" "1"
+contains "$OUT" "no duel screen is open" \
+    && ok "the closed-duel refusal is grounded in structured state" \
+    || fail "the closed-duel refusal is grounded in structured state" "$OUT"
+snap 117027 '[]' '{"duel_open":true,"duel":{"stage":"confirm","opponent":"Passing Traveller","my_accepted":false,"their_accepted":null,"options":{},"my_stake":[],"their_stake":[]}}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" duel decline)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the duel decline door completes through ACTIONS" "$CODE" "0"
+contains "$OUT" "duel-decline(stage=confirm)" \
+    && ok "the decline door grounds the live stage" \
+    || fail "the decline door grounds the live stage" "$OUT"
+check_eq "the decline door wrote duel-decline" "$(last_action 'type=duel-decline')" "1"
+snap 11703 '[]' '{"right_click_menu_open":true,"menu_options":["Trade with Passing Traveller","Follow Passing Traveller"]}'
+fake_bridge done
+OUT="$(bash "$HEADLESS" menu 'Trade with Passing Traveller')"; CODE=$?
 wait "$FAKE_BRIDGE_PID"
 check_eq "the menu-text door completes through ACTIONS" "$CODE" "0"
-contains "$OUT" "menu(Trade with Discordian)" \
+contains "$OUT" "menu(Trade with Passing Traveller)" \
     && ok "and preserves the whole text fragment" \
     || fail "and preserves the whole text fragment" "$OUT"
 check_eq "the menu door wrote choose-menu" "$(last_action 'type=choose-menu')" "1"
 check_eq "the action carries one intact text field" \
-    "$(last_action 'text=Trade with Discordian')" "1"
+    "$(last_action 'text=Trade with Passing Traveller')" "1"
 snap 117031 '[]' '{"talking_to_npc":true,"dialogue_open":true,"dialogue_options":["Ask about the quest","Goodbye"]}'
 OUT="$(bash "$HEADLESS" dialogue)"; CODE=$?
 check_eq "the dialogue door lists semantic NPC replies" "$CODE" "0"
@@ -3188,7 +3256,7 @@ json.dump({"pending_messages":[{"id":1}],
            "pending_system_messages":[{"id":2,"x":120,"z":648}]},
           open(sys.argv[1], "w"))
 PY
-BLOCKED_IDLE="$(printf '%s\n' '{"tool_input":{"command":"betty-openrsc recall Discordian"}}' \
+BLOCKED_IDLE="$(printf '%s\n' '{"tool_input":{"command":"betty-openrsc recall Passing Traveller"}}' \
     | python3 "$SLEEP_HOOK")"
 contains "$BLOCKED_IDLE" 'five-minute standing warning is pending' \
     && ok "the hook makes one-tile movement outrank conversation" \
@@ -3590,6 +3658,11 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until with exactly one 
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "fatigue_zero, or action_done" \
     && ok "the resumed thread receives causal action completion awareness" \
     || fail "the resumed thread receives causal action completion awareness"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
+    "duel_open, duel_confirm, duel_closed" \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "duel accept OPPONENT-NAME" \
+    && ok "the resumed thread receives the structured duel stages and doors" \
+    || fail "the resumed thread receives the structured duel stages and doors"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "ui_panel_open and ui_panel" \
     && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" \
         "panel close" \
@@ -4219,7 +4292,7 @@ FRIEND0="$(decided friend-status-received)"
 python3 "$GP" objective runner-method-test >/dev/null
 python3 "$GP" plan "Keep using the selected bank-side range" >/dev/null
 snap 160 '[]' '{"ground_items":[{"id":27,"x":121,"z":649}],"messages":[
-    {"id":9300,"channel":"friend-status","incoming":false,"sender":"","text":"Gm Mitch has logged in"}
+    {"id":9300,"channel":"friend-status","incoming":false,"sender":"","text":"Nearby Friend has logged in"}
 ]}'
 python3 "$GP" run --poll-ms 100 > "$SANDBOX/runner-out" 2>&1 &
 RUNNER_PID=$!
@@ -4239,7 +4312,7 @@ contains "$OUT" "ground_items=27" \
 contains "$OUT" "plan=Keep using the selected bank-side range" \
     && ok "the resident heartbeat preserves the binding method" \
     || fail "the deferred fallback lost the objective method" "$OUT"
-contains "$OUT" 'friend_updates=[{"id":9300,"name":"Gm Mitch","status":"online"}]' \
+contains "$OUT" 'friend_updates=[{"id":9300,"name":"Nearby Friend","status":"online"}]' \
     && ok "the deferred verdict makes an authoritative friend login visible to Sol" \
     || fail "the friend transition must ride ordinary play without stopping it" "$OUT"
 check_eq "the friend transition is captured once in the durable decision log" \

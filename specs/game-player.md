@@ -406,8 +406,12 @@ deliberate-play channel.
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`,
    `right_click_menu_closed`, `ui_panel_open`, `ui_panel_closed`, `trade_open`, `trade_closed`,
+   `duel_open`, `duel_confirm`, `duel_closed`,
    `sleeping`, `not_sleeping`, `fatigue_zero`, and `action_done`; dashes are accepted in place of
-   underscores. Unlike the
+   underscores. `duel_open` and `duel_closed` follow the snapshot's `duel_open`; `duel_confirm`
+   is true only while the structured `duel` object names `confirm` as the open stage, so
+   accepting the setup stage has an observable postcondition (`duel_confirm`) and accepting the
+   confirmation has another (`duel_closed`) without a screenshot anywhere. Unlike the
    level-triggered state names, `action_done` requires the causal baseline armed immediately before
    the most recent direct bridge action and consumes it after observing a result.
    When `not_talking_to_npc` begins in a false gap, it must observe dialogue become true and then
@@ -714,7 +718,16 @@ deliberate-play channel.
     targets exactly as NPCs are: `entity player PLAYER-NAME [BUTTON]` resolves the exact
     case-insensitive visible name to that player's stable server identity and clicks the
     player's own live rendered point; button 3 opens the ordinary context menu, whose exact live
-    option text is then selectable through `menu TEXT`. `panel` names the hover-open
+    option text is then selectable through `menu TEXT`. The duel screens that follow a
+    challenge are structured state, never screenshots: the snapshot's `duel` object names the
+    open stage, the exact opponent, acceptance, options, and stakes; `duel [status]` prints it;
+    `duel accept OPPONENT-NAME` accepts the currently open stage only after the caller's named
+    opponent matches the live screen's, compiling to the bridge's `duel-accept` with the
+    observed stage and exact name so a stale stage or a different opponent is refused at
+    execution time rather than accepted blind; `duel decline` closes the open screen through
+    its own ordinary Decline. Stage progress is waited on with `wait-until duel-open`,
+    `duel-confirm`, and `duel-closed` (rule 7d), and no coordinate or pixel is ever part of the
+    flow. `panel` names the hover-open
     side panel; `panel close` deliberately moves the private pointer outside it and accepts success
     only after `ui_panel_closed` is observed. A world `entity` click never hides the mistake: the
     bridge returns `refused-ui-panel-open` until the player notices and performs that correction.

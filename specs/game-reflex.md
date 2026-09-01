@@ -65,6 +65,16 @@ Three parts:
    minimap, skills/quests, magic/prayer, friends, or options—otherwise false and `null`),
    `trade_open` (either ordinary
    player-trade screen is visible),
+   `duel_open` (either ordinary duel screen — the stake-and-options setup or the final
+   confirmation — is visible) and `duel` (`null` while no duel screen is open; otherwise the
+   structured state of the open screen: `stage` (`setup` or `confirm`), `opponent` (the exact
+   player name the open screen itself displays — the setup screen's challenged or challenging
+   player, or the confirmation screen's server-sent name), `my_accepted` (this client has
+   accepted the currently open stage), `their_accepted` (the setup screen's
+   other-player-has-accepted indicator; `null` at the confirmation stage, where the client is
+   never told), `options` (`no_retreat`, `no_magic`, `no_prayer`, `no_weapons` — true when that
+   restriction is on for the open stage), and `my_stake`/`their_stake` (the open stage's staked
+   items as id/name/count arrays)),
    `talking_to_npc` (an NPC choice menu is open or
    the client received NPC-spoken quest dialogue within the last four seconds; NPC speech is the
    quest-channel `Name: words` form with an empty sender, not the local player's named reply),
@@ -189,7 +199,12 @@ Three parts:
    `bank-deposit` / `bank-withdraw` and `shop-buy` / `shop-sell` (send the
    open interface's ordinary transaction by item identity and positive amount,
    without selecting a row or an amount button), `trade-player` (send the ordinary Trade-with
-   request to a currently visible non-local player by server identity), `choose-menu` (choose an
+   request to a currently visible non-local player by server identity), `duel-accept` (accept the
+   currently open duel stage — the setup screen's Accept or the confirmation screen's final
+   Accept — through the same ordinary packet its own button sends, only after proving at
+   execution time that the emitter and the client agree on which stage is open and on the exact
+   opponent), `duel-decline` (send the open duel screen's own ordinary Decline, closing the
+   duel), `choose-menu` (choose an
    option from the context menu that is open now by a case-insensitive text fragment; an absent or
    ambiguous fragment is refused), `choose-dialogue` (choose one currently open NPC reply by the
    same exact-then-unambiguous text discipline), `take-ground` (walk to and take a
@@ -199,13 +214,16 @@ Three parts:
    probes). `talk-npc`, `attack-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
    `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
-   `click-bank`, the four bank/shop transaction actions, `trade-player`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
+   `click-bank`, the four bank/shop transaction actions, `trade-player`, `duel-accept`,
+   `duel-decline`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
    (rule 9). The reflex table cannot author speech. Nothing in this layer can log in, create or
    delete a character or drop. Trading is available only through a deliberate player action;
-   neither executable rule table can initiate it. Spending through `shop-buy` is available
+   neither executable rule table can initiate it. Duelling is the same: only a deliberate
+   action can accept, decline, or progress a duel stage, and the duel actions are absent from
+   both executable rule tables. Spending through `shop-buy` is available
    only to a deliberate action; it is absent from both executable rule tables.
    The bridge refuses any action type it does not know.
 
@@ -245,7 +263,9 @@ Three parts:
    `item` for equip-inventory and
    unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
    `item` and `amount` for the
-   four transaction actions; `sidx` for trade-player; `text` for choose-menu and
+   four transaction actions; `sidx` for trade-player; `stage` (`setup` or `confirm`) and `name`
+   — the exact opponent the emitter saw on the open duel screen — for duel-accept, and an
+   optional `stage` for duel-decline; `text` for choose-menu and
    choose-dialogue; `x`, `z`, and
    `item` for take-ground; `distance` 1–10 and fallback `dx`/`dz` for retreat). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
@@ -276,7 +296,16 @@ Three parts:
    inventory), clamps an overlarge request to that quantity, and then sends the
    ordinary client transaction. Amount zero or negative is refused.
    `trade-player` re-matches the server index against the current visible player list and refuses
-   a vanished player. Player-targeted clicks re-match both the server index and the exact visible
+   a vanished player. `duel-accept` reads the live duel screens at execution time, never a
+   remembered stage: a malformed `stage` is `refused-bad-duel-stage`, no open duel screen is
+   `refused-duel-closed`, a live stage other than the named one is `refused-duel-stage-changed`,
+   a missing `name` or one that is not exactly the live opponent's is
+   `refused-duel-opponent-mismatch`, and a stage this client has already accepted is
+   `refused-already-accepted`; only after every check passes is that stage's own ordinary accept
+   packet sent. `duel-decline` requires an open duel screen (`refused-duel-closed`) and, when a
+   `stage` rides the file, the same live-stage agreement, then sends the open screen's ordinary
+   decline. Neither duel action moves the pointer, and no screen coordinate crosses the action
+   file. Player-targeted clicks re-match both the server index and the exact visible
    name the emitter saw there — an index now held by someone else is refused as
    `refused-player-mismatch`, never clicked. They resolve that player's latest rendered screen point inside the client immediately before
    moving and clicking; no pixel coordinate crosses the action file, so a walking player cannot

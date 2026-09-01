@@ -58,6 +58,15 @@ public class ReflexBridgeHarness {
 		final int[] tradeMyAmounts = {2};
 		final int[] tradeTheirIds = {145, 10};
 		final int[] tradeTheirAmounts = {1, 50};
+		boolean duelOpen = false;
+		boolean duelConfirmStage = false;
+		String duelOpponent = "Nearby Friend";
+		boolean duelSelfAccepted = false;
+		boolean duelOtherAccepted = true;
+		final int[] duelMyIds = {33};
+		final int[] duelMyAmounts = {5};
+		final int[] duelTheirIds = {10};
+		final int[] duelTheirAmounts = {200};
 		boolean npcDialogueOpen = false;
 		boolean npcAttackable = true;
 		boolean shopOpen = true;
@@ -342,6 +351,90 @@ public class ReflexBridgeHarness {
 		public void removeTradeItem(int offerSlot, int amount) {
 			events.add("trade-remove slot=" + offerSlot + " amount=" + amount
 					+ " item=" + tradeMyIds[offerSlot]);
+		}
+
+		public boolean isDuelOpen() {
+			return duelOpen;
+		}
+
+		public boolean isDuelConfirmStage() {
+			return duelConfirmStage;
+		}
+
+		public String duelOpponentDisplayName() {
+			return duelOpponent;
+		}
+
+		public boolean duelSelfAccepted() {
+			return duelSelfAccepted;
+		}
+
+		public boolean duelOtherAccepted() {
+			return !duelConfirmStage && duelOtherAccepted;
+		}
+
+		public boolean duelOptionNoRetreat() {
+			return true;
+		}
+
+		public boolean duelOptionNoMagic() {
+			return false;
+		}
+
+		public boolean duelOptionNoPrayer() {
+			return false;
+		}
+
+		public boolean duelOptionNoWeapons() {
+			return false;
+		}
+
+		public int duelMyItemCount() {
+			return duelMyIds.length;
+		}
+
+		public int duelMyItemId(int index) {
+			return duelMyIds[index];
+		}
+
+		public int duelMyItemAmount(int index) {
+			return duelMyAmounts[index];
+		}
+
+		public String duelMyItemName(int index) {
+			return "Cheese";
+		}
+
+		public int duelTheirItemCount() {
+			return duelTheirIds.length;
+		}
+
+		public int duelTheirItemId(int index) {
+			return duelTheirIds[index];
+		}
+
+		public int duelTheirItemAmount(int index) {
+			return duelTheirAmounts[index];
+		}
+
+		public String duelTheirItemName(int index) {
+			return "Coins";
+		}
+
+		public void acceptDuelSetup() {
+			duelSelfAccepted = true;
+			events.add("duel-accept stage=setup");
+		}
+
+		public void acceptDuelConfirm() {
+			duelSelfAccepted = true;
+			events.add("duel-accept stage=confirm");
+		}
+
+		public void declineDuel() {
+			events.add("duel-decline stage=" + (duelConfirmStage ? "confirm" : "setup"));
+			duelOpen = false;
+			duelConfirmStage = false;
 		}
 
 		public boolean isNpcDialogueOpen() {
@@ -941,6 +1034,21 @@ public class ReflexBridgeHarness {
 			host.tradeOpen = true;
 			host.tradeConfirmStage = true;
 			host.tradeOtherAccepted = false;
+		}
+		if ("state-duel-setup".equals(mode) || "exec-duel-setup".equals(mode)) {
+			host.duelOpen = true;
+		}
+		if ("exec-duel-setup-accepted".equals(mode)) {
+			host.duelOpen = true;
+			host.duelSelfAccepted = true;
+		}
+		if ("state-duel-confirm".equals(mode) || "exec-duel-confirm".equals(mode)) {
+			host.duelOpen = true;
+			host.duelConfirmStage = true;
+		}
+		if ("exec-duel-swapped".equals(mode)) {
+			host.duelOpen = true;
+			host.duelOpponent = "Replacement Player";
 		}
 		if ("state-dialogue".equals(mode)) {
 			bridge.recordMessage("quest", false, "", "Guide: What can I do for you?");

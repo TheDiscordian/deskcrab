@@ -127,6 +127,8 @@ assert s["talking_to_npc"] is False
 assert s["dialogue_open"] is False and s["dialogue_options"] == []
 assert s["trade_open"] is False
 assert s["trade"] is None
+assert s["duel_open"] is False
+assert s["duel"] is None
 assert s["opponent"] is None
 assert s["inventory"] == [
     {"id": 132, "name": "Trout", "count": 1, "equipped": False, "wearable": False,
@@ -582,6 +584,84 @@ check_eq "a stage transition is refused instead of accepting a stale screen" \
 wact 6524 "$(now_ms)" "type=trade-accept" "stage=offer"
 harness exec >/dev/null
 check_eq "accepting with no trade open is refused" "$(rstatus)" "refused-trade-closed"
+
+echo
+echo "the duel screens are structured stages with an exact opponent (rules 3, 5-7):"
+harness state-duel-setup >/dev/null
+python3 - "$S/state.json" <<'PY' && ok "the setup screen rides the snapshot as structured state" \
+    || fail "the setup screen rides the snapshot as structured state"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["duel_open"] is True
+assert s["duel"] == {
+    "stage": "setup", "opponent": "Nearby Friend",
+    "my_accepted": False, "their_accepted": True,
+    "options": {"no_retreat": True, "no_magic": False,
+                "no_prayer": False, "no_weapons": False},
+    "my_stake": [{"id": 33, "name": "Cheese", "count": 5}],
+    "their_stake": [{"id": 10, "name": "Coins", "count": 200}],
+}, s["duel"]
+PY
+harness state-duel-confirm >/dev/null
+python3 - "$S/state.json" <<'PY' && ok "the confirmation stage names its own opponent and hides the untold flag" \
+    || fail "the confirmation stage names its own opponent and hides the untold flag"
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["duel_open"] is True
+assert s["duel"]["stage"] == "confirm"
+assert s["duel"]["opponent"] == "Nearby Friend"
+assert s["duel"]["their_accepted"] is None
+PY
+wact 6601 "$(now_ms)" "type=duel-accept" "stage=setup" "name=Nearby Friend"
+OUT="$(harness exec-duel-setup)"
+contains "$OUT" "duel-accept stage=setup" \
+    && ok "the setup stage accepts through its own ordinary packet path" \
+    || fail "the setup stage accepts through its own ordinary packet path" "$OUT"
+check_eq "the setup acceptance is receipted done" "$(rstatus)" "done"
+wact 6602 "$(now_ms)" "type=duel-accept" "stage=confirm" "name=Nearby Friend"
+OUT="$(harness exec-duel-confirm)"
+contains "$OUT" "duel-accept stage=confirm" \
+    && ok "the confirmation stage accepts through its own ordinary packet path" \
+    || fail "the confirmation stage accepts through its own ordinary packet path" "$OUT"
+check_eq "the final acceptance is receipted done" "$(rstatus)" "done"
+wact 6603 "$(now_ms)" "type=duel-accept" "stage=setup" "name=Nearby Friend"
+harness exec-duel-confirm >/dev/null
+check_eq "a duel stage transition is refused instead of accepting a stale screen" \
+    "$(rstatus)" "refused-duel-stage-changed"
+wact 6604 "$(now_ms)" "type=duel-accept" "stage=setup" "name=Nearby Friend"
+OUT="$(harness exec-duel-swapped)"
+refute "a different live opponent is never accepted" contains "$OUT" "duel-accept stage="
+check_eq "the opponent mismatch is named" "$(rstatus)" "refused-duel-opponent-mismatch"
+wact 6605 "$(now_ms)" "type=duel-accept" "stage=setup"
+OUT="$(harness exec-duel-setup)"
+refute "an accept without a named opponent never fires" contains "$OUT" "duel-accept stage="
+check_eq "the nameless accept is an opponent mismatch" "$(rstatus)" \
+    "refused-duel-opponent-mismatch"
+wact 6606 "$(now_ms)" "type=duel-accept" "stage=setup" "name=Nearby Friend"
+harness exec >/dev/null
+check_eq "accepting with no duel open is refused" "$(rstatus)" "refused-duel-closed"
+wact 6607 "$(now_ms)" "type=duel-accept" "stage=fight" "name=Nearby Friend"
+harness exec-duel-setup >/dev/null
+check_eq "an unknown duel stage is refused before any state is read" "$(rstatus)" \
+    "refused-bad-duel-stage"
+wact 6608 "$(now_ms)" "type=duel-accept" "stage=setup" "name=Nearby Friend"
+harness exec-duel-setup-accepted >/dev/null
+check_eq "an already-accepted stage is not accepted twice" "$(rstatus)" \
+    "refused-already-accepted"
+wact 6609 "$(now_ms)" "type=duel-decline" "stage=setup"
+OUT="$(harness exec-duel-setup)"
+contains "$OUT" "duel-decline stage=setup" \
+    && ok "declining sends the open screen's own ordinary decline" \
+    || fail "declining sends the open screen's own ordinary decline" "$OUT"
+check_eq "the decline is receipted done" "$(rstatus)" "done"
+wact 6610 "$(now_ms)" "type=duel-decline" "stage=setup"
+harness exec-duel-confirm >/dev/null
+check_eq "a stage-guarded decline refuses a changed screen" "$(rstatus)" \
+    "refused-duel-stage-changed"
+wact 6611 "$(now_ms)" "type=duel-decline"
+harness exec >/dev/null
+check_eq "declining with no duel open is refused" "$(rstatus)" "refused-duel-closed"
+
 wact 653 "$(now_ms)" "type=choose-menu" "text=follow"
 OUT="$(harness exec-menu)"
 contains "$OUT" "menu index=1 text=Follow @whi@Nearby Friend" \
@@ -847,6 +927,16 @@ wact 7792 "$(now_ms)" "type=click-entity" "kind=player" "sidx=999" \
     "name=Nearby Friend" "button=3"
 harness exec >/dev/null
 check_eq "a vanished player is refused" "$(rstatus)" "refused-no-such-player"
+wact 7793 "$(now_ms)" "type=click-entity" "kind=player" "sidx=0" \
+    "name=Beatrice" "button=3"
+OUT="$(harness exec)"
+refute "the local player is never a click-entity target" contains "$OUT" "click x="
+check_eq "the local self is refused as no such player" "$(rstatus)" \
+    "refused-no-such-player"
+wact 7794 "$(now_ms)" "type=click-entity" "kind=player" "sidx=11" \
+    "name=Nearby Friend" "button=3"
+harness exec-offscreen >/dev/null
+check_eq "a player no longer on-screen is refused" "$(rstatus)" "refused-not-on-screen"
 wact 78 "$(now_ms)" "type=click-entity" "kind=npc" "sidx=7" "npc=474" "button=1"
 OUT="$(harness exec)"
 contains "$OUT" "click x=411 y=211 button=1" \
