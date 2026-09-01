@@ -104,6 +104,8 @@ NAVIGATION_ATLAS_REFRESH_MS = 60 * 1000
 NAVIGATION_ATLAS_NPC_SITES = 128
 NAVIGATION_ATLAS_STATIC_SITES = 2048
 NAVIGATION_ATLAS_LINKS = 8192
+NAVIGATION_BLOCKER_MARGIN_TILES = 32
+NAVIGATION_BLOCKER_MAX = 4096
 BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
 MOVEMENT_CONTRADICTION_LIMIT = 3  # consecutive settles against the request stop re-dispatching
 ROUTE_RULE_NAME = "active-route"
@@ -781,10 +783,11 @@ def record_navigation_observation(snap: dict) -> None:
         return
 
 
-def learned_navigation_portals() -> list[dict]:
+def learned_navigation_portals(atlas: dict | None = None) -> list[dict]:
     """Openable blockers learned from ordinary client packets/cache."""
     portals = []
-    for entity in load_navigation_atlas()["entities"].values():
+    atlas = load_navigation_atlas() if atlas is None else atlas
+    for entity in atlas["entities"].values():
         if not isinstance(entity, dict) or entity.get("kind") not in ("object", "bound"):
             continue
         commands = {_normalise_landmark_text(value)
@@ -800,6 +803,49 @@ def learned_navigation_portals() -> list[dict]:
                             "x": site["x"], "z": site["z"],
                             "dir": site.get("dir", 0)})
     return sorted(portals, key=lambda item: (
+        item["kind"], item["x"], item["z"], item["id"], item["dir"]))
+
+
+def learned_navigation_blockers(start_x: int, start_z: int, target_x: int,
+                                target_z: int, atlas: dict | None = None) -> list[dict]:
+    """Observed collision geometry relevant to one complete-cache query.
+
+    Static definitions supply footprint and collision type in the client; its
+    packets supply the placement direction that the landscape cache lacks.
+    Bound the transfer to a generous corridor around this route so a mature
+    world atlas cannot make every request grow forever.
+    """
+    atlas = load_navigation_atlas() if atlas is None else atlas
+    low_x = min(start_x, target_x) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_x = max(start_x, target_x) + NAVIGATION_BLOCKER_MARGIN_TILES
+    low_z = min(start_z, target_z) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_z = max(start_z, target_z) + NAVIGATION_BLOCKER_MARGIN_TILES
+    blockers = []
+    for entity in atlas["entities"].values():
+        if not isinstance(entity, dict) \
+                or entity.get("kind") not in ("object", "bound") \
+                or not isinstance(entity.get("id"), int):
+            continue
+        for site in (entity.get("sites") or {}).values():
+            if not isinstance(site, dict) or site.get("blocks_movement") is not True \
+                    or not isinstance(site.get("x"), int) \
+                    or not isinstance(site.get("z"), int) \
+                    or not low_x <= site["x"] <= high_x \
+                    or not low_z <= site["z"] <= high_z:
+                continue
+            direction = site.get("dir")
+            last_seen = site.get("last_seen")
+            blockers.append({"kind": entity["kind"], "id": entity["id"],
+                             "x": site["x"], "z": site["z"],
+                             "dir": direction if isinstance(direction, int) else 0,
+                             "last_seen": last_seen if isinstance(last_seen, int) else 0})
+    if len(blockers) > NAVIGATION_BLOCKER_MAX:
+        blockers = sorted(blockers, key=lambda item: (
+            -item["last_seen"], item["kind"], item["x"], item["z"],
+            item["id"], item["dir"]))[:NAVIGATION_BLOCKER_MAX]
+    for blocker in blockers:
+        blocker.pop("last_seen", None)
+    return sorted(blockers, key=lambda item: (
         item["kind"], item["x"], item["z"], item["id"], item["dir"]))
 
 
@@ -1574,11 +1620,18 @@ def client_cache_route_plan(start_x: int, start_z: int, target_x: int,
             lines = [f"id={request_id}", f"ts={now_ms()}",
                      f"start_x={start_x}", f"start_z={start_z}",
                      f"x={target_x}", f"z={target_z}", f"arrive={arrive}"]
-            portals = learned_navigation_portals()
+            atlas = load_navigation_atlas()
+            portals = learned_navigation_portals(atlas)
             if portals:
                 lines.append("learned_portals=" + ";".join(
                     f"{portal['kind']},{portal['id']},{portal['x']},"
                     f"{portal['z']},{portal['dir']}" for portal in portals))
+            blockers = learned_navigation_blockers(
+                start_x, start_z, target_x, target_z, atlas)
+            if blockers:
+                lines.append("learned_blockers=" + ";".join(
+                    f"{blocker['kind']},{blocker['id']},{blocker['x']},"
+                    f"{blocker['z']},{blocker['dir']}" for blocker in blockers))
             game_reflex.atomic_write(request_path, "\n".join(lines) + "\n")
             deadline = time.monotonic() + CLIENT_ROUTE_TIMEOUT_S
             response = None

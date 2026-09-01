@@ -293,7 +293,9 @@ ap = os.path.join(sd, "action.json")
 for _ in range(100):
     rp = os.path.join(sd, "route-request.json")
     if os.path.exists(rp):
-        fields = dict(line.split("=", 1) for line in open(rp).read().splitlines()
+        request_body = open(rp).read()
+        open(os.path.join(sd, "last-route-request"), "w").write(request_body)
+        fields = dict(line.split("=", 1) for line in request_body.splitlines()
                       if "=" in line)
         os.remove(rp)
         plan = {"status": "ok", "source": "client-cache", "steps": 8,
@@ -1476,6 +1478,9 @@ check_eq "the client is asked for one grounded eight-step path prefix" \
     "$(last_action 'route_step=8')" "1"
 check_eq "the route gives collision pathfinding its grounded arrival area" \
     "$(last_action 'arrive=1')" "1"
+check_eq "the cache query carries an observed non-openable blocker" \
+    "$(grep -c '^learned_blockers=.*object,61,109,658,6' \
+        "$DESKCRAB_GAME_STATE_DIR/last-route-request")" "1"
 check_eq "the local waypoint carries a bounded actual-path budget" \
     "$(last_action 'max_path=16')" "1"
 check_eq "the conflicting learned walk never reached the bridge" \

@@ -460,8 +460,11 @@ deliberate-play channel.
    The graphical client has both a loaded 96×96 live collision region and the complete static
    landscape archive used to build each region. A separate read-only request/result door asks that
    same client to run A* over its cached same-floor landscape; neither DeskCrab nor the game server
-   supplies map truth. The request also carries openable obstacles accumulated in
-   `$DESKCRAB_GAME_DIR/navigation-atlas.json` from ordinary client packets and client-cache names.
+   supplies map truth. The request also carries blocking objects and boundaries accumulated in
+   `$DESKCRAB_GAME_DIR/navigation-atlas.json` from ordinary client packets, including their
+   observed direction and full definition footprint. The cache planner overlays that collision
+   geometry on the static landscape before choosing a waypoint. Openable blockers additionally
+   remain semantic portal edges: only their exact Open action may cross the overlaid edge.
    The resident runner keeps the REAL durable destination in `route.json`, sends only the next
    client-planned waypoint through ACTIONS, and replans from the body's observed settlement after
    every leg. A 16-step `max_path` guard and `route_step=8` still protect each local live dispatch;
