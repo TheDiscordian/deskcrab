@@ -14,28 +14,43 @@
 
 # The units, grouped by how they are handled. serve and the wake timer are the
 # two GATES — enabled/disabled, so a login or reboot cannot re-arm them while
-# she is meant to be down; the rest are start/stop only.
+# she is meant to be down; the rest are start/stop only. The list names what
+# this repo SHIPS; everything transient is swept by prefix below, which is how
+# a suffix nobody thought of at writing time still goes down.
 _LC_GATES="deskcrab-serve.service deskcrab-wake.timer"
-_LC_SERVICES="deskcrab-chessweb.service"
+_LC_SERVICES="deskcrab-chessweb.service deskcrab-face-presence.service deskcrab-face-openrsc.service"
 _LC_TIMERS="deskcrab-canary-selfchange.timer deskcrab-sleep.timer deskcrab-tidy.timer"
 _LC_PATHS="deskcrab-notice-selfchange.path deskcrab-notice-transcriptions.path"
 
+# The playing arm lives in the game checkout rather than this repo, and is
+# reached through its own door: the player unit carries Restart=always, so
+# killing the process restarts the player — only its control unit stops it.
+# Same env doors the game player spec defines.
+_LC_PLAY_UNITS="${BETTY_OPENRSC_UNIT:-orsc-player.service} ${BETTY_OPENRSC_CONTROL_UNIT:-orsc-player-control.service} orsc-author.path orsc-author.service"
+_lc_play_bin() { printf '%s' "${BETTY_OPENRSC_BIN:-$HOME/.local/bin/betty-openrsc}"; }
+
 _lc_wakes_dir() { printf '%s' "${WAKES_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes}"; }
 _lc_cli() { basename "${CLAUDE_BIN:-claude}"; }
+# One marker so revive reopens the portrait window seal closed, and only that.
+_lc_facewin_mark() { printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab/sealed-face-window"; }
 
-# What is still up: live processes, loaded per-wake timers, booking records.
-# Returns success only when all three read zero.
+# What is still up: live processes, loaded per-wake timers, booking records,
+# and the playing arm. Returns success only when all four read zero. The arm
+# is counted on its own because its command line carries none of the words the
+# process sweep greps for — without this the report says "fully down" while
+# the player is still spending the game account.
 crab_seal_report() {
-    local procs timers bookings gates cli
+    local procs timers bookings play gates cli
     cli="$(_lc_cli)"
     procs=$(pgrep -af "deskcrab|chessweb|tts-streamer|job-runner|memory.py judge|${cli} -p" 2>/dev/null \
             | grep -vcE "grep|crab-debug|/crab (seal|revive|status|offline|online)( |$)")
     timers=$(systemctl --user list-timers --all 2>/dev/null | grep -c 'deskcrab-wake')
     bookings=$(find "$(_lc_wakes_dir)" -maxdepth 1 -name '*.wake' 2>/dev/null | wc -l | tr -d ' ')
+    play=$(systemctl --user is-active $_LC_PLAY_UNITS 2>/dev/null | grep -c '^active$')
     gates=$(systemctl --user is-enabled $_LC_GATES 2>&1 | tr '\n' '/' | sed 's:/$::')
-    printf '  live processes: %s\n  wake timers loaded: %s\n  wake bookings: %s\n  gates (serve/wake): %s\n' \
-        "$procs" "$timers" "$bookings" "$gates"
-    [ "$procs" = 0 ] && [ "$timers" = 0 ] && [ "$bookings" = 0 ]
+    printf '  live processes: %s\n  wake timers loaded: %s\n  wake bookings: %s\n  playing arm units up: %s\n  gates (serve/wake): %s\n' \
+        "$procs" "$timers" "$bookings" "$play" "$gates"
+    [ "$procs" = 0 ] && [ "$timers" = 0 ] && [ "$bookings" = 0 ] && [ "$play" = 0 ]
 }
 
 crab_seal() {
@@ -44,20 +59,43 @@ crab_seal() {
     systemctl --user disable --now $_LC_GATES 2>/dev/null
     # 2. Stop the rest.
     systemctl --user stop $_LC_SERVICES $_LC_TIMERS $_LC_PATHS 2>/dev/null
-    # 3. Stop every transient per-wake unit a session or wake-restore booked.
-    systemctl --user stop 'deskcrab-wake-*.timer' 'deskcrab-wake-*.service' 2>/dev/null
+    # 3. Stop every transient unit of hers, whatever booked it — a session's
+    #    per-wake timer, a deferring self-change watcher (which arms dozens at
+    #    once), a detached job, a turn child, the face broker. By PREFIX: a
+    #    sweep written against the wake suffix alone left eighty-two notice
+    #    timers armed to fire inside the minute after a "successful" seal.
+    systemctl --user stop 'deskcrab-*.timer' 'deskcrab-*.service' 2>/dev/null
     # 4. Cancel the booking RECORDS, not just the timers — a timer stopped with
     #    its booking intact is brought back by wake-restore. This is the step a
     #    by-hand seal forgets, and it is why a wake fired after the last one.
     "$SCRIPT_DIR/crab" wake-cancel --all >/dev/null 2>&1
-    # 5. Kill anything of her still live: a session, its streamer, a detached
-    #    job, a post-turn memory judge, the chess server, the CLI mid-turn.
+    # 5. The playing arm, through its own door rather than a kill: its unit
+    #    carries Restart=always, so killing the player restarts the player.
+    #    This is the arm that spends the game account — usually the reason for
+    #    a seal in the first place. The origin is named honestly and is not
+    #    "phone", so a seal from the phone still takes the arm down.
+    local playbin; playbin="$(_lc_play_bin)"
+    [ -x "$playbin" ] && DESKCRAB_TURN_ORIGIN=seal "$playbin" stop >/dev/null 2>&1
+    # 6. Note whether the portrait window is open before killing it, so revive
+    #    puts back what seal closed and never drops an uninvited face on a
+    #    desktop that had none.
+    mkdir -p "$(dirname "$(_lc_facewin_mark)")" 2>/dev/null
+    if pgrep -f "lib/face-window" >/dev/null 2>&1; then
+        : > "$(_lc_facewin_mark)"
+    else
+        rm -f "$(_lc_facewin_mark)" 2>/dev/null
+    fi
+    # 7. Kill anything of her still live: a session, its streamer, a detached
+    #    job, a post-turn memory judge, the chess server, the face broker and
+    #    its portrait window, the CLI mid-turn.
     local cli; cli="$(_lc_cli)"
     pkill -f "deskcrab/crab wake"    2>/dev/null
     pkill -f "deskcrab/crab remote"  2>/dev/null
     pkill -f "lib/job-runner"        2>/dev/null
     pkill -f "lib/tts-streamer"      2>/dev/null
     pkill -f "lib/chessweb.py serve" 2>/dev/null
+    pkill -f "face_state.py serve"   2>/dev/null
+    pkill -f "lib/face-window"       2>/dev/null
     pkill -f "memory.py judge-turn"  2>/dev/null
     pkill -f "${cli} -p"             2>/dev/null
     systemctl --user reset-failed 2>/dev/null
@@ -77,8 +115,18 @@ crab_revive() {
     # cleared the bookings, so there is nothing stale to bring back, and the
     # wake timer fires fresh on its own schedule. Restoring here is how a revive
     # stampedes a day's worth of old wakes the moment she comes up.
+    #
+    # Deliberately NO playing arm either: a sitting begins on purpose, with
+    # `betty-openrsc play`, against a session clock and a live objective. The
+    # same stampede, on the account that pays for it.
     systemctl --user enable --now $_LC_GATES 2>/dev/null
     systemctl --user start $_LC_SERVICES $_LC_TIMERS $_LC_PATHS 2>/dev/null
+    # The portrait window if seal closed one — not otherwise. The broker it
+    # talks to is spawned on demand by whoever first needs it.
+    if [ -e "$(_lc_facewin_mark)" ]; then
+        "$SCRIPT_DIR/crab" face-window >/dev/null 2>&1
+        rm -f "$(_lc_facewin_mark)" 2>/dev/null
+    fi
     sleep 2
     local up=0 total=0 u
     for u in $_LC_GATES $_LC_SERVICES; do
