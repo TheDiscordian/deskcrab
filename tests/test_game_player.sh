@@ -1142,32 +1142,26 @@ check_eq "an approach walk alone leaves a scenery action unresolved" "$CODE" "2"
 contains "$OUT" "action-timeout id=905 type=interact-object" \
     && ok "walking is never a scenery action's completion" \
     || fail "walking is never a scenery action's completion" "$OUT"
-python3 "$GP" wait-until action_done --timeout 2 > "$SANDBOX/settle-away-out" &
-WAIT_PID=$!
-sleep .1
-snap 104574 '[]' '{"x":120,"z":537,"walking":true,"objects":[{"id":6,"name":"Ladder","x":106,"z":534,"commands":["Climb-Down","Examine"]}]}'
-sleep .15
-snap 104575 '[]' '{"x":128,"z":537,"walking":false,"objects":[{"id":15,"name":"Bed","x":130,"z":538,"commands":["rest","Examine"]}]}'
-CODE=0; wait "$WAIT_PID" || CODE=$?
+snap 104574 '[]' '{"x":128,"z":537,"walking":false,"objects":[{"id":15,"name":"Bed","x":130,"z":538,"commands":["rest","Examine"]}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
 check_eq "a body that walked away settles into grounded failure" "$CODE" "0"
-OUT="$(cat "$SANDBOX/settle-away-out")"
 contains "$OUT" "type=interact-object result=failed" \
     && contains "$OUT" "settled-away:(128,537)-target:(106,534)-distance:22" \
-    && ok "the missed climb names where the body actually stopped" \
-    || fail "the missed climb names where the body actually stopped" "$OUT"
+    && ok "the re-wait remembers walking and names where the missed climb stopped" \
+    || fail "the re-wait remembers walking and names where the missed climb stopped" "$OUT"
 
-snap 104576 '[]' '{"x":120,"z":648,"objects":[{"id":1187,"name":"Ladder","x":121,"z":648,"commands":["Climb-Down","Examine"]}]}'
+snap 104575 '[]' '{"x":120,"z":648,"objects":[{"id":1187,"name":"Ladder","x":121,"z":648,"commands":["Climb-Down","Examine"]}]}'
 python3 "$GP" action-arm 906 interact-object x=121 z=648 obj=1187 cmd=1 >/dev/null
-snap 104577 '[]' '{"x":150,"z":700,"walking":false,"objects":[]}'
+snap 104576 '[]' '{"x":150,"z":700,"walking":false,"objects":[]}'
 CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
 check_eq "an unexplained settled jump is a portal transition" "$CODE" "0"
 contains "$OUT" "result=done" && contains "$OUT" "portal-jump:(120,648)->(150,700)" \
     && ok "a same-floor portal proves itself by the twelve-tile boundary" \
     || fail "a same-floor portal proves itself by the twelve-tile boundary" "$OUT"
 
-snap 104578 '[]' '{"x":120,"z":648,"objects":[{"id":57,"name":"Cavern entrance","x":121,"z":648,"commands":["enter","Examine"]}]}'
+snap 104577 '[]' '{"x":120,"z":648,"objects":[{"id":57,"name":"Cavern entrance","x":121,"z":648,"commands":["enter","Examine"]}]}'
 python3 "$GP" action-arm 907 interact-object x=121 z=648 obj=57 cmd=1 >/dev/null
-snap 104579 '[]' '{"x":120,"z":648,"walking":false,"objects":[{"id":63,"name":"rocks","x":123,"z":650,"commands":["WalkTo","Examine"]}]}'
+snap 104578 '[]' '{"x":120,"z":648,"walking":false,"objects":[{"id":63,"name":"rocks","x":123,"z":650,"commands":["WalkTo","Examine"]}]}'
 CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
 check_eq "a still body watching its target vanish observed the reload" "$CODE" "0"
 contains "$OUT" "result=done" && contains "$OUT" "scenery-reloaded:obj-57-gone" \

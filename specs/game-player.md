@@ -287,9 +287,10 @@ deliberate-play channel.
    tile, and the distance: the click moved the body somewhere, and reaching SOMEWHERE is not
    acting on IT. `walking: true`, hover text, or ordinary movement alone never completes a
    scenery action. The wait may still time out while the body legitimately walks its approach;
-   the armed observation survives that timeout inside this rule's 60-second window, so the
-   caller re-waits rather than re-clicks, and an expired unverified approach licenses
-   repositioning, never a claim of success.
+   the armed observation and its `walking was observed` fact survive that timeout inside this
+   rule's 60-second window, so a later re-wait cannot misclassify the pedestrian's final distant
+   stop as an instantaneous portal. The caller re-waits rather than re-clicks, and an expired
+   unverified approach licenses repositioning, never a claim of success.
    `cast-npc` uses the same causal verifier for direct and learned casts, narrowed to the selected
    spell's required rune ids, Magic XP, and explicit spell feedback. An unrelated inventory,
    interface, or message transition cannot make a cast successful, and routine work cannot resume

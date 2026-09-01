@@ -190,6 +190,23 @@ def action_observation_path() -> Path:
     return state_dir() / "last-action-observation.json"
 
 
+def action_observation_lock_path() -> Path:
+    return state_dir() / "last-action-observation.lock"
+
+
+class action_observation_lock:
+    """Serialize arming with a waiter's compare-and-update or removal."""
+    def __enter__(self):
+        action_observation_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(action_observation_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
 def foreign_take_in_progress() -> dict | None:
     try:
         progress = json.loads(take_progress_path().read_text())
@@ -3073,7 +3090,8 @@ def cmd_action_arm(args):
     snap = game_reflex.read_snapshot() or {}
     observation = make_action_observation(args.id, args.type, list(args.fields), snap)
     state_dir().mkdir(parents=True, exist_ok=True)
-    game_reflex.atomic_write(action_observation_path(), json.dumps(observation) + "\n")
+    with action_observation_lock():
+        game_reflex.atomic_write(action_observation_path(), json.dumps(observation) + "\n")
     report("action-armed", id=args.id, type=args.type)
 
 
@@ -3089,6 +3107,30 @@ def load_action_observation():
             or not isinstance(observation.get("baseline"), dict):
         return None
     return observation
+
+
+def same_action_observation(left: dict, right: dict) -> bool:
+    """Whether two records name the same dispatch, not merely the same type."""
+    return isinstance(left, dict) and isinstance(right, dict) \
+        and left.get("id") == right.get("id") \
+        and left.get("sent_ts") == right.get("sent_ts")
+
+
+def settle_action_observation(observation: dict, remove: bool = False) -> bool:
+    """Compare-and-update one armed action without clobbering a newer dispatch."""
+    with action_observation_lock():
+        current = load_action_observation()
+        if not same_action_observation(current, observation):
+            return False
+        if remove:
+            try:
+                action_observation_path().unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            game_reflex.atomic_write(
+                action_observation_path(), json.dumps(observation) + "\n")
+        return True
 
 
 def action_completion(observation: dict, snap: dict, context: dict = None):
@@ -3291,7 +3333,12 @@ def await_action_completion(observation: dict, timeout: float):
     # The loop's memory across polls: whether the body was ever observed
     # walking. It separates a pedestrian settle-away from a portal's
     # instantaneous jump (spec rule 7a's scenery transitions).
-    context = {"saw_walking": False}
+    saved_context = observation.get("wait_context")
+    context = {
+        "saw_walking": bool(isinstance(saved_context, dict)
+                            and saved_context.get("saw_walking")),
+    }
+    observation["wait_context"] = context
     with SnapshotChangeWatch() as watch:
         while True:
             latest = game_reflex.read_snapshot()
@@ -3312,22 +3359,21 @@ def cmd_wait_action_done(args):
         report("action-unarmed", next="perform-one-bridge-action-first")
         sys.exit(EXIT_NOT_READY)
     if now_ms() - observation["sent_ts"] > WAIT_MAX_S * 1000:
-        try:
-            action_observation_path().unlink()
-        except FileNotFoundError:
-            pass
+        settle_action_observation(observation, remove=True)
         report("action-unarmed", reason="expired",
                next="perform-one-bridge-action-first")
         sys.exit(EXIT_NOT_READY)
     completion, latest = await_action_completion(observation, args.timeout)
     if completion is not None:
-        try:
-            action_observation_path().unlink()
-        except FileNotFoundError:
-            pass
+        settle_action_observation(observation, remove=True)
         report("action-done", id=observation["id"], type=observation["type"],
                **completion)
         return
+    # A short wait can end midway through a legitimate approach. Preserve the
+    # fact that walking was observed so a subsequent waiter does not call the
+    # eventual distant pedestrian stop an instantaneous portal. The
+    # compare-and-update leaves a newer action's observation untouched.
+    settle_action_observation(observation)
     record_wait_failure("action_done", "timeout", latest or {}, args.timeout)
     report("action-timeout", id=observation["id"],
            type=observation["type"], timeout=f"{args.timeout:g}",
