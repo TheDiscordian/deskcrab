@@ -558,7 +558,17 @@ deliberate-play channel.
    the message interrupts ordinary play and messages from the oldest pending
    sender/channel conversation are reported together as one structured burst. Its actionable
    `id` is the newest message in that burst, so one `reply` handles the whole preceding chain;
-   `step` reports `player-message id=… channel=… sender=… count=… burst=…` and exits 6.
+   `step` reports
+   `player-message id=… channel=… sender=… count=… now=… received=… age=… burst=…` and exits 6.
+   The report carries its own time: `now` is the current clock time, `received` and `age` belong
+   to the message the `id` names, and every entry inside `burst` carries its own `received` clock
+   time and `age`. An age runs from the observation that captured those words, through the settle
+   window, through the activity that continued during it, and through the player's own
+   deliberation — so a burst answered after a long stretch of play reads as the minutes old it
+   actually is, and the elapsed time between what someone said and the answer is a fact in front
+   of the player rather than an assumption. The autonomous conversation gate's refusal line
+   carries the same `age`, because that refusal is where an interrupted action meets the waiting
+   conversation.
    Player information is part of play: the player may change
    the current plan when the message supplies help, identifies a problem, or requests
    coordination.
@@ -1222,6 +1232,11 @@ deliberate-play channel.
       fresh snapshot summary, the decision log's tail, and the handoff file's contents as they are
       NOW. Normal continuation prompts also re-read and prominently carry that plan; it is not
       dependent on an old conversation turn or on rereading the emergency handoff.
+      Every composed prompt, first start and continuation alike, states the wall-clock time it was
+      written at among its current facts, and the snapshot summary carries the same clock beside
+      its own age. A play session runs for hours across many process boundaries, so without that
+      anchor an age reported anywhere else is a number attached to nothing; with it, the player
+      can place a message, a snapshot, and the present moment on one timeline.
       The Codex thread id is captured durably in the player home. A normal process boundary or
       service restart resumes that same Sol thread with a compact current-state continuation,
       instead of opening a new conversation that re-reads the standing instructions and audits

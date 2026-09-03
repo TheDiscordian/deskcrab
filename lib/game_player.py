@@ -777,6 +777,21 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def clock_hms(ms: int) -> str:
+    """The wall-clock time of a stamp, for a report a mind reads."""
+    return time.strftime("%H:%M:%S", time.localtime((ms or 0) / 1000.0))
+
+
+def human_age(ms: int) -> str:
+    """How long ago, said the way a person says it: 12s, 4m11s, 1h03m."""
+    seconds = max(0, int(ms or 0) // 1000)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
 def memory_program() -> Path:
     """The same durable store door used by betty-openrsc.
 
@@ -3286,10 +3301,35 @@ def pending_message_batch(est: dict) -> list:
             and str(m.get("sender", "")).casefold() == sender]
 
 
-def pending_message_burst(batch: list) -> str:
-    return json.dumps([
-        {"id": m["id"], "text": m["text"]} for m in batch
-    ], separators=(",", ":"), ensure_ascii=False)
+def pending_message_burst(batch: list, now: int = None) -> str:
+    """The settled chain, each line carrying when it actually arrived.
+
+    Words are read long after they are said here: the settle window closes,
+    the chosen activity keeps running through it, and the reply is written
+    at the end of whatever the player was doing. The received time and the
+    age ride with the text so the answer is written against the real gap.
+    """
+    now = now_ms() if now is None else now
+    items = []
+    for message in batch:
+        entry = {"id": message["id"], "text": message["text"]}
+        received = message.get("captured_ts")
+        if isinstance(received, int):
+            entry["received"] = clock_hms(received)
+            entry["age"] = human_age(now - received)
+        items.append(entry)
+    return json.dumps(items, separators=(",", ":"), ensure_ascii=False)
+
+
+def message_time_fields(message: dict, now: int = None) -> dict:
+    """`now`, `received` and `age` for the message a verdict names."""
+    now = now_ms() if now is None else now
+    fields = {"now": clock_hms(now)}
+    received = (message or {}).get("captured_ts")
+    if isinstance(received, int):
+        fields["received"] = clock_hms(received)
+        fields["age"] = human_age(now - received)
+    return fields
 
 
 def oldest_pending_message(est: dict):
@@ -6283,7 +6323,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         # conversation becomes the priority verdict below.
         report("player-message", id=pending_message["id"],
                channel=pending_message["channel"], sender=pending_message["sender"],
-               count=len(pending_batch), burst=pending_message_burst(pending_batch),
+               count=len(pending_batch),
+               **message_time_fields(pending_message, now),
+               burst=pending_message_burst(pending_batch, now),
                session_renewed=message_batch_session_renewal(est, pending_batch) or None)
         return "player-message", EXIT_PLAYER_MESSAGE
     # Spec rule 21a: past the limit, ordinary evaluation stops — no learned
@@ -9245,9 +9287,12 @@ def main():
                     batch = pending_message_batch(live_state)
                     pending = batch[-1] if batch else None
                     if pending is not None:
+                        asked_at = now_ms()
                         report("player-message", id=pending["id"],
                                channel=pending["channel"], sender=pending["sender"],
-                               count=len(batch), burst=pending_message_burst(batch),
+                               count=len(batch),
+                               **message_time_fields(pending, asked_at),
+                               burst=pending_message_burst(batch, asked_at),
                                session_renewed=(
                                    message_batch_session_renewal(live_state, batch) or None),
                                friend_updates=friend_updates_field)
