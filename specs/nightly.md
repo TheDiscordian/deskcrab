@@ -822,9 +822,32 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     null-shaped, too thin to act on) is skipped and logged, never dispatched; a refusal from the
     job door's block marker ends dispatch for the night, because the wall in front of one builder
     stands in front of them all.
+60a. Every selection dispatch carries an explicit workdir, resolved and verified — the `-C`
+    flag rides EVERY job-door call the selector's picks make, and a dispatch path without it
+    MUST NOT exist. A dispatch with no `-C` inherits the nightly process's own cwd — whatever
+    room sleep happened to be standing in, not a git checkout at all: every selector dispatch
+    of 2026-08-15 (035653, 041817, 043954, 050112) went out that way, 20260903-040620 went out
+    that way again, and three of the four builders survived only by walking to the real repo
+    by hand — luck, not design — while collection judged the declared non-checkout and called
+    the work uncollectable. When the selector supplies no workdir (an empty field, the literal
+    `-`, or whitespace alone), the night resolves the deskcrab checkout itself: the parent
+    directory of `readlink -f ~/.local/lib/deskcrab` (the deployed symlink of rule 6a —
+    exactly the walk a builder had to perform by hand for job 043954), and, when that path is
+    missing or its parent holds no `.git`, the script's own checkout resolved from its own
+    path. Whatever workdir is finally chosen — supplied or resolved — MUST exist and be inside
+    a git work tree (`git -C <wd> rev-parse --show-toplevel` succeeding) before the door is
+    called: dispatched work is committed in the same run, and a non-checkout makes that
+    impossible, so a pick whose workdir fails the check is REFUSED — skipped, never
+    dispatched, with a loud line on the night log AND on stderr naming the rejected workdir,
+    the key and the title, never silent — and the night moves on to the next pick. The workdir
+    handed to `-C` is the single source of truth: it is the value the job's sidecar records,
+    so `job-collect` and the self-change watcher's workdir claim both judge the tree the
+    builder actually works in, and no second value is fabricated anywhere on the path.
 61. `DESKCRAB_NO_DISPATCH` MUST dry-run the whole phase — real material, real selection,
     would-dispatch lines, nothing started and no ledger written — so the selection can be watched
-    in daylight without spending a builder.
+    in daylight without spending a builder. The dry run resolves and verifies the workdir
+    exactly as a real round does (rule 60a), and its would-dispatch line names the resolved
+    workdir, so what is watched in daylight is what the night would actually do.
 
 The same engine is runnable by hand: `lib/claudism-corpus` scores an archived conversation
 directory (the rotation's transcript format — [turn-pipeline.md](turn-pipeline.md) DATA) against
@@ -989,6 +1012,14 @@ hold; each outgrown section is named on the night log with its true size and its
 total record budget clips oldest-touched first, announced, with the clipped record riding the
 overflow list rather than vanishing; and a night whose material fits its budgets announces
 nothing.
+`tests/test_night_work_workdir.sh` — rule 60a: an empty workdir field and the literal `-` both
+dispatch with an explicit `-C` naming the deployed symlink's parent, and the sidecar records
+that same path; with no deployed symlink — and with a symlink whose parent holds no `.git` —
+the fallback is the script's own checkout; an explicit git-tree workdir dispatches exactly as
+given; an explicit workdir that exists but is no git tree, and one that does not exist at all,
+are REFUSED — no door call, a loud line naming the workdir, the key and the title on the night
+log and stderr both — while the round continues to the next pick and a later valid pick still
+dispatches; and no dispatch path without `-C` remains in the script at all.
 `tests/test_sleep_stamp_coverage.sh` — rule 14a: the header parsed to chunks, chars and passes;
 the pass-count fallback where the header predates stating it; a field the log never states is
 omitted; a log with no header still stamps and still counts as slept; and the status command

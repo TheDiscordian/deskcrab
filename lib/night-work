@@ -111,6 +111,26 @@ section_overrun() {  # <section name> <true bytes> <budget bytes>
     say "round ${ROUNDS:-0}: the $1 outgrew its budget — $2 bytes against $3, cut to the budget on a character boundary (rule 58a)"
 }
 
+# Rule 60a's resolver: the workdir a selection dispatch defaults to when the
+# selector supplies none. The deployed symlink (~/.local/lib/deskcrab, rule
+# 6a) points into the checkout's lib/, so its parent IS the repo root — the
+# exact walk a builder had to perform by hand on 2026-08-15 after its job was
+# dispatched into sleep's own cwd. When the symlink is missing or its parent
+# holds no .git, this script's own checkout stands in (SCRIPT_DIR is already
+# resolved through readlink -f above). Prints the root and returns 0, or
+# prints nothing and returns 1 — the caller's git verification is the final
+# gate either way.
+night_default_workdir() {
+    local lnk root
+    if lnk="$(readlink -f "$HOME/.local/lib/deskcrab" 2>/dev/null)" \
+        && [ -n "$lnk" ] && [ -d "$lnk" ]; then
+        root="$(dirname "$lnk")"
+        if [ -e "$root/.git" ]; then printf '%s' "$root"; return 0; fi
+    fi
+    if [ -e "$SCRIPT_DIR/.git" ]; then printf '%s' "$SCRIPT_DIR"; return 0; fi
+    return 1
+}
+
 # One selection question to the NIGHT JUDGE — the one shared walk of
 # specs/nightly.md rules 14c-14e, sourced, never re-implemented. No fallback
 # model: a round the judge cannot answer selects nothing, because picking the
@@ -614,11 +634,40 @@ $LEDGER_TAIL"
             BRIEF="The night's work, from the open item '$KEY': $TITLE
 
 $BRIEF"
+            # The dispatch workdir, resolved and verified (rule 60a). An
+            # empty or "-" field used to fall through to a dispatch with no
+            # -C at all, so the builder inherited THIS process's cwd —
+            # sleep's own room, not a git checkout: all four 2026-08-15
+            # dispatches and 20260903-040620 again went out that way, three
+            # of the four builders surviving only by walking to the real
+            # repo by hand, while collection judged the declared
+            # non-checkout and called the work uncollectable. The default is
+            # that walk done here instead (night_default_workdir), and
+            # whatever is finally chosen must sit inside a git work tree
+            # before the door is called — dispatched work is committed in
+            # the same run, and a non-checkout makes that impossible. A pick
+            # whose workdir fails the check is REFUSED, loudly, on the night
+            # log and stderr both, and the round moves to the next pick.
+            # The chosen value rides -C on EVERY dispatch — the no- -C
+            # branch is gone — so the sidecar, job-collect and the
+            # self-change watcher's workdir claim all see the one tree the
+            # builder actually works in.
+            if [ -z "$WD" ] || [ "$WD" = "-" ]; then
+                WD="$(night_default_workdir)" || WD=""
+            fi
+            if [ -z "$WD" ] || [ ! -d "$WD" ] \
+                || ! git -C "$WD" rev-parse --show-toplevel >/dev/null 2>&1; then
+                say "round $ROUNDS: dispatch REFUSED for '$KEY' — workdir '${WD:-unresolvable}' is not a git work tree, and dispatched work must commit in its own run (rule 60a) — $TITLE"
+                printf 'night-work: round %s: dispatch REFUSED for '\''%s'\'' — workdir '\''%s'\'' is not a git work tree (rule 60a) — %s\n' \
+                    "$ROUNDS" "$KEY" "${WD:-unresolvable}" "$TITLE" >&2
+                continue
+            fi
             # The dry-run stops HERE, before the door: rule 61 promises real
-            # selection with nothing started and no ledger written, so the
-            # dispatch call itself must never happen.
+            # selection — the workdir resolved and verified above exactly as
+            # a live round would — with nothing started and no ledger
+            # written, so the dispatch call itself must never happen.
             if [ -n "$DRY" ]; then
-                say "round $ROUNDS: would dispatch '$KEY' — $TITLE"
+                say "round $ROUNDS: would dispatch '$KEY' in $WD — $TITLE"
                 SEL_SENT=$(( SEL_SENT + 1 ))
                 SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
                 DISPATCHED=$(( DISPATCHED + 1 ))
@@ -629,11 +678,7 @@ $BRIEF"
             # queue the night's own picks straight back onto the shelf it is
             # working.
             local OUTPUT RC JOB_ID
-            if [ -n "$WD" ] && [ "$WD" != "-" ] && [ -d "$WD" ]; then
-                OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
-            else
-                OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job "$BRIEF" 2>&1)"; RC=$?
-            fi
+            OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
             if [ "$RC" -ne 0 ]; then
                 case "$OUTPUT" in
                     *"the last job never began"*)
