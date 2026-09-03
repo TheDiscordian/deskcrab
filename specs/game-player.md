@@ -1115,10 +1115,13 @@ deliberate-play channel.
     matching learned rule, or being uncertain are not blockers and cannot resolve the GAP to
     deliberate idle. A common semantic intent with no valid inspector or action is a capability
     gap, not permission to guess a numbered command or substitute a pixel. The playing hand records
-    the exact intent, observed state, missing semantic input/action, and required postcondition,
-    then dispatches an immediate detached builder through the supplied capability-improvement
-    door. It continues with another valid action while that builder works, and uses the new door
-    once it is deployed. A genuinely unresolved prerequisite is named precisely together with the
+    the exact intent, observed state, missing semantic input/action, and required postcondition
+    through the capability-improvement door, which appends it to the outcome queue as a
+    `capability-gap` record for the background hand (rule 16) — the player's own author, at the
+    player's model and effort, builds the missing door. The playing hand continues with another
+    valid action (or rule 22's deliberate fallback) while the door grows, and uses it once it is
+    deployed. The playing arm holds no builder door: it never dispatches detached jobs, at any
+    model or effort — a gap is evidence for its own author, never a brief for the job lane. A genuinely unresolved prerequisite is named precisely together with the
     corrective inspection or action it requires; it is not converted into a vague decision to
     stop playing. A newly verified play must become an executable rule — but
     authoring it is the BACKGROUND hand's job (rule 16), never the playing hand's: the player
@@ -1274,6 +1277,14 @@ deliberate-play channel.
     hand's one-line door for candidate lessons the queue cannot see (it stamps the current position,
     objective and inventory alongside the text). It enters the same evidence review as action
     outcomes rather than bypassing verification merely because the player called it a lesson.
+    A `capability-gap` record is a build instruction, not evidence to file: the author closes it
+    by building the missing semantic inspector or action in the harness's own tree — the
+    building blocks come first, so reflexes can then be built with them. It defines the door's
+    observed postcondition, implements it, tests it in isolation with the tree's own test
+    scripts, preserves live play untouched, and commits and pushes only its changes in that
+    checkout. One door per gap family: records phrased around the same missing interaction are
+    one build, re-encounters are evidence on it, and a gap an existing or in-progress door
+    already covers needs no second build.
     A completed player reply appends `conversation-evidence` containing the exact settled burst,
     reply, live context, and `claims_untrusted=true`; it does not interrupt play again or outrank
     another evidence source. The author also advances a separate durable cursor through the Sol
@@ -1531,8 +1542,8 @@ deliberate-play channel.
     server-side behaviour reaches the same outcome; (b) the coordinate fallback — screenshot,
     then `mouse`/`click`/`click-screen` — which exists precisely for the gap where identity-based
     doors end, used deliberately and never retained as knowledge (rule 5's pixel ban binds
-    learned reflexes, not one-off problem-solving); (c) naming the gap for the builder lane
-    while play continues on whatever the fallback yields. Only an interaction the server itself
+    learned reflexes, not one-off problem-solving); (c) recording the gap through the
+    capability-improvement door while play continues on whatever the fallback yields. Only an interaction the server itself
     refuses may be recorded as impossible, with the server's own feedback as the evidence. A
     handoff or plan line that says "wait until X is built" is a defect in the plan, not a
     strategy: on 2026-09-02 the ground-item door sat written-but-unbuilt while the plan said to
