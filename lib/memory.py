@@ -2165,6 +2165,16 @@ def codex_cooling_until():
     return None
 
 
+def codex_cooling_clock(until):
+    """That expiry as a person would say it (model-backends rule 13). A bare
+    clock time is only honest for a time later today; a reported expiry can
+    stand days out, so any other date is spoken with it."""
+    when = time.localtime(until)
+    if time.strftime("%F", when) == time.strftime("%F", time.localtime()):
+        return time.strftime("%H:%M", when)
+    return time.strftime("%b %-d, %H:%M", when)
+
+
 # The provider's own reset clause, when the refusal quotes one — the wording
 # seen in the wild: "try again at Sep 6th, 2026 10:28 PM" (ordinal day, US
 # month-day-year, 12-hour clock, local time). The mirror of
@@ -2249,7 +2259,7 @@ def run_codex(prompt, model, effort, timeout=600, kind="ingest"):
         raise RuntimeError(
             "the codex engine is cooling until %s — the judge cannot judge, "
             "and no cheaper model may judge in its place"
-            % time.strftime("%H:%M", time.localtime(until)))
+            % codex_cooling_clock(until))
     env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
     instr = None
     t0 = time.time()

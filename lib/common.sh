@@ -1761,7 +1761,7 @@ account_state_line() {
     local codex_until
     if codex_until="$(codex_limit_until)"; then
         printf 'Codex: over its limit — cooling until %s; codex-model turns fall back to the Claude walk\n' \
-            "$(date -d "@$codex_until" '+%H:%M' 2>/dev/null || echo soon)"
+            "$(codex_cooling_clock "$codex_until")"
     fi
 }
 
@@ -6150,10 +6150,24 @@ codex_available() {
     ! codex_limit_until >/dev/null
 }
 
+# A cooldown used to be half an hour, so a bare clock time could only mean
+# today. Now that the refusal's own reset time is recorded (rule 13) it can
+# stand days out, and a bare '22:28' for a Sunday four days away is a false
+# reading of my own panel — so the date is spoken whenever it is not today.
+codex_cooling_clock() {  # <epoch> -> clock time, dated unless it is today
+    local until="${1:-}"
+    [ -n "$until" ] || { printf 'soon'; return 0; }
+    if [ "$(date -d "@$until" '+%F' 2>/dev/null)" = "$(date '+%F')" ]; then
+        date -d "@$until" '+%H:%M' 2>/dev/null || printf 'soon'
+    else
+        date -d "@$until" '+%b %-d, %H:%M' 2>/dev/null || printf 'soon'
+    fi
+}
+
 codex_unavailable_why() {
     local until
     if until="$(codex_limit_until)"; then
-        printf 'cooling until %s' "$(date -d "@$until" '+%H:%M' 2>/dev/null || echo soon)"
+        printf 'cooling until %s' "$(codex_cooling_clock "$until")"
     else
         printf 'not installed'
     fi

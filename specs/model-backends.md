@@ -157,7 +157,10 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     marker trails on purpose: every existing reader splits the line on TAB and consults only the
     first two fields. While the cooldown stands, `codex_available` answers no
     and every path goes straight to its fallback rather than paying a doomed boot. The cooldown
-    MUST be visible in `crab status` beside the account line.
+    MUST be visible in `crab status` beside the account line. Wherever that expiry is RENDERED —
+    the status line, the state block, the reason a codex path gives for standing down — a bare
+    clock time is only honest for a time later today; a reported expiry can stand days out, so
+    any other date MUST be shown with it.
 14. A builder job on a codex model that is refused is BLOCKED, never downgraded (specs/jobs.md
     rule 5a holds across engines): the runner records the refusal and the block machinery holds
     and re-dispatches exactly as it does when every Claude account refuses. A genuine failure

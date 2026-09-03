@@ -73,6 +73,18 @@ sb 'codex_available' \
     || ok "while the reported cooldown stands codex is unavailable"
 
 echo
+echo "how that expiry is SPOKEN — a bare clock time is only honest for today:"
+check_eq "a reported expiry days out carries its date" \
+    "$(sb "codex_cooling_clock $WILD_EPOCH")" \
+    "$(date -d "@$WILD_EPOCH" '+%b %-d, %H:%M')"
+check_eq "…and the status line says it that way too" \
+    "$(sb 'codex_unavailable_why')" \
+    "cooling until $(date -d "@$TARGET_EPOCH" '+%b %-d, %H:%M')"
+check_eq "a cooldown later today stays a bare clock time" \
+    "$(sb 'codex_cooling_clock "$(( $(date +%s) + 300 ))"')" \
+    "$(date -d "@$(( $(date +%s) + 300 ))" '+%H:%M')"
+
+echo
 echo "the shell recorder — everything unclear falls back to the flat window:"
 rm -f "$CODEX_STATE"; BEFORE="$(date +%s)"
 sb 'codex_limit_record "You have hit your usage limit."'
