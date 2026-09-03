@@ -165,7 +165,8 @@ below is a fact placed before her, never a gate placed behind her.
     and update time, or a plain statement that no mood stands — followed by `Recent feelings`,
     the recent tail of the durable mood journal ([face.md](face.md) rules 42a–42b), each shift
     with its time, mood word, and reason, including classifications the display's stale-turn
-    guard never applied. If an older record lacks a specific reason or subject source, the
+    guard never applied, and — when the window holds event-driven flourishes — a compact
+    `Face flickers` count of what her face wore and which events caused it. If an older record lacks a specific reason or subject source, the
     report names that absence and gives the journal path with the origin and reference it can
     recover. The report reads the broker and the journal tail with a short bound; it MUST NOT
     start the broker, run a classifier, or delay the rest of the state block when the face

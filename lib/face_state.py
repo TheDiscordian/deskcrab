@@ -654,9 +654,21 @@ class Broker:
         if name not in ENABLED_EVENTS:
             return {"ok": True, "note": "event mapping disabled",
                     "state": self.snapshot()}
-        return self.set_expression(
+        reply = self.set_expression(
             EVENT_MAP[name], source="event",
             seconds=EVENT_LIFETIMES.get(name, EVENT_EXPRESSION_SECONDS))
+        if reply.get("ok"):
+            # Rule 42b: the flourish is part of her visible feeling even
+            # though no mood moves; without this line the whole channel
+            # would be invisible to her.
+            entry = {"ts": _now(), "event": "expression",
+                     "expression": EVENT_MAP[name], "cause": name,
+                     "activity": (reply.get("state") or {}).get("activity", ""),
+                     "applied": "note" not in reply}
+            if reply.get("note"):
+                entry["note"] = reply["note"]
+            _journal_mood(entry)
+        return reply
 
     def speak(self, clips):
         cleaned = []

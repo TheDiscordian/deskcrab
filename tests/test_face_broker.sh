@@ -254,6 +254,9 @@ stale = [r for r in sets if not r["applied"]]
 assert any(r["mood"] == "pleased" and r["applied"] for r in sets), rows
 assert any(r["mood"] == "annoyed" and "stale" in r["note"] for r in stale), rows
 assert any(r["event"] in ("cleared", "rest-cleared") for r in rows), rows
+flicks = [r for r in rows if r["event"] == "expression"]
+assert any(r["cause"] in ("game-win", "failed-action", "player-message")
+           for r in flicks), rows
 PY
 FB rest >/dev/null; FB activity resting >/dev/null
 check "her rest lands in the journal too (rule 42b)" \

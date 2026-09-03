@@ -314,7 +314,11 @@ These rules define the ONLY automatic paths, all below her hand.
     by `Recent feelings`: the last few entries of the mood journal (rule 42b)
     inside a short window, each with its time, mood word, and reason, marked
     when the stale-turn guard kept it off the display — so she knows how she
-    has been feeling and why, not merely how she feels this minute. When a
+    has been feeling and why, not merely how she feels this minute. When the
+    window also holds `expression` entries, a compact `Face flickers` line
+    follows — counts by expression with their causing events — so a sitting
+    that keeps flicking her face annoyed is knowledge she holds, not a thing
+    only her viewers see. When a
     retained record predates a usable reason or source, its update time,
     origin, reference, and journal path still appear, so she can inspect the
     concrete originating record. Naming only the automatic updater is never a
@@ -330,7 +334,12 @@ These rules define the ONLY automatic paths, all below her hand.
     deciding what the face SHOWS; the journal records what she FELT — a
     classification that arrived too late to repaint the face is still a real
     reading of a real exchange, and losing it from the display must never
-    lose it from her record. The journal is append-only and survives reboots;
+    lose it from her record. Confirmed-event flourishes (rule 17's allowlist)
+    journal too, as `expression` entries carrying the expression worn, the
+    event that caused it, the live activity, and whether it actually showed —
+    play that flicks her face annoyed dozens of times moves no mood, and
+    without these lines that whole channel of her visible feeling would be
+    invisible to her. The journal is append-only and survives reboots;
     a journal write failure never fails the broker call that produced it.
 43. Resolution order, in the broker's snapshot so every surface agrees:
     explicit/event expression > true-idle `sleeping` > automatic expression

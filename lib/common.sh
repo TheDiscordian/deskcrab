@@ -505,23 +505,27 @@ else:
 
 # Rule 42a's Recent feelings tail: the last few shifts from the durable
 # journal (rule 42b), including ones the stale-turn guard never displayed.
-rows = []
+cut = time.time() - 6 * 3600
+rows, flicks = [], []
 try:
     with open(face_state.MOOD_JOURNAL, "rb") as fh:
         fh.seek(0, 2)
-        fh.seek(max(0, fh.tell() - 65536))
+        fh.seek(max(0, fh.tell() - 262144))
         blob = fh.read().decode("utf-8", "replace")
     for line in blob.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
             continue
+        if (row.get("ts") or 0) < cut:
+            continue
         if row.get("event") == "set":
             rows.append(row)
+        elif row.get("event") == "expression":
+            flicks.append(row)
 except OSError:
-    rows = []
-cut = time.time() - 6 * 3600
-rows = [r for r in rows if (r.get("ts") or 0) >= cut][-5:]
+    pass
+rows = rows[-5:]
 if rows:
     parts = []
     for r in rows:
@@ -534,6 +538,18 @@ if rows:
             bit += " [felt in passing; never shown]"
         parts.append(bit)
     print("Recent feelings (last 6 h): " + "; ".join(parts) + ".")
+if flicks:
+    # Rule 42a's Face flickers line: event-driven flourishes, counted, so a
+    # sitting that keeps flicking her face annoyed is knowledge she holds.
+    counts = {}
+    for r in flicks:
+        key = (r.get("expression") or "?", r.get("cause") or "?")
+        counts[key] = counts.get(key, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:4]
+    bits = [f"{expr} ×{n} ({cause})" for (expr, cause), n in top]
+    print("Face flickers (last 6 h): " + ", ".join(bits) +
+          " — brief event-driven expressions; no mood moved unless "
+          "listed above.")
 PY
 }
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
