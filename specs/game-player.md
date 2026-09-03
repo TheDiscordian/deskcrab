@@ -318,6 +318,18 @@ deliberate-play channel.
    loaded openable boundary connects the separated components, the more specific result is
    `ground-item-needs-door`. Wanted loot is wanted at ANY distance:
    visibility licenses a collision-path check, and the body walks to what it wants.
+   `choose-dialogue` (`text`: the option's own text, exactly or as an unambiguous fragment) is the
+   learned form of the deliberate `dialogue` door: the answer to an open option menu, whether that
+   menu is an NPC's reply list or a skill's own question — Fletching re-asks "What would you like
+   to make?" after every batch, and a menu the table cannot answer costs a model turn per log.
+   Eligibility is the live menu, the shape `click-shop` and `click-bank` already use for an
+   interface: it compiles only while `dialogue_open` is true and exactly one current option matches
+   (an exact match wins over fragments), and refuses `dialogue-closed`,
+   `dialogue-option-ambiguous`, or `no-such-dialogue-option` without dispatch. The compiled action
+   carries that option's own current text, never an index or a screen row, and the client re-matches
+   it immediately before sending the game's own option packet. Its observed postcondition is the
+   ordinary one: an XP delta, an inventory change, grounded game feedback, or a dialogue-state
+   transition — never the receipt.
    `drop-inventory` (`item`: the held item id) is the learned mirror of the deliberate drop
    door: ONE atomic single-slot release of that identity, compiled only out of combat and only
    while the item is held, whose observed postcondition is the drop door's own — the held count
@@ -573,9 +585,14 @@ deliberate-play channel.
    - `npc-dialogue-in-progress` (exit 3): an NPC exchange is between speech/choice states. Ordinary
      learned rules emit nothing; in particular, visible or respawning loot cannot walk the player
      out of the conversation.
-   - `npc-dialogue-choice` (exit 4): the NPC reply menu is open. `choices` contains its exact
+   - `npc-dialogue-choice` (exit 4): the option menu is open and NO enabled `choose-dialogue` rule
+     both triggers and compiles against its current options. `choices` contains its exact
      semantic text and the sole licensed reasoning task is choosing one with the dialogue command.
      The conversation continues to own the body across as many speech/choice stages as it needs.
+     When such a rule does exist, the table answers the menu itself: for that pass the candidate
+     set is exactly those `choose-dialogue` rules, so no walk, loot, route, follow leg, or other
+     interaction may act past a question the game is waiting on, and an unanswered menu still
+     falls back to this exit rather than to ordinary play.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.

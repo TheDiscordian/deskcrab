@@ -45,7 +45,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "skill_at_least")
 ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "step-aside", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground",
-           "drop-inventory", "use-item-ground")
+           "drop-inventory", "use-item-ground", "choose-dialogue")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
@@ -2567,6 +2567,16 @@ def validate_config(cfg: dict) -> None:
                     or not isinstance(action.get("item"), int) \
                     or isinstance(action["item"], bool) or action["item"] < 0:
                 bad(f"{where}: drop-inventory takes exactly item=<item id>")
+        elif atype == "choose-dialogue":
+            # The open option-menu door: the game asks a question (an NPC
+            # reply list, or a skill's "What would you like to make?") and
+            # this answers ONE named option. Only the option text crosses
+            # the bridge; no index, no pointer, no screen coordinate.
+            if set(action) != {"type", "text"} \
+                    or not isinstance(action.get("text"), str) \
+                    or not action["text"].strip() or "\n" in action["text"]:
+                bad(f"{where}: choose-dialogue takes exactly "
+                    "text=<option text fragment>")
         elif atype == "use-item-ground":
             # The held-item-on-ground-pile door: firemaking's tinderbox on the
             # logs that had to be put down first. item is held, ground is the
@@ -5212,6 +5222,27 @@ def compile_player_action(rule, snap, food, eat_pick):
             return {"type": action["type"], "item": want,
                     "button": action.get("button", 1)}, None
         return None, f"item-not-in-{interface}"
+    if action["type"] == "choose-dialogue":
+        # Eligibility is the live menu itself, the shape click-shop and
+        # click-bank already use for an interface: the option list must be
+        # open and must name exactly one option this rule can answer. The
+        # compiled action carries that option's own current text, so the
+        # client re-matches an unambiguous string rather than a stale row.
+        if snap.get("dialogue_open") is not True:
+            return None, "dialogue-closed"
+        fragment = " ".join(action["text"].split()).casefold()
+        options = [" ".join(option.split())
+                   for option in snap.get("dialogue_options") or []
+                   if isinstance(option, str) and option.strip()]
+        exact = [option for option in options if option.casefold() == fragment]
+        partial = [option for option in options if fragment in option.casefold()]
+        if len(exact) == 1:
+            return {"type": "choose-dialogue", "text": exact[0]}, None
+        if len(exact) == 0 and len(partial) == 1:
+            return {"type": "choose-dialogue", "text": partial[0]}, None
+        if len(exact) > 1 or len(partial) > 1:
+            return None, "dialogue-option-ambiguous"
+        return None, "no-such-dialogue-option"
     if action["type"] == "drop-inventory":
         # The bridge refuses a drop during combat, so a doomed dispatch is
         # named as an ordinary ineligibility here instead.
@@ -5305,6 +5336,7 @@ def snap_brief(snap: dict) -> dict:
     brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
                                       "fatigue", "sleeping", "sleep_fatigue", "sleep_status",
                                       "walking", "in_combat", "talking_to_npc",
+                                      "dialogue_open", "dialogue_options",
                                       "right_click_menu_open", "ui_panel_open", "ui_panel",
                                       "hover_text",
                                       "magic_level", "selected_spell",
@@ -6561,18 +6593,34 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("movement-in-progress", x=snap.get("x"), z=snap.get("z"),
                next="wait-until-not_walking")
         return "movement-in-progress", EXIT_NOT_READY
+    # An open option menu is answerable from the table (spec rule 5's
+    # choose-dialogue): a skill that re-asks "What would you like to make?"
+    # after every batch is a reflex loop, not a model turn per log. Only
+    # choose-dialogue rules run while the menu is open — nothing else may
+    # walk, loot, or interact past a question the game is waiting on — and
+    # with no such rule the open menu still belongs to the hand.
+    dialogue_rule_names = set()
     if not urgent_retreat_names and snap.get("logged_in") \
             and snap.get("talking_to_npc") is True:
         choices = snap.get("dialogue_options") or []
         if snap.get("dialogue_open") is True and choices:
-            report("npc-dialogue-choice",
-                   choices=json.dumps(choices, separators=(",", ":")),
-                   next="choose-dialogue-by-text")
-            return "npc-dialogue-choice", EXIT_NO_RULE
-        report("npc-dialogue-in-progress", next="wait-for-next-dialogue-state")
-        return "npc-dialogue-in-progress", EXIT_NOT_READY
+            dialogue_rule_names = {
+                rule["name"] for rule in source_rules
+                if rule.get("enabled")
+                and (rule.get("action") or {}).get("type") == "choose-dialogue"
+                and trigger_true(rule.get("trigger") or {}, snap, {})
+                and compile_player_action(rule, snap, {}, "min")[0] is not None
+            }
+            if not dialogue_rule_names:
+                report("npc-dialogue-choice",
+                       choices=json.dumps(choices, separators=(",", ":")),
+                       next="choose-dialogue-by-text")
+                return "npc-dialogue-choice", EXIT_NO_RULE
+        else:
+            report("npc-dialogue-in-progress", next="wait-for-next-dialogue-state")
+            return "npc-dialogue-in-progress", EXIT_NOT_READY
 
-    if not urgent_retreat_names and follow is not None:
+    if not urgent_retreat_names and not dialogue_rule_names and follow is not None:
         if follow.get("status") == "invalid":
             report("follow-invalid", file=str(follow_path()))
             return "follow-needs-path", EXIT_NO_RULE
@@ -6602,7 +6650,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     # Spec rule 7e: one durable destination, executed by this resident runner
     # as ordinary lowest-priority walk actions. Messages above and every
     # learned interaction below retain priority.
-    route = None if backtrack is not None or follow is not None else load_route()
+    route = None if backtrack is not None or follow is not None \
+        or dialogue_rule_names else load_route()
     route_blocked = False
     route_leg = None
     route_portal_action = None
@@ -6656,6 +6705,10 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     ]
     for rule in source_rules:
         if urgent_retreat_names and rule["name"] not in urgent_retreat_names:
+            continue
+        # While the game holds an open question, only the rules that answer
+        # it are candidates.
+        if dialogue_rule_names and rule["name"] not in dialogue_rule_names:
             continue
         # Retracing is a deliberate recovery commitment. Incidental learned
         # work must neither cut it off nor become a fallback when one reverse
@@ -7009,10 +7062,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "talk-npc", "attack-npc", "interact-npc", "use-item-npc",
             "interact-object", "interact-bound",
             "click-inventory", "click-entity",
-            "drop-inventory", "use-item-ground"):
+            "drop-inventory", "use-item-ground", "choose-dialogue"):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
-            "within", "button", "batch", "ground", "amount") if key in action]
+            "within", "button", "batch", "ground", "amount",
+            "text") if key in action]
         observation = make_action_observation(
             action_id, action["type"], fields, snap, event.get("ts"))
         completion_detail, latest = await_action_completion(
@@ -7595,7 +7649,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                        "origin_x", "origin_z", "retreat_suppressed", "npc",
                        "sidx", "obj", "item", "spell", "cmd", "within",
                        "distance", "dx", "dz", "button", "kind", "batch",
-                       "ground", "amount",
+                       "ground", "amount", "text",
                        "target_x", "target_z") if key in action},
                    "start": {"x": snap.get("x"), "z": snap.get("z")},
                    "end": {"x": end_x, "z": end_z}}
@@ -7738,6 +7792,17 @@ def predict(cfg: dict, snap: dict, objective: str, activity: str = ""):
     trigger_fn = make_trigger_fn(objective, activity)
     rules = sorted((r for r in cfg["rules"] if r["enabled"]),
                    key=lambda r: -r["priority"])
+    # The same candidate restriction the live pass applies: while the game
+    # holds an open question, only the rules that answer it may act, whatever
+    # any louder rule's priority is. A replay case must read what would
+    # really happen, so this belongs to the pure selection too.
+    if snap.get("dialogue_open") is True and (snap.get("dialogue_options") or []):
+        answering = [rule for rule in rules
+                     if rule["action"].get("type") == "choose-dialogue"
+                     and trigger_fn(rule["trigger"], snap, {})
+                     and compile_player_action(rule, snap, {}, "min")[0] is not None]
+        if answering:
+            rules = answering
     for rule in rules:
         if not trigger_fn(rule["trigger"], snap, {}):
             continue
