@@ -505,7 +505,7 @@ else:
 
 # Rule 42a's Recent feelings tail: the last few shifts from the durable
 # journal (rule 42b), including ones the stale-turn guard never displayed.
-cut = time.time() - 20 * 60
+cut = time.time() - 5 * 60
 rows, flicks = [], []
 try:
     with open(face_state.MOOD_JOURNAL, "rb") as fh:
@@ -537,7 +537,7 @@ if rows:
         if not r.get("applied", True):
             bit += " [felt in passing; never shown]"
         parts.append(bit)
-    print("Recent feelings (last 20 min): " + "; ".join(parts) + ".")
+    print("Recent feelings (last 5 min): " + "; ".join(parts) + ".")
 if flicks:
     # Rule 42a's Face flickers line: event-driven flourishes, counted, so a
     # sitting that keeps flicking her face annoyed is knowledge she holds.
@@ -547,7 +547,7 @@ if flicks:
         counts[key] = counts.get(key, 0) + 1
     top = sorted(counts.items(), key=lambda kv: -kv[1])[:4]
     bits = [f"{expr} ×{n} ({cause})" for (expr, cause), n in top]
-    print("Face flickers (last 20 min): " + ", ".join(bits) +
+    print("Face flickers (last 5 min): " + ", ".join(bits) +
           " — brief event-driven expressions; no mood moved unless "
           "listed above.")
 PY
