@@ -142,8 +142,20 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     independent run therefore tries Codex normally. When genuine
     reply text preceded the failure, no second model runs: the genuine text stands and the
     provider error is discarded, so already-streamed speech is never duplicated.
-13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir) for
-    `CODEX_LIMIT_COOLDOWN` seconds (default 1800). While it stands, `codex_available` answers no
+13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir). When the refusal
+    text itself quotes a reset time — the wording seen in the wild is
+    `try again at Sep 6th, 2026 10:28 PM`: ordinal day, US month-day-year, 12-hour clock, local
+    time — that quoted moment IS the cooldown. The recorder parses the FULL refusal text it was
+    handed, before its own comment clamp shortens anything, and tolerates the clause appearing
+    more than once. The parse is conservative: a clause that does not clearly match, a time not
+    in the future, or a time more than a week out is a bad read, not a booking, and each falls
+    back to the flat `CODEX_LIMIT_COOLDOWN` window (default 1800 seconds) — the pre-existing
+    behaviour, unchanged, which also covers a refusal that quotes no time at all. The state line
+    is `blocked-until`, the expiry epoch, the refusal text (one line, at most 200 characters),
+    then a trailing marker: `reported` when the epoch is the provider's own answer, `estimated`
+    when it is our flat-window guess — so no reader mistakes a guess for a measurement. The
+    marker trails on purpose: every existing reader splits the line on TAB and consults only the
+    first two fields. While the cooldown stands, `codex_available` answers no
     and every path goes straight to its fallback rather than paying a doomed boot. The cooldown
     MUST be visible in `crab status` beside the account line.
 14. A builder job on a codex model that is refused is BLOCKED, never downgraded (specs/jobs.md
@@ -180,12 +192,12 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 | `CODEX_CAPACITY_RE` | `codex_stream_capacity` and the speech streamer | fallback recognition when structured `serverOverloaded` metadata is unavailable |
 | `CODEX_CAPACITY_RETRIES` | turn/wake capacity retry | additional same-Codex attempts, default 2 |
 | `CODEX_CAPACITY_RETRY_DELAY` | turn/wake capacity retry | seconds before each retry, default 1 |
-| `CODEX_LIMIT_COOLDOWN` | `codex_limit_record` | seconds, default 1800 |
+| `CODEX_LIMIT_COOLDOWN` | `codex_limit_record` | seconds, default 1800 — the fallback window when the refusal quotes no usable reset time (rule 13) |
 | `CODEX_FALLBACK_MODEL` | turn/wake fallback (rule 12) | default `$CLAUDE_MODEL` |
 | `CODEX_PROMPT_MODE` | the run functions | `instructions` (default) or `preface` (rule 8) |
 | `CODEX_STREAM_MODE` | `_codex_stream_run` | `auto` (default) / `app` / `exec` — which road a turn or wake takes (rule 11a) |
 | `CODEX_APP_HANDSHAKE_TIMEOUT` | `lib/codex-app-stream` | seconds before an unanswered handshake reads as protocol-unavailable, default 30 |
-| `codex-state` (data dir) | `codex_available`, `crab status` | the cooldown record |
+| `codex-state` (data dir) | `codex_available`, `crab status` | the cooldown record — rule 13's four-field line |
 | `${STATE_PREFIX}-codex-instructions-<pid>.md` | rule 7 | the assembled prompt, per run |
 
 ## INTERACTIONS
@@ -214,3 +226,10 @@ app-server falling through to the exec pipeline with the note on the record, in 
 `CODEX_STREAM_MODE=exec` pinning the old road; and the exact structured `serverOverloaded` event
 after a tool call, proving both turn and wake retry the same Codex model, never enter the Claude
 walk, write no Codex limit cooldown, and extract only the successful retry's answer.
+
+`tests/test_limit_expiry.sh` — rule 13's expiry, both recorders (`lib/common.sh` and
+`lib/memory.py`): the wild refusal sentence parses to the provider's own epoch and records it
+with the `reported` marker; a refusal quoting no time, a quoted time in the past, one beyond the
+week cap, and a clause truncated mid-time each fall back to the flat window with the `estimated`
+marker; the clause appearing twice still parses; and the four-field line still reads through
+`codex_limit_until` and `codex_cooling_until` — honoured while it stands, ignored once expired.

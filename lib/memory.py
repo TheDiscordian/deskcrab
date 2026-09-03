@@ -2165,18 +2165,74 @@ def codex_cooling_until():
     return None
 
 
+# The provider's own reset clause, when the refusal quotes one — the wording
+# seen in the wild: "try again at Sep 6th, 2026 10:28 PM" (ordinal day, US
+# month-day-year, 12-hour clock, local time). The mirror of
+# codex_limit_reset_parse in lib/common.sh, and the same discipline: the FULL
+# refusal text is read, before any clamp, and a clause truncated mid-time
+# simply fails the pattern while a complete later copy still wins.
+_CODEX_RESET_RE = re.compile(
+    r"try again at ([A-Za-z]{3,9}) (\d{1,2})(?:st|nd|rd|th)? ?,? (\d{4}),? "
+    r"(\d{1,2}):(\d{2}) ?([ap])m", re.I)
+_CODEX_RESET_MONTHS = ("january", "february", "march", "april", "may", "june",
+                       "july", "august", "september", "october", "november",
+                       "december")
+
+
+def codex_limit_reset_parse(text):
+    """Epoch of the reset time the refusal itself quotes, else None."""
+    for m in _CODEX_RESET_RE.finditer(text or ""):
+        word = m.group(1).lower()
+        month = next((i for i, name in enumerate(_CODEX_RESET_MONTHS, 1)
+                      if name.startswith(word)), None)
+        day, hour, minute = int(m.group(2)), int(m.group(4)), int(m.group(5))
+        if not month or not 1 <= day <= 31 or not 1 <= hour <= 12 \
+                or minute > 59:
+            continue
+        hour = hour % 12 + (12 if m.group(6).lower() == "p" else 0)
+        try:
+            return int(time.mktime((int(m.group(3)), month, day, hour,
+                                    minute, 0, 0, 0, -1)))
+        except (ValueError, OverflowError):
+            continue
+    return None
+
+
+def codex_limit_reset_epoch(text):
+    """That epoch, only when it is sane (model-backends.md rule 13): a quoted
+    time already past, or more than a week out, is a bad read rather than a
+    booking — the recorder keeps the flat window instead of trusting it."""
+    epoch = codex_limit_reset_parse(text)
+    if epoch is None:
+        return None
+    now = time.time()
+    if epoch <= now or epoch > now + 7 * 86400:
+        return None
+    return epoch
+
+
 def codex_limit_record(reason):
     try:
         cool = int(os.environ.get("CODEX_LIMIT_COOLDOWN") or 1800)
     except ValueError:
         cool = 1800
+    # The refusal's own reset time IS the cooldown when it quotes one; the
+    # flat window is the fallback for a refusal that quotes nothing usable.
+    # The trailing marker says which, so no reader mistakes a guess for a
+    # measurement — every reader of this line splits on TAB and consults
+    # only the first two fields, so the extra field costs none of them
+    # anything.
+    until = codex_limit_reset_epoch(reason or "")
+    src = "estimated" if until is None else "reported"
+    if until is None:
+        until = int(time.time()) + cool
     path = _codex_state_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            f.write("blocked-until\t%d\t%s\n"
-                    % (int(time.time()) + cool,
-                       " ".join((reason or "limit").split())[:200]))
+            f.write("blocked-until\t%d\t%s\t%s\n"
+                    % (until, " ".join((reason or "limit").split())[:200],
+                       src))
     except OSError:
         pass
 
@@ -2263,7 +2319,9 @@ def run_codex(prompt, model, effort, timeout=600, kind="ingest"):
                     or os.environ.get("CODEX_LIMIT_RE")
                     or CODEX_LIMIT_RE_DEFAULT, re.I)
     if rx.search(said):
-        codex_limit_record(said.strip().splitlines()[0] if said.strip() else "limit")
+        # The recorder gets the WHOLE refusal, not a first line or a clamp:
+        # the reset clause it parses may sit past either.
+        codex_limit_record(said.strip() or "limit")
         _ledger_record(None, kind, model, "", "refused", time.time() - t0)
         raise RuntimeError(
             "the codex login refused (%s) — cooldown recorded; no cheaper "
