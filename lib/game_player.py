@@ -7836,6 +7836,13 @@ def predict(cfg: dict, snap: dict, objective: str, activity: str = ""):
                      and compile_player_action(rule, snap, {}, "min")[0] is not None]
         if answering:
             rules = answering
+        else:
+            # The live pass reports npc-dialogue-choice and hands an
+            # unanswerable question back to the hand; nothing else may walk,
+            # loot, cut, or interact past it. A replay case must read the
+            # same, or a rule that merely happens to match would look like
+            # the winner of a pass it could never own.
+            return None, None
     for rule in rules:
         if not trigger_fn(rule["trigger"], snap, {}):
             continue

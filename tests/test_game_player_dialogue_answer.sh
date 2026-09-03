@@ -120,11 +120,13 @@ check "the open menu is answered with the option's own current text" \
         '{"type":"choose-dialogue","text":"Arrow shafts","within":null,"item":null}'
 case_snapshot 205 '{"talking_to_npc": true, "dialogue_open": true,
                     "dialogue_options": ["Shortbow", "Longbow"]}'
-check "an option this menu does not offer never compiles" \
-    add_case absent-option-refuses loot-mind-rune-test
+check "an option this menu does not offer never compiles, and the unanswered
+      menu is the hand's — no louder loot rule inherits the pass" \
+    add_case absent-option-refuses none
 case_snapshot 206 '{"talking_to_npc": true, "dialogue_open": true,
                     "dialogue_options": ["Bronze arrow shafts", "Oak arrow shafts"]}'
-check "an ambiguous fragment refuses instead of guessing a row" \
-    add_case ambiguous-option-refuses loot-mind-rune-test
+check "an ambiguous fragment refuses instead of guessing a row, and again
+      nothing ordinary acts past the open question" \
+    add_case ambiguous-option-refuses none
 check "the suite the mutation gate replays is green" \
     sh -c "python3 '$GP' test run | grep -q '0 failure'"

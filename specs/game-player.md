@@ -609,7 +609,10 @@ deliberate-play channel.
      When such a rule does exist, the table answers the menu itself: for that pass the candidate
      set is exactly those `choose-dialogue` rules, so no walk, loot, route, follow leg, or other
      interaction may act past a question the game is waiting on, and an unanswered menu still
-     falls back to this exit rather than to ordinary play.
+     falls back to this exit rather than to ordinary play. Rule 17's replay prediction reads the
+     same restriction on both sides of it: with an answerable menu the candidate set is those
+     answers, and with no answer at all the case has no winner — a rule that merely happens to
+     match must never be recorded as owning a pass the live engine would have handed back.
    - `held` (exit 5): the manual override is on; nobody plays, model included.
    - `player-message` (exit 6): an incoming local or private message must be answered through
      rule 7b before ordinary play continues.
