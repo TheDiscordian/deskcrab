@@ -375,6 +375,16 @@ re-derived it by hand.
     the job's test result before any prose; the line is machine record, not prose, so rule 39
     judges the report's closing words with trailing `VERDICT:` lines stripped — a verdict line
     neither hides a report that ends on a wait, nor is itself ever read as one.
+38c. Commits in the workdir since dispatch are the TREE's, not necessarily the job's, because
+    several hands share these checkouts. On 2026-09-02 job 20260902-224329 stood down without
+    touching a file and was collected as "2 commits on wake-viseme-awareness" — commits a live
+    session had landed in the same tree minutes earlier — while its own last line read
+    `commit=none`. So the builder's `VERDICT: … commit=` (rule 38b) outranks the git window on
+    attribution: when it says `commit=none`, the sidecar's `commits` list is EMPTY, the count of
+    commits the window saw is recorded separately as `tree_commits=N`, and the verdict line says
+    the job committed nothing of its own, naming N as other hands' work when N is above zero.
+    When the verdict names a sha, or the report carries no verdict line at all, the window's
+    commits are still listed — but worded as what they are, commits in the tree since dispatch.
 39. A job that dies waiting reports FAILURE, not success. A run that exited clean whose report ends
     on an intention — standing by, waiting on another job, watching a monitor, holding the commit
     until later — made a promise that outlives the process that made it, and exit 0 means the
@@ -415,7 +425,7 @@ re-derived it by hand.
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |

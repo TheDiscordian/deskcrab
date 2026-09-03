@@ -66,6 +66,26 @@ n="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])).get("commits",[
 check_eq "two runs, one list" "$n" "$first"
 
 echo
+echo "commit=none means the window's commits are another hand's (rule 38c):"
+# The shape of job 20260902-224329: it stood down, touched nothing, and was
+# credited with two commits a live session had landed in the same tree.
+mkjob sd1 finished 0
+sleep 1
+echo other > "$WD/another-hand.txt"
+git -C "$WD" add -- another-hand.txt
+git -C "$WD" commit -qm "a live session's commit, not this job's"
+printf 'I stood down: a duplicate of a live job. I committed nothing.\n\nVERDICT: tests=0/0 commit=none\n' > "$J/sd1.log"
+"$JC" run "$J" sd1 >/dev/null 2>"$T/sdverdict"
+sdc="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("commits",[])))' "$J/sd1.json")"
+check_eq "no commit is attributed to a job that says it made none" "$sdc" "0"
+check_eq "the window's count is kept separately" \
+    "$("$JS" get "$J/sd1.json" tree_commits)" "1"
+check "and the verdict says so in words" \
+    contains "$(cat "$T/sdverdict")" "no commits of its own"
+check "naming the other hands" \
+    contains "$(cat "$T/sdverdict")" "from other hands"
+
+echo
 echo "the tally is the END STATE, never the deliberate red (rule 38a):"
 # A well-behaved builder proves its tests red against the pre-change tree
 # before writing the fix, and twice the collector quoted exactly that proof

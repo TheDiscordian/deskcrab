@@ -133,6 +133,18 @@ def fmt_counts(nums, failed):
     return "%s passed, %s failed" % ("+".join(nums), failed)
 
 
+def scrape_verdict_commit(report):
+    """What the last VERDICT line claims it committed, lowercased, or None.
+
+    The tree is shared, so the git window alone cannot say whose commits
+    those are; this is the only first-hand word on it (rule 38c).
+    """
+    claim = None
+    for m in VERDICT_RE.finditer(report):
+        claim = m.group(3)
+    return claim.lower() if claim else None
+
+
 def scrape_tally(report):
     """The end-state test tally the log supports, or None (rule 38a)."""
     verdict = None
@@ -252,6 +264,18 @@ def cmd_run(argv):
     facts = []
     pairs = []
 
+    # The report is read before the git facts: its VERDICT line decides
+    # whether the window's commits may be attributed to this job at all
+    # (rule 38c).
+    report = ""
+    try:
+        with open(os.path.join(jobs_dir, jid + ".log"),
+                  encoding="utf-8", errors="replace") as f:
+            report = f.read()
+    except OSError:
+        pass
+    claimed = scrape_verdict_commit(report)
+
     # The workdir's git facts. A missing tree or a directory that is no
     # repository costs these lines and nothing else (rule 38).
     commits = []
@@ -273,8 +297,16 @@ def cmd_run(argv):
                      if ln.strip()])
         pairs.append("unpushed=%d" % unpushed)
         pairs.append("dirty=%d" % dirty)
-        if commits:
-            facts.append("%d commit%s on %s%s" % (
+        if claimed == "none":
+            # It says it committed nothing. Whatever the window saw belongs
+            # to the other hands in this shared tree (rule 38c).
+            pairs.append("tree_commits=%d" % len(commits))
+            facts.append("no commits of its own"
+                         + (" (%d landed in the tree from other hands)"
+                            % len(commits) if commits else ""))
+            commits = []
+        elif commits:
+            facts.append("%d commit%s in the tree since dispatch on %s%s" % (
                 len(commits), "" if len(commits) == 1 else "s",
                 branch or "?",
                 " (%d unpushed)" % unpushed if unpushed else ""))
@@ -288,13 +320,6 @@ def cmd_run(argv):
                      % workdir)
 
     # The report: the test tally it states, and its closing words.
-    report = ""
-    try:
-        with open(os.path.join(jobs_dir, jid + ".log"),
-                  encoding="utf-8", errors="replace") as f:
-            report = f.read()
-    except OSError:
-        pass
     tally = scrape_tally(report)
     if tally:
         pairs.append("tests=%s" % tally)
