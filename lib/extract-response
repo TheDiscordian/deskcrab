@@ -56,7 +56,7 @@ except re.error:
     CAPACITY_RX = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sentence_stream import near_duplicate
+from sentence_stream import QUIET_RE, QUIET_STRIP_RE, near_duplicate
 
 partials = None
 if os.environ.get("DESKCRAB_INCLUDE_PARTIAL") == "1":
@@ -156,6 +156,21 @@ if partials is not None:
                 continue
             blocks.append({"text": raw, "synthetic": False, "key": None})
 
+# The wake's voice (specs/wake-queue.md rule 27e): with the flag set, only
+# the blocks of the LAST real message stand — the reply that ends the run —
+# so a caller can voice the final message while the full join above still
+# feeds the conversation and the journal. Applied before the rejection drop
+# so a rejected-and-rewritten final message keeps only its rewrite.
+if os.environ.get("DESKCRAB_FINAL_MESSAGE") == "1":
+    last_key = None
+    for blk in blocks:
+        if not blk["synthetic"]:
+            last_key = blk["key"]
+    if last_key is not None:
+        kept = [i for i, blk in enumerate(blocks) if blk["key"] == last_key]
+        rejected = {kept.index(i) for i in rejected if i in kept}
+        blocks = [blocks[i] for i in kept]
+
 # The stop-hook drop (rule 5a): a rejected draft goes only when something real
 # stands after the last rejection — delivering a rejection with no rewrite as
 # silence would be the never-silent failure, so that draft stands.
@@ -197,8 +212,14 @@ if result_text and (not texts or texts[-1] != result_text.strip()):
 spoken, display = [], []
 for b in texts:
     head, sep, tail = b.partition(DELIM)
-    if head.strip():
-        spoken.append(head.strip())
+    head = head.strip()
+    if head:
+        # Rule 5c: a quiet block joins as its normalised one-line bubble form,
+        # so the split's line-based readers hold the whole thought and the
+        # voiced half never inherits its tail.
+        if QUIET_RE.match(head):
+            head = "(quiet) " + " ".join(QUIET_STRIP_RE.sub("", head).split())
+        spoken.append(head)
     if sep and tail.strip():
         display.append(tail.strip())
 

@@ -122,6 +122,34 @@ check "the journal shows the bubble as what he received" \
     grep -qF "replied: (quiet) the east shelf wants re-ordering" "$SESSLOG"
 
 echo
+echo "a held thought BEHIND narration is still a bubble — rule 57 per block:"
+reset_witnesses
+sandbox_stub claude <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+python3 - <<'PYEOF2'
+import json
+def block(mid, text):
+    print(json.dumps({"type": "assistant",
+                      "message": {"id": mid, "model": "stub",
+                                  "content": [{"type": "text", "text": text}]}}))
+block("m1", "Checking the ledger now.")
+block("m2", "(quiet) the drawer key is still under the mat")
+print(json.dumps({"type": "result"}))
+PYEOF2
+EOF
+desk "how goes the ledger"
+check "the narration reached the speakers" grep -qF "Checking the ledger" "$SANDBOX_SPOKEN_LOG"
+check "the thought never reached the speakers — rule 57, per block" \
+    bash -c '! grep -qF "drawer key" "$1"' _ "$SANDBOX_SPOKEN_LOG"
+check "the marker never reached the speakers either" \
+    bash -c '! grep -qi "quiet" "$1"' _ "$SANDBOX_SPOKEN_LOG"
+check "the conversation carries the narration and the bubble alike" \
+    bash -c 'grep -qF "Checking the ledger" "$1" && grep -qF "(quiet) the drawer key is still under the mat" "$1"' _ "$CONVO"
+check "and the guarantee stayed quiet — the narration was the voiced half" \
+    bash -c '! grep -q "speech path failed" "$1"' _ "$SANDBOX_NOTIFY_LOG"
+
+echo
 echo "the square-bracket spelling is normalised on its way to the chat:"
 reset_witnesses
 stub_reply "[quiet] the ledger needs a fresh page"

@@ -191,12 +191,15 @@ slot is the loudest statement this machine can make that it was not listening.
      nothing behind it and no display half. An empty interactive reply takes rule 16's no-text
      branch, notified and journalled, never delivered anywhere; an empty wake completes invisibly
      ([wake-queue.md](wake-queue.md) rule 24), its words kept by the journal alone.
-     The split is also where the quiet marker is decided, once for every path: a reply whose
-     spoken half OPENS with the marker delivers as the shown "(quiet) …" bubble — voiced nowhere,
-     its thought passed through the replace table ([speech-output.md](speech-output.md) rule 54),
-     the square-bracket spelling normalised — and such a reply's voiced half is empty by
-     definition, so the never-silent guarantee cannot fire on it and no path may synthesise the
-     thought ([speech-output.md](speech-output.md) rule 57 holds the live half). Before this rule
+     The split is also where the quiet marker is decided, once for every path, PER LINE: every
+     line of the reply that opens with the marker — the whole reply, or one held thought behind
+     blocks of narration ([speech-output.md](speech-output.md) rule 5c keeps such a thought on
+     one line) — delivers as the shown "(quiet) …" bubble, voiced nowhere, its thought passed
+     through the replace table ([speech-output.md](speech-output.md) rule 54), the
+     square-bracket spelling normalised. The voiced half excludes every quiet line by
+     construction, so the never-silent guarantee cannot fire on a held thought and no path may
+     synthesise one ([speech-output.md](speech-output.md) rule 57 holds the live half, per
+     block). Before this rule
      the wake path alone knew the marker: a desk reply opening "(quiet)" was streamed to the
      speakers marker-first, a phone turn synthesised the held thought into a clip, and a
      marker-only reply reached the chat as a bare "(quiet)" bubble.

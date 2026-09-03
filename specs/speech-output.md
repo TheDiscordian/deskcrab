@@ -64,6 +64,12 @@ the same authority rule 5a already exercises on the stored reply.
     pair at or below 0.34, so the threshold sits inside a wide gap and MUST NOT fire across
     genuinely distinct paragraphs. This is the belt under rule 5a: it judges the delivered text
     alone, whatever the cause upstream turns out to be.
+5c. A block whose spoken half OPENS with the quiet marker joins the reply as its normalised
+    bubble form: "(quiet) " plus the thought, flattened to one line. The marker's protection is
+    per block (rule 57), and every post-hoc reader of the joined reply is line-based — a
+    one-line bubble is how a mid-reply held thought stays whole for the split
+    ([turn-pipeline.md](turn-pipeline.md) rule 16b) instead of leaking its tail into the voiced
+    half. Both input spellings normalise to the round-bracket form here.
 6. Each block may carry its own display section. The spoken halves are joined into the reply and the
    display halves are concatenated after a single delimiter, so the turn has exactly one display
    channel.
@@ -457,19 +463,20 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     Both readings are the assistant's own reading of the assistant's own rewrites; no outside
     hand has scored that table, and anything drawn from it MUST be quoted as such.
 
-57. The quiet marker is honoured by the LIVE voices as well. A reply whose spoken half OPENS with
-    the marker chose the bubble over the voice while it was being written, and no voice may start
-    on it: the desk streamer and the phone's streaming voice — block and sentence mode alike —
-    speak nothing of such a turn, and the phone's live text events carry the normalised bubble
-    form rather than the raw marker. The test is ONE implementation, in the shared chunker
-    (`lib/sentence_stream.py`), judged on the turn's first spoken chunk and sticky for the whole
-    turn — the marker opens a reply or it is not the marker. This is not a gate on her speech: the
-    marker IS the writing-time choice of silence the standing rule protects, and honouring it only
-    after the fact — the marker itself and half the thought already out of the synthesiser, which
-    is what the desk did for as long as only the wake path knew the marker — is the leak, not the
-    hold. The never-silent guarantee treats a quiet reply's voiced half as empty by definition and
-    stays quiet ([turn-pipeline.md](turn-pipeline.md) rule 16b owns the post-hoc half: one split,
-    every path, above every sink).
+57. The quiet marker is honoured by the LIVE voices as well, PER BLOCK. A text block whose
+    first worded chunk OPENS with the marker chose the bubble over the voice while it was being
+    written, and no voice may start on it — wherever the block sits in the turn. A turn narrates
+    in many blocks, and a held thought is as much a held thought behind three blocks of
+    narration as it is alone: the turn-sticky judgement this rule once carried voiced a later
+    quiet block whole, private words and all, because the turn's FIRST chunk had been ordinary
+    speech. The test is ONE implementation, in the shared chunker (`lib/sentence_stream.py`),
+    judged on each block's first worded chunk and sticky for that block. This is not a gate on
+    her speech: the marker IS the writing-time choice of silence the standing rule protects, and
+    honouring it only after the fact — the marker itself and half the thought already out of the
+    synthesiser — is the leak, not the hold. The never-silent guarantee treats a quiet block's
+    voiced half as empty by definition and stays quiet
+    ([turn-pipeline.md](turn-pipeline.md) rule 16b owns the post-hoc half: one split, every
+    path, above every sink).
 
 ## DATA
 
@@ -499,11 +506,12 @@ book a wake, or dispatch a job.
 
 ## VERIFIED-CORRECT RULES
 
-- **Silence is an empty reply; `(quiet)` is the one authorized held-thought form.** (Corrected
-  2026-08-07: the earlier "never a marker" statement predated the user reinstating the marker.)
-  `spoken_part` strips the marker so no path can voice it; the reply is delivered as a shown
-  "(quiet) …" bubble — never the speakers — including when the reply has no display section. A
-  bare marker with no thought is plain silence and completes invisibly, words kept for the journal.
+- **Silence is an empty reply; `(quiet)` is the one authorized held-thought form — per block,
+  wherever it sits.** `spoken_part` drops the whole quiet line so no path can voice the thought;
+  it is delivered as a shown "(quiet) …" bubble — never the speakers — including when the reply
+  has no display section, and including when narration stands ahead of it in the same turn. A
+  bare marker with no thought is plain silence and completes invisibly, words kept for the
+  journal.
 - **A refusal is never voiced, on any path, even when the whole chain is spent.** An outage read
   aloud in her own voice is how a session-limit message once reached the user's ears as her words.
 - **Every retry appends to the same stream log and never truncates it**, because the streamer is

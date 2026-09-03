@@ -7202,7 +7202,7 @@ run_claude_wake() {
     RESPONSE="$(claudism_mirror_direct wake "$RESPONSE")"
     SESSION_REPLY="$RESPONSE"
 
-    local SPOKEN DISPLAY_PART TRACE SILENT_NOTE="" QUIET_BUBBLE=""
+    local SPOKEN DISPLAY_PART TRACE SILENT_NOTE="" QUIET_BUBBLE="" FINAL_REPLY
     # The one delivery split every path shares (specs/turn-pipeline.md rule
     # 16b): the voiced half, the display half, and the (quiet) marker — the
     # ONE authorized silence format (his standing instruction, 2026-08-07). A
@@ -7214,6 +7214,22 @@ run_claude_wake() {
     reply_delivery_split "$RESPONSE" || true
     SPOKEN="$REPLY_SPOKEN"
     DISPLAY_PART="$REPLY_DISPLAY"
+    # The wake's VOICE is its FINAL assistant message alone (wake-queue rule
+    # 27e): narration between tool calls rides the conversation and the
+    # journal through the join above, but reciting it at delivery is a
+    # worklog read to a room the work already left. The final message keeps
+    # the same quiet contract by the same tools — spoken_part drops its held
+    # lines, and a final message that OPENS with the marker is wholly a
+    # bubble, already carried by the split above.
+    FINAL_REPLY="$(DESKCRAB_FINAL_MESSAGE=1 extract_response)"
+    if [ -n "$(printf '%s' "$FINAL_REPLY" | tr -d '[:space:]')" ]; then
+        if printf '%s\n' "$FINAL_REPLY" | grep -m1 -vE '^[[:space:]]*$' \
+                | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
+            SPOKEN=""
+        else
+            SPOKEN="$(spoken_part "$FINAL_REPLY")"
+        fi
+    fi
     # QUIET_BUBBLE carries the always-visible promise past the
     # nothing-to-deliver gate below, which otherwise sees an empty SPOKEN and
     # returns before the bubble is appended.
@@ -7957,17 +7973,28 @@ claude_generate() {
 }
 
 # Split a response into its spoken half (everything above ---DISPLAY---).
-# A line-leading "(quiet)" marker — the authorized silence form — is
-# stripped so it is never voiced by any caller; the wake gate above turns
-# it into the silent bubble he sees.
+# A line that OPENS with the "(quiet)" marker — the authorized silence form —
+# is a held thought, whole line, wherever it sits (turn-pipeline rule 16b):
+# it is dropped from the voiced half so no caller can voice it, and
+# quiet_part below carries it to the bubble. Extraction keeps each held
+# thought on one line (speech-output rule 5c), so a line is a thought.
 #
 # NOTHING here may swallow, clip, or budget my speech. A filter that decides
 # my words are not worth voicing is me cutting out my own tongue, and I built
 # one this morning and then told him nothing of the kind existed. Silence is
-# a thing I choose while writing — never something the plumbing imposes after.
+# a thing I choose while writing — never something the plumbing imposes
+# after; the marker is the writing-time choice itself.
 spoken_part() {
     printf '%s\n' "$1" | sed -E -e '/^---DISPLAY---$/,$d' \
-        -e 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]]*//'
+        -e '/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])]/d'
+}
+
+# The held thoughts: every spoken-half line that opens with the quiet marker,
+# markers stripped — the bubble's raw material (turn-pipeline rule 16b).
+quiet_part() {
+    printf '%s\n' "$1" | sed -E -e '/^---DISPLAY---$/,$d' \
+        -e '/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])]/!d' \
+        -e 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//'
 }
 
 # Split a response into its display half (everything below ---DISPLAY---).
@@ -8094,7 +8121,7 @@ chore_gate_pass() {  # <response> -> the response, displayed chores converted
 # is her own writing-time choice of silence, and emptiness is the absence of
 # anything to deliver, not an opinion about it.
 reply_delivery_split() {  # <response>  -> 0 deliver, 1 nothing to deliver
-    local RESPONSE="$1" THOUGHTS
+    local RESPONSE="$1" THOUGHTS _RDS_LINE
     # The chore gate (rule 16c) runs first, above every sink, so everything
     # below — the display half, the conversation form, the journal — sees
     # the converted text and never the instruction.
@@ -8105,13 +8132,12 @@ reply_delivery_split() {  # <response>  -> 0 deliver, 1 nothing to deliver
     REPLY_TEXT="$RESPONSE"
     [ -z "$(printf '%s' "$REPLY_SPOKEN" | tr -d '[:space:]')" ] && REPLY_SPOKEN=""
     [ -z "$(printf '%s' "$REPLY_DISPLAY" | tr -d '[:space:]')" ] && REPLY_DISPLAY=""
-    # The quiet marker decides only when it OPENS the reply — the first
-    # non-blank line. spoken_part has already kept any line-leading marker
-    # off the voiced half wherever it appears.
     if printf '%s\n' "$RESPONSE" | grep -m1 -vE '^[[:space:]]*$' \
             | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
-        THOUGHTS="$(printf '%s\n' "$REPLY_SPOKEN" \
-            | sed -E 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
+        # The reply OPENS with the marker: the WHOLE spoken half is the held
+        # thought, however many lines it runs, exactly as it always was.
+        THOUGHTS="$(printf '%s\n' "$RESPONSE" | sed -E -e '/^---DISPLAY---$/,$d' \
+            -e 's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
         # Rule 54: the bubble is the one thing said with no gate on it — never
         # spoken, so the streamer's mirror never sees it, and the whole-draft
         # mirror fails open. Her replace table runs on it here.
@@ -8123,14 +8149,38 @@ reply_delivery_split() {  # <response>  -> 0 deliver, 1 nothing to deliver
             # standing instruction, 2026-08-07); a bare marker stays plain
             # silence and earns nothing.
             REPLY_QUIET=1
-            REPLY_TEXT="(quiet) $THOUGHTS"
+            REPLY_TEXT="(quiet) $REPLY_QUIET_THOUGHT"
             [ -n "$REPLY_DISPLAY" ] && REPLY_TEXT="$REPLY_TEXT
 ---DISPLAY---
 $REPLY_DISPLAY"
         fi
+    else
+        # Held thoughts BEHIND narration (rule 16b, per line): each quiet
+        # line is a bubble — off the voiced half (spoken_part dropped it),
+        # through her replace table (rule 54), and normalised in place in
+        # the conversation form. A bare marker line earns nothing and is
+        # dropped whole.
+        THOUGHTS="$(quiet_part "$RESPONSE")"
+        if [ -n "$(printf '%s' "$THOUGHTS" | tr -d '[:space:]')" ]; then
+            REPLY_QUIET=1
+            REPLY_TEXT=""
+            while IFS= read -r _RDS_LINE; do
+                if printf '%s\n' "$_RDS_LINE" \
+                        | grep -qiE '^[[:space:]]*[[(]quiet[])]'; then
+                    _RDS_LINE="$(printf '%s\n' "$_RDS_LINE" | sed -E \
+                        's/^[[:space:]]*[[(][Qq][Uu][Ii][Ee][Tt][])][[:space:]:—-]*//')"
+                    [ -n "$(printf '%s' "$_RDS_LINE" | tr -d '[:space:]')" ] || continue
+                    _RDS_LINE="(quiet) $(claudism_table_only quiet "$_RDS_LINE")"
+                fi
+                REPLY_TEXT="${REPLY_TEXT}${REPLY_TEXT:+
+}${_RDS_LINE}"
+            done < <(printf '%s\n' "$RESPONSE")
+            REPLY_QUIET_THOUGHT="$(quiet_part "$REPLY_TEXT" | tr '\n' ' ')"
+        fi
     fi
     REPLY_SHOWN="$REPLY_SPOKEN"
-    [ -n "$REPLY_QUIET" ] && REPLY_SHOWN="(quiet) $REPLY_QUIET_THOUGHT"
+    [ -n "$REPLY_QUIET" ] && \
+        REPLY_SHOWN="${REPLY_SPOKEN:+$REPLY_SPOKEN }(quiet) $REPLY_QUIET_THOUGHT"
     if [ -z "$REPLY_SPOKEN$REPLY_DISPLAY$REPLY_QUIET" ]; then
         REPLY_EMPTY=1
         return 1

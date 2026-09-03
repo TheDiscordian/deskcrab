@@ -189,4 +189,60 @@ grep -qi 'honest' "$CONVOFILE" \
 grep -q 'I lost the game' "$CONVOFILE" \
     || die "the table pass ate the bubble instead of repairing it: $(cat "$CONVOFILE")"
 
-ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private, a quiet thought is a bubble, and the bubble is gated"
+# --- 6. the wake's voice is its FINAL message alone (wake-queue rule 27e) --
+# A wake narrates while it works; reciting the worklog at delivery is stale
+# noise, and the reply that ends the run is the one thing meant to be heard.
+sandbox_stub claude <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+python3 - <<'PYEOF2'
+import json
+def block(mid, text):
+    print(json.dumps({"type": "assistant",
+                      "message": {"id": mid, "model": "stub",
+                                  "content": [{"type": "text", "text": text}]}}))
+block("w1", "Now the shelf braces.")
+block("w2", "Now the varnish coat.")
+block("w3", "The bench is mended and the varnish is drying.")
+print(json.dumps({"type": "result"}))
+PYEOF2
+EOF
+: > "$CONVOFILE"
+: > "$SANDBOX_SPOKEN_LOG"
+wake "a test wake that narrated its way to a reply"
+
+grep -q "bench is mended" "$SANDBOX_SPOKEN_LOG" \
+    || die "the wake's final reply never reached the speakers: $(cat "$SANDBOX_SPOKEN_LOG")"
+grep -q "shelf braces\|varnish coat" "$SANDBOX_SPOKEN_LOG" \
+    && die "the wake recited its worklog at delivery: $(cat "$SANDBOX_SPOKEN_LOG")"
+grep -q "shelf braces" "$CONVOFILE" && grep -q "bench is mended" "$CONVOFILE" \
+    || die "the conversation lost the narration or the reply: $(cat "$CONVOFILE")"
+
+# ...and a final message that OPENS with the marker keeps the whole wake off
+# the speakers, narration included, with the bubble shown.
+sandbox_stub claude <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+python3 - <<'PYEOF2'
+import json
+def block(mid, text):
+    print(json.dumps({"type": "assistant",
+                      "message": {"id": mid, "model": "stub",
+                                  "content": [{"type": "text", "text": text}]}}))
+block("q1", "Now the sweep path gets the day's commits.")
+block("q2", "(quiet) the flag was false and the record is settled")
+print(json.dumps({"type": "result"}))
+PYEOF2
+EOF
+: > "$CONVOFILE"
+: > "$SANDBOX_SPOKEN_LOG"
+wake "a test wake whose reply is a held thought behind narration"
+
+[ -s "$SANDBOX_SPOKEN_LOG" ] \
+    && die "a wake ending in a held thought put something on the speakers: $(cat "$SANDBOX_SPOKEN_LOG")"
+grep -qF "(quiet) the flag was false and the record is settled" "$CONVOFILE" \
+    || die "the held thought's bubble never reached the conversation: $(cat "$CONVOFILE")"
+grep -q "sweep path" "$CONVOFILE" \
+    || die "the narration fell out of the conversation: $(cat "$CONVOFILE")"
+
+ok "suppressed wake leaves nothing, delivered wake lands, stream logs are private, a quiet thought is a bubble, the bubble is gated, and the voice is the final message alone"

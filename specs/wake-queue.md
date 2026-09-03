@@ -403,6 +403,17 @@ for reduction here — every rule below makes the queue **visible and bounded**,
      - `WAKE_JOB_NEWS_HOLD=0` switches the discipline off and a job's return takes the ordinary
        exits like any other wake. The busy and flight gates themselves are untouched for every
        other wake: this rule changes who exits through them, never what they read.
+27e. An autonomous wake's VOICED half is the spoken half of its FINAL assistant message alone.
+    A wake narrates while it works — text blocks between tool calls — and nothing is live to
+    speak them when they happen: reciting them at delivery is a worklog read to a room the work
+    already left, minutes stale by the time it sounds, and long enough to bury the reply it
+    ends with. The narration still rides the conversation and the journal whole (extraction
+    keeps every block — [speech-output.md](speech-output.md) rule 5); only the speakers are the
+    final message's, with its own quiet marker honoured
+    ([speech-output.md](speech-output.md) rule 57). What she means to be HEARD she says in the
+    reply that ends the run. This is not rule 29's forbidden after-the-fact judgement: nothing
+    weighs the words — the channel is defined by position, the way the display half is defined
+    by its delimiter.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence. Rule 27c is
     not that queueing: the choice it forbids is the WRITER'S — a reply that answers "later" instead
