@@ -352,6 +352,22 @@ deliberate-play channel.
    needs it, not to the generic chooser. The tinderbox-on-carried-logs shortcut remains outside
    both tables: the server itself answers it with "I think you should put the logs down before
    you light them!", so the drop is part of the behaviour, not an inconvenience to route around.
+   `use-item-item` (`item`: one held item id; `target`: the other held item id) is the learned
+   form of the held-pair door, and it exists because a skill whose whole loop is two held items
+   — a knife against logs, a chisel against a gem — otherwise costs a model turn per batch even
+   when every other step of the loop is already a reflex. It compiles only while BOTH ids are
+   held in current structured state, and when the two ids are equal only while two distinct
+   slots hold them, refusing `item-not-held` and `item-pair-needs-two-slots` without dispatch;
+   the compiled action carries the two item identities alone, and the bridge re-resolves them to
+   two live slots immediately before sending the ordinary item-on-item packet, so no slot,
+   selection phase or pointer is ever remembered. Its observed postcondition is the deliberate
+   door's own: either named item's held count changing, or an XP delta, with only explicit
+   failure feedback ending it otherwise — a receipt, a pane transition, an opened option menu or
+   a changed selection is never completion. Lighting a fire remains explicitly outside it: the
+   server answers a tinderbox on carried logs with "I think you should put the logs down before
+   you light them!", which the verifier classifies as grounded failure, so firemaking still runs
+   through `drop-inventory` and `use-item-ground`. The menu a successful pair opens — Fletching's
+   "What would you like to make?" — is answered by `choose-dialogue`, not by this action.
    **The cap doctrine.** Distance caps on wanting things have repeatedly broken play in exactly
    two shapes: a capped take strands loot on the ground, and a capped attack idles the body in
    sight of its target. Neither has ever been the behaviour anyone wanted. Validation therefore
@@ -521,8 +537,9 @@ deliberate-play channel.
    put the logs down before you light them!", which the verifier classifies as grounded failure
    feedback — the semantic answer that routes play to the drop-then-use-on-ground sequence
    above, where the fire, the Firemaking XP, and the consumed pile are the observed
-   postconditions. The action belongs to the deliberate-play channel alone: it is absent from
-   both executable rule tables, so no learned routine can own or reserve it.
+   postconditions. The reflex channel's own table still does not carry this action; rule 5's
+   learned `use-item-item` is the deliberate-play channel's own form of the same door, with the
+   same held-pair requirement and the same postcondition.
    An identity-based inventory click is also unresolved until newer state shows the item selected
    for Use-with, a context menu, an inventory change, or grounded game feedback. A changed hover
    alone proves only pointer placement and is never reported as click completion.

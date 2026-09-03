@@ -45,7 +45,8 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "skill_at_least")
 ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "step-aside", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground",
-           "drop-inventory", "use-item-ground", "choose-dialogue")
+           "drop-inventory", "use-item-ground", "use-item-item",
+           "choose-dialogue")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
@@ -2577,6 +2578,18 @@ def validate_config(cfg: dict) -> None:
                     or not action["text"].strip() or "\n" in action["text"]:
                 bad(f"{where}: choose-dialogue takes exactly "
                     "text=<option text fragment>")
+        elif atype == "use-item-item":
+            # The held-pair door: a knife against logs, a chisel against a
+            # gem.  Both ids are held identities; no slot, selection phase or
+            # pointer is ever authored, and the compile refuses a pair the
+            # live inventory cannot satisfy rather than dispatching it.
+            if set(action) != {"type", "item", "target"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0 \
+                    or not isinstance(action.get("target"), int) \
+                    or isinstance(action["target"], bool) or action["target"] < 0:
+                bad(f"{where}: use-item-item takes exactly item=<held item id> "
+                    "and target=<held item id>")
         elif atype == "use-item-ground":
             # The held-item-on-ground-pile door: firemaking's tinderbox on the
             # logs that had to be put down first. item is held, ground is the
@@ -4911,6 +4924,13 @@ def make_trigger_fn(objective: str, activity: str = ""):
     return trigger_true
 
 
+def snapshot_held_slots(snap: dict, item_id: int) -> int:
+    """How many inventory slots hold that identity, in either shape."""
+    return sum(1 for entry in snap.get("inventory") or []
+               if entry == item_id or (isinstance(entry, dict)
+                                       and entry.get("id") == item_id))
+
+
 def snapshot_holds_item(snap: dict, item_id: int) -> bool:
     """Item presence, read from either snapshot inventory shape.
 
@@ -5252,6 +5272,18 @@ def compile_player_action(rule, snap, food, eat_pick):
             return {"type": "drop-inventory", "item": action["item"],
                     "amount": 1}, None
         return None, "item-not-held"
+    if action["type"] == "use-item-item":
+        # Both identities must be held right now; when the rule names the
+        # same id twice the pair needs two distinct slots, exactly as the
+        # deliberate door requires before the bridge re-resolves them.
+        if action["item"] == action["target"]:
+            if snapshot_held_slots(snap, action["item"]) < 2:
+                return None, "item-pair-needs-two-slots"
+        elif not snapshot_holds_item(snap, action["item"]) \
+                or not snapshot_holds_item(snap, action["target"]):
+            return None, "item-not-held"
+        return {"type": "use-item-item", "item": action["item"],
+                "target": action["target"]}, None
     if action["type"] in ("take-ground", "use-item-ground"):
         # One pile chooser for both ground doors: taking a pile and using a
         # held item on a pile pick the same nearest REACHABLE target, and
@@ -7062,11 +7094,12 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "talk-npc", "attack-npc", "interact-npc", "use-item-npc",
             "interact-object", "interact-bound",
             "click-inventory", "click-entity",
-            "drop-inventory", "use-item-ground", "choose-dialogue"):
+            "drop-inventory", "use-item-ground", "use-item-item",
+            "choose-dialogue"):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
             "within", "button", "batch", "ground", "amount",
-            "text") if key in action]
+            "target", "text") if key in action]
         observation = make_action_observation(
             action_id, action["type"], fields, snap, event.get("ts"))
         completion_detail, latest = await_action_completion(
