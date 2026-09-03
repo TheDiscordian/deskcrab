@@ -685,6 +685,18 @@ refute "the full-fatigue predicate stops beyond the observed percentage scale" \
 refute "an impossible fatigue range is refused" \
     python3 "$GP" learn bad-fatigue-range --priority 1 --trigger fatigue_at_least=100 \
         --trigger fatigue_below=100 --action walk --param x=1 --param z=1
+refute "step-aside refuses a zero preferred direction" \
+    python3 "$GP" learn bad-step-aside --priority 1 \
+        --trigger out_of_combat=true --action step-aside --param dx=0 --param dz=0
+refute "step-aside refuses a distance parameter it cannot honour" \
+    python3 "$GP" learn bad-step-aside-distance --priority 1 \
+        --trigger out_of_combat=true --action step-aside --param dz=1 --param distance=5
+refute "a stationary threshold below one observed second is refused" \
+    python3 "$GP" learn bad-stationary-floor --priority 1 \
+        --trigger stationary_ms_at_least=999 --action walk --param x=1 --param z=1
+refute "a stationary threshold past the server idle warning is refused" \
+    python3 "$GP" learn bad-stationary-cap --priority 1 \
+        --trigger stationary_ms_at_least=300001 --action walk --param x=1 --param z=1
 refute "an empty activity scope is refused" \
     python3 "$GP" learn bad-activity --priority 1 --trigger activity_is= \
         --action walk --param x=1 --param z=1
@@ -1994,6 +2006,39 @@ assert matches(full, {"fatigue": 99}, None) is False
 assert matches(full, {}, None) is False
 assert matches(full, {"fatigue": None}, None) is False
 
+# stationary_ms_at_least reads the engine's own observation, never a bridge
+# field, and fails closed when the engine has not watched the player stand
+# still. Movement is its honest stopping condition.
+still = {"stationary_ms_at_least": 240000}
+assert matches(still, {"_stationary_ms": 240000}, None) is True
+assert matches(still, {"_stationary_ms": 239999}, None) is False
+assert matches(still, {"_stationary_ms": 0}, None) is False
+assert matches(still, {}, None) is False
+assert matches(still, {"_stationary_ms": True}, None) is False
+
+# The engine measures that duration itself: the clock starts when a tile is
+# first observed, survives an unchanged tile, and restarts on any step, on a
+# logged-out gap, and on a snapshot without coordinates.
+est = {}
+gp.track_stationary_state({"logged_in": True, "x": 77, "z": 697}, est, 1_000)
+gp.track_stationary_state({"logged_in": True, "x": 77, "z": 697}, est, 241_000)
+snap = {"logged_in": True, "x": 77, "z": 697}
+gp.annotate_stationary_state(snap, est, 241_000)
+assert snap["_stationary_ms"] == 240_000, snap
+gp.track_stationary_state({"logged_in": True, "x": 77, "z": 698}, est, 242_000)
+snap = {"logged_in": True, "x": 77, "z": 698}
+gp.annotate_stationary_state(snap, est, 242_000)
+assert snap["_stationary_ms"] == 0, snap
+gp.track_stationary_state({"logged_in": False}, est, 243_000)
+assert est["stationary_since"] is None, est
+snap = {"logged_in": False}
+gp.annotate_stationary_state(snap, est, 243_000)
+assert "_stationary_ms" not in snap, snap
+gp.track_stationary_state({"logged_in": True, "x": 77, "z": 698}, est, 244_000)
+snap = {"logged_in": True, "x": 77, "z": 698}
+gp.annotate_stationary_state(snap, est, 250_000)
+assert snap["_stationary_ms"] == 6_000, snap
+
 # Inventory conditions read the recorded brief form too: a replay snapshot
 # carries plain item ids, and an id list must never crash a trigger.
 held = {"inventory_has": 1263}
@@ -2001,6 +2046,26 @@ assert matches(held, {"inventory": [1263, 20]}, None) is True
 assert matches(held, {"inventory": [20]}, None) is False
 assert matches(held, {"inventory": [{"id": 1263}]}, None) is True
 assert matches({"inventory_lacks": 1263}, {"inventory": [1263]}, None) is False
+
+# step-aside is the peaceful twin of the combat break: out of combat it
+# compiles the same collision-proved one-tile ordinary walk, and in combat it
+# refuses so the escape sidestep keeps owning the break.
+still_snap = {"x": 77, "z": 697, "in_combat": False,
+              "terrain": {"radius": 6, "blocked_cells": [], "barriers": []}}
+compiled, refusal = gp.compile_player_action(
+    {"action": {"type": "step-aside", "dx": 0, "dz": 1}}, still_snap, None, None)
+assert refusal is None, refusal
+assert compiled == {"type": "walk", "x": 77, "z": 698, "arrive": 0,
+                    "max_path": 1, "sidestep": 1,
+                    "origin_x": 77, "origin_z": 697}, compiled
+compiled, refusal = gp.compile_player_action(
+    {"action": {"type": "step-aside", "dx": 0, "dz": 1}},
+    dict(still_snap, in_combat=True), None, None)
+assert compiled is None, compiled
+assert refusal == "in-combat-escape-owns-the-break", refusal
+compiled, refusal = gp.compile_player_action(
+    {"action": {"type": "sidestep", "dx": 0, "dz": 1}}, still_snap, None, None)
+assert compiled is None and refusal == "already-out-of-combat", (compiled, refusal)
 
 # The same fatigue state must not block ordinary inventory clicks such as food.
 compiled, refusal = gp.compile_player_action(

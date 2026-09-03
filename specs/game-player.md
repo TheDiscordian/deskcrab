@@ -141,6 +141,17 @@ deliberate-play channel.
      condition: fatigue falls, the condition goes false, and the XP-bearing routine resumes.
      Authoring both `fatigue_at_least` and a `fatigue_below` at or beneath it is refused as a range
      that can never match.
+   - `stationary_ms_at_least` (int, 1000–300000): the player's own tile has been unchanged for at
+     least this many milliseconds. The server owns this clock and does not publish it —
+     `GameStateUpdater.updateTimeouts` warns once `curTime - getLastMoved()` reaches `IDLE_TIMER`
+     (300000ms), cancels an in-progress sleep at that same moment, and force-unregisters with
+     `Movement time-out` sixty seconds later unless `hasMoved()` became true — so the engine
+     observes the faithful proxy: any change of the player's `x`/`z`, or a logged-out or
+     coordinate-less gap, restarts it. A snapshot the engine has not watched fails closed. The
+     threshold is capped at the warning itself so an anti-eviction rule cannot be authored to fire
+     only after the logout. Movement is the honest stopping condition: one `sidestep` sets the
+     server's `lastMoved`, clears `warnedToMove`, and makes the trigger false — unlike the rolling
+     warning text, which stays true across the move and even across a re-login.
    - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
      polarity. These conditions are mutually exclusive in live state and let global pickup or
      travel rules stay mechanically quiet during a fight.
@@ -232,6 +243,16 @@ deliberate-play channel.
    any other destination. An escape rule
    built on this action triggers on `opponent_rounds_at_least: 3`, so
    the single step is sent once the server can accept it rather than burned probing the lock),
+   `step-aside` (the same optional preferred direction `dx`/`dz`, default south `0/1` — the
+   **peaceful one-tile step**, compiled by exactly the same collision-proved adjacent-tile chooser
+   and dispatched as the same ordinary `walk` with `arrive` 0 and `max_path` 1, but only while
+   `in_combat` is false. It exists because movement itself is sometimes the goal: the server's
+   idle machinery reads `getLastMoved()`, warns at `IDLE_TIMER`, cancels an in-progress sleep at
+   that moment, and force-unregisters a minute later, and no combat break can be used to answer
+   it. In combat the escape `sidestep` owns the break, so this action refuses with
+   `in-combat-escape-owns-the-break` rather than racing it; no adjacent tile is
+   `step-aside-no-adjacent-tile`. Its observed postcondition is the sidestep postcondition read
+   out of combat: the body settled on exactly the chosen adjacent tile),
    `interact-object` (`obj`: the object type id,
    optional `cmd` 1 or 2 defaulting to 1 — the nearest matching entry in the snapshot's
    `objects` list is resolved at fire time and its tile rides the action file, so the bridge's

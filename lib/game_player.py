@@ -39,8 +39,9 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "inventory_slots_at_least", "fatigue_below", "fatigue_at_least",
                 "in_combat", "out_of_combat",
                 "opponent_rounds_at_least",
+                "stationary_ms_at_least",
                 "skill_at_least")
-ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "interact-object", "interact-bound", "click-entity",
+ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "step-aside", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
@@ -596,6 +597,42 @@ def annotate_combat_state(snap: dict, est: dict, now: int) -> None:
         attempt = est.get("combat_sidestep")
         if isinstance(attempt, dict) and attempt.get("refused_tiles"):
             snap["_sidestep_excluded"] = attempt["refused_tiles"]
+
+
+def track_stationary_state(snap: dict, est: dict, now: int) -> None:
+    """Measure how long the player's own tile has been unchanged.
+
+    The server owns this clock and does not publish it: GameStateUpdater's
+    updateTimeouts warns once curTime - getLastMoved() reaches IDLE_TIMER
+    (300000ms by default), cancels an in-progress sleep at that same moment,
+    and force-unregisters with 'Movement time-out' sixty seconds later unless
+    hasMoved() has become true.  The bridge exposes no lastMoved, so the engine
+    observes the only faithful proxy it can: any change of the player's own
+    tile restarts the clock, and so does a logged-out or coordinate-less gap,
+    because a fresh login starts the server's clock over too.
+    """
+    x, z = snap.get("x"), snap.get("z")
+    if snap.get("logged_in") is not True \
+            or isinstance(x, bool) or isinstance(z, bool) \
+            or not isinstance(x, int) or not isinstance(z, int):
+        est["stationary_tile"] = None
+        est["stationary_since"] = None
+        return
+    tile = [x, z]
+    if est.get("stationary_tile") != tile \
+            or isinstance(est.get("stationary_since"), bool) \
+            or not isinstance(est.get("stationary_since"), int):
+        est["stationary_tile"] = tile
+        est["stationary_since"] = now
+
+
+def annotate_stationary_state(snap: dict, est: dict, now: int) -> None:
+    """Copy the observed stationary duration onto the snapshot, where the
+    trigger vocabulary (and replay cases) can read it."""
+    since = est.get("stationary_since")
+    if isinstance(since, int) and not isinstance(since, bool) \
+            and est.get("stationary_tile") == [snap.get("x"), snap.get("z")]:
+        snap["_stationary_ms"] = max(0, now - since)
 
 
 def route_path() -> Path:
@@ -2298,6 +2335,12 @@ def validate_config(cfg: dict) -> None:
                         or not 1 <= val <= 100:
                     bad(f"{where}: trigger.opponent_rounds_at_least must be "
                         "an integer 1..100")
+            elif key == "stationary_ms_at_least":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1000 <= val <= 300000:
+                    bad(f"{where}: trigger.stationary_ms_at_least must be "
+                        "an integer 1000..300000 milliseconds, at or below the "
+                        "server's 300000ms idle warning")
             elif key == "skill_at_least":
                 if (not isinstance(val, dict) or set(val) != {"name", "level"}
                         or not isinstance(val.get("name"), str)
@@ -2420,6 +2463,12 @@ def validate_config(cfg: dict) -> None:
             dx, dz = action.get("dx", 0), action.get("dz", 1)
             if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
                 bad(f"{where}: sidestep dx/dz must be -1, 0, or 1 and not both zero")
+        elif atype == "step-aside":
+            if set(action) - {"type", "dx", "dz"}:
+                bad(f"{where}: step-aside takes only an optional preferred dx/dz")
+            dx, dz = action.get("dx", 0), action.get("dz", 1)
+            if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
+                bad(f"{where}: step-aside dx/dz must be -1, 0, or 1 and not both zero")
         elif atype in ("interact-object", "interact-bound"):
             if not set(action) <= {"type", "obj", "cmd"} \
                     or not isinstance(action.get("obj"), int) or action["obj"] < 0:
@@ -3003,6 +3052,8 @@ def load_player_state() -> dict:
     est.setdefault("last_combat", None)
     est.setdefault("last_npc_action", None)
     est.setdefault("last_direct_provocation_id", None)
+    est.setdefault("stationary_tile", None)
+    est.setdefault("stationary_since", None)
     est.setdefault("healing_hold", None)
     # One explicit semantic batch may outlive the transient condition that
     # started it. Each member is still a separately dispatched and observed
@@ -4698,6 +4749,15 @@ def make_trigger_fn(objective: str, activity: str = ""):
             return False
         if "out_of_combat" in trig and snap.get("in_combat") is not False:
             return False
+        if "stationary_ms_at_least" in trig:
+            # The engine's own observation (track_stationary_state), not a
+            # bridge field: a snapshot without it fails closed, so an engine
+            # that has not yet watched the player stand still can never be
+            # mistaken for one that has.
+            held = snap.get("_stationary_ms")
+            if not isinstance(held, int) or isinstance(held, bool) \
+                    or held < trig["stationary_ms_at_least"]:
+                return False
         if "opponent_rounds_at_least" in trig:
             rounds = snap.get("opponent_rounds")
             if snap.get("in_combat") is not True \
@@ -4883,6 +4943,19 @@ def compile_player_action(rule, snap, food, eat_pick):
                 "name": target.get("name") or action["name"],
                 "x": target["x"], "z": target["z"],
                 "arrive": action["within"]}, None
+    if action["type"] == "step-aside":
+        # The peaceful twin of `sidestep`: the same single ordinary walk to an
+        # adjacent walkable tile, but only OUT of combat, where its purpose is
+        # movement itself - the server's idle clock reads getLastMoved(), not
+        # intent. In combat the escape sidestep owns the break, so this refuses
+        # rather than racing it.
+        if snap.get("in_combat") is not False:
+            return None, "in-combat-escape-owns-the-break"
+        compiled = compile_sidestep_walk(snap, action.get("dx", 0),
+                                         action.get("dz", 1))
+        if compiled is None:
+            return None, "step-aside-no-adjacent-tile"
+        return compiled, None
     if action["type"] == "sidestep":
         if snap.get("in_combat") is not True:
             return None, "already-out-of-combat"
@@ -6014,8 +6087,10 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     with player_state_lock():
         est = load_player_state()
         track_combat_state(snap, est, now)
+        track_stationary_state(snap, est, now)
         save_player_state(est)
     annotate_combat_state(snap, est, now)
+    annotate_stationary_state(snap, est, now)
     xp_metrics = activity_metrics(snap, activity)
     xp_text = activity_xp_metrics_text(xp_metrics)
     xp_compare = activity_comparison_text(xp_metrics)
