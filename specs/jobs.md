@@ -153,8 +153,8 @@ and the completion channel a job has back to her.
       line that is not JSON at all. A stream carries every byte of every tool result, so a raw
       signature match says "blocked" for a builder that merely READ a file containing the wording —
       and one such file is `lib/common.sh`, which holds the signature's own patterns. The
-      consequence is not local: a false block cools an account that never refused, moves the
-      durable current off it, and holds every further dispatch for the cooldown.
+      consequence is not local: a false block moves the durable current off an account that
+      never refused.
     - A slice containing genuine model output is NEVER blocked, whatever words passed through it. A
       run that produced output is a run that happened.
 15a. A limit that cuts a build off MID-RUN (account-fallback.md rule 12a: genuine output, then the

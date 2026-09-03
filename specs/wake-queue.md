@@ -213,23 +213,16 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     the exit code and error text, naming the session limit as the cause when it was one, append
     nothing to the conversation, skip the audit and all output, and re-book a kinded wake so the
     agenda survives the outage. The refusal text is a failure record, never a reply.
-23a. A wake whose walk ended WHOLLY REFUSED over limits MUST NOT re-book into the drought it
-    just measured: every account it could offer is now cooling for its model, so a re-book on
-    the plain outage slot fires straight back into the same refusals — the 2026-08-15 morning
-    logged refusal/re-book pairs eight seconds apart, 136 wakes before nine, a 2↔3 ping-pong
-    that burned CLI boots and genuine session capacity on walks that could not succeed. The
-    re-book delay is the SOONEST cooldown expiry covering the wake's model
-    (account-fallback.md rules 8a, 8b: per account, the latest covering record; across
-    accounts, the earliest of those), plus a small jitter so a stack of refused wakes does not
-    land on the same second, bounded by `WAKE_REBOOK_MAX` (default six hours) so a state file
-    claiming next week never parks the agenda that long. Only a walk the limits refused
-    outright earns this wait: every other outage — network, crash, stall reap, rule 24a's
-    launcher death — keeps the free half-hour slot, because nothing measured says when IT
-    clears. WHOLLY REFUSED is judged from the walk's OWN per-attempt outcomes — every attempt
-    a limit refusal or cut — never by re-grepping the whole accumulated log: an earlier
-    account's refusal plus a later account's silent network death wears the same whole-log
-    shape (limit text standing, no genuine output), and judged that way a mixed walk was sent
-    into the long cooldown-keyed wait for a drought it never measured.
+23a. A wake whose walk ended WHOLLY REFUSED over limits re-books on the plain outage slot
+    (`WAKE_OUTAGE_RETRY`), plus a small jitter so a stack of refused wakes does not land on the
+    same second. Nothing records when a drought clears (account-fallback.md rule 8), so no
+    longer wait can honestly be computed; the half-hour sweep costs a handful of fast refusals
+    while the drought holds, and answers on the first sweep after it lifts — a recorded guess
+    did neither, parking agendas against resets that had already happened. WHOLLY REFUSED is
+    judged from the walk's OWN per-attempt outcomes — every attempt a limit refusal or cut —
+    never by re-grepping the whole accumulated log: an earlier account's refusal plus a later
+    account's silent network death wears the same whole-log shape (limit text standing, no
+    genuine output).
 24. A wake that produced no output on a clean exit MUST be journaled as silence, not as a crash.
 24a. A wake whose CLI exited **non-zero** with no genuine model output is rule 23's outage in
     different clothes, and MUST be treated the same way: journal the failure and re-book the kinded
