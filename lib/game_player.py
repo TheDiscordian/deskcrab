@@ -36,7 +36,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "ground_item_visible", "shop_item_visible", "bank_item_visible",
                 "message_contains", "near_tile",
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
-                "inventory_slots_at_least", "fatigue_below",
+                "inventory_slots_at_least", "fatigue_below", "fatigue_at_least",
                 "in_combat", "out_of_combat",
                 "opponent_rounds_at_least",
                 "skill_at_least")
@@ -2286,6 +2286,10 @@ def validate_config(cfg: dict) -> None:
                 if not isinstance(val, int) or isinstance(val, bool) \
                         or not 1 <= val <= 101:
                     bad(f"{where}: trigger.fatigue_below must be an integer from 1 to 101")
+            elif key == "fatigue_at_least":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1 <= val <= 100:
+                    bad(f"{where}: trigger.fatigue_at_least must be an integer from 1 to 100")
             elif key in ("in_combat", "out_of_combat"):
                 if val is not True:
                     bad(f"{where}: trigger.{key} must be true when present")
@@ -2309,6 +2313,9 @@ def validate_config(cfg: dict) -> None:
         if "inventory_slots_below" in trig and "inventory_slots_at_least" in trig \
                 and trig["inventory_slots_at_least"] >= trig["inventory_slots_below"]:
             bad(f"{where}: inventory slot range can never match")
+        if "fatigue_below" in trig and "fatigue_at_least" in trig \
+                and trig["fatigue_at_least"] >= trig["fatigue_below"]:
+            bad(f"{where}: fatigue range can never match")
 
         action = rule.get("action")
         if not isinstance(action, dict) or action.get("type") not in ACTIONS:
@@ -4657,7 +4664,12 @@ def make_trigger_fn(objective: str, activity: str = ""):
             if max(abs(px - t["x"]), abs(pz - t["z"])) > radius:
                 return False
         inventory = snap.get("inventory") or []
-        inv_ids = {i.get("id") for i in inventory}
+        # Live snapshots carry inventory entries as objects; the brief form this
+        # layer itself records (and every replay case built from one) carries
+        # plain item ids. A trigger must read both, or an inventory condition
+        # crashes the moment it is evaluated against a recorded snapshot.
+        inv_ids = {entry.get("id") if isinstance(entry, dict) else entry
+                   for entry in inventory}
         if "inventory_has" in trig and trig["inventory_has"] not in inv_ids:
             return False
         if "inventory_lacks" in trig and trig["inventory_lacks"] in inv_ids:
@@ -4672,6 +4684,15 @@ def make_trigger_fn(objective: str, activity: str = ""):
             fatigue = snap.get("fatigue")
             if not isinstance(fatigue, (int, float)) or isinstance(fatigue, bool) \
                     or fatigue >= trig["fatigue_below"]:
+                return False
+        if "fatigue_at_least" in trig:
+            # The counterpart of fatigue_below, and the only honest way to say
+            # "fatigue is full".  A snapshot without a numeric fatigue fails
+            # closed exactly as fatigue_below does, so a missing reading can
+            # never be mistaken for an exhausted player.
+            fatigue = snap.get("fatigue")
+            if not isinstance(fatigue, (int, float)) or isinstance(fatigue, bool) \
+                    or fatigue < trig["fatigue_at_least"]:
                 return False
         if "in_combat" in trig and snap.get("in_combat") is not True:
             return False

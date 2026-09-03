@@ -133,6 +133,14 @@ deliberate-play channel.
      the threshold. A snapshot without a numeric fatigue value fails closed. Irreversible
      experience-bearing inventory actions use `fatigue_below: 100` when the server stops awarding
      experience at full fatigue, so the eligibility record itself explains why the action fired.
+   - `fatigue_at_least` (int, 1–100): the snapshot's observed fatigue is present and at least the
+     threshold — the counterpart of `fatigue_below`, and the only honest way to say "fatigue is
+     full". A snapshot without a numeric fatigue value fails closed, so a missing reading is never
+     mistaken for an exhausted player. Recovery rules — sleeping through `click-inventory` on the
+     Sleeping Bag — use `fatigue_at_least: 100` because the recovered state itself is the stopping
+     condition: fatigue falls, the condition goes false, and the XP-bearing routine resumes.
+     Authoring both `fatigue_at_least` and a `fatigue_below` at or beneath it is refused as a range
+     that can never match.
    - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
      polarity. These conditions are mutually exclusive in live state and let global pickup or
      travel rules stay mechanically quiet during a fight.

@@ -679,6 +679,12 @@ refute "an impossible inventory capacity range is refused" \
 refute "fatigue thresholds stop beyond the observed percentage scale" \
     python3 "$GP" learn bad-fatigue-cap --priority 1 --trigger fatigue_below=102 \
         --action walk --param x=1 --param z=1
+refute "the full-fatigue predicate stops beyond the observed percentage scale" \
+    python3 "$GP" learn bad-fatigue-floor --priority 1 --trigger fatigue_at_least=101 \
+        --action walk --param x=1 --param z=1
+refute "an impossible fatigue range is refused" \
+    python3 "$GP" learn bad-fatigue-range --priority 1 --trigger fatigue_at_least=100 \
+        --trigger fatigue_below=100 --action walk --param x=1 --param z=1
 refute "an empty activity scope is refused" \
     python3 "$GP" learn bad-activity --priority 1 --trigger activity_is= \
         --action walk --param x=1 --param z=1
@@ -1979,6 +1985,22 @@ matches = gp.make_trigger_fn("Leaderboard competition", "thieving")
 assert matches(fatigue_rule["trigger"], {"fatigue": 99}, None) is True
 assert matches(fatigue_rule["trigger"], {"fatigue": 100}, None) is False
 assert matches(fatigue_rule["trigger"], {}, None) is False
+
+# fatigue_at_least is its mirror: full fatigue matches, the last productive
+# value does not, and a snapshot without a reading still fails closed.
+full = {"fatigue_at_least": 100}
+assert matches(full, {"fatigue": 100}, None) is True
+assert matches(full, {"fatigue": 99}, None) is False
+assert matches(full, {}, None) is False
+assert matches(full, {"fatigue": None}, None) is False
+
+# Inventory conditions read the recorded brief form too: a replay snapshot
+# carries plain item ids, and an id list must never crash a trigger.
+held = {"inventory_has": 1263}
+assert matches(held, {"inventory": [1263, 20]}, None) is True
+assert matches(held, {"inventory": [20]}, None) is False
+assert matches(held, {"inventory": [{"id": 1263}]}, None) is True
+assert matches({"inventory_lacks": 1263}, {"inventory": [1263]}, None) is False
 
 # The same fatigue state must not block ordinary inventory clicks such as food.
 compiled, refusal = gp.compile_player_action(
