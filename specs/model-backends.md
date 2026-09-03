@@ -161,10 +161,15 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     the status line, the state block, the reason a codex path gives for standing down — a bare
     clock time is only honest for a time later today; a reported expiry can stand days out, so
     any other date MUST be shown with it.
-14. A builder job on a codex model that is refused is BLOCKED, never downgraded (specs/jobs.md
-    rule 5a holds across engines): the runner records the refusal and the block machinery holds
-    and re-dispatches exactly as it does when every Claude account refuses. A genuine failure
-    (non-limit) stays a failure, on either engine.
+14. A builder job on a codex model that is refused, or whose codex login is cooling, is never
+    SILENTLY downgraded (specs/jobs.md rule 5a holds across engines): the runner records the
+    refusal, and its one sanctioned move is the ordered family walk of specs/jobs.md rule 5b —
+    the next family in the job's list, loudly, with the sidecar's `model` re-stamped to what
+    actually ran. A job whose whole walk is refused is BLOCKED, with the block machinery
+    holding and re-dispatching exactly as it does when every Claude account refuses; a walk
+    disabled (`JOB_MODEL_FALLBACK` set empty) blocks at the codex family exactly as before. A
+    genuine failure (non-limit) stays a failure, on either engine, and ends the walk where it
+    happened.
 15. The chess mover on a codex model from its own ENVIRONMENT CHAIN tries codex first and,
     refused or cooling, falls through to its own Claude account walk unchanged — a game in
     flight must not stall on a dry engine. A ROUTED model — a real-game job carrying the

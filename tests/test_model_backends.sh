@@ -479,7 +479,12 @@ check "a classifier subscription-limit refusal cools the one codex login" \
     test -s "$CODEX_STATE"
 
 echo
-echo "a builder on codex is BLOCKED when refused, never downgraded (rule 14):"
+echo "a builder on codex is BLOCKED when refused, never SILENTLY downgraded (rule 14):"
+# The family walk (jobs.md rule 5b) is pinned off below — JOB_MODEL_FALLBACK
+# is set empty on the runner's env — so this case holds the terminal shape:
+# a refused codex family with nowhere configured to walk blocks, and not one
+# Claude account is spent. The walk itself is held by
+# tests/test_job_model_fallback.sh.
 T="$SANDBOX/jobtest"
 mkdir -p "$T/repo/lib" "$T/jobs" "$T/wd"
 cp "$REPO/lib/job-runner" "$T/repo/lib/job-runner"
@@ -500,6 +505,7 @@ json.dump({"id": "cjob", "description": "try a codex build",
 PY
 rm -f "$CODEX_STATE"; : > "$SANDBOX_CLAUDE_LOG"; rm -f "$CODEX_LOG"
 JOBS_DIR="$T/jobs" JOB_MODEL="gpt-5.6-sol" JOB_EFFORT="high" \
+    JOB_MODEL_FALLBACK="" \
     CODEX_BIN="$SANDBOX_BIN/codex" CODEX_STUB_LIMIT=1 \
     CLAUDE_BIN="$SANDBOX_BIN/claude" \
     DESKCRAB_CODEX_STATE="$CODEX_STATE" \

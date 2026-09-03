@@ -39,15 +39,44 @@ and the completion channel a job has back to her.
    a bare environment, and a scratch instance's jobs must stay in the scratch instance.
 5. A job MUST be dispatched with the account the selection answers with now, and MUST walk the
    flat list itself from there.
-5a. A builder runs on the model the dispatch named — `JOB_MODEL` — and NOTHING may downgrade or
-   substitute it: not a retry, not the block retry, not any attempt of the account walk. A
-   model-limit refusal ("You've reached your <model> limit") is an ACCOUNT that ran dry, not a
-   model to swap out: it matches the shared limit signature and rotates the walk to the next
-   account exactly as any limit refusal does ([account-fallback.md](account-fallback.md) rules 7
-   and 12). When every offered account refuses, the job is `blocked` — terminally, past the one
-   automatic retry of rule 18b: no re-queue, no additional wakes, nothing that accumulates and
-   mass-fires when credit returns. A build on a lesser model is not the build that was asked for,
-   and a silently substituted model is worse than a blocked job, because a blocked job says so.
+5a. A builder runs on the model the dispatch named — the per-job request of rule 5c, else
+   `JOB_MODEL` — and within a family NOTHING may downgrade or substitute it: not a retry, not
+   the block retry, not any attempt of the account walk. A model-limit refusal ("You've reached
+   your <model> limit") is an ACCOUNT that ran dry, not a model to swap out: it matches the
+   shared limit signature and rotates the walk to the next account exactly as any limit refusal
+   does ([account-fallback.md](account-fallback.md) rules 7 and 12), with `--model` unchanged on
+   every attempt. A SILENTLY substituted model is worse than a blocked job, because a blocked
+   job says so; the one sanctioned move between families is rule 5b's ordered walk, which is
+   loud everywhere a reader could look. When every family in that walk has been refused on every
+   offered account, the job is `blocked` — terminally, past the one automatic retry of rule 18b:
+   no re-queue, no additional wakes, nothing that accumulates and mass-fires when credit
+   returns.
+5b. One family's dry spell MUST NOT stop all builder work. The 2026-08-28 night is the measured
+   case (the record `every-builder-job-is-pinned-to-fable-so-one-mode`): nine fable dispatches
+   refused in four seconds each across seven hours, zero builder starts — while the very
+   accounts that refused them answered opus immediately, and the refusal wording itself said
+   "switch models with /model". So when EVERY offered account refuses at a family — the
+   whole-list refusal that used to be terminal — the worker walks to the NEXT family in the
+   job's ordered list and runs the whole account walk again there. The list is the job's own
+   model first, then `JOB_MODEL_FALLBACK` in the configured order (default `opus sonnet`; set
+   it empty to restore the terminal block at the pinned family), duplicates dropped by family
+   key. The walk crosses engines by the same rule every model knob routes by
+   ([model-backends.md](model-backends.md) rule 14): a codex family that is refused or cooling
+   walks on exactly as a dry Claude family does. Every move is LOUD: the job log names both
+   families, the `attempts` record carries the move, and the sidecar's `model` is re-stamped to
+   what the builder actually ran (rule 35) — collection and the completion wake therefore
+   report the family used, never merely the one that was asked for. A genuine build failure
+   (rule 15) ends the job at the family it happened on: the walk exists for refusals, not for
+   papering over a broken build with a second opinion.
+5c. `crab job --model <name>` pins ONE job to a model, overriding `JOB_MODEL` for that job
+   only: the request is recorded on the sidecar as `model_request`, the dispatch stamps `model`
+   from it, and the worker reads it back from the sidecar — the conf's own `JOB_MODEL`
+   assignment overwrites any inherited environment when the library sources it, so the sidecar
+   is the one carrier that survives into a detached worker. Requeue and the automatic block
+   retry (rules 7a, 18b) carry the request exactly as they carry the record and the slug. The
+   conf is never edited and a dispatch without the flag behaves exactly as before. The name is
+   validated at the door (the same token as [wake-queue.md](wake-queue.md) rule 13b), and rule
+   5b's walk starts from the override when one is given.
 6. A job MUST be silent by contract: no speech, no notifications, no windows.
 7. A job's only channel back to her is one event wake on completion, carrying the outcome as its
    reason.
@@ -166,9 +195,14 @@ and the completion channel a job has back to her.
     A FINAL attempt that ends cut stays `failed`, never `blocked` — work was attempted and the log
     holds it — and four builders died exactly this way on the night of 2026-08-11, each one
     journalled "failed (exit 1)" with the session-limit line standing as its closing words.
-16. While the block marker is younger than the retry window, dispatch MUST refuse. The standing
-    policy of dispatching a builder the moment work is noticed otherwise fires builder after builder
-    into the same wall.
+16. While the block marker is younger than the retry window, dispatch of a MATCHING FAMILY must
+    refuse. The marker records the families whose whole walk refused (rule 5b), and it holds
+    exactly those: a dispatch whose own family — the per-job request of rule 5c, else
+    `JOB_MODEL`, by family key — is not among them passes, because a fable dry spell holding an
+    opus brief is the 2026-08-28 night this scoping ends. A marker scoped `all`, and the
+    two-field marker written before the families field existed, hold every family — the
+    pre-scope behaviour, preserved. The standing policy of dispatching a builder the moment
+    work is noticed otherwise fires builder after builder into the same wall.
 17. The marker MUST expire on its own, so the first dispatch after the window is the retry probe.
     There MUST be a force flag for a deliberate retry inside the window.
 18. The completion wake for a blocked job MUST say plainly that the task is still undone, rather
@@ -495,9 +529,9 @@ log still held only the account banner. These rules make the protection structur
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, model_request, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35) — `model` is re-stamped by rule 5b's family walk so it stays what actually ran, and `model_request` is the per-job override of rule 5c, absent when none was given. `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
-| `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
+| `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <family[,family…]|all> \t <reason>` (rule 16), last block wins; a two-field marker from before the families field reads as `all` |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
 | `~/.local/share/deskcrab/jobs/flight/<key>.lock` | the single-flight lock (rule 44): flock'd by the worker for the life of its run; the `<pid> <job id>` line inside is legibility only, never the lock itself; pruned by report's keep-days sweep |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
@@ -626,6 +660,18 @@ exactly one writer by content and mtime, the loser `duplicate` with the key and 
 its own log, having booted no builder; a stale-queued `--daily` brief superseded at the door
 with no unit started while a fresh one dispatches, the dry run dropping nothing; and a stale
 flight lock from a dead pid recovered rather than standing).
+`tests/test_job_model_fallback.sh` (rules 5b, 5c, 16-17: the per-job `--model` override
+dispatching on its own model with `model_request` on the sidecar, the conf's bytes untouched
+and a flag-less dispatch unchanged; a malformed name refused at the door; the family-scoped
+marker holding the refused family and passing the others — the legacy two-field marker still
+family-blind — at the fresh and the queued door alike; the worker's ordered walk: a fable
+refusal riding to opus on the very account a legacy cooldown row called cooling, a configured
+`JOB_MODEL_FALLBACK` order followed, the sidecar's `model` re-stamped to the family used and
+the move named in the log and the attempts record; every family dry landing `blocked` with
+the families on the marker, the one retry probe armed from the marker's own window —
+`JOB_BLOCK_RETRY` plus the margin, once, never for a retry — and the marker the dry walk
+wrote holding a refused family while passing an untried one; and the request riding requeue
+and the automatic block retry).
 
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
 unpushed and dirty counts, and the report's test tally; the tally is the end state, never the

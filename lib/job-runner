@@ -111,6 +111,13 @@ if [ -n "$JOB_FLIGHT_KEY" ]; then
     fi
 fi
 
+# The per-job model override (specs/jobs.md rule 5c), off the sidecar: the
+# conf's own JOB_MODEL assignment clobbered any inherited environment when
+# common.sh sourced it above, so the record is the one carrier that survives
+# into this worker — and through requeue and the block retry.
+JOB_MODEL_REQUEST="$("$LIB_DIR/job-status" get "$STATUS" model_request 2>/dev/null)"
+[ -n "$JOB_MODEL_REQUEST" ] && JOB_MODEL="$JOB_MODEL_REQUEST"
+
 JOB_BACKEND="$(model_backend "$JOB_MODEL")"
 # The per-job correction hook reads these from the builder process. The
 # sidecar stamp lets `crab job steer` refuse older jobs that began without
@@ -209,10 +216,9 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 # is: it is a headless coding session working inside his project, and the
 # project's own memory index is precisely the rules it should arrive knowing.
 # An account refusing over a usage/session limit is not a dead job: the build
-# moves to the next account and only a walk with nothing left in it blocks.
-# Accounts known dry are skipped outright — paying a doomed CLI boot and refusal
-# in front of every build buys nothing. Each refusal cools its account, so the
-# next job starts past it too.
+# moves to the next account, a family every offered account refused moves the
+# build to the next FAMILY in the ordered list (specs/jobs.md rule 5b), and
+# only a walk with nothing left in it anywhere blocks.
 #
 # ATT_OFF marks where the current attempt's output begins: every judgement below
 # reads only the final attempt's slice of the STREAM, so an earlier attempt's
@@ -220,144 +226,198 @@ cd "$WORKDIR" 2>/dev/null || cd "$HOME"
 ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
 RC=0
 ATTEMPT=0
-PREV_ACCT=""
-# The engine follows the model name (specs/model-backends.md rule 14): a
-# codex-model build runs the one codex login, and refused it is BLOCKED,
-# never downgraded — jobs.md rule 5a holds across engines. The builder keeps
-# full hands on either engine: codex's own sandbox and approvals are off
-# exactly as --dangerously-skip-permissions is the Claude builder's shape.
-# The brief rides as a preface on the task rather than
-# replacing codex's base instructions — a builder is a coding agent, and
-# codex's own coding instructions are the ones it should keep.
 CODEX_PRE_BLOCKED=""
-if [ "$JOB_BACKEND" = "codex" ]; then
-    ATTEMPT=1
-    ACCT="codex"
-    CODEX_SLUG="$(codex_model_resolve "$JOB_MODEL")"
-    if codex_available; then
-        echo "job-runner: building on codex ($CODEX_SLUG)" >> "$LOG"
-        ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
-        (
-            env -u OPENAI_API_KEY "$CODEX_BIN" exec \
-                --ignore-user-config --skip-git-repo-check \
-                --dangerously-bypass-approvals-and-sandbox --json --color never \
-                -C "$PWD" -m "$CODEX_SLUG" \
-                -c "model_reasoning_effort=$JOB_EFFORT" \
-                "$SYS
+# The ordered family walk (specs/jobs.md rule 5b): this job's own model first
+# — the sidecar's per-job request (rule 5c) already folded into JOB_MODEL
+# above — then JOB_MODEL_FALLBACK in the user's order, duplicates dropped by
+# family key. Within a family nothing substitutes the model (rule 5a): the
+# account walk rides refusals at --model unchanged. Only a family EVERY
+# offered account refused moves the walk on, and the move is loud — the log
+# names both families, the attempts record carries it, and the sidecar's
+# model is re-stamped to what actually ran (rule 35). One family's dry spell
+# stopping all night work was the 2026-08-28 record this walk closes.
+JOB_MODEL_WALK="$JOB_MODEL"
+for _FB in $JOB_MODEL_FALLBACK; do
+    _FBK="$(job_model_key "$_FB")"; _DUP=""
+    for _M in $JOB_MODEL_WALK; do
+        [ "$(job_model_key "$_M")" = "$_FBK" ] && { _DUP=1; break; }
+    done
+    [ -n "$_DUP" ] || JOB_MODEL_WALK="$JOB_MODEL_WALK $_FB"
+done
+unset _FB _FBK _DUP _M
+FAMILIES_REFUSED=""
+JOB_MODEL_USED="$JOB_MODEL"
+for JOB_TRY_MODEL in $JOB_MODEL_WALK; do
+    TRY_BACKEND="$(model_backend "$JOB_TRY_MODEL")"
+    if [ -n "$FAMILIES_REFUSED" ]; then
+        echo "job-runner: every account refused at $JOB_MODEL_USED — walking to $JOB_TRY_MODEL, the next family in the ordered list (jobs.md rule 5b)" >> "$LOG"
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') family walk: every account refused at $JOB_MODEL_USED — trying $JOB_TRY_MODEL" 2>/dev/null
+        # Rule 35: the sidecar's model is what the builder ACTUALLY ran
+        # with, so a fallback family is on the record, never misreported.
+        "$LIB_DIR/job-status" set "$STATUS" model="$JOB_TRY_MODEL" 2>/dev/null
+    fi
+    JOB_MODEL_USED="$JOB_TRY_MODEL"
+    FAMILY_REFUSED=""
+    CODEX_PRE_BLOCKED=""
+    if [ "$TRY_BACKEND" = "codex" ]; then
+        # The engine follows the model name (specs/model-backends.md rule
+        # 14): a codex-family try runs the one codex login — refused or
+        # cooling, the family walk moves on exactly as a dry Claude family
+        # does, and only a walk with nothing left blocks. The builder keeps
+        # full hands on either engine: codex's own sandbox and approvals are
+        # off exactly as --dangerously-skip-permissions is the Claude
+        # builder's shape. The brief rides as a preface on the task rather
+        # than replacing codex's base instructions — a builder is a coding
+        # agent, and codex's own coding instructions are the ones it should
+        # keep.
+        ATTEMPT=$(( ATTEMPT + 1 ))
+        ACCT="codex"
+        CODEX_SLUG="$(codex_model_resolve "$JOB_TRY_MODEL")"
+        if codex_available; then
+            echo "job-runner: building on codex ($CODEX_SLUG)" >> "$LOG"
+            ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+            (
+                env -u OPENAI_API_KEY "$CODEX_BIN" exec \
+                    --ignore-user-config --skip-git-repo-check \
+                    --dangerously-bypass-approvals-and-sandbox --json --color never \
+                    -C "$PWD" -m "$CODEX_SLUG" \
+                    -c "model_reasoning_effort=$JOB_EFFORT" \
+                    "$SYS
 
 --- the task ---
 
 $TASK" </dev/null 2>&1 \
-                | CODEX_STREAM_MODEL="$CODEX_SLUG" "$LIB_DIR/codex-stream" \
+                    | CODEX_STREAM_MODEL="$CODEX_SLUG" "$LIB_DIR/codex-stream" \
+                    | tee -a "$STREAMLOG" \
+                    | "$LIB_DIR/job-log-stream" >> "$LOG"
+                exit "${PIPESTATUS[0]}"
+            )
+            RC=$?
+            if [ "$RC" -eq 0 ]; then
+                "$LIB_DIR/job-status" append "$STATUS" attempts \
+                    "$(date '+%F %T') codex: ran clean" 2>/dev/null
+            elif REFUSAL="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
+                codex_limit_record "$REFUSAL"
+                "$LIB_DIR/job-status" append "$STATUS" attempts \
+                    "$(date '+%F %T') codex: refused — $REFUSAL" 2>/dev/null
+                FAMILY_REFUSED=1
+            else
+                "$LIB_DIR/job-status" append "$STATUS" attempts \
+                    "$(date '+%F %T') codex: failed (exit $RC)" 2>/dev/null
+            fi
+        else
+            # Cooling or absent: this family never boots. The reason is kept
+            # in hand — the post-run judgement cannot read a refusal out of
+            # a stream no CLI ever wrote to — and the walk moves on.
+            CODEX_PRE_BLOCKED="codex is $(codex_unavailable_why)"
+            echo "job-runner: $CODEX_PRE_BLOCKED — this family never began" >> "$LOG"
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') codex: $CODEX_PRE_BLOCKED" 2>/dev/null
+            RC=1
+            FAMILY_REFUSED=1
+        fi
+    else
+    # The walk offers every account (specs/account-fallback.md rule 10),
+    # rotated to the current; what an account can answer is learned by
+    # calling it, never remembered (rule 8).
+    FAM_FIRST=1
+    PREV_ACCT=""
+    LAST_OUTCOME=""
+    for ACCT in $(claude_accounts "$JOB_TRY_MODEL"); do
+        CONFDIR="$(claude_account_dir "$ACCT")"
+        ATTEMPT=$(( ATTEMPT + 1 ))
+        if [ -n "$FAM_FIRST" ]; then
+            echo "job-runner: building as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
+        else
+            echo "job-runner: account $PREV_ACCT is over its limit — retrying as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
+        fi
+        FAM_FIRST=""
+        PREV_ACCT=$ACCT
+        ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+        (
+            # Every account is addressed explicitly, account 1 included
+            # (specs/account-fallback.md rule 3) — never by whatever the
+            # environment arrived holding: a job dispatched from a turn inherits
+            # the turn's override (job_start forwards it on purpose), and a rule
+            # shaped as "absent means X" once re-ran the account that had just
+            # refused while another entry was never tried at all.
+            export CLAUDE_CONFIG_DIR="$CONFDIR"
+            # The job profile: no MCP servers and no skills catalogue, and
+            # deliberately no --tools restriction — a builder needs whatever the
+            # work needs. See claude_profile_flags; --tools without the empty MCP
+            # config is the shape that TRIPLES the context.
+            claude_profile_flags job
+            # $LOG fills AS the builder writes, not at completion. This used to
+            # exec straight into $STREAMLOG and turn the attempt's slice back into
+            # prose only after the CLI exited, so for a running job `crab job log`
+            # showed nothing, a stopped one kept nothing, and both were read, over
+            # and over, as "the job produced nothing". The tee keeps $STREAMLOG
+            # byte-identical for the viewer and the refusal slices below; the
+            # filter (lib/job-log-stream) writes the human report event by event,
+            # so a job killed mid-build leaves exactly what it had said by then.
+            # The subshell's exit code must stay the CLI's own — tee and the
+            # filter exit 0 whatever happened in front of them.
+            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+                --model "$JOB_TRY_MODEL" --effort "$JOB_EFFORT" \
+                --verbose --output-format stream-json \
+                "${CLAUDE_PROFILE_FLAGS[@]}" \
+                --append-system-prompt "$SYS" \
+                "$TASK" 2>&1 \
                 | tee -a "$STREAMLOG" \
                 | "$LIB_DIR/job-log-stream" >> "$LOG"
             exit "${PIPESTATUS[0]}"
         )
         RC=$?
         if [ "$RC" -eq 0 ]; then
+            # The walk on the record (jobs.md rule 37): a morning reader sees
+            # which logins tonight's build burned without opening the stream.
+            LAST_OUTCOME=clean
             "$LIB_DIR/job-status" append "$STATUS" attempts \
-                "$(date '+%F %T') codex: ran clean" 2>/dev/null
-        elif REFUSAL="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
-            codex_limit_record "$REFUSAL"
-            "$LIB_DIR/job-status" append "$STATUS" attempts \
-                "$(date '+%F %T') codex: refused — $REFUSAL" 2>/dev/null
-        else
-            "$LIB_DIR/job-status" append "$STATUS" attempts \
-                "$(date '+%F %T') codex: failed (exit $RC)" 2>/dev/null
+                "$(date '+%F %T') account $ACCT: ran clean" 2>/dev/null
+            break
         fi
-    else
-        # Cooling or absent: the build never boots. Blocked, with the reason
-        # in hand — the post-run judgement cannot read a refusal out of a
-        # stream no CLI ever wrote to.
-        CODEX_PRE_BLOCKED="codex is $(codex_unavailable_why)"
-        echo "job-runner: $CODEX_PRE_BLOCKED — the build never began" >> "$LOG"
-        "$LIB_DIR/job-status" append "$STATUS" attempts \
-            "$(date '+%F %T') codex: $CODEX_PRE_BLOCKED" 2>/dev/null
-        RC=1
+        # Judged on the CLI's OWN events in this attempt's slice, never on its raw
+        # bytes. A stream carries every byte of every tool result, so grepping it
+        # for the limit signature made a builder that merely READ a file
+        # containing the wording — lib/common.sh, which holds the signature's own
+        # patterns — and then exited non-zero for any reason look like an account
+        # refusal: the current account rotated and every further dispatch was held
+        # for half an hour, on the strength of a file the builder opened.
+        # claude_stream_refusal is the same judgement the turn and wake walks use
+        # — and so is the mid-build CUT (specs/jobs.md rule 15a, account-fallback
+        # rule 12a): a limit that stops a builder half-way through its work moves
+        # the build to the next account at once, exactly as a refusal does, instead
+        # of journalling the CLI's complaint as the builder's closing words. Four
+        # builders died that way inside ten minutes on the night of 2026-08-11.
+        # A final attempt that ends cut stays a real failure, never blocked — the
+        # blocked judgement below still demands no genuine output at all.
+        if REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
+            LAST_OUTCOME=refused
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: refused — $REFUSAL" 2>/dev/null
+        elif REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")"; then
+            LAST_OUTCOME=cut
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: cut mid-run — $REFUSAL" 2>/dev/null
+        else
+            LAST_OUTCOME=failed
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: failed (exit $RC)" 2>/dev/null
+            break
+        fi
+        claude_limit_record "$ACCT" "$REFUSAL" "$JOB_TRY_MODEL"
+    done
+    # A list that ended on a refusal or a cut was offered nothing with
+    # credit: the family is dry, and the walk above decides where to go.
+    case "$LAST_OUTCOME" in refused|cut) FAMILY_REFUSED=1 ;; esac
     fi
-fi
-# The walk knows its model (specs/account-fallback.md rule 10): an account
-# whose cooldown is scoped to another family still takes a build. A codex
-# build already ran above, so the list it walks is empty on that engine —
-# blocked is blocked, never a downgrade.
-for ACCT in $([ "$JOB_BACKEND" = "codex" ] || claude_accounts "$JOB_MODEL"); do
-    CONFDIR="$(claude_account_dir "$ACCT")"
-    ATTEMPT=$(( ATTEMPT + 1 ))
-    if [ "$ATTEMPT" = 1 ]; then
-        echo "job-runner: building as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
-    else
-        echo "job-runner: account $PREV_ACCT is over its limit — retrying as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
-    fi
-    PREV_ACCT=$ACCT
-    ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
-    (
-        # Every account is addressed explicitly, account 1 included
-        # (specs/account-fallback.md rule 3) — never by whatever the
-        # environment arrived holding: a job dispatched from a turn inherits
-        # the turn's override (job_start forwards it on purpose), and a rule
-        # shaped as "absent means X" once re-ran the account that had just
-        # refused while another entry was never tried at all.
-        export CLAUDE_CONFIG_DIR="$CONFDIR"
-        # The job profile: no MCP servers and no skills catalogue, and
-        # deliberately no --tools restriction — a builder needs whatever the
-        # work needs. See claude_profile_flags; --tools without the empty MCP
-        # config is the shape that TRIPLES the context.
-        claude_profile_flags job
-        # $LOG fills AS the builder writes, not at completion. This used to
-        # exec straight into $STREAMLOG and turn the attempt's slice back into
-        # prose only after the CLI exited, so for a running job `crab job log`
-        # showed nothing, a stopped one kept nothing, and both were read, over
-        # and over, as "the job produced nothing". The tee keeps $STREAMLOG
-        # byte-identical for the viewer and the refusal slices below; the
-        # filter (lib/job-log-stream) writes the human report event by event,
-        # so a job killed mid-build leaves exactly what it had said by then.
-        # The subshell's exit code must stay the CLI's own — tee and the
-        # filter exit 0 whatever happened in front of them.
-        "$CLAUDE_BIN" -p --dangerously-skip-permissions \
-            --model "$JOB_MODEL" --effort "$JOB_EFFORT" \
-            --verbose --output-format stream-json \
-            "${CLAUDE_PROFILE_FLAGS[@]}" \
-            --append-system-prompt "$SYS" \
-            "$TASK" 2>&1 \
-            | tee -a "$STREAMLOG" \
-            | "$LIB_DIR/job-log-stream" >> "$LOG"
-        exit "${PIPESTATUS[0]}"
-    )
-    RC=$?
-    if [ "$RC" -eq 0 ]; then
-        # The walk on the record (jobs.md rule 37): a morning reader sees
-        # which logins tonight's build burned without opening the stream.
-        "$LIB_DIR/job-status" append "$STATUS" attempts \
-            "$(date '+%F %T') account $ACCT: ran clean" 2>/dev/null
-        break
-    fi
-    # Judged on the CLI's OWN events in this attempt's slice, never on its raw
-    # bytes. A stream carries every byte of every tool result, so grepping it
-    # for the limit signature made a builder that merely READ a file
-    # containing the wording — lib/common.sh, which holds the signature's own
-    # patterns — and then exited non-zero for any reason look like an account
-    # refusal: the current account rotated and every further dispatch was held
-    # for half an hour, on the strength of a file the builder opened.
-    # claude_stream_refusal is the same judgement the turn and wake walks use
-    # — and so is the mid-build CUT (specs/jobs.md rule 15a, account-fallback
-    # rule 12a): a limit that stops a builder half-way through its work moves
-    # the build to the next account at once, exactly as a refusal does, instead
-    # of journalling the CLI's complaint as the builder's closing words. Four
-    # builders died that way inside ten minutes on the night of 2026-08-11.
-    # A final attempt that ends cut stays a real failure, never blocked — the
-    # blocked judgement below still demands no genuine output at all.
-    if REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
-        "$LIB_DIR/job-status" append "$STATUS" attempts \
-            "$(date '+%F %T') account $ACCT: refused — $REFUSAL" 2>/dev/null
-    elif REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")"; then
-        "$LIB_DIR/job-status" append "$STATUS" attempts \
-            "$(date '+%F %T') account $ACCT: cut mid-run — $REFUSAL" 2>/dev/null
-    else
-        "$LIB_DIR/job-status" append "$STATUS" attempts \
-            "$(date '+%F %T') account $ACCT: failed (exit $RC)" 2>/dev/null
-        break
-    fi
-    claude_limit_record "$ACCT" "$REFUSAL" "$JOB_MODEL"
+    [ "$RC" -eq 0 ] && break
+    # A genuine failure ends the job at the family it happened on (rule 5b):
+    # the walk exists for refusals, not for a second opinion on a broken
+    # build.
+    [ -n "$FAMILY_REFUSED" ] || break
+    FAMILIES_REFUSED="${FAMILIES_REFUSED:+$FAMILIES_REFUSED,}$(job_model_key "$JOB_TRY_MODEL")"
 done
 trap - TERM
 
@@ -366,7 +426,7 @@ trap - TERM
 # reads the accounts off the swap markers each retry logged above. The hint
 # is the walk's own last account NUMBER — equal to the only account when the
 # walk never swapped, which is the one case the hint decides.
-token_ledger_record "$STREAMLOG" job "$JOB_MODEL" "$JOB_EFFORT" \
+token_ledger_record "$STREAMLOG" job "$JOB_MODEL_USED" "$JOB_EFFORT" \
     "$ACCT" "$(( $(date +%s) - START ))"
 
 # Renewed: the status write, the day journal, and the completion wake below
@@ -454,7 +514,7 @@ if [ "$RC" -ne 0 ]; then
     # land here (specs/jobs.md rule 15). Each engine is judged by its own
     # detector (specs/model-backends.md rule 14), and a codex build that
     # never booted carries its reason in hand — no stream holds it.
-    if [ "$JOB_BACKEND" = "codex" ]; then
+    if [ "${TRY_BACKEND:-$JOB_BACKEND}" = "codex" ]; then
         if [ -n "$CODEX_PRE_BLOCKED" ]; then
             BLOCKED="$CODEX_PRE_BLOCKED"
         else
@@ -465,7 +525,11 @@ if [ "$RC" -ne 0 ]; then
     fi
     if [ -n "$BLOCKED" ]; then
         STATE=blocked
-        job_block_record "$BLOCKED"
+        # The marker carries every family the walk was refused at (jobs.md
+        # rule 16), so the hold scopes to the families proved dry and a
+        # dispatch of any other passes.
+        job_block_record "$BLOCKED" \
+            "${FAMILIES_REFUSED:-$(job_model_key "$JOB_MODEL_USED")}"
     fi
 fi
 "$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
@@ -499,7 +563,7 @@ REVIEW_WAKE=""
 if [ "$STATE" = blocked ]; then
     # Nothing ran, so there is nothing to read and nothing to verify. Say that
     # plainly instead of sending the next wake to audit an empty log.
-    WAKE_REASON="Detached job $ID never began: ${BLOCKED:-the CLI refused to run}. NO WORK WAS ATTEMPTED and the log holds only the refusal — do not read it looking for results. Task still undone: $(printf '%.200s' "$TASK"). Further dispatches are held for $(( JOB_BLOCK_RETRY / 60 )) min; do the work by hand if it is small, or leave it for later."
+    WAKE_REASON="Detached job $ID never began: ${BLOCKED:-the CLI refused to run}. NO WORK WAS ATTEMPTED and the log holds only the refusals — do not read it looking for results. Every family in the walk was refused (${FAMILIES_REFUSED:-$(job_model_key "$JOB_MODEL_USED")}). Task still undone: $(printf '%.200s' "$TASK"). Dispatches at those families are held for $(( JOB_BLOCK_RETRY / 60 )) min; do the work by hand if it is small, or leave it for later."
 elif [ -n "$RECORD_UNTOUCHED" ]; then
     # The build ran clean and the obligation did not: the record it was
     # dispatched against was never touched (jobs.md rule 28). Name the record

@@ -81,8 +81,9 @@ it is ten minutes of silence with nothing on screen explaining it.
     turn's wall-clock deadline is asked again immediately before the fallback walk boots: a
     deadline that lapsed while the raised walk was refusing SKIPS the fallback — the turn
     reports the outage it measured rather than booting a walk it has no time to hear. It is a
-    TURN rule and nothing else's: a builder job's model is never downgraded
-    ([jobs.md](jobs.md) rule 5a stands, pinning test and all).
+    TURN rule and nothing else's: a builder job's model is never SILENTLY substituted — its one
+    sanctioned move is the loud, recorded family walk of [jobs.md](jobs.md) rules 5a-5b, never
+    this turn-side downgrade ([jobs.md](jobs.md) rule 5a stands, pinning test and all).
 11. Every move of the current MUST be recorded: the state file says where the selection stands and
     why it last moved; the
     append-only account log says what it has been through. `crab status` and the state block MUST

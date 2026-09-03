@@ -260,6 +260,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # JOBS_DIR="$HOME/.local/share/deskcrab/jobs"
 # JOB_MODEL="fable"
 # JOB_EFFORT="high"
+# JOB_MODEL_FALLBACK="opus sonnet"  # the ordered families a builder walks to
+                                    # when EVERY account refuses at a family
+                                    # (specs/jobs.md rule 5b) — one model's
+                                    # limit must not stop all night work; set
+                                    # it EMPTY to block at JOB_MODEL as before
 # JOB_REVIEW_MODEL="sol"   # the review wake a finished job books; routes by
                            # name like every other model knob, so leaving it
                            # unset keeps a codex default nothing here names

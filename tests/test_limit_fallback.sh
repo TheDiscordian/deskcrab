@@ -753,10 +753,16 @@ run_runner() { # <id> [ENV=val ...]
     local id="$1"; shift
     "$REPO_DIR/lib/job-status" new "$T/jobs" "$id" "do a thing" "" >/dev/null 2>&1 || \
         python3 -c 'import json,sys,time; json.dump({"id":sys.argv[2],"description":"do a thing","started_epoch":int(time.time()),"state":"running","unit":""},open(sys.argv[1]+"/"+sys.argv[2]+".json","w"))' "$T/jobs" "$id"
+    # The family walk is pinned OFF here (JOB_MODEL_FALLBACK=""): this suite
+    # holds the ONE-family shapes — the account rotation, the call counts,
+    # blocked-when-everything-refused, --model unchanged on every attempt
+    # (jobs.md rule 5a). The ordered walk across families (rule 5b) has its
+    # own suite, tests/test_job_model_fallback.sh; a case here that wants it
+    # back on can override the pin through its own env pairs.
     JOBS_DIR="$T/jobs" DESKCRAB_CONF="$T/conf" DESKCRAB_STATE_PREFIX="$T/state" \
         ACCOUNT_STATE_FILE="$T/account-state" \
         NOTICE_STATE_DIR="$T/notice" WAKES_DIR="$T/wakes" \
-        DESKCRAB_METRICS_DIR="$T/metrics" \
+        DESKCRAB_METRICS_DIR="$T/metrics" JOB_MODEL_FALLBACK="" \
         DAY_JOURNAL_DIR="$T/journal" CLAUDE_BIN="$T/claude-plain" \
         env "$@" "$T/repo/lib/job-runner" "$id" "$T" >/dev/null 2>&1
 }
@@ -1193,8 +1199,11 @@ grep -qF '"note":"dispute-fallback-skipped"' "$T/state-debug.log" \
             "$(grep note "$T/state-debug.log" 2>/dev/null | tail -n3)"
 rm -f "$T/state-convo.txt" "$T/walkcount"
 
-# Never for jobs: a builder's model is never downgraded (jobs.md rule 5a) —
-# an all-dry fable job blocks at fable, with no opus attempt anywhere.
+# Never SILENTLY for jobs (jobs.md rule 5a): with the ordered family walk
+# pinned off (run_runner's JOB_MODEL_FALLBACK=""), an all-dry fable job
+# blocks at fable, with no opus attempt anywhere — the dispute fallback must
+# not leak into the job path. The loud, recorded walk of rule 5b is held by
+# tests/test_job_model_fallback.sh.
 rm -f "$T/calls" "$T/jobs/blocked" "$T/account-state"
 run_runner fabledry CLAUDE_BIN="$T/claude-bymodel" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" JOB_MODEL=fable
 out="$("$REPO_DIR/lib/job-status" get "$T/jobs/fabledry.json" state)"

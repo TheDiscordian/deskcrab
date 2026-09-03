@@ -615,6 +615,15 @@ SPEECHLOCK="${STATE_PREFIX}-speech.lock"
 JOBS_DIR="${JOBS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs}"
 JOB_MODEL="${JOB_MODEL:-fable}"
 JOB_EFFORT="${JOB_EFFORT:-high}"
+# The ordered fallback families for a builder (jobs.md rule 5b), tried in
+# this order after the job's own model when EVERY offered account refuses at
+# a family. One family's dry spell must not stop all night work: on
+# 2026-08-28 nine fable dispatches were refused in four seconds each across
+# seven hours while the same accounts answered opus immediately (the record
+# every-builder-job-is-pinned-to-fable-so-one-mode). Set it EMPTY to restore
+# the terminal block at the pinned family — which is why the default below
+# keeps a set-but-empty value rather than replacing it.
+JOB_MODEL_FALLBACK="${JOB_MODEL_FALLBACK-opus sonnet}"
 # The completion review's effort override (jobs.md rule 29b): a record job
 # that ran clean ends SUBMITTED, and its completion wake — the review — books
 # with this override so the review runs with real hands whatever the wake
@@ -5780,6 +5789,16 @@ claude_model_family() {  # <model string or wording> -> family | nothing
         | grep -oiE "$pat" | head -n1 | tr '[:upper:]' '[:lower:]'
 }
 
+# The FAMILY KEY of a model name, for the job walk's dedup and the block
+# marker's scope (specs/jobs.md rules 5b and 16): the Claude family the name
+# carries, else the whole name lowercased — a codex name is its own family.
+job_model_key() {  # <model> -> family key
+    local k
+    k="$(claude_model_family "${1:-}")"
+    [ -n "$k" ] || k="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    printf '%s' "$k"
+}
+
 # The login to hand a DETACHED child — a job, the promise auditor, the memory
 # judge — as the one to start from: the account the selection answers with
 # NOW, as a config dir, always non-empty. The shared state is fresher than
@@ -9036,23 +9055,54 @@ job_output_blocked() {
     grep -qiE "$CLAUDE_LIMIT_RE" -- "$1" 2>/dev/null
 }
 
-# Record the block, with the line that proved it. One file, last block wins.
-job_block_record() {
+# Record the block, with the line that proved it and the families the walk
+# was refused at (specs/jobs.md rule 16). One file, last block wins:
+#   <epoch> \t <family[,family…]|all> \t <reason>
+# A caller that names no families writes `all` — the pre-scope behaviour —
+# and a two-field marker written before the field existed reads the same
+# way in job_block_active below.
+job_block_record() {  # <reason> [families, space or comma separated]
+    local fams="${2:-all}"
+    fams="$(printf '%s' "$fams" | tr -s ' \t' ',,')"
+    fams="${fams#,}"; fams="${fams%,}"
+    [ -n "$fams" ] || fams=all
     mkdir -p "$JOBS_DIR" 2>/dev/null
-    printf '%s\t%s\n' "$(date +%s)" "$1" > "$JOBS_BLOCKED_FILE" 2>/dev/null
+    printf '%s\t%s\t%s\n' "$(date +%s)" "$fams" "$1" > "$JOBS_BLOCKED_FILE" 2>/dev/null
 }
 
-# Prints "<age-seconds>\t<reason>" and returns 0 while a block is still fresh.
-# It expires on its own rather than needing to be cleared: nothing here can see
-# an account refill, so the next dispatch after the window IS the retry probe.
-job_block_active() {
-    local rec epoch reason age
+# Prints "<age-seconds>\t<reason>" and returns 0 while a block is still fresh
+# AND applies to the caller's model (specs/jobs.md rule 16): the marker is
+# scoped to the families whose whole walk refused, so it holds only a
+# dispatch of one of those — a fable dry spell holding an opus brief is the
+# 2026-08-28 night that scoping ends. No model argument, a marker scoped
+# `all`, and the legacy two-field marker all keep the family-blind answer.
+# It expires on its own rather than needing to be cleared: nothing here can
+# see an account refill, so the next dispatch after the window IS the retry
+# probe.
+job_block_active() {  # [model of the dispatch being judged]
+    local rec epoch rest fams reason age key
     rec="$(head -n1 "$JOBS_BLOCKED_FILE" 2>/dev/null)" || return 1
     [ -n "$rec" ] || return 1
-    epoch="${rec%%	*}"; reason="${rec#*	}"
+    epoch="${rec%%	*}"; rest="${rec#*	}"
     case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
     age=$(( $(date +%s) - epoch ))
     [ "$age" -lt "$JOB_BLOCK_RETRY" ] || return 1
+    case "$rest" in
+        *"	"*) fams="${rest%%	*}"; reason="${rest#*	}" ;;
+        *)      fams="all";          reason="$rest" ;;
+    esac
+    # A families field is a bare comma-joined token list; anything else is a
+    # legacy reason that happened to hold a tab, and stays family-blind.
+    case "$fams" in
+        ''|*[!a-z0-9.,_:-]*) fams="all"; reason="$rest" ;;
+    esac
+    if [ -n "${1:-}" ] && [ "$fams" != all ]; then
+        key="$(job_model_key "$1")"
+        case ",$fams," in
+            *",$key,"*) ;;
+            *) return 1 ;;
+        esac
+    fi
     printf '%s\t%s\n' "$age" "$reason"
 }
 
@@ -9138,7 +9188,7 @@ job_start() {
     # parsing it back out of the human messages below was the alternative.
     JOB_START_ID="" JOB_START_QUEUED=""
     local workdir="$PROJECT_DIR" force="" origin="" record="" want="" redo_of=""
-    local slug="" daily=""
+    local slug="" daily="" model_request=""
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
@@ -9150,6 +9200,14 @@ job_start() {
             # queued door drop a stale copy the next occurrence has replaced.
             --slug) slug="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             --daily) daily="${2:-}"; shift 2 2>/dev/null || shift $# ;;
+            # The per-job model override (jobs.md rule 5c): this one dispatch
+            # runs on the named model, the conf's JOB_MODEL untouched and
+            # every other job unchanged. It rides the sidecar as
+            # model_request — the conf's own assignment overwrites any
+            # inherited environment when the worker sources the library, so
+            # the record is the one carrier that survives — and requeue and
+            # the automatic block retry carry it like the record and slug.
+            --model) model_request="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # -O names the blocked job this dispatch is the automatic retry of
             # (lib/job-block-retry, jobs.md rule 18b). Internal, not offered in
             # the usage line: the stamps it writes below are what make the
@@ -9172,12 +9230,12 @@ job_start() {
             --want|-W) want="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # Any other flag is a mistake, not a task description — once, a
             # stray --help was dispatched as a real job that ran `claude --help`.
-            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [-f] <description of the work>"; return 1 ;;
+            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [--model <name>] [-f] <description of the work>"; return 1 ;;
             *) break ;;
         esac
     done
     local task="$*"
-    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [-f] <description of the work>"; return 1; }
+    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [--model <name>] [-f] <description of the work>"; return 1; }
     # A slug is a key, and a key is a filename: the flight lock of rule 44
     # lives at flight/<key>.lock, so the character set is validated here,
     # before anything exists (the same discipline as the id check in steer).
@@ -9197,6 +9255,13 @@ job_start() {
                 return 1 ;;
         esac
     fi
+    # A model name is the same token the wake queue's own model override
+    # carries (wake-queue.md rule 13b): judged here, before anything exists.
+    case "$model_request" in
+        *[!A-Za-z0-9._:-]*)
+            echo "Not dispatched — --model '$model_request' is not a model name (letters, digits, dot, dash, underscore and colon; jobs.md rule 5c)."
+            return 1 ;;
+    esac
     # Live steering is a synchronous ACTIONS control, not build work. Sending
     # this one-line correction to a detached builder delays it and makes a
     # second personality responsible for the assistant's own play.
@@ -9217,6 +9282,10 @@ job_start() {
             slug="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" slug 2>/dev/null)"
         [ -z "$daily" ] && \
             daily="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" daily 2>/dev/null)"
+        # ...and the per-job model (rule 5c): the retry probes the model the
+        # brief was pinned to, never whatever the conf says on the day.
+        [ -z "$model_request" ] && \
+            model_request="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" model_request 2>/dev/null)"
     fi
     # An id the records drawer does not know is refused before any sidecar or
     # unit exists — a job tied to a record nobody can touch could only ever
@@ -9282,13 +9351,18 @@ job_start() {
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" slug="$slug"
         [ -n "$daily" ] && \
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" daily="$daily"
+        [ -n "$model_request" ] && \
+            "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" model_request="$model_request"
         echo "Job $id QUEUED for the night — not dispatched. Awake, the door dispatches only want-linked work (jobs.md rule 30); the night takes up the queue after sleep."
         echo "  now instead: crab job dispatch $id   (or --want <ref> to link a want, -f to force)"
         echo "  list: crab jobs    drop: crab job drop $id"
         return 0
     fi
+    # The marker is judged against THIS dispatch's family (jobs.md rule 16):
+    # the per-job request, else the conf's JOB_MODEL. A family the marker
+    # does not name was never seen refusing and passes.
     local block
-    if [ -z "$force" ] && block="$(job_block_active)"; then
+    if [ -z "$force" ] && block="$(job_block_active "${model_request:-$JOB_MODEL}")"; then
         echo "Not dispatched — the last job never began: ${block#*	}"
         echo "  Recorded $(( ${block%%	*} / 60 )) min ago; dispatch is held for ${JOB_BLOCK_RETRY} s from then, then the next job is the retry."
         echo "  Do the work by hand, or force it with: crab job -f <description>"
@@ -9317,7 +9391,7 @@ job_start() {
     # — one of which fired a completion wake at me, seven hours later, about a
     # job whose scratch log had long since been deleted.
     if [ -n "${DESKCRAB_NO_DISPATCH:-}" ]; then
-        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}${record:+ (against record $record)}${want_title:+ (want: $want_title)}"
+        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}${record:+ (against record $record)}${want_title:+ (want: $want_title)}${model_request:+ (model: $model_request)}"
         return 0
     fi
     local id
@@ -9340,6 +9414,10 @@ job_start() {
         "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" slug="$slug"
     [ -n "$daily" ] && \
         "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" daily="$daily"
+    # And the per-job model (rule 5c): the dispatch tail stamps `model` from
+    # it, and the worker reads it back past the conf's own assignment.
+    [ -n "$model_request" ] && \
+        "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" model_request="$model_request"
     if [ -n "$origin" ]; then
         # jobs.md rules 18b and 18f: the new sidecar names the blocked job it
         # came from — `crab jobs` shows it, and job-runner reads it to never
@@ -9370,9 +9448,18 @@ job_dispatch_sidecar() {  # <id> <workdir>
     # with no sidecar is exactly the untracked work the sidecars exist to
     # prevent. (The status writer's own lock open recreates `<id>.lock` on
     # the way to discovering the loss; it is swept back out.)
+    # The model this builder actually runs (jobs.md rules 5c and 35): the
+    # per-job request recorded on the sidecar outranks the conf's JOB_MODEL,
+    # for this job only. The worker re-reads the same field itself — the
+    # conf's own assignment overwrites any inherited environment when
+    # common.sh sources it, so the sidecar, never the environment, is the
+    # carrier that survives into a detached unit.
+    local jmodel
+    jmodel="$("$LIB_DIR/job-status" get "$JOBS_DIR/$id.json" model_request 2>/dev/null)"
+    [ -n "$jmodel" ] || jmodel="$JOB_MODEL"
     if ! "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" \
         state=dispatched started=now unit="$unit" \
-        model="$JOB_MODEL" effort="$JOB_EFFORT" 2>/dev/null; then
+        model="$jmodel" effort="$JOB_EFFORT" 2>/dev/null; then
         [ -e "$JOBS_DIR/$id.json" ] || rm -f "$JOBS_DIR/$id.lock"
         echo "Not dispatched — job $id's record could not be stamped (vanished mid-flight — a racing drop?). No builder started."
         return 1
@@ -9407,7 +9494,7 @@ job_dispatch_sidecar() {  # <id> <workdir>
         --setenv=JOBS_DIR="$JOBS_DIR" \
         --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
         "${acctenv[@]}" \
-        --setenv=JOB_MODEL="$JOB_MODEL" \
+        --setenv=JOB_MODEL="$jmodel" \
         --setenv=JOB_EFFORT="$JOB_EFFORT" \
         "$LIB_DIR/job-runner" "$id" "$workdir" 2>/dev/null; then
         echo "Job $id dispatched (unit $unit) — detached, it survives this turn ending."
@@ -9480,8 +9567,11 @@ job_dispatch_queued() {
             return 1
         fi
     fi
-    local block
-    if block="$(job_block_active)"; then
+    # The marker against the record's own family (jobs.md rule 16): a queued
+    # brief pinned to another model passes a hold its family never earned.
+    local block qmodel
+    qmodel="$("$LIB_DIR/job-status" get "$sidecar" model_request 2>/dev/null)"
+    if block="$(job_block_active "${qmodel:-$JOB_MODEL}")"; then
         echo "Not dispatched — the last job never began: ${block#*	}"
         echo "  Recorded $(( ${block%%	*} / 60 )) min ago; dispatch is held for ${JOB_BLOCK_RETRY} s from then. The brief stays queued."
         return 1
@@ -9569,14 +9659,18 @@ job_requeue() {
     # keeps the obligation its original carried, off the sidecar like the
     # rest — and its single-flight identity (rule 42), so the redispatch
     # stands down behind a live twin instead of racing it.
-    local record slug daily
+    local record slug daily mreq
     record="$("$LIB_DIR/job-status" get "$sidecar" record 2>/dev/null)"
     slug="$("$LIB_DIR/job-status" get "$sidecar" slug 2>/dev/null)"
     daily="$("$LIB_DIR/job-status" get "$sidecar" daily 2>/dev/null)"
+    # ...and the per-job model (rule 5c): a brief pinned to a model stays
+    # pinned through its redispatch.
+    mreq="$("$LIB_DIR/job-status" get "$sidecar" model_request 2>/dev/null)"
     local -a args=(-C "$workdir" -X "$id")
     [ -n "$record" ] && args+=(--record "$record")
     [ -n "$slug" ] && args+=(--slug "$slug")
     [ -n "$daily" ] && args+=(--daily "$daily")
+    [ -n "$mreq" ] && args+=(--model "$mreq")
     job_start "${args[@]}" "$desc"
 }
 
