@@ -42,8 +42,8 @@ which fails silently is worse than one that does not exist.
 
 10a. A failed ingest cancels the stamp and sets the night's exit — nothing else. On a non-zero
     ingest, sleep MUST NOT stamp (rule 8) and the service's exit stays the ingest's own rc
-    (rule 10), but the post-ingest phases — the claudism review, the promise sweep, the
-    twin-merge pass, the night's work — still run, in their order, through the same phase
+    (rule 10), but the post-ingest phases — the key backfill, the claudism review, the promise
+    sweep, the twin-merge pass, the night's work — still run, in their order, through the same phase
     wrapper as on a good night. None of them reads the ingest's output: the review and the
     sweep read the day's journal, the merge pass and the night's work read the record drawer
     and the job queue, and a judge-backed phase that cannot reach its own model fails loudly on
@@ -79,9 +79,10 @@ which fails silently is worse than one that does not exist.
     (rule 9) — the stamp MUST NOT be stricter than the night it records.
 
 14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-ingest
-    phase — the claudism review, the promise sweep, the twin-merge pass, the night's work — owes
-    the night log at least one line opening with its own name (`claudism-scan:`, `promise-check:`,
-    `eng-merge:`, `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
+    phase — the key backfill, the claudism review, the promise sweep, the twin-merge pass, the
+    night's work — owes
+    the night log at least one line opening with its own name (`backfill-keys:`, `claudism-scan:`,
+    `promise-check:`, `eng-merge:`, `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
     leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
     its exit status — in the night log itself as well as on stderr. A phase's non-zero exit is
     likewise named in the log, not on stderr alone, where only the journal would carry it. The

@@ -44,8 +44,14 @@ life, and she re-reads that store every single turn.
 
 11. Notes and directives MUST be queried as two pools with different floors, so her own notes can
     never crowd the user's rules out.
-12. Notes are ranked by similarity, confidence, decay, a capped use bonus, and the
-    recency-of-relevance factor of rule 37. Directives are ranked by raw similarity and are never
+12. Notes are ranked by similarity FIRST. Confidence, decay, the capped use bonus, and the
+    recency-of-relevance factor of rule 37 combine into ONE modifier, clamped to a narrow band
+    around 1, so reinforcement and freshness reorder near-ties and can never bury a clearly
+    better match under a well-worn or fresher one: selection must never cull a row in favour of
+    one whose similarity is clearly lower. (Unclamped, the multipliers ranged over a factor of
+    several and drowned similarity outright — measured 2026-09-03, a 0.55-cosine note rode in
+    over a culled 0.71.) The clamp binds SELECTION only; confidence and decay keep their full
+    range where they retire stale notes. Directives are ranked by raw similarity and are never
     decayed or boosted.
 13. Every pinned record MUST ride along regardless of score in the general recall view.
 13a. A specialised prompt MAY declare a lexical domain scope over record text, source, topics,
@@ -55,6 +61,22 @@ life, and she re-reads that store every single turn.
     a selection gate — candidates that would exceed it are not retrieved — never a renderer cut.
     The general recall view declares no scope or character budget and remains byte-for-byte under
     rules 11–15.
+13b. A record MAY carry a `lookup_key`: one line naming what the record is ABOUT — subject,
+    people, topic — never a restatement of its content, and never dates or identifiers. When a
+    key is present, retrieval embeds the KEY in place of the record text; the record itself
+    still reaches the block whole on a hit. Whole-record embeddings are the measured failure
+    this ends: a long multi-clause record blurs toward the corpus mean, and measured 2026-09-03
+    every active row of every pool cleared its similarity floor — the floors selected nothing
+    and the caps did all the work.
+13c. The nightly distiller writes the key on every record it creates, and the nightly pass
+    backfills a key onto any active record still without one (`crab memory backfill-keys`,
+    batched, judged by the same model the ingest judge uses), so a manual `crab memory add`
+    needs no key at write time — it earns one the next night. Writing a key re-embeds the
+    record from the key, through the same embedder walk as any insert.
+13d. Floors MUST discriminate against the live store. A floor that every active row of its pool
+    clears is a dead letter, and retrieval decays into cap-only selection. Floor values are set
+    from the measured similarity spread of KEYED retrieval, and re-measured whenever the
+    embedding source changes shape.
 14. **The recall block is NEVER truncated.** Every retrieved row reaches the block, whole. Its size
     is governed by retrieval — the note top-K, the directive cap, the pinned tier — and by nothing
     after retrieval. This rule used to say the opposite ("the recall block MUST be capped; when the
@@ -284,8 +306,9 @@ life, and she re-reads that store every single turn.
 47. Episodic records ARE retrieved by similarity into the recall block — the deliberate opposite
     of the hidden kinds — as their own pool beside notes and directives, with its own floor and
     cap, so rule 11's discipline extends to three pools and no kind crowds another out. They rank
-    by similarity, the recency-of-relevance factor of rule 37 (floored, so an old evening that is
-    genuinely the best match is dimmed, never buried), and the capped use bonus. They take NO
+    by similarity first, the recency-of-relevance factor of rule 37 (floored, so an old evening that
+    is genuinely the best match is dimmed, never buried) and the capped use bonus combined under
+    rule 12's clamp. They take NO
     confidence decay, ever, and the decay pass stays keyed on notes: her life does not expire for
     want of being asked about, and a decay clock on moments would re-create by arithmetic exactly
     the throw-away-my-life defect this section exists to close.

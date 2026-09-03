@@ -464,6 +464,10 @@ instruction about the reply belongs beside the thing being answered.
     changed. When no source has been observed, the only licensed claim is that she does not know
     or has not verified it. The frame states this rule immediately before the reply is written and
     explicitly makes pressure-ending answers a high-risk case.
+39i. **The subject-framing sentence closes the frame.** The line naming the message below as the
+    subject is the LAST line of the assembled prompt: the origin line (desk or phone, and the
+    place when one is fixed) renders before it, never after, so "the text that follows" sits
+    flush against the message it points at.
 
 ### One copy of anything — the de-duplication pass
 

@@ -78,6 +78,15 @@ NEAR_DUP_SIM = 0.92
 DECAY_HALF_LIFE_DAYS = 90
 REINFORCE_WEIGHT = 0.15
 REINFORCE_MAX_BOOST = 2.0
+# Similarity ranks first (memory-recall.md rule 12): the non-similarity
+# factors combine into one modifier clamped to this band, so reinforcement
+# and freshness reorder near-ties and can never bury a clearly better match.
+# Unclamped, the multipliers spanned a factor of several and drowned cosine —
+# measured 2026-09-03, a 0.55-similarity note rode in over a culled 0.71.
+# The clamp binds SELECTION only; decay keeps its full range where it
+# retires stale notes (decay_pass).
+SCORE_MOD_MIN = 0.95
+SCORE_MOD_MAX = 1.05
 # The recall block is NEVER truncated. It held a ~800-token cap that popped
 # rows and stamped 'TRUNCATED to fit' in the header — a trim a subagent wrote
 # into the spec, which the user never asked for and ordered out on 2026-08-11:
@@ -261,7 +270,14 @@ MEMORIES_COLUMNS_SQL = """
     -- every other kind; both rendered by the block and both part
     -- of what is embedded.
     participants TEXT NOT NULL DEFAULT '',
-    opinion    TEXT NOT NULL DEFAULT ''
+    opinion    TEXT NOT NULL DEFAULT '',
+    -- The lookup key (memory-recall.md rules 13b-13c): one line naming
+    -- what the record is ABOUT. When present, retrieval embeds the KEY,
+    -- not the record text — a long multi-clause record embedded whole
+    -- blurs toward the corpus mean and the floors stop selecting. Empty
+    -- means the record's text is what its embedding holds; the nightly
+    -- backfill-keys pass closes that gap.
+    lookup_key TEXT NOT NULL DEFAULT ''
 """
 
 
@@ -374,20 +390,22 @@ def query_dates(text, today=None):
 
 
 def score_row(row, now):
-    """The 13:15 scoring formula, with temporal grounding. Notes:
-    cosine × confidence × decay(last use) × (1 + log(1+use_count) × 0.15)
-    × recency(occurred), decay exponential with a DECAY_HALF_LIFE_DAYS
+    """Similarity first (rule 12), with temporal grounding. Notes: cosine ×
+    clamp(confidence × decay(last use) × (1 + log(1+use_count) × 0.15)
+    × recency(occurred)), decay exponential with a DECAY_HALF_LIFE_DAYS
     half-life counted from last_used_at (falling back to creation for a note
-    never yet used), boost capped at REINFORCE_MAX_BOOST. The recency factor
+    never yet used), boost capped at REINFORCE_MAX_BOOST, and the whole
+    modifier clamped to [SCORE_MOD_MIN, SCORE_MOD_MAX] so it reorders
+    near-ties and never buries a clearly better match. The recency factor
     reads `occurred` — when the described thing happened — and is FLOORED at
     OCCURRED_FLOOR, so what mattered recently surfaces first while an old
     note that is genuinely the best match is dimmed, never buried; a row
     whose occurred is unknown takes no factor at all, because an unknown left
     unknown must not read as either fresh or stale. Episodic (rule 47):
-    similarity × the same floored recency factor × the capped use bonus —
-    NO confidence, NO last-use decay, ever: her life does not expire for
-    want of being asked about. Directives: raw cosine, untouched — the
-    user's rules do not age out."""
+    similarity × the same clamp over the floored recency factor and the
+    capped use bonus — NO confidence, NO last-use decay, ever: her life does
+    not expire for want of being asked about. Directives: raw cosine,
+    untouched — the user's rules do not age out."""
     sim = row[9]
     if row[2] not in ("note", "episodic"):
         return sim
@@ -400,11 +418,13 @@ def score_row(row, now):
         recency = OCCURRED_FLOOR + (1.0 - OCCURRED_FLOOR) \
             * 0.5 ** (odays / OCCURRED_HALF_LIFE_DAYS)
     if row[2] == "episodic":
-        return sim * boost * recency
-    ts = parse_iso(row[10] or row[7])
-    days = max(0.0, (now - ts).total_seconds() / 86400) if ts else 0.0
-    decay = 0.5 ** (days / DECAY_HALF_LIFE_DAYS)
-    return sim * row[6] * decay * boost * recency
+        mod = boost * recency
+    else:
+        ts = parse_iso(row[10] or row[7])
+        days = max(0.0, (now - ts).total_seconds() / 86400) if ts else 0.0
+        decay = 0.5 ** (days / DECAY_HALF_LIFE_DAYS)
+        mod = row[6] * decay * boost * recency
+    return sim * min(max(mod, SCORE_MOD_MIN), SCORE_MOD_MAX)
 
 
 def normalize_scope_terms(terms):
@@ -626,6 +646,12 @@ class Store:
                 " (SELECT n.id FROM memories n WHERE n.supersedes = memories.id)"
                 " WHERE status='superseded'")
             self.db.commit()
+        # Stores born before the lookup key (rule 13b): the column arrives
+        # empty — text embeddings stand until backfill-keys re-embeds.
+        if "lookup_key" not in cols:
+            self.db.execute("ALTER TABLE memories ADD COLUMN lookup_key"
+                            " TEXT NOT NULL DEFAULT ''")
+            self.db.commit()
         self._widen_kind_check()
 
     def _widen_kind_check(self):
@@ -645,7 +671,7 @@ class Store:
             return
         cols = ("id, text, kind, pinned, source, topics, confidence, status,"
                 " supersedes, superseded_by, created, last_seen, last_used_at,"
-                " use_count, occurred, participants, opinion")
+                " use_count, occurred, participants, opinion, lookup_key")
         self.db.executescript(f"""
             BEGIN;
             CREATE TABLE memories_migrate ({MEMORIES_COLUMNS_SQL});
@@ -670,20 +696,36 @@ class Store:
 
     def insert(self, text, kind="note", pinned=False, source="self",
                topics="", vec=None, occurred=None, participants="",
-               opinion=""):
+               opinion="", lookup_key=""):
+        # The key is what retrieval matches on when one exists (rule 13b);
+        # the record text is what a hit delivers, whole, either way.
         if vec is None:
-            vec = self.embed_text(text, topics, participants, opinion)
+            vec = (self.embed_text(lookup_key) if lookup_key
+                   else self.embed_text(text, topics, participants, opinion))
         now = now_iso()
         cur = self.db.execute(
             "INSERT INTO memories (text, kind, pinned, source, topics, created,"
-            " last_seen, occurred, participants, opinion)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " last_seen, occurred, participants, opinion, lookup_key)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (text, kind, 1 if pinned else 0, source, topics, now, now,
-             occurred or None, participants or "", opinion or ""))
+             occurred or None, participants or "", opinion or "",
+             lookup_key or ""))
         self.db.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?,?)",
                         (cur.lastrowid, pack(vec)))
         self.db.commit()
         return cur.lastrowid
+
+    def set_lookup_key(self, mem_id, lookup_key):
+        """Write a record's key and re-embed it from the key (rule 13c):
+        one write, one vector swap, so the index never holds a vector the
+        row's own key does not explain."""
+        vec = self.embed_text(lookup_key)
+        self.db.execute("UPDATE memories SET lookup_key=? WHERE id=?",
+                        (lookup_key, mem_id))
+        self.db.execute("DELETE FROM memories_vec WHERE rowid=?", (mem_id,))
+        self.db.execute("INSERT INTO memories_vec (rowid, embedding)"
+                        " VALUES (?,?)", (mem_id, pack(vec)))
+        self.db.commit()
 
     def knn(self, vec, k, kinds=None):
         """Raw KNN against active records: rows with cosine similarity at
@@ -850,7 +892,8 @@ class Store:
         return picked, (t1 - t0) * 1000, (t2 - t1) * 1000
 
     def add_deduped(self, text, kind="note", pinned=False, source="self",
-                    topics="", occurred=None, participants="", opinion=""):
+                    topics="", occurred=None, participants="", opinion="",
+                    lookup_key=""):
         """Insert with the ingest rules: same-kind exact text -> skip and bump
         last_seen; same-kind similar-but-different -> the new record
         supersedes the old. Returns (action, id). A duplicate that arrives
@@ -868,7 +911,11 @@ class Store:
             # for. No dedup, no supersession, ever.
             return "added", self.insert(text, kind, pinned, source, topics,
                                         occurred=occurred)
-        vec = self.embed_text(text, topics, participants, opinion)
+        # A keyed candidate compares and stores by its KEY vector (rule 13b):
+        # after the backfill the index holds key vectors, and a like-for-like
+        # comparison is the only one the thresholds mean anything against.
+        vec = (self.embed_text(lookup_key) if lookup_key
+               else self.embed_text(text, topics, participants, opinion))
         best = None
         for row in self.knn(vec, 5, kinds=(kind,)):
             if row[2] == kind:
@@ -897,7 +944,7 @@ class Store:
                 kind != "episodic" or _same_day(occurred, best[12])):
             new_id = self.insert(text, kind, pinned, source, topics, vec=vec,
                                  occurred=occurred, participants=participants,
-                                 opinion=opinion)
+                                 opinion=opinion, lookup_key=lookup_key)
             self.db.execute(
                 "UPDATE memories SET status='superseded', superseded_by=?"
                 " WHERE id=?", (new_id, best[0]))
@@ -907,7 +954,7 @@ class Store:
             return "superseded", new_id
         return "added", self.insert(text, kind, pinned, source, topics, vec=vec,
                                     occurred=occurred, participants=participants,
-                                    opinion=opinion)
+                                    opinion=opinion, lookup_key=lookup_key)
 
     def add_distinct_directive(self, text, pinned=False, source="self",
                                topics="", occurred=None):
@@ -1740,10 +1787,16 @@ date; use them. A standing fact with no event behind it, or a date you are \
 not sure of, gets NO "occurred" field at all: an unknown left unknown beats \
 a guess.
 
+Every record also gets "key": ONE line, a dozen words at most, naming what \
+the record is ABOUT — its subject, the people in it, the topic — in plain \
+words a later question would use. Never a restatement of the record's \
+content, never dates, ids, or hashes. The key is what retrieval matches \
+against, so write it as the search phrase that should find this record.
+
 Reply with ONLY a JSON array (no prose, no code fence):
 [{"text": "...", "kind": "directive"|"note"|"episodic"|"observation"|"miss", \
-"topics": "comma,separated", "occurred": "YYYY-MM-DD", \
-"participants": "...", "opinion": "..."}]
+"key": "what this is about", "topics": "comma,separated", \
+"occurred": "YYYY-MM-DD", "participants": "...", "opinion": "..."}]
 ("participants" and "opinion" belong to "episodic" records only.)
 
 MATERIAL:
@@ -2462,10 +2515,14 @@ def cmd_ingest(store, args):
             print(f"  would {'hold overlap' if overlaps else 'add'} [{kind}]"
                   + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
             continue
+        # The lookup key (rule 13b): one line collapsed flat. A distiller
+        # that omits it leaves the record keyless for the nightly backfill.
+        lookup_key = " ".join((cand.get("key") or "").split())
         action, rec_id = store.add_deduped(
             text, kind=kind, source=cand.get("source", "conversation"),
             topics=cand.get("topics", ""), occurred=occurred,
-            participants=participants, opinion=opinion)
+            participants=participants, opinion=opinion,
+            lookup_key=lookup_key)
         counts[action] += 1
         print(f"  {action} #{rec_id} [{kind}]"
               + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
@@ -3065,6 +3122,73 @@ def cmd_backfill_occurred(store, args):
     return 0
 
 
+KEY_PROMPT = """Each numbered record below is one memory from a desktop \
+assistant's long-term store. For each, write its lookup key: ONE line, a \
+dozen words at most, naming what the record is ABOUT — its subject, the \
+people in it, the topic — in plain words a later question would use. Never \
+a restatement of the record's content, never dates, ids, or hashes. The key \
+is what retrieval matches against, so write it as the search phrase that \
+should find this record.
+
+Reply with ONLY a JSON object mapping each record's number to its key (no \
+prose, no code fence): {"12": "...", "31": "..."}
+
+RECORDS:
+"""
+
+
+def cmd_backfill_keys(store, args):
+    """Rule 13c: a lookup key for every active record still without one,
+    judged in batches, each write re-embedding the record from its key.
+    Runs nightly after the ingest, so a manual add is keyless for at most
+    a day; the first run is the one-time backfill of the whole store."""
+    rows = store.db.execute(
+        "SELECT id, kind, text, participants, opinion FROM memories"
+        " WHERE status='active' AND lookup_key='' ORDER BY id").fetchall()
+    if args.limit:
+        rows = rows[:args.limit]
+    if not rows:
+        print("backfill-keys: every active record is keyed")
+        return 0
+    print(f"backfill-keys: {len(rows)} keyless records "
+          f"-> {args.model} ({args.effort}) in batches of {args.batch}...")
+    keyed = skipped = 0
+    for start in range(0, len(rows), args.batch):
+        batch = rows[start:start + args.batch]
+        material = "\n".join(
+            f"{r[0]}. [{r[1]}] {r[2]}"
+            + (f" [with: {r[3]}]" if r[3] else "")
+            + (f" [her take: {r[4]}]" if r[4] else "")
+            for r in batch)
+        body = run_model(KEY_PROMPT + material, args.model,
+                         effort=args.effort, kind="backfill-keys")
+        m = re.search(r"\{.*\}", body, re.S)
+        try:
+            keys = json.loads(m.group(0)) if m else {}
+        except json.JSONDecodeError:
+            keys = {}
+        for r in batch:
+            key = " ".join(str(keys.get(str(r[0]), "")).split())
+            if not key:
+                # Loud, never silent (the module's central rule): a record
+                # the judge skipped stays keyless and is named, and the
+                # next nightly pass offers it again.
+                skipped += 1
+                print(f"  no key offered for #{r[0]}, left for the next pass")
+                continue
+            if args.dry_run:
+                print(f"  would key #{r[0]}: {key}")
+                keyed += 1
+                continue
+            store.set_lookup_key(r[0], key)
+            keyed += 1
+        done = min(start + args.batch, len(rows))
+        print(f"  {done}/{len(rows)} judged")
+    print(f"backfill-keys: {keyed} keyed, {skipped} left keyless"
+          + (" (dry run — nothing written)" if args.dry_run else ""))
+    return 0
+
+
 def cmd_reinforce(store, args):
     hit = store.reinforce(args.ids)
     for rec_id in hit:
@@ -3169,6 +3293,24 @@ def main():
                             "leave everything else unknown")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_backfill_occurred)
+
+    p = sub.add_parser("backfill-keys",
+                       help="write a lookup key onto every active record "
+                            "still without one, re-embedding each from its "
+                            "key (rule 13c); runs nightly after the ingest")
+    # The same judge the ingest uses (rule 13c), same knob walk.
+    p.add_argument("--model",
+                   default=os.environ.get("MEMORY_INGEST_MODEL")
+                   or os.environ.get("NIGHT_JUDGE_MODEL")
+                   or "gpt-5.6-sol")
+    p.add_argument("--effort",
+                   default=os.environ.get("MEMORY_INGEST_EFFORT")
+                   or os.environ.get("NIGHT_JUDGE_EFFORT") or "high")
+    p.add_argument("--batch", type=int, default=25)
+    p.add_argument("--limit", type=int, default=0,
+                   help="key at most this many records this run (0 = all)")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_backfill_keys)
 
     p = sub.add_parser("forget", help="retire a record by id")
     p.add_argument("id", type=int)

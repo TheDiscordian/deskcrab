@@ -2976,7 +2976,6 @@ EOF
         *)
             _prompt_layer_register
             _prompt_layer_attention
-            printf '%s\n' "THIS TURN IS ABOUT THE MESSAGE BELOW. Everything above is background; the text that follows is the subject and it is what you answer. A topic that appears only above is not this turn's topic."
             if [ "$dev" = "phone" ]; then
                 printf '%s\n' "This turn came from the phone — anything to look at goes in the display channel, where he can see it."
                 # Where he is (specs/phone.md rule 3a): the phone server
@@ -2991,6 +2990,9 @@ EOF
             else
                 printf '%s\n' "This turn came from the desk."
             fi
+            # Rule 39i: the framing sentence closes the frame, so "the text
+            # that follows" sits flush against the message it points at.
+            printf '%s\n' "THIS TURN IS ABOUT THE MESSAGE BELOW. Everything above is background; the text that follows is the subject and it is what you answer. A topic that appears only above is not this turn's topic."
             ;;
     esac
 }

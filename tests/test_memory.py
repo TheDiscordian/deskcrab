@@ -980,30 +980,45 @@ class TestScoreFormula(unittest.TestCase):
         self.assertAlmostEqual(
             memory.score_row(fake_row(sim=0.8), self.now), 0.8, places=2)
 
-    def test_decay_halves_at_half_life(self):
+    def test_decay_dims_only_to_the_clamp_floor(self):
+        # Rule 12: staleness reorders near-ties and never buries a clearly
+        # better match — the whole modifier is clamped.
         row = fake_row(sim=0.8, used_days=memory.DECAY_HALF_LIFE_DAYS)
-        self.assertAlmostEqual(memory.score_row(row, self.now), 0.4, places=2)
+        self.assertAlmostEqual(memory.score_row(row, self.now),
+                               0.8 * memory.SCORE_MOD_MIN, places=6)
 
     def test_decay_counts_from_last_use_not_creation(self):
         # He caught this flaw: a memory used all the time must not fade like
         # one never used. Old note, used today -> no decay (only the boost).
         stale = fake_row(sim=0.8, created_days=400)
         lived = fake_row(sim=0.8, created_days=400, used_days=0, uses=1)
-        self.assertLess(memory.score_row(stale, self.now), 0.1)
+        self.assertLess(memory.score_row(stale, self.now),
+                        memory.score_row(lived, self.now))
+        self.assertAlmostEqual(memory.score_row(stale, self.now),
+                               0.8 * memory.SCORE_MOD_MIN, places=6)
         self.assertGreater(memory.score_row(lived, self.now), 0.8)
 
-    def test_boost_is_log_shaped_and_capped(self):
+    def test_boost_lifts_and_saturates_at_the_clamp(self):
+        s0 = memory.score_row(fake_row(sim=0.8, used_days=0, uses=0), self.now)
         s10 = memory.score_row(fake_row(sim=0.8, used_days=0, uses=10), self.now)
-        s100 = memory.score_row(fake_row(sim=0.8, used_days=0, uses=100), self.now)
-        self.assertGreater(s100, s10)          # a hundred beats ten...
-        self.assertLess(s100, s10 * 2)         # ...by a little, not tenfold
+        self.assertGreater(s10, s0)            # use still lifts...
         absurd = fake_row(sim=0.8, used_days=0, uses=10**9)
         self.assertLessEqual(memory.score_row(absurd, self.now),
-                             0.8 * memory.REINFORCE_MAX_BOOST + 1e-9)
+                             0.8 * memory.SCORE_MOD_MAX + 1e-9)
 
-    def test_confidence_still_fades_the_score(self):
+    def test_confidence_nudges_inside_the_clamp(self):
         weak = fake_row(sim=0.8, conf=0.5)
-        self.assertAlmostEqual(memory.score_row(weak, self.now), 0.4, places=2)
+        self.assertAlmostEqual(memory.score_row(weak, self.now),
+                               0.8 * memory.SCORE_MOD_MIN, places=6)
+
+    def test_boosts_never_outrun_a_clearly_better_match(self):
+        # The measured failure of 2026-09-03: a 0.55-similarity note, heavily
+        # used and fresh, rode in over a culled 0.71. Rule 12 forbids it.
+        better = fake_row(sim=0.71, conf=0.6, created_days=200, rec_id=1)
+        worse = fake_row(sim=0.55, used_days=0, uses=50, occurred_days=1,
+                         rec_id=2)
+        self.assertGreater(memory.score_row(better, self.now),
+                           memory.score_row(worse, self.now))
 
 
 class TestReinforce(StoreCase):
@@ -1391,11 +1406,11 @@ class TestEpisodic(StoreCase):
         self.assertAlmostEqual(
             memory.score_row(starved, datetime.now().astimezone()),
             0.8, places=2)
-        # An old evening is dimmed to the floor, never buried.
+        # An old evening is dimmed — to rule 12's clamp floor, never buried.
         old = fake_row(kind="episodic", sim=0.8, occurred_days=3000)
         self.assertAlmostEqual(
             memory.score_row(old, datetime.now().astimezone()),
-            0.8 * memory.OCCURRED_FLOOR, places=2)
+            0.8 * memory.SCORE_MOD_MIN, places=2)
 
     def test_dedup_is_narrow_two_evenings_are_two_records(self):
         """Rule 51: the supersede threshold bites only inside one day. The
@@ -1731,7 +1746,7 @@ class TestSearchScoring(StoreCase):
         rows, _, _ = self.store.search("which WoW character does he play", k=1)
         self.assertIn("note", [r[2] for r in rows])
 
-    def test_decay_reranks_and_reinforce_recovers(self):
+    def test_decay_dims_but_never_buries_the_better_match(self):
         vec_a = self.store.embed_text(
             "His character Xena is a Paladin on the DiscoWoW server.")
         a = self.store.insert("His character Xena is a Paladin on the "
@@ -1747,16 +1762,73 @@ class TestSearchScoring(StoreCase):
         rows, _, _ = self.store.search(query)
         self.assertTrue(order(rows))  # raw similarity favours the Xena note
         # Age the Xena note far past the half-life (never used -> decays from
-        # creation): the fresher note must outrank it.
+        # creation): rule 12's clamp dims it by at most the clamp floor, so
+        # the clearly better match STILL outranks the fresher, worse one.
         self.store.db.execute("UPDATE memories SET created=? WHERE id=?",
                               (days_ago(400), a))
         self.store.db.commit()
         rows, _, _ = self.store.search(query)
-        self.assertFalse(order(rows))
-        # One genuine use resets the decay clock: back on top.
+        self.assertTrue(order(rows))
+        # And a genuine use lifts it clear again either way.
         self.store.reinforce([a])
         rows, _, _ = self.store.search(query)
         self.assertTrue(order(rows))
+
+
+class TestLookupKeys(StoreCase):
+    """Rules 13b-13c: a keyed record is matched by its key and delivered
+    whole; the nightly backfill keys the keyless and re-embeds them."""
+
+    def test_keyed_insert_matches_by_key_not_text(self):
+        a = self.store.insert(
+            "On a Monday at 02:30 the interruptibility work landed as one "
+            "commit with nineteen tests passing and the builder parked "
+            "without committing until a second dispatch.",
+            lookup_key="phone hold-to-talk interruption mid-turn")
+        vec = self.store.embed_text("phone hold-to-talk interruption mid-turn")
+        row = self.store.knn(vec, 1)[0]
+        self.assertEqual(row[0], a)
+        self.assertGreater(row[9], 0.9)  # the index holds the key's vector
+
+    def test_set_lookup_key_reembeds(self):
+        a = self.store.insert("A long tale about the chess clock that names "
+                              "no fruit at all, only timers and flags.")
+        self.store.set_lookup_key(a, "bananas and orchard fruit")
+        self.assertEqual(self.store.db.execute(
+            "SELECT lookup_key FROM memories WHERE id=?",
+            (a,)).fetchone()[0], "bananas and orchard fruit")
+        vec = self.store.embed_text("bananas and orchard fruit")
+        row = self.store.knn(vec, 1)[0]
+        self.assertEqual(row[0], a)
+        self.assertGreater(row[9], 0.9)
+
+    def test_backfill_keys_keys_the_keyless_and_reembeds(self):
+        a = self.store.insert("The wobbly axle squeaks in the cold.")
+        keyed = self.store.insert("Already keyed.", lookup_key="prior key")
+        with mock.patch.object(
+                memory, "run_model",
+                return_value='{"%d": "wobbly axle squeak"}' % a) as rm:
+            rc = memory.cmd_backfill_keys(self.store, Namespace(
+                model="m", effort="low", batch=10, limit=0, dry_run=False))
+        self.assertEqual(rc, 0)
+        # Only the keyless record was offered to the judge.
+        self.assertIn(f"{a}. [note]", rm.call_args[0][0])
+        self.assertNotIn(f"{keyed}. [note]", rm.call_args[0][0])
+        self.assertEqual(self.store.db.execute(
+            "SELECT lookup_key FROM memories WHERE id=?",
+            (a,)).fetchone()[0], "wobbly axle squeak")
+        vec = self.store.embed_text("wobbly axle squeak")
+        self.assertEqual(self.store.knn(vec, 1)[0][0], a)
+
+    def test_backfill_keys_dry_run_writes_nothing(self):
+        a = self.store.insert("The wobbly axle squeaks in the cold.")
+        with mock.patch.object(memory, "run_model",
+                               return_value='{"%d": "wobbly axle"}' % a):
+            memory.cmd_backfill_keys(self.store, Namespace(
+                model="m", effort="low", batch=10, limit=0, dry_run=True))
+        self.assertEqual(self.store.db.execute(
+            "SELECT lookup_key FROM memories WHERE id=?",
+            (a,)).fetchone()[0], "")
 
 
 class TestScopedRecall(StoreCase):
