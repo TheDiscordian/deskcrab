@@ -1203,7 +1203,15 @@ deliberate-play channel.
       the body, the rule cannot lawfully act on any pile now visible and does not own the
       direct take of one; a single matching pile inside the cap keeps the capture.
     A guard on a *different* item, a missing, stale, or logged-out snapshot, or an unresolvable
-    body tile proves nothing and releases nothing — the interlock fails closed to capture. A
+    body tile proves nothing and releases nothing — the interlock fails closed to capture. The
+    reservation belongs to the table the runner is ENFORCING, not to the file on disk: a rule
+    absent from the heartbeat's `enforced_rules` cannot fire at all, so citing it would leave
+    the semantic action reserved by nobody and performable by no one — the deadlock observed on
+    2026-09-03, when a rejected reload left `woodcut-chop-visible-tree` owning `interact-object`
+    without ever dispatching it. Such a rule releases the direct door and records one
+    `direct-unenforced-release` decision event naming it, the refusal, and the runner's pid. A
+    heartbeat without `enforced_rules` — an older runner mid-upgrade — asserts nothing and
+    changes nothing, so the interlock still fails closed to capture. A
     release is not silent: `direct-owner` records one `direct-scope-release` decision event
     naming the released rules, each rule's proof, the item, and the snapshot tick, then reports
     the action unreserved so the direct door proceeds. The released direct take is rule 7a's
@@ -1441,9 +1449,15 @@ deliberate-play channel.
     validator against today's table silently rejects every reload and keeps enforcing a table
     nobody can see — a disabled rule that keeps firing is exactly this failure. It then
     evaluates, verifies per rule 7a, and writes a heartbeat —
-    `$DESKCRAB_GAME_STATE_DIR/player-runner.json`: pid, ts, latest verdict, detail, and visible
-    ground-item ids — every
-    pass. A fresh heartbeat (pid alive, ts within 30 s, covering an in-progress walk verification)
+    `$DESKCRAB_GAME_STATE_DIR/player-runner.json`: pid, ts, latest verdict, detail, visible
+    ground-item ids, the last refused table load (`table_error`, null once a table loads),
+    and `enforced_rules`, the exact rule names this process is holding in memory — every
+    pass. A refusal that only reaches the decision log is a silent one: re-exec heals the
+    skew only when the source itself changes, so between a rejected reload and the next deploy
+    the file reads as armed while the evaluator has never seen it, and the new rule's zero
+    firings look like a trigger bug. The refusal therefore rides the ordinary verdict as
+    `table_error=…` for as long as it stands, and `rules` prints it above the table together
+    with the authored rules the live runner is not enforcing. A fresh heartbeat (pid alive, ts within 30 s, covering an in-progress walk verification)
     is how rule 12's `step` knows to defer:
     two writers of the engine state would race, so while the runner is live it is the ONLY
     evaluator. The hold flag, stale, logged-out and slot-busy protections all hold inside the

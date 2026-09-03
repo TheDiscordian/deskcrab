@@ -5871,13 +5871,26 @@ def verify_semantic_portal_open(portal: dict, timeout_s: float = STOP_VERIFY_S):
 # The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
 # A fresh heartbeat makes the runner the only evaluator; `step` defers.
 # --------------------------------------------------------------------------
+def enforced_rule_names(cfg: dict) -> list:
+    """The rule names the evaluator is actually holding in memory.
+
+    Spec rule 15: a refused reload keeps the last valid table, so the file on
+    disk and the table being enforced can differ. The heartbeat publishes the
+    enforced names so nothing downstream cites a rule this process never
+    loaded."""
+    return sorted(str(rule.get("name")) for rule in (cfg or {}).get("rules") or [])
+
+
 def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
                     plan: str = "", activity: str = "", activity_xp: str = "",
                     activity_compare: str = "", friend_updates=None,
-                    goal: str = "") -> None:
+                    goal: str = "", table_error: str = "",
+                    enforced_rules=None) -> None:
     game_reflex.atomic_write(runner_path(), json.dumps(
         {"pid": os.getpid(), "ts": now_ms(),
          "verdict": verdict, "detail": detail,
+         "table_error": table_error or None,
+         "enforced_rules": list(enforced_rules or []),
          "ground_items": ground_items or [],
          "plan": plan or None,
          "goal": goal or None,
@@ -6006,7 +6019,8 @@ def cmd_direct_owner(args):
     unreserved; a scope-proof release additionally logs one
     `direct-scope-release` decision event before releasing.
     """
-    if read_live_runner() is None:
+    hb = read_live_runner()
+    if hb is None:
         raise SystemExit(1)
     selectors = parse_kv(args.param)
     cfg = load_config()
@@ -6016,6 +6030,22 @@ def cmd_direct_owner(args):
         snap = None
     owners, released = rules_own_direct_action(
         cfg, args.action, selectors, read_objective(), read_activity(), snap)
+    # Spec rule 15: the reservation belongs to the table the runner is
+    # ENFORCING, not to the file on disk. A rule the live runner never loaded
+    # — a refused reload keeping an older table — can never fire, so citing it
+    # would deadlock the direct door against a rule nobody is running.
+    enforced = hb.get("enforced_rules")
+    unenforced = []
+    if isinstance(enforced, list) and enforced:
+        unenforced = [name for name in owners if name not in enforced]
+        owners = [name for name in owners if name in enforced]
+    if unenforced:
+        flush_events([{
+            "ts": now_ms(), "kind": "direct-unenforced-release",
+            "action": args.action, "selectors": selectors,
+            "rules": unenforced, "pid": hb.get("pid"),
+            "table_error": hb.get("table_error") or None,
+        }])
     if not owners:
         if released:
             flush_events([{
@@ -7929,6 +7959,31 @@ def cmd_init(args):
         print(f"wrote empty learned table to {rules_path()}")
 
 
+def print_enforced_table_divergence(cfg: dict) -> None:
+    """Say out loud when the live runner is enforcing an older table.
+
+    Spec rule 15: a refused reload keeps the last valid table. Without this
+    line the file reads as armed while the running evaluator has never seen
+    it, and a rule with zero firings looks like a trigger bug."""
+    hb = read_live_runner()
+    if hb is None:
+        return
+    error = hb.get("table_error")
+    enforced = hb.get("enforced_rules")
+    if not error and not isinstance(enforced, list):
+        return
+    missing = ([rule["name"] for rule in cfg.get("rules") or []
+                if rule["name"] not in enforced]
+               if isinstance(enforced, list) and enforced else [])
+    if not error and not missing:
+        return
+    if error:
+        print(f"WARNING: the resident runner (pid {hb.get('pid')}) REFUSED this "
+              f"table and is enforcing an older one: {error}")
+    if missing:
+        print("WARNING: not enforced by the live runner: " + ",".join(sorted(missing)))
+
+
 def cmd_rules(args):
     if getattr(args, "history", False):
         records = load_jsonl(reflex_history_path())
@@ -7952,6 +8007,7 @@ def cmd_rules(args):
             print("no reflex change history" + (f" for {wanted}" if wanted else ""))
         return
     cfg = load_config()
+    print_enforced_table_divergence(cfg)
     if not cfg["rules"] and not cfg["unfinished"]:
         print("no learned rules yet")
     for rule in sorted(cfg["rules"], key=lambda r: -r["priority"]):
@@ -9507,6 +9563,10 @@ def cmd_run(args):
     gap_candidate_signature = None
     gap_candidate_since = 0
     last_verdict = "starting"
+    # Spec rule 15: a refused reload is not merely logged. The refusal rides
+    # every heartbeat until a table loads, so the ordinary verdict says the
+    # enforced table is not the one on disk.
+    table_error = ""
     while True:
         try:
             # Reload the table when its mtime moves; an invalid table is
@@ -9523,10 +9583,12 @@ def cmd_run(args):
                     fresh.setdefault("unfinished", [])
                     cfg = fresh
                     wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+                    table_error = ""
                     flush_events([{"ts": now_ms(), "kind": "table-reloaded"}])
                 except (ValueError, json.JSONDecodeError) as e:
+                    table_error = str(e)[:300]
                     flush_events([{"ts": now_ms(), "kind": "table-invalid",
-                                   "error": str(e)[:300]}])
+                                   "error": table_error}])
 
             # Spec rule 15: a runner outliving a deploy enforces a table
             # nobody can see — when the deployed source changes, re-exec in
@@ -9602,7 +9664,8 @@ def cmd_run(args):
                             live_friend_updates,
                             (live_goal.get("text")
                              if live_goal is not None
-                             and live_goal.get("status") != "invalid" else ""))
+                             and live_goal.get("status") != "invalid" else ""),
+                            table_error, enforced_rule_names(cfg))
         except SystemExit:
             raise
         except Exception as e:  # one bad pass must not kill the unit
@@ -9944,6 +10007,7 @@ def main():
                                 hb.get("activity_xp"), hb.get("activity")))
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
+                           table_error=hb.get("table_error") or None,
                            plan=hb.get("plan") or read_plan() or None,
                            activity=hb.get("activity") or None,
                            activity_xp=hb.get("activity_xp") or None,

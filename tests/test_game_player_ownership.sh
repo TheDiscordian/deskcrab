@@ -127,3 +127,56 @@ check "a held stack returns the distant take to the stock-extension routine" \
 write_take_fixture '[]' 12 10000
 check "a stale snapshot proves nothing and the whole capture stands" \
     sh -c "python3 '$GP' direct-owner take-ground --param item=500 | grep -q 'rules=local-initial-loot,stack-only-loot'"
+
+# Spec rule 15: the reservation belongs to the table the runner is ENFORCING.
+# A refused reload keeps an older table, so a rule the live runner never
+# loaded owns nothing — citing it would reserve an action nobody can perform.
+write_enforced_fixture() { # ENFORCED-RULES-JSON TABLE-ERROR
+    python3 - "$DESKCRAB_GAME_STATE_DIR" "$DESKCRAB_GAME_DIR" "$$" "$1" "$2" <<'PY'
+import json, os, sys, time
+state_dir, game_dir, owner_pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+enforced, table_error = json.loads(sys.argv[4]), sys.argv[5]
+table = {
+    "v": 1,
+    "defaults": {"stale_ms": 2000, "min_action_interval_ms": 0,
+                 "max_actions_per_min": 0, "inflight_timeout_ms": 3000},
+    "rules": [
+        {"name": "chop-visible-tree", "enabled": True,
+         "priority": 40, "cooldown_ms": 0, "hold_ticks": 1,
+         "trigger": {"object_visible": 1, "out_of_combat": True},
+         "action": {"type": "interact-object", "obj": 1, "cmd": 1}},
+    ],
+    "unfinished": [],
+}
+json.dump(table, open(os.path.join(game_dir, "learned-rules.json"), "w"))
+open(os.path.join(game_dir, "objective"), "w").write("\n")
+open(os.path.join(game_dir, "activity"), "w").write("\n")
+heartbeat = {"pid": owner_pid, "ts": int(time.time() * 1000),
+             "verdict": "no-rule-matched",
+             "table_error": table_error or None}
+if enforced is not None:
+    heartbeat["enforced_rules"] = enforced
+json.dump(heartbeat, open(os.path.join(state_dir, "player-runner.json"), "w"))
+PY
+}
+
+write_enforced_fixture '["chop-visible-tree"]' ''
+check "a rule the live runner is enforcing still reserves its action" \
+    sh -c "python3 '$GP' direct-owner interact-object --param obj=1 --param cmd=1 \
+        | grep -q 'rules=chop-visible-tree'"
+
+write_enforced_fixture '["some-older-rule"]' "rule 'chop-visible-tree': unknown trigger 'fatigue_at_least'"
+refute "a rule the runner never loaded cannot reserve the direct hand" \
+    python3 "$GP" direct-owner interact-object --param obj=1 --param cmd=1
+check "that release is one recorded direct-unenforced-release naming the rule" \
+    sh -c "grep -q '\"kind\":\"direct-unenforced-release\"' '$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl' \
+        && grep -q 'chop-visible-tree' '$DESKCRAB_GAME_STATE_DIR/player-decisions.jsonl'"
+check "the refused table is named above the rules listing" \
+    sh -c "python3 '$GP' rules | grep -q \"REFUSED this table\""
+check "the rules listing names what the live runner is not enforcing" \
+    sh -c "python3 '$GP' rules | grep -q 'not enforced by the live runner: chop-visible-tree'"
+
+write_enforced_fixture 'null' ''
+check "an older heartbeat without enforced_rules keeps the capture" \
+    sh -c "python3 '$GP' direct-owner interact-object --param obj=1 --param cmd=1 \
+        | grep -q 'rules=chop-visible-tree'"
