@@ -174,8 +174,15 @@ EXIT_SESSION_OVER = 8
 SESSION_LIMIT_MS = 2 * 60 * 60 * 1000
 SESSION_GRACE_MS = 10 * 60 * 1000
 SESSION_MESSAGE_TOP_UP_MS = 20 * 60 * 1000
-PLAN_MAX_CHARS = 1200
+PLAN_MAX_CHARS = 400
 PLAN_REASON_MAX_CHARS = 500
+# Spec rule 11c: how stale the objective's progress record may be before the
+# plan doors refuse a new decision, and how much play may pass between
+# deliberate reflections before verdicts start carrying reflection_due.
+PROGRESS_STALE_MS = int(os.environ.get(
+    "BETTY_OPENRSC_PROGRESS_STALE_MS", str(30 * 60 * 1000)))
+REFLECT_EVERY_MS = int(os.environ.get(
+    "BETTY_OPENRSC_REFLECT_EVERY_MS", str(5 * 60 * 1000)))
 
 EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
 
@@ -202,6 +209,14 @@ def plan_path() -> Path:
 
 def activity_path() -> Path:
     return game_dir() / "activity"
+
+
+def progress_path() -> Path:
+    return game_dir() / "objective-progress.json"
+
+
+def progress_history_path() -> Path:
+    return game_dir() / "objective-progress-history.jsonl"
 
 
 def activity_stats_path() -> Path:
@@ -2395,12 +2410,15 @@ def validate_config(cfg: dict) -> None:
             if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
                 bad(f"{where}: talk-npc takes exactly npc=<type id>")
         elif atype == "attack-npc":
-            if not set(action) <= {"type", "npc", "within"} \
+            if "within" in action:
+                bad(f"{where}: REFUSED — a distance cap on attack-npc idles the body "
+                    "in sight of its own target. Distance caps on wanting things are "
+                    "forbidden (spec rule 5's cap doctrine); no learned attack ever "
+                    "takes `within`. If a cap ever seems genuinely necessary, STOP "
+                    "and raise it with the user instead of arming it")
+            if set(action) != {"type", "npc"} \
                     or not isinstance(action.get("npc"), int) or action["npc"] < 0:
-                bad(f"{where}: attack-npc takes npc=<type id> and optionally within")
-            if "within" in action and (not isinstance(action["within"], int)
-                                        or not 0 <= action["within"] <= 10):
-                bad(f"{where}: attack-npc within must be an integer 0..10")
+                bad(f"{where}: attack-npc takes exactly npc=<type id>")
         elif atype == "interact-npc":
             npc_param = action.get("npc")
             # Spec rule 5: npc may be one type id or rule 4's target set — a
@@ -2530,13 +2548,16 @@ def validate_config(cfg: dict) -> None:
                     bad(f"{where}: click-inventory batch=all requires "
                         "out_of_combat=true; the batch pauses during combat")
         elif atype == "take-ground":
-            if not set(action) <= {"type", "item", "within"} \
+            if "within" in action:
+                bad(f"{where}: REFUSED — a distance cap on take-ground strands wanted "
+                    "loot on the ground. Distance caps on wanting things are forbidden "
+                    "(spec rule 5's cap doctrine); wanted loot is wanted at ANY "
+                    "distance, and the body walks to it. If a cap ever seems genuinely "
+                    "necessary, STOP and raise it with the user instead of arming it")
+            if set(action) != {"type", "item"} \
                     or not isinstance(action.get("item"), int) \
                     or action["item"] < 0:
-                bad(f"{where}: take-ground takes item=<item id> and optionally within")
-            if "within" in action and (not isinstance(action["within"], int)
-                                        or not 0 <= action["within"] <= 10):
-                bad(f"{where}: take-ground within must be an integer 0..10")
+                bad(f"{where}: take-ground takes exactly item=<item id>")
         elif atype == "drop-inventory":
             # One atomic release of one held item, the mirror of take-ground.
             # The quantity is the server's business (its Drop X option is
@@ -6872,7 +6893,9 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                      and current_goal.get("status") != "invalid" else None),
                activity=activity or None,
                activity_xp=xp_text or None,
+               activity_mismatch=xp_activity_mismatch(xp_text, activity),
                activity_compare=xp_compare or None,
+               **reflection_fields(),
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
                sidestep_pause=(f"{sidestep_pause.get('status')}"
@@ -8063,6 +8086,300 @@ def cmd_quests(args):
         die(f"no quest name contains {fragment!r}")
 
 
+# --------------------------------------------------------------------------
+# Spec rule 11c: the objective progress record — measure, milestones,
+# reflection. An objective is pursued against live data, never orbited on
+# stale belief.
+# --------------------------------------------------------------------------
+def load_progress() -> dict:
+    """The progress record, iff it belongs to the current objective."""
+    try:
+        record = json.loads(progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(record, dict) \
+            or (record.get("objective") or "") != (read_objective() or ""):
+        return {}
+    if not isinstance(record.get("milestones"), list):
+        record["milestones"] = []
+    return record
+
+
+def save_progress(record: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(progress_path(), json.dumps(record) + "\n")
+
+
+def archive_progress(reason: str) -> None:
+    """A finished objective's record is history, never live state."""
+    try:
+        record = json.loads(progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        record = None
+    if isinstance(record, dict) and record:
+        entry = dict(record, archived_ts=now_ms(), archived_reason=reason)
+        game_dir().mkdir(parents=True, exist_ok=True)
+        with progress_history_path().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    try:
+        progress_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def progress_gate_or_die(change: str) -> None:
+    """Refuse a decision made on stale standings (spec rule 11c)."""
+    record = load_progress()
+    measure = record.get("measure")
+    if not measure:
+        return
+    verified = record.get("verified_ms")
+    now = now_ms()
+    if isinstance(verified, int) and now - verified <= PROGRESS_STALE_MS:
+        return
+    ago = f"{(now - verified) // 60000}m ago" if isinstance(verified, int) \
+        else "never"
+    die(f"{change} refused: the objective's measure has not been read recently "
+        f"(last progress record: {ago}). Read the measure — {measure} — and "
+        "record what it actually showed with `play progress TEXT`, then retry. "
+        "Deciding on stale standings is how finished work gets retrained.")
+
+
+# The skills an activity name plausibly trains; anything else gaining XP is
+# named in the reflection facts so a stale activity label cannot hide.
+ACTIVITY_SKILL_HINTS = {
+    "combat": {"attack", "defense", "strength", "hits"},
+    "melee": {"attack", "defense", "strength", "hits"},
+    "fight": {"attack", "defense", "strength", "hits"},
+    "kill": {"attack", "defense", "strength", "hits"},
+    "slay": {"attack", "defense", "strength", "hits"},
+    "warrior": {"attack", "defense", "strength", "hits"},
+    "range": {"ranged", "hits"},
+    "magic": {"magic", "hits"},
+    "cast": {"magic", "hits"},
+    "pray": {"prayer"},
+    "bury": {"prayer"},
+    "bone": {"prayer"},
+    "thiev": {"thieving"},
+    "pickpocket": {"thieving"},
+    "woodcut": {"woodcut"},
+    "chop": {"woodcut"},
+    "log": {"woodcut", "firemaking"},
+    "fire": {"firemaking"},
+    "cook": {"cooking"},
+    "fish": {"fishing"},
+    "mine": {"mining"},
+    "mining": {"mining"},
+    "smith": {"smithing"},
+    "craft": {"crafting"},
+    "fletch": {"fletching"},
+    "herb": {"herblaw"},
+    "agility": {"agility"},
+}
+
+
+def xp_activity_mismatch(xp_text, activity):
+    """Skills gaining XP that the declared activity does not account for."""
+    if not xp_text or not activity:
+        return None
+    act = activity.lower()
+    implied = set()
+    for token, skills in ACTIVITY_SKILL_HINTS.items():
+        if token in act:
+            implied |= skills
+    stray = []
+    for segment in xp_text.split(";"):
+        name = segment.split(":", 1)[0].strip()
+        if name and name.lower() not in act and name.lower() not in implied:
+            stray.append(name)
+    return ",".join(stray) or None
+
+
+def reflection_fields() -> dict:
+    """Spec rule 11c: what a due reflection must face, riding the verdict."""
+    if not read_objective():
+        return {}
+    record = load_progress()
+    now = now_ms()
+    fields = {}
+    if record.get("measure"):
+        verified = record.get("verified_ms")
+        fields["progress_age_min"] = (now - verified) // 60000 \
+            if isinstance(verified, int) else "never"
+    last = record.get("last_reflect_ms")
+    if isinstance(last, int):
+        if now - last > REFLECT_EVERY_MS:
+            fields["reflection_due"] = f"{(now - last) // 60000}m-since-last"
+    else:
+        fields["reflection_due"] = "now"
+    if fields.get("reflection_due"):
+        fields["next"] = "play reflect TEXT"
+    return fields
+
+
+def cmd_progress(args):
+    objective = read_objective()
+    if not objective:
+        die("set an objective before recording its progress")
+    record = load_progress()
+    text = " ".join(args.text).strip() if args.text else ""
+    if not text:
+        measure = record.get("measure") or "(no measure declared)"
+        verified = record.get("verified_ms")
+        age = f"{(now_ms() - verified) // 60000}m ago" \
+            if isinstance(verified, int) else "never"
+        print(f"objective: {objective}")
+        print(f"measure  : {measure}")
+        print(f"last read: {age}")
+        print(f"result   : {record.get('result') or '(none recorded)'}")
+        milestones = record.get("milestones") or []
+        if milestones:
+            for m in milestones:
+                mark = "done" if m.get("status") == "done" else "open"
+                print(f"milestone [{mark}] {m.get('name')}"
+                      + (f" — {m.get('evidence')}" if m.get("evidence") else ""))
+        else:
+            print("milestones: none")
+        last = record.get("last_reflect_ms")
+        print("reflected: " + (f"{(now_ms() - last) // 60000}m ago"
+                               if isinstance(last, int) else "never"))
+        return
+    if len(text) > 1200:
+        die("a progress record is a compact reading of the measure, not an essay")
+    record.update({"objective": objective, "verified_ms": now_ms(),
+                   "result": text})
+    record.setdefault("milestones", [])
+    save_progress(record)
+    event = {"ts": now_ms(), "kind": "progress-recorded",
+             "objective": objective, "result": text}
+    flush_events([event])
+    append_outcome(dict(event))
+    print(f"progress recorded: {text}")
+
+
+def cmd_milestone(args):
+    objective = read_objective()
+    if not objective:
+        die("set an objective before keeping its milestone ledger")
+    record = load_progress()
+    record.setdefault("objective", objective)
+    record.setdefault("milestones", [])
+    milestones = record["milestones"]
+    if args.action == "list":
+        if not milestones:
+            print("no milestones yet")
+        for m in milestones:
+            mark = "done" if m.get("status") == "done" else "open"
+            line = f"[{mark}] {m.get('name')}"
+            if m.get("note"):
+                line += f" — {m['note']}"
+            if m.get("evidence"):
+                line += f" (evidence: {m['evidence']})"
+            print(line)
+        return
+    if not args.name:
+        die(f"milestone {args.action} needs a NAME")
+    name = args.name.strip()
+    existing = next((m for m in milestones if m.get("name") == name), None)
+    if args.action == "add":
+        if existing is not None:
+            die(f"milestone '{name}' already exists ({existing.get('status')})")
+        entry = {"name": name, "status": "open", "ts": now_ms()}
+        if args.note:
+            entry["note"] = args.note
+        milestones.append(entry)
+        verb = "opened"
+    elif args.action == "done":
+        if existing is None:
+            die(f"no milestone named '{name}' — add it first")
+        if not args.evidence:
+            die("milestone done requires --evidence TEXT: closed on evidence, "
+                "never on feeling")
+        existing.update({"status": "done", "evidence": args.evidence,
+                         "ts": now_ms()})
+        verb = "closed"
+    elif args.action == "reopen":
+        if existing is None:
+            die(f"no milestone named '{name}'")
+        if not args.reason:
+            die("milestone reopen requires --reason TEXT naming the live data "
+                "that disagrees")
+        existing.update({"status": "open", "reopen_reason": args.reason,
+                         "ts": now_ms()})
+        verb = "reopened"
+    else:
+        die(f"unknown milestone action '{args.action}'")
+    save_progress(record)
+    event = {"ts": now_ms(), "kind": f"milestone-{verb}",
+             "objective": objective, "milestone": name,
+             "evidence": args.evidence or None, "reason": args.reason or None}
+    flush_events([event])
+    append_outcome(dict(event))
+    print(f"milestone {verb}: {name}")
+
+
+def cmd_reflect(args):
+    objective = read_objective()
+    if not objective:
+        die("set an objective before reflecting on its pursuit")
+    text = " ".join(args.text).strip()
+    if not text:
+        die("a reflection is an honest assessment in words, not a stamp")
+    record = load_progress()
+    record.setdefault("objective", objective)
+    record.setdefault("milestones", [])
+    record["last_reflect_ms"] = now_ms()
+    save_progress(record)
+    snap = game_reflex.read_snapshot() or {}
+    event = {"ts": now_ms(), "kind": "reflection", "objective": objective,
+             "activity": read_activity() or None, "plan": read_plan() or None,
+             "ground_items": len(snap.get("ground_items") or []),
+             "text": text}
+    flush_events([event])
+    append_outcome(dict(event))
+    print("reflection recorded")
+
+
+def activity_prep_line(snap: dict) -> str:
+    """The prep facts, in front of every activity change (spec rule 11c)."""
+    inv = snap.get("inventory") or []
+    try:
+        heals = game_reflex.load_food()
+    except BaseException:
+        heals = {}
+    food = [i for i in inv if i.get("id") in heals]
+    total_heal = sum(heals[i["id"]] * (i.get("count") or 1) for i in food)
+    worn = [str(i.get("name")) for i in inv if i.get("equipped")]
+    return (f"prep: food {len(food)} item(s) (~{total_heal} heal); "
+            f"equipped: {', '.join(worn) if worn else 'nothing'}; "
+            f"bag {len(inv)}/30 slots")
+
+
+# Spec rule 11: the plan is the current method, nothing else. Standing
+# instructions, lessons, and prohibitions are different artifacts wearing the
+# plan's clothes, and each refusal routes the text to its real home.
+STANDING_PLAN_PATTERNS = (
+    r"\bnever\b", r"\balways\b", r"\bunder no circumstances?\b",
+    r"\bfrom now on\b", r"\bgoing forward\b", r"\bat all times\b",
+    r"\bevery time\b", r"\bin the future\b", r"\bdo not (?:ever|again)\b",
+    r"\bstop \w+ing\b", r"\bhow to\b", r"\bremember\b", r"\bno \w+ing\b",
+)
+
+
+def plan_hygiene_or_die(text: str) -> None:
+    hits = [p for p in STANDING_PLAN_PATTERNS
+            if re.search(p, text, re.IGNORECASE)]
+    if hits:
+        die("plan refused — it contains standing-instruction language "
+            f"(matched: {', '.join(hits)}). The plan is the current method and "
+            "nothing else. A lesson belongs in durable memory (betty-openrsc "
+            "remember), a momentary redirect in steering, and finished or "
+            "closed work is a measured fact (play milestone done NAME "
+            "--evidence …), never a prohibition clause. A ban written into "
+            "the plan is how one bad afternoon becomes a permanent wall. "
+            "State only what you are doing next and how.")
+
+
 def cmd_objective(args):
     old_objective = read_objective()
     old_plan = read_plan()
@@ -8075,11 +8392,29 @@ def cmd_objective(args):
             clear_plan_for_objective_change(
                 old_objective, "objective-cleared", old_plan)
         clear_goal("objective-cleared")
+        archive_progress("objective-cleared")
         print("objective cleared")
         return
     if args.name is None:
+        if args.measure is not None:
+            if not old_objective:
+                die("set an objective before declaring its measure")
+            measure = args.measure.strip()
+            if not measure or "\n" in measure:
+                die("the measure is one non-empty line naming where the "
+                    "objective's ground truth lives and how to read it")
+            record = load_progress()
+            record.update({"objective": old_objective, "measure": measure})
+            record.setdefault("milestones", [])
+            save_progress(record)
+            print(f"measure: {measure}")
+            return
         obj = read_objective()
         print(obj if obj else "(none)")
+        if obj:
+            measure = load_progress().get("measure")
+            if measure:
+                print(f"measure: {measure}")
         return
     if "\n" in args.name or not args.name.strip():
         die("the objective is one non-empty line")
@@ -8092,12 +8427,25 @@ def cmd_objective(args):
             die(f"objective refused: {quest['name']} is already completed "
                 f"(journal stage={quest.get('stage')}); choose unfinished work")
     game_dir().mkdir(parents=True, exist_ok=True)
+    if old_objective != new_objective:
+        archive_progress(f"objective-changed-to:{new_objective}")
     game_reflex.atomic_write(objective_path(), new_objective + "\n")
     if old_plan and old_objective != new_objective:
         clear_plan_for_objective_change(
             old_objective, f"objective-changed-to:{new_objective}", old_plan)
     if old_objective != new_objective:
         clear_goal(f"objective-changed-to:{new_objective}")
+    if args.measure is not None:
+        measure = args.measure.strip()
+        if not measure or "\n" in measure:
+            die("the measure is one non-empty line naming where the "
+                "objective's ground truth lives and how to read it")
+        record = load_progress()
+        record.update({"objective": new_objective, "measure": measure})
+        record.setdefault("milestones", [])
+        save_progress(record)
+        print(f"objective: {new_objective} (measure: {measure})")
+        return
     print(f"objective: {new_objective}")
 
 
@@ -8157,6 +8505,7 @@ def cmd_plan(args):
     if not objective:
         die("set an objective before selecting its plan")
     proposed = validate_plan_line(args.text, "plan", PLAN_MAX_CHARS)
+    plan_hygiene_or_die(proposed)
     if args.revise is not None:
         reason = validate_plan_line(
             args.revise, "plan-revision reason", PLAN_REASON_MAX_CHARS)
@@ -8165,6 +8514,7 @@ def cmd_plan(args):
         if proposed == current:
             print(f"plan unchanged: {current}")
             return
+        progress_gate_or_die("plan revision")
         game_reflex.atomic_write(plan_path(), proposed + "\n")
         record_plan_change("revised", current, proposed, reason)
         print(f"plan revised: {proposed}")
@@ -8174,6 +8524,7 @@ def cmd_plan(args):
     if current == proposed:
         print(f"plan unchanged: {current}")
         return
+    progress_gate_or_die("plan selection")
     game_dir().mkdir(parents=True, exist_ok=True)
     game_reflex.atomic_write(plan_path(), proposed + "\n")
     record_plan_change("selected", "", proposed, "initial-selection")
@@ -8286,6 +8637,8 @@ def cmd_activity(args):
         die("the activity is one non-empty line")
     selected = args.name.strip()
     previous = read_activity()
+    if selected != previous:
+        progress_gate_or_die(f"activity switch to '{selected}'")
     cfg = load_config()
     snap = game_reflex.read_snapshot() or {}
     changed = selected != previous or args.restart
@@ -8321,6 +8674,10 @@ def cmd_activity(args):
     if changed:
         print(f"iteration: {stats.get('iteration') or next_activity_iteration(selected)} "
               f"({'baseline ready' if stats else 'XP baseline pending'})")
+        print(activity_prep_line(snap))
+        print("resolve preparation before settling in: combat wants food and "
+              "armed gear; a gathering, banking, or crafting mode should not "
+              "haul supplies it does not need")
     current_names = briefing.get("current_rules") or []
     print("current reflexes: " + (", ".join(current_names[:12]) if current_names else "none"))
     candidates = briefing.get("reuse_candidates") or []
@@ -9037,6 +9394,10 @@ def cmd_run(args):
         table_mtime = rules_path().stat().st_mtime
     except OSError:
         table_mtime = 0
+    try:
+        source_mtime = Path(__file__).stat().st_mtime
+    except OSError:
+        source_mtime = 0
     last_gap_signature = None
     gap_candidate_signature = None
     gap_candidate_since = 0
@@ -9061,6 +9422,18 @@ def cmd_run(args):
                 except (ValueError, json.JSONDecodeError) as e:
                     flush_events([{"ts": now_ms(), "kind": "table-invalid",
                                    "error": str(e)[:300]}])
+
+            # Spec rule 15: a runner outliving a deploy enforces a table
+            # nobody can see — when the deployed source changes, re-exec in
+            # place so the same supervised process continues on current code.
+            try:
+                smt = Path(__file__).stat().st_mtime
+            except OSError:
+                smt = source_mtime
+            if smt != source_mtime:
+                flush_events([{"ts": now_ms(), "kind": "runner-source-changed",
+                               "note": "re-exec onto current code"}])
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
             verdict, _code = step_once(cfg, read_objective(), read_activity(), wait_ms)
 
@@ -9203,7 +9576,32 @@ def main():
     p = sub.add_parser("objective", help="show, set or clear the durable objective")
     p.add_argument("name", nargs="?")
     p.add_argument("--clear", action="store_true")
+    p.add_argument("--measure", metavar="TEXT",
+                   help="one line naming where this objective's ground truth "
+                        "lives and how to read it (spec rule 11c)")
     p.set_defaults(fn=cmd_objective)
+
+    p = sub.add_parser("progress",
+                       help="record or show what the objective's measure "
+                            "actually showed (spec rule 11c)")
+    p.add_argument("text", nargs="*")
+    p.set_defaults(fn=cmd_progress)
+
+    p = sub.add_parser("milestone",
+                       help="the objective's sub-goal ledger: closed on "
+                            "evidence, reopened on live data (spec rule 11c)")
+    p.add_argument("action", choices=["add", "done", "reopen", "list"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--note", metavar="TEXT")
+    p.add_argument("--evidence", metavar="TEXT")
+    p.add_argument("--reason", metavar="TEXT")
+    p.set_defaults(fn=cmd_milestone)
+
+    p = sub.add_parser("reflect",
+                       help="record the periodic self-check: is this still "
+                            "accomplishing the objective? (spec rule 11c)")
+    p.add_argument("text", nargs="+")
+    p.set_defaults(fn=cmd_reflect)
 
     p = sub.add_parser("quests", help="show or search the authoritative quest journal")
     p.add_argument("query", nargs="*")
@@ -9433,6 +9831,12 @@ def main():
                         report("runner-system-message", age_ms=now_ms() - hb.get("ts", 0),
                                pid=hb.get("pid"), friend_updates=friend_updates_field)
                 else:
+                    deliberation_fields = {}
+                    if verdict == "no-rule-matched":
+                        deliberation_fields = dict(
+                            reflection_fields(),
+                            activity_mismatch=xp_activity_mismatch(
+                                hb.get("activity_xp"), hb.get("activity")))
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
                            plan=hb.get("plan") or read_plan() or None,
@@ -9442,7 +9846,8 @@ def main():
                            ground_items=",".join(str(i)
                                                  for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None,
-                           friend_updates=friend_updates_field)
+                           friend_updates=friend_updates_field,
+                           **deliberation_fields)
                 acknowledge_friend_status(friend_updates)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
                           "route-needs-detour": EXIT_NO_RULE,

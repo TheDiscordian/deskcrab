@@ -2555,9 +2555,9 @@ echo "visible ground items become identity-based learned actions (spec rules 4-5
 refute "take-ground without an item id is refused" \
     python3 "$GP" learn bad-ground --priority 1 --trigger ground_item_visible=27 \
         --action take-ground
-refute "take-ground refuses a roaming cap beyond ten tiles" \
+refute "take-ground refuses any distance cap (the cap doctrine)" \
     python3 "$GP" learn bad-ground-range --priority 1 --trigger ground_item_visible=27 \
-        --action take-ground --param item=27 --param within=11
+        --action take-ground --param item=27 --param within=2
 refute "a non-integer ground_item_visible is refused" \
     python3 "$GP" learn bad-ground2 --priority 1 --trigger ground_item_visible=skull \
         --action take-ground --param item=27
@@ -2594,11 +2594,16 @@ contains "$OUT" "ground_items=27" \
     && ok "the fallback verdict makes the visible pickup explicit" \
     || fail "the fallback verdict makes the visible pickup explicit" "$OUT"
 python3 "$GP" remove take-quest-skull >/dev/null
+# The cap doctrine: wanted loot is wanted at ANY distance — an uncapped loot
+# reflex chases every reachable visible pile, near or far.
 python3 "$GP" learn take-nearby-skull --priority 90 --cooldown-ms 0 \
-    --trigger ground_item_visible=27 --action take-ground --param item=27 --param within=2 >/dev/null
+    --trigger ground_item_visible=27 --action take-ground --param item=27 >/dev/null
 snap 1292 '[]' '{"x":120,"z":648,"ground_items":[{"id":27,"x":124,"z":648}]}'
-CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
-check_eq "a local loot reflex will not chase a distant visible pile" "$CODE" "4"
+fake_take_bridge collected
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "a loot reflex chases a distant visible pile" "$CODE" "0"
+check_eq "the distant pile compiles to its exact live tile" "$(last_action 'x=124')" "1"
 snap 1293 '[]' '{"x":120,"z":648,"ground_items":[{"id":27,"x":122,"z":649}]}'
 fake_take_bridge collected
 OUT="$(python3 "$GP" step)"; CODE=$?
@@ -2643,11 +2648,12 @@ python3 "$GP" learn pickpocket-man --priority 75 --cooldown-ms 0 \
 snap 1295 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":true}'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "an out-of-combat NPC rule stays quiet during a fight" "$CODE" "4"
+REFUSED_BEFORE=$(decided refused)
 snap 12951 '[{"sidx":91,"id":11,"x":140,"z":660}]' '{"in_combat":false}'
 CODE=0; OUT="$(python3 "$GP" step)" || CODE=$?
 check_eq "a repeating NPC reflex will not chase a distant visible target" "$CODE" "4"
 check_eq "the range refusal is recorded for diagnosis" \
-    "$(decided refused)" "3"
+    "$(decided refused)" "$((REFUSED_BEFORE + 1))"
 snap 1296 '[{"sidx":91,"id":11,"x":121,"z":648}]' '{"in_combat":false}'
 fake_bridge done
 OUT="$(python3 "$GP" step)"; CODE=$?
@@ -2661,9 +2667,11 @@ check_eq "the range cap crosses ACTIONS for a live dispatch recheck" \
 python3 "$GP" remove pickpocket-man >/dev/null
 python3 "$GP" objective --clear >/dev/null
 python3 "$GP" objective gather-bones >/dev/null
+# The cap doctrine: no learned attack ever takes `within` — the body walks
+# to what it wants to fight.
 python3 "$GP" learn attack-nearby-goblin --priority 75 --cooldown-ms 0 \
     --trigger objective_is=gather-bones --trigger npc_visible=62 \
-    --trigger out_of_combat=true --action attack-npc --param npc=62 --param within=4 >/dev/null
+    --trigger out_of_combat=true --action attack-npc --param npc=62 >/dev/null
 snap 12961 '[{"sidx":92,"id":62,"name":"Goblin","x":121,"z":648,"attackable":true}]' \
     '{"in_combat":false}'
 fake_bridge done
@@ -2672,7 +2680,6 @@ wait "$FAKE_BRIDGE_PID"
 check_eq "the semantic NPC attack verifies actual combat" "$CODE" "0"
 check_eq "the action is attack-npc" "$(last_action 'type=attack-npc')" "1"
 check_eq "the attack carries the stable server index" "$(last_action 'sidx=92')" "1"
-check_eq "the attack range cap reaches the bridge" "$(last_action 'within=4')" "1"
 contains "$OUT" "status=done" \
     && ok "combat state, not approach movement, completes the attack" \
     || fail "the semantic attack needs grounded combat completion" "$OUT"
@@ -2744,10 +2751,11 @@ check_eq "on the spot's tile" "$(last_action 'x=196')" "1"
 check_eq "with its chosen verb riding (cmd 2, the second menu command)" "$(last_action 'cmd=2')" "1"
 python3 "$GP" learn open-gate --priority 40 --cooldown-ms 0 \
     --trigger objective_is=seek-fred --action interact-object --param obj=60 >/dev/null
+REFUSED_BEFORE=$(decided refused)
 snap 132 '[]' '{"objects":[],"bounds":[]}'
 CODE=0; python3 "$GP" step >/dev/null || CODE=$?
 check_eq "a rule whose object is not loaded refuses at compile: exit 4" "$CODE" "4"
-check_eq "and the refusal is logged" "$(decided refused)" "4"
+check_eq "and the refusal is logged" "$(decided refused)" "$((REFUSED_BEFORE + 1))"
 python3 "$GP" remove open-farm-door >/dev/null
 python3 "$GP" remove net-fishing-spot >/dev/null
 python3 "$GP" remove open-gate >/dev/null
@@ -3916,8 +3924,15 @@ check "which resolves to a real GPT Sol slug" \
     grep -q 'CODEX_MODEL_SOL:-gpt-5.6-sol' "$BOC"
 check "the background author follows the player's model by default" \
     grep -q 'AUTHOR_MODEL="${BETTY_OPENRSC_AUTHOR_MODEL:-$MODEL}"' "$BOC"
-check "the background author reasoning effort is pinned medium" \
-    grep -q 'AUTHOR_EFFORT=.*medium' "$BOC"
+# The author's effort is no longer a repeated literal: it follows the player's
+# effort, which itself falls back to medium. Both are resolved below conf_value,
+# because reading them above the function is a command-not-found that silently
+# lands every run on the fallback.
+check "the background author reasoning effort follows the player's" \
+    grep -q 'AUTHOR_EFFORT="${AUTHOR_EFFORT:-$(conf_value OPENRSC_AUTHOR_EFFORT || echo "$EFFORT")}"' "$BOC"
+check "and both efforts resolve after conf_value is defined" \
+    test "$(grep -n '^conf_value()' "$BOC" | cut -d: -f1)" -lt \
+         "$(grep -n '^EFFORT="${EFFORT:-' "$BOC" | cut -d: -f1)"
 check "the author runs Sol through Codex" \
     grep -q '"$CODEX" exec --json.*--ephemeral' "$BOC"
 check "the Sol author carries the same no-sleep command guard" \
@@ -3928,7 +3943,7 @@ check "the author streams its prompt on stdin instead of risking ARG_MAX" \
 check "the author is event-driven by the outcome queue, with no sleep loop" \
     grep -q 'path-property=.*PathModified' "$BOC"
 check "the author is forbidden from touching the game action slot" \
-    grep -q 'NEVER play the game, touch action.json' "$BOC"
+    grep -q 'the game, touch action.json, receipt.json, hold' "$BOC"
 check "the author does not turn incidental activity into reflex scope" \
     grep -q 'Treat the outcome.*activity as context, not an automatic scope' "$BOC"
 check "the author keeps generic loot activity-agnostic" \
@@ -4138,7 +4153,7 @@ contains "$OUT" '`use ITEM-ID npc NAME`' \
     && contains "$OUT" '`attack NAME`' \
     && contains "$OUT" 'Never put a screenshot coordinate' \
     && contains "$OUT" 'orsc-headless.sh improve' \
-    && contains "$OUT" 'immediately dispatches a detached builder' \
+    && contains "$OUT" 'it dispatches nothing and is not a delayed wake' \
     && ok "the fresh player receives the semantic action and reflex hierarchy" \
     || fail "the fresh player needs the concrete semantic tool map" "$OUT"
 

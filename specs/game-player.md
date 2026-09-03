@@ -1399,8 +1399,8 @@ deliberate-play channel.
     turn. Each iteration re-reads the objective, reloads the table when
     `learned-rules.json`'s mtime moves (an invalid table is refused loudly and the last valid
     one kept), and watches its OWN deployed source's mtime the same way: when
-    `game_player.py` changes on disk, the runner finishes the current pass and exits cleanly so
-    its supervisor restarts it on current code. A long-lived evaluator running yesterday's
+    `game_player.py` changes on disk, the runner finishes the current pass and re-execs itself
+    in place — same process, same supervision, current code. A long-lived evaluator running yesterday's
     validator against today's table silently rejects every reload and keeps enforcing a table
     nobody can see — a disabled rule that keeps firing is exactly this failure. It then
     evaluates, verifies per rule 7a, and writes a heartbeat —
