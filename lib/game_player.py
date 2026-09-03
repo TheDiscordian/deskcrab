@@ -4862,6 +4862,22 @@ def make_trigger_fn(objective: str, activity: str = ""):
     return trigger_true
 
 
+def snapshot_holds_item(snap: dict, item_id: int) -> bool:
+    """Item presence, read from either snapshot inventory shape.
+
+    Live bridge snapshots carry inventory entries as objects; the brief form
+    this layer records into its own outcome queue — and therefore every replay
+    case built from one — carries plain item ids. ``make_trigger_fn`` already
+    reads both, so a compile-side presence check that assumed objects crashed
+    the moment a recorded snapshot reached it.
+    """
+    for entry in snap.get("inventory") or []:
+        if entry == item_id or (isinstance(entry, dict)
+                                and entry.get("id") == item_id):
+            return True
+    return False
+
+
 def nearest_npc(snap: dict, wanted, predicate=None):
     """Choose by actual walking steps, independently of snapshot list order.
 
@@ -4945,7 +4961,7 @@ def compile_player_action(rule, snap, food, eat_pick):
         return None, "npc-not-within-range" if within is not None else "npc-not-visible"
     if action["type"] == "use-item-npc":
         item_id = action["item"]
-        if not any(entry.get("id") == item_id for entry in snap.get("inventory") or []):
+        if not snapshot_holds_item(snap, item_id):
             return None, "item-not-held"
         want = action["npc"]
         within = action.get("within")
@@ -5132,7 +5148,7 @@ def compile_player_action(rule, snap, food, eat_pick):
         want = action["item"]
         if want in PRAYER_BONE_ITEM_IDS and snap.get("fatigue") == 100:
             return None, "bone-burial-blocked-at-full-fatigue"
-        if any(entry.get("id") == want for entry in snap.get("inventory") or []):
+        if snapshot_holds_item(snap, want):
             compiled = {"type": "click-inventory", "item": want,
                         "button": action.get("button", 1)}
             if action.get("batch") == "all":
@@ -5152,8 +5168,7 @@ def compile_player_action(rule, snap, food, eat_pick):
         if action["type"] == "click-bank":
             # The bank's selectable grid includes inventory items available
             # for deposit even when no bank stack exists yet.
-            visible = visible or any(entry.get("id") == want
-                                     for entry in snap.get("inventory") or [])
+            visible = visible or snapshot_holds_item(snap, want)
         if visible:
             return {"type": action["type"], "item": want,
                     "button": action.get("button", 1)}, None
@@ -5163,8 +5178,7 @@ def compile_player_action(rule, snap, food, eat_pick):
         # named as an ordinary ineligibility here instead.
         if snap.get("in_combat") is not False:
             return None, "combat-blocks-drop"
-        if any(entry.get("id") == action["item"]
-               for entry in snap.get("inventory") or []):
+        if snapshot_holds_item(snap, action["item"]):
             return {"type": "drop-inventory", "item": action["item"],
                     "amount": 1}, None
         return None, "item-not-held"
@@ -5173,8 +5187,7 @@ def compile_player_action(rule, snap, food, eat_pick):
         # held item on a pile pick the same nearest REACHABLE target, and
         # report the same unreachable/needs-door reasons.
         if action["type"] == "use-item-ground" \
-                and not any(entry.get("id") == action["item"]
-                            for entry in snap.get("inventory") or []):
+                and not snapshot_holds_item(snap, action["item"]):
             return None, "item-not-held"
         # Spec rule 5's opt-in pile guard: Firemaking.handleFiremaking refuses
         # with "You can't light a fire here" whenever ANY GameObject stands on
