@@ -3123,9 +3123,11 @@ def main():
     # its, at its own effort; the summariser only condenses for it.
     p.add_argument("--model",
                    default=os.environ.get("MEMORY_INGEST_MODEL")
+                   or os.environ.get("NIGHT_JUDGE_MODEL")
                    or "gpt-5.6-sol")
     p.add_argument("--effort",
-                   default=os.environ.get("MEMORY_INGEST_EFFORT") or "high")
+                   default=os.environ.get("MEMORY_INGEST_EFFORT")
+                   or os.environ.get("NIGHT_JUDGE_EFFORT") or "high")
     p.add_argument("--summary-model",
                    default=os.environ.get("MEMORY_SUMMARY_MODEL") or "sonnet")
     p.add_argument("--max-chars", type=int, default=150000)
@@ -3149,9 +3151,11 @@ def main():
     # itself is allowed — only a cheaper tier deciding is not.
     p.add_argument("--model",
                    default=os.environ.get("MEMORY_INGEST_MODEL")
+                   or os.environ.get("NIGHT_JUDGE_MODEL")
                    or "gpt-5.6-sol")
     p.add_argument("--effort",
-                   default=os.environ.get("MEMORY_INGEST_EFFORT") or "high")
+                   default=os.environ.get("MEMORY_INGEST_EFFORT")
+                   or os.environ.get("NIGHT_JUDGE_EFFORT") or "high")
     p.add_argument("--max-chars", type=int, default=100000)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_backfill_episodic)

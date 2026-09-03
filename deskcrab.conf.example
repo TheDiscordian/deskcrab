@@ -310,10 +310,18 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # the job instead. Fails open; benign command mentions are never touched.
 # CHORE_GATE=1                      # set 0 to deliver displayed chores as written
 
-# The night judge's other roles (specs/nightly.md rules 14c-14e): every sleep
-# judgment — retention, deduplication, reconciliation, work selection — runs
-# on the night judge, gpt-5.6-sol at high by default, with NO fallback model.
-# The nightly ingest judge pair is MEMORY_INGEST_MODEL/_EFFORT above.
+# The night judge (specs/nightly.md rules 14c, 14c-i): every sleep judgment —
+# retention, deduplication, reconciliation, work selection — runs on ONE judge,
+# gpt-5.6-sol at high by default, with NO fallback model. ONE judge is ONE
+# knob: set this pair and the whole night moves, in both languages. The four
+# per-role pairs below (and MEMORY_INGEST_MODEL/_EFFORT above) each override it
+# for their own role and are otherwise better left unset.
+#
+# Because there is no fallback here, a judge whose account is out of credits is
+# not a slower night — it is a night that does not happen. Move this knob, not
+# four literals.
+# NIGHT_JUDGE_MODEL="gpt-5.6-sol"
+# NIGHT_JUDGE_EFFORT="high"
 # PROMISE_SWEEP_MODEL="gpt-5.6-sol"  # the night sweep's judge — never the
 #                                    # live checker's sonnet/haiku pair
 # PROMISE_SWEEP_EFFORT="high"

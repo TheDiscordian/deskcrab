@@ -83,8 +83,10 @@ CAP="${NIGHT_WORK_CAP:-2}"
 POLL="${NIGHT_WORK_POLL:-300}"
 WINDOW_MAX="${NIGHT_WORK_WINDOW_MAX:-21600}"
 ROUNDS_MAX="${NIGHT_WORK_ROUNDS_MAX:-0}"
-NIGHT_WORK_MODEL="${NIGHT_WORK_MODEL:-gpt-5.6-sol}"
-NIGHT_WORK_EFFORT="${NIGHT_WORK_EFFORT:-high}"
+# Defaults from the night's one judge (nightly.md rule 14c-i); this pair
+# overrides it for work selection alone.
+NIGHT_WORK_MODEL="${NIGHT_WORK_MODEL:-${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}}"
+NIGHT_WORK_EFFORT="${NIGHT_WORK_EFFORT:-${NIGHT_JUDGE_EFFORT:-high}}"
 CRAB="${CRAB_BIN:-$SCRIPT_DIR/crab}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 

@@ -77,14 +77,25 @@ which fails silently is worse than one that does not exist.
     judge. Every retention call (what the day's material earns as a record), every deduplication
     call (which two records are one complaint), every reconciliation call (which promises
     genuinely died), and every work-selection call (what the night buys) runs on the night-judge
-    model at its own reasoning effort — `gpt-5.6-sol` at `high` by default, one knob pair per
-    role (`MEMORY_INGEST_MODEL`/`MEMORY_INGEST_EFFORT`, `ENG_MERGE_MODEL`/`ENG_MERGE_EFFORT`,
-    `PROMISE_SWEEP_MODEL`/`PROMISE_SWEEP_EFFORT`, `NIGHT_WORK_MODEL`/`NIGHT_WORK_EFFORT`) —
-    routed to its engine by the model name alone ([model-backends.md](model-backends.md)). The
-    shell-side walk is ONE implementation, `lib/nightly-judge`, sourced by every judging phase;
-    nothing on the sleep path re-implements it, and the ingest's python side mirrors the same
-    routing rather than inventing a second engine rule. (The user's correction of 2026-08-25,
-    the record `sleep-should-be-orchestrated-and-judged-by-sol-h`.)
+    model at its own reasoning effort, routed to its engine by the model name alone
+    ([model-backends.md](model-backends.md)). The shell-side walk is ONE implementation,
+    `lib/nightly-judge`, sourced by every judging phase; nothing on the sleep path re-implements
+    it, and the ingest's python side mirrors the same routing rather than inventing a second
+    engine rule. (The user's correction of 2026-08-25, the record
+    `sleep-should-be-orchestrated-and-judged-by-sol-h`.)
+14c-i. ONE judge means ONE knob. `NIGHT_JUDGE_MODEL`/`NIGHT_JUDGE_EFFORT` — `gpt-5.6-sol` at
+    `high` by default — is what every role above resolves from, and moving the night's judge MUST
+    be that one pair changed in one place. The four role pairs
+    (`MEMORY_INGEST_MODEL`/`MEMORY_INGEST_EFFORT`, `ENG_MERGE_MODEL`/`ENG_MERGE_EFFORT`,
+    `PROMISE_SWEEP_MODEL`/`PROMISE_SWEEP_EFFORT`, `NIGHT_WORK_MODEL`/`NIGHT_WORK_EFFORT`) remain,
+    each overriding the shared pair for its own role, and each MUST take its DEFAULT from the
+    shared pair rather than naming a model itself. A role that repeats the literal is the defect
+    this rule exists to prevent: the policy was already "one judge", but it was written as four
+    independent literals across two languages and named in no config, so on 2026-09-02 — the
+    judge's account out of credits, every knob the config knew about already moved — the night
+    still could not run. She could not sleep, and the switch that was supposed to move her looked
+    complete. The shared pair is exported, so the ingest's python side reads the same value the
+    shell phases do.
 14d. Sonnet summarises; it never judges. The summariser tier's only place in the night is
     producing summaries handed TO the judge — the ingest's stage 1
     ([memory-recall.md](memory-recall.md) rules 27 and 29a) — and a summariser-tier model MUST

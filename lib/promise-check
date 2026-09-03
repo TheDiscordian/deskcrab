@@ -68,8 +68,10 @@ CHECK_FALLBACK_MODEL="${PROMISE_CHECK_FALLBACK_MODEL:-haiku}"
 # genuinely died is a sleep judgment, and no cheaper model may make it — no
 # fallback model, where the live pass above keeps its sonnet/haiku pair as
 # the live-turn role it is.
-SWEEP_MODEL="${PROMISE_SWEEP_MODEL:-gpt-5.6-sol}"
-SWEEP_EFFORT="${PROMISE_SWEEP_EFFORT:-high}"
+# Defaults from the night's one judge (nightly.md rule 14c-i); this pair
+# overrides it for the promise sweep alone.
+SWEEP_MODEL="${PROMISE_SWEEP_MODEL:-${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}}"
+SWEEP_EFFORT="${PROMISE_SWEEP_EFFORT:-${NIGHT_JUDGE_EFFORT:-high}}"
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
 if [ ! -x "$CLAUDE_BIN" ] || ! command -v python3 >/dev/null 2>&1; then
     [ "$MODE" = inspect ] && exit 4

@@ -352,3 +352,54 @@ else
     echo "        cases need sqlite-vec; the walk, selector, sweep and merge"
     echo "        cases above still ran in full"
 fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "ONE judge is ONE knob (rule 14c-i): the shared pair alone moves a role's"
+echo "engine and effort, and the role's own knob still overrides it:"
+reset
+# Both roads answer the selector, so the only thing under test is which one was
+# asked and with what.
+sandbox_stub codex <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CODEX_LOG}"
+cat > "$T/shared-stdin"
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"TASK: a-latch-that-sticks | - | Fix the sticking latch\nBRIEF:\nIn /tmp/greenhouse, from the thread a-latch-that-sticks: free the latch.\nEND"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2}}'
+STUB
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/shared-stdin"
+printf '%s\n' 'TASK: a-latch-that-sticks | - | Fix the sticking latch'
+printf '%s\n' 'BRIEF:'
+printf '%s\n' 'In /tmp/greenhouse, from the thread a-latch-that-sticks: free the latch.'
+printf '%s\n' 'END'
+STUB
+
+# The shared knob alone, named for the other engine: the role follows it.
+night_work DESKCRAB_CODEX_STATE="$T/cx-state-sh1" \
+    NIGHT_JUDGE_MODEL=stub-claude \
+    NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1 >/dev/null 2>&1
+check "the selector followed the shared knob" \
+    grep -q -- "--model stub-claude" "$SANDBOX_CLAUDE_LOG"
+check_eq "and the engine it names is the only one consulted" "$(codex_n)" "0"
+
+# The role's own knob still wins over the shared one.
+reset
+night_work DESKCRAB_CODEX_STATE="$T/cx-state-sh2" \
+    NIGHT_JUDGE_MODEL=stub-claude NIGHT_WORK_MODEL=stub-claude-role \
+    NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1 >/dev/null 2>&1
+check "the role's own knob overrides the shared one" \
+    grep -q -- "--model stub-claude-role" "$SANDBOX_CLAUDE_LOG"
+check_eq "the shared model was not used beside it" \
+    "$(sandbox_count_in -- "--model stub-claude " "$SANDBOX_CLAUDE_LOG")" "0"
+
+# The effort half of the pair rides the same way, visible on the codex road.
+reset
+night_work DESKCRAB_CODEX_STATE="$T/cx-state-sh3" \
+    NIGHT_JUDGE_MODEL=gpt-5.6-sol NIGHT_JUDGE_EFFORT=low \
+    NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1 >/dev/null 2>&1
+check "the shared effort reached the engine" \
+    grep -q -- "model_reasoning_effort=low" "$SANDBOX_CODEX_LOG"
+check_eq "and no claude stood beside the codex-named shared judge" "$(claude_n)" "0"

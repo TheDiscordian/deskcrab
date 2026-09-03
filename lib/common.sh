@@ -118,6 +118,17 @@ CONVO_SUMMARIZE_TURNS="${CONVO_SUMMARIZE_TURNS:-10}"
 # Conversation continuity is part of her voice, so it follows the speaking
 # engine rather than a cheap classifier model.
 CONVO_SUMMARY_MODEL="${CONVO_SUMMARY_MODEL:-sol}"
+# The night's one judge (specs/nightly.md rule 14c-i). Every judging phase —
+# the ingest's retention calls, the record merge, the promise sweep, the work
+# selection — takes its DEFAULT from this pair, so moving the night's judge is
+# one knob in one place instead of four literals across two languages. Each
+# phase keeps its own knob to override this for its own role.
+#
+# Exported because the ingest's judge lives on the python side and must read
+# the same value the shell phases do.
+NIGHT_JUDGE_MODEL="${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}"
+NIGHT_JUDGE_EFFORT="${NIGHT_JUDGE_EFFORT:-high}"
+export NIGHT_JUDGE_MODEL NIGHT_JUDGE_EFFORT
 # Durable "wants" file the assistant maintains and pursues during autonomous
 # wakes (crab wake / crab wake-at). Unset = feature off.
 WANTS_FILE="${WANTS_FILE:-}"
@@ -6074,12 +6085,53 @@ _codex_state_file() {
     printf '%s' "${DESKCRAB_CODEX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/codex-state}"
 }
 
+# The provider's own reset clause, when the refusal quotes one — the wording
+# seen in the wild: "try again at Sep 6th, 2026 10:28 PM" (ordinal day, US
+# month-day-year, 12-hour clock, local time). Reads the FULL text it is
+# handed, before the record's comment clamp, and tolerates the clause
+# appearing twice — a copy truncated mid-time simply fails the pattern and a
+# complete one still wins. `date -d` is the validator: a month it does not
+# know, a day that does not exist, an hour outside the 12-hour clock all fail
+# the parse. Prints the epoch of a clean read; anything less returns 1.
+codex_limit_reset_parse() {  # <refusal text> -> epoch of the quoted reset
+    local clause epoch
+    clause="$(printf '%s' "${1:-}" | tr '\n\t' '  ' | sed -nE \
+        's/.*[Tt]ry again at ([A-Za-z]{3,9}) ([0-9]{1,2})(st|nd|rd|th)? ?,? ([0-9]{4}),? ([0-9]{1,2}:[0-9]{2}) ?([AaPp][Mm]).*/\1 \2 \4 \5 \6/p')"
+    [ -n "$clause" ] || return 1
+    epoch="$(date -d "$clause" +%s 2>/dev/null)" || return 1
+    case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s' "$epoch"
+}
+
+# The sanity gate on that read (specs/model-backends.md rule 13): a quoted
+# time already past, or more than a week out, is a bad read rather than a
+# booking — the caller keeps the flat window instead of trusting it.
+codex_limit_reset_epoch() {  # <refusal text> -> epoch, only for a sane read
+    local epoch now
+    epoch="$(codex_limit_reset_parse "${1:-}")" || return 1
+    now="$(date +%s)"
+    [ "$epoch" -gt "$now" ] || return 1
+    [ "$epoch" -le $(( now + 604800 )) ] || return 1
+    printf '%s' "$epoch"
+}
+
 codex_limit_record() {  # <refusal text>
-    local f; f="$(_codex_state_file)"
+    local f until src; f="$(_codex_state_file)"
     mkdir -p "$(dirname "$f")" 2>/dev/null
-    printf 'blocked-until\t%s\t%s\n' "$(( $(date +%s) + CODEX_LIMIT_COOLDOWN ))" \
+    # The refusal's own reset time IS the cooldown when it quotes one; the
+    # flat window is the fallback for a refusal that quotes nothing usable.
+    # The trailing marker says which, so no reader mistakes a guess for a
+    # measurement — every reader of this line splits on TAB and consults the
+    # first two fields, so the extra field costs none of them anything.
+    if until="$(codex_limit_reset_epoch "${1:-}")"; then
+        src="reported"
+    else
+        until=$(( $(date +%s) + CODEX_LIMIT_COOLDOWN ))
+        src="estimated"
+    fi
+    printf 'blocked-until\t%s\t%s\t%s\n' "$until" \
         "$(printf '%s' "${1:-limit}" | tr '\n\t' '  ' | head -c 200)" \
-        > "$f" 2>/dev/null
+        "$src" > "$f" 2>/dev/null
 }
 
 codex_limit_until() {  # -> epoch on stdout only while a cooldown stands

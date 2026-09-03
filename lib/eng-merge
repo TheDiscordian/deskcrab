@@ -82,8 +82,10 @@ export DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-${XDG_DATA_HOME:-$HOME/.local/share
 ENGDIR="$DESKCRAB_ENG_DIR"
 THRESH="${ENG_MERGE_THRESHOLD:-0.80}"
 MAX_JUDGED="${ENG_MERGE_MAX_JUDGED:-8}"
-ENG_MERGE_MODEL="${ENG_MERGE_MODEL:-gpt-5.6-sol}"
-ENG_MERGE_EFFORT="${ENG_MERGE_EFFORT:-high}"
+# Defaults from the night's one judge (nightly.md rule 14c-i); this pair
+# overrides it for the record merge alone.
+ENG_MERGE_MODEL="${ENG_MERGE_MODEL:-${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}}"
+ENG_MERGE_EFFORT="${ENG_MERGE_EFFORT:-${NIGHT_JUDGE_EFFORT:-high}}"
 EMBED_URL="${MEMORY_EMBED_URL:-http://localhost:11434/api/embed}"
 EMBED_MODEL="${MEMORY_EMBED_MODEL:-nomic-embed-text}"
 
