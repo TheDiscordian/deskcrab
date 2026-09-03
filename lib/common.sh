@@ -2709,15 +2709,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # 2026-08-15 it alone measured 20,262 bytes over 63 outcomes, with
         # the whole layer at ~31 KB and the assembled prompt ~16 KB over its
         # total on every build. The fix is rule 36's other arm — slim the
-        # SOURCE rendering, never cut: `lib/eng prompt` now shows the settled
-        # tail as the freshest few outcomes plus a count naming the drawer
-        # (the recent-catches shape), and the turn profile takes `--compact`
-        # (the count line alone — an interactive answer rarely needs the
-        # outcome essays that a wake's maintenance work does). Measured
-        # 2026-08-15 against the live drawer of 25 open threads: the block is
-        # 7,290 compact and 11,894 full, so the layer runs ~10,800 on a turn
-        # and ~15,400 on a wake. The numbers hold those shapes with room.
-        # (4,000 since 2026-08-09 before all this; 2,400 before that.)
+        # SOURCE rendering, never cut: `lib/eng prompt` renders the drawer
+        # as one pointer paragraph — counts, retrieval doors, and the
+        # read-the-record-first rule (rule 21a) — under a kilobyte however
+        # full the drawer, so the layer now runs well inside these numbers
+        # on both profiles. (4,000 since 2026-08-09 before all this; 2,400
+        # before that.)
         L4:turn) v=12000 ;;  L4:wake) v=16000 ;;
         # The complete drawer index is small but grows when a durable source is
         # added. It always rides whole, including on jobs.
@@ -3141,23 +3138,16 @@ $WANTS_TITLES"
         elif [ -n "${WANTS_FILE:-}" ]; then
             SHELVES="YOUR WANTS — the shelf at $WANTS_FILE is empty; nothing is recorded yet."
         fi
-        # The engineering drawer, as RECORDS with state (prompt-assembly rule
-        # 21a, specs/engineering-records.md): open threads as live lines with
-        # their opened/last-touched dates, settled and dead ones as history
-        # that reads as history at a glance. Rendered by the tool that owns
-        # the format, so a worry written before a question was settled can
-        # never be quoted back as present-tense fact — the 2026-08-10 failure
-        # this drawer shape exists to end. The settled tail is the shelf
-        # pattern, profile-aware: a wake (her own maintenance time) gets the
-        # freshest outcomes with the older tail as a count naming the drawer,
-        # an interactive turn gets the count line alone (--compact) — the
-        # tail grows one line per settlement forever, and by 2026-08-15 it
-        # was 20 KB of outcome essays on every speaking prompt. A broken or
-        # empty drawer costs the block and never the prompt.
-        local ENG_BLOCK="" ENG_ARGS=(prompt)
-        [ "$PROMPT_PROFILE" = turn ] && ENG_ARGS+=(--compact)
+        # The engineering drawer, as a POINTER (prompt-assembly rule 21a,
+        # specs/engineering-records.md rules 11-11a): counts and retrieval
+        # doors plus the read-the-record-first rule, never record lines — a
+        # rendered line is a paraphrase that goes stale the moment the
+        # record moves, and the live state layer already carries what her
+        # hands are doing. A broken or empty drawer costs the block and
+        # never the prompt.
+        local ENG_BLOCK=""
         ENG_BLOCK="$(DESKCRAB_ENG_DIR="$H/engineering/records" \
-                     python3 "$LIB_DIR/eng" "${ENG_ARGS[@]}" 2>/dev/null)" || ENG_BLOCK=""
+                     python3 "$LIB_DIR/eng" prompt 2>/dev/null)" || ENG_BLOCK=""
         [ -n "$ENG_BLOCK" ] && SHELVES="${SHELVES:+$SHELVES
 
 }$ENG_BLOCK"

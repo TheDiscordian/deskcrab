@@ -245,23 +245,17 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
 21. Conduct MUST get the same treatment as wants: the binding test and the rule titles in the
     prompt, the bodies on disk behind an index. **The binding test line MUST stay verbatim.** Conduct
     is owed, not chosen, and a paraphrase regresses corrections.
-21a. The engineering drawer rides the shelves layer as RECORDS, not prose
-    ([engineering-records.md](engineering-records.md)), rendered by `lib/eng prompt` on the turn
-    and wake profiles. An OPEN record is a live thread: title, id, its `opened` and `last_touched`
-    dates, body on disk behind `crab eng show` — always, whole, on both profiles. A SETTLED or
-    DEAD record is the title plus ONE line — `settled <when>: <what settled it>` — and NEVER its
-    body prose: a worry written before a question was settled must not be quotable as
-    present-tense fact, which is the failure this whole drawer shape exists to end (2026-08-10,
-    twice). The settled tail's PROMPT rendering is the shelf pattern, not the archive, because the
-    tail grows one line per settlement forever and by 2026-08-15 it alone was 20 KB of outcome
-    essays riding every speaking prompt: the wake profile (her own maintenance time, where
-    settlement work happens) carries only RECENT closures — the window, floor and cap, and why
-    that withholding is the drawer's judgement and not a rule 4 cut, are
-    [engineering-records.md](engineering-records.md) rule 11a, which owns the rendering — with the
-    older tail as a pointer naming the drawer and its command; the turn profile carries the count
-    line alone (`--compact`). Nothing is cut: every outcome stays on disk, whole, one
-    `crab eng list --state all` away — the same bargain as wants titles and the recent catches.
-    The block states that the settled section is history. The renderer is fail-safe: an empty
+21a. The engineering drawer rides the shelves layer as a POINTER, never a listing
+    ([engineering-records.md](engineering-records.md) rules 11–11a), rendered by `lib/eng prompt`
+    identically on the turn and wake profiles: the drawer's location, the live and closed counts
+    (`review` claims counted by name), the doors that reach a record — `crab eng search <words>`,
+    `crab eng show <id>`, `crab eng list --state all` — and the standing rule that she reads the
+    record itself before speaking about or acting on any thread, every single time. No record's
+    title, dates, or prose rides the prompt: a rendered line is a paraphrase that goes stale the
+    moment the record moves, and a stale line quoted as present-tense fact is the failure this
+    whole drawer shape exists to end (2026-08-10, twice). What her hands are doing right now is
+    the state layer's to carry; a thread's content is on disk, whole, one `crab eng show` away —
+    the same bargain as wants titles and the recent catches. The renderer is fail-safe: an empty
     drawer costs the block, an unreadable record is skipped, and no failure of it may break a
     prompt build.
 22. There MUST be a `WHERE THINGS ARE` layer: one line per drawer, path plus a short description,
@@ -812,10 +806,9 @@ reaches the job or classify profile),
 assembled through the real assembler and graded against its assertions — and, structurally on
 every assembled case, desk and phone origins alike, rules 38 and 39: both standing attention rules
 present in the prompt),
-`tests/test_eng_records.sh` (rule 21a: an open record renders as a live thread with its dates, a
-settled one as its one-line outcome with its body prose kept out of the prompt, the settled tail
-as recent closures behind the rule 11a window with the pointer line — the count line alone under
-`--compact` — an empty drawer costs the block and nothing else, and open records never age out),
+`tests/test_eng_records.sh` (rule 21a: the block is the pointer alone — counts, retrieval doors,
+and the read-the-record-first rule, with no record's title, dates, or prose in the prompt on
+either profile — and an empty drawer costs the block and nothing else),
 `tests/test_prompt_dedup.sh` (rules 40 and 40a: a build carrying the same block through two
 layers emits it once, names the drop in the manifest under the layer it was dropped from, leaves
 the standing record and renders it in the next state block; a build with no duplication emits no

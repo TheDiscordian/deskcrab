@@ -73,41 +73,22 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 ### The prompt
 
 11. The engineering drawer reaches the speaking prompts (turn and wake) through `lib/eng prompt`,
-    rendered into the shelves layer as a bounded index. Records in `review` lead the live section,
-    followed by the most recently touched OPEN records. The turn profile shows at most 12 live
-    records and the wake profile at most 20; `DESKCRAB_ENG_PROMPT_MAX_OPEN_TURN` and
-    `DESKCRAB_ENG_PROMPT_MAX_OPEN` override those limits. Any omitted live records are counted
-    beside `crab eng list --state all` and `crab eng search <words>`, so the complete drawer is
-    always reachable without being reread on every invocation. Each rendered record line is
-    bounded to 360 bytes by default (`DESKCRAB_ENG_PROMPT_LINE_BYTES`) and retains its id, state,
-    and dates; `crab eng show <id>` retains the complete title, outcome, and body. SETTLED and DEAD
-    records never contribute body prose, so resolved worries cannot return as present-tense facts.
-    The wake profile shows the recent closures selected by rule 11a, while `--compact` (the turn
-    profile) shows only the closure count. The rendering states plainly that settled entries are
-    history, not live concerns.
+    rendered into the shelves layer as a POINTER, never a listing, identical on both profiles:
+    the drawer's location, the count of live threads (`review` claims counted by name beside
+    them), the count of closed ones, and the doors that reach a record — `crab eng search
+    <words>` finds it, `crab eng show <id>` is the whole of it, `crab eng list --state all` the
+    full drawer. No record's title, dates, or prose rides the prompt. What her hands are doing
+    right now is the live state layer's to carry; a thread's content lives in the record on
+    disk, whole. A rendered record line is a paraphrase, and a paraphrase is stale the moment
+    the record moves — a stale line quoted as present-tense fact is the failure this drawer
+    shape exists to end (2026-08-10, twice).
     Detail in [prompt-assembly.md](prompt-assembly.md) rule 21a, which owns the layer.
-11a. The settled section carries only RECENT closures. A closure renders when its `settled_at`
-    falls inside a window (default 7 days, `DESKCRAB_ENG_PROMPT_WINDOW_DAYS`); whatever the window
-    says, the most recent closures always render up to a floor (default 5,
-    `DESKCRAB_ENG_PROMPT_MIN_CLOSED`) and never past a cap (default 10,
-    `DESKCRAB_ENG_PROMPT_MAX_CLOSED`), the cap binding last. An older closure is not rendered in
-    the block at all — it stays on disk, reachable exactly as before through
-    `crab eng list --state all`, `crab eng show <id>` and `crab eng search` — and whenever
-    anything is withheld the section's preamble says how many and names those doors, so the block
-    never reads as though the history is gone. OPEN and `review` records remain live regardless of
-    age; the prompt index may omit them only behind the counted retrieval pointer in rule 11.
-    This is not a cut in the sense [prompt-assembly.md](prompt-assembly.md) rule 4 forbids. Rule 4
-    binds the ASSEMBLER, which must carry every layer it is handed whole; this is the drawer
-    deciding what it hands over — the same judgement that already renders a settled record as one
-    outcome line instead of its body prose. The reason closures appear at all — a resolved worry
-    must read as resolved rather than as a quotable present-tense fact — applies to threads recent
-    enough that she might still be carrying them as live. A thread settled a month ago is not a
-    live worry that needs disarming. Measured 2026-08-14: settling 37 threads and killing 3 in one
-    evening GREW the block from about 15.3 KB to about 20.1 KB, because an outcome line is longer
-    than the two dated lines it replaces and, before this rule, nothing ever left.
+11a. The block carries the standing rule that she reads the record FIRST — `crab eng show <id>`,
+    found through `crab eng search` — whenever a thread comes up: speaking about it, acting on
+    it, or being asked about it, every single time, never from memory and never from an earlier
+    reading. The record on disk is the only current account of a thread.
 12. The renderer is fail-safe: an empty or missing drawer contributes nothing, an unparseable
-    record is skipped, a bad aging knob falls back to its default, and no failure of the renderer
-    may break a prompt build.
+    record is skipped, and no failure of the renderer may break a prompt build.
 
 ### The job hook
 
@@ -221,8 +202,8 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     entry — and its own submission. A dispatch the door refuses is named on the entry the same
     way, and the record still stands `open` from the write that preceded the attempt: the
     rejection is never lost to its own dispatch (rule 15c's discipline).
-16c. `review` is a live state, not a closed one. It renders among the OPEN threads of the prompt
-    block, marked as awaiting the review; it never ages out; and `settle` from it — the user's
+16c. `review` is a live state, not a closed one. It counts among the live threads in the prompt
+    block's pointer, named there as awaiting review; it never ages out; and `settle` from it — the user's
     or the reviewer's own hand, outside a builder session — works exactly as rule 8 says. A
     record in a terminal state refuses a new submission; a record already in `review` accepts
     another, updating the claim while the state stands.
@@ -258,12 +239,9 @@ own act, never a second writer of anything.
 ## TESTS
 
 **Existing:** `tests/test_eng_records.sh` (round-trip, transitions bumping `last_touched`,
-`touched-since`, search, the prompt rendering of open versus settled records — a settled record's
-body prose stays out of the prompt — migration preserving dates and idempotence, and the bounded
-index of rules 11–11a: review records lead, live and closed caps hold, omitted counts name their
-retrieval doors, long lines remain bounded while their source record stays complete, a closure
-inside the window renders and one well outside it does not, and `--compact` (the interactive turn)
-is the closure count alone);
+`touched-since`, search, the prompt pointer of rules 11–11a: counts and retrieval doors with the
+read-the-record-first rule, no record's title, dates, or prose in the block, an empty drawer
+contributing nothing — and migration preserving dates and idempotence);
 `tests/test_eng_selfchange.sh` (rule 10a: a real `crab eng touch` declares its own write and the
 self-change watcher stays quiet about it, while an undeclared out-of-band edit to the same record
 still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md));
@@ -276,8 +254,8 @@ note, and inability mid-note all pass untouched; a refused dispatch is named on 
 write survives; and the runner floor of rule 15b — an attach write newer than dispatch does not
 stand in for the builder's own touch);
 `tests/test_eng_review.sh` (rules 16–16d beside [jobs.md](jobs.md) rules 29a–29b: a submission
-moves the record to `review`, bumps `last_touched`, and the prompt renders it live and marked,
-never as settled; under the builder role, settle, kill, accept and reject are all refused with
+moves the record to `review`, bumps `last_touched`, and the prompt pointer counts it live and
+awaiting review, never as settled; under the builder role, settle, kill, accept and reject are all refused with
 the state standing, while the same hands work without the marker; accept settles only from
 `review`, with the verdict on `settled_by`; reject returns the record to `open`, preserves the
 missing requirements verbatim on the entry AND on the redispatched brief — sidecar `record` set,

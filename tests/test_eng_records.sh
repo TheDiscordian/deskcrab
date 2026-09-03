@@ -82,45 +82,26 @@ check "search misses honestly (exit 1)" \
     bash -c '! DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" search zanzibar-xylophone >/dev/null'
 
 echo
-echo "the prompt block — a settled thing reads as settled, never as live prose:"
+echo "the prompt block — a pointer with counts and doors, never record lines:"
 BLOCK="$(E prompt)"
-check "open records are live threads with dates" \
+check "the block counts the live and closed threads" \
+    contains "$BLOCK" "1 live thread and 2 closed"
+refute "no open record's title rides the prompt" \
+    contains "$BLOCK" "doohickey"
+refute "no record dates ride the prompt" \
     contains "$BLOCK" "opened 20"
-check "the open record's line carries last touched" \
-    contains "$BLOCK" "last touched 20"
-check "the settled record is title plus its one-line outcome" \
-    contains "$BLOCK" "settled $(E field "$ID" settled_at): the state was never lost — commit abc123"
+refute "no outcome line rides the prompt" \
+    contains "$BLOCK" "overtaken by events"
 refute "the settled record's present-tense body prose is NOT in the prompt" \
     contains "$BLOCK" "is broken and drops its state"
-check "the settled section says it is history" \
-    contains "$BLOCK" "never quote one as a present-tense fact"
+check "the block orders the record read first, every time" \
+    contains "$BLOCK" "read the record first, every single time"
+check "and names every retrieval door" \
+    contains "$BLOCK" "crab eng list --state all"
+check "a closed record is named history" \
+    contains "$BLOCK" "history, never a present-tense fact"
 check "the block names the tool as the only writer" \
-    contains "$BLOCK" "crab eng"
-
-echo
-echo "the settled tail is the shelf pattern — fresh outcomes shown, the rest counted:"
-# Two closed records exist and both are recent, so the full rendering above
-# showed both. Bind the cap to one: the newest outcome (the killed record —
-# closed after the settlement) rides, the older one becomes part of the
-# withheld pointer naming the drawer (rule 11a — the cap binds last).
-NARROW="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=1 bash -c \
-    'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" prompt')"
-check "the newest outcome is shown" contains "$NARROW" "overtaken by events"
-refute "the older outcome fell behind the pointer" \
-    contains "$NARROW" "the state was never lost"
-check "and the pointer counts what was withheld" \
-    contains "$NARROW" "(1 older closure not shown here but not gone"
-check "with the command that opens it" \
-    contains "$NARROW" "crab eng list --state all"
-COMPACT="$(E prompt --compact)"
-check "compact keeps the selected open threads visible" \
-    contains "$COMPACT" "opened 20"
-refute "compact shows no outcome line at all" \
-    contains "$COMPACT" "overtaken by events"
-check "compact counts the whole closed tail" \
-    contains "$COMPACT" "2 threads of history"
-check "and still names the drawer" \
-    contains "$COMPACT" "crab eng list --state settled"
+    contains "$BLOCK" "never a hand edit"
 
 echo
 echo "the block reaches the assembled prompt, and its absence costs nothing:"
@@ -137,19 +118,15 @@ printf '# Wants\n\n- 🎼 **Learn to read a score**\n' > "$D/wants.md"
 PROMPT="$(sandbox_bash 'build_system_prompt --profile turn')"
 check "the turn prompt carries the records block" \
     contains "$PROMPT" "YOUR ENGINEERING RECORDS"
-refute "the turn is compact: the outcome essays stay in the drawer" \
+refute "the outcome essays stay in the drawer" \
     contains "$PROMPT" "the state was never lost — commit abc123"
-check "with the counted tail naming the drawer instead" \
-    contains "$PROMPT" "crab eng list --state settled"
-refute "and without the settled record's body prose" \
+refute "and the settled record's body prose too" \
     contains "$PROMPT" "is broken and drops its state"
 PROMPT_WAKE="$(sandbox_bash 'build_system_prompt --profile wake')"
-check "the wake prompt carries it too" \
+check "the wake prompt carries the same pointer" \
     contains "$PROMPT_WAKE" "YOUR ENGINEERING RECORDS"
-check "and the wake — her maintenance time — gets the fresh outcomes" \
+refute "with no record lines on it either" \
     contains "$PROMPT_WAKE" "the state was never lost — commit abc123"
-refute "but never the settled record's body prose" \
-    contains "$PROMPT_WAKE" "is broken and drops its state"
 rm -rf "$ENG"
 PROMPT2="$(sandbox_bash 'build_system_prompt --profile turn')"
 refute "an empty drawer costs the block" \
@@ -216,11 +193,10 @@ OUT4="$(E migrate "$SANDBOX/index.md")"
 check "the index migration is idempotent too" contains "$OUT4" "0 records created, 2 already existed"
 
 echo
-echo "aging (engineering-records rule 11a) — the settled section carries only"
-echo "recent closures; the rest stay on disk behind the pointer line:"
-# A controlled drawer, written directly: the aging cases need settled_at
-# dates the tool would always stamp as now. The tool still reads them
-# through the one parser, so the shape is the record shape.
+echo "the pointer scales by counting, never by listing:"
+# A controlled drawer, written directly: the cases need dates the tool
+# would always stamp as now. The tool still reads them through the one
+# parser, so the shape is the record shape.
 rm -rf "$ENG"; mkdir -p "$ENG"
 mkrec() {  # <id> <state> <settled_at> [last_touched]
     local id="$1" state="$2" sat="$3" touched="${4:-${3:-2026-01-01 00:00:00}}"
@@ -249,78 +225,29 @@ for i in 0 1 2 3 4 5 6 7; do
     mkrec "old-$i" settled "$(ts "-$((40 + i)) days")"
 done
 BLOCK="$(E prompt)"
-check "an open record never ages out, however old its last_touched" \
+check "an open record never ages out of the live count, however old" \
+    contains "$BLOCK" "1 live thread and 10 closed"
+refute "but its id never rides the block" \
     contains "$BLOCK" "stale-open"
-check "a closure inside the window renders" \
+refute "and no closure rides either" \
     contains "$BLOCK" "fresh-a"
-check "the floor tops the window up to the five most recent closures" \
-    contains "$BLOCK" "old-2"
-refute "a closure well outside the window does not render" \
-    contains "$BLOCK" "old-7"
-check "the pointer line counts what was withheld and names the doors" \
-    contains "$BLOCK" "(5 older closures not shown here but not gone: 'crab eng list --state all'"
-check "the withheld closure is still reachable through list --state all" \
+check "an unlisted record is reachable through list --state all" \
     bash -c 'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" list --state all | grep -q old-7'
 check "and through show" \
     bash -c 'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" show old-7 | grep -q "Body prose of old-7"'
-# The measured-bytes pin. Line 1 carries the sandbox's own path, so the pin
-# is everything after it: 1 preamble-free block of 1 open line, 2 section
-# headers, the pointer, and 5 closure lines, every datetime 19 bytes wide.
-# If this number grows, something new is riding the block — look before
-# raising it.
-check_eq "the block after its path line measures exactly its pinned bytes" \
-    "$(E prompt | tail -n +2 | wc -c)" "798"
-
-echo
-echo "the window, floor and cap are knobs, and the cap binds last:"
-BLOCK_WIDE="$(DESKCRAB_ENG_PROMPT_WINDOW_DAYS=100 E prompt)"
-check "a wider window lets an old closure back in" \
-    contains "$BLOCK_WIDE" "old-7"
-refute "and withholds nothing" contains "$BLOCK_WIDE" "older closure"
-BLOCK_FLOOR2="$(DESKCRAB_ENG_PROMPT_MIN_CLOSED=2 E prompt)"
-refute "a lower floor keeps window-expired closures out" \
-    contains "$BLOCK_FLOOR2" "old-0"
-check "while the in-window ones still render" contains "$BLOCK_FLOOR2" "fresh-b"
 for i in $(seq 0 29); do
     mkrec "rc-$i" settled "$(ts "-$((i + 100)) seconds")"
 done
-BLOCK_CAP="$(E prompt)"
-check_eq "the cap holds at 10 when many closures are recent" \
-    "$(printf '%s\n' "$BLOCK_CAP" | grep -c '^  - rc-')" "10"
-check "counting everything else it withheld" \
-    contains "$BLOCK_CAP" "(30 older closures not shown"
-BLOCK_CAP3="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=3 E prompt)"
-check_eq "and the cap knob binds over window and floor alike" \
-    "$(printf '%s\n' "$BLOCK_CAP3" | grep -c '^  - ')" "4"
-BLOCK_BAD="$(DESKCRAB_ENG_PROMPT_MAX_CLOSED=banana E prompt)"
-check_eq "an unparseable knob falls back to its default, never a traceback" \
-    "$(printf '%s\n' "$BLOCK_BAD" | grep -c '^  - rc-')" "10"
+check "thirty more closures move the count alone" \
+    contains "$(E prompt)" "1 live thread and 40 closed"
+check_eq "the block stays one paragraph however full the drawer" \
+    "$(E prompt | wc -l)" "1"
 
 echo
-echo "the live index is bounded, review-first, and every hidden record remains reachable:"
-for i in $(seq 0 24); do
-    mkrec "live-$i" open "" "$(ts "-$((i + 1)) seconds")"
-done
+echo "a review claim is live and named, never listed:"
 mkrec old-review review "" "$(ts '-500 days')"
-BLOCK_OPEN="$(E prompt)"
-LIVE_SECTION="$(printf '%s\n' "$BLOCK_OPEN" | sed -n '/^OPEN/,/^SETTLED/p')"
-check "a review leads even when it is old" contains "$LIVE_SECTION" "old-review"
-check "the freshest ordinary live record is shown" contains "$LIVE_SECTION" "live-0"
-refute "a live record beyond the cap is not injected" contains "$LIVE_SECTION" "live-24"
-check "the omitted live count names both retrieval doors" \
-    contains "$LIVE_SECTION" "other live threads remain in the drawer: 'crab eng list --state all'"
-check "a hidden live record is still reachable through show" \
-    bash -c 'DESKCRAB_ENG_DIR="'"$ENG"'" python3 "'"$REPO_DIR"'/lib/eng" show live-24 | grep -q "Body prose of live-24"'
-COMPACT_OPEN="$(E prompt --compact)"
-check_eq "the turn index has its smaller twelve-record cap" \
-    "$(printf '%s\n' "$COMPACT_OPEN" | sed -n '/^OPEN/,/^SETTLED/p' | grep -c '^  - ')" "12"
-
-LONG_WORDS="$(printf 'unnecessarily-long-field %.0s' $(seq 1 80))"
-LONG_WORDS="${LONG_WORDS% }"
-LONG_ID="$(E new "$LONG_WORDS")"
-E settle "$LONG_ID" "$LONG_WORDS" >/dev/null
-LONG_LINE="$(E prompt | grep "\[$LONG_ID\]")"
-check "a rendered pointer is byte-bounded" \
-    test "$(printf '%s' "$LONG_LINE" | wc -c)" -le 364
-check_eq "the full long outcome remains in its record" \
-    "$(E field "$LONG_ID" settled_by)" "$LONG_WORDS"
+BLOCK_R="$(E prompt)"
+check "the review is counted among the live threads, marked unsettled" \
+    contains "$BLOCK_R" "2 live threads (1 of them in review — completion claimed, NOT settled"
+refute "but its id stays in the drawer" \
+    contains "$BLOCK_R" "old-review"

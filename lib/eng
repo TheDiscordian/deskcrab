@@ -240,26 +240,6 @@ def touched_epoch(meta):
     return 0
 
 
-def settled_epoch(meta):
-    v = (meta.get(CLOSED_AT) or "").strip()
-    for fmt in (TIMEFMT, "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            return int(time.mktime(time.strptime(v, fmt)))
-        except ValueError:
-            continue
-    return 0
-
-
-def env_int(name, default):
-    """A knob read the way the rest of deskcrab reads one — but fail-safe,
-    because the one caller is the prompt renderer and no bad value may
-    break a prompt build: unset or unparseable means the default."""
-    try:
-        return int(os.environ.get(name, ""))
-    except ValueError:
-        return default
-
-
 def add_entry(body, note, stamp=None):
     """Records read newest FIRST: the fresh entry goes above whatever is
     already there. A want document is a journal and reads newest LAST
@@ -664,46 +644,6 @@ def one_line(meta):
                  "the artefact against the original ask, then crab eng "
                  "accept or reject)")
     return line
-
-
-def utf8_clip(text, max_bytes):
-    """Collapse a prompt field to one line and bound it without splitting UTF-8."""
-    text = " ".join(str(text or "").split())
-    raw = text.encode("utf-8")
-    if len(raw) <= max_bytes:
-        return text
-    if max_bytes <= 3:
-        return "." * max(0, max_bytes)
-    tail = "…"
-    room = max_bytes - len(tail.encode("utf-8"))
-    clipped = raw[:room].decode("utf-8", "ignore").rstrip()
-    return clipped + tail
-
-
-def prompt_one_line(meta, max_bytes):
-    """A bounded shelf pointer; `show` retains the record's complete prose."""
-    max_bytes = max(200, max_bytes)
-    state = meta.get("state", OPEN_STATE)
-    rid = meta.get("id", "?")
-    title = meta.get("title", "?")
-    if state in CLOSED_STATES:
-        middle = " [%s] — %s %s: " % (
-            rid, state, meta.get(CLOSED_AT) or "(undated)")
-        available = max(40, max_bytes - len(middle.encode("utf-8")))
-        title_budget = min(120, max(20, available // 2))
-        shown_title = utf8_clip(title, title_budget)
-        reason_budget = max(20, available - len(shown_title.encode("utf-8")))
-        return "%s%s%s" % (
-            shown_title, middle,
-            utf8_clip(meta.get(CLOSED_BY) or "(unrecorded)", reason_budget))
-
-    tail = " [%s] — opened %s, last touched %s" % (
-        rid, meta.get("opened") or "(undated)",
-        meta.get("last_touched") or "(undated)")
-    if state == "review":
-        tail += " (in review — inspect, then crab eng accept or reject)"
-    title_budget = max(20, max_bytes - len(tail.encode("utf-8")))
-    return "%s%s" % (utf8_clip(title, title_budget), tail)
 
 
 def state_rank(meta):
@@ -1186,76 +1126,33 @@ def cmd_migrate_want(argv):
 
 
 def cmd_prompt(argv):
-    """The bounded shelves-layer index (prompt-assembly rule 21a).
+    """The shelves-layer pointer (prompt-assembly rule 21a).
 
-    Review records lead, then the freshest open records, with omitted live
-    threads counted beside commands that retrieve them. Wakes also receive a
-    bounded recent-closure sample; interactive turns receive only its count.
-    Every rendered record is a bounded pointer, while `show` retains every
-    byte of the record itself. Empty drawer, no block.
+    Counts and retrieval doors only, identical on every profile: no record's
+    title, dates, or prose rides the prompt. The record on disk is the only
+    current account of a thread, and the block says to read it first, every
+    single time. Empty drawer, no block.
     """
-    compact = "--compact" in argv
-    window = env_int("DESKCRAB_ENG_PROMPT_WINDOW_DAYS", 7)
-    floor = env_int("DESKCRAB_ENG_PROMPT_MIN_CLOSED", 5)
-    cap = max(0, env_int("DESKCRAB_ENG_PROMPT_MAX_CLOSED", 10))
-    open_cap_name = ("DESKCRAB_ENG_PROMPT_MAX_OPEN_TURN" if compact
-                     else "DESKCRAB_ENG_PROMPT_MAX_OPEN")
-    open_cap = max(0, env_int(open_cap_name, 12 if compact else 20))
-    line_bytes = max(200, env_int("DESKCRAB_ENG_PROMPT_LINE_BYTES", 360))
     recs = [m for m, _ in all_records()]
     if not recs:
         return
-    # A record in `review` is live — a completion claim awaiting judgement,
-    # never a resolution (rule 16c) — so it renders among the open threads,
-    # carrying its own marker from prompt_one_line.
-    opens = sorted((m for m in recs if m.get("state") in ("open", "review")),
-                   key=lambda m: (m.get("state") == "review", touched_epoch(m)),
-                   reverse=True)
-    closed = sorted((m for m in recs if m.get("state") in ("settled", "dead")),
-                    key=lambda m: m.get("settled_at") or "", reverse=True)
-    # Recent means settled_at inside the window; the floor keeps the freshest
-    # few visible when everything is old, and the cap binds last. closed is
-    # newest-first, so the recent ones are a prefix of it.
-    cutoff = time.time() - window * 86400
-    n = sum(1 for m in closed if settled_epoch(m) >= cutoff)
-    n = max(0, min(max(n, floor), cap))
-    shown_opens = opens[:open_cap]
-    withheld_opens = len(opens) - len(shown_opens)
-    shown = [] if compact else closed[:n]
-    withheld = len(closed) - len(shown)
-    out = ["YOUR ENGINEERING RECORDS — one thread per file in %s. Read one "
-           "with 'crab eng show <id>'; every state change goes through "
-           "'crab eng' (touch/settle/kill), never a hand edit, so the dates "
-           "stay true." % eng_dir()]
-    if opens:
-        out.append("OPEN — live threads, still current:")
-        if withheld_opens:
-            out.append("  (%d other live thread%s remain in the drawer: "
-                       "'crab eng list --state all' lists them and 'crab "
-                       "eng search <words>' finds the relevant record.)"
-                       % (withheld_opens, "s" if withheld_opens != 1 else ""))
-        for m in shown_opens:
-            out.append("  - %s" % prompt_one_line(m, line_bytes))
-    if closed:
-        if shown:
-            out.append("SETTLED or DEAD — recent history, not live worries. "
-                       "The line below is the whole of what each still says; "
-                       "never quote one as a present-tense fact:")
-            if withheld:
-                out.append("  (%d older closure%s not shown here but not "
-                           "gone: 'crab eng list --state all' is the full "
-                           "history, 'crab eng show <id>' one record, 'crab "
-                           "eng search <words>' finds by content.)"
-                           % (withheld, "s" if withheld != 1 else ""))
-            for m in shown:
-                out.append("  - %s" % prompt_one_line(m, line_bytes))
-        else:
-            out.append("SETTLED or DEAD — %d thread%s of history, one "
-                       "outcome line each in the drawer: 'crab eng list "
-                       "--state settled' has every one, and none is a "
-                       "present-tense fact."
-                       % (len(closed), "s" if len(closed) != 1 else ""))
-    print("\n".join(out))
+    live = [m for m in recs if m.get("state") in ("open", "review")]
+    review = sum(1 for m in live if m.get("state") == "review")
+    closed = len(recs) - len(live)
+    counts = "%d live thread%s" % (len(live), "s" if len(live) != 1 else "")
+    if review:
+        counts += (" (%d of them in review — completion claimed, NOT "
+                   "settled: inspect, then crab eng accept or reject)"
+                   % review)
+    counts += " and %d closed" % closed
+    print("YOUR ENGINEERING RECORDS — one thread per file in %s: %s. Never "
+          "speak about or act on a thread from memory or from an earlier "
+          "reading: read the record first, every single time — 'crab eng "
+          "search <words>' finds it, 'crab eng show <id>' is the whole of "
+          "it, 'crab eng list --state all' the full drawer. A closed "
+          "record is history, never a present-tense fact. Every state "
+          "change goes through 'crab eng' (touch/settle/kill), never a "
+          "hand edit, so the dates stay true." % (eng_dir(), counts))
 
 
 # --- migration -------------------------------------------------------------

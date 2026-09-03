@@ -58,12 +58,12 @@ check "the claim is on the record" \
     bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" show "$3" | grep -q "Submitted for review: extracted the clip queue"' \
     _ "$ENG" "$REPO" "$RID"
 check "the submission bumped last_touched" E touched-since "$RID" "$NOW0"
-check "the prompt renders it live and marked, never as resolved" \
+check "the prompt pointer counts it in review, never as resolved" \
     bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" prompt | grep -q "in review — completion claimed, NOT settled"' \
     _ "$ENG" "$REPO"
-check "and among the OPEN threads, not the settled tail" \
-    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" prompt | sed -n "/OPEN/,/SETTLED/p" | grep -q "$3"' \
-    _ "$ENG" "$REPO" "$RID"
+check "and among the live threads, not the closed count" \
+    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" prompt | grep -q "live thread"' \
+    _ "$ENG" "$REPO"
 
 echo
 echo "the builder role is refused every verdict verb, and the state stands:"
@@ -123,8 +123,8 @@ check_eq "the sidecar carries the record" \
 check "the attach epoch is stamped, so the reopen cannot pass the runner floor" \
     bash -c 'test -n "$("$1/lib/job-status" get "$2/$3.json" record_attached_epoch)"' \
     _ "$REPO" "$JOBS" "$NEWID"
-check "the reopened record renders live, never settled" \
-    bash -c 'DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" prompt | sed -n "/OPEN/,/SETTLED/p" | grep -q "$3"' \
+check "the reopened record stands open again, never settled" \
+    bash -c 'test "$(DESKCRAB_ENG_DIR="$1" python3 "$2/lib/eng" field "$3" state)" = open' \
     _ "$ENG" "$REPO" "$RID"
 
 echo
