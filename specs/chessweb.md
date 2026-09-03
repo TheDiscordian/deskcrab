@@ -826,6 +826,22 @@ cannot be changed.
        reply and an own-voice clip after BOTH colours' landed moves, asserted for the sitter's
        move while the store provably holds only their move, and a typed burst coalescing to
        one reply composed from the thread as it stands now.
+25. **The page keeps its own wire.** From the user's Connect on, the shipped client owns the
+    connection: a socket that closes or errors — a network blip, a laptop sleep, a bridge
+    restart, an idle proxy — is redialed by the page itself, on an exponential backoff from one
+    second doubling to a thirty-second cap, jittered, retried for as long as it takes; a hidden
+    page holds its hand, and the browser's `online` event or a return to visibility redials at
+    once with the backoff reset. A redial that lands never trusts the board the page kept: the
+    old role is resumed uninvited — the seat re-Joins as player, a watcher as spectator — so
+    rule 3's join sync (Team + replay) rebuilds the board from the store and the rule 18
+    photograph repaints the dressing, and a move recorded during the outage is on the board the
+    moment the socket is. A seat refused while the probe frees a dead chair (rule 3; KNOWN
+    LIMITS) is re-asked a bounded few times, then given up out loud in the console — never a
+    silently unseated board. And the page never wears a live face over a dead wire: a status
+    word beside the connection dot says connected, reconnecting or offline (offline when the
+    browser itself reports no network), and the board is visibly greyed until the resync lands.
+    This rule exists because until 2026-09-03 a dropped connection left the page exactly as it
+    stood — a live-looking board, silently frozen mid-game, until a human noticed and reloaded.
 
 A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
 the default client. It speaks the stock wire exactly — client framing out (one-byte lengths,
@@ -889,6 +905,11 @@ the stock page. What it owes beyond the protocol:
   never a message dropped behind a busy or dead clip, never a backlog voiced after a reset. The
   browser's built-in narrator is never used and never a fallback: a clip that cannot be fetched
   or played keeps the text and says so in the page console.
+- **The kept wire** (rule 25). Connect once and the page holds the connection: a drop redials
+  on the jittered backoff, `online` and a return to visibility redial at once, and the old
+  role is resumed so the join sync repaints the board from the store. The status word beside
+  the connection dot — connected / reconnecting / offline — and the greyed board are the
+  witness that what is shown is a photograph, never a live-looking dead game.
 - **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
   It never fires on one click: the first click arms it and says so on its own label, a second
   click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on

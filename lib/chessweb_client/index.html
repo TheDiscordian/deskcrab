@@ -110,6 +110,9 @@
 			<button id="newgame" type="button" disabled>New Game</button>
 			<button id="resign" type="button" class="danger" disabled>Resign</button>
 			<span id="connstate" class="dot"></span>
+			<!-- The wire's one word (specs/chessweb.md rule 25): connected /
+			     reconnecting / offline — never a live-looking dead board. -->
+			<span id="connword" class="connword"></span>
 		</div>
 	</details>
 

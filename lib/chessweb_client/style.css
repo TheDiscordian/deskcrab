@@ -295,6 +295,23 @@ button.armed:hover:not(:disabled) {
 }
 
 .dot.on { background: var(--good); }
+.dot.reconn { background: #d8a54e; }
+
+/* The wire's one word (specs/chessweb.md rule 25): connected /
+   reconnecting / offline, beside the dot — never a silent dead board. */
+.connword {
+	font-size: 0.85rem;
+	color: var(--text-dim);
+}
+
+.connword.connected { color: var(--good); }
+.connword.reconnecting,
+.connword.offline { color: #d8a54e; }
+
+/* And while the wire is down the board is a photograph, visibly. */
+#boardwrap.stale {
+	filter: grayscale(0.55) brightness(0.8);
+}
 
 /* ------------------------------------------------------------- arena */
 .arena {
