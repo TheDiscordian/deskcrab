@@ -1051,8 +1051,9 @@ the check reports and never rewrites.
 
 **To be written:**
 
-- `tests/test_sleep_nightly.sh` — a failed ingest does not stamp; a night with nothing new does; the
-  status command reports rot past the threshold; something reads that status.
+- `tests/test_sleep_nightly.sh` — the status command reports rot past the threshold; something reads
+  that status. (The stamp half is written: `tests/test_sleep_ingest_failure.sh` holds both a failed
+  ingest not stamping and a healthy night stamping, rule 10a.)
 - `tests/test_tidy.sh` — once the units are in the repository: tidy declares its writes, touches no
   memory, leaves its own dated record somewhere a reader reads, and never creates a second
   namespace.
