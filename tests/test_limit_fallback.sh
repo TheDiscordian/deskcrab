@@ -1,17 +1,16 @@
 #!/bin/bash
 # Tests for the flat numbered account list (specs/account-fallback.md): the
 # list parsed from the configuration, the current index advancing one account
-# per refusal, cooldown-skip, the wrap, every-account-cooling offering the
-# soonest to expire, the numbered messages, the claude_limit_retry_due
-# predicate, the wake-path walk, extract-response on a combined refusal+reply
-# log, the TTS streamer riding through a refusal, the mid-flight limit CUT and
-# its ride to the next account, and the job-runner's attempts along the list.
-# Also the model-aware machinery of the 2026-08-15 drought (rules 8a, 8b, 10,
-# 10a; wake-queue rule 23a): refusal scope classification, the per-model walk
-# filter and the ping-pong pin, scoped records stacking and old records
-# parsing as all, the dispute-model fallback, the job path never downgrading,
-# the account log's real session kinds, the re-book delay, the status line's
-# scoped bench, and the Python walkers' matching filter.
+# per refusal, the wrap, the whole list always offered — there is no cooldown
+# bookkeeping (rule 8): nothing is skipped on a record's say-so and a legacy
+# row is ignored and dropped on the next write — the numbered messages, the
+# claude_limit_retry_due predicate, the wake-path walk, extract-response on a
+# combined refusal+reply log, the TTS streamer riding through a refusal, the
+# mid-flight limit CUT and its ride to the next account, and the job-runner's
+# attempts along the list. Also the dispute-model fallback (rule 10a), the
+# job path never downgrading, the account log's real session kinds, the flat
+# re-book delay (wake-queue rule 23a), and the Python walkers reading the
+# same state file.
 # Run: bash tests/test_limit_fallback.sh
 #
 # The gap the walk was written for: on 2026-08-07 one account ran out of usage
@@ -162,7 +161,7 @@ reply_stream "a genuine answer" > "$T/fix-reply"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'cp "'"$T"'/fix-reply" "$DEBUGLOG"; claude_limit_retry_due && echo DUE || echo no')"
 [ "$out" = no ] && ok "a genuine reply is never retried" || fail "real output must not retry" "$out"
 
-echo "the selection — current index, cooldown-skip, wrap, never empty:"
+echo "the selection — current index, list order, wrap, never empty:"
 WALK='claude_accounts | tr "\n" ","'
 rm -f "$T/account-state"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" "$WALK")"
@@ -170,10 +169,11 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" "$WALK")"
     || fail "a clean state must lead with account 1" "$out"
 
 # (b) of the contract: account 1 refuses, the state advances to account 2, and
-# a NEW run starts at 2 — never back at 1, which is now cooling.
+# a NEW run starts at 2 — with account 1 offered again at the end of the walk,
+# because nothing records that it might still be dry (rule 8).
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_limit_record 1 "Session limit reached - resets 3am"; '"$WALK")"
-[ "$out" = "2,3," ] && ok "account 1 refused: account 2 answers and 1 is skipped" \
-    || fail "a refusal must advance the current and cool the refuser" "$out"
+[ "$out" = "2,3,1," ] && ok "account 1 refused: account 2 answers, the walk still ends at 1" \
+    || fail "a refusal must advance the current and keep the whole list" "$out"
 
 # Written by one session, read by the next: the state is a file, not memory.
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_account_pick')"
@@ -183,43 +183,26 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_account_pick')"
 # The state file names the account by number AND dir, and says why it moved.
 out="$(cat "$T/account-state")"
 case "$out" in
-    *"current	2	$T/two"*"account 1 is over its limit (session)"*) ok "the state file records current=2 and the numbered reason" ;;
+    *"current	2	$T/two"*"account 1 is over its limit"*) ok "the state file records current=2 and the numbered reason" ;;
     *) fail "the state file must carry number, dir, and reason" "$out" ;; esac
 case "$out" in
-    *"cooldown	1	$A1"*) ok "…and account 1's cooldown, by number and dir" ;;
-    *) fail "the refused account must carry a cooldown record" "$out" ;; esac
+    *cooldown*) fail "no cooldown record may be written (rule 8)" "$out" ;;
+    *) ok "…and no cooldown record exists, because none is kept" ;; esac
 
-# Cooldown lengths follow the refusal kind: a session limit cools ~5h, a
-# credits-shaped stop ~24h, both knobs.
-now=$(date +%s)
-until1="$(awk -F'\t' '$1 == "cooldown" && $2 == 1 {print $4}' "$T/account-state")"
-d=$(( until1 - now ))
-[ "$d" -gt 17700 ] && [ "$d" -le 18000 ] && ok "a session refusal cools for ACCOUNT_COOLDOWN_SESSION (~5h: ${d}s)" \
-    || fail "session cooldown must be ~18000s" "${d}s"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_limit_record 2 "You are out of usage credits"; claude_account_pick')"
 [ "$out" = "3" ] && ok "account 2 refused too: account 3 answers" || fail "the second refusal must advance again" "$out"
-until2="$(awk -F'\t' '$1 == "cooldown" && $2 == 2 {print $4}' "$T/account-state")"
-d=$(( until2 - now ))
-[ "$d" -gt 86100 ] && [ "$d" -le 86400 ] && ok "a credits refusal cools for ACCOUNT_COOLDOWN_CREDITS (~24h: ${d}s)" \
-    || fail "credits cooldown must be ~86400s" "${d}s"
+n="$(grep -c "^cooldown" "$T/account-state" || true)"
+[ "$n" = "0" ] && ok "two refusals recorded, still not one cooldown row" \
+    || fail "refusals must not grow a ledger" "$n"
 
-# The shorter knob is a knob.
-rm -f "$T/account-state"
-run ACCOUNT_COOLDOWN_SESSION=60 CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
-    'claude_limit_record 1 "Session limit reached"' >/dev/null
-until1="$(awk -F'\t' '$1 == "cooldown" && $2 == 1 {print $4}' "$T/account-state")"
-d=$(( until1 - $(date +%s) ))
-[ "$d" -gt 0 ] && [ "$d" -le 60 ] && ok "the cooldown length is configurable (${d}s under a 60s knob)" \
-    || fail "ACCOUNT_COOLDOWN_SESSION must be honoured" "${d}s"
-
-# An EXPIRED cooldown makes the account selectable again — but the current
-# does not switch back to it: it waits to be reached by a refusal walk.
+# A legacy cooldown row is ignored, unexpired or not: the walk it used to
+# bench reads it as nothing and offers the whole list (rule 4).
 rm -f "$T/account-state"
 printf 'cooldown\t1\t%s\t%s\tsession\ncurrent\t2\t%s\t1\tx\n' \
-    "$A1" "$(( $(date +%s) - 5 ))" "$T/two" > "$T/account-state"
+    "$A1" "$(( $(date +%s) + 90000 ))" "$T/two" > "$T/account-state"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" "$WALK")"
-[ "$out" = "2,3,1," ] && ok "an expired cooldown rejoins the walk, behind the current" \
-    || fail "expiry must free the account without switching back" "$out"
+[ "$out" = "2,3,1," ] && ok "a legacy cooldown row benches nobody" \
+    || fail "legacy rows must be ignored" "$out"
 
 # The wrap: the current is the LAST account and it refuses while earlier
 # accounts are free — the advance wraps to the top of the list.
@@ -229,21 +212,24 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_limit_record 3 "
 [ "$out" = "1" ] && ok "the walk wraps past the end back to account 1" \
     || fail "the advance must wrap" "$out"
 
-# (e): EVERY account cooling — the selection is never empty; the account
-# whose cooldown ends soonest answers, alone.
+# (e): a state file FULL of legacy cooldown rows — the selection is never
+# narrowed; the whole list stands, rotated to the current.
 rm -f "$T/account-state"
 now=$(date +%s)
 printf 'cooldown\t1\t%s\t%s\tcredits\ncooldown\t2\t%s\t%s\tsession\ncooldown\t3\t%s\t%s\tcredits\ncurrent\t2\t%s\t1\tx\n' \
     "$A1" "$(( now + 80000 ))" "$T/two" "$(( now + 3000 ))" \
     "$T/three" "$(( now + 50000 ))" "$T/two" > "$T/account-state"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" "$WALK")"
-[ "$out" = "2," ] && ok "all cooling: the soonest to expire (account 2) is offered alone" \
-    || fail "the selection must never be empty" "$out"
+[ "$out" = "2,3,1," ] && ok "legacy rows everywhere: the whole list is still offered" \
+    || fail "the selection must never be narrowed by a ledger" "$out"
 
-# ...and a refusal landing when everything is cooling still leaves a current.
+# ...and a refusal of the current rewrites the state WITHOUT the legacy rows.
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_limit_record 2 "Session limit reached"; claude_account_pick')"
-[ -n "$out" ] && ok "a refusal with everything cooling still selects (account $out)" \
-    || fail "the selection went empty" "(nothing)"
+[ "$out" = "3" ] && ok "the refusal still advances (account $out)" \
+    || fail "the advance must stand whatever the file held" "($out)"
+n="$(grep -c "^cooldown" "$T/account-state" || true)"
+[ "$n" = "0" ] && ok "…and the rewrite dropped every legacy cooldown row" \
+    || fail "legacy rows must be dropped on the next write" "$n"
 
 # A stored current the configuration no longer names resets to account 1.
 rm -f "$T/account-state"
@@ -280,8 +266,8 @@ case "$out" in
     *"account 1 is over its limit"*) ok "…and why the state moved, by number" ;;
     *) fail "the reason must name the refused account by number" "$out" ;; esac
 case "$out" in
-    *"1 of 3 accounts cooling"*) ok "…and how much of the list is benched" ;;
-    *) fail "the cooling count must be on the line" "$out" ;; esac
+    *"accounts cooling"*) fail "the status line must not count a bench (rule 8)" "$out" ;;
+    *) ok "…and no benched-accounts count anywhere on it" ;; esac
 rm -f "$T/account-state" "$T/account-log"
 
 echo "the shared signature — session-limit wordings match, prose does not:"
@@ -1021,104 +1007,12 @@ hits="$(grep -cF "$strip" "$(readlink -f "$0")")"
     || fail "the suite must not remove CLAUDE_CONFIG_DIR on the code's behalf" "$hits uses"
 
 echo
-echo "cooldown scope — classified on the CLI's whole refusal line (rule 8a):"
-# The 2026-08-15 drought: the premium model is a per-account allowance cut
-# before the account's other capacity, so a refusal NAMING a model cools that
-# family only, and only a wording naming NO model cools everything. Driven
-# through the pipeline's OWN composition, never a hand-fed wording: every
-# production path hands claude_limit_record whatever claude_stream_refusal
-# PRINTED, so the cases put the wording into a captured stream, judge it, and
-# feed THAT output onward. Feeding the full line by hand green-washed a
-# detector that printed only the signature's matched substring — for the
-# observed credits line the leftmost match is "out of usage credits", the
-# model name sits after it, and the truncated text classified as `all`.
-pipeline_scope() { # <refusal wording> -> the scope the pipeline lands
-    printf '%s\n' \
-        '{"type":"assistant","is_api_error_message":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"'"$1"'"}]}}' \
-        '{"type":"result","is_error":true,"result":"'"$1"'"}' > "$T/scope-fix"
-    run SCOPE_FIX="$T/scope-fix" \
-        'R="$(claude_stream_refusal "$SCOPE_FIX")" || { echo NODETECT; exit 1; }
-         claude_refusal_scope "$R"'
-}
-out="$(pipeline_scope "$REFUSAL")"
-[ "$out" = fable ] && ok "the observed credits-with-model line scopes to fable off the stream" \
-    || fail "scope must be read off the whole owning line, not the match" "$out"
-out="$(pipeline_scope "$MODEL_LIMIT")"
-[ "$out" = fable ] && ok "the observed model-limit wording scopes to fable off the stream" \
-    || fail "a model-naming refusal must scope to its family" "$out"
-out="$(pipeline_scope "Session limit reached - resets 3am")"
-[ "$out" = all ] && ok "a model-less session limit is the whole account" \
-    || fail "session wordings naming no model must scope to all" "$out"
-out="$(pipeline_scope "You've hit your session limit for Fable 5")"
-[ "$out" = fable ] && ok "a model named inside a session wording wins — the allowance is that model's" \
-    || fail "model-name presence must win over the account-wide phrase list" "$out"
-out="$(pipeline_scope "You're out of usage credits")"
-[ "$out" = all ] && ok "generic out-of-credits with no model named is the whole account" \
-    || fail "no model named means all" "$out"
-out="$(pipeline_scope "Opus weekly limit reached")"
-[ "$out" = opus ] && ok "a weekly cap naming a model scopes to that model" \
-    || fail "model-name presence must win over the weekly phrase" "$out"
-out="$(run 'claude_refusal_kind "Opus weekly limit reached"')"
-[ "$out" = credits ] && ok "…and its kind stays credits — length and scope are orthogonal reads" \
-    || fail "the weekly cap must keep the long cooldown" "$out"
 # The roster the family read rides is the knob's, never a baked list.
 out="$(run CLAUDE_MODEL_FAMILIES="fable opus sonnet haiku griffin" \
     'claude_model_family "keep using Griffin 9"')"
 [ "$out" = griffin ] && ok "claude_model_family reads the CLAUDE_MODEL_FAMILIES roster" \
     || fail "the family roster must be the knob's" "$out"
 
-echo
-echo "the model-aware walk — one family's drought benches nobody else (rules 7, 10):"
-rm -f "$T/account-state"
-run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" REF="$MODEL_LIMIT" \
-    'claude_limit_record 1 "$REF" fable' >/dev/null
-out="$(awk -F'\t' '$1 == "cooldown" {print $5 "/" $6}' "$T/account-state")"
-[ "$out" = "session/fable" ] && ok "the record carries kind AND scope — length stays the kind's own" \
-    || fail "the cooldown row must carry its scope" "$out"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts fable | tr "\n" ","')"
-[ "$out" = "2,3," ] && ok "a fable walk skips the fable-cooled account" \
-    || fail "the refused family must skip its cooldown" "$out"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts opus | tr "\n" ","')"
-[ "$out" = "2,3,1," ] && ok "an opus walk still offers the same account — the drought is not its" \
-    || fail "another family must not be benched (the incident's defect)" "$out"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts | tr "\n" ","')"
-[ "$out" = "2,3," ] && ok "a model-less selection treats every cooldown as blocking (legacy read)" \
-    || fail "no model named must stay the conservative read" "$out"
-
-# An account-wide session limit blocks both families.
-rm -f "$T/account-state"
-run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" \
-    'claude_limit_record 1 "Session limit reached - resets 3am" fable' >/dev/null
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts fable | tr "\n" ","'):$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts opus | tr "\n" ","')"
-[ "$out" = "2,3,:2,3," ] && ok "an account-wide session limit blocks fable and opus alike" \
-    || fail "scope all must cover every model" "$out"
-
-# Back-compat: a pre-scope record has five fields and reads as all.
-rm -f "$T/account-state"
-now=$(date +%s)
-printf 'cooldown\t1\t%s\t%s\tsession\ncurrent\t1\t%s\t1\tx\n' \
-    "$A1" "$(( now + 3000 ))" "$A1" > "$T/account-state"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts opus | tr "\n" ","')"
-[ "$out" = "2,3," ] && ok "an old-format record without the scope field still parses, as all" \
-    || fail "pre-scope records must read as account-wide" "$out"
-
-# Rule 8b: scopes stack, and the latest covering record decides.
-rm -f "$T/account-state"
-printf 'cooldown\t1\t%s\t%s\tsession\tall\ncooldown\t1\t%s\t%s\tcredits\tfable\n' \
-    "$A1" "$(( now + 3000 ))" "$A1" "$(( now + 80000 ))" > "$T/account-state"
-out="$(run 'claude_account_cooldown_until 1 fable')"
-[ "$out" = "$(( now + 80000 ))" ] && ok "fable waits for BOTH records — the later one decides" \
-    || fail "stacked scopes must not shorten each other" "$out"
-out="$(run 'claude_account_cooldown_until 1 opus')"
-[ "$out" = "$(( now + 3000 ))" ] && ok "opus waits only for the account-wide record" \
-    || fail "another family must not inherit the fable stop" "$out"
-run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" REF="$MODEL_LIMIT" \
-    'claude_limit_record 1 "$REF" fable' >/dev/null
-n="$(awk -F'\t' '$1 == "cooldown" && $2 == 1' "$T/account-state" | wc -l)"
-[ "$n" = 2 ] && ok "re-recording one scope leaves the account's other scope standing" \
-    || fail "a record may only replace its own account+scope" "$(cat "$T/account-state")"
-
-echo
 echo "the incident's ping-pong, pinned — a fable drought costs an opus wake nothing:"
 # The stub refuses any fable run with the observed model-limit wording and
 # answers every other model: the overnight selfplay's shape.
@@ -1140,8 +1034,8 @@ n="$(grep -c CALL "$T/calls" 2>/dev/null)"
 [ "${n:-0}" = 3 ] && ok "the fable wake rode the whole list dry, once each" \
     || fail "the fable walk must try each account once" "$n calls"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" 'claude_accounts fable | wc -l')"
-[ "$out" = 1 ] && ok "every account now cools for fable: the soonest is offered alone" \
-    || fail "an all-dry family must offer the soonest alone" "$out"
+[ "$out" = 3 ] && ok "the whole list still stands after the dry ride — nothing benched" \
+    || fail "a refused ride must not shrink the selection" "$out"
 rm -f "$T/calls"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two:$T/three" CLAUDE_BIN="$T/claude-bymodel" \
     WAKE_MODEL=opus '
@@ -1181,9 +1075,9 @@ run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-credmodel" \
     SYSTEM_PROMPT=sys PROMPT_TEXT=hello WAKE_EFFORT=low
     : > "$DEBUGLOG"
     wake_claude_run_chain' >/dev/null
-out="$(awk -F'\t' '$1 == "cooldown" {print $6}' "$T/account-state" 2>/dev/null | sort -u | tr '\n' ',')"
-[ "$out" = "fable," ] && ok "every cooldown the walk recorded is scoped fable" \
-    || fail "the verbatim line must land model-scoped cooldowns" \
+out="$(grep -c "^cooldown" "$T/account-state" 2>/dev/null || true)"
+[ "$out" = "0" ] && ok "the ride recorded moves and not one cooldown row" \
+    || fail "no refusal may grow a ledger" \
             "$(cat "$T/account-state" 2>/dev/null || echo "no record")"
 rm -f "$T/calls"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-credmodel" \
@@ -1324,43 +1218,28 @@ out="$(cut -f5 "$T/account-log" 2>/dev/null | head -n1)"
 rm -f "$T/account-log" "$T/account-state"
 
 echo
-echo "the re-book delay honours the soonest matching expiry (wake-queue rule 23a):"
-now=$(date +%s)
-rm -f "$T/account-state"
-printf 'cooldown\t1\t%s\t%s\tsession\tfable\ncooldown\t2\t%s\t%s\tsession\tall\n' \
-    "$A1" "$(( now + 600 ))" "$T/two" "$(( now + 3000 ))" > "$T/account-state"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" WAKE_REBOOK_JITTER=1 'claude_limit_rebook_delay fable')"
-[ "$out" -ge 605 ] && [ "$out" -le 615 ] && ok "a fable wake waits for the soonest cooldown covering fable (${out}s)" \
-    || fail "the delay must track the soonest covering expiry" "${out}s"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" WAKE_REBOOK_JITTER=1 'claude_limit_rebook_delay opus')"
-[ "$out" -ge 3005 ] && [ "$out" -le 3015 ] && ok "an opus wake ignores the fable record and waits for its own (${out}s)" \
-    || fail "another family's record must not set the delay" "${out}s"
-printf 'cooldown\t1\t%s\t%s\tcredits\tall\n' "$A1" "$(( now + 90000 ))" > "$T/account-state"
-out="$(run WAKE_REBOOK_JITTER=1 'claude_limit_rebook_delay opus')"
-[ "$out" -ge 21605 ] && [ "$out" -le 21615 ] && ok "a distant expiry is capped at WAKE_REBOOK_MAX (${out}s)" \
-    || fail "the cap must bound the wait" "${out}s"
+echo "the re-book delay is the plain outage slot, jittered (wake-queue rule 23a):"
 rm -f "$T/account-state"
 out="$(run WAKE_REBOOK_JITTER=1 WAKE_OUTAGE_RETRY=300 'claude_limit_rebook_delay opus')"
-[ "$out" -ge 305 ] && [ "$out" -le 315 ] && ok "nothing cooling: the plain outage slot stands (${out}s)" \
-    || fail "no covering record must fall back to WAKE_OUTAGE_RETRY" "${out}s"
+[ "$out" -ge 305 ] && [ "$out" -le 315 ] && ok "the delay is WAKE_OUTAGE_RETRY plus jitter (${out}s)" \
+    || fail "the re-book must ride the plain outage slot" "${out}s"
+now=$(date +%s)
+printf 'cooldown\t1\t%s\t%s\tcredits\tall\n' "$A1" "$(( now + 90000 ))" > "$T/account-state"
+out="$(run WAKE_REBOOK_JITTER=1 WAKE_OUTAGE_RETRY=300 'claude_limit_rebook_delay opus')"
+[ "$out" -ge 305 ] && [ "$out" -le 315 ] && ok "a legacy record changes nothing about the wait (${out}s)" \
+    || fail "nothing recorded may lengthen the re-book" "${out}s"
+rm -f "$T/account-state"
 
 echo
-echo "the status line tells a scoped bench from a total one:"
-rm -f "$T/account-state"
+echo "the status line never speaks of a bench:"
 now=$(date +%s)
-printf 'cooldown\t1\t%s\t%s\tsession\tfable\ncurrent\t2\t%s\t%s\tx\n' \
-    "$A1" "$(( now + 3000 ))" "$T/two" "$now" > "$T/account-state"
-out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'account_state_line')"
-case "$out" in
-    *"1 of 2 accounts cooling (1 only for one model)"*) ok "a model-scoped bench is named as such" ;;
-    *) fail "the line must say the bench is one model's" "$out" ;; esac
 printf 'cooldown\t1\t%s\t%s\tsession\tall\ncurrent\t2\t%s\t%s\tx\n' \
     "$A1" "$(( now + 3000 ))" "$T/two" "$now" > "$T/account-state"
 out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" 'account_state_line')"
 case "$out" in
-    *"only for one model"*) fail "an account-wide bench must not claim a scope" "$out" ;;
-    *"1 of 2 accounts cooling"*) ok "an account-wide bench keeps the plain count" ;;
-    *) fail "the cooling count went missing" "$out" ;; esac
+    *"accounts cooling"*) fail "a legacy row must not reach the status line" "$out" ;;
+    "Account: account 2 answers next"*) ok "legacy rows on disk, and the line only names who answers" ;;
+    *) fail "the line must lead with who answers next" "$out" ;; esac
 rm -f "$T/account-state"
 
 echo

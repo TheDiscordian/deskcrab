@@ -159,11 +159,11 @@ contains "$out" "Failed to authenticate" \
     && ok "the OAuth auth-failure line is recognised, whole line printed" \
     || fail "the auth death must be a refusal the walk can ride" "$out"
 
-out="$(run 'claude_refusal_kind "'"$AUTH"'"')"
-check_eq "it takes the SHORT cooldown — a refreshed token comes back at the next walk-on" \
-    "$out" "session"
-out="$(run 'claude_refusal_scope "'"$AUTH"'"')"
-check_eq "no model named, so the dead login is benched for every model" "$out" "all"
+out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
+    'claude_limit_record 1 "'"$AUTH"'"; claude_account_pick; grep -c "^cooldown" "$ACCOUNT_STATE_FILE" || true')"
+check_eq "recording it moves the walk on and keeps no ledger (rule 8)" \
+    "$out" "2
+0"
 
 # Rule 15, the anti-gag pin: her genuine reply QUOTING the sentence is model
 # output, so the structural test must never read it as a refusal.
@@ -192,9 +192,10 @@ contains "$out" "Failed to authenticate" \
     || ok "not one byte of the auth line in the delivered reply"
 check_eq "account 1 died, account 2 was tried at once" \
     "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)" "CALL:$A1 CALL:$T/two "
-grep -q "^cooldown	1	" "$ACCOUNT_STATE_FILE" 2>/dev/null \
-    && ok "the failed attempt is on the account record — a cooldown for account 1" \
-    || fail "an auth death must be recorded like any refused attempt" \
+grep -q "^current	2	" "$ACCOUNT_STATE_FILE" 2>/dev/null \
+    && ! grep -q "^cooldown" "$ACCOUNT_STATE_FILE" 2>/dev/null \
+    && ok "the failed attempt moved the current to account 2, and no ledger grew" \
+    || fail "an auth death must move the walk on, recording nothing else (rule 8)" \
         "$(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo none)"
 grep -q "account-swap" "$T/state-debug.log" 2>/dev/null \
     && ok "the swap marker is in the stream log — the failed run is legible there" \
@@ -216,10 +217,10 @@ out="$(run CLAUDE_FALLBACK_CONFIG_DIR="$T/two" CLAUDE_BIN="$T/claude-auth" \
 check_eq "the whole-log judgement reads the run as failed" "$out" "FAILED-RUN"
 check_eq "every login was offered before the run failed" \
     "$(tr '\n' ' ' < "$T/calls" 2>/dev/null)" "CALL:$A1 CALL:$T/two "
-grep -q "^cooldown	1	" "$ACCOUNT_STATE_FILE" 2>/dev/null \
-    && grep -q "^cooldown	2	" "$ACCOUNT_STATE_FILE" 2>/dev/null \
-    && ok "both dead logins are on the record" \
-    || fail "every auth-dead attempt must be recorded" \
+[ "$(grep -c "^current" "$ACCOUNT_STATE_FILE" 2>/dev/null)" = 1 ] \
+    && ! grep -q "^cooldown" "$ACCOUNT_STATE_FILE" 2>/dev/null \
+    && ok "the walk moved through both dead logins, and no ledger grew" \
+    || fail "auth deaths must move the current and record nothing else (rule 8)" \
         "$(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo none)"
 
 echo "the summariser commits nothing on an auth death (the 01:15 summary-view road):"

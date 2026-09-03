@@ -177,10 +177,10 @@ it is ten minutes of silence with nothing on screen explaining it.
 29. Every out-of-band model call — the promise audit, the promise checker and its sweep, the
     memory store's ingest and judge, the summariser, the chess mover — MUST select from the same
     flat list by the same rule, passing its own model (rule 10). The two Python walkers (the
-    memory store, the chess mover) read the shared state and skip accounts cooling for their
-    model — a record scoped to another family does not bench them, and a record without the
-    scope field reads as `all` (rule 8a) — and are read-only: recording a refusal is the
-    shell paths' job. The model-family roster itself has ONE spelling: `CLAUDE_MODEL_FAMILIES`
+    memory store, the chess mover) read the shared state's current pointer by the same rule and
+    are read-only: recording a move is the shell paths' job. They still skip an account a
+    leftover cooldown row names — legacy tolerance for a ledger nothing writes any more (rule
+    8), never bookkeeping of their own. The model-family roster itself has ONE spelling: `CLAUDE_MODEL_FAMILIES`
     in the shell library, exported to every child as `DESKCRAB_MODEL_FAMILIES`. The Python
     walkers MUST prefer that variable and keep their baked copy only as a last resort for a
     walker started outside the shell paths (the chessweb service) — three hand-maintained
@@ -201,7 +201,7 @@ it is ten minutes of silence with nothing on screen explaining it.
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/account-state` | one `current` line: `current \t number \t dir \t epoch \t why`; one `cooldown` line per cooling account and scope: `cooldown \t number \t dir \t until-epoch \t kind \t scope` — scope is `all` or a model family, and a line without the field reads as `all` (rule 8a); override per instance via `ACCOUNT_STATE_FILE` |
+| `~/.local/share/deskcrab/account-state` | one `current` line: `current \t number \t dir \t epoch \t why`; a legacy `cooldown` line is ignored by every reader and dropped on the next write (rule 8); override per instance via `ACCOUNT_STATE_FILE` |
 | `~/.local/share/deskcrab/account-log` | append-only: epoch, from number, to number, reason, session kind (the real path's own name — rule 11) |
 | the stream log | carries the swap marker lines |
 
@@ -247,49 +247,32 @@ refusal to audio.
 ## TESTS
 
 **Existing:** `tests/test_limit_fallback.sh` — the flat list parsed from the configuration; the
-current advancing one position per refusal; cooldown-skip; the wrap; every-account-cooling
-offering the soonest to expire; the numbered messages; the walk on the turn, wake, and job paths;
-the TTS streamer riding through refusals; extract-response on a combined refusal+reply log. Holds
-the mid-run cut cases (rule 12a: the cut detector against the observed 2.1.219 stream shape, its
-disjointness from the plain refusal, the rule-15 echo trap, the wake and turn walks riding a cut
-to the next account, and the job-runner finishing a cut build on a later account). Also holds rule
-4a: with nothing configured and no state record the selection still yields account 1, and a wake
-walk handed a forcibly emptied list still makes exactly one attempt, on the account the selection
-answers with, with the fall-through named in its own stream. Also holds the 2026-08-11 model-limit
-wording ("You've reached your Fable 5 limit. Run /usage-credits…"), which matched nothing in the
-signature and let two builder jobs die as ordinary failures with no rotation: the exact observed
-line is judged a refusal, matches the blocked-job signature, and rides the wake walk to the next
-account, cooling the account it dried up and moving the current — and on the job path, a builder
-refused with it finishes on the next account with `--model` unchanged on every attempt
-([jobs.md](jobs.md) rule 5a). And the sweep: no emitted account string names a "primary" or a
-"fallback". Holds the 2026-08-15 model-scope rules too: the scope cases are driven through the
-pipeline's own composition — the wording goes into a captured stream, `claude_stream_refusal`
-judges it, and whatever THAT printed is what the scope read gets, because a hand-fed full line
-once green-washed a detector that was printing only the signature's matched substring; a
-model-naming refusal writes a scoped cooldown that leaves the same account selectable for a walk
-at another family — including the verbatim credits-with-model line, whose signature match lands
-ahead of the model name, ridden through the wake chain to a fable-scoped cooldown that a
-following opus walk never pays for — while a model-less session-limit wording blocks every
-family, and a model named inside a weekly or session wording wins the scope (kind untouched);
-the incident's ping-pong pinned end to end — a
-premium-model refusal moves the current, and the ordinary-model wake that follows answers on its
-FIRST boot, paying zero extra; a model-less selection still treats every cooldown as blocking;
-per-scope records stack without shortening each other; an old-format record without the scope
-field parses as `all`; the walk's own wholly-refused record (`WAKE_CHAIN_ALL_LIMITED`) is set by
-an every-attempt-refused walk and NOT by a mixed one whose last attempt died on the network; the
-dispute fallback (rule 10a) fires exactly once, only when every
-offered account refused at the raised model, never on a genuine answer, never on the job
-path, and never past the turn's wall clock — a deadline that lapsed during the raised walk
-skips the fallback with the skip named in the stream; the family roster reaches
-`claude_model_family` from `CLAUDE_MODEL_FAMILIES` and both Python walkers from
-`DESKCRAB_MODEL_FAMILIES`, with their baked list standing only when the environment carries
-nothing; and the rebook delay (wake-queue.md rule 23a) honours the soonest expiry covering the
-wake's model.
+current advancing one position per refusal; the wrap; the whole list always offered, with legacy
+cooldown rows ignored on read, dropped on the next write, and never reaching the status line;
+the numbered messages; the walk on the turn, wake, and job paths; the TTS streamer riding
+through refusals; extract-response on a combined refusal+reply log. Holds the mid-run cut cases
+(rule 12a: the cut detector against the observed 2.1.219 stream shape, its disjointness from the
+plain refusal, the rule-15 echo trap, the wake and turn walks riding a cut to the next account,
+and the job-runner finishing a cut build on a later account). Also holds rule 4a: with nothing
+configured and no state record the selection still yields account 1, and a wake walk handed a
+forcibly emptied list still makes exactly one attempt, on the account the selection answers
+with, with the fall-through named in its own stream. Also the observed model-limit wording
+("You've reached your Fable 5 limit. Run /usage-credits…"), judged a refusal, matching the
+blocked-job signature, and ridden to the next account with the current moved and `--model`
+unchanged on every attempt ([jobs.md](jobs.md) rule 5a); a family's whole-list dry ride leaving
+the selection whole; the wake that follows at another model answering on its first boot, because
+the current moved to where the answers are; the dispute fallback (rule 10a) firing exactly once,
+only when every offered account refused at the raised model, never on a genuine answer, never on
+the job path, and never past the turn's wall clock, with the skip named in the stream; the
+account log's real session kinds (rule 11); the flat re-book delay (wake-queue rule 23a),
+unchanged by anything on disk; the family roster reaching `claude_model_family` from
+`CLAUDE_MODEL_FAMILIES`; the Python walkers reading the same state file and preferring the
+exported roster. And the sweep: no emitted account string names a "primary" or a "fallback".
 `tests/test_wake_limit_cut.sh` — the wake path end to end in the sandbox: a walk that ends cut
 journals a failed run naming the session limit, writes nothing to the conversation, and re-books
 through the outage-retry path; a walk with credit left delivers the later account's reply and
 re-books nothing; and a mixed walk — a cut, then a network death on the next login — re-books on
-the ordinary outage slot, never the drought's cooldown-keyed wait.
+the same ordinary outage slot every refused or dead walk gets.
 `tests/test_convo_compaction.sh` — the summariser uses Sol for continuity, records a Sol capacity
 refusal, and falls through without persisting provider text; on the Claude path, a summary whose
 text contains the signature's words is still committed as genuine output, while a synthetic

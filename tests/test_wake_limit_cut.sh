@@ -95,15 +95,14 @@ REBOOK="$(grep -l "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null | head -n1)"
 grep -q "greenhouse latch" "$REBOOK" \
     || die "the re-book lost the wake's agenda: $(cat "$REBOOK")"
 
-# specs/wake-queue.md rule 23a: a walk the limits ended does not re-book into
-# the drought it just measured. The cut cooled the only account for the
-# session window (~5 h), so the re-book is due around that expiry — never on
-# the half-hour outage slot that produced the 2026-08-15 morning's
-# eight-second refusal/re-book ping-pong. Upper bound is the cap plus jitter.
+# specs/wake-queue.md rule 23a: the re-book rides the plain outage slot plus
+# jitter — nothing records when the drought clears (account-fallback.md rule
+# 8), so no longer wait can honestly be computed, and the half-hour sweep
+# costs a handful of fast refusals while it holds.
 DUE="$(cut -f1 "$REBOOK" 2>/dev/null | head -n1)"
 IN=$(( ${DUE:-0} - $(date +%s) ))
-[ "$IN" -ge 17000 ] && [ "$IN" -le 21800 ] \
-    || die "the re-book ignores the cooldown expiry: due in ${IN}s (record: $(cat "$REBOOK"))"
+[ "$IN" -ge 1700 ] && [ "$IN" -le 2100 ] \
+    || die "the re-book must ride the outage slot: due in ${IN}s (record: $(cat "$REBOOK"))"
 
 # --- 2. credit elsewhere: the fallback answers and the thought gets said ---
 : > "$CONVOFILE"
@@ -118,14 +117,11 @@ ls "$WAKES_DIR"/*.wake >/dev/null 2>&1 \
     && grep -q "outage-retry" "$WAKES_DIR"/*.wake 2>/dev/null \
     && die "a wake the fallback carried still re-booked itself: $(ls "$WAKES_DIR")"
 
-# Account 1 was cooled by the first scenario's cut — that record is exactly
-# why THIS wake made no doomed boot on it — so the NEXT wake leads with
-# account 2 too: the selection skips the cooling account (rules 7 and 10).
-# Asked of the selection itself, not read off the current line: the current
-# never moved here because nothing refused in this scenario, and that is the
-# design — a cooldown, not a re-cut, is what spares the boot.
-grep -q "^cooldown	1	" "$ACCOUNT_STATE_FILE" 2>/dev/null \
-    || die "the first scenario's cut left no cooldown for account 1: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
+# Account 1's cut moved the current onto the login that answered, so the
+# NEXT wake leads with account 2 — no record of account 1's state is kept
+# (account-fallback.md rule 8): whether it answers again is learned by
+# calling it, at the walk's own tail, and one refused boot is the price of
+# never benching a login that came back.
 NEXT="$(env CLAUDE_FALLBACK_CONFIG_DIR="$FB" bash -c '. "$1/lib/common.sh"; claude_account_pick' _ "$REPO" 2>/dev/null)"
 [ "$NEXT" = "2" ] \
     || die "the next wake would not lead with account 2: pick=$NEXT, state: $(cat "$ACCOUNT_STATE_FILE" 2>/dev/null || echo "no record")"
