@@ -23,6 +23,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # (low|medium|high|xhigh|max), plus "ultra" on codex only. Every model knob in
 # this file routes the same way: WAKE_MODEL, JOB_MODEL, DISPUTE_MODEL, the
 # chess movers, the classifiers.
+#
+# There is no single switch: the engine is chosen per knob, by name. Moving off
+# an engine means moving every knob that names it — including the ones left
+# unset here, which keep whatever default their code carries. Grep the source
+# for a model default before believing a switch is complete.
 # CLAUDE_MODEL="opus"
 # CLAUDE_EFFORT="low"
 
@@ -435,3 +440,9 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # FACE_SENTENCE_CUES=1           # per-sentence acting over her own words
 # FACE_EVENTS="game-win,failed-action"
 # FACE_ACTIVITY_EXPRESSIONS="listening=attentive,considering=focused,chess=focused"
+
+# Optional: chess (specs/chessweb.md). Two different jobs, two knobs — choosing
+# the move is not the same work as talking across the board, and they are meant
+# to be able to sit on different models.
+# DESKCRAB_CHESS_MOVER_MODEL="fable"   # who picks the move
+# DESKCRAB_CHESS_CHAT_MODEL="sol"      # her voice at the table
