@@ -395,6 +395,44 @@ deliberate-play channel.
    actions use the same causal verifier after resolving the held item and NPC identities. An item
    delta, grounded game feedback, or NPC-dialogue transition verifies the use; a bridge receipt or
    moved pointer does not.
+   `orsc-headless.sh drop ITEM-ID [AMOUNT|all]` is the deliberate release of held stock through
+   the bridge's `drop-inventory` action, dispatched by item identity only — the bridge resolves
+   the current slot and sends the client's own drop packet. Its observed postcondition is BOTH
+   deltas from a newer snapshot: that item's held quantity decreased AND a matching
+   `ground_items` entry at the body's tile appeared or grew. The client prints its local
+   "Dropping …" line at packet time, before the server has moved anything, so a message alone
+   never completes a drop; explicit refusal feedback ends it `result=failed`. An AMOUNT above
+   one (or `all`) is the item-batch discipline: one ordinary single-slot drop at a time, each
+   next dispatch authorized by the prior drop's observed completion, never by a claimed packet
+   amount — the live server decides quantity from the slot's own contents while Drop X is
+   disabled. A drop attempted during combat emits nothing and reports
+   `drop-needs-retreat ... next=retreat`, matching the direct take door.
+   `orsc-headless.sh use ITEM-ID ground ITEM-ID [SECONDS]` and the bridge's `use-item-ground`
+   action resolve the held item and the nearest reachable matching ground pile together — the
+   same shortest-reachable selection, door proof, and unreachability refusals as `take-ground`
+   — walk to that tile, and send the ordinary item-on-ground packet as one operation. This is
+   the game's own put-the-logs-down-then-light-them sequence made semantic: `drop 14` then
+   `use 166 ground 14`. Success requires the TARGETED pile's entry count at that exact tile to
+   decrease in a newer snapshot (firemaking's lit pile leaves `ground_items` as the fire
+   scenery replaces it) or an XP delta; explicit failure feedback — including the server's
+   "You fail to light a fire" — ends it `result=failed`. The intermediate "You attempt to
+   light the logs" line is observation, never completion, exactly as a furnace's early smelt
+   line is ignored by `use-item-object`.
+   `orsc-headless.sh use ITEM-ID item TARGET-ITEM-ID [SECONDS]` is the held-pair door — one held
+   item used on another by pure held identity (dough from a pot of flour and a bucket of water, a
+   chisel against an uncut gem). The door requires both ids held in the fresh
+   snapshot (two distinct slots when the ids are equal) before dispatching `use-item-item`; the
+   bridge re-resolves both to two distinct live slots and sends the ordinary item-on-item packet
+   with no selection phase and no pointer. Success requires either named item's held count
+   changing or XP, and only explicit failure feedback may end it
+   unsuccessfully without either delta. A receipt, pane transition, or selection change is never
+   completion. Lighting a fire is explicitly NOT this door's postcondition: the authentic
+   server's own inventory trigger refuses a tinderbox on carried logs with "I think you should
+   put the logs down before you light them!", which the verifier classifies as grounded failure
+   feedback — the semantic answer that routes play to the drop-then-use-on-ground sequence
+   above, where the fire, the Firemaking XP, and the consumed pile are the observed
+   postconditions. The action belongs to the deliberate-play channel alone: it is absent from
+   both executable rule tables, so no learned routine can own or reserve it.
    An identity-based inventory click is also unresolved until newer state shows the item selected
    for Use-with, a context menu, an inventory change, or grounded game feedback. A changed hover
    alone proves only pointer placement and is never reported as click completion.
@@ -974,6 +1012,7 @@ deliberate-play channel.
     has one door for stepping, state-based waiting, learning and objectives. The direct harness
     doors `orsc-headless.sh wait-until CONDITION [SECONDS]`, `orsc-headless.sh panel [close]`,
     `orsc-headless.sh use ITEM-ID object OBJECT-ID [SECONDS]`,
+    `orsc-headless.sh use ITEM-ID item TARGET-ITEM-ID [SECONDS]`,
     `orsc-headless.sh object OBJ-NAME|TYPE-ID VERB [SECONDS]`, and
     `orsc-headless.sh retreat [SECONDS]` use that same snapshot path. While the resident runner
     heartbeat is live, every enabled rule
@@ -1484,6 +1523,21 @@ deliberate-play channel.
 21d. Nothing schedules the next sitting: that is hers to choose, and `play` is the door. The
     end-of-session report names the elapsed time and says so, so a sitting that ends while she is
     still there ends with her deciding when to come back rather than with a silence.
+
+22. A missing capability is work, never a wait. When play needs an interaction no semantic door
+    yet expresses, the plan MUST NOT encode waiting — not "bank until the door exists", not
+    shelving the goal, not any phrasing whose satisfaction depends on someone else building
+    something. The escalation is fixed and all of it is hers: (a) the nearest semantic door whose
+    server-side behaviour reaches the same outcome; (b) the coordinate fallback — screenshot,
+    then `mouse`/`click`/`click-screen` — which exists precisely for the gap where identity-based
+    doors end, used deliberately and never retained as knowledge (rule 5's pixel ban binds
+    learned reflexes, not one-off problem-solving); (c) naming the gap for the builder lane
+    while play continues on whatever the fallback yields. Only an interaction the server itself
+    refuses may be recorded as impossible, with the server's own feedback as the evidence. A
+    handoff or plan line that says "wait until X is built" is a defect in the plan, not a
+    strategy: on 2026-09-02 the ground-item door sat written-but-unbuilt while the plan said to
+    bank logs until it existed, and a day of firemaking became banking because waiting had been
+    allowed to look like prudence.
 
 ## KNOWN LIMITS
 
