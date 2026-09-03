@@ -124,11 +124,14 @@ and the completion channel a job has back to her.
    schema field is `state`, and every writer uses it. A second field name means the sidecar keeps
    saying "running" and the next report reaps the job as died.
 9. The state values are: `queued`, `dispatched`, `running`, `finished`, `collected`, `failed`,
-   `stopped`, `blocked`, `died`. Every value MUST be documented where the schema is documented.
+   `stopped`, `blocked`, `died`, `duplicate`, `superseded`. Every value MUST be documented where
+   the schema is documented.
    `queued` is a brief on the shelf with no unit and no builder (rule 30); `dispatched` is the
    moment between the dispatch call and the worker's first write, reaped exactly as `running` is
    when the worker never appears; `collected` is a finished job whose work has been located and
-   recorded (rule 38).
+   recorded (rule 38); `duplicate` is a worker that lost the single-flight race and exited
+   without touching any work file (rule 44); `superseded` is a queued recurring brief dropped at
+   the door because its own next occurrence had arrived (rule 45).
 9a. The sidecar's `steerable` field records whether this run started with the per-job correction
     hook. Its `steering` history records queued and delivered receipts. These fields describe the
     correction channel; they never replace or imply the job's `state`.
@@ -327,7 +330,9 @@ the night's work ([nightly.md](nightly.md) rules 54-61) is where it is spent.
     to prevent.
 33. A queued record is never reaped and never pruned: it has no unit and no pid to be dead, and
     ageing out silently would be work quietly dropped. `crab job drop <id>` is the one way a queued
-    brief leaves the queue undispatched, and it refuses any state but `queued` — a job that ran has
+    brief leaves the queue undispatched BY HAND — the supersession drop of rule 45 is the one
+    automatic exit, and unlike drop it keeps the record, as `superseded`, with the reason in the
+    job's own log. Drop refuses any state but `queued` — a job that ran has
     a history worth keeping. The drop's check and delete happen under the job's own `<id>.lock`
     (rule 36), the state re-read inside it: a drop racing a dispatch serialises against the
     writer's stamp, so whichever lands first wins whole — a drop arriving second sees `dispatched`
@@ -437,14 +442,64 @@ re-derived it by hand.
     surfaces anyway MUST be reported with the job id beside it, described as running only when
     its state is `dispatched` or `running`, so the claim is traceable and never misnamed.
 
+### Single flight and supersession
+
+The night of 2026-09-03: the 02:30 nightly tidy and a tidy that had been queued behind an account
+limit since 22:21 dispatched at the same instant, the moment the limit lifted — two hands on the
+identical brief against wants.md, a file with no git behind it, the exact shape of the 2026-08-09
+clobber. The collision was caught by luck: the 02:30 hand noticed and stopped the other while its
+log still held only the account banner. These rules make the protection structural.
+
+42. Every job carries a single-flight key. An explicit slug (`crab job --slug <key>` — letters,
+    digits, dot, dash and underscore, recorded on the sidecar as `slug`) is the key where one is
+    given, and a recurring brief — the nightly tidy — MUST give one; absent a slug, the key is a
+    stable hash of the brief's normalised description (lowercased, whitespace collapsed), so
+    identical briefs collide by SUBSTANCE rather than wording. The key rides queueing, dispatch,
+    the automatic block retry (which inherits its origin's `slug` and `daily` exactly as it
+    inherits `record`, rule 18b), and requeue. ONE implementation mints and matches keys —
+    `job-status flight-key` / `flight-incumbent` — never a second hash in a second language; where
+    only one side of a pair carries a slug, the descriptions' hashes decide, so a slugged brief
+    still collides with its own slug-less twin.
+43. Dispatch REFUSES a brief whose key is already held. The fresh-dispatch door and the queued
+    door both scan the sidecars before anything exists to clean up: a fresh brief is refused while
+    a job with the same key stands `queued`, `dispatched` or `running`; a queued record is refused
+    — and STAYS queued, for the night to skip (nightly.md rule 56a) — while one stands
+    `dispatched` or `running`, its own record excluded from the scan. Queueing itself is never
+    refused: a recurring brief must be able to shelve beside its stranded predecessor, or the
+    stale copy would run in the fresh one's place. The refusal is plain — the key and the
+    incumbent's id and state, printed to the caller and therefore into the night log — never a
+    silent skip. A dead incumbent holds no key: a `dispatched`/`running` sidecar whose unit is
+    inactive and whose pid is gone (the reaper's own liveness test) does not block, or the scan
+    would rebuild, as a sidecar file, the permanent block the lock below is designed never to be.
+44. The door's scan cannot see two dispatches racing in the same instant — the observed failure —
+    so the key is also a LOCK, held for the life of the run: the worker takes a non-blocking flock
+    on `jobs/flight/<key>.lock` before it touches anything beyond the jobs ledger, and holds the
+    descriptor until it exits. The loser exits WITHOUT touching any work file: the refusal — key
+    and incumbent id — lands in its own log, its sidecar ends `duplicate`, and it books no
+    completion wake (the incumbent's own wake is the news) and arms no retry. The flock is the
+    arbiter, never the lockfile's content: the kernel releases it on any death — clean exit,
+    failure, SIGKILL — so a stale lockfile left by a dead pid is recovered by the next taker
+    rather than standing as a permanent block. The `<pid> <job id>` line the winner writes into
+    the file is legibility for a hand reading the drawer, nothing more, and the lockfiles are
+    pruned on report's own keep-days sweep.
+45. A recurring brief queued behind a wall MUST NOT run late into its own successor. A queued
+    record carrying `daily` (`crab job --daily HH:MM`, the brief's own schedule, recorded on the
+    sidecar) whose `queued_epoch` is older than the most recent HH:MM occurrence is SUPERSEDED at
+    the queued door: dropped before any unit, builder, or work file exists, the record moved to
+    state `superseded` with the one-line reason in its own log and in the caller's face. The
+    nightly tidy dispatches with `--slug nightly-tidy --daily 02:30`, so the 22:21 corpse of the
+    incident above is dropped at the door and the 02:30 occurrence runs alone. The dry run
+    (`DESKCRAB_NO_DISPATCH`) says "would drop" and writes nothing.
+
 ## DATA
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35). `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <reason>`, last block wins |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
+| `~/.local/share/deskcrab/jobs/flight/<key>.lock` | the single-flight lock (rule 44): flock'd by the worker for the life of its run; the `<pid> <job id>` line inside is legibility only, never the lock itself; pruned by report's keep-days sweep |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
 | systemd unit `deskcrab-job-retry-<id>` | the one-shot timer that re-dispatches a blocked job's brief once the hold expires (rule 18a) |
 
@@ -560,7 +615,17 @@ writer's lock and re-judges the state inside it, so a drop that loses the race t
 refuses on the winner's state; and a dispatch whose record vanished mid-flight aborts without
 starting a unit);
 `tests/test_job_similar.sh` (rule 7i: dispatch names the running and queued work a brief
-resembles, stays silent on unrelated briefs, and never refuses).
+resembles, stays silent on unrelated briefs, and never refuses);
+`tests/test_job_single_flight.sh` (rules 42-45: the key — one hash for one substance whatever
+the case and spacing, an explicit slug outranking it; the fresh door refused on a queued,
+dispatched or running incumbent, by slug and by bare substance alike, with the key and the
+incumbent named and no sidecar created; the queued door refused beside a live incumbent with
+the brief left queued; a differently-keyed brief passing, and a dead incumbent's stale sidecar
+not blocking; two workers racing the flock in the same instant against a wants.md stand-in —
+exactly one writer by content and mtime, the loser `duplicate` with the key and incumbent in
+its own log, having booted no builder; a stale-queued `--daily` brief superseded at the door
+with no unit started while a fresh one dispatches, the dry run dropping nothing; and a stale
+flight lock from a dead pid recovered rather than standing).
 
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
 unpushed and dirty counts, and the report's test tally; the tally is the end state, never the

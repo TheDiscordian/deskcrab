@@ -255,6 +255,17 @@ which fails silently is worse than one that does not exist.
     `common.sh` does not blanket-export conf values, and most conf values lean on `$HOME`,
     which systemd's parser would import unexpanded for every neighbour the file carries.
 
+21f. The tidy is single-flight. The unit dispatches its brief with `--slug nightly-tidy
+    --daily 02:30` ([jobs.md](jobs.md) rules 42-45), so two tidies can never hold wants.md at
+    once — on 2026-09-03 the 02:30 tidy and a tidy queued behind an account limit since 22:21
+    dispatched in the same instant the moment the limit lifted, two hands on the identical
+    brief against a file with no git behind it, caught only because the first noticed and
+    stopped the second while its log still held the account banner — and a queued tidy that
+    missed its night is dropped at the door once the next 02:30 occurrence has taken its
+    place, rather than run late into it. The 02:30 timer remains the tidy's one owner; the
+    slug adds no second scheduler, only the guarantee that whichever hand reaches the door
+    second stands down.
+
 ### The self-change watcher
 
 22. The watcher is driven by a path unit using the kernel's own change notification. No polling

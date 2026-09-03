@@ -9138,10 +9138,18 @@ job_start() {
     # parsing it back out of the human messages below was the alternative.
     JOB_START_ID="" JOB_START_QUEUED=""
     local workdir="$PROJECT_DIR" force="" origin="" record="" want="" redo_of=""
+    local slug="" daily=""
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
             -f) force=1; shift ;;
+            # The single-flight identity (jobs.md rules 42-45): --slug is the
+            # explicit stable key a recurring brief dispatches under — the
+            # nightly tidy's protection against the 2026-09-03 twin dispatch —
+            # and --daily is that brief's own HH:MM occurrence, which lets the
+            # queued door drop a stale copy the next occurrence has replaced.
+            --slug) slug="${2:-}"; shift 2 2>/dev/null || shift $# ;;
+            --daily) daily="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # -O names the blocked job this dispatch is the automatic retry of
             # (lib/job-block-retry, jobs.md rule 18b). Internal, not offered in
             # the usage line: the stamps it writes below are what make the
@@ -9164,12 +9172,31 @@ job_start() {
             --want|-W) want="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # Any other flag is a mistake, not a task description — once, a
             # stray --help was dispatched as a real job that ran `claude --help`.
-            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [-f] <description of the work>"; return 1 ;;
+            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [-f] <description of the work>"; return 1 ;;
             *) break ;;
         esac
     done
     local task="$*"
-    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [-f] <description of the work>"; return 1; }
+    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [-f] <description of the work>"; return 1; }
+    # A slug is a key, and a key is a filename: the flight lock of rule 44
+    # lives at flight/<key>.lock, so the character set is validated here,
+    # before anything exists (the same discipline as the id check in steer).
+    case "$slug" in
+        *[!A-Za-z0-9._-]*)
+            echo "Not dispatched — slug '$slug' is not a key: letters, digits, dot, dash and underscore only (jobs.md rule 42)."
+            return 1 ;;
+    esac
+    if [ "${#slug}" -gt 64 ]; then
+        echo "Not dispatched — slug '$slug' is too long for a key (64 characters at most; jobs.md rule 42)."
+        return 1
+    fi
+    if [ -n "$daily" ]; then
+        case "$daily" in
+            [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+            *)  echo "Not dispatched — --daily '$daily' is not a time of day (HH:MM, 24-hour; jobs.md rule 45)."
+                return 1 ;;
+        esac
+    fi
     # Live steering is a synchronous ACTIONS control, not build work. Sending
     # this one-line correction to a detached builder delays it and makes a
     # second personality responsible for the assistant's own play.
@@ -9180,9 +9207,16 @@ job_start() {
             return 1 ;;
     esac
     # An automatic retry inherits the obligation its origin carried: the brief
-    # is the same brief, so the record rides the sidecar chain (rule 7b).
-    if [ -z "$record" ] && [ -n "$origin" ] && [ -e "$JOBS_DIR/$origin.json" ]; then
-        record="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" record 2>/dev/null)"
+    # is the same brief, so the record rides the sidecar chain (rule 7b) —
+    # and so does the single-flight identity (rule 42), or a retried tidy
+    # would race tomorrow's under a different key.
+    if [ -n "$origin" ] && [ -e "$JOBS_DIR/$origin.json" ]; then
+        [ -z "$record" ] && \
+            record="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" record 2>/dev/null)"
+        [ -z "$slug" ] && \
+            slug="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" slug 2>/dev/null)"
+        [ -z "$daily" ] && \
+            daily="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" daily 2>/dev/null)"
     fi
     # An id the records drawer does not know is refused before any sidecar or
     # unit exists — a job tied to a record nobody can touch could only ever
@@ -9239,6 +9273,15 @@ job_start() {
         JOB_START_ID="$id" JOB_START_QUEUED=1
         [ -n "$record" ] && \
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" record="$record"
+        # The flight identity rides the queued record (rule 42): queueing is
+        # never refused — a recurring brief must be able to shelve beside its
+        # stranded predecessor, or the stale copy would run in its place —
+        # and the queued DOOR is where the key and the daily occurrence are
+        # judged (rules 43 and 45).
+        [ -n "$slug" ] && \
+            "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" slug="$slug"
+        [ -n "$daily" ] && \
+            "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" daily="$daily"
         echo "Job $id QUEUED for the night — not dispatched. Awake, the door dispatches only want-linked work (jobs.md rule 30); the night takes up the queue after sleep."
         echo "  now instead: crab job dispatch $id   (or --want <ref> to link a want, -f to force)"
         echo "  list: crab jobs    drop: crab job drop $id"
@@ -9249,6 +9292,23 @@ job_start() {
         echo "Not dispatched — the last job never began: ${block#*	}"
         echo "  Recorded $(( ${block%%	*} / 60 )) min ago; dispatch is held for ${JOB_BLOCK_RETRY} s from then, then the next job is the retry."
         echo "  Do the work by hand, or force it with: crab job -f <description>"
+        return 1
+    fi
+    # Single flight (jobs.md rule 43): a brief whose key — the slug, or the
+    # hash of its own words — is already held by a job still queued,
+    # dispatched or running is REFUSED before any sidecar exists. On
+    # 2026-09-03 two identical tidies dispatched in the same instant against
+    # wants.md; the door's scan is the first line, and the worker's flock
+    # (rule 44) catches the same-instant race the scan cannot see. The check
+    # runs before its own sidecar is created, deliberately, so two racing
+    # doors cannot each refuse on the other's half-made record.
+    local flight fkey
+    if flight="$("$LIB_DIR/job-status" flight-incumbent "$JOBS_DIR" \
+            "$slug" "$task" "" "queued,dispatched,running" 2>/dev/null)" \
+        && [ -n "$flight" ]; then
+        fkey="$("$LIB_DIR/job-status" flight-key "$slug" "$task" 2>/dev/null)"
+        echo "Not dispatched — single-flight key '$fkey' is already held by job ${flight%% *} (${flight#* })."
+        echo "  One brief, one hand (jobs.md rule 43): two hands on one brief is the 2026-09-03 tidy collision. Incumbent: crab job show ${flight%% *}   log: $JOBS_DIR/${flight%% *}.log"
         return 1
     fi
     # A test may only ever prove that the preflight let it through. Past this
@@ -9274,6 +9334,12 @@ job_start() {
     # the record says which want this builder served.
     [ -n "$want_title" ] && \
         "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" want="$want_title"
+    # And the flight identity (rule 42): the worker reads the slug back to
+    # take its key's lock, and requeue and the block retry carry both along.
+    [ -n "$slug" ] && \
+        "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" slug="$slug"
+    [ -n "$daily" ] && \
+        "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" daily="$daily"
     if [ -n "$origin" ]; then
         # jobs.md rules 18b and 18f: the new sidecar names the blocked job it
         # came from — `crab jobs` shows it, and job-runner reads it to never
@@ -9382,10 +9448,57 @@ job_dispatch_queued() {
             echo "  Drop it: crab job drop $id"
             return 1 ;;
     esac
+    # Supersession (jobs.md rule 45): a recurring brief that sat queued past
+    # its own next occurrence is DROPPED, never run late — a stale tidy
+    # dispatching beside the fresh one is the 2026-09-03 collision. Judged
+    # here, before the block marker, the flight scan, and any unit: a stale
+    # copy sheds whatever else stands in the door's way, and no work file is
+    # ever opened for it. The record stays, as `superseded`, reason in its
+    # own log — visible where a silent deletion would not be.
+    local daily qe occ
+    daily="$("$LIB_DIR/job-status" get "$sidecar" daily 2>/dev/null)"
+    if [ -n "$daily" ]; then
+        qe="$("$LIB_DIR/job-status" get "$sidecar" queued_epoch 2>/dev/null)"
+        occ="$(date -d "today $daily" +%s 2>/dev/null)" || occ=""
+        if [ -n "$occ" ] && [ "$occ" -gt "$(date +%s)" ]; then
+            occ=$(( occ - 86400 ))
+        fi
+        case "$qe" in ''|*[!0-9]*) qe="" ;; esac
+        if [ -n "$occ" ] && [ -n "$qe" ] && [ "$qe" -lt "$occ" ]; then
+            local qwhen owhen
+            qwhen="$(date -d "@$qe" '+%F %T' 2>/dev/null)"
+            owhen="$(date -d "@$occ" '+%F %T' 2>/dev/null)"
+            if [ -n "${DESKCRAB_NO_DISPATCH:-}" ]; then
+                echo "Would drop queued job $id (DESKCRAB_NO_DISPATCH set): superseded — queued $qwhen, before the current $daily occurrence ($owhen)."
+                return 0
+            fi
+            printf '%s superseded: queued %s, before the current %s occurrence (%s) — dropped undispatched rather than run late beside its successor (jobs.md rule 45)\n' \
+                "$(date '+%F %T')" "$qwhen" "$daily" "$owhen" >> "$JOBS_DIR/$id.log"
+            "$LIB_DIR/job-status" set "$sidecar" state=superseded finished=now \
+                summary="superseded: queued $qwhen, before the current $daily occurrence ($owhen) — dropped undispatched" 2>/dev/null
+            echo "Not dispatched — queued job $id superseded: it was queued $qwhen, before the current $daily occurrence ($owhen). Running the brief late would collide with the occurrence that replaced it (jobs.md rule 45). Dropped; no builder started, no work file opened."
+            return 1
+        fi
+    fi
     local block
     if block="$(job_block_active)"; then
         echo "Not dispatched — the last job never began: ${block#*	}"
         echo "  Recorded $(( ${block%%	*} / 60 )) min ago; dispatch is held for ${JOB_BLOCK_RETRY} s from then. The brief stays queued."
+        return 1
+    fi
+    # Single flight at the queued door (jobs.md rule 43): the brief stays
+    # queued — the night skips it (nightly.md rule 56a) and a later night,
+    # or rule 45 above, settles it. Another QUEUED twin does not block, or
+    # two queued copies would refuse each other forever; only a hand already
+    # moving does.
+    local flight fkey fslug
+    fslug="$("$LIB_DIR/job-status" get "$sidecar" slug 2>/dev/null)"
+    if flight="$("$LIB_DIR/job-status" flight-incumbent "$JOBS_DIR" \
+            "$fslug" "$desc" "$id" "dispatched,running" 2>/dev/null)" \
+        && [ -n "$flight" ]; then
+        fkey="$("$LIB_DIR/job-status" flight-key "$fslug" "$desc" 2>/dev/null)"
+        echo "Not dispatched — single-flight key '$fkey' is already held by job ${flight%% *} (${flight#* }); job $id stays queued (jobs.md rule 43)."
+        echo "  One brief, one hand: the incumbent's log is $JOBS_DIR/${flight%% *}.log"
         return 1
     fi
     local workdir
@@ -9453,14 +9566,18 @@ job_requeue() {
         return 1
     fi
     # The engineering record rides too (jobs.md rule 7b): a requeued brief
-    # keeps the obligation its original carried, off the sidecar like the rest.
-    local record
+    # keeps the obligation its original carried, off the sidecar like the
+    # rest — and its single-flight identity (rule 42), so the redispatch
+    # stands down behind a live twin instead of racing it.
+    local record slug daily
     record="$("$LIB_DIR/job-status" get "$sidecar" record 2>/dev/null)"
-    if [ -n "$record" ]; then
-        job_start -C "$workdir" -X "$id" --record "$record" "$desc"
-    else
-        job_start -C "$workdir" -X "$id" "$desc"
-    fi
+    slug="$("$LIB_DIR/job-status" get "$sidecar" slug 2>/dev/null)"
+    daily="$("$LIB_DIR/job-status" get "$sidecar" daily 2>/dev/null)"
+    local -a args=(-C "$workdir" -X "$id")
+    [ -n "$record" ] && args+=(--record "$record")
+    [ -n "$slug" ] && args+=(--slug "$slug")
+    [ -n "$daily" ] && args+=(--daily "$daily")
+    job_start "${args[@]}" "$desc"
 }
 
 # One line per job, running first, recent finishes last — read by `crab jobs`

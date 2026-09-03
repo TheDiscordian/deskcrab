@@ -108,7 +108,10 @@ case "$out" in *"No such job"*) ok "a missing sidecar is an error, not a dispatc
     *) fail "requeue of an unknown id must error" "$out" ;; esac
 # A sidecar that recorded its workdir: requeue must reach dispatch with the
 # recorded description IN the recorded directory, reading .description itself.
-"$REPO_DIR/lib/job-status" new "$T/jobs" rqtest "rebuild the widget" "" "/tmp/rqproj"
+# An ENDED record, explicitly: `new` defaults to running for legacy callers,
+# and a requeue of a still-running twin is now refused by single flight
+# (jobs.md rule 43) — which is its own case in test_job_single_flight.sh.
+"$REPO_DIR/lib/job-status" new "$T/jobs" rqtest "rebuild the widget" "" "/tmp/rqproj" failed
 out="$(run 'rm -f "$JOBS_BLOCKED_FILE"; job_requeue rqtest 2>&1 | head -n1')"
 case "$out" in *"Would dispatch (DESKCRAB_NO_DISPATCH set) in /tmp/rqproj: rebuild the widget"*)
         ok "requeue reads description and workdir off the record" ;;

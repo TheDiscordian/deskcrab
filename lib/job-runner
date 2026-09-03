@@ -76,6 +76,41 @@ done
 unset _s _sid
 TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 [ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
+
+# Single flight (specs/jobs.md rule 44). The door's sidecar scan cannot see
+# two dispatches racing in the same instant — on 2026-09-03 the 02:30 tidy
+# and a tidy queued behind an account limit since 22:21 dispatched the moment
+# the limit lifted, both against wants.md — so the key is held as a real
+# lock for the life of this run: a non-blocking flock on flight/<key>.lock,
+# taken HERE, before the builder, the workdir declaration, or any work file.
+# The descriptor stays open until this process (and everything it spawned)
+# exits, and the kernel releases the flock on ANY death — clean, failed,
+# SIGKILLed — so a stale lockfile from a dead pid can never block the next
+# run: the flock is the arbiter, the file's `<pid> <id>` line is only
+# legibility for a hand reading the drawer. The loser exits without touching
+# a single work file, its refusal — key and incumbent — in its own log and
+# sidecar (state `duplicate`), with no completion wake (the incumbent's own
+# wake is the news) and no retry.
+JOB_FLIGHT_SLUG="$("$LIB_DIR/job-status" get "$STATUS" slug 2>/dev/null)"
+JOB_FLIGHT_KEY="$("$LIB_DIR/job-status" flight-key "$JOB_FLIGHT_SLUG" "$TASK" 2>/dev/null)"
+if [ -n "$JOB_FLIGHT_KEY" ]; then
+    mkdir -p "$JOBS_DIR/flight" 2>/dev/null
+    exec 8>>"$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock"
+    if flock -n 8; then
+        printf '%s %s\n' "$$" "$ID" > "$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock" 2>/dev/null
+    else
+        INCUMBENT="$("$LIB_DIR/job-status" flight-incumbent "$JOBS_DIR" \
+            "$JOB_FLIGHT_SLUG" "$TASK" "$ID" dispatched,running 2>/dev/null)"
+        [ -n "$INCUMBENT" ] || INCUMBENT="$(awk '{print $2; exit}' \
+            "$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock" 2>/dev/null)"
+        INCUMBENT="${INCUMBENT%% *}"
+        echo "job-runner: single-flight key '$JOB_FLIGHT_KEY' is already held by job ${INCUMBENT:-unknown} — two hands must never run one brief at once (jobs.md rule 44). This run exits WITHOUT touching any work file; the incumbent's log is $JOBS_DIR/${INCUMBENT:-unknown}.log" >> "$LOG"
+        "$LIB_DIR/job-status" set "$STATUS" state=duplicate finished=now exit=0 \
+            summary="single flight: key '$JOB_FLIGHT_KEY' held by job ${INCUMBENT:-unknown} — stood down without touching any work file"
+        exit 0
+    fi
+fi
+
 JOB_BACKEND="$(model_backend "$JOB_MODEL")"
 # The per-job correction hook reads these from the builder process. The
 # sidecar stamp lets `crab job steer` refuse older jobs that began without
