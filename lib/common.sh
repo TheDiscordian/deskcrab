@@ -9232,7 +9232,7 @@ job_start() {
     # need it programmatically (the chore gate, turn-pipeline rule 16c) —
     # parsing it back out of the human messages below was the alternative.
     JOB_START_ID="" JOB_START_QUEUED=""
-    local workdir="$PROJECT_DIR" force="" origin="" record="" want=""
+    local workdir="$PROJECT_DIR" force="" origin="" record="" want="" redo_of=""
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
@@ -9242,6 +9242,10 @@ job_start() {
             # the usage line: the stamps it writes below are what make the
             # retry once-only and legible in `crab jobs`.
             -O) origin="${2:-}"; shift 2 2>/dev/null || shift $# ;;
+            # -X names a job this brief is a deliberate redo of, so rule 7i's
+            # in-flight warning does not name the original as a twin of its
+            # own requeue. Internal, like -O.
+            -X) redo_of="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # The engineering record this build is dispatched against
             # (jobs.md rule 7b, specs/engineering-records.md). The runner
             # refuses to call the job successful unless the builder touched
@@ -9298,6 +9302,12 @@ job_start() {
             echo "  (A job sidecar's field is .description, not .task. To redo a recorded job: crab job requeue <id>)"
             return 1 ;;
     esac
+    # What is already in flight that this brief looks like (jobs.md rule 7i).
+    # Four builders went out on one Firemaking sequence in eight minutes
+    # because nothing in this path ever looked. It prints and never refuses:
+    # the bands do not separate, and a wrong refusal costs real work.
+    python3 "$LIB_DIR/job-similar" --skip "${redo_of:-$origin}" \
+        "$JOBS_DIR" "$task" 2>/dev/null || :
     # The want gate (jobs.md rules 30-31). A named want must match the shelf
     # — an unmatched ref is refused outright, neither dispatched nor queued.
     local want_title=""
@@ -9542,9 +9552,9 @@ job_requeue() {
     local record
     record="$("$LIB_DIR/job-status" get "$sidecar" record 2>/dev/null)"
     if [ -n "$record" ]; then
-        job_start -C "$workdir" --record "$record" "$desc"
+        job_start -C "$workdir" -X "$id" --record "$record" "$desc"
     else
-        job_start -C "$workdir" "$desc"
+        job_start -C "$workdir" -X "$id" "$desc"
     fi
 }
 

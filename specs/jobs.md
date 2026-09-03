@@ -94,6 +94,22 @@ and the completion channel a job has back to her.
 7g. A builder MUST NOT finish successfully while its inbox still contains a pending correction.
     The runner records each such message as undelivered and fails the job in plain words, so the
     completion path cannot present an off-course result as though the correction reached it.
+7i. Dispatch NAMES the live work that resembles this brief. On 2026-09-02 four builders were
+    dispatched in eight minutes against one Firemaking sequence — two of them found the others
+    mid-implementation in the same shared checkouts and stood down, having spent an account each
+    to discover it. So `crab job` (dispatching or queueing) compares the new brief against every
+    `running` and `queued` sidecar's description and prints the close ones — id, state, and the
+    opening of the description — before it acts. The measure is an idf-weighted OVERLAP
+    COEFFICIENT over the lighter of the two briefs, never Jaccard: Jaccard's score moves with how
+    much anybody happened to type, scoring one real pair 0.21 written short and 0.40 written in
+    full, and the idf weight carries a `+1` floor so that a small corpus, where a common word
+    appears in every sidecar, does not collapse every weight to zero. It is a WARNING and never
+    a refusal. Measured over tonight's dispatches the duplicates sit at 0.67–0.86, a DIFFERENT
+    gap wearing the same brief template at 0.57–0.68, and unrelated work at 0.03–0.37: the two
+    upper bands touch, so no threshold can separate them and a refusal would silently cost real
+    work. The floor is 0.45 — low enough to name a template cousin rather than miss a real twin.
+    The point is that the hand dispatching sees the live sibling at the moment it matters, and
+    the job still goes out.
 7h. A detached builder is neither the user nor the assistant persona. The shared conversation
     boundary MUST refuse a builder context before it can create a desktop, phone, or autonomous
     turn, and the `crab` presentation doors (bare message text, `remote`, `notify`, `play`, and
@@ -543,6 +559,9 @@ through the full preflight, and `drop` removes only a queued one; the drop waits
 writer's lock and re-judges the state inside it, so a drop that loses the race to a dispatch
 refuses on the winner's state; and a dispatch whose record vanished mid-flight aborts without
 starting a unit);
+`tests/test_job_similar.sh` (rule 7i: dispatch names the running and queued work a brief
+resembles, stays silent on unrelated briefs, and never refuses).
+
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
 unpushed and dirty counts, and the report's test tally; the tally is the end state, never the
 deliberate red — a red before the commit line loses to the green after it, a `VERDICT:` line
