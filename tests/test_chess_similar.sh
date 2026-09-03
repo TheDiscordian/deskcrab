@@ -7,11 +7,14 @@
 # ingestion, retraction, and backfill; retrieval hands back neighbours that a
 # chess player would call neighbours, and never a row without a finished
 # result behind it; the mover renders position memory into
-# its own prompt (rule 14: NO exact block for any input — an exact hit is the
-# reflex's business, answered before any prompt exists — the neighbours with
-# their outcomes above the legal moves, a remembered win never buried by the
-# exchange count); and similarity work only ever happens after the exact
-# layer's gate has declined — a reflex hit plays before any of it.
+# its own prompt (rule 14: no exact block for a position the gate would
+# CLEAR — a clearing hit is the reflex's business, answered before any
+# prompt exists, and every drive below stands on a cleared or unknown
+# position; the DECLINED-hit warning is tests/test_chess_exact_decline.sh's
+# business — the neighbours with their outcomes above the legal moves, a
+# remembered win never buried by the exchange count); and similarity work
+# only ever happens after the exact layer's gate has declined — a reflex
+# hit plays before any of it.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 
 REPO="$(dirname "$(dirname "$(readlink -f "$0")")")"

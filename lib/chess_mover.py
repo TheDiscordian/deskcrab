@@ -376,15 +376,58 @@ def memory_sections(board):
     prompt. `lines` go above the legal-move lists; `endorsed` is the set of
     UCI moves whose remembered record is net-winning (rule 14c: the exchange
     count may not bury one); `stamp` is the `similar-context` metric detail,
-    or None when no stamp is owed. There is NO exact-position block here
-    (rule 14a): an exact hit is the reflex's business, answered before any
-    prompt is built, so the memory a prompt carries is the similar section
-    only — nearest non-exact neighbours, each with a finished result behind
-    it. Never raises: any failure is a bare prompt, never a lost move."""
+    or None when no stamp is owed. The exact layer speaks here only through
+    its refusal (rule 14a): a hit the auto-play gate would CLEAR is the
+    reflex's business, answered before any prompt is built, and stays out of
+    the prompt entirely — but a hit the gate DECLINED is rendered as an
+    explicit warning, because the old blanket filter hid the browser-044
+    loss (h6: one game, zero wins, score 0.25) from the very hand about to
+    replay it. Never raises: any failure is a bare prompt, never a lost
+    move."""
     if os.environ.get("DESKCRAB_CHESS_MEMORY_PROMPT", "1") == "0":
         return [], set(), None
     lines, endorsed = [], set()
     fen = board.fen()
+    # -- the declined exact hit (rule 14a) ---------------------------------
+    # Judged by the gate's own arithmetic (chess_reflex.best_move — the same
+    # gate, never a twin): candidates present with no clearing move is the
+    # DECLINED shape, and only that shape prints. A clearing move means the
+    # reflex answers before any prompt exists (or the auto-play switch is
+    # off, in which case the prompt still says nothing about the position
+    # itself — decided 2026-08-21). Declined candidates never enter
+    # `endorsed`: a record the gate refused is a warning, not a
+    # recommendation.
+    try:
+        import chess_reflex
+        cands = chess_reflex.lookup(fen)
+        if cands and chess_reflex.best_move(fen, board) is None:
+            warn = []
+            for c in cands:
+                try:
+                    mv = chess.Move.from_uci(c["move"])
+                    if mv not in board.legal_moves:
+                        continue
+                    san = board.san(mv)
+                except (chess.InvalidMoveError, ValueError):
+                    continue
+                record = (_record_words(c["wins"], c["draws"], c["losses"])
+                          or "no finished result")
+                verdict = ("an exact losing precedent"
+                           if c["losses"] > c["wins"]
+                           else "an exact precedent too thin to replay")
+                warn.append(f"- {san} ({c['move']}): played from this very "
+                            f"position in {c['n']} finished game(s) by the "
+                            f"side to move — {record} — score "
+                            f"{c['score']:.2f}: {verdict}")
+            if warn:
+                lines.append("This very position is in her finished games, "
+                             "and memory DECLINED to replay it: no "
+                             "candidate's record clears the auto-play gate. "
+                             "What was tried here before is a warning, "
+                             "never a recommendation:")
+                lines.extend(warn)
+    except Exception:
+        pass  # a failed exact read is a prompt without the warning
     # -- the similar section (rule 14b) ------------------------------------
     if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
         return lines, endorsed, None

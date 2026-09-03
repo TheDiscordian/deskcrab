@@ -123,15 +123,33 @@ like, what was played, and how those games ended". It informs; it never plays.
     her in practice: the live metrics for browser-018 and browser-022/023/024 show every
     middlegame `similar-context` stamp `empty` — the note's 0.75 floor silenced memory at the
     very plies those games collapsed at, and no similar-position help ever reached a middlegame
-    move prompt. One section, rendered above the legal-move lists, reached only
+    move prompt. Two sections, rendered above the legal-move lists, reached only
     after the exact layer's auto-play gate has declined (rules 7 and 8 short-circuit first —
     the mover only ever sees positions memory would not answer alone):
-    a. **There is no exact section.** An exact hit is the reflex's business, answered before
-       any prompt is built; the move prompt never carries a block about this very position.
-       Rows flagged `exact` are excluded from the rendered neighbours, and no header claims
-       the position has been stood in before — the store holds moves by whichever colour,
-       keyed on the position, so "she has stood here" was wrong about what is known. (Decided
-       2026-08-21; the exact section briefly existed and printed alongside the similar one.)
+    a. **The exact layer speaks only through its refusal.** An exact hit that CLEARS the
+       auto-play gate is the reflex's business, answered before any prompt is built (rules 7
+       and 8 short-circuit; that path may never grow a prompt build or a model call), so the
+       move prompt never carries a block about a position memory would replay: rows flagged
+       `exact` are excluded from the rendered neighbours, no exact row is ever endorsed
+       (rule 14c's set), and when the gate would clear but `DESKCRAB_CHESS_REFLEX=0` holds
+       the auto-play hand, the prompt still stays silent about the position itself, exactly
+       as decided 2026-08-21 (an exact section briefly existed and printed alongside the
+       similar one; and no header may claim *she* has stood here — the store keys moves by
+       position and side to move, whichever hand made them). But when the store holds this
+       very position and the gate DECLINES — judged by rule 7's own arithmetic
+       (`chess_reflex.best_move`, the same gate, never a twin) — silence is the defect, not
+       the rule: the 2026-08-27 audit of browser-044 found the position before 23...h6 in
+       the store exactly (h6: one game, zero wins, one loss, score 0.25), the gate rightly
+       refusing to replay it, and the old blanket filter then hiding the recorded loss from
+       the very hand about to consider the move — the database knew h6 lost, and the model
+       was never told. So a declined exact hit is carried into the prompt as an explicit
+       warning section, above the similar one: each candidate on its own line naming the
+       move (SAN and UCI), its played-game count, its win/draw/loss record and its rule-6
+       score, phrased as an exact losing precedent (more losses than wins) or an exact
+       precedent too thin to replay, and never as a recommendation — a declined candidate
+       never enters the endorsed set, and the exchange-count buckets still file its move
+       wherever the count says. Any failure in this read is a prompt without the section,
+       never a lost move.
     b. **The similar section.** `chess_similar.similar(fen)`, non-exact neighbours only,
        each with a finished result behind it (rule 13's retrieval filter),
        at most `$DESKCRAB_CHESS_PROMPT_SIM_K` (default 3) lines,
@@ -151,9 +169,10 @@ like, what was played, and how those games ended". It informs; it never plays.
        one only with a concrete reason" pile: it is listed on its own line carrying both facts,
        the exchange count against it and the record for it, because the record *is* a concrete
        reason and the model must weigh it rather than never see it.
-    d. `DESKCRAB_CHESS_SIMILAR=0` switches the similar section off;
-       `DESKCRAB_CHESS_MEMORY_PROMPT=0` likewise sends the prompt bare of memory (with one
-       section the two switches now coincide; both stay, each honouring its name). Any retrieval
+    d. `DESKCRAB_CHESS_SIMILAR=0` switches the similar section off — the declined-exact
+       warning (rule 14a) is the exact layer's, not this one's, and stays;
+       `DESKCRAB_CHESS_MEMORY_PROMPT=0` sends the prompt bare of all memory, warning
+       included. Any retrieval
        failure is a bare prompt, never a lost move. The `similar-context` stamp (chessweb.md
        rule 17) is written by the mover as it builds the prompt, in its established shape, so
        its absence still proves a reflex hit short-circuited. `reason_note` — with its floor
