@@ -1482,13 +1482,18 @@ deliberate-play channel.
     continuity changes: the durable objective, snapshot, decision log and handoff are what a new
     thread derives current state from, and they are engine-neutral.
 
-20b. A Claude-engine player is the ordinary Claude walk, not a second one. It runs the account
-    list of [account-fallback.md](account-fallback.md) rule 3 — account 1 is the primary config
-    dir, accounts 2..N the configured chain — beginning at the account the shared state file says
-    answers now, and skipping any account whose recorded cooldown is unexpired and scoped `all`
-    or to this model's family. It READS that state and never writes it: two writers would race
-    the conversation lane's own bookkeeping, and a player refused on every account exits so its
-    supervisor restarts it, which is the same shape as every other refusal here.
+20b. A Claude-engine player tries the account list of
+    [account-fallback.md](account-fallback.md) rule 3 — account 1 is the primary config dir,
+    accounts 2..N the configured chain — in list order, every start. The first account that
+    answers owns the run. An account whose run ends in a usage- or session-limit refusal is
+    skipped and the next is tried — whatever the CLI's exit status said, because a refusal can
+    come back as a clean exit whose only content is the CLI's own synthetic error events. On a
+    clean exit the test requires that synthetic marker: a genuine reply that merely quotes a
+    limit phrase is never treated as a refusal ([speech-output.md](speech-output.md) rule 8's
+    principle). There is no cooldown bookkeeping: no record of when an account might answer
+    again is kept, read, or honoured — the walk finds out by calling. A player refused on every
+    account exits so its supervisor restarts it, which is the same shape as every other refusal
+    here.
 
 20c. The Claude engine carries the same isolation the codex one does (model-backends rules 5-6
     and 10). Her player session loads none of the user's own Claude configuration — no user,
