@@ -38,11 +38,13 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "fatigue_below", "fatigue_at_least",
                 "in_combat", "out_of_combat",
+                "standing_on_object", "standing_on_clear_tile",
                 "opponent_rounds_at_least",
                 "stationary_ms_at_least",
                 "skill_at_least")
 ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "step-aside", "interact-object", "interact-bound", "click-entity",
-           "click-inventory", "click-shop", "click-bank", "take-ground")
+           "click-inventory", "click-shop", "click-bank", "take-ground",
+           "drop-inventory", "use-item-ground")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
@@ -2342,7 +2344,8 @@ def validate_config(cfg: dict) -> None:
                 if not isinstance(val, int) or isinstance(val, bool) \
                         or not 1 <= val <= 100:
                     bad(f"{where}: trigger.fatigue_at_least must be an integer from 1 to 100")
-            elif key in ("in_combat", "out_of_combat"):
+            elif key in ("in_combat", "out_of_combat",
+                         "standing_on_object", "standing_on_clear_tile"):
                 if val is not True:
                     bad(f"{where}: trigger.{key} must be true when present")
             elif key == "opponent_rounds_at_least":
@@ -2374,6 +2377,8 @@ def validate_config(cfg: dict) -> None:
         if "fatigue_below" in trig and "fatigue_at_least" in trig \
                 and trig["fatigue_at_least"] >= trig["fatigue_below"]:
             bad(f"{where}: fatigue range can never match")
+        if "standing_on_object" in trig and "standing_on_clear_tile" in trig:
+            bad(f"{where}: the tile is either occupied or clear, never both")
 
         action = rule.get("action")
         if not isinstance(action, dict) or action.get("type") not in ACTIONS:
@@ -2528,6 +2533,39 @@ def validate_config(cfg: dict) -> None:
             if "within" in action and (not isinstance(action["within"], int)
                                         or not 0 <= action["within"] <= 10):
                 bad(f"{where}: take-ground within must be an integer 0..10")
+        elif atype == "drop-inventory":
+            # One atomic release of one held item, the mirror of take-ground.
+            # The quantity is the server's business (its Drop X option is
+            # disabled); a rule that wants more asks again from the durable
+            # held-item trigger, exactly as the loot rules re-acquire.
+            if set(action) != {"type", "item"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0:
+                bad(f"{where}: drop-inventory takes exactly item=<item id>")
+        elif atype == "use-item-ground":
+            # The held-item-on-ground-pile door: firemaking's tinderbox on the
+            # logs that had to be put down first. item is held, ground is the
+            # pile's item id, and the pile is chosen the way take-ground
+            # chooses one — nearest REACHABLE by collision path.
+            if not set(action) <= {"type", "item", "ground", "within",
+                                   "require_clear_tile"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0 \
+                    or not isinstance(action.get("ground"), int) \
+                    or isinstance(action["ground"], bool) or action["ground"] < 0:
+                bad(f"{where}: use-item-ground takes item=<held item id>, "
+                    "ground=<ground item id>, and optionally within "
+                    "and require_clear_tile")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or isinstance(action["within"], bool)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: use-item-ground within must be an integer 0..10")
+            # The scenery guard, the shape cast-npc's terrain guards already
+            # use: an opt-in relation the pile itself must satisfy, not a
+            # skill-specific exception buried in the generic chooser.
+            if "require_clear_tile" in action \
+                    and action["require_clear_tile"] not in (0, 1):
+                bad(f"{where}: use-item-ground require_clear_tile must be 0 or 1")
 
 
 def load_config() -> dict:
@@ -4789,6 +4827,22 @@ def make_trigger_fn(objective: str, activity: str = ""):
             return False
         if "out_of_combat" in trig and snap.get("in_combat") is not False:
             return False
+        if "standing_on_object" in trig or "standing_on_clear_tile" in trig:
+            # The scenery relation the server's own firemaking check reads:
+            # handleFiremaking refuses with "You can't light a fire here" when
+            # ANY GameObject stands on the pile's tile, and the pile is where
+            # the body dropped it.  Both polarities fail closed without a
+            # resolvable body tile, so an unknown position never looks clear.
+            px, pz = snap.get("x"), snap.get("z")
+            if not isinstance(px, int) or not isinstance(pz, int):
+                return False
+            occupied = any(entry.get("x") == px and entry.get("z") == pz
+                           for entry in snap.get("objects") or []
+                           if isinstance(entry, dict))
+            if trig.get("standing_on_object") is True and not occupied:
+                return False
+            if trig.get("standing_on_clear_tile") is True and occupied:
+                return False
         if "stationary_ms_at_least" in trig:
             # The engine's own observation (track_stationary_state), not a
             # bridge field: a snapshot without it fails closed, so an engine
@@ -5104,18 +5158,49 @@ def compile_player_action(rule, snap, food, eat_pick):
             return {"type": action["type"], "item": want,
                     "button": action.get("button", 1)}, None
         return None, f"item-not-in-{interface}"
-    if action["type"] == "take-ground":
-        want = action["item"]
+    if action["type"] == "drop-inventory":
+        # The bridge refuses a drop during combat, so a doomed dispatch is
+        # named as an ordinary ineligibility here instead.
+        if snap.get("in_combat") is not False:
+            return None, "combat-blocks-drop"
+        if any(entry.get("id") == action["item"]
+               for entry in snap.get("inventory") or []):
+            return {"type": "drop-inventory", "item": action["item"],
+                    "amount": 1}, None
+        return None, "item-not-held"
+    if action["type"] in ("take-ground", "use-item-ground"):
+        # One pile chooser for both ground doors: taking a pile and using a
+        # held item on a pile pick the same nearest REACHABLE target, and
+        # report the same unreachable/needs-door reasons.
+        if action["type"] == "use-item-ground" \
+                and not any(entry.get("id") == action["item"]
+                            for entry in snap.get("inventory") or []):
+            return None, "item-not-held"
+        # Spec rule 5's opt-in pile guard: Firemaking.handleFiremaking refuses
+        # with "You can't light a fire here" whenever ANY GameObject stands on
+        # the pile's tile, so a rule that asks for a clear tile must not have
+        # such a pile chosen for it and dispatched into a certain refusal.
+        obstructed = set()
+        if action.get("require_clear_tile") == 1:
+            obstructed = {(entry.get("x"), entry.get("z"))
+                          for entry in snap.get("objects") or []
+                          if isinstance(entry, dict)}
+        want = action["ground"] if action["type"] == "use-item-ground" \
+            else action["item"]
         within = action.get("within")
         px, pz = snap.get("x"), snap.get("z")
         matching = []
         blocked = []
+        obstructed_piles = 0
         for item in snap.get("ground_items") or []:
             if item.get("id") == want and isinstance(item.get("x"), int) \
                     and isinstance(item.get("z"), int):
                 if within is not None and (
                         not isinstance(px, int) or not isinstance(pz, int)
                         or max(abs(px - item["x"]), abs(pz - item["z"])) > within):
+                    continue
+                if (item["x"], item["z"]) in obstructed:
+                    obstructed_piles += 1
                     continue
                 if item.get("reachable") is False:
                     blocked.append(item)
@@ -5131,8 +5216,14 @@ def compile_player_action(rule, snap, food, eat_pick):
                 return (2, 0)
 
             item = min(matching, key=route_key)
+            if action["type"] == "use-item-ground":
+                return {"type": "use-item-ground", "x": item["x"],
+                        "z": item["z"], "item": action["item"],
+                        "ground": want}, None
             return {"type": "take-ground", "x": item["x"], "z": item["z"],
                     "item": want}, None
+        if obstructed_piles:
+            return None, "ground-item-tile-obstructed"
         if blocked:
             return None, "ground-item-needs-door" \
                 if any(isinstance(item.get("door"), dict) for item in blocked) \
@@ -5146,7 +5237,7 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
     for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "route_step", "dir", "obj", "cmd", "within",
                 "stationary", "require_clear_shot", "require_melee_unreachable",
-                "item", "button",
+                "item", "button", "ground", "amount",
                 "distance", "dx", "dz", "committed_direction",
                 "target", "text"):
         if key in action:
@@ -6863,10 +6954,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     elif status == "done" and action["type"] in (
             "talk-npc", "attack-npc", "interact-npc", "use-item-npc",
             "interact-object", "interact-bound",
-            "click-inventory", "click-entity"):
+            "click-inventory", "click-entity",
+            "drop-inventory", "use-item-ground"):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
-            "within", "button", "batch") if key in action]
+            "within", "button", "batch", "ground", "amount") if key in action]
         observation = make_action_observation(
             action_id, action["type"], fields, snap, event.get("ts"))
         completion_detail, latest = await_action_completion(
@@ -7449,6 +7541,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                        "origin_x", "origin_z", "retreat_suppressed", "npc",
                        "sidx", "obj", "item", "spell", "cmd", "within",
                        "distance", "dx", "dz", "button", "kind", "batch",
+                       "ground", "amount",
                        "target_x", "target_z") if key in action},
                    "start": {"x": snap.get("x"), "z": snap.get("z")},
                    "end": {"x": end_x, "z": end_z}}

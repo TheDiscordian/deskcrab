@@ -152,6 +152,14 @@ deliberate-play channel.
      only after the logout. Movement is the honest stopping condition: one `sidestep` sets the
      server's `lastMoved`, clears `warnedToMove`, and makes the trigger false — unlike the rolling
      warning text, which stays true across the move and even across a re-login.
+   - `standing_on_object` / `standing_on_clear_tile` (literal `true`): some entry in the
+     snapshot's `objects` list stands on / no entry stands on the player's OWN tile. This is the
+     relation the server itself reads before it will light a fire: `Firemaking.handleFiremaking`
+     refuses with "You can't light a fire here" whenever any `GameObject` occupies the pile's
+     tile, and a pile is dropped where the body stands — so a firemaking loop must put its log
+     down on clear ground and step off the fire it just made. Both polarities fail closed
+     without a resolvable body tile, so an unknown position never passes for clear ground, and
+     authoring both on one trigger is refused as a tile that can never be occupied and clear.
    - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
      polarity. These conditions are mutually exclusive in live state and let global pickup or
      travel rules stay mechanically quiet during a fight.
@@ -299,6 +307,28 @@ deliberate-play channel.
    `ground-item-needs-door`. Wanted-loot
    reflexes deliberately omit `within`: visibility licenses a collision-path check, not a fabricated
    entity walk.
+   `drop-inventory` (`item`: the held item id) is the learned mirror of the deliberate drop
+   door: ONE atomic single-slot release of that identity, compiled only out of combat and only
+   while the item is held, whose observed postcondition is the drop door's own — the held count
+   falls AND a matching `ground_items` entry appears at the body's tile. No quantity, batch, or
+   pacing crosses the bridge; a rule that wants another log asks again from its own durable
+   held-item trigger. `use-item-ground` (`item`: the held item id; `ground`: the pile's item id;
+   optional `within` 0–10; optional 0/1 `require_clear_tile`) is the learned form of the
+   put-the-logs-down-then-light-them sequence's second half: it requires the held item in
+   current structured state, chooses the pile exactly as `take-ground` does — shortest
+   reachable, never a visually closer unreachable one, with the same
+   `ground-item-unreachable`/`ground-item-needs-door` refusals — and its
+   observed postcondition is the targeted pile's entry at that exact tile decreasing or an XP
+   delta, with the server's own "You fail to light a fire" ending it as grounded failure. These
+   two make firemaking (and any other put-it-down-then-act-on-it skill) expressible as reflexes
+   rather than as a model turn per log. `require_clear_tile: 1` is the opt-in pile relation, the
+   same shape as `cast-npc`'s terrain guards: a pile whose own tile carries any object in the
+   snapshot is not chosen, and a rule left with only such piles refuses as
+   `ground-item-tile-obstructed` instead of dispatching into the server's certain "You can't
+   light a fire here". The guard is opt-in because the relation belongs to the behaviour that
+   needs it, not to the generic chooser. The tinderbox-on-carried-logs shortcut remains outside
+   both tables: the server itself answers it with "I think you should put the logs down before
+   you light them!", so the drop is part of the behaviour, not an inconvenience to route around.
    `within` is only for a rule whose intended behaviour is explicitly local, never an implicit
    safety restriction on an ordinary desire. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks

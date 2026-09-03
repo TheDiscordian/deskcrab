@@ -691,6 +691,26 @@ refute "step-aside refuses a zero preferred direction" \
 refute "step-aside refuses a distance parameter it cannot honour" \
     python3 "$GP" learn bad-step-aside-distance --priority 1 \
         --trigger out_of_combat=true --action step-aside --param dz=1 --param distance=5
+refute "use-item-ground refuses a scenery guard that is not 0 or 1" \
+    python3 "$GP" learn bad-light-guard --priority 1 --trigger ground_item_visible=14 \
+        --action use-item-ground --param item=166 --param ground=14 \
+        --param require_clear_tile=2
+refute "a tile cannot be asked to be occupied and clear at once" \
+    python3 "$GP" learn bad-tile-polarity --priority 1 \
+        --trigger standing_on_object=true --trigger standing_on_clear_tile=true \
+        --action step-aside --param dz=1
+refute "the tile relation refuses anything but a literal true" \
+    python3 "$GP" learn bad-tile-literal --priority 1 \
+        --trigger standing_on_object=false --action step-aside --param dz=1
+refute "drop-inventory refuses anything but one held item identity" \
+    python3 "$GP" learn bad-drop --priority 1 --trigger inventory_has=14 \
+        --action drop-inventory --param item=14 --param amount=5
+refute "use-item-ground refuses a missing ground target" \
+    python3 "$GP" learn bad-light --priority 1 --trigger ground_item_visible=14 \
+        --action use-item-ground --param item=166
+refute "use-item-ground refuses a roaming cap beyond ten tiles" \
+    python3 "$GP" learn bad-light-range --priority 1 --trigger ground_item_visible=14 \
+        --action use-item-ground --param item=166 --param ground=14 --param within=11
 refute "a stationary threshold below one observed second is refused" \
     python3 "$GP" learn bad-stationary-floor --priority 1 \
         --trigger stationary_ms_at_least=999 --action walk --param x=1 --param z=1
@@ -2066,6 +2086,74 @@ assert refusal == "in-combat-escape-owns-the-break", refusal
 compiled, refusal = gp.compile_player_action(
     {"action": {"type": "sidestep", "dx": 0, "dz": 1}}, still_snap, None, None)
 assert compiled is None and refusal == "already-out-of-combat", (compiled, refusal)
+
+# The body's own tile is either occupied by scenery or clear — the relation
+# Firemaking.java itself reads before it will light a pile.  Both polarities
+# fail closed with no resolvable body tile, so an unknown position never
+# passes for clear ground.
+on_scenery = {"standing_on_object": True}
+clear_tile = {"standing_on_clear_tile": True}
+fern = {"x": 163, "z": 618, "objects": [{"id": 34, "x": 163, "z": 618},
+                                        {"id": 0, "x": 163, "z": 619}]}
+open_ground = {"x": 163, "z": 617, "objects": [{"id": 34, "x": 163, "z": 618}]}
+assert matches(on_scenery, fern, None) is True
+assert matches(on_scenery, open_ground, None) is False
+assert matches(clear_tile, open_ground, None) is True
+assert matches(clear_tile, fern, None) is False
+assert matches(clear_tile, {"objects": []}, None) is False
+assert matches(on_scenery, {"objects": [{"id": 34, "x": 163, "z": 618}]}, None) is False
+
+# The firemaking pair: one held item put down, and one held item used on the
+# pile already lying there.  The pile is chosen exactly as take-ground chooses
+# one — nearest REACHABLE — and neither action carries a slot or a pixel.
+drop_rule = {"action": {"type": "drop-inventory", "item": 14}}
+holding = {"x": 120, "z": 648, "in_combat": False,
+           "inventory": [{"id": 14, "name": "Logs", "count": 3},
+                         {"id": 166, "name": "tinderbox", "count": 1}]}
+compiled, refusal = gp.compile_player_action(drop_rule, holding, None, None)
+assert compiled == {"type": "drop-inventory", "item": 14, "amount": 1}, compiled
+assert refusal is None, refusal
+compiled, refusal = gp.compile_player_action(
+    drop_rule, dict(holding, inventory=[{"id": 166, "count": 1}]), None, None)
+assert compiled is None and refusal == "item-not-held", (compiled, refusal)
+compiled, refusal = gp.compile_player_action(
+    drop_rule, dict(holding, in_combat=True), None, None)
+assert compiled is None and refusal == "combat-blocks-drop", (compiled, refusal)
+
+light_rule = {"action": {"type": "use-item-ground", "item": 166, "ground": 14}}
+piles = dict(holding, ground_items=[
+    {"id": 14, "x": 118, "z": 648, "reachable": False, "path_distance": None},
+    {"id": 14, "x": 124, "z": 648, "reachable": True, "path_distance": 4}])
+compiled, refusal = gp.compile_player_action(light_rule, piles, None, None)
+assert compiled == {"type": "use-item-ground", "x": 124, "z": 648,
+                    "item": 166, "ground": 14}, compiled
+assert refusal is None, refusal
+compiled, refusal = gp.compile_player_action(
+    light_rule, dict(piles, inventory=[{"id": 14, "count": 3}]), None, None)
+assert compiled is None and refusal == "item-not-held", (compiled, refusal)
+compiled, refusal = gp.compile_player_action(
+    light_rule, dict(holding, ground_items=[]), None, None)
+assert compiled is None and refusal == "ground-item-not-visible", (compiled, refusal)
+
+# require_clear_tile is the opt-in pile relation, the shape cast-npc's terrain
+# guards already use: a pile standing under scenery is one the server would
+# refuse to light, so the chooser skips it and says so instead of dispatching
+# a certain refusal.  Without the guard the same pile is still chosen.
+guarded = {"action": {"type": "use-item-ground", "item": 166, "ground": 14,
+                      "within": 1, "require_clear_tile": 1}}
+fern_pile = dict(holding, x=163, z=618,
+                 objects=[{"id": 34, "x": 163, "z": 618}],
+                 ground_items=[{"id": 14, "x": 163, "z": 618,
+                                "reachable": True, "path_distance": 0}])
+compiled, refusal = gp.compile_player_action(guarded, fern_pile, None, None)
+assert compiled is None and refusal == "ground-item-tile-obstructed", (compiled, refusal)
+compiled, refusal = gp.compile_player_action(
+    {"action": dict(guarded["action"], require_clear_tile=0)}, fern_pile, None, None)
+assert compiled == {"type": "use-item-ground", "x": 163, "z": 618,
+                    "item": 166, "ground": 14}, compiled
+clear_pile = dict(fern_pile, objects=[{"id": 34, "x": 163, "z": 619}])
+compiled, refusal = gp.compile_player_action(guarded, clear_pile, None, None)
+assert refusal is None and (compiled["x"], compiled["z"]) == (163, 618), (compiled, refusal)
 
 # The same fatigue state must not block ordinary inventory clicks such as food.
 compiled, refusal = gp.compile_player_action(
