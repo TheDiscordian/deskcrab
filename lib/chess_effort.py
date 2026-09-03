@@ -29,14 +29,13 @@ QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "low")
 SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 
 # Exact controls may have different measured winners even when they share a
-# speed label. A control table therefore wins over the broader speed default;
-# the speed table remains the fallback for timed controls not named here.
-CONTROL_PAIRS = {
-    "3+2": ("low", "low"),
-    "5+0": ("low", "low"),
-    "10+0": ("low", "low"),
-    "15+10": ("low", "medium"),
-}
+# speed label, so a control table wins over the broader speed default. The
+# user's final routing decision (2026-09-01, eng record
+# redo-the-chess-benchmark-across-full-model-effor) is bucket-shaped — one
+# row per speed — so both control tables ship EMPTY and the speed tables
+# below carry every route; an exact-control override lands here only when
+# one is decided.
+CONTROL_PAIRS = {}
 
 SPEED_PAIRS = {
     "bullet": ("low", "low"),
@@ -44,20 +43,38 @@ SPEED_PAIRS = {
     "rapid": ("low", "low"),
 }
 
-# The exact-control model defaults are the corrected full-game benchmark
-# winners. Bullet remains disabled in live play; its dormant speed fallback
-# preserves the selected Spark trial without claiming benchmark reliability.
-CONTROL_MODELS = {
-    "3+2": "sonnet",
-    "5+0": "sonnet",
-    "10+0": "opus",
-    "15+10": "fable",
-}
+# The user's final routing table, decided 2026-09-01 after the completed
+# corrected full-game matrix benchmark (docs/chess-bench-matrix-2026-08.md):
+#
+#   bullet (1+0, 2+1)  sonnet  low/low — the benchmark's LEAST-FAILURE
+#       verdict, not a reliable finisher: no MEASURED configuration finishes
+#       bullet reliably (sonnet-low carried the fewest failures, 3 flags in
+#       8 games), and unmeasured configurations are not spoken for.
+#       Bullet remains disabled in live play
+#       (chess_cli.DISABLED_LIVE_TIME_CONTROLS).
+#   blitz (3+2, 5+0)  gpt-5.3-codex-spark  low/low — an EXPLICIT
+#       USER-SELECTED live-play trial, NOT a benchmark-proven clock-safe
+#       winner. The completed benchmark measured spark-low too slow for 10+0
+#       (game 549: flagged after 103 plies through the configured codex
+#       login) and found no measured model fast enough for blitz; the
+#       measured blitz verdict was sonnet-low. The user chose the Spark
+#       trial for live blitz anyway, and its judge is live play itself.
+#   rapid (10+0, 15+10)  opus  low/low — the measured reliable winner
+#       (pooled rate 0.75, zero failure events).
+#   untimed  fable  low/medium — the user's decision: the configured Fable
+#       model at the module (QUIET, SHARP) pair above.
+#
+# A routed model is exact (chessweb.md rule 16b): the mover may rotate
+# same-model Claude accounts, but a routed model that is unavailable,
+# refusing, or cooling leaves the move unplayed with the failure exposed —
+# never a silent substitute.
+CONTROL_MODELS = {}
 
 SPEED_MODELS = {
-    "bullet": "gpt-5.3-codex-spark",
-    "blitz": "sonnet",
+    "bullet": "sonnet",
+    "blitz": "gpt-5.3-codex-spark",
     "rapid": "opus",
+    "untimed": "fable",
 }
 
 

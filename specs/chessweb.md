@@ -353,30 +353,41 @@ cannot be changed.
     quiet position uses the first effort in the routed pair; any alarm uses the second.
     `DESKCRAB_CHESS_ALWAYS_LOW=1` bypasses the classifier and pins every move to `low`.
 
-    The exact time-control name selects both model and effort pair before the broader speed
-    fallback:
+    The routing table is the user's final decision (2026-09-01, eng record
+    redo-the-chess-benchmark-across-full-model-effor), applied to every standard timer and
+    to untimed:
 
-    | Control | Model | Quiet | Sharp |
+    | Control | Speed | Model | Quiet | Sharp |
     | --- | --- | --- | --- | --- |
-    | 3+2 | `sonnet` | `low` | `low` |
-    | 5+0 | `sonnet` | `low` | `low` |
-    | 10+0 | `opus` | `low` | `low` |
-    | 15+10 | `fable` | `low` | `medium` |
+    | 1+0 | bullet | `sonnet` | `low` | `low` |
+    | 2+1 | bullet | `sonnet` | `low` | `low` |
+    | 3+2 | blitz | `gpt-5.3-codex-spark` | `low` | `low` |
+    | 5+0 | blitz | `gpt-5.3-codex-spark` | `low` | `low` |
+    | 10+0 | rapid | `opus` | `low` | `low` |
+    | 15+10 | rapid | `opus` | `low` | `low` |
+    | untimed | — | `fable` | `low` | `medium` |
 
-    `chess_effort.CONTROL_MODELS` and `CONTROL_PAIRS` hold these corrected full-game
-    benchmark winners. `SPEED_MODELS` and `SPEED_PAIRS` are fallbacks for timed controls
-    outside that exact table. Untimed games use
-    `DESKCRAB_CHESS_EFFORT_QUIET` / `DESKCRAB_CHESS_EFFORT_SHARP` (defaults
-    `low`/`medium`) and have no routed model.
+    The decision is bucket-shaped, so `chess_effort.SPEED_MODELS` and `SPEED_PAIRS` carry
+    every route (untimed's model rides the table's `untimed` row; its pair is the uniform
+    `DESKCRAB_CHESS_EFFORT_QUIET` / `DESKCRAB_CHESS_EFFORT_SHARP` pair, defaults
+    `low`/`medium`). `CONTROL_MODELS` and `CONTROL_PAIRS` ship empty; they remain the door
+    for a future exact-control override, and win over the speed tables when populated.
+
+    The blitz cell is an EXPLICIT USER-SELECTED live-play trial, not a benchmark-proven
+    clock-safe winner: the completed corrected benchmark measured Spark-low too slow for
+    10+0 (game 549 flagged after 103 plies through the configured codex login) and found
+    NO measured model fast enough for blitz — the measured blitz verdict was sonnet-low.
+    The user selected the Spark trial for live blitz anyway; live play is its judge.
+
+    The bullet cell is the benchmark's least-failure verdict, not a reliable finisher: no
+    MEASURED configuration finishes bullet reliably, and unmeasured configurations are not
+    spoken for. Bullet stays disabled for live creation (see below) while its route stands
+    ready for a deliberate re-enable.
 
     `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` and
     `DESKCRAB_CHESS_EFFORT_<SPEED>_{QUIET,SHARP}` override both exact-control and speed
     defaults. A routed model outranks the global `DESKCRAB_CHESS_MOVER_MODEL`; an unrouted
     game uses the mover's normal environment chain.
-
-    Bullet controls 1+0 and 2+1 are disabled for live games. Their dormant speed fallback
-    remains `gpt-5.3-codex-spark` at `low`/`low`, but Spark is excluded from benchmarks and
-    this fallback makes no claim that Spark can finish either clock.
 
     A routed offer preserves EXACT model identity end to end: the mover may rotate
     same-model Claude accounts (identity-preserving), but it never substitutes another
@@ -507,7 +518,7 @@ cannot be changed.
     clock that kept running, because the clock IS the stored stamps read against the wall
     clock — that is the honest reading of a chess clock, not a defect.
     Bullet remains a recognised clock for existing records and benchmark evidence, but new live
-    `1+0` and `2+1` games are disabled: Spark Low/Low is not reliably fast enough for 2+1. The
+    `1+0` and `2+1` games are disabled: no MEASURED configuration finished bullet reliably. The
     live creation gate offers only Blitz, Rapid, and untimed until Bullet is deliberately
     re-enabled; the page, HTTP endpoint, stock-wire creation, CLI creation, and serve default all
     enforce the same gate.

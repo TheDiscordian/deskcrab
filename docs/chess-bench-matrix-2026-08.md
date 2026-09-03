@@ -4,20 +4,26 @@ Base matrix generated 2026-09-01 00:21 EDT by matrix_report.py. The adaptive-pai
 
 **Status: INCOMPLETE. The earlier completion declaration was false. Required adaptive-ladder games, same-model contender games, and cross-model finalist games were never run. Invalid older games do not satisfy those obligations, and pruning them did not finish the benchmark. Bullet is settled as disabled; every enabled control remains provisional. No benchmark worker is running. The current selection script still proposes common-reference top-ups and does not enforce the new same-model completion gate, so it must be corrected before this queue is scheduled.**
 
+**Closure (2026-09-01, user ruling): the benchmark is OVER. No further benchmark, Spark, or probe games may be run, resumed, or replaced — the queue above is retired, not owed. The recorded evidence is final (game 511 invalid as a wrong-login account interruption; game 549 valid: spark-low flagged after 103 plies at 10+0 through the configured codex login). The measured verdicts stand — rapid opus-low, blitz sonnet-low, bullet sonnet-low least-failure — and live routing follows the user's decided table below, including the explicit user-selected Spark blitz trial.**
+
 Speed classes (chess_cli.TIME_CONTROLS): bullet = 1+0, 2+1; blitz = 3+2, 5+0; rapid = 10+0, 15+10; untimed is its own routed class. Reference opponent: sonnet-low. `matrix_selection.py` computes the existing reliability and result statistics (failure events: flag, stall, retry storm >= 10 excess attempts, account-limit death), but it does not yet implement rule 20's same-model completion gate. A recorded game carrying any manufactured fallback move, or named in the invalid sidecar, is rule-20b INVALID: excluded from strength and reliability alike, its slot replayed or validly eliminated.
 
-## Current provisional routing — not a final selection
+## Applied routing — the user's final decision (2026-09-01)
 
-These are the routes currently applied to live play. They are not final benchmark winners:
+The benchmark is CLOSED by explicit user ruling (2026-09-01): no further benchmark, Spark,
+or probe games of any kind. The recorded evidence above and below is final. The routes
+applied to live play are the user's decided table, not a claim that every cell was
+benchmark-proven:
 
-| Control | Live state | Model | Quiet/sharp effort | Decisive evidence |
+| Control | Live state | Model | Quiet/sharp effort | Basis |
 | --- | --- | --- | --- | --- |
-| 1+0 | disabled | — | — | No measured configuration reliably finished Bullet. Spark is permanently excluded from benchmark play. |
-| 2+1 | disabled | — | — | No measured configuration reliably finished Bullet. Spark is permanently excluded from benchmark play. |
-| 3+2 | enabled, provisional | `sonnet` | `low`/`low` | Sonnet's eligible adaptive ladder was not run at this control. |
-| 5+0 | enabled, provisional | `sonnet` | `low`/`low` | Opus and Sonnet have eligible adaptive pairs that were not run at this control. |
-| 10+0 | enabled, provisional | `opus` | `low`/`low` | Opus `low`/`medium` also finished cleanly, but never played Opus `low`/`low`; Opus and Sonnet `medium`/`medium` were not run. |
-| 15+10 | enabled, provisional | `fable` | `low`/`medium` | Same-model contender rounds are missing, Haiku's clean baseline gate is missing, Luna's `low`/`medium` rung is missing, and the cross-model final cannot be settled first. |
+| 1+0 | disabled | `sonnet` | `low`/`low` | Least-failure verdict only. No MEASURED configuration reliably finished Bullet; Spark is permanently excluded from benchmark play and was never measured at bullet. |
+| 2+1 | disabled | `sonnet` | `low`/`low` | Same least-failure verdict; the route stands ready for a deliberate re-enable. |
+| 3+2 | enabled | `gpt-5.3-codex-spark` | `low`/`low` | EXPLICIT USER-SELECTED live-play trial, not a benchmark-proven clock-safe winner: the completed benchmark found Spark-low too slow for 10+0 (game 549 flagged after 103 plies) and no measured model fast enough for blitz; the measured blitz verdict was sonnet-low. |
+| 5+0 | enabled | `gpt-5.3-codex-spark` | `low`/`low` | Same user-selected trial; live play is its judge. |
+| 10+0 | enabled | `opus` | `low`/`low` | Measured reliable rapid winner (pooled rate 0.75, zero failure events). |
+| 15+10 | enabled | `opus` | `low`/`low` | Routed with 10+0 as one rapid class by the user's decision. |
+| untimed | enabled | `fable` | `low`/`medium` | User decision: the configured Fable model at the uniform untimed pair. |
 
 At 15+10, `medium`/`high` produced a valid flag for Opus, Fable, Sonnet, Terra, and Luna. Sol `low`/`low` also flagged. These failures validly eliminate slower descendants; they do not erase the missing gates and direct comparisons below.
 
@@ -1107,16 +1113,17 @@ Pooled reliable ranking: opus-low (rate 0.75 over 4 games) > fable-low (rate 0.5
 
 none — every scheduled cell is complete.
 
-## Applied routing (live lib/chess_effort.py tables)
+## Applied routing (live lib/chess_effort.py tables — the user's final 2026-09-01 decision)
 
-- CONTROL_MODELS: {'3+2': 'sonnet', '5+0': 'sonnet', '10+0': 'opus', '15+10': 'fable'}
-- CONTROL_PAIRS: {'3+2': ('low', 'low'), '5+0': ('low', 'low'), '10+0': ('low', 'low'), '15+10': ('low', 'medium')}
-- SPEED_MODELS: {'bullet': 'gpt-5.3-codex-spark', 'blitz': 'sonnet', 'rapid': 'opus'}
+- CONTROL_MODELS: {} (empty — the decision is bucket-shaped; the door stays for a future exact-control override)
+- CONTROL_PAIRS: {} (empty, same reason)
+- SPEED_MODELS: {'bullet': 'sonnet', 'blitz': 'gpt-5.3-codex-spark', 'rapid': 'opus', 'untimed': 'fable'}
 - SPEED_PAIRS: {'bullet': ('low', 'low'), 'blitz': ('low', 'low'), 'rapid': ('low', 'low')}
-- bullet: disabled for live play; the dormant Spark speed fallback is not benchmark evidence and cannot be offered through the live control list
-- 3+2 and 5+0: Sonnet `low`/`low`
-- 10+0: Opus `low`/`low`
-- 15+10: Fable `low`/`medium`
+- bullet (1+0, 2+1): Sonnet `low`/`low`, the least-failure verdict — disabled for live play; no MEASURED configuration finished bullet reliably
+- blitz (3+2, 5+0): gpt-5.3-codex-spark `low`/`low` — an EXPLICIT USER-SELECTED live-play trial, not a benchmark-proven clock-safe winner: the completed benchmark found Spark-low too slow for 10+0 and no measured model fast enough for blitz (measured blitz verdict: sonnet-low)
+- rapid (10+0, 15+10): Opus `low`/`low`, the measured reliable winner
+- untimed: Fable `low`/`medium` (the uniform untimed pair), by the same user decision
+- A routed model is exact: same-model Claude account rotation only, never a substituted model or engine; an unavailable, refusing, or cooling routed model leaves the move unplayed with the failure exposed (chessweb.md rule 16b)
 
 ## Raw evidence
 

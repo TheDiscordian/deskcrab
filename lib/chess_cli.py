@@ -183,7 +183,8 @@ TIME_CONTROLS = {  # name -> (speed, base ms, Fischer increment ms per move)
 }
 
 # Bullet remains a readable and benchmarkable clock, but it is not currently
-# offered for live games: even Spark Low cannot answer 2+1 reliably. Keeping
+# offered for live games: no MEASURED configuration finished bullet reliably
+# (Spark was never measured at bullet at all — chessweb.md rule 16b). Keeping
 # the definitions above preserves every existing record and makes the future
 # re-enable a deliberate gate change rather than a file-format change.
 DISABLED_LIVE_TIME_CONTROLS = {"1+0", "2+1"}

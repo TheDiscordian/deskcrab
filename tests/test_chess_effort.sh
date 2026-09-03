@@ -394,10 +394,10 @@ check_eq "an unknown speed keeps it too" "$(pairfor correspondence -)" "low medi
 check_eq "bullet reads its dormant speed fallback" "$(pairfor bullet 1+0)" "low low"
 check_eq "blitz reads its speed fallback" "$(pairfor blitz -)" "low low"
 check_eq "rapid reads its speed fallback" "$(pairfor rapid -)" "low low"
-check_eq "10+0 uses the measured Opus low/low pair" \
+check_eq "10+0 rides the rapid bucket's low/low pair" \
     "$(pairfor rapid 10+0)" "low low"
-check_eq "15+10 uses the measured Fable low/medium pair" \
-    "$(pairfor rapid 15+10)" "low medium"
+check_eq "15+10 rides the same rapid low/low pair (the user's 2026-09-01 table)" \
+    "$(pairfor rapid 15+10)" "low low"
 check_eq "a per-speed knob overrides by env alone" \
     "$(pairfor rapid 15+10 DESKCRAB_CHESS_EFFORT_RAPID_QUIET=medium \
        DESKCRAB_CHESS_EFFORT_RAPID_SHARP=max)" "medium max"
@@ -440,20 +440,20 @@ print("untimed:", chessweb.mover_model_for({}))
 print("none-game:", chessweb.mover_model_for(None))
 EOF
 )"
-contains "$MM" "unset: gpt-5.3-codex-spark" \
+contains "$MM" "unset: sonnet" \
     && ok "no per-speed knob means the shipped routed default rides the job" \
     || fail "mover_model_for: $MM"
 contains "$MM" "set: haiku" \
     && ok "the per-speed knob rides the job for its speed" \
     || fail "mover_model_for: $MM"
-contains "$MM" "rapid: opus fable" \
-    && ok "the two Rapid controls carry their independently measured winners" \
+contains "$MM" "rapid: opus opus" \
+    && ok "both Rapid controls carry the one decided rapid winner" \
     || fail "mover_model_for: $MM"
 contains "$MM" "rapid-override: sonnet" \
-    && ok "the per-speed knob overrides an exact-control default" \
+    && ok "the per-speed knob overrides the routed default" \
     || fail "mover_model_for: $MM"
-contains "$MM" "untimed: None" && contains "$MM" "none-game: None" \
-    && ok "an untimed game and a missing game read as no offer" \
+contains "$MM" "untimed: fable" && contains "$MM" "none-game: fable" \
+    && ok "an untimed game and a missing game ride the routed Fable offer" \
     || fail "mover_model_for: $MM"
 
 echo
@@ -482,8 +482,8 @@ chess_effort.SPEED_MODELS.clear()
 print("cleared:", chessweb.mover_model_for(timed))
 EOF
 )"
-contains "$RT" "shipped: gpt-5.3-codex-spark sonnet opus fable None" \
-    && ok "the shipped tables route each exact live control to its measured winner" \
+contains "$RT" "shipped: sonnet gpt-5.3-codex-spark opus opus fable" \
+    && ok "the shipped tables carry the user's decided route for every bucket" \
     || fail "SPEED_MODELS: $RT"
 contains "$RT" "routed: sonnet" \
     && ok "a routed speed's default rides the job over the global knob" \
@@ -511,6 +511,10 @@ check_eq "no 'no configuration ... finishes' absolute outside a MEASURED qualifi
     "$(grep -ci "no configuration[^.]*finishes" "$REPO/lib/chess_effort.py")" "0"
 check "the dormant Bullet route is explicitly marked disabled" \
     grep -q "Bullet remains disabled" "$REPO/lib/chess_effort.py"
+check "the bullet verdict keeps its MEASURED qualifier" \
+    grep -q "no MEASURED configuration" "$REPO/lib/chess_effort.py"
+check "the blitz Spark cell is named a user-selected live-play trial" \
+    grep -q "USER-SELECTED live-play trial" "$REPO/lib/chess_effort.py"
 if [ -f "$REPO/docs/chess-bench-matrix-2026-08.md" ]; then
     check_eq "the rendered report carries no absolute physically-finishes claim either" \
         "$(grep -ci "physically finishes" "$REPO/docs/chess-bench-matrix-2026-08.md")" "0"
