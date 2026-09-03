@@ -255,6 +255,9 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # JOBS_DIR="$HOME/.local/share/deskcrab/jobs"
 # JOB_MODEL="fable"
 # JOB_EFFORT="high"
+# JOB_REVIEW_MODEL="sol"   # the review wake a finished job books; routes by
+                           # name like every other model knob, so leaving it
+                           # unset keeps a codex default nothing here names
 # JOBS_SHOW_FINISHED=6     # finished jobs shown by `crab jobs` and in the prompt
 # JOBS_KEEP_DAYS=14        # prune finished job records after this many days
 
