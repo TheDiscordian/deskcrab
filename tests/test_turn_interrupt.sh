@@ -263,8 +263,18 @@ echo "the knob and the pushback boundary:"
     kill "$INFLIGHT" 2>/dev/null; wait "$INFLIGHT" 2>/dev/null
 
     # A turn that has been cut stops waiting on the queue at once.
+    #
+    # Both waits below are only evidence against a NON-EMPTY queue: an
+    # earlier ticket whose owner is alive is the thing the wait would
+    # otherwise sit the full bound on. This block used to write its tickets
+    # straight into the directory the knob check above had rm -rf'd, without
+    # recreating it — every redirect failed, the queue stayed empty, and both
+    # assertions passed vacuously, measuring an instant return from a wait
+    # that had nothing to wait on. Seed first, then PROVE the seed took: a
+    # missing or dead fixture is a loud failure, never a silent pass.
     rm -rf "$ORDERDIR"; TURN_INTERRUPT=1
-    sleep 30 & LIVE=$!
+    mkdir -p "$TURN_ORDER_DIR"
+    sleep 300 & LIVE=$!
     printf '%s\t%s\t%s\tdesk\n' "$LIVE" "$(_proc_starttime "$LIVE")" "$(date +%s)" \
         > "$(printf '%s/%09d.ticket' "$TURN_ORDER_DIR" 1)"
     printf '2\n' > "$TURN_ORDER_DIR/next"
@@ -273,19 +283,49 @@ echo "the knob and the pushback boundary:"
         > "$(printf '%s/%09d.ticket' "$TURN_ORDER_DIR" 2)"
     printf '3\this newer message\n' > "$(printf '%s/%09d.cut' "$TURN_ORDER_DIR" 2)"
     TURN_ORDER_WAIT=30
-    S=$(date +%s)
-    turn_order_wait
-    W=$(( $(date +%s) - S ))
-    [ "$W" -lt 2 ] && ok "a cut turn does not wait on earlier tickets — nothing it holds is going out" \
-        || fail "a cut turn sat in the delivery queue" "waited ${W}s"
+    if [ ! -s "$TURN_ORDER_DIR/000000001.ticket" ] \
+        || ! _turn_ticket_alive "$TURN_ORDER_DIR/000000001.ticket" \
+        || [ ! -s "$TURN_ORDER_DIR/000000002.ticket" ] \
+        || [ ! -s "$TURN_ORDER_DIR/000000002.cut" ]; then
+        fail "a cut turn does not wait on earlier tickets — FIXTURE NEVER SEEDED: no live earlier ticket stands behind this cut turn, so the wait would return at once for the wrong reason" \
+            "$(ls -la "$TURN_ORDER_DIR" 2>&1)"
+    else
+        S=$(date +%s)
+        turn_order_wait
+        W=$(( $(date +%s) - S ))
+        [ "$W" -lt 2 ] && ok "a cut turn does not wait on earlier tickets — nothing it holds is going out" \
+            || fail "a cut turn sat in the delivery queue" "waited ${W}s"
+    fi
+    kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+
     # …and nothing waits on a CUT earlier ticket either (the 15d discipline).
-    rm -f "$(printf '%s/%09d.cut' "$TURN_ORDER_DIR" 2)"
+    # Reseeded whole rather than patched from the fixture above: this turn
+    # (seq 2, NOT cut) stands behind an earlier LIVE ticket that IS cut — the
+    # one shape where only rule 15f's skip keeps a live answer from sitting
+    # the full bound behind a reply that will never be spoken.
+    rm -rf "$ORDERDIR"; mkdir -p "$TURN_ORDER_DIR"
+    sleep 300 & LIVE=$!
+    printf '%s\t%s\t%s\tdesk\n' "$LIVE" "$(_proc_starttime "$LIVE")" "$(date +%s)" \
+        > "$(printf '%s/%09d.ticket' "$TURN_ORDER_DIR" 1)"
     printf '9\the spoke again\n' > "$(printf '%s/%09d.cut' "$TURN_ORDER_DIR" 1)"
-    S=$(date +%s)
-    turn_order_wait
-    W=$(( $(date +%s) - S ))
-    [ "$W" -lt 2 ] && ok "nothing waits on a cut earlier ticket" \
-        || fail "a live answer queued behind a reply that will never be spoken" "waited ${W}s"
+    printf '2\n' > "$TURN_ORDER_DIR/next"
+    TURN_SEQ=2
+    printf '%s\t%s\t%s\tdesk\n' "$$" "$(_proc_starttime $$)" "$(date +%s)" \
+        > "$(printf '%s/%09d.ticket' "$TURN_ORDER_DIR" 2)"
+    if [ ! -s "$TURN_ORDER_DIR/000000001.ticket" ] \
+        || ! _turn_ticket_alive "$TURN_ORDER_DIR/000000001.ticket" \
+        || [ ! -s "$TURN_ORDER_DIR/000000001.cut" ] \
+        || [ ! -s "$TURN_ORDER_DIR/000000002.ticket" ] \
+        || [ -e "$TURN_ORDER_DIR/000000002.cut" ]; then
+        fail "nothing waits on a cut earlier ticket — FIXTURE NEVER SEEDED: no live cut earlier ticket stands before this turn, so the wait would return at once for the wrong reason" \
+            "$(ls -la "$TURN_ORDER_DIR" 2>&1)"
+    else
+        S=$(date +%s)
+        turn_order_wait
+        W=$(( $(date +%s) - S ))
+        [ "$W" -lt 2 ] && ok "nothing waits on a cut earlier ticket" \
+            || fail "a live answer queued behind a reply that will never be spoken" "waited ${W}s"
+    fi
     kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
     exit 0
 ) || true
