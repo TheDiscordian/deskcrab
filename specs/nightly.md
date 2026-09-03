@@ -39,6 +39,26 @@ which fails silently is worse than one that does not exist.
 9. "Nothing new since the last cursor" still counts as a night. There was nothing to learn and she
    did look.
 10. The exit status that matters is the ingest's own, never a pipeline's last stage.
+
+10a. A failed ingest cancels the stamp and sets the night's exit — nothing else. On a non-zero
+    ingest, sleep MUST NOT stamp (rule 8) and the service's exit stays the ingest's own rc
+    (rule 10), but the post-ingest phases — the claudism review, the promise sweep, the
+    twin-merge pass, the night's work — still run, in their order, through the same phase
+    wrapper as on a good night. None of them reads the ingest's output: the review and the
+    sweep read the day's journal, the merge pass and the night's work read the record drawer
+    and the job queue, and a judge-backed phase that cannot reach its own model fails loudly on
+    its own line (rule 14b) without taking the night with it. The cost of the old early return
+    was measured 2026-09-02: one codex usage-limit refusal at the top of sleep, refused until
+    Sep 6 by its own text, cancelled what would have been four consecutive nights of promise
+    sweeps, claudism reviews and queued builder work that had nothing to do with memory — and
+    the queued fix for the refusal itself sat behind the very phase the refusal was killing.
+    Before the first phase, the night log MUST say plainly, on its own line, that the rest of
+    the night is running on a FAILED ingest, and the night's last line MUST repeat it beside
+    the rc it is about to return, so no reader of either end of the log mistakes a partial
+    night for a whole one. The absent stamp stays the only machine-readable "slept": everything
+    that infers sleep — `status`, the tiredness score — reads the stamp and never the phases'
+    traces, so a failed-ingest night still reads as not slept everywhere, however much work its
+    phases did.
 11. Sleep MUST NOT touch the shelves. It is separate from tidy on purpose.
 12. Ingest MUST NOT tail-clamp its input. See [memory-recall.md](memory-recall.md) rule 29.
 13. Sleep MUST run its model calls under the account chain wherever they run the Claude engine. A
@@ -58,7 +78,7 @@ which fails silently is worse than one that does not exist.
     omitted, not invented, and a log with no header at all still stamps and still counts as slept
     (rule 9) — the stamp MUST NOT be stricter than the night it records.
 
-14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-stamp
+14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-ingest
     phase — the claudism review, the promise sweep, the twin-merge pass, the night's work — owes
     the night log at least one line opening with its own name (`claudism-scan:`, `promise-check:`,
     `eng-merge:`, `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
@@ -390,7 +410,8 @@ which fails silently is worse than one that does not exist.
 
 ### The claudism review — part of sleep
 
-39. After a night that happened — ingest succeeded, stamp written — sleep runs the claudism review
+39. After the ingest — stamped when it succeeded, the FAILED-ingest notice on the log when it did
+    not (rule 10a) — sleep runs the claudism review
     over the day that just ended. It reads the day's journal and nothing else. It MUST NOT run
     inside a live turn, and it MUST NOT gate, mute, or rewrite anything she says or has said:
     detection and review after the fact, only. The standing rule of
@@ -490,7 +511,7 @@ deliberately cheap: a pattern pre-check gates the model, so a commitment phrased
 patterns is never judged, and a wake the checker booked may itself have come to nothing. The
 night is where the day's promises are settled honestly, from the whole record at once.
 
-51. After a night that happened — ingest succeeded, stamp written — and BEFORE the night's
+51. After the ingest — succeeded or loudly failed (rule 10a) — and BEFORE the night's
     work, sleep runs the promise
     sweep (`lib/promise-check sweep`) over the day that just ended: the day's journal, every
     channel's replies with the outcome and work trace each session left, beside the day's
@@ -661,7 +682,7 @@ assistant ends it idle and available. Sleeping is an ACTIVE activity, the user's
 (2026-08-11 00:26 and 09:40): a night that only reads the day and then sits idle is not the sleep
 that was asked for, and promised work must stop waiting for a live turn to personally remember it.
 
-54. After a night that happened — ingest succeeded, stamp written — and AFTER the promise sweep,
+54. After the ingest — succeeded or loudly failed (rule 10a) — and AFTER the promise sweep,
     as the night's last phase, sleep runs the night's work (`lib/night-work run`) over the
     open owed work. The sweep runs first on purpose: its reconciled end-of-day misses are part of
     the night's material (rule 58b), and the night's work is the phase that holds the night open until

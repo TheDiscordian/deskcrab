@@ -117,28 +117,35 @@ cmd_run() {
     local rc="${PIPESTATUS[0]}"
     echo "exit: $rc" | tee -a "$log"
     if [ "$rc" -ne 0 ]; then
-        echo "sleep: ingest failed (rc=$rc) — not stamping. See $log" >&2
-        return "$rc"
+        # A failed ingest cancels the stamp and the night's exit — nothing
+        # else (specs/nightly.md rule 10a). The phases below never read the
+        # ingest's output, so they run regardless; before the first of them,
+        # the log says plainly that this night is partial, and the same line
+        # comes again at the end beside the rc. The old early return here
+        # cost four consecutive nights of promise sweeps, claudism reviews
+        # and queued builder work to one refused model account (2026-09-02).
+        echo "sleep: ingest FAILED (rc=$rc) — not stamping; the rest of the night runs on a FAILED ingest. See $log" \
+            | tee -a "$log" >&2
+    else
+        # Stamp only a night that actually happened. "nothing new since last
+        # cursor" still counts: there was nothing to learn, and I did look.
+        local added coverage
+        added="$(grep -oE '^ingest: [0-9]+ added' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+        # Coverage beside yield, on the SAME line: the third line stays the
+        # one place a reader looks, so cmd_status's `sed -n 3p` and a legacy
+        # added-only stamp both keep reading fine.
+        coverage="$(coverage_fields "$log")"
+        printf '%s\n%s\n%s\n' \
+            "$(date +%s)" \
+            "$(date -Iseconds)" \
+            "added=${added:-0}${coverage:+ $coverage}" > "$STAMP"
+        echo "sleep: stamped $STAMP (added=${added:-0}${coverage:+ $coverage})"
     fi
 
-    # Stamp only a night that actually happened. "nothing new since last
-    # cursor" still counts: there was nothing to learn, and I did look.
-    local added coverage
-    added="$(grep -oE '^ingest: [0-9]+ added' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
-    # Coverage beside yield, on the SAME line: the third line stays the one
-    # place a reader looks, so cmd_status's `sed -n 3p` and a legacy
-    # added-only stamp both keep reading fine.
-    coverage="$(coverage_fields "$log")"
-    printf '%s\n%s\n%s\n' \
-        "$(date +%s)" \
-        "$(date -Iseconds)" \
-        "added=${added:-0}${coverage:+ $coverage}" > "$STAMP"
-    echo "sleep: stamped $STAMP (added=${added:-0}${coverage:+ $coverage})"
-
     # The claudism review, over the day that just ended — detection and
-    # review only, never a gate (specs/nightly.md rules 39-45). Only after a
-    # night that happened, and never the night's verdict: it surfaces its own
-    # failures through its own wake, and the exit below stays the ingest's.
+    # review only, never a gate (specs/nightly.md rules 39-45). Never the
+    # night's verdict: it surfaces its own failures through its own wake,
+    # and the exit below stays the ingest's.
     run_phase claudism-scan "claudism review" "$LIB_DIR/claudism-scan" run
 
     # The promise sweep, over the same day: the journal beside the promise
@@ -172,7 +179,15 @@ cmd_run() {
     # activity, not idle time. Same bargain as the review: never the
     # night's verdict.
     run_phase night-work "night's work" "$LIB_DIR/night-work" run
-    return 0
+
+    # The night's exit is the ingest's own, phase failures notwithstanding
+    # (rules 8 and 10) — and a partial night says so again at its last line,
+    # so a tail of the log is as honest as its head (rule 10a).
+    if [ "$rc" -ne 0 ]; then
+        echo "sleep: this night ran on a FAILED ingest (rc=$rc) — not stamped. See $log" \
+            | tee -a "$log" >&2
+    fi
+    return "$rc"
 }
 
 cmd_status() {
