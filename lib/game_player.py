@@ -3486,6 +3486,22 @@ def _trade_offer_totals(snap: dict) -> dict:
     return totals
 
 
+def _ground_totals(snap: dict) -> dict:
+    """Visible ground stock keyed by exact identity and tile: "id@x,z" -> count.
+
+    The drop and use-on-ground verifiers compare piles at one tile, so the
+    key carries the tile rather than aggregating an item across the room."""
+    totals = {}
+    for entry in snap.get("ground_items") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), int) \
+                or not isinstance(entry.get("x"), int) \
+                or not isinstance(entry.get("z"), int):
+            continue
+        key = f"{entry['id']}@{entry['x']},{entry['z']}"
+        totals[key] = totals.get(key, 0) + 1
+    return totals
+
+
 def _skill_totals(snap: dict) -> dict:
     totals = {}
     for skill in snap.get("skills") or []:
@@ -3562,6 +3578,7 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "shop_open": snap.get("shop_open"),
             "sleeping": snap.get("sleeping"),
             "inventory": _inventory_totals(snap),
+            "ground_items": _ground_totals(snap),
             "skills": _skill_totals(snap),
             "message_ids": _message_ids(snap),
             "spell_runes": _spell_rune_ids(snap, spell_id),
@@ -3692,6 +3709,9 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         "nothing interesting happens", "you can't", "you cannot", "unable to",
         "not enough", "not high enough", "you need", "reagents", "spell fails",
         "can't reach", "cannot reach", "clear shot",
+        # Firemaking's held-pair answer: carried logs are refused, the game
+        # itself routes play to the drop-then-light-on-ground sequence.
+        "put the logs down",
     ))
     completed = bool(inventory_changes or xp_changes or message
                      or ui_changes or movement_done)
@@ -3748,6 +3768,54 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         # failure feedback may terminate it without either delta.
         completed = bool(fields.get("item") in changed_item_ids
                          or xp_changes or failure)
+    if observation["type"] == "use-item-item":
+        # The held pair grounds the same way item-on-object does: one of the
+        # two named held counts changes (lit logs leave the inventory) or XP
+        # arrives (Firemaking). A receipt, pane, or selection change is never
+        # completion; only explicit failure feedback ends it without a delta.
+        completed = bool(fields.get("item") in changed_item_ids
+                         or fields.get("target") in changed_item_ids
+                         or xp_changes or failure)
+    if observation["type"] == "drop-inventory":
+        # The client prints its local "Dropping ..." line at packet time,
+        # before the server has moved anything, so a message alone is never
+        # completion. Spec rule 7a requires BOTH grounded deltas from one
+        # newer snapshot: the held count falling AND the matching ground
+        # pile at the body's tile appearing or growing. Explicit refusal
+        # feedback alone ends it failed.
+        item_key = str(fields.get("item", ""))
+        old_held = (old_inventory.get(item_key) or {}).get("count", 0)
+        new_held = (current_inventory.get(item_key) or {}).get("count", 0)
+        held_fell = new_held < old_held
+        old_ground = before.get("ground_items") or {}
+        new_ground = _ground_totals(snap)
+        here_key = f"{item_key}@{snap.get('x')},{snap.get('z')}"
+        pile_grew = new_ground.get(here_key, 0) > old_ground.get(here_key, 0)
+        if held_fell and pile_grew:
+            ui_changes.append(
+                f"ground-pile:{here_key}:"
+                f"{old_ground.get(here_key, 0)}->{new_ground.get(here_key, 0)}")
+        completed = bool((held_fell and pile_grew) or failure)
+    if observation["type"] == "use-item-ground":
+        # Success is the TARGETED pile shrinking at its exact tile (a lit
+        # pile leaves ground_items as the fire scenery replaces it) or an
+        # XP delta. The server's "You attempt to light the logs" line is
+        # observation, never completion; its "You fail to light a fire" is
+        # explicit failure the generic needles do not carry.
+        target_key = (f"{fields.get('ground', '')}@"
+                      f"{fields.get('x', '')},{fields.get('z', '')}")
+        old_ground = before.get("ground_items") or {}
+        new_ground = _ground_totals(snap)
+        pile_fell = new_ground.get(target_key, 0) < old_ground.get(target_key, 0)
+        failed_line = any(
+            "fail to light" in str(entry.get("text", "")).casefold()
+            for entry in new_messages)
+        if pile_fell:
+            ui_changes.append(
+                f"ground-pile:{target_key}:"
+                f"{old_ground.get(target_key, 0)}->{new_ground.get(target_key, 0)}")
+        failure = bool(failure or failed_line)
+        completed = bool(pile_fell or xp_changes or failure)
     trade_give = None
     trade_stage = None
     if observation["type"] in ("trade-offer", "trade-remove"):

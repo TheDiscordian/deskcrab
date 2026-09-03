@@ -911,6 +911,31 @@ check_eq "an optional locality cap is rechecked against the live NPC" "$(rstatus
     "refused-npc-out-of-range"
 
 echo
+echo "use-item-item resolves two held identities to two distinct slots (rules 5-7):"
+wact 748 "$(now_ms)" "type=use-item-item" "item=132" "target=81"
+OUT="$(harness exec)"
+contains "$OUT" "use-item-item slot=0 item=132 targetSlot=1 target=81" \
+    && ok "one semantic action carries both current held slots, no selection phase" \
+    || fail "item-on-item should carry both live slots in one action" "$OUT"
+check_eq "the item-on-item action is receipted done" "$(rstatus)" "done"
+wact 749 "$(now_ms)" "type=use-item-item" "item=999" "target=81"
+harness exec >/dev/null
+check_eq "a used item no longer held is refused before item-on-item" "$(rstatus)" \
+    "refused-no-such-item"
+wact 750 "$(now_ms)" "type=use-item-item" "item=132" "target=999"
+harness exec >/dev/null
+check_eq "a target item no longer held is refused before item-on-item" "$(rstatus)" \
+    "refused-no-such-item"
+wact 751 "$(now_ms)" "type=use-item-item" "item=81" "target=81"
+harness exec >/dev/null
+check_eq "one held stack is never used on itself: no second slot is a refusal" \
+    "$(rstatus)" "refused-no-such-item"
+wact 752 "$(now_ms)" "type=use-item-item" "item=132"
+harness exec >/dev/null
+check_eq "a missing target half is refused as a bad use target" "$(rstatus)" \
+    "refused-bad-use-target"
+
+echo
 echo "interact-bound opens the door, matched on tile AND wall (rules 5-7):"
 wact 75 "$(now_ms)" "type=interact-bound" "x=121" "z=650" "dir=0" "obj=1" "cmd=1"
 OUT="$(harness exec)"
@@ -1145,6 +1170,51 @@ wact 93 "$(now_ms)" "type=take-ground" "x=121" "z=650" "item=27"
 OUT="$(harness exec-ground-needs-door)"
 refute "a door-blocked ground item is not clicked through the wall" contains "$OUT" "take x="
 check_eq "a proven closed door is distinguished from generic unreachability" "$(rstatus)" \
+    "refused-ground-item-needs-door"
+
+echo
+echo "drop-inventory resolves the held slot at execution time (rules 5-7):"
+wact 94 "$(now_ms)" "type=drop-inventory" "item=81" "amount=1"
+OUT="$(harness exec)"
+contains "$OUT" "drop slot=1 item=81 amount=1" \
+    && ok "the held item reaches the game's ordinary drop packet path" \
+    || fail "the held item reaches the game's ordinary drop packet path" "$OUT"
+check_eq "the drop is receipted done" "$(rstatus)" "done"
+wact 95 "$(now_ms)" "type=drop-inventory" "item=999" "amount=1"
+harness exec >/dev/null
+check_eq "an unheld item cannot be dropped" "$(rstatus)" "refused-no-such-item"
+wact 96 "$(now_ms)" "type=drop-inventory" "item=81" "amount=0"
+OUT="$(harness exec)"
+refute "a zero-amount drop never reaches the game" contains "$OUT" "drop slot="
+check_eq "a zero drop amount is refused" "$(rstatus)" "refused-bad-amount"
+
+echo
+echo "use-item-ground resolves held item and ground pile together (rules 5-7):"
+wact 97 "$(now_ms)" "type=use-item-ground" "item=81" "x=121" "z=650" "ground=27"
+OUT="$(harness exec)"
+contains "$OUT" "use-item-ground slot=1 item=81 x=121 z=650 ground=27" \
+    && ok "both live identities reach the game's item-on-ground path atomically" \
+    || fail "both live identities reach the game's item-on-ground path atomically" "$OUT"
+check_eq "the item-on-ground use is receipted done" "$(rstatus)" "done"
+wact 98 "$(now_ms)" "type=use-item-ground" "item=999" "x=121" "z=650" "ground=27"
+harness exec >/dev/null
+check_eq "a vanished held item refuses the ground use" "$(rstatus)" "refused-no-such-item"
+wact 99 "$(now_ms)" "type=use-item-ground" "item=81" "x=121" "z=650" "ground=999"
+harness exec >/dev/null
+check_eq "a changed pile is refused, never used blind" "$(rstatus)" \
+    "refused-ground-item-mismatch"
+wact 100 "$(now_ms)" "type=use-item-ground" "item=81" "x=5" "z=5" "ground=27"
+harness exec >/dev/null
+check_eq "an empty tile refuses the ground use" "$(rstatus)" "refused-no-such-ground-item"
+wact 101 "$(now_ms)" "type=use-item-ground" "item=81" "x=121" "z=650" "ground=27"
+OUT="$(harness exec-unreachable-ground)"
+refute "an unreachable pile never reaches the game's use path" contains "$OUT" "use-item-ground slot="
+check_eq "unreachable terrain refuses the ground use before dispatch" "$(rstatus)" \
+    "refused-ground-item-unreachable"
+wact 102 "$(now_ms)" "type=use-item-ground" "item=81" "x=121" "z=650" "ground=27"
+OUT="$(harness exec-ground-needs-door)"
+refute "a door-blocked pile is not used through the wall" contains "$OUT" "use-item-ground slot="
+check_eq "the proven closed door is named for the ground use too" "$(rstatus)" \
     "refused-ground-item-needs-door"
 
 echo

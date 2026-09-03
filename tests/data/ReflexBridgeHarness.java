@@ -529,6 +529,11 @@ public class ReflexBridgeHarness {
 					+ " sidx=" + serverIndex);
 		}
 
+		public void useInventoryItemOnItem(int slot, int targetSlot) {
+			events.add("use-item-item slot=" + slot + " item=" + invIds[slot]
+					+ " targetSlot=" + targetSlot + " target=" + invIds[targetSlot]);
+		}
+
 		public int equipmentStatCount() {
 			return 2;
 		}
@@ -928,6 +933,17 @@ public class ReflexBridgeHarness {
 		public void takeGroundItem(int i) {
 			events.add("take x=" + groundAbsX[i] + " z=" + groundAbsZ[i]
 					+ " id=" + groundId[i]);
+		}
+
+		public void dropInventoryItem(int slot, int amount) {
+			events.add("drop slot=" + slot + " item=" + invIds[slot]
+					+ " amount=" + amount);
+		}
+
+		public void useInventoryItemOnGroundItem(int slot, int groundIndex) {
+			events.add("use-item-ground slot=" + slot + " item=" + invIds[slot]
+					+ " x=" + groundAbsX[groundIndex] + " z=" + groundAbsZ[groundIndex]
+					+ " ground=" + groundId[groundIndex]);
 		}
 
 		public int terrainFlagsAt(int absX, int absZ) {

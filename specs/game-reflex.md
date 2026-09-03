@@ -196,7 +196,11 @@ Three parts:
    that object, and send the ordinary item-on-object packet as one operation, without opening the
    inventory pane or staging pointer clicks), `use-item-npc` (resolve a held item id and a visible
    NPC's server/type identity together, walk to that NPC, and send the ordinary item-on-NPC packet
-   as one operation, without selecting the inventory item or moving the pointer), `click-shop` and `click-bank` (find an item
+   as one operation, without selecting the inventory item or moving the pointer), `use-item-item`
+   (resolve two currently held item ids together — a tinderbox and the logs it lights — to two
+   DISTINCT live inventory slots and send the ordinary item-on-item packet, the same
+   Use-x-with-y the inventory menu builds, as one operation with no selection phase and no
+   pointer; one held stack can never be used on itself), `click-shop` and `click-bank` (find an item
    by id in the currently open interface, expose its containing page or scroll row, resolve its
    current slot centre, and click button 1, 2, or 3; bank identity covers
    inventory items shown for deposit even when no bank stack exists),
@@ -215,20 +219,31 @@ Three parts:
    option from the context menu that is open now by a case-insensitive text fragment; an absent or
    ambiguous fragment is refused), `choose-dialogue` (choose one currently open NPC reply by the
    same exact-then-unambiguous text discipline), `take-ground` (walk to and take a
-   currently visible ground item identified by item id and world tile), and `retreat` (while in
+   currently visible ground item identified by item id and world tile), `drop-inventory`
+   (release one held item by item identity through the client's ordinary drop packet against
+   that item's current slot; the slot's own contents decide the released quantity — the live
+   server ignores a claimed amount while its Drop X option is disabled, so one dispatch
+   releases one non-stackable item or a stackable's whole held stack), `use-item-ground`
+   (resolve a held item id and a currently visible ground item identified by item id and world
+   tile together, walk to that tile, and send the ordinary item-on-ground-item packet as one
+   operation, without an inventory selection phase or pointer staging — the sequence the game
+   itself demands when it says the logs must be put down before they are lit), and `retreat` (while in
    combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
    fallback direction, trying alternate directions and nearer tiles without sending failed path
    probes). `talk-npc`, `attack-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
-   `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`,
+   `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`, `use-item-item`,
    `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
    `click-bank`, the four bank/shop transaction actions, `trade-player`, `trade-offer`,
    `trade-remove`, `trade-accept`, `duel-accept`,
-   `duel-decline`, `choose-menu`, `choose-dialogue`, `take-ground`, `retreat`,
+   `duel-decline`, `choose-menu`, `choose-dialogue`, `take-ground`, `drop-inventory`,
+   `use-item-ground`, `retreat`,
    `chat-local`, and `chat-private` belong to the deliberate-play
    channel — an action file written by the player's own hand or harness — not to
    reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
-   (rule 9). The reflex table cannot author speech. Nothing in this layer can log in, create or
-   delete a character or drop. Trading is available only through a deliberate player action;
+   (rule 9). The reflex table cannot author speech. Nothing in this layer can log in or create
+   or delete a character. Dropping releases owned stock into the world, so like trading it is
+   available only through the deliberate `drop-inventory` action and is absent from both
+   executable rule tables. Trading is available only through a deliberate player action;
    neither executable rule table can initiate it. Duelling is the same: only a deliberate
    action can accept, decline, or progress a duel stage, and the duel actions are absent from
    both executable rule tables. Spending through `shop-buy` is available
@@ -268,6 +283,8 @@ Three parts:
    has vanished and `refused-player-mismatch` when a different name now holds it; `item` and `button`
    for click-inventory, click-shop, and click-bank; `item`, `x`, `z`, and `obj` for
    use-item-object; `item`, `sidx`, and `npc`, plus optional `within` 0–10, for use-item-npc;
+   `item` and `target` — the second held item id, deliberately NOT a second `item` line because
+   the flat map keeps one value per key — for use-item-item;
    `item` for equip-inventory and
    unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
    `item` and `amount` for the
@@ -277,7 +294,10 @@ Three parts:
    — the exact opponent the emitter saw on the open duel screen — for duel-accept, and an
    optional `stage` for duel-decline; `text` for choose-menu and
    choose-dialogue; `x`, `z`, and
-   `item` for take-ground; `distance` 1–10 and fallback `dx`/`dz` for retreat). The bridge resolves
+   `item` for take-ground; `item` and positive `amount` for drop-inventory (the amount rides the
+   ordinary packet for protocol fidelity; the server's slot contents remain the authority on the
+   released quantity); `item`, `x`, `z`, and `ground` — the ground item's type id, NOT named `id`
+   for the same collision reason — for use-item-ground; `distance` 1–10 and fallback `dx`/`dz` for retreat). The bridge resolves
    the identity against the current client arrays at execution time, obtains that exact entity's
    latest rendered screen point, and emits pointer move then click as one bridge operation. A
    missing, swapped, or off-screen entity is refused with the same identity refusal or
@@ -300,7 +320,20 @@ Three parts:
    click. `use-item-npc` performs the equivalent rechecks against the current inventory slot and
    NPC server/type identity, including the nearer-equivalent and optional locality checks used by
    other NPC actions. It sends the ordinary item-on-NPC packet without an inventory selection
-   phase. `click-shop` and `click-bank` use the same identity-only
+   phase. `drop-inventory` resolves the item's current slot at execution time
+   (`refused-no-such-item` when the item is gone, `refused-bad-amount` below one) and sends the
+   client's ordinary drop packet against that slot. `use-item-ground` rechecks the held slot
+   (`refused-no-such-item`) and the pile's exact tile and item id with take-ground's own matching
+   and reachability discipline (`refused-no-such-ground-item`, `refused-ground-item-mismatch`,
+   `refused-ground-item-needs-door`, `refused-ground-item-unreachable`) before sending the
+   ordinary walk-and-use packet. `use-item-item` re-resolves both ids in the current inventory at execution time and
+   requires two DISTINCT live slots — the `target` id may equal `item` only when a second slot
+   holds it. A negative or absent id half is `refused-bad-use-target`; a half no slot (or no
+   second slot) can satisfy is `refused-no-such-item`. It then sends the ordinary item-on-item
+   packet exactly as the client's own Use-x-with-y menu writes it — the target's slot rides
+   first, the used item's slot second — with no selection phase, no pointer, and no approach
+   walk, and clears any pending inventory selection just as the menu path does. `click-shop`
+   and `click-bank` use the same identity-only
    contract. A closed interface or missing item is refused; for a bank item the bridge switches
    the live bank to the page or scroll row containing the item before resolving its slot centre.
    A transaction rechecks that its interface is open and that its item has a

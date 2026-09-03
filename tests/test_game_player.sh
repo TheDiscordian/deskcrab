@@ -1257,6 +1257,73 @@ contains "$OUT" "action-done id=900 type=use-item-object result=done" \
     && ok "the completed action reports inventory, XP, and server evidence" \
     || fail "the completed action reports inventory, XP, and server evidence" "$OUT"
 
+snap 1045651 '[]' '{"inventory":[{"id":163,"name":"Pot of flour","count":1},{"id":50,"name":"Bucket of water","count":1}],"skills":[{"id":7,"name":"Cooking","xp":210}],"messages":[{"id":1045651000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9001 use-item-item item=163 target=50 >/dev/null
+snap 1045652 '[]' '{"inventory":[{"id":168,"name":"dough","count":1},{"id":21,"name":"Bucket","count":1}],"skills":[{"id":7,"name":"Cooking","xp":210}],"messages":[{"id":1045651000,"channel":"game","text":"Ready"},{"id":1045652000,"channel":"game","text":"You mix the water and flour to make some dough"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "action_done recognizes a combined held pair from grounded postconditions" "$CODE" "0"
+contains "$OUT" "action-done id=9001 type=use-item-item result=done" \
+    && contains "$OUT" "Pot of flour(163):-1" \
+    && ok "the held-pair action reports the consumed pair's own deltas" \
+    || fail "the held-pair action reports the consumed pair's own deltas" "$OUT"
+snap 1045653 '[]' '{"inventory":[{"id":166,"name":"tinderbox","count":1},{"id":14,"name":"Logs","count":1}],"skills":[{"id":11,"name":"Firemaking","xp":66}],"messages":[{"id":1045653000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9002 use-item-item item=166 target=14 >/dev/null
+snap 1045654 '[]' '{"inventory":[{"id":166,"name":"tinderbox","count":1},{"id":14,"name":"Logs","count":1}],"skills":[{"id":11,"name":"Firemaking","xp":66}],"messages":[{"id":1045653000,"channel":"game","text":"Ready"},{"id":1045654000,"channel":"game","text":"A friend has logged in"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "unrelated feedback cannot claim a held-pair use completed" "$CODE" "2"
+contains "$OUT" "action-timeout id=9002 type=use-item-item" \
+    && ok "held-pair completion stays narrowed to the pair's deltas or XP" \
+    || fail "held-pair completion stays narrowed to the pair's deltas or XP" "$OUT"
+snap 1045655 '[]' '{"inventory":[{"id":166,"name":"tinderbox","count":1},{"id":14,"name":"Logs","count":1}],"skills":[{"id":11,"name":"Firemaking","xp":66}],"messages":[{"id":1045655000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9003 use-item-item item=166 target=14 >/dev/null
+snap 1045656 '[]' '{"inventory":[{"id":166,"name":"tinderbox","count":1},{"id":14,"name":"Logs","count":1}],"skills":[{"id":11,"name":"Firemaking","xp":66}],"messages":[{"id":1045655000,"channel":"game","text":"Ready"},{"id":1045656000,"channel":"quest","text":"I think you should put the logs down before you light them!"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "the carried-logs refusal ends a held-pair wait as grounded failure" "$CODE" "0"
+contains "$OUT" "type=use-item-item result=failed" \
+    && contains "$OUT" "message=I think you should put the logs down before you light them!" \
+    && ok "the server's own put-them-down answer is failure, never a hang" \
+    || fail "the server's own put-them-down answer is failure, never a hang" "$OUT"
+
+snap 1045660 '[]' '{"inventory":[{"id":14,"name":"Logs","count":8},{"id":166,"name":"tinderbox","count":1}],"messages":[{"id":1045660000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9004 drop-inventory item=14 amount=1 >/dev/null
+snap 1045661 '[]' '{"inventory":[{"id":14,"name":"Logs","count":8},{"id":166,"name":"tinderbox","count":1}],"messages":[{"id":1045660000,"channel":"game","text":"Ready"},{"id":1045661000,"channel":"inventory","text":"Dropping Logs"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "the client's packet-time Dropping line cannot complete a drop" "$CODE" "2"
+snap 1045662 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"messages":[{"id":1045660000,"channel":"game","text":"Ready"},{"id":1045661000,"channel":"inventory","text":"Dropping Logs"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "a fallen held count without the pile at the body's tile stays unresolved" "$CODE" "2"
+snap 1045663 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"ground_items":[{"id":14,"name":"Logs","x":120,"z":648}],"messages":[{"id":1045660000,"channel":"game","text":"Ready"},{"id":1045661000,"channel":"inventory","text":"Dropping Logs"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "action_done accepts the drop once BOTH grounded deltas exist" "$CODE" "0"
+contains "$OUT" "action-done id=9004 type=drop-inventory result=done" \
+    && contains "$OUT" "ground-pile:14@120,648:0->1" \
+    && contains "$OUT" "Logs(14):-1" \
+    && ok "the completed drop names the held fall and the pile at the body's tile" \
+    || fail "the completed drop names the held fall and the pile at the body's tile" "$OUT"
+
+snap 1045664 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"ground_items":[{"id":14,"name":"Logs","x":120,"z":648}],"skills":[{"id":11,"name":"Firemaking","xp":66}],"messages":[{"id":1045664000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9005 use-item-ground item=166 x=120 z=648 ground=14 >/dev/null
+snap 1045665 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"ground_items":[{"id":14,"name":"Logs","x":120,"z":648}],"skills":[{"id":11,"name":"Firemaking","xp":66}],"messages":[{"id":1045664000,"channel":"game","text":"Ready"},{"id":1045665000,"channel":"quest","text":"You attempt to light the logs"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout .1)" || CODE=$?
+check_eq "the attempt line is observation, never completion" "$CODE" "2"
+snap 1045666 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"ground_items":[],"skills":[{"id":11,"name":"Firemaking","xp":91}],"messages":[{"id":1045664000,"channel":"game","text":"Ready"},{"id":1045665000,"channel":"quest","text":"You attempt to light the logs"},{"id":1045666000,"channel":"quest","text":"The fire catches and the logs begin to burn"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "the lit pile leaving the ground completes the use as done" "$CODE" "0"
+contains "$OUT" "action-done id=9005 type=use-item-ground result=done" \
+    && contains "$OUT" "ground-pile:14@120,648:1->0" \
+    && contains "$OUT" "Firemaking:+25" \
+    && ok "the grounded fire is the targeted pile shrinking plus the XP delta" \
+    || fail "the grounded fire is the targeted pile shrinking plus the XP delta" "$OUT"
+
+snap 1045667 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"ground_items":[{"id":14,"name":"Logs","x":120,"z":648}],"skills":[{"id":11,"name":"Firemaking","xp":91}],"messages":[{"id":1045667000,"channel":"game","text":"Ready"}]}'
+python3 "$GP" action-arm 9006 use-item-ground item=166 x=120 z=648 ground=14 >/dev/null
+snap 1045668 '[]' '{"inventory":[{"id":14,"name":"Logs","count":7},{"id":166,"name":"tinderbox","count":1}],"ground_items":[{"id":14,"name":"Logs","x":120,"z":648}],"skills":[{"id":11,"name":"Firemaking","xp":91}],"messages":[{"id":1045667000,"channel":"game","text":"Ready"},{"id":1045668000,"channel":"quest","text":"You fail to light a fire"}]}'
+CODE=0; OUT="$(python3 "$GP" wait-until action_done --timeout 1)" || CODE=$?
+check_eq "the explicit fail-to-light line ends the wait" "$CODE" "0"
+contains "$OUT" "type=use-item-ground result=failed" \
+    && ok "a failed light is grounded failure with the pile still owed" \
+    || fail "a failed light is grounded failure with the pile still owed" "$OUT"
+
 snap 104566 '[]' '{"messages":[{"id":104566000,"channel":"game","text":"Ready"}]}'
 python3 "$GP" action-arm 901 click-entity item=202 obj=118 >/dev/null
 snap 104567 '[]' '{"messages":[{"id":104566000,"channel":"game","text":"Ready"},{"id":104567000,"channel":"game","text":"Nothing interesting happens"}]}'
@@ -2648,7 +2715,9 @@ check_eq "the harness carries the semantic equipment listing door" \
 check_eq "the harness carries idempotent equip and unequip doors" \
     "$(sandbox_count_in '^    equip|unequip)' "$HEADLESS")" "1"
 check_eq "the harness carries the named item-command door" \
-    "$(sandbox_count_in '^    item)' "$HEADLESS")" "1"
+    "$(sandbox_count_in '^    item).*cmd_item_command' "$HEADLESS")" "1"
+check_eq "and the held-pair use door beside the object and npc kinds" \
+    "$(sandbox_count_in 'use-item-item' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based shop door" \
     "$(sandbox_count_in '^    shop)' "$HEADLESS")" "1"
 check_eq "the harness carries the identity-based bank door" \
