@@ -159,13 +159,17 @@ below is a fact placed before her, never a gate placed behind her.
 
 ### Mood self-knowledge
 
-39. When the face system is enabled and its broker holds a standing mood, both state-report
-    audiences MUST include `How you feel`, the mood, its stored reason when present, and its
-    concrete subject source, mechanical origin, originating turn reference, and update time. If
-    an older record lacks a specific reason or subject source, the report names that absence and
-    gives the updater-log path with the origin and reference it can recover. The report reads the
-    broker with a short bound; it MUST NOT start the broker, run a classifier, or delay the rest
-    of the state block when the face system is unavailable.
+39. When the face system is enabled and its broker answers, both state-report audiences MUST
+    include her mood self-knowledge: `How you feel` — the standing mood with its stored reason
+    when present, its concrete subject source, mechanical origin, originating turn reference,
+    and update time, or a plain statement that no mood stands — followed by `Recent feelings`,
+    the recent tail of the durable mood journal ([face.md](face.md) rules 42a–42b), each shift
+    with its time, mood word, and reason, including classifications the display's stale-turn
+    guard never applied. If an older record lacks a specific reason or subject source, the
+    report names that absence and gives the journal path with the origin and reference it can
+    recover. The report reads the broker and the journal tail with a short bound; it MUST NOT
+    start the broker, run a classifier, or delay the rest of the state block when the face
+    system is unavailable.
 
 ### The block is how she sees, not how she speaks
 
@@ -204,6 +208,7 @@ below is a fact placed before her, never a gate placed behind her.
 | `~/.local/share/deskcrab/account-log` | read and written | append-only record of every move of the current |
 | `${STATE_PREFIX}-jobs-surfaced` | written | the once-stamp for failed-job news |
 | `${STATE_PREFIX}-face.sock` | read when the face is enabled | current standing mood, reason, subject source, origin, turn reference, and update time |
+| `~/.local/share/deskcrab/mood-journal.jsonl` | read when the face is enabled | one mood decision per line, epoch first; the `Recent feelings` tail; override via `DESKCRAB_MOOD_JOURNAL` |
 | systemd user timers | read | joined onto the records, never the primary source |
 
 ## INTERACTIONS

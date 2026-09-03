@@ -56,6 +56,9 @@ SOCKET_PATH = os.environ.get("DESKCRAB_FACE_SOCKET",
                              STATE_PREFIX + "-face.sock")
 STATE_PATH = os.environ.get("DESKCRAB_FACE_STATE",
                             STATE_PREFIX + "-face-state.json")
+MOOD_JOURNAL = os.environ.get("DESKCRAB_MOOD_JOURNAL",
+                              os.path.expanduser(
+                                  "~/.local/share/deskcrab/mood-journal.jsonl"))
 
 # The authored expression family (specs/face.md rule 4). `resting` is the
 # absence of an expression record, not a member a caller sets.
@@ -183,6 +186,18 @@ def _now():
 def _one_line(value, limit):
     """Bounded state text: useful context, never a multiline prompt splice."""
     return " ".join(str(value or "").split())[:limit]
+
+
+def _journal_mood(entry):
+    """Rule 42b: every mood decision lands in the durable journal, applied or
+    not — the stale-turn guard decides what the face shows, never what she is
+    allowed to remember feeling. A journal failure never fails the call."""
+    try:
+        os.makedirs(os.path.dirname(MOOD_JOURNAL), exist_ok=True)
+        with open(MOOD_JOURNAL, "a") as fh:
+            fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
 
 
 def _recover_mood_provenance(mood):
@@ -404,6 +419,10 @@ class Broker:
                 self._bump()
             if self.mood and self.mood.get("expires_at", 0) <= now:
                 # An unrefreshed mood decays back to nothing on its own.
+                _journal_mood({"ts": now, "event": "decayed",
+                               "mood": self.mood.get("name", ""),
+                               "reason": self.mood.get("reason", ""),
+                               "source": self.mood.get("source", "")})
                 self.mood = None
                 self._bump()
             direct_fresh = (self.activity != "resting"
@@ -559,8 +578,19 @@ class Broker:
         if name in ("neutral", "none", ""):
             with self.lock:
                 if self._stale(turn):
+                    if self.mood:
+                        _journal_mood({"ts": _now(), "event": "cleared",
+                                       "mood": self.mood.get("name", ""),
+                                       "turn": str(turn or ""),
+                                       "applied": False,
+                                       "note": "stale turn — not applied"})
                     return {"ok": True, "state": self.snapshot(),
                             "note": "stale turn — not applied"}
+                if self.mood:
+                    _journal_mood({"ts": _now(), "event": "cleared",
+                                   "mood": self.mood.get("name", ""),
+                                   "turn": str(turn or ""),
+                                   "applied": True})
                 self.mood = None
                 self._bump()
             return {"ok": True, "state": self.snapshot()}
@@ -574,6 +604,11 @@ class Broker:
         source_ref = _one_line(source_ref, 120)
         with self.lock:
             if self._stale(turn):
+                _journal_mood({"ts": _now(), "event": "set", "mood": name,
+                               "reason": reason, "source": source,
+                               "origin": origin, "source_ref": source_ref,
+                               "turn": str(turn or ""), "applied": False,
+                               "note": "stale turn — not applied"})
                 return {"ok": True, "state": self.snapshot(),
                         "note": "stale turn — not applied"}
             set_at = _now()
@@ -582,6 +617,10 @@ class Broker:
                          "source_ref": source_ref,
                          "set_at": set_at,
                          "expires_at": set_at + MOOD_SECONDS}
+            _journal_mood({"ts": set_at, "event": "set", "mood": name,
+                           "reason": reason, "source": source,
+                           "origin": origin, "source_ref": source_ref,
+                           "turn": str(turn or ""), "applied": True})
             self._bump()
         return {"ok": True, "state": self.snapshot()}
 
@@ -592,6 +631,10 @@ class Broker:
         make her hand weaker than the machinery under it."""
         with self.lock:
             self.expression = None
+            if self.mood:
+                _journal_mood({"ts": _now(), "event": "rest-cleared",
+                               "mood": self.mood.get("name", ""),
+                               "applied": True})
             self.mood = None
             self._bump()
         return {"ok": True, "state": self.snapshot()}

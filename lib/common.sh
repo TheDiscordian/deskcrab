@@ -467,30 +467,73 @@ face_mood_report() {
     [ "${FACE_ENABLED:-0}" = 1 ] || return 0
     DESKCRAB_FACE_SOCKET="$FACE_SOCKET" python3 - "$LIB_DIR" "$STATE_PREFIX" <<'PY' 2>/dev/null
 import datetime
+import json
 import sys
+import time
 
 sys.path.insert(0, sys.argv[1])
 import face_state
 
 state = face_state.get_state(timeout=0.35)
-if not state or not state.get("mood"):
+if not state:
     raise SystemExit(0)
-mood = state["mood"]
-reason = " ".join(str(state.get("mood_reason") or "").split())
-source = " ".join(str(state.get("mood_source") or "unspecified").split())
-origin = " ".join(str(state.get("mood_origin") or "origin unavailable").split())
-source_ref = " ".join(str(state.get("mood_source_ref") or "").split())
-set_at = state.get("mood_set_at")
-when = datetime.datetime.fromtimestamp(set_at).strftime("%H:%M") if set_at else "time unknown"
-provenance = origin + ((", reference: " + source_ref) if source_ref else "")
-if reason:
-    print(f"How you feel: {mood} — {reason} (source: {source}; "
-          f"origin: {provenance}; updated {when}).")
+
+
+def when(ts):
+    return (datetime.datetime.fromtimestamp(ts).strftime("%H:%M")
+            if ts else "time unknown")
+
+
+mood = state.get("mood")
+if mood:
+    reason = " ".join(str(state.get("mood_reason") or "").split())
+    source = " ".join(str(state.get("mood_source") or "unspecified").split())
+    origin = " ".join(str(state.get("mood_origin") or "origin unavailable").split())
+    source_ref = " ".join(str(state.get("mood_source_ref") or "").split())
+    provenance = origin + ((", reference: " + source_ref) if source_ref else "")
+    at = when(state.get("mood_set_at"))
+    if reason:
+        print(f"How you feel: {mood} — {reason} (source: {source}; "
+              f"origin: {provenance}; updated {at}).")
+    else:
+        print(f"How you feel: {mood} — no specific reason was recorded "
+              f"(source: {source}; origin: {provenance}; updated {at}; "
+              f"source record: {face_state.MOOD_JOURNAL}; "
+              f"details: crab face status).")
 else:
-    print(f"How you feel: {mood} — no specific reason was recorded "
-          f"(source: {source}; origin: {provenance}; updated {when}; "
-          f"source record: {sys.argv[2]}-face-auto.log; "
-          f"details: crab face status).")
+    print("How you feel: no mood is standing right now.")
+
+# Rule 42a's Recent feelings tail: the last few shifts from the durable
+# journal (rule 42b), including ones the stale-turn guard never displayed.
+rows = []
+try:
+    with open(face_state.MOOD_JOURNAL, "rb") as fh:
+        fh.seek(0, 2)
+        fh.seek(max(0, fh.tell() - 65536))
+        blob = fh.read().decode("utf-8", "replace")
+    for line in blob.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("event") == "set":
+            rows.append(row)
+except OSError:
+    rows = []
+cut = time.time() - 6 * 3600
+rows = [r for r in rows if (r.get("ts") or 0) >= cut][-5:]
+if rows:
+    parts = []
+    for r in rows:
+        bit = (f"{when(r.get('ts'))} {r.get('mood', '?')} — "
+               f"{' '.join(str(r.get('reason') or 'no reason recorded').split())}")
+        about = " ".join(str(r.get("source") or "").split())
+        if about and about != "source unavailable":
+            bit += f" (about {about})"
+        if not r.get("applied", True):
+            bit += " [felt in passing; never shown]"
+        parts.append(bit)
+    print("Recent feelings (last 6 h): " + "; ".join(parts) + ".")
 PY
 }
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root

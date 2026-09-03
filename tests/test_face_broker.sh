@@ -13,6 +13,7 @@ REPO_DIR="$SANDBOX_REPO"
 T="$SANDBOX"
 export DESKCRAB_FACE_SOCKET="$T/face.sock"
 export DESKCRAB_FACE_STATE="$T/face-state.json"
+export DESKCRAB_MOOD_JOURNAL="$T/mood-journal.jsonl"
 # This suite exercises the pre-presence layers in isolation. Its broker has no
 # observer process; retain the fresh neutral aggregate while those cases run.
 export DESKCRAB_FACE_AMBIENT_ACTIVITY_STALE=3600
@@ -244,7 +245,19 @@ check "the current turn's own result lands" \
     bash -c 'DESKCRAB_FACE_TURN=turn-live python3 "$0/lib/face-broker" \
         mood pleased >/dev/null
         python3 "$0/lib/face-broker" | grep -q "mood=pleased"' "$REPO_DIR"
+check "every mood decision is in the durable journal, discarded ones included (rule 42b)" \
+    python3 - "$T/mood-journal.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+sets = [r for r in rows if r["event"] == "set"]
+stale = [r for r in sets if not r["applied"]]
+assert any(r["mood"] == "pleased" and r["applied"] for r in sets), rows
+assert any(r["mood"] == "annoyed" and "stale" in r["note"] for r in stale), rows
+assert any(r["event"] in ("cleared", "rest-cleared") for r in rows), rows
+PY
 FB rest >/dev/null; FB activity resting >/dev/null
+check "her rest lands in the journal too (rule 42b)" \
+    bash -c 'grep -q "\"event\":\"rest-cleared\"" "$1"' _ "$T/mood-journal.jsonl"
 
 echo
 echo "decay and disable switches — nothing automatic is permanent (rules 39, 41):"

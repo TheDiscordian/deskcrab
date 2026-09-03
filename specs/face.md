@@ -307,14 +307,31 @@ These rules define the ONLY automatic paths, all below her hand.
     `FACE_AUTO_EXPRESSION` (and `FACE_ENABLED`); bounded by
     `FACE_AUTO_TIMEOUT`; every failure, refusal, or unparseable answer
     changes nothing and is one line in `${STATE_PREFIX}-face-auto.log`.
-42a. A current standing mood MUST appear in the assistant's self-state prompt
-    as `How you feel`, followed by its stored reason, concrete subject source,
-    mechanical origin, and turn reference. When a retained record predates a
-    usable reason or source, its update time, origin, reference, and face-updater
-    log path still appear, so she can inspect the concrete originating record.
-    Naming only the automatic updater is never a source. This is a read of the
-    broker's existing record: it runs no classifier and starts no broker while
-    the prompt waits.
+42a. Mood self-knowledge in the prompt: when the broker answers, the
+    assistant's self-state prompt carries `How you feel` — the standing mood
+    with its stored reason, concrete subject source, mechanical origin, and
+    turn reference, or a plain statement that no mood stands. It is followed
+    by `Recent feelings`: the last few entries of the mood journal (rule 42b)
+    inside a short window, each with its time, mood word, and reason, marked
+    when the stale-turn guard kept it off the display — so she knows how she
+    has been feeling and why, not merely how she feels this minute. When a
+    retained record predates a usable reason or source, its update time,
+    origin, reference, and journal path still appear, so she can inspect the
+    concrete originating record. Naming only the automatic updater is never a
+    source. This is a read of the broker's existing record and the journal's
+    tail: it runs no classifier and starts no broker while the prompt waits.
+42b. Every mood decision is journalled durably, applied or not. Each set,
+    each stale-discarded set, each clear (an explicit `neutral`, a `rest`, or
+    a stale-discarded clear), and each decay appends one line — epoch, event,
+    mood word, reason, subject source, mechanical origin, turn reference, the
+    applied flag, and the guard's note when it was not applied — to
+    `DESKCRAB_MOOD_JOURNAL` (default
+    `~/.local/share/deskcrab/mood-journal.jsonl`). The stale-turn guard keeps
+    deciding what the face SHOWS; the journal records what she FELT — a
+    classification that arrived too late to repaint the face is still a real
+    reading of a real exchange, and losing it from the display must never
+    lose it from her record. The journal is append-only and survives reboots;
+    a journal write failure never fails the broker call that produced it.
 43. Resolution order, in the broker's snapshot so every surface agrees:
     explicit/event expression > true-idle `sleeping` > automatic expression
     > mood > activity map > `resting`. Sleep's special position is rule 59:
