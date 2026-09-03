@@ -394,6 +394,24 @@ ledger.
      a named path nowhere fresh on disk are judged exactly as before, and an unreadable games
      dir, game file, or path degrades to today's judgement with the fall-through named on the
      run trace — never a crash, and never a silent acquittal.
+32bb. Her code work exists as COMMITS, and no other record can see one. The named-files
+     section stats paths, but a commit leaves the working tree exactly as it was: the same
+     mtimes stand whether the change was staged and committed or left lying about, so a
+     claim about committing is invisible to every section rule 32b lists. On 2026-09-02 at
+     22:55 the reply "committing my three paths only, since another hand has files in this
+     tree" was ruled UNKEPT while the commit sat in the log one minute later carrying
+     precisely those three paths and no others. So the judged evidence MUST carry one more
+     labelled section: every commit that landed in her repositories within the same evidence
+     window, newest last, each with its time, repository, short hash, author, subject and the
+     files it touched. Gathering is mechanical and model-free (`lib/promise_commits.py`),
+     reading `git log --all --no-merges` per repository so a builder's own branch counts, and
+     bounded — 24 commits, 12 files each, a section budget. The repositories are her workdir
+     (`PROJECT_DIR`) and the repositories one level under her code and game roots, overridable
+     wholesale with `DESKCRAB_COMMIT_REPOS` (colon-separated). This section fails SOFT exactly
+     as the others do: a repository that cannot be read is NAMED as unread inside the section
+     and on the run trace, an empty window says so in words, and neither is ever presented as
+     an acquittal. And it loosens nothing: a commit claim no repository's log shows is judged
+     exactly as before.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the

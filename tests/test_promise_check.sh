@@ -650,7 +650,18 @@ cat > "$T/model-stdin"
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"CLEAN"}]}}'
 printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
-DESKCRAB_GAME_DIR="$T/gamefix" \
+# And a repository of hers with one commit inside the swept day (rule 32bb):
+# a day's code work exists as commits, which no mtime record can see.
+SWEEPREPO="$T/sweep-repo"
+mkdir -p "$SWEEPREPO"
+git init -q -b main "$SWEEPREPO"
+git -C "$SWEEPREPO" config user.email t@example.com
+git -C "$SWEEPREPO" config user.name Tester
+printf 'a\n' > "$SWEEPREPO/retreat.md"
+git -C "$SWEEPREPO" add -- retreat.md
+GIT_AUTHOR_DATE="${DAY}T14:20:00" GIT_COMMITTER_DATE="${DAY}T14:20:00" \
+    git -C "$SWEEPREPO" commit -qm "Write the retreat doctrine down"
+DESKCRAB_GAME_DIR="$T/gamefix" DESKCRAB_COMMIT_REPOS="$SWEEPREPO" \
     "$T/repo/lib/promise-check" sweep "$DAY" >/dev/null 2>&1
 check "the named-files section reached the judge" \
     grep -q "FILES THE DAY'S REPLIES NAME, AS THEY STAND ON DISK" "$T/model-stdin"
@@ -674,6 +685,14 @@ check "the instructions hand the artefact standard to the judge" \
     grep -q "whoever's hand wrote it" "$T/model-stdin"
 check "and the resident player's" \
     grep -q "outside every speaking turn" "$T/model-stdin"
+check "the day's commits reached the judge as their own section" \
+    grep -q "COMMITS THAT LANDED IN HER REPOSITORIES THAT DAY" "$T/model-stdin"
+check "carrying the commit no file's mtime could have shown" \
+    grep -qF "Write the retreat doctrine down" "$T/model-stdin"
+check "at its own time inside the swept day" \
+    grep -qF "$DAY 14:20" "$T/model-stdin"
+check "and the judge is told a commit claim is judged against it alone" \
+    grep -qF "a commit changes no file's modification time" "$T/model-stdin"
 check_eq "a CLEAN verdict over the widened evidence books and ledgers nothing" \
     "$(ledger_n)$(records)" "00"
 

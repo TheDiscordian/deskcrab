@@ -407,6 +407,7 @@ CONF
         DESKCRAB_SANDBOX_SETTLE="${DESKCRAB_SANDBOX_SETTLE:-}" \
         DESKCRAB_SANDBOX_VIGIL="${DESKCRAB_SANDBOX_VIGIL:-}" \
         DESKCRAB_GAME_STATE_DIR="$_sb_root/state/game" \
+        DESKCRAB_COMMIT_REPOS="$_sb_root/repos" \
         OPENRSC_STATE_DIR="$_sb_root/state/game" \
         DESKCRAB_OPENRSC_STATE_DIR="$_sb_root/state/game" \
         MEMORY_PYTHON="$_sb_venv" \

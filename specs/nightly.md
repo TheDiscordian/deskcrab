@@ -517,8 +517,8 @@ night is where the day's promises are settled honestly, from the whole record at
     sweep's judge classifies each commitment's polarity before fulfilment and drops the
     negative unjudged.
 52a. The sweep's judge reads more than the day's own turns, because the day's work is wider
-    than its speech. Two further records ride the sweep's prompt as their own labelled
-    sections, both gathered mechanically and model-free: every path-shaped token the day's
+    than its speech. Three further records ride the sweep's prompt as their own labelled
+    sections, all gathered mechanically and model-free: every path-shaped token the day's
     replies name, statted from the disk itself — exists, with its modification time, or NOT
     found — because a dated artefact whose mtime is consistent with the claim is the claim's
     own witness, whoever's hand wrote it and however compressed the speaking turn's outcome
@@ -527,7 +527,9 @@ night is where the day's promises are settled honestly, from the whole record at
     `DESKCRAB_GAME_DIR`), digested and bounded, because the resident player works outside
     every speaking turn by design — its acts land on the game's own record and on no journal
     row, so a commitment about the game is judged against that record, never against the
-    turns' silence. The 2026-08-28 sweep called fifty commitments missing and direct
+    turns' silence; and the day's commits across her repositories
+    ([turn-pipeline.md](turn-pipeline.md) rule 32bb), because a day's code work exists as
+    commits and the mtime record cannot see them. The 2026-08-28 sweep called fifty commitments missing and direct
     verification found forty-five fulfilled in exactly these records (the record
     `the-end-of-day-promise-sweep-calls-existing-arte`): a blank instrument was promoted into
     a fact about the world. Either section failing to gather is presented AS unreadable and
