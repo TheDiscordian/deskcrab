@@ -160,7 +160,7 @@ class TestSearch(StoreCase):
                           kind="note", topics="weather")
 
     def test_relevant_record_ranks_first(self):
-        rows, embed_ms, knn_ms = self.store.search(
+        rows, embed_ms, knn_ms, _ = self.store.search(
             "which World of Warcraft character does he play")
         self.assertTrue(rows)
         self.assertIn("Xena", rows[0][1])
@@ -171,7 +171,7 @@ class TestSearch(StoreCase):
     def test_search_bumps_last_seen(self):
         before = self.store.db.execute(
             "SELECT last_seen FROM memories WHERE id=1").fetchone()[0]
-        rows, _, _ = self.store.search("wow paladin character")
+        rows, _, _, _ = self.store.search("wow paladin character")
         after = self.store.db.execute(
             "SELECT last_seen FROM memories WHERE id=1").fetchone()[0]
         self.assertIn(1, [r[0] for r in rows])
@@ -182,7 +182,7 @@ class TestSearch(StoreCase):
         # slots: the second is squashed at >= NEAR_DUP_SIM to the first.
         self.store.insert("His character Xena is a Paladin on DiscoWoW.",
                           kind="note", topics="wow, gaming")
-        rows, _, _ = self.store.search("which character does he play in WoW")
+        rows, _, _, _ = self.store.search("which character does he play in WoW")
         xena_rows = [r for r in rows if "Xena" in r[1]]
         self.assertEqual(len(xena_rows), 1)
 
@@ -191,7 +191,7 @@ class TestSearch(StoreCase):
         # clears DIRECTIVE_FLOOR. Force the cut with k=1 on a related query.
         self.store.insert("When he asks about WoW rankings, always check the "
                           "DiscoWoW highscores first.", kind="directive")
-        rows, _, _ = self.store.search("look up a World of Warcraft character", k=1)
+        rows, _, _, _ = self.store.search("look up a World of Warcraft character", k=1)
         kinds = [r[2] for r in rows]
         self.assertIn("directive", kinds)
         self.assertGreater(len(rows), 1)
@@ -225,7 +225,7 @@ class TestDedupSupersede(StoreCase):
         self.assertEqual(old, "superseded")
         self.assertEqual(link, old_id)
         # The superseded record is gone from retrieval; the newer one answers.
-        rows, _, _ = self.store.search("what time should he be woken up")
+        rows, _, _, _ = self.store.search("what time should he be woken up")
         ids = [r[0] for r in rows]
         self.assertIn(new_id, ids)
         self.assertNotIn(old_id, ids)
@@ -616,7 +616,7 @@ class TestRecallBlock(StoreCase):
         self.store.insert("Stay silent during his meetings.", kind="directive")
         self.store.insert("The render-md NON_UNIQUE fix landed on main.",
                           kind="note")
-        rows, _, _ = self.store.search("meetings and render-md work")
+        rows, _, _, _ = self.store.search("meetings and render-md work")
         block = memory.format_block(rows)
         self.assertIn("## What I remember", block)
         self.assertIn("What I hold to:", block)
@@ -1145,14 +1145,14 @@ class TestHiddenKinds(StoreCase):
         the NEXT asking of the same question — and it must lose anyway,
         because surfacing it reads a record of not-knowing as knowledge."""
         self.seed()
-        rows, _, _ = self.store.search("what did the doctor say about my knee")
+        rows, _, _, _ = self.store.search("what did the doctor say about my knee")
         ids = [r[0] for r in rows]
         self.assertIn(self.note, ids)
         self.assertNotIn(self.miss, ids)
         self.assertNotIn(self.obs, ids)
         # Excluded, not merely under the floor: asked DELIBERATELY, the same
         # query finds the miss, and finds it matching strongly.
-        rows, _, _ = self.store.search("what did the doctor say about my knee",
+        rows, _, _, _ = self.store.search("what did the doctor say about my knee",
                                        deliberate=True)
         by_id = {r[0]: r for r in rows}
         self.assertIn(self.miss, by_id)
@@ -1161,9 +1161,9 @@ class TestHiddenKinds(StoreCase):
     def test_an_observation_never_surfaces_however_well_it_matches(self):
         self.seed()
         query = "he goes quiet and then comes back to the same subject"
-        rows, _, _ = self.store.search(query)
+        rows, _, _, _ = self.store.search(query)
         self.assertNotIn(self.obs, [r[0] for r in rows])
-        rows, _, _ = self.store.search(query, deliberate=True)
+        rows, _, _, _ = self.store.search(query, deliberate=True)
         by_id = {r[0]: r for r in rows}
         self.assertIn(self.obs, by_id)
         self.assertGreater(by_id[self.obs][9], memory.SIM_FLOOR)
@@ -1297,7 +1297,7 @@ class TestEpisodic(StoreCase):
         rec = self.seed_moment()
         self.store.insert("Correct robot-voice pronunciation before speaking.",
                           kind="note")
-        rows, _, _ = self.store.search(
+        rows, _, _, _ = self.store.search(
             "that evening we laughed about bad sci-fi films")
         self.assertIn(rec, [r[0] for r in rows])
 
@@ -1332,7 +1332,7 @@ class TestEpisodic(StoreCase):
         try:
             for query in ("what happened on August 5th?",
                           "the evening of 2026-08-05"):
-                rows, _, _ = self.store.search(query)
+                rows, _, _, _ = self.store.search(query)
                 episodic = {r[0]: r for r in rows if r[2] == "episodic"}
                 self.assertIn(rec, episodic, query)
                 self.assertEqual(episodic[rec][9], 1.0, query)
@@ -1743,7 +1743,7 @@ class TestSearchScoring(StoreCase):
                           kind="directive")
         self.store.insert("Never spend gold from his WoW characters.",
                           kind="directive")
-        rows, _, _ = self.store.search("which WoW character does he play", k=1)
+        rows, _, _, _ = self.store.search("which WoW character does he play", k=1)
         self.assertIn("note", [r[2] for r in rows])
 
     def test_decay_dims_but_never_buries_the_better_match(self):
@@ -1759,7 +1759,7 @@ class TestSearchScoring(StoreCase):
             return ids.index(a) < ids.index(b)
 
         query = "which character does he play on DiscoWoW"
-        rows, _, _ = self.store.search(query)
+        rows, _, _, _ = self.store.search(query)
         self.assertTrue(order(rows))  # raw similarity favours the Xena note
         # Age the Xena note far past the half-life (never used -> decays from
         # creation): rule 12's clamp dims it by at most the clamp floor, so
@@ -1767,11 +1767,11 @@ class TestSearchScoring(StoreCase):
         self.store.db.execute("UPDATE memories SET created=? WHERE id=?",
                               (days_ago(400), a))
         self.store.db.commit()
-        rows, _, _ = self.store.search(query)
+        rows, _, _, _ = self.store.search(query)
         self.assertTrue(order(rows))
         # And a genuine use lifts it clear again either way.
         self.store.reinforce([a])
-        rows, _, _ = self.store.search(query)
+        rows, _, _, _ = self.store.search(query)
         self.assertTrue(order(rows))
 
 
@@ -1846,7 +1846,7 @@ class TestScopedRecall(StoreCase):
             "At the desk, finish the chess benchmark before opening mail.",
             kind="directive", pinned=True)
 
-        rows, _, _ = self.store.search(
+        rows, _, _, _ = self.store.search(
             "OpenRSC Demon Slayer quest facts and learned play mistakes",
             scope=("OpenRSC", "RuneScape", "Demon Slayer"),
             k=6, directive_cap=4, episodic_cap=3, max_chars=2000)
@@ -2831,7 +2831,7 @@ class TestCommitmentSurvivesTheNight(StoreCase):
         query = ("the chess chat doesn't feel nearly as good as the mobile "
                  "interface — I thought you said you were going to improve "
                  "it, did that happen?")
-        picked, _, _ = self.store.search(query)
+        picked, _, _, _ = self.store.search(query)
         notes = [r for r in picked if r[2] == "note"]
         self.assertTrue(notes and notes[0][0] == rec_id,
                         "the commitment must be the top note when its "

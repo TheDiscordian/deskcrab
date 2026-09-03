@@ -60,11 +60,60 @@ EMBED_URL = os.environ.get("MEMORY_EMBED_URL") or "http://localhost:11434/api/em
 # looser floor, capped, so the assistant's own chatter can never crowd the
 # user's rules out. Near-duplicates of an already-taken record are squashed so
 # K slots hold K distinct things.
+#
+# The floors are set from the measured spread of KEYED retrieval (rule 13d),
+# 2026-09-03, against a /tmp copy of the live store (2,119 keyed of 2,165
+# active records) with 160 real queries sampled from the journal — 80
+# distinct turn messages, 80 wake agendas — through tools/floor-probe. The
+# lowest similarity a real query's TAKEN row carried: note 0.504, directive
+# 0.495, episodic 0.489. Each floor sits just under its pool's observed
+# bottom, so no row retrieval takes today is lost, while the pool bulk (the
+# corpus median sits near 0.44) now genuinely falls under them — the old
+# floors (0.35 / 0.28 / 0.30) sat below every active row on every query and
+# selected nothing. An interim recalibration to 0.52 / 0.48 / 0.50 measured
+# only best-match bands; against per-query taken sets it cut real rows
+# (notes to 0.504, episodics to 0.489), so these sit lower.
+#
+# Every floor here resolves environment first, conf second, shipped default
+# last (the nightly.md rule 21e convention, same shape as lib/tidy-claims):
+# MEMORY_SIM_FLOOR, MEMORY_DIRECTIVE_FLOOR, MEMORY_EPISODIC_FLOOR,
+# MEMORY_SIM_MARGIN, MEMORY_ABSTAIN_FLOOR, MEMORY_NULL_CEILING. The module
+# constants are the shipped defaults.
 TOP_K = 8
-SIM_FLOOR = 0.35
-DIRECTIVE_FLOOR = 0.28
+SIM_FLOOR = 0.50
+DIRECTIVE_FLOOR = 0.49
 DIRECTIVE_CAP = 10
 NEAR_DUP_SIM = 0.92
+# The relative floor: a row more than this far (raw cosine) below the
+# query's own best match is cut whatever the absolute floors say. Measured
+# spread between a real query's best match and its lowest taken row peaked
+# at 0.178 (wake directives); 0.25 clears that with headroom and still
+# bounds the pathological tail no absolute floor can (a 0.85 best dragging
+# 0.55 trailers into the block).
+SIM_MARGIN = 0.25
+# Abstention (rule 13f): raw cosine against this embedder cannot say "I know
+# nothing" — the record's probes measured gibberish at best 0.535, German
+# prose 0.525, and a bare full stop at best 0.724, MEDIAN 0.681, higher than
+# the eighth-best note of a median real turn. The instrument that can: embed
+# the empty query alongside the real one (one batched call — the bare
+# "search_query: " prefix is the contentless direction), project it out of
+# the query vector, and ask what similarity survives. Measured 2026-09-03
+# over the same 160 real queries: every real query's corrected best ≥ 0.199,
+# while gibberish scored 0.163, German prose 0.174, an unrelated historical
+# topic 0.163. ABSTAIN_FLOOR sits at 0.18 — under the real band by 0.019, so
+# the lose-nothing rule holds with the cut biased toward keeping real
+# queries. The full stop separates on the other axis: its raw cosine TO the
+# contentless direction is 0.910 where no real query exceeded 0.815;
+# NULL_CEILING at 0.86 splits that gap. One probe — a coherent unrelated
+# technical sentence — measured corrected-best 0.221, inside the real band's
+# tail (real minima 0.199-0.215): no function of this embedder's similarity
+# distribution separates it from a terse genuine turn, which answers the
+# record's open question (a) — raw cosine, corrected or not, cannot cut a
+# coherent off-corpus sentence without cutting real queries. That residual
+# gap is accepted and documented rather than papered over with an overfit
+# threshold.
+ABSTAIN_FLOOR = 0.18
+NULL_CEILING = 0.86
 # Reinforcement scoring (13:15 design revision). Notes rank by
 #   score = cosine × confidence × decay(last_used_at) × (1 + log(1+use_count) × 0.15)
 # Decay counts from the last USE, never creation — a memory used all the time
@@ -222,7 +271,7 @@ RECORD_KINDS = RECALL_KINDS + HIDDEN_KINDS
 # SIM_FLOOR on purpose — rule 50's whole argument is more memories, scored,
 # over few memories, curated.
 EPISODIC_TOP_K = 5
-EPISODIC_FLOOR = 0.30
+EPISODIC_FLOOR = 0.485
 # A query that NAMES a calendar day gets that day's moments regardless of the
 # similarity floor (rule 48) — "what happened on the 5th" embeds nowhere near
 # the evening itself — capped so one crowded day cannot flood a block.
@@ -356,6 +405,64 @@ _QUERY_DMY_RE = re.compile(
     r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?("
     + "|".join(m[:3] + r"(?:" + m[3:] + r")?" for m in _MONTH_NAMES)
     + r")\.?(?:\s*,?\s*(20\d\d))?\b", re.I)
+
+
+# --- retrieval knob resolution (nightly.md rule 21e shape) ------------------
+# Environment first, conf second, shipped default last — the same walk
+# lib/tidy-claims makes, for the same reason: common.sh does not blanket-
+# export conf values, so an environment-only read would leave the live
+# conf's floors invisible to every process common.sh spawns. When a knob is
+# absent from the environment, ONE subshell asks a bash that sources
+# common.sh (and through it the conf, $HOME expansion and all) from this
+# script's own realpath-resolved directory; a missing, broken or slow
+# common.sh degrades silently to the shipped defaults — retrieval never
+# raises over configuration. The conf answer is cached per process; the
+# environment is re-read per call, so a test may flip a knob between
+# searches without re-importing.
+
+RETRIEVAL_KNOBS = ("MEMORY_SIM_FLOOR", "MEMORY_DIRECTIVE_FLOOR",
+                   "MEMORY_EPISODIC_FLOOR", "MEMORY_SIM_MARGIN",
+                   "MEMORY_ABSTAIN_FLOOR", "MEMORY_NULL_CEILING")
+_RETRIEVAL_CONF = None
+
+
+def _conf_fallback(names):
+    """name -> the conf's value, for every name the conf answers non-empty.
+    One subshell for all of them; any failure at all is {} and the defaults
+    stand."""
+    if not names:
+        return {}
+    lib_dir = os.path.dirname(os.path.realpath(__file__))
+    script = '. "%s/common.sh" >/dev/null 2>&1 || exit 1\n' % lib_dir
+    script += "".join('printf \'%%s\\036\' "${%s:-}"\n' % n for n in names)
+    try:
+        r = subprocess.run(["bash", "-c", script], capture_output=True,
+                           text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    vals = r.stdout.split("\x1e")
+    if len(vals) != len(names) + 1:
+        return {}
+    return {n: v for n, v in zip(names, vals) if v}
+
+
+def _float_knob(name, default):
+    """One retrieval knob: environment, then conf, then the shipped default.
+    A value that does not parse as a float falls to the default — a broken
+    conf line must not silence retrieval."""
+    global _RETRIEVAL_CONF
+    raw = os.environ.get(name) or ""
+    if not raw:
+        if _RETRIEVAL_CONF is None:
+            _RETRIEVAL_CONF = _conf_fallback(
+                [n for n in RETRIEVAL_KNOBS if not os.environ.get(n)])
+        raw = _RETRIEVAL_CONF.get(name) or ""
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
 
 
 def query_dates(text, today=None):
@@ -799,7 +906,17 @@ class Store:
         everything above the deliberately looser DIRECTIVE_FLOOR (capped, raw
         cosine — never decayed or boosted), and every pinned record rides
         along regardless. Near-duplicates of an already-taken record are
-        squashed so K slots hold K distinct things.
+        squashed so K slots hold K distinct things. Every floor resolves
+        environment first, conf second, shipped default last (_float_knob),
+        a relative floor cuts rows more than SIM_MARGIN below the query's
+        best match, and the whole similarity retrieval may ABSTAIN (rule
+        13f): the returned tuple's fourth element is "" when the pools were
+        searched normally, or a reason — "null-query" (the query is the
+        contentless direction), "low-signal" (best null-projected similarity
+        under MEMORY_ABSTAIN_FLOOR), "empty" (the floors cut everything) —
+        when the block should say nothing relevant was retrieved. Pinned
+        rows and rule-48 date rows ride through an abstention: they are
+        explicit asks, not similarity matches.
 
         The default query is restricted to those two kinds IN THE SQL —
         observations and misses never reach a prompt this way, however well
@@ -813,12 +930,50 @@ class Store:
         to pinned rows too. `max_chars` bounds selection against the rendered
         block; build_block still renders every selected row whole."""
         t0 = time.monotonic()
-        qvec = embed([query], query=True)[0]
+        # One batched call embeds the query AND the contentless query (the
+        # bare task prefix): the second vector is the abstain instrument's
+        # reference direction, and batching it costs no extra round trip.
+        qvec, nullvec = embed([query, ""], query=True)
         t1 = time.monotonic()
+        sim_floor = _float_knob("MEMORY_SIM_FLOOR", SIM_FLOOR)
+        dir_floor = _float_knob("MEMORY_DIRECTIVE_FLOOR", DIRECTIVE_FLOOR)
+        epi_floor = _float_knob("MEMORY_EPISODIC_FLOOR", EPISODIC_FLOOR)
+        margin = _float_knob("MEMORY_SIM_MARGIN", SIM_MARGIN)
+        abstain_floor = _float_knob("MEMORY_ABSTAIN_FLOOR", ABSTAIN_FLOOR)
+        null_ceiling = _float_knob("MEMORY_NULL_CEILING", NULL_CEILING)
         terms = normalize_scope_terms(scope)
-        rows = self.knn(qvec, 0, kinds=None if deliberate else RECALL_KINDS)
+        kinds = None if deliberate else RECALL_KINDS
+        rows = self.knn(qvec, 0, kinds=kinds)
         if terms:
             rows = [row for row in rows if row_matches_scope(row, terms)]
+        # The abstain instrument (rule 13f). Raw cosine cannot say "I know
+        # nothing" — a bare full stop out-scores real queries. Project the
+        # contentless-query direction out of the query vector and ask what
+        # similarity survives; a query that IS mostly that direction, or
+        # whose best corrected match falls under the calibrated bar, gets
+        # the abstained result instead of a full block of noise.
+        abstained = ""
+        qn = math.sqrt(sum(a * a for a in qvec))
+        nn = math.sqrt(sum(a * a for a in nullvec))
+        if qn < 1e-9 or nn < 1e-9:
+            abstained = "null-query"
+        else:
+            nhat = [a / nn for a in nullvec]
+            ndot = sum(a * b for a, b in zip(qvec, nhat))
+            if ndot / qn >= null_ceiling:
+                abstained = "null-query"
+            else:
+                proj = [a - ndot * b for a, b in zip(qvec, nhat)]
+                pn = math.sqrt(sum(a * a for a in proj))
+                if pn < 1e-9:
+                    abstained = "null-query"
+                else:
+                    crows = self.knn([a / pn for a in proj], 0, kinds=kinds)
+                    if terms:
+                        crows = [r for r in crows
+                                 if row_matches_scope(r, terms)]
+                    if not crows or crows[0][9] < abstain_floor:
+                        abstained = "low-signal"
         now = datetime.now().astimezone()
         picked, seen = [], set()
 
@@ -834,42 +989,62 @@ class Store:
             seen.add(row[0])
             return True
 
-        notes = sorted((r for r in rows if r[2] == "note" and r[9] >= SIM_FLOOR),
-                       key=lambda r: score_row(r, now), reverse=True)
-        taken = 0
-        for row in notes:
-            if taken >= k:
-                break
-            taken += take(row)
-        # The episodic pool (rule 47): her own moments, a third pool with its
-        # own floor and cap so no kind crowds another out, ranked by the
-        # episodic score — similarity × floored occurred-recency × use bonus.
-        episodic = sorted((r for r in rows
-                           if r[2] == "episodic" and r[9] >= EPISODIC_FLOOR),
-                          key=lambda r: score_row(r, now), reverse=True)
-        etaken = 0
-        for row in episodic:
-            if etaken >= episodic_cap:
-                break
-            etaken += take(row)
+        # The relative floor: nothing more than `margin` below the query's
+        # own best match, whatever the absolute floors say.
+        rel_floor = (rows[0][9] - margin) if rows else 0.0
+        sim_taken = 0
+        if not abstained:
+            notes = sorted((r for r in rows if r[2] == "note"
+                            and r[9] >= sim_floor and r[9] >= rel_floor),
+                           key=lambda r: score_row(r, now), reverse=True)
+            taken = 0
+            for row in notes:
+                if taken >= k:
+                    break
+                taken += take(row)
+            sim_taken += taken
+            # The episodic pool (rule 47): her own moments, a third pool with
+            # its own floor and cap so no kind crowds another out, ranked by
+            # the episodic score — similarity × floored occurred-recency ×
+            # use bonus.
+            episodic = sorted((r for r in rows if r[2] == "episodic"
+                               and r[9] >= epi_floor and r[9] >= rel_floor),
+                              key=lambda r: score_row(r, now), reverse=True)
+            etaken = 0
+            for row in episodic:
+                if etaken >= episodic_cap:
+                    break
+                etaken += take(row)
+            sim_taken += etaken
         # Rule 48: a query that names a calendar day gets that day's moments
         # whatever their similarity — "what happened on the 5th" embeds
-        # nowhere near the evening itself.
+        # nowhere near the evening itself. An explicit ask, not a similarity
+        # match, so it rides through an abstention too.
         for row in self.on_date(query_dates(query), cap=EPISODIC_DATE_CAP):
             take(row)
-        directives = 0
-        for row in rows:
-            if directives >= directive_cap:
-                break
-            if row[2] == "directive" and row[9] >= DIRECTIVE_FLOOR:
-                directives += take(row)
-        if deliberate:
-            hidden = 0
+        if not abstained:
+            directives = 0
             for row in rows:
-                if hidden >= k:
+                if directives >= directive_cap:
                     break
-                if row[2] in HIDDEN_KINDS and row[9] >= SIM_FLOOR:
-                    hidden += take(row)
+                if row[2] == "directive" and row[9] >= dir_floor \
+                        and row[9] >= rel_floor:
+                    directives += take(row)
+            sim_taken += directives
+            if deliberate:
+                hidden = 0
+                for row in rows:
+                    if hidden >= k:
+                        break
+                    if row[2] in HIDDEN_KINDS and row[9] >= sim_floor \
+                            and row[9] >= rel_floor:
+                        hidden += take(row)
+                sim_taken += hidden
+            # Floors that cut everything are themselves an answer: the
+            # similarity retrieval came back with nothing, and the caller
+            # gets to see that rather than a silently thinner block.
+            if sim_taken == 0:
+                abstained = "empty"
         for row in self.pinned_rows():
             # General recall's pinned tier is unconditional and predates the
             # near-duplicate rule: preserve it exactly. A specialised scope
@@ -889,7 +1064,7 @@ class Store:
             self.db.executemany("UPDATE memories SET last_seen=? WHERE id=?",
                                 [(now, r[0]) for r in picked])
             self.db.commit()
-        return picked, (t1 - t0) * 1000, (t2 - t1) * 1000
+        return picked, (t1 - t0) * 1000, (t2 - t1) * 1000, abstained
 
     def add_deduped(self, text, kind="note", pinned=False, source="self",
                     topics="", occurred=None, participants="", opinion="",
@@ -1668,7 +1843,7 @@ def cmd_recall_block(store, args):
         print(block, end="" if not rows else "\n")
         return 0
     try:
-        rows, _, _ = store.search(
+        rows, _, _, abstained = store.search(
             query, k=args.notes, scope=args.scope,
             directive_cap=args.directives, episodic_cap=args.episodes,
             max_chars=args.max_chars)
@@ -1684,7 +1859,11 @@ def cmd_recall_block(store, args):
         if block:
             print(block)
         return 0
-    block, kept = build_block(rows)
+    # An abstention is legible, never silent (rule 13f): one neutral marker
+    # under the header says the similarity retrieval found nothing relevant,
+    # while pinned rows and rule-48 date rows still render beneath it.
+    marker = "(nothing relevant retrieved)" if abstained else ""
+    block, kept = build_block(rows, marker)
     write_ids_out(args.ids_out, kept)
     if block:
         print(block)
@@ -2929,11 +3108,14 @@ def cmd_search(store, args):
     # A typed query is a deliberate read (rule 43): the hidden kinds are
     # matched and shown here, and only here — never by the recall block.
     query = " ".join(args.query).strip()
-    rows, embed_ms, knn_ms = store.search(query, k=args.n, deliberate=True)
+    rows, embed_ms, knn_ms, abstained = store.search(query, k=args.n,
+                                                     deliberate=True)
     for r in rows:
         flags = ("" if not r[3] else " pinned") + \
                 ("" if not r[11] else f" used×{r[11]}")
         print(f"{r[9]:.3f}  #{r[0]:<4} {r[2]:<9}{flags} {r[1]}  ({r[7][:10]})")
+    if abstained:
+        print(f"-- abstained ({abstained}): nothing relevant retrieved")
     print(f"-- {len(rows)} records in {embed_ms + knn_ms:.1f} ms "
           f"(embed {embed_ms:.1f} ms + knn {knn_ms:.1f} ms)")
     return 0

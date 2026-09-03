@@ -77,6 +77,43 @@ life, and she re-reads that store every single turn.
     clears is a dead letter, and retrieval decays into cap-only selection. Floor values are set
     from the measured similarity spread of KEYED retrieval, and re-measured whenever the
     embedding source changes shape.
+13e. The floor values are calibrated, not chosen, and each sits just under the bottom of its
+    pool's measured taken band so no row a real query takes is lost to a floor: measured
+    2026-09-03 through `tools/floor-probe` (160 real journal queries — 80 distinct turn
+    messages, 80 wake agendas — against a /tmp copy of the live keyed store), the lowest
+    similarity a taken row carried was note 0.504, directive 0.495, episodic 0.489, giving
+    shipped floors of 0.50 / 0.49 / 0.485, while the pool bulk (corpus median near 0.44) falls
+    under them on every query. A relative floor rides beside the absolute ones: a row more than
+    `MEMORY_SIM_MARGIN` (shipped 0.25; largest measured real spread 0.178) below the query's own
+    best match is cut whatever the absolute floors say. Every knob here — `MEMORY_SIM_FLOOR`,
+    `MEMORY_DIRECTIVE_FLOOR`, `MEMORY_EPISODIC_FLOOR`, `MEMORY_SIM_MARGIN`,
+    `MEMORY_ABSTAIN_FLOOR`, `MEMORY_NULL_CEILING` — resolves environment first, conf second,
+    shipped default last, the [nightly.md](nightly.md) rule 21e convention in the same shape
+    `lib/tidy-claims` uses: when a knob is absent from the environment the module asks one bash
+    that sources `common.sh` (and through it the live conf), and a missing or broken conf
+    degrades silently to the shipped default — retrieval never raises over configuration.
+13f. Retrieval MUST be able to abstain, and an abstention MUST be legible to the caller. Raw
+    cosine against this embedder cannot say "I know nothing" — measured 2026-08-28 and again
+    2026-09-03, gibberish, foreign prose and a bare full stop all out-score the floors, the full
+    stop at a MEDIAN of 0.681, above the eighth-best note of a median real turn. The instrument
+    that can: embed the contentless query (the bare `search_query: ` prefix) in the same batched
+    call as the real one, project that direction out of the query vector, and ask what
+    similarity survives. `search` returns an abstain reason beside the rows — `null-query` when
+    the query's cosine to the contentless direction reaches `MEMORY_NULL_CEILING` (shipped 0.86;
+    no real query measured above 0.815, the full stop measures 0.910), `low-signal` when the
+    best null-projected similarity falls under `MEMORY_ABSTAIN_FLOOR` (shipped 0.18; every real
+    query measured ≥ 0.199, gibberish 0.163, German prose 0.174, an unrelated historical topic
+    0.163), `empty` when the floors cut every similarity pool to nothing — and the recall block
+    renders one neutral marker, `(nothing relevant retrieved)`, in the warning slot under its
+    header instead of padding a full block of noise. Pinned records and rule-48 date rows ride
+    through an abstention: they are explicit asks, not similarity matches. The calibration is
+    biased toward keeping real queries — the bars sit under the measured real band, not between
+    the bands — and one measured residual is accepted rather than papered over: a coherent
+    unrelated technical sentence lands inside the real band's tail on every instrument measured
+    (raw best 0.638, null-projected best 0.221 against real minima 0.199–0.215), so it neither
+    abstains nor loses its block; no function of this embedder's similarity distribution
+    separates it from a terse genuine turn. Re-measure with `tools/floor-probe` whenever the
+    embedder or the keying discipline changes.
 14. **The recall block is NEVER truncated.** Every retrieved row reaches the block, whole. Its size
     is governed by retrieval — the note top-K, the directive cap, the pinned tier — and by nothing
     after retrieval. This rule used to say the opposite ("the recall block MUST be capped; when the
@@ -525,3 +562,11 @@ reinforce, end to end, including a wordless wake).
 - `tests/test_memory_block.py` — a malformed embedder response degrades to the pinned tier and
   emits the warning. (The pinned-survives-truncation half died with truncation itself: rule 14, and
   the whole-block cases now in `tests/test_memory.py`.)
+- `tests/test_memory_floors.sh` — rules 13e and 13f with stubbed embeddings, no network: each of
+  the three absolute floors demonstrably cuts a constructed record, the relative margin cuts a
+  trailer no absolute floor reaches, a real-shaped high-similarity query keeps its full set, a
+  pool wholly under the bar returns the abstained result with its marker while pinned rows still
+  ride, and the environment-over-conf-over-default resolution of every retrieval knob.
+  `tools/floor-probe` is the calibration's measuring instrument (live embedder, /tmp store copy,
+  never the live store): re-run it and re-set the shipped values whenever rule 13d's re-measure
+  duty fires.
