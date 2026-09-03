@@ -160,6 +160,17 @@ deliberate-play channel.
      down on clear ground and step off the fire it just made. Both polarities fail closed
      without a resolvable body tile, so an unknown position never passes for clear ground, and
      authoring both on one trigger is refused as a tile that can never be occupied and clear.
+   - `bank_open` / `bank_closed` (literal `true`): the snapshot's bank interface is open / is
+     observed closed. Every bank-side action in this vocabulary — `click-bank`, and the
+     `bank_item_visible` condition that proves live stock — can only act through an interface
+     something already opened, so a rule that opens one had no honest way to say when to stop:
+     the existing bank openers borrow `inventory_lacks` on whatever they meant to withdraw, which
+     silently ties the door to one errand and leaves every other objective standing at a closed
+     bank. The interface state is the door's own postcondition — the bank opens, the condition
+     goes false, and the opener is quiet — so it needs no cooldown, no elapsed pacing and no
+     once-per-objective quota. Both polarities fail closed when the snapshot carries no boolean
+     `bank_open` field, so an unread interface is never mistaken for a closed one; authoring both
+     on one trigger is refused as an interface that can never be open and closed.
    - `in_combat` / `out_of_combat` (literal `true`): the snapshot's combat state has the named
      polarity. These conditions are mutually exclusive in live state and let global pickup or
      travel rules stay mechanically quiet during a fight.
@@ -178,7 +189,8 @@ deliberate-play channel.
    from the snapshot at fire time — nearest matching NPC by real walking steps, independently of
    input list order — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
-   click), `attack-npc` (`npc`: the type id; optional `within` 0–10) resolves that same stable
+   click), `attack-npc` (`npc`: the type id; NO distance parameter — a `within` cap here is
+   refused at validation, see the cap doctrine below) resolves that same stable
    identity, requires the live NPC to be explicitly attackable, and sends the game's native attack
    action. Combat begins only when structured state observes combat, an opponent, or combat XP;
    merely walking toward the NPC is not completion. `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
@@ -190,8 +202,8 @@ deliberate-play channel.
    real-walking-steps choice, across all listed types — is resolved at fire time, and the
    compiled action carries that chosen NPC's own exact type id and server index, so the bridge's
    despawn/mismatch re-checks are unchanged and no set ever crosses the action file.
-   Repeating reflexes use `within` so a wandering
-   target cannot drag the player across the area; deliberate one-off NPC commands may still
+   Where `within` remains in the vocabulary it expresses a real game or approach mechanic,
+   never a leash on an ordinary desire; deliberate one-off NPC commands may still
    approach their chosen visible target. Every NPC action records the selected target's snapshot
    tile in its decision event, and the bridge refuses it if a strictly nearer equivalent exists by
    dispatch time. `use-item-npc` (`item`: the held item id; `npc`: the NPC type id; optional
@@ -297,16 +309,15 @@ deliberate-play channel.
    optional `button` 1, 2, or 3 defaulting to 1). The compiled action again carries only item
    identity. The bridge refuses a closed interface or missing item; otherwise it exposes the
    current page or scroll row containing the item and resolves that live slot immediately before
-   clicking), and `take-ground` (`item`: the item id; optional `within` 0–10 caps its current
-   Chebyshev distance). The
+   clicking), and `take-ground` (`item`: the item id; NO distance parameter — a `within` cap here
+   is refused at validation, see the cap doctrine below). The
    shortest reachable matching `ground_items` entry is compiled to item id and current world tile;
    a visually closer unreachable pile cannot displace a farther reachable one. The bridge re-matches
    both and rechecks the live collision path immediately before sending the game's own walk-and-take
    action. It refuses `ground-item-unreachable` without dispatch; when snapshot topology proves one
    loaded openable boundary connects the separated components, the more specific result is
-   `ground-item-needs-door`. Wanted-loot
-   reflexes deliberately omit `within`: visibility licenses a collision-path check, not a fabricated
-   entity walk.
+   `ground-item-needs-door`. Wanted loot is wanted at ANY distance:
+   visibility licenses a collision-path check, and the body walks to what it wants.
    `drop-inventory` (`item`: the held item id) is the learned mirror of the deliberate drop
    door: ONE atomic single-slot release of that identity, compiled only out of combat and only
    while the item is held, whose observed postcondition is the drop door's own — the held count
@@ -329,8 +340,16 @@ deliberate-play channel.
    needs it, not to the generic chooser. The tinderbox-on-carried-logs shortcut remains outside
    both tables: the server itself answers it with "I think you should put the logs down before
    you light them!", so the drop is part of the behaviour, not an inconvenience to route around.
-   `within` is only for a rule whose intended behaviour is explicitly local, never an implicit
-   safety restriction on an ordinary desire. Everything the bridge refuses stays refused;
+   **The cap doctrine.** Distance caps on wanting things have repeatedly broken play in exactly
+   two shapes: a capped take strands loot on the ground, and a capped attack idles the body in
+   sight of its target. Neither has ever been the behaviour anyone wanted. Validation therefore
+   REFUSES `within` on `take-ground` and `attack-npc` outright — for every learned rule, new or
+   loaded — with a message that names this doctrine. `within` survives only where it expresses a
+   real mechanic: `cast-npc` range (the server's own limit), `use-item-ground` adjacency
+   (light the pile beside you; the sweep behaviour handles distant piles), `interact-npc`
+   approach, `approach-entity` and `follow-player` radii. Even there it is suspect: a rule
+   author who believes a new cap is genuinely necessary does not arm it — it stops and raises
+   the case with the user, because every cap so far has been a bug wearing a safety costume. Everything the bridge refuses stays refused;
    nothing in this layer can log in, spend, trade or message a player, and screen-space clicks
    that do not name a rendered game entity or current inventory, shop, or bank item remain structurally outside the vocabulary — an action
    that cannot be expressed here belongs in `unfinished`, not approximated.
@@ -1044,7 +1063,16 @@ deliberate-play channel.
     `plan --clear REASON`; both the old/new method and grounded reason enter the decision and
     outcome logs. A plain conflicting `plan TEXT` is refused, so a difficult route, nearby
     alternative, restart, or momentary uncertainty cannot erase a prior decision without being
-    noticed. An objective change or clear removes its plan automatically and records why;
+    noticed. **The plan is the current method and nothing else.** The door refuses plan text that
+    carries standing instructions, lessons, or prohibitions — "never", "always", "under no
+    circumstance", "from now on", "at all times", "how to", "remember", "stop …ing", or a
+    gerund prohibition list ("no woodcutting, no thieving") — because every one of those is a
+    different artifact wearing the plan's clothes: a lesson belongs in durable memory, a redirect
+    in steering's moment, and finished work in a measured milestone. A prohibition written into
+    the plan is how one bad afternoon becomes a permanent wall. The refusal message routes each
+    shape to its own door. The plan is also capped at 400 characters: a method is a sentence or
+    two, and length is how how-to essays sneak in. An objective change or clear removes its plan
+    automatically and records why;
     `enable`/`disable`/`set`/`remove`/`rules` mirror `betty-game`'s. `init` writes an empty
     valid table if none exists, never overwrites. Selecting a genuinely new activity immediately
     prints the rules already eligible there, prior best XP/hour, and a bounded ranked list of
@@ -1071,6 +1099,39 @@ deliberate-play channel.
     action parameter, priority, zero cooldown, note and activity scope byte-for-byte, and runs the
     replay gate once over the complete change. `--replace` is the explicit destructive form;
     widening is the default so prior targets keep their learned behaviour.
+
+11c. **An objective is pursued against live data, never orbited on stale belief.** The durable
+    objective may declare a MEASURE — one line naming where its ground truth lives and how to
+    read it (`objective NAME --measure TEXT`, or `objective --measure TEXT` for the current
+    one). Beside it live a progress record and a milestone ledger, all in
+    `$DESKCRAB_GAME_DIR/objective-progress.json`, archived whole to
+    `objective-progress-history.jsonl` whenever the objective changes or clears:
+    - `progress TEXT` records what the measure actually showed, timestamped; bare `progress`
+      prints the record — measure, latest result with its age, milestones, reflection age.
+      Every claim about standings, completion, or "where I am" is either this record's fresh
+      content or it is a guess, and guesses are how finished skills get retrained.
+    - `milestone add NAME [--note TEXT]` opens a sub-goal; `milestone done NAME --evidence TEXT`
+      closes one on evidence, never on feeling; `milestone reopen NAME --reason TEXT` reverses
+      it when live data disagrees; `milestone list` prints the ledger. Closed milestones ride
+      every composed prompt: work verified done STAYS done in front of every future thread, so
+      it cannot be forgotten and re-ground.
+    - **The freshness gate.** While the current objective declares a measure, selecting or
+      revising the plan and switching to a different activity both REFUSE when the progress
+      record is older than 30 minutes (`BETTY_OPENRSC_PROGRESS_STALE_MS`), naming the measure
+      and the exact door to run. Deciding what to do next on stale data is the root failure
+      this whole record exists to prevent; the gate makes fresh data the path of least
+      resistance. `plan --clear`, `activity --clear`, and every safety door stay ungated. A
+      measure that cannot currently be read is still recorded honestly ("measure unreachable:
+      why") — the gate wants a fresh look, not a particular answer.
+    - `reflect TEXT` is the deliberate self-check: it stamps the record and appends the
+      assessment to the decision log. When more than five minutes of play
+      (`BETTY_OPENRSC_REFLECT_EVERY_MS`) pass without one, the `no-rule-matched` verdict carries
+      `reflection_due` with the minutes overdue, plus the facts the reflection must face:
+      ground items presently visible, the declared activity beside the skills actually gaining
+      XP (a mismatch names itself), and the progress record's age. The obligation is a real
+      look at "is this still accomplishing the objective, and is anything stupid happening —
+      loot on the ground, the wrong activity declared, a plan step already agreed to be wrong" —
+      answered by fixing what it finds through the ordinary doors, not by narrating it.
 
 ### The entrypoint
 
@@ -1234,16 +1295,25 @@ deliberate-play channel.
       command's to stop). `login` is the mechanical login alone, and `player-start` starts the
       supervised player unit alone when the stack is already up.
     - The Sol player is her own continuing play, not a subordinate agent or another personality.
-      `steer <instruction>` is her ordinary self-direction door for redirecting that play whenever
-      she notices it is wrong, stalled or looping, as well as when the user asks for a correction.
+      `steer <instruction>` is a RUDDER: it changes what play is doing in this moment — switch
+      to mining, come to the bank, wind the sitting down early — and nothing else. Steering a
+      thing does not fix the thing. A defect in how play behaves (looping, forgetting, a broken
+      reflex) is fixed OUTSIDE the game, in this spec and these doors, exactly as the chess
+      player never patches chess; a lesson learned belongs in durable memory through the
+      `remember` door; only the momentary "do this now instead" belongs here. The door refuses
+      instruction-shaped text — "never", "always", "under no circumstance", "from now on",
+      "stop …ing" — with a message routing each to its real home, because a prohibition parked
+      in steering becomes standing doctrine repeated to every future thread, and one
+      overcorrected afternoon has already cemented an anti-fact rule that way.
       It atomically records the newest direction in `$DESKCRAB_GAME_DIR/steering.md`, beside the
       existing ACTIONS state, and signals only the Sol process inside `orsc-player.service` so
       `Restart=always` resumes the same Sol thread with that direction placed prominently in its
       compact continuation prompt. The client, bridge, reflex engine, resident runner, author,
       and spectator remain running. If the player unit is down, `steer` raises the normal stack
       instead. Steering is writable from phone turns without changing their filesystem boundary.
-      Steering is durable ground truth across later player-process boundaries; a
-      repeated direction never means undoing completed progress to reenact it. Noticing a bad
+      A steer is SPENT once acted on: composition shows it only while it is fresh
+      (`BETTY_OPENRSC_STEER_FRESH_MIN`, default 45 minutes) and never resurrects an old
+      direction to be reenacted over completed progress. Noticing a bad
       course is itself sufficient reason to steer; narrating distress about the course is not a
       substitute for changing it.
     - The player's durable base prompt (`prompt.md`), its handoff file (`handoff.md`), the
@@ -1328,7 +1398,12 @@ deliberate-play channel.
     rule fires within a poll interval of its trigger becoming true — never waiting on a model
     turn. Each iteration re-reads the objective, reloads the table when
     `learned-rules.json`'s mtime moves (an invalid table is refused loudly and the last valid
-    one kept), evaluates, verifies per rule 7a, and writes a heartbeat —
+    one kept), and watches its OWN deployed source's mtime the same way: when
+    `game_player.py` changes on disk, the runner finishes the current pass and exits cleanly so
+    its supervisor restarts it on current code. A long-lived evaluator running yesterday's
+    validator against today's table silently rejects every reload and keeps enforcing a table
+    nobody can see — a disabled rule that keeps firing is exactly this failure. It then
+    evaluates, verifies per rule 7a, and writes a heartbeat —
     `$DESKCRAB_GAME_STATE_DIR/player-runner.json`: pid, ts, latest verdict, detail, and visible
     ground-item ids — every
     pass. A fresh heartbeat (pid alive, ts within 30 s, covering an in-progress walk verification)

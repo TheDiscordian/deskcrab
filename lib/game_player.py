@@ -38,6 +38,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
                 "inventory_has", "inventory_lacks", "inventory_slots_below",
                 "inventory_slots_at_least", "fatigue_below", "fatigue_at_least",
                 "in_combat", "out_of_combat",
+                "bank_open", "bank_closed",
                 "standing_on_object", "standing_on_clear_tile",
                 "opponent_rounds_at_least",
                 "stationary_ms_at_least",
@@ -2345,6 +2346,7 @@ def validate_config(cfg: dict) -> None:
                         or not 1 <= val <= 100:
                     bad(f"{where}: trigger.fatigue_at_least must be an integer from 1 to 100")
             elif key in ("in_combat", "out_of_combat",
+                         "bank_open", "bank_closed",
                          "standing_on_object", "standing_on_clear_tile"):
                 if val is not True:
                     bad(f"{where}: trigger.{key} must be true when present")
@@ -2379,6 +2381,8 @@ def validate_config(cfg: dict) -> None:
             bad(f"{where}: fatigue range can never match")
         if "standing_on_object" in trig and "standing_on_clear_tile" in trig:
             bad(f"{where}: the tile is either occupied or clear, never both")
+        if "bank_open" in trig and "bank_closed" in trig:
+            bad(f"{where}: the bank interface is either open or closed, never both")
 
         action = rule.get("action")
         if not isinstance(action, dict) or action.get("type") not in ACTIONS:
@@ -4827,6 +4831,20 @@ def make_trigger_fn(objective: str, activity: str = ""):
             return False
         if "out_of_combat" in trig and snap.get("in_combat") is not False:
             return False
+        if "bank_open" in trig or "bank_closed" in trig:
+            # The interface state every bank-side action depends on, and the
+            # honest stopping condition for the rule that opens one: the bank
+            # opens and the opener goes quiet.  Both polarities fail closed
+            # when the snapshot publishes no boolean, so an unread interface
+            # never passes for a closed one and a stale read never re-opens a
+            # bank that is already open.
+            state = snap.get("bank_open")
+            if not isinstance(state, bool):
+                return False
+            if trig.get("bank_open") is True and state is not True:
+                return False
+            if trig.get("bank_closed") is True and state is not False:
+                return False
         if "standing_on_object" in trig or "standing_on_clear_tile" in trig:
             # The scenery relation the server's own firemaking check reads:
             # handleFiremaking refuses with "You can't light a fire here" when

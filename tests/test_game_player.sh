@@ -702,6 +702,13 @@ refute "a tile cannot be asked to be occupied and clear at once" \
 refute "the tile relation refuses anything but a literal true" \
     python3 "$GP" learn bad-tile-literal --priority 1 \
         --trigger standing_on_object=false --action step-aside --param dz=1
+refute "the bank interface cannot be asked to be open and closed at once" \
+    python3 "$GP" learn bad-bank-polarity --priority 1 \
+        --trigger bank_open=true --trigger bank_closed=true \
+        --action interact-npc --param npc=95 --param cmd=1
+refute "the bank interface relation refuses anything but a literal true" \
+    python3 "$GP" learn bad-bank-literal --priority 1 \
+        --trigger bank_closed=false --action interact-npc --param npc=95 --param cmd=1
 refute "drop-inventory refuses anything but one held item identity" \
     python3 "$GP" learn bad-drop --priority 1 --trigger inventory_has=14 \
         --action drop-inventory --param item=14 --param amount=5
@@ -2102,6 +2109,21 @@ assert matches(clear_tile, open_ground, None) is True
 assert matches(clear_tile, fern, None) is False
 assert matches(clear_tile, {"objects": []}, None) is False
 assert matches(on_scenery, {"objects": [{"id": 34, "x": 163, "z": 618}]}, None) is False
+
+# The bank interface is either open or observed closed.  This is what a bank
+# OPENER stops on: the interface every click-bank and bank_item_visible needs
+# is the door's own postcondition.  Both polarities fail closed when the
+# snapshot publishes no boolean, so an unread interface never passes for a
+# closed one.
+opener = {"bank_closed": True}
+withdrawer = {"bank_open": True}
+assert matches(opener, {"bank_open": False}, None) is True
+assert matches(opener, {"bank_open": True}, None) is False
+assert matches(opener, {}, None) is False
+assert matches(opener, {"bank_open": None}, None) is False
+assert matches(withdrawer, {"bank_open": True}, None) is True
+assert matches(withdrawer, {"bank_open": False}, None) is False
+assert matches(withdrawer, {}, None) is False
 
 # The firemaking pair: one held item put down, and one held item used on the
 # pile already lying there.  The pile is chosen exactly as take-ground chooses
