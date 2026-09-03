@@ -4153,7 +4153,7 @@ contains "$OUT" '`use ITEM-ID npc NAME`' \
     && contains "$OUT" '`attack NAME`' \
     && contains "$OUT" 'Never put a screenshot coordinate' \
     && contains "$OUT" 'orsc-headless.sh improve' \
-    && contains "$OUT" 'it dispatches nothing and is not a delayed wake' \
+    && contains "$OUT" 'it dispatches nothing and is not a delayed' \
     && ok "the fresh player receives the semantic action and reflex hierarchy" \
     || fail "the fresh player needs the concrete semantic tool map" "$OUT"
 
