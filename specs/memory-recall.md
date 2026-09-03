@@ -101,19 +101,33 @@ life, and she re-reads that store every single turn.
     similarity survives. `search` returns an abstain reason beside the rows — `null-query` when
     the query's cosine to the contentless direction reaches `MEMORY_NULL_CEILING` (shipped 0.86;
     no real query measured above 0.815, the full stop measures 0.910), `low-signal` when the
-    best null-projected similarity falls under `MEMORY_ABSTAIN_FLOOR` (shipped 0.18; every real
-    query measured ≥ 0.199, gibberish 0.163, German prose 0.174, an unrelated historical topic
-    0.163), `empty` when the floors cut every similarity pool to nothing — and the recall block
+    best null-projected similarity falls under `MEMORY_ABSTAIN_FLOOR` (shipped 0 — see below),
+    `empty` when the floors cut every similarity pool to nothing — and the recall block
     renders one neutral marker, `(nothing relevant retrieved)`, in the warning slot under its
     header instead of padding a full block of noise. Pinned records and rule-48 date rows ride
-    through an abstention: they are explicit asks, not similarity matches. The calibration is
-    biased toward keeping real queries — the bars sit under the measured real band, not between
-    the bands — and one measured residual is accepted rather than papered over: a coherent
-    unrelated technical sentence lands inside the real band's tail on every instrument measured
-    (raw best 0.638, null-projected best 0.221 against real minima 0.199–0.215), so it neither
-    abstains nor loses its block; no function of this embedder's similarity distribution
-    separates it from a terse genuine turn. Re-measure with `tools/floor-probe` whenever the
-    embedder or the keying discipline changes.
+    through an abstention: they are explicit asks, not similarity matches. The low-signal gate
+    SHIPS OFF — `MEMORY_ABSTAIN_FLOOR` defaults to 0, the machinery stays in place, and the
+    gate engages only when a conf or environment deliberately sets a positive floor. The
+    instrument was tried at a shipped 0.18 and does not separate content from brevity: that
+    calibration ("every real query measured ≥ 0.199") was a property of a corpus drawn
+    entirely from long journal messages and wake agendas, containing no short turns, and
+    measured 2026-09-03 against a copy of the live keyed store the real short-turn band runs
+    straight through the noise band — 'morning' 0.327, 'did it work?' 0.210, 'nice' 0.193,
+    "what's up" 0.176, 'hey' 0.169, 'ok' 0.168, 'no, the other one' 0.159, against German
+    prose at 0.169 and gibberish at 0.142, while coherent but wholly irrelevant sentences
+    measure 0.234 and 0.265, above most of the real band. The instrument's discriminant is
+    query length and specificity, not relevance, so no absolute threshold on it can work: any
+    bar that abstains on noise abstains on real casual turns, and an abstention there costs
+    the block's directives on exactly the turns where her voice matters most, to save a
+    harmless block of noise on gibberish — the costs are asymmetric and the gate had them
+    backwards. Nobody may re-pick a floor for this instrument by feel from a fresh
+    distribution; any future replacement MUST be length-normalised or judged against a
+    per-length reference band rather than one absolute bar, and MUST be calibrated against a
+    corpus that CONTAINS short turns. The null-query gate is unaffected and stands
+    unconditionally: it measures the query's direction, not its magnitude, and its bands do
+    not overlap — the full stop measures 0.910 where the original 160-query corpus peaked at
+    0.815 and the 2026-09-03 short-turn corpus at 0.694, a gap nothing crosses. Re-measure
+    with `tools/floor-probe` whenever the embedder or the keying discipline changes.
 14. **The recall block is NEVER truncated.** Every retrieved row reaches the block, whole. Its size
     is governed by retrieval — the note top-K, the directive cap, the pinned tier — and by nothing
     after retrieval. This rule used to say the opposite ("the recall block MUST be capped; when the
@@ -566,7 +580,12 @@ reinforce, end to end, including a wordless wake).
   the three absolute floors demonstrably cuts a constructed record, the relative margin cuts a
   trailer no absolute floor reaches, a real-shaped high-similarity query keeps its full set, a
   pool wholly under the bar returns the abstained result with its marker while pinned rows still
-  ride, and the environment-over-conf-over-default resolution of every retrieval knob.
+  ride, and the environment-over-conf-over-default resolution of every retrieval knob. The
+  shipped-off low-signal gate is pinned there too: under default settings, queries shaped like
+  the measured short-turn band ('hey', "what's up", 'ok' — projected best 0.168–0.176, under
+  the retired 0.18 bar) keep their rows and do not abstain while a bare full stop still
+  abstains as null-query, and an explicit positive `MEMORY_ABSTAIN_FLOOR` re-engages the
+  low-signal gate exactly as before.
   `tools/floor-probe` is the calibration's measuring instrument (live embedder, /tmp store copy,
   never the live store): re-run it and re-set the shipped values whenever rule 13d's re-measure
   duty fires.

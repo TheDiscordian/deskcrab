@@ -97,22 +97,31 @@ SIM_MARGIN = 0.25
 # the eighth-best note of a median real turn. The instrument that can: embed
 # the empty query alongside the real one (one batched call — the bare
 # "search_query: " prefix is the contentless direction), project it out of
-# the query vector, and ask what similarity survives. Measured 2026-09-03
-# over the same 160 real queries: every real query's corrected best ≥ 0.199,
-# while gibberish scored 0.163, German prose 0.174, an unrelated historical
-# topic 0.163. ABSTAIN_FLOOR sits at 0.18 — under the real band by 0.019, so
-# the lose-nothing rule holds with the cut biased toward keeping real
-# queries. The full stop separates on the other axis: its raw cosine TO the
-# contentless direction is 0.910 where no real query exceeded 0.815;
-# NULL_CEILING at 0.86 splits that gap. One probe — a coherent unrelated
-# technical sentence — measured corrected-best 0.221, inside the real band's
-# tail (real minima 0.199-0.215): no function of this embedder's similarity
-# distribution separates it from a terse genuine turn, which answers the
-# record's open question (a) — raw cosine, corrected or not, cannot cut a
-# coherent off-corpus sentence without cutting real queries. That residual
-# gap is accepted and documented rather than papered over with an overfit
-# threshold.
-ABSTAIN_FLOOR = 0.18
+# the query vector, and ask what similarity survives. The full stop
+# separates on the direction axis: its raw cosine TO the contentless
+# direction is 0.910 where no real query exceeded 0.815; NULL_CEILING at
+# 0.86 splits that gap, and that gate stands unconditionally.
+#
+# The LOW-SIGNAL gate ships OFF: ABSTAIN_FLOOR is 0, and the gate engages
+# only when a conf or environment deliberately raises it. Its original
+# 0.18 calibration ("every real query's corrected best ≥ 0.199" over 160
+# journal queries) was a property of a corpus drawn entirely from long
+# journal messages and wake agendas — it contained no short turns. Measured
+# 2026-09-03 05:30 against a copy of the live keyed store with this same
+# instrument, the real short-turn band runs straight through the noise
+# band: 'morning' 0.327, 'did it work?' 0.210, 'nice' 0.193, "what's up"
+# 0.176, 'hey' 0.169, 'ok' 0.168, 'no, the other one' 0.159 — against
+# German prose 0.169 and gibberish 0.142, while coherent wholly irrelevant
+# sentences score 0.234 and 0.265, above most of the real band. The
+# instrument's discriminant is query length and specificity, not relevance,
+# so no absolute threshold on it can work: any bar that abstains on noise
+# abstains on real casual turns, and losing the block's directives on
+# exactly the casual turns where voice matters most costs far more than a
+# harmless block of noise on gibberish saves. Do not re-pick a floor by
+# feel from a fresh distribution; a replacement instrument must be
+# length-normalised or judged against a per-length reference band, and
+# calibrated against a corpus that CONTAINS short turns (rule 13f).
+ABSTAIN_FLOOR = 0.0
 NULL_CEILING = 0.86
 # Reinforcement scoring (13:15 design revision). Notes rank by
 #   score = cosine × confidence × decay(last_used_at) × (1 + log(1+use_count) × 0.15)
@@ -913,7 +922,9 @@ class Store:
         13f): the returned tuple's fourth element is "" when the pools were
         searched normally, or a reason — "null-query" (the query is the
         contentless direction), "low-signal" (best null-projected similarity
-        under MEMORY_ABSTAIN_FLOOR), "empty" (the floors cut everything) —
+        under MEMORY_ABSTAIN_FLOOR — shipped 0, so this gate is off until a
+        conf or environment deliberately raises it: the instrument measures
+        brevity, not relevance), "empty" (the floors cut everything) —
         when the block should say nothing relevant was retrieved. Pinned
         rows and rule-48 date rows ride through an abstention: they are
         explicit asks, not similarity matches.

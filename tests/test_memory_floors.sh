@@ -15,10 +15,17 @@
 #     the query's best match even though it clears every absolute floor;
 #   - a high-similarity real-shaped query keeps its full top-K;
 #   - a query whose whole pool sits under the bar returns the abstained
-#     result — "empty" when the floors cut everything, "low-signal" when no
-#     null-projected similarity survives, "null-query" when the query IS the
-#     contentless direction — with pinned rows still riding through, the
-#     recall block rendering the one neutral marker, and no ids sidecar;
+#     result — "empty" when the floors cut everything, "null-query" when the
+#     query IS the contentless direction — with pinned rows still riding
+#     through, the recall block rendering the one neutral marker, and no ids
+#     sidecar;
+#   - the low-signal gate SHIPS OFF (rule 13f: the instrument measures
+#     brevity, not relevance): under default settings a null-direction pool
+#     no longer abstains, queries shaped like the measured short-turn band
+#     ('hey' 0.169, "what's up" 0.176, 'ok' 0.168 — all under the retired
+#     0.18 bar) keep their rows, and a bare full stop still abstains as
+#     null-query; an explicit positive MEMORY_ABSTAIN_FLOOR re-engages the
+#     gate exactly as before;
 #   - every knob resolves environment first, conf second, shipped default
 #     last, and a missing conf degrades silently to the defaults.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
@@ -98,9 +105,43 @@ elif CASE == "fullset":
     result(rows, abst)
 elif CASE == "lowsignal":
     # Raw similarity clears every floor; null-projected similarity is zero.
+    # With the gate shipped off (ABSTAIN_FLOOR 0) this abstains nothing and
+    # keeps the note; an explicit positive MEMORY_ABSTAIN_FLOOR in the
+    # environment re-engages the gate and the shell asserts both faces.
     VECS[Q] = q_with_null(0.8)
     store.insert("background note", kind="note", vec=unit((0, 1.0)))
     rows, _, _, abst = store.search(Q)
+    result(rows, abst)
+elif CASE == "shortturns":
+    # The measured 2026-09-03 short-turn band: best null-projected
+    # similarity 'hey' 0.169, "what's up" 0.176, 'ok' 0.168 — every one a
+    # real turn, every one under the retired 0.18 default. Each query is
+    # built to that projected best over a note whose raw similarity (0.55)
+    # clears every floor: with the low-signal gate shipped off, none of
+    # them may abstain and each keeps its note.
+    out = {}
+    c = 0.6
+    s = math.sqrt(1 - c * c)
+    for i, (text, p) in enumerate(
+            [("hey", 0.169), ("what's up", 0.176), ("ok", 0.168)]):
+        VECS[text] = unit((0, c), (1, s))
+        d0 = (0.55 - s * p) / c
+        rest = math.sqrt(max(0.0, 1 - d0 * d0 - p * p))
+        st = memory.Store(tempfile.mkdtemp(prefix="short-", dir=WORK))
+        st.insert("kept note", kind="note",
+                  vec=unit((0, d0), (1, p), (2 + i, rest)))
+        rows, _, _, abst = st.search(text)
+        out[text + " abstained"] = abst
+        out[text + " kept"] = sorted(r[1] for r in rows)
+    print("RESULT " + json.dumps(out))
+elif CASE == "dot":
+    # A bare full stop measures 0.910 on the contentless direction where no
+    # real query in either corpus came near (0.815 / 0.694): the null-query
+    # gate must hold with the low-signal gate off, and a note whose raw
+    # similarity would sail through the floors must not ride an abstention.
+    VECS["."] = q_with_null(0.91)
+    store.insert("tempting note", kind="note", vec=unit((0, 0.7), (1, 0.55)))
+    rows, _, _, abst = store.search(".")
     result(rows, abst)
 elif CASE == "nullq":
     VECS[Q] = q_with_null(0.9)
@@ -166,10 +207,34 @@ check_eq "eight notes inside floor and margin all arrive" \
     "['note 0', 'note 1', 'note 2', 'note 3', 'note 4', 'note 5', 'note 6', 'note 7']"
 
 # --- abstention ------------------------------------------------------------
+# The low-signal gate ships OFF (rule 13f): the instrument measures brevity,
+# not relevance, so under default settings a null-direction pool keeps its
+# rows and only a deliberate positive floor re-engages the gate.
 R="$(run_case lowsignal)"
-check_eq "raw-high background rows abstain as low-signal" \
+check_eq "with the gate shipped off, a raw-high null-direction pool does not abstain" \
+    "$(field "$R" abstained)" ""
+check_eq "the shipped defaults keep the note the 0.18 gate used to cut" \
+    "$(field "$R" kept)" "['background note']"
+
+R="$(run_case lowsignal MEMORY_ABSTAIN_FLOOR=0.18)"
+check_eq "an explicit positive floor re-engages the low-signal gate as before" \
     "$(field "$R" abstained)" "low-signal"
-check_eq "low-signal returns no similarity rows" "$(field "$R" kept)" "[]"
+check_eq "an engaged low-signal gate returns no similarity rows" \
+    "$(field "$R" kept)" "[]"
+
+R="$(run_case shortturns)"
+for T in "hey" "what's up" "ok"; do
+    check_eq "the short real turn '$T' does not abstain under default settings" \
+        "$(field "$R" "$T abstained")" ""
+    check_eq "the short real turn '$T' keeps its note" \
+        "$(field "$R" "$T kept")" "['kept note']"
+done
+
+R="$(run_case dot)"
+check_eq "a bare full stop still abstains as null-query under default settings" \
+    "$(field "$R" abstained)" "null-query"
+check_eq "no similarity row rides the full stop's abstention" \
+    "$(field "$R" kept)" "[]"
 
 R="$(run_case nullq)"
 check_eq "a query that is the contentless direction abstains as null-query" \
