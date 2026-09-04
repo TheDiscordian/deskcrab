@@ -4949,8 +4949,11 @@ claudism_mirror_direct() {  # <kind> <response>
         SPLICED=""
         REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
         if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
+            # echo_guard (speech-output rule 41a): a rewrite the draft
+            # already carries as another sentence splices as a deletion, so
+            # the reply says the words once, where she wrote them.
             SPLICED="$(python3 -c \
-                'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
+                'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3], "echo_guard": True}))' \
                 "$RESPONSE" "$SENT" "$REWRITE" \
                 | "$LIB_DIR/claudism-mirror" splice 2>/dev/null)" || SPLICED=""
         fi
@@ -5114,8 +5117,12 @@ PY
             REWRITE="$(CLAUDISM_MIRROR_CALL_TIMEOUT="$CLAUDISM_MIRROR_DESK_CALL_TIMEOUT" \
                 _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
             if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
+                # echo_guard (speech-output rule 41a): the streamer asks the
+                # same question of the same words at the verdict, so a
+                # rewrite the draft already carries splices as a deletion
+                # here while the draft's own copy keeps the voice there.
                 SPLICED="$(python3 -c \
-                    'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3]}))' \
+                    'import json,sys; print(json.dumps({"response": sys.argv[1], "sentence": sys.argv[2], "rewrite": sys.argv[3], "echo_guard": True}))' \
                     "$RESPONSE" "$SENT" "$REWRITE" \
                     | "$LIB_DIR/claudism-mirror" splice 2>/dev/null)" || SPLICED=""
             fi
@@ -5159,7 +5166,13 @@ PY
                 sleep 0.2
                 W=$((W + 1))
             done
-            if [ "$OUTCOME" = "rewrite-spoken" ] && [ -n "$SPLICED" ]; then
+            if { [ "$OUTCOME" = "rewrite-spoken" ] \
+                    || [ "$OUTCOME" = "rewrite-absorbed" ]; } \
+                    && [ -n "$SPLICED" ]; then
+                # rewrite-absorbed (rule 41a): the streamer dropped the held
+                # slot because the draft's own copy of the rewrite speaks in
+                # its own place, and SPLICED is the matching deletion — the
+                # committed reply carries the words exactly once either way.
                 RESPONSE="$SPLICED"
                 OUTLOG="rewrite"
                 LOGREW="$REWRITE"

@@ -275,6 +275,29 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     rule 47 is the one exception, and it runs before the hold, never after a verdict). A `release`
     verdict, a verdict that never comes inside the deadline, a caller that died, or a caller
     that has already moved past the turn (the done marker) speaks the original untouched.
+41a. A rewrite the draft already carries is not spoken over the draft's own copy of itself.
+    Handed one flagged line and the whole draft for context, the mirror sometimes answers with a
+    sentence that draft already says next — on 2026-09-03 15:01:20 the draft was `Noted.`
+    followed by `Reading the clock instead of guessing.`, the flagged `Noted.` came back
+    rewritten as exactly that second sentence, and the words sounded twice in the same second:
+    the gate spoke the rewrite, and the draft's own copy — already chunked and queued behind the
+    held slot — spoke right after it. One flag row, two identical deliveries, and the rule 12a
+    supersede can never see this shape, because it judges completed BLOCKS and the second copy
+    is a sibling chunk of the same block, queued before the verdict lands. So before a `rewrite`
+    verdict crosses to the synthesiser it is measured — the near-duplicate blend of rule 12a,
+    one threshold everywhere — against the OTHER speakable sentences of the draft's own text
+    blocks: quiet blocks and display halves excluded, the held sentence itself excluded. When it
+    matches one, the held slot is dropped instead of spoken: nothing sounds in its place, the
+    draft's own copy speaks once where she wrote it, and the outcome record reads
+    `rewrite-absorbed`. The same test guards the splice on every path that folds a rewrite into
+    a reply — the desk commit and the whole-draft passes of rule 44 — where an echoing rewrite
+    is spliced as a DELETION of the held sentence, so the committed reply carries the words once
+    and rule 43's agreement holds from each side independently: whichever way either side
+    decides an edge case, the substance stands exactly once in both. Deciding a duplicate is
+    the suppressor's jurisdiction, never a judgment of worth (the standing rule), and the check
+    fails open — helper missing, registry unreadable, anything — the rewrite speaks exactly as
+    rule 41 says. The table of rule 47 is untouched: a swap has already sounded by the time the
+    reply is folded, so a swap is never absorbed and its fold never deduped.
 42. FAIL OPEN is the only failure mode. No path through the mirror may end in suppressed speech
     or machine-substituted text: an unreadable list, a helper that will not import, a mirror
     call that errors or refuses or times out, a splice that cannot find its sentence — every one
@@ -290,10 +313,11 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     2026-08-20's: the user heard the unrepaired line, read the auth error in its place in the
     written reply, and the flag log claimed a clean catch — a receipt that lied exactly when the
     mirror call failed auth.
-43. The streamer's outcome record (`rewrite-spoken` / `released` / `failopen` / `post-commit`,
-    per seq) is the single source of truth for what reached the speakers. The caller MUST commit
-    the spliced reply only on `rewrite-spoken` and the original otherwise, so the conversation
-    can never disagree with what was heard.
+43. The streamer's outcome record (`rewrite-spoken` / `rewrite-absorbed` / `released` /
+    `failopen` / `post-commit`, per seq) is the single source of truth for what reached the
+    speakers. The caller MUST commit the spliced reply only on `rewrite-spoken` or
+    `rewrite-absorbed` — whose splice is rule 41a's deletion — and the original otherwise, so
+    the conversation can never disagree with what was heard.
 44. On the whole-draft paths — a wake before `speak_once` or the phone hand-off, a phone turn
     before its audio is synthesised — the same pass runs once, on the complete spoken half, with
     the same one-chance and fail-open rules; the spliced reply is what is spoken, shown, and
@@ -637,6 +661,16 @@ the draft `Noted.` suppresses its own later identical block instead of sounding 
 never-sounded draft no longer suppresses a later block that merely matches it, the registry's
 own substitution is in place and fail-closed, and the rule 12b rejection withdrawal behaves as
 it did before the amendment.
+
+Rule 41a is held by `tests/test_mirror_echo.sh`, on the recorded shape of 2026-09-03 15:01:20
+driven through the REAL caller path — `claude_generate` over a stub CLI, the armed streamer
+tailing, `claudism_mirror_desk` answering the fire — with the rule 12a block supersede stood
+down in a harness-private copy of the library, so the count at the stub synthesiser is the
+queue's own and cannot pass vacuously: a mirror rewrite that echoes the draft's next sentence
+sounds exactly once and the committed reply carries it exactly once; a fresh rewrite still
+speaks in the held slot with the sentence after it untouched; the stood-down supersede is
+itself proven off by a block-level duplicate sounding twice; and the splice's echo guard is
+opt-in, so the table-swap fold of rule 49 keeps its old byte-for-byte behaviour.
 
 Rule 12b is held by `tests/test_reply_stop_acceptance.sh` (written red 2026-08-26 against the
 unbuilt hold, green since the hold landed in `lib/tts-streamer` the same day): the 2026-08-25

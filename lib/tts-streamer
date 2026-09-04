@@ -524,6 +524,39 @@ class Voice(threading.Thread):
             self.queued_chars += len(text)
             self.q.put((text, raw))
 
+    # Rule 41a's question: is this rewrite already a sentence of the draft?
+    # The rule 12a supersede judges completed BLOCKS, and the 2026-09-03
+    # doubling was invisible to it because the second copy of the words was a
+    # sibling CHUNK of the same block, queued behind the hold before the
+    # verdict landed. So the question is asked here, of the draft's own text:
+    # every registered block's spoken half, quiet blocks and display tails
+    # excluded, the held sentence itself excluded — one near-duplicate
+    # threshold everywhere (sentence_stream, via claudism-mirror). Returns
+    # the echoed sentence, or None; EVERY failure returns None, so an
+    # unanswerable question speaks the rewrite exactly as rule 41 always has.
+    def _rewrite_echo(self, t, raw):
+        if self.registry is None or _CLAUDISM_MOD is None \
+                or not hasattr(_CLAUDISM_MOD, "echo_sentence"):
+            return None
+        try:
+            seen, parts = set(), []
+            maps = list(self.registry.messages.values())
+            if not any(m is self.registry.blocks for m in maps):
+                maps.append(self.registry.blocks)
+            for mb in maps:
+                for b in list(mb.values()):
+                    if id(b) in seen or b.quiet or not b.raw.strip():
+                        continue
+                    seen.add(id(b))
+                    parts.append(b.raw.partition(DELIM)[0])
+            if not parts:
+                return None
+            return _CLAUDISM_MOD.echo_sentence(t, "\n".join(parts), raw)
+        except Exception as exc:
+            speech_log("rewrite echo check failed (%s) — speaking the "
+                       "rewrite as given" % exc)
+            return None
+
     # The pre-speech mirror gate (specs/speech-output.md rules 38-43). Sits
     # on the voice thread — the last hand-off before the synthesiser — so the
     # reader is never blocked and a clean sentence passes byte-identical.
@@ -673,7 +706,17 @@ class Voice(threading.Thread):
                 if v.get("action") == "rewrite":
                     t = for_speech(str(v.get("text") or "").partition(DELIM)[0])
                     if t:
-                        outcome, text = "rewrite-spoken", t
+                        # Rule 41a: a rewrite the draft already carries is
+                        # not spoken over the draft's own copy of itself.
+                        # 2026-09-03 15:01:20 — the flagged 'Noted.' came
+                        # back rewritten as exactly the draft's next
+                        # sentence, which was already chunked and queued
+                        # behind this hold, and the words sounded twice.
+                        echo = self._rewrite_echo(t, raw)
+                        if echo is not None:
+                            outcome, text = "rewrite-absorbed", ""
+                        else:
+                            outcome, text = "rewrite-spoken", t
                     else:
                         outcome, text = "released", spoken
                 else:
@@ -698,6 +741,10 @@ class Voice(threading.Thread):
                        "the original (fail open)" % (seq, CLAUDISM_TIMEOUT))
         elif outcome == "rewrite-spoken":
             speech_log("claudism fire #%d — her rewrite goes out" % seq)
+        elif outcome == "rewrite-absorbed":
+            speech_log("claudism fire #%d — her rewrite already stands in "
+                       "the draft; the held line is dropped and the draft's "
+                       "own copy speaks once (rule 41a)" % seq)
         try:
             record({"seq": seq, "outcome": outcome})
         except Exception:
@@ -725,6 +772,11 @@ class Voice(threading.Thread):
             # The mirror gate, before the synthesiser ever sees the words. A
             # clean sentence comes back exactly as it went in.
             item = self._claudism_gate(item, raw)
+            if not (item or "").strip():
+                # An absorbed rewrite (rule 41a): nothing sounds in the held
+                # slot — the draft's own copy of the words, queued behind
+                # this one, speaks in its own place.
+                continue
             if not self._open():
                 # Voice is unusable. Drain rather than block the reader, and
                 # let the receipt tell the caller nothing was spoken.

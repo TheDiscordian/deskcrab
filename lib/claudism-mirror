@@ -17,7 +17,10 @@ Modes:
       {"response": ..., "sentence": ..., "rewrite": ...} on stdin. Replaces
       the first occurrence of the sentence in the SPOKEN half only and prints
       the whole spliced response. Exit 3 when the sentence is not found — the
-      caller keeps the original (rule 42).
+      caller keeps the original (rule 42). With "echo_guard": true — the
+      mirror-rewrite callers, never the table-swap fold — a rewrite the
+      spoken half already carries as another sentence is spliced as a
+      deletion instead (rule 41a), so the reply says the words once.
   logflag <flags-dir> <kind> <pid> <outcome> [rewrite]
       One flag object on stdin; appends the day's record — claudism-capture's
       shape plus {"stage": "live", "outcome": ...} — flocked, like the
@@ -51,6 +54,12 @@ import os
 import re
 import sys
 import time
+
+# The near-duplicate blend and the quiet marker come from the shared sentence
+# module (specs/speech-output.md rule 41a: one threshold everywhere) — the
+# same import lib/tts-streamer already makes from this directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sentence_stream import QUIET_RE, near_duplicate
 
 DELIM = "---DISPLAY---"
 
@@ -372,6 +381,33 @@ def sentences(text):
     return out
 
 
+def echo_sentence(rewrite, text, flagged):
+    """Is her rewrite already a sentence of the draft? Returns the first
+    OTHER speakable sentence of `text` the rewrite near-duplicates, or None
+    (specs/speech-output.md rule 41a). Quiet lines never sound, so they are
+    no basis for absorbing a rewrite; the flagged sentence itself — and any
+    near-copy of it — is the slot under repair, never an echo. The caller
+    treats None as "no echo" and an exception as its own cue to fail open,
+    so an unanswerable question speaks the rewrite exactly as rule 41
+    always has."""
+    if not (rewrite or "").strip():
+        return None
+    flagged = (flagged or "").strip()
+    for para in text.splitlines():
+        para = para.strip()
+        if not para or QUIET_RE.match(para):
+            continue
+        # sentences() on the one line: the same splitter the scan uses, kept
+        # byte-identical with claudism-capture's twin (MIN-34) — never a
+        # third copy of the boundary expression.
+        for sent in sentences(para):
+            if flagged and near_duplicate(sent, flagged):
+                continue
+            if near_duplicate(rewrite, sent):
+                return sent
+    return None
+
+
 def scan(text, patterns):
     flags = []
     for sent in sentences(text):
@@ -402,11 +438,24 @@ def split_spoken(response):
     return response, ""
 
 
-def splice(response, sentence, rewrite):
+def splice(response, sentence, rewrite, echo_guard=False):
     head, tail = split_spoken(response)
     for cand in (sentence, sentence.strip()):
         if cand and cand in head:
+            # The echo guard (rule 41a), opt-in per caller: a mirror rewrite
+            # the spoken half already carries as another sentence is spliced
+            # as a DELETION of the held sentence, so the reply says the words
+            # once, where she wrote them. The table-swap fold never sets the
+            # flag — a swap has already sounded, so its fold must keep its
+            # byte-for-byte behaviour.
+            if echo_guard and rewrite.strip() \
+                    and echo_sentence(rewrite, head, cand) is not None:
+                rewrite = ""
             head = head.replace(cand, rewrite, 1)
+            if not rewrite.strip():
+                # Repair only what deleting a span breaks: the doubled space
+                # the vanished sentence leaves between its neighbours.
+                head = re.sub(r"[ \t]{2,}", " ", head)
             return head + ("\n" + tail if tail else "")
     return None
 
@@ -426,7 +475,7 @@ def main(argv):
         try:
             d = json.load(sys.stdin)
             out = splice(str(d["response"]), str(d["sentence"]),
-                         str(d["rewrite"]))
+                         str(d["rewrite"]), bool(d.get("echo_guard")))
         except Exception:
             return 2
         if out is None:
