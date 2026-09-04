@@ -100,10 +100,16 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # WHISPER_FIXES=''
 
 # Optional: TTS fixes (sed expressions applied to spoken text)
-# Useful for words piper mispronounces or spells out letter-by-letter. A
-# replacement newline starts a new piper input line and its sentence pause.
+# Useful for words piper mispronounces or spells out letter-by-letter.
 # Applied only to the spoken reply — display-channel content is untouched.
-# Example: TTS_FIXES='s/\bhmph\b/humph/gi; s/—/\n/g'
+# A replacement newline starts a new piper input line but NOT a pause:
+# piper's sentence silence follows punctuation as espeak segments it, so a
+# fix that wants a pause must emit punctuation. In particular, do not
+# rewrite em-dashes to newlines — measured 2026-09-04 (Library/voice/wild.py,
+# 40 journal replies, four arms, paired sign tests): the literal dash and a
+# comma each out-pause the newline rewrite at p=0.001, and the newline is as
+# silent as deleting the mark. The literal em-dash is already a real cue.
+# Example: TTS_FIXES='s/\bhmph\b/humph/gi'
 # TTS_FIXES=''
 
 # What the CLI puts in front of her, per run. Measured numbers and the

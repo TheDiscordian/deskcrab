@@ -422,7 +422,7 @@ sandbox_bash 'FACE_ENABLED=1
     DESKCRAB_FACE_AUDIO_LEAD=0
     export WAKE_PHONEME_TEXT="'$T'/wake-phoneme-text"
     speak_once "Ah—eight of fifteen."' >/dev/null 2>&1
-check "the one-shot wake fed both pause-bounded lines to Piper" \
+check "the one-shot wake fed both fix-created lines to Piper" \
     bash -c '[ "$(wc -l < "$1")" -eq 2 ]' _ "$T/wake-phoneme-text"
 check "the one-shot wake was visibly speaking while its audio played" \
     python3 - "$T/wake-playing.json" <<'PY'

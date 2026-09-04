@@ -99,8 +99,8 @@ stream dashpause '
     done_json'
 unset TTS_FIXES_UNDER_TEST
 [ "$SAID" = $'Ah\neight of fifteen.' ] \
-    && ok "a TTS_FIXES em dash becomes two piper lines and its sentence pause" \
-    || fail "the streamer collapsed the configured em-dash pause" "$SAID"
+    && ok "a TTS_FIXES newline reaches piper as two input lines (rule 12c)" \
+    || fail "the streamer collapsed a TTS_FIXES line boundary" "$SAID"
 
 stream leadws 'say_json "
 

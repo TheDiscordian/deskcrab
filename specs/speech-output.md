@@ -150,9 +150,18 @@ the same authority rule 5a already exercises on the stored reply.
     the external piper trace, never the streamer's own logs or receipts.
 12c. A line break created by `TTS_FIXES` MUST reach piper as a new input line on every speech path.
     The desktop streamer collapses ordinary draft whitespace before applying the fixes, then
-    preserves the line boundaries the fixes create. This lets an em-dash rewrite
-    (`s/—/\n/g`) turn piper's rushed em-dash delivery into its normal sentence silence without
-    changing the written reply or its display section.
+    preserves the line boundaries the fixes create. A preserved line break is a transport fact,
+    not a prosodic one: piper's sentence_silence follows a sentence as espeak segments it, not
+    an input line, and a bare line break carrying no punctuation is no cue at all — a fix that
+    wants a pause must emit punctuation. espeak already gives a literal em-dash its own break,
+    so the em-dash rewrite (`s/—/\n/g`) this rule once credited with piper's "normal sentence
+    silence" in fact replaced a real cue with nothing. Measured 2026-09-04
+    (`Library/voice/wild.py`: 40 spoken replies sampled from the journal, 27 dashed, rendered
+    four ways, paired sign tests over identical words): a comma and the literal dash each beat
+    the newline arm on pause count 16/2 p=0.001 and pause seconds 21/6 p=0.006, while deleting
+    the mark was indistinguishable from the newline, 6/5 p=1.000 — and no arm moved pitch
+    spread, so punctuation is a rhythm lever only. No shipped fix emits newlines any more; the
+    preservation this rule mandates stays for any future fix that does.
 13. The streamer MUST NEVER count bytes it did not read. The read counter is advanced by the length
     of lines actually read, never by a size taken from the file's metadata. Assigning the stat size
     to the read counter counts bytes appended between the read and the stat, and then counts them

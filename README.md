@@ -167,10 +167,10 @@ WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 
 ### TTS fixes
 
-Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. A replacement newline starts a new Piper input line, which uses Piper's sentence silence and can give punctuation a natural pause. Fixes apply only to the spoken reply; display-channel content is untouched:
+Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. A replacement newline starts a new Piper input line but not a pause — Piper's sentence silence follows punctuation as espeak segments it, not line breaks, so a fix that wants a pause must emit punctuation (measured 2026-09-04; an em-dash already earns its own break, so don't rewrite it away). Fixes apply only to the spoken reply; display-channel content is untouched:
 
 ```bash
-TTS_FIXES='s/\bhmph\b/humph/gi; s/—/\n/g'
+TTS_FIXES='s/\bhmph\b/humph/gi'
 ```
 
 ## Autonomous wants & wakes
