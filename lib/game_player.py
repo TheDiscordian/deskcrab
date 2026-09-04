@@ -212,6 +212,10 @@ def activity_path() -> Path:
     return game_dir() / "activity"
 
 
+def stop_path() -> Path:
+    return game_dir() / "stop-at.json"
+
+
 def progress_path() -> Path:
     return game_dir() / "objective-progress.json"
 
@@ -2701,6 +2705,98 @@ def read_activity() -> str:
         return ""
 
 
+# --------------------------------------------------------------------------
+# The declared stop ceiling (spec rule 11d): a stopping level named out loud
+# becomes structure the trigger layer, the runner and the activity door all
+# test, instead of prose nothing enforces. Fail closed in the fatigue_below
+# shape: an unreadable record or an unreadable skill never permits the play
+# the ceiling was set to stop.
+# --------------------------------------------------------------------------
+STOP_THEN_KINDS = ("clear", "halt", "switch")
+
+
+def load_stop():
+    """('none'|'cleared'|'armed'|'invalid', record-or-None).
+
+    'none' is the store where no stop was ever declared; 'cleared' is the
+    explicit tombstone `stop-at --clear` writes. 'invalid' is a file that
+    exists but cannot be trusted — unreadable, wrong shape, missing fields —
+    and both the trigger layer and the activity door fail closed on it."""
+    try:
+        raw = stop_path().read_text()
+    except FileNotFoundError:
+        return "none", None
+    except OSError:
+        return "invalid", None
+    try:
+        record = json.loads(raw)
+    except (ValueError, TypeError):
+        return "invalid", None
+    if not isinstance(record, dict) or record.get("v") != 1:
+        return "invalid", None
+    if record.get("cleared") is True:
+        return "cleared", record
+    then = record.get("then")
+    if not isinstance(record.get("skill"), str) or not record["skill"].strip() \
+            or "\n" in record["skill"] \
+            or isinstance(record.get("level"), bool) \
+            or not isinstance(record.get("level"), int) \
+            or not 1 <= record["level"] <= 99 \
+            or not isinstance(record.get("activity"), str) \
+            or not record["activity"].strip() or "\n" in record["activity"] \
+            or not isinstance(then, dict) \
+            or then.get("kind") not in STOP_THEN_KINDS:
+        return "invalid", record
+    if then["kind"] == "switch" \
+            and (not isinstance(then.get("activity"), str)
+                 or not then["activity"].strip() or "\n" in then["activity"]
+                 or then["activity"].strip() == record["activity"].strip()):
+        return "invalid", record
+    return "armed", record
+
+
+def stop_skill_level(record: dict, snap: dict):
+    """The snapshot's base level for the stop's skill, or None unread — the
+    same read skill_at_least makes, so the ceiling and the eligibility floor
+    can never disagree about what a level is."""
+    want = record["skill"].strip().casefold()
+    level = next(
+        (s.get("level") for s in snap.get("skills") or []
+         if isinstance(s, dict)
+         and str(s.get("name", "")).strip().casefold() == want),
+        None)
+    if isinstance(level, bool) or not isinstance(level, int):
+        return None
+    return level
+
+
+def stop_then_text(record: dict) -> str:
+    then = record.get("then") or {}
+    if then.get("kind") == "switch":
+        return f"switch:{then.get('activity')}"
+    return str(then.get("kind"))
+
+
+def stop_closure(verdict: str, record, activity_name: str, snap: dict):
+    """Why the stop store closes this activity against this snapshot, or
+    None when it permits. Spec rule 11d: an invalid record closes every
+    activity; an armed record closes its governed activity at the ceiling
+    or whenever the declared skill cannot be read."""
+    if verdict == "invalid":
+        return {"why": "stop-record-invalid", "file": str(stop_path())}
+    if verdict != "armed" or record["activity"] != activity_name:
+        return None
+    level = stop_skill_level(record, snap)
+    if level is None:
+        return {"why": "stop-skill-unread", "skill": record["skill"],
+                "ceiling": record["level"], "then": stop_then_text(record)}
+    if level >= record["level"]:
+        return {"why": "stop-reached", "level": level,
+                "skill": record["skill"], "ceiling": record["level"],
+                "then": stop_then_text(record)}
+    return None
+
+
 def snapshot_skills(snap: dict) -> dict:
     """Skill id -> the grounded cumulative XP currently published by the client."""
     found = {}
@@ -4774,12 +4870,21 @@ def cmd_goal(args):
 # exception — the same fail-safe rule the reflex triggers follow.
 # --------------------------------------------------------------------------
 def make_trigger_fn(objective: str, activity: str = ""):
+    stop_verdict, stop_record = load_stop()
+
     def trigger_true(trig, snap, food):
         if "objective_is" in trig:
             if not objective or objective != trig["objective_is"]:
                 return False
         if "activity_is" in trig:
             if not activity or activity != trig["activity_is"]:
+                return False
+            # Spec rule 11d: the declared stop ceiling, fail closed exactly
+            # like fatigue_below — a reached ceiling, an unreadable skill,
+            # or an unreadable record never lets an activity-scoped rule
+            # fire past the number that was said out loud.
+            if stop_closure(stop_verdict, stop_record,
+                            trig["activity_is"], snap) is not None:
                 return False
         if "npc_visible" in trig:
             # Spec rule 4: an int or the target set — any listed type visible.
@@ -6575,6 +6680,63 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("session-over", phase=sess["phase"], elapsed_ms=sess["elapsed_ms"],
                limit_ms=sess["limit_ms"], grace_ms_left=sess["grace_ms_left"])
         return "session-over", EXIT_SESSION_OVER
+
+    # Spec rule 11d: the declared stop ceiling's consequence. The DISARM is
+    # the trigger layer's and needs nothing here; this block performs what
+    # the declaration said reaching the ceiling does — once, on a fresh
+    # logged-in reading, below the message and session gates so a person
+    # who spoke still gets an answer and urgent escape still owns combat.
+    stop_verdict, stop_record = load_stop()
+    if not urgent_retreat_names and stop_verdict == "armed" and activity \
+            and stop_record["activity"] == activity \
+            and snap.get("logged_in") is True \
+            and now - snap.get("ts", 0) <= defaults["stale_ms"]:
+        closure = stop_closure(stop_verdict, stop_record, activity, snap)
+        if closure is not None and closure["why"] == "stop-reached":
+            then = stop_record["then"]
+            if not stop_record.get("reached_ts"):
+                marked = dict(stop_record, reached_ts=now,
+                              reached_level=closure["level"])
+                game_reflex.atomic_write(stop_path(),
+                                         json.dumps(marked) + "\n")
+                flush_events([{"ts": now, "kind": "stop-reached",
+                               "skill": stop_record["skill"],
+                               "ceiling": stop_record["level"],
+                               "level": closure["level"],
+                               "activity": activity,
+                               "then": stop_then_text(stop_record)}])
+                append_outcome({
+                    "ts": now, "kind": "stop-reached",
+                    "skill": stop_record["skill"],
+                    "ceiling": stop_record["level"],
+                    "level": closure["level"], "activity": activity,
+                    "then": stop_then_text(stop_record),
+                    "note": "the declared ceiling; the activity's rules are "
+                            "disarmed and the switch back in stays refused "
+                            "until: play stop-at --clear"})
+            if then["kind"] == "clear":
+                finish_activity_iteration(
+                    f"stop-reached:{stop_record['skill']}-{stop_record['level']}",
+                    snap)
+                try:
+                    activity_path().unlink()
+                except FileNotFoundError:
+                    pass
+                clear_activity_stats()
+            elif then["kind"] == "switch":
+                target = then["activity"].strip()
+                finish_activity_iteration(
+                    f"stop-reached-switch-to:{target}", snap)
+                game_dir().mkdir(parents=True, exist_ok=True)
+                game_reflex.atomic_write(activity_path(), target + "\n")
+                clear_activity_stats()
+                start_activity_stats(target, snap,
+                                     reason="stop-reached-switch", cfg=cfg)
+            report("stop-reached", skill=stop_record["skill"],
+                   ceiling=stop_record["level"], level=closure["level"],
+                   activity=activity, then=stop_then_text(stop_record),
+                   next="clear-or-replace-with:play-stop-at")
+            return "stop-reached", EXIT_NO_RULE
 
     if (state_dir() / "action.json").exists():
         report("slot-busy")
@@ -8797,6 +8959,30 @@ def cmd_activity(args):
     if "\n" in args.name or not args.name.strip():
         die("the activity is one non-empty line")
     selected = args.name.strip()
+    # Spec rule 11d: the declared stop ceiling refuses the switch back into
+    # the activity it stops, and fails closed when the record or the level
+    # cannot be read. The refusal names the ceiling and the clearing door.
+    stop_verdict, stop_record = load_stop()
+    if stop_verdict == "invalid":
+        die(f"activity '{selected}' refused: the stop record {stop_path()} "
+            "is unreadable or malformed, so the ceiling it held cannot be "
+            "known — activity selection fails closed. Re-declare it with "
+            "`play stop-at SKILL LEVEL clear|halt|switch NAME` or clear it "
+            "with `play stop-at --clear`")
+    if stop_verdict == "armed" and stop_record["activity"] == selected:
+        level = stop_skill_level(stop_record, game_reflex.read_snapshot() or {})
+        if level is None:
+            die(f"activity '{selected}' refused: a stop is declared at "
+                f"{stop_record['skill']} {stop_record['level']} and the live "
+                f"{stop_record['skill']} level cannot be read — the ceiling "
+                "fails closed rather than trusting a blind switch. Clear or "
+                "replace it with `play stop-at --clear` if the ceiling no "
+                "longer stands")
+        if level >= stop_record["level"]:
+            die(f"activity '{selected}' refused: the declared stop at "
+                f"{stop_record['skill']} {stop_record['level']} is reached "
+                f"(level {level}). The ceiling stays binding until "
+                "`play stop-at --clear` or a replacing declaration")
     previous = read_activity()
     if selected != previous:
         progress_gate_or_die(f"activity switch to '{selected}'")
@@ -8855,6 +9041,108 @@ def cmd_activity(args):
         if recalled:
             print("relevant play memories for this transition:")
             print(recalled)
+
+
+def cmd_stop_at(args):
+    """Spec rule 11d: declare, show, or clear the mechanical stop ceiling —
+    'woodcutting stops at 30' as one command at the moment it is said, so
+    the check is the trigger layer's and never the speaker's attention."""
+    if args.clear:
+        if args.skill is not None or args.level is not None or args.then:
+            die("stop-at --clear takes no other arguments")
+        verdict, record = load_stop()
+        tombstone = {"v": 1, "cleared": True, "cleared_ts": now_ms()}
+        if verdict == "armed":
+            tombstone["previous"] = {
+                key: record[key]
+                for key in ("skill", "level", "activity", "then",
+                            "reached_ts", "reached_level")
+                if key in record}
+        game_dir().mkdir(parents=True, exist_ok=True)
+        game_reflex.atomic_write(stop_path(), json.dumps(tombstone) + "\n")
+        flush_events([{"ts": now_ms(), "kind": "stop-cleared",
+                       "previous": tombstone.get("previous")}])
+        if verdict == "armed":
+            print(f"stop-at cleared: {record['skill']} {record['level']} "
+                  f"(activity {record['activity']})")
+        else:
+            print("stop-at cleared (none was armed)")
+        return
+    if args.skill is None:
+        verdict, record = load_stop()
+        if verdict in ("none", "cleared"):
+            print("(none)")
+            return
+        if verdict == "invalid":
+            die(f"the stop record {stop_path()} is unreadable or malformed — "
+                "activity rules and activity selection fail closed until it "
+                "is re-declared or cleared with `play stop-at --clear`")
+        line = (f"stop-at: {record['skill']} {record['level']} "
+                f"then={stop_then_text(record)} (activity {record['activity']})")
+        if record.get("reached_ts"):
+            line += " REACHED"
+        print(line)
+        level = stop_skill_level(record, game_reflex.read_snapshot() or {})
+        if level is None:
+            print(f"level: unread (the ceiling fails closed for "
+                  f"'{record['activity']}' until {record['skill']} can be read)")
+        else:
+            state = "reached" if level >= record["level"] else "below ceiling"
+            print(f"level: {level} ({state})")
+        return
+    if args.level is None or not args.then:
+        die("stop-at SKILL LEVEL clear|halt|switch NAME [--activity NAME] — "
+            "or bare stop-at to show, or stop-at --clear")
+    skill = args.skill.strip()
+    if not skill or "\n" in skill:
+        die("the skill is one non-empty line")
+    if not 1 <= args.level <= 99:
+        die("the ceiling level is an integer from 1 to 99")
+    then_words = [word.strip() for word in args.then if word.strip()]
+    kind = then_words[0].casefold() if then_words else ""
+    if kind == "switch" and len(then_words) == 2:
+        then = {"kind": "switch", "activity": then_words[1]}
+    elif kind in ("clear", "halt") and len(then_words) == 1:
+        then = {"kind": kind}
+    else:
+        die("what reaching the ceiling does is exactly one of: "
+            "clear | halt | switch NAME")
+    governed = (args.activity.strip() if args.activity else skill.casefold())
+    if not governed or "\n" in governed:
+        die("the governed activity is one non-empty line")
+    if then["kind"] == "switch" and then["activity"] == governed:
+        die(f"switch names '{then['activity']}', the governed activity "
+            "itself — a ceiling cannot switch back into what it stops")
+    # A typo'd skill would fail closed forever without ever reading a level.
+    # When the client publishes a ready skill table, the declared name must
+    # be in it; with no ready reading the door still works — a ceiling is
+    # spoken from anywhere, including logged out.
+    snap = game_reflex.read_snapshot() or {}
+    published = sorted(
+        {str(entry.get("name")).strip() for entry in snap.get("skills") or []
+         if isinstance(entry, dict) and str(entry.get("name") or "").strip()})
+    if published and skills_ready(snapshot_skills(snap)) \
+            and skill.casefold() not in {name.casefold() for name in published}:
+        die(f"'{skill}' names no skill the client publishes — "
+            f"known: {', '.join(published)}")
+    previous_verdict, previous = load_stop()
+    record = {"v": 1, "skill": skill, "level": args.level,
+              "activity": governed, "then": then, "set_ts": now_ms()}
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(stop_path(), json.dumps(record) + "\n")
+    flush_events([{"ts": now_ms(), "kind": "stop-declared",
+                   "skill": skill, "ceiling": args.level,
+                   "activity": governed, "then": stop_then_text(record),
+                   "replaced": ({key: previous[key] for key in
+                                 ("skill", "level", "activity")
+                                 if key in previous}
+                                if previous_verdict == "armed" else None)}])
+    print(f"stop-at: {skill} {args.level} then={stop_then_text(record)} "
+          f"(activity {governed})")
+    level = stop_skill_level(record, snap)
+    if level is not None:
+        state = "ALREADY REACHED" if level >= args.level else "below ceiling"
+        print(f"level: {level} ({state})")
 
 
 def cmd_session(args):
@@ -9640,6 +9928,19 @@ def cmd_run(args):
                                 f"npc={live_pause.get('npc')}; thieving-held; "
                                 "clear with: play sidestep-pause --clear")
                 detail = f"{pause_detail}; {detail}" if detail else pause_detail
+            live_stop_verdict, live_stop = load_stop()
+            if live_stop_verdict == "invalid":
+                stop_detail = ("stop-at record invalid; activity rules fail "
+                               "closed; re-declare or clear with: "
+                               "play stop-at --clear")
+                detail = f"{stop_detail}; {detail}" if detail else stop_detail
+            elif live_stop_verdict == "armed":
+                stop_detail = (f"stop-at {live_stop['skill']} "
+                               f"{live_stop['level']} "
+                               f"then={stop_then_text(live_stop)}"
+                               + (" REACHED" if live_stop.get("reached_ts")
+                                  else ""))
+                detail = f"{stop_detail}; {detail}" if detail else stop_detail
             active_route = load_route()
             if active_route is not None and active_route.get("status") != "invalid":
                 route_detail = (f"route {active_route['status']} to "
@@ -9790,6 +10091,21 @@ def main():
     p.add_argument("--history", action="store_true",
                    help="show comparable XP/hour iterations for NAME or the current activity")
     p.set_defaults(fn=cmd_activity)
+
+    p = sub.add_parser("stop-at",
+                       help="declare, show, or clear the mechanical skill "
+                            "ceiling: SKILL LEVEL clear|halt|switch NAME "
+                            "(spec rule 11d)")
+    p.add_argument("skill", nargs="?")
+    p.add_argument("level", nargs="?", type=int)
+    p.add_argument("then", nargs="*",
+                   help="what reaching the ceiling does: clear | halt | switch NAME")
+    p.add_argument("--activity",
+                   help="the activity the ceiling governs "
+                        "(default: the skill name, casefolded)")
+    p.add_argument("--clear", action="store_true",
+                   help="retire the stop to an explicit cleared record")
+    p.set_defaults(fn=cmd_stop_at)
 
     p = sub.add_parser("session", help="the sitting's clock: open, status, end")
     p.add_argument("action", nargs="?", default="status",
@@ -10019,6 +10335,7 @@ def main():
                            **deliberation_fields)
                 acknowledge_friend_status(friend_updates)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
+                          "stop-reached": EXIT_NO_RULE,
                           "route-needs-detour": EXIT_NO_RULE,
                           "route-needs-local-interaction": EXIT_NO_RULE,
                           "follow-needs-path": EXIT_NO_RULE,

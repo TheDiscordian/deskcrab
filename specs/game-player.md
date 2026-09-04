@@ -29,7 +29,9 @@ deliberate-play channel.
 1. The durable table is `$DESKCRAB_GAME_DIR/learned-rules.json`; the current objective is
    `$DESKCRAB_GAME_DIR/objective`, its chosen method is `$DESKCRAB_GAME_DIR/plan`, and the
    immediate activity is `$DESKCRAB_GAME_DIR/activity` (each one line, empty or absent meaning
-   none). The objective is the longer-lived goal (for example `cooking-level-10`); the plan is
+   none). Beside the plan lives the declared stop ceiling, `$DESKCRAB_GAME_DIR/stop-at.json`
+   (rule 11d): structure, not prose, read by the runner, the replay gate, and the activity door
+   alike. The objective is the longer-lived goal (for example `cooking-level-10`); the plan is
    the currently chosen way to achieve it, including meaningful destination and method constraints
    (for example `Use the Al Kharid bank-and-range loop; do not substitute Lumbridge's distant-bank
    range`); the activity is what the player is doing now (for example `travelling`, `banking`, or
@@ -1169,6 +1171,45 @@ deliberate-play channel.
       look at "is this still accomplishing the objective, and is anything stupid happening —
       loot on the ground, the wrong activity declared, a plan step already agreed to be wrong" —
       answered by fixing what it finds through the ordinary doors, not by narrating it.
+
+11d. **A stopping level named out loud is a mechanical, fail-closed stop.** A ceiling that
+    exists only as a spoken sentence, or as advisory prose in the plan, is a ceiling nothing
+    tests: the activity's reflexes outrank prose and the loop continues past any written
+    number. The declaration is therefore structure — `stop-at SKILL LEVEL clear|halt|switch
+    NAME [--activity NAME]` writes `$DESKCRAB_GAME_DIR/stop-at.json`: the skill, the ceiling
+    level (1..99), the activity the ceiling governs (the casefolded skill name unless
+    `--activity` names another), and what reaching it does — `clear` (clear the activity),
+    `switch NAME` (select that activity instead; the target may not be the governed activity
+    itself), or `halt` (ordinary evaluation stops entirely). One stop is binding at a time;
+    declaring another replaces it, and `stop-at --clear` retires it to an explicit cleared
+    record rather than deleting the file, so a deliberate clear leaves evidence. Bare
+    `stop-at` prints the record beside the skill's live level. When the client publishes a
+    ready skill table, a declared skill outside it is refused with the published names — a
+    typo'd ceiling would otherwise fail closed forever without ever reading a level.
+
+    The check is the trigger layer's, in exactly the `fatigue_below` shape (rule 4): while a
+    stop is armed, a trigger carrying `activity_is` equal to the governed activity is FALSE —
+    on the resident runner, on `step`, and in every rule-17 replay case — whenever the
+    snapshot's base level for the declared skill has reached the ceiling, or that skill cannot
+    be read from the snapshot at all. A record that exists but cannot be parsed or fails
+    validation closes EVERY `activity_is` trigger, whatever activity it names: an unreadable
+    ceiling never permits the play it was set to stop, and only an explicitly cleared record
+    or a store where no stop was ever declared permits. Rules with no activity scope (escape,
+    eating, dialogue safety) are not the ceiling's business and stay armed.
+
+    `activity NAME` refuses to select the governed activity while the ceiling is reached or
+    the skill unreadable, and refuses ANY selection over an invalid record; the refusal names
+    the ceiling (or the unreadable file) and the clearing door. When the resident runner
+    observes the ceiling reached on a fresh logged-in snapshot with the governed activity
+    current, it performs the declared consequence once — the activity clear or switch through
+    the ordinary iteration bookkeeping, stamping `reached_ts` onto the record — and reports
+    the `stop-reached` verdict, which maps to the model-may-reason exit so the deliberate
+    hand decides what the sitting does next. A `halt` stop keeps returning that verdict
+    instead of evaluating the table, sitting BELOW the message and session gates (rules
+    7b-7c, 21a) so a person who spoke still gets an answer and urgent escape still owns
+    combat. The reached stop stays binding — the switch back in stays refused — until
+    `stop-at --clear` or a replacing declaration; the runner's heartbeat detail carries the
+    armed ceiling, and an invalid record rides it as a loud fail-closed warning.
 
 ### The entrypoint
 
