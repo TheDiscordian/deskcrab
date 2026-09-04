@@ -1040,6 +1040,14 @@ deliberate-play channel.
 
 8. The discipline inside evaluation is game-reflex rules 10–11 verbatim, because it is the same
    code: descending priority for one game slot, losers logged as `conflict-loss`, `hold_ticks`
+   debounce — with one player-layer refinement to the tie: among EQUAL-priority `take-ground`
+   rules, the rule whose nearest matching reachable pile is closest to the body is evaluated
+   first, every other rule keeping its exact position. Without this, table order is the
+   permanent tiebreak, and one drop type visible somewhere in the field starves every other
+   loot rule at the same priority indefinitely — hides were collected for an hour while the
+   bones underfoot were lost to `conflict-loss` on every pass. Nearest-first is also the loot
+   doctrine mechanised: the kill tile underfoot is cleared before the body walks to the next
+   corpse. The rest is unchanged:
    debounce, one action in flight until its observed completion or failure lease, stale and
    logged-out snapshots firing nothing, a logged-out snapshot resetting streaks, no tick acted
    on twice, and the `hold` flag honoured at both ends (game-reflex rule 15 — the same flag file;
@@ -1107,7 +1115,12 @@ deliberate-play channel.
     circumstance", "from now on", "at all times", "how to", "remember", "stop …ing", or a
     gerund prohibition list ("no woodcutting, no thieving") — because every one of those is a
     different artifact wearing the plan's clothes: a lesson belongs in durable memory, a redirect
-    in steering's moment, and finished work in a measured milestone. A prohibition written into
+    in steering's moment, and finished work in a measured milestone. The same refusal covers the
+    reworded forms the first filter taught: work-status declarations ("melee and thieving are
+    PAUSED", "on hold", "banned", "off-limits") — what is or is not worth training is the
+    measure's business, read fresh, never a list frozen into the plan — and queued future
+    plans ("resume the crafting run next sitting"), because a second plan stapled after the
+    current one is the handoff's cargo, not the plan's. A prohibition written into
     the plan is how one bad afternoon becomes a permanent wall. The refusal message routes each
     shape to its own door. The plan is also capped at 400 characters: a method is a sentence or
     two, and length is how how-to essays sneak in. An objective change or clear removes its plan

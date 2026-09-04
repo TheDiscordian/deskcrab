@@ -2631,6 +2631,29 @@ check_eq "the distant wanted pile is approached through take-ground" \
     "$(last_action 'type=take-ground')" "1"
 python3 "$GP" remove routine-farmer-pocket >/dev/null
 python3 "$GP" remove wanted-coins-before-routine >/dev/null
+# Spec rule 8's tie refinement: among equal-priority loot rules the nearest
+# pile wins, whatever the table order — one drop type visible across the
+# field must not starve the loot underfoot on conflict-loss forever.
+python3 "$GP" learn loot-far-first-in-table --priority 900 --cooldown-ms 0 \
+    --trigger ground_item_visible=31 --trigger out_of_combat=true \
+    --action take-ground --param item=31 >/dev/null
+python3 "$GP" learn loot-near-second-in-table --priority 900 --cooldown-ms 0 \
+    --trigger ground_item_visible=41 --trigger out_of_combat=true \
+    --action take-ground --param item=41 >/dev/null
+snap 1297 '[]' '{"x":120,"z":648,"ground_items":[
+  {"id":31,"x":126,"z":648,"reachable":true,"path_distance":6},
+  {"id":41,"x":120,"z":648,"reachable":true,"path_distance":0}
+]}'
+fake_take_bridge collected
+OUT="$(python3 "$GP" step)"; CODE=$?
+wait "$FAKE_BRIDGE_PID"
+check_eq "the nearest-pile tie completes its take" "$CODE" "0"
+contains "$OUT" "rule=loot-near-second-in-table" \
+    && ok "the pile underfoot beats the earlier-tabled distant one" \
+    || fail "the pile underfoot beats the earlier-tabled distant one" "$OUT"
+check_eq "the underfoot tile is the compiled target" "$(last_action 'x=120')" "1"
+python3 "$GP" remove loot-far-first-in-table >/dev/null
+python3 "$GP" remove loot-near-second-in-table >/dev/null
 python3 "$GP" objective --clear >/dev/null
 
 echo

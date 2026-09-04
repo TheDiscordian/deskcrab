@@ -7037,6 +7037,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                                       "route_step": NAVIGATION_ROUTE_STEP_TILES,
                                       "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
                                       "arrive": leg_arrive}})
+    live_rules = order_take_rules_by_proximity(live_rules, snap)
     eval_cfg = {"v": cfg.get("v", 1),
                 "defaults": {k: v for k, v in defaults.items()},
                 "rules": live_rules}
@@ -8409,6 +8410,53 @@ def cmd_quests(args):
         die(f"no quest name contains {fragment!r}")
 
 
+def order_take_rules_by_proximity(rules: list, snap: dict) -> list:
+    """Spec rule 8's tie refinement: among equal-priority take-ground rules,
+    the nearest matching reachable pile is taken first, so the kill tile
+    underfoot is cleared before the body walks to the next corpse. Every
+    non-take rule keeps its exact position."""
+    ground = snap.get("ground_items") or []
+    if not ground:
+        return rules
+    px, pz = snap.get("x"), snap.get("z")
+
+    def pile_distance(rule):
+        action = rule.get("action") or {}
+        if action.get("type") != "take-ground":
+            return None
+        best = None
+        for entry in ground:
+            if not isinstance(entry, dict) or entry.get("id") != action.get("item") \
+                    or entry.get("reachable") is False:
+                continue
+            d = entry.get("path_distance")
+            if not isinstance(d, int) or d < 0:
+                if not (isinstance(entry.get("x"), int) and isinstance(px, int)
+                        and isinstance(entry.get("z"), int) and isinstance(pz, int)):
+                    continue
+                d = max(abs(entry["x"] - px), abs(entry["z"] - pz))
+            if best is None or d < best:
+                best = d
+        return best
+
+    out = list(rules)
+    bands = {}
+    for index, rule in enumerate(out):
+        bands.setdefault(rule.get("priority"), []).append(index)
+    for indices in bands.values():
+        takes = [i for i in indices
+                 if (out[i].get("action") or {}).get("type") == "take-ground"]
+        if len(takes) < 2:
+            continue
+        distances = {id(out[i]): pile_distance(out[i]) for i in takes}
+        ranked = sorted((out[i] for i in takes),
+                        key=lambda r: (distances[id(r)] is None,
+                                       distances[id(r)] or 0))
+        for slot, rule in zip(takes, ranked):
+            out[slot] = rule
+    return out
+
+
 # --------------------------------------------------------------------------
 # Spec rule 11c: the objective progress record — measure, milestones,
 # reflection. An objective is pursued against live data, never orbited on
@@ -8686,6 +8734,13 @@ STANDING_PLAN_PATTERNS = (
     r"\bfrom now on\b", r"\bgoing forward\b", r"\bat all times\b",
     r"\bevery time\b", r"\bin the future\b", r"\bdo not (?:ever|again)\b",
     r"\bstop \w+ing\b", r"\bhow to\b", r"\bremember\b", r"\bno \w+ing\b",
+    # Reworded prohibitions: a work-status list is the measure's business,
+    # never a clause frozen into the plan.
+    r"\bpaused\b", r"\bon hold\b", r"\bbanned\b", r"\bforbidden\b",
+    r"\boff[- ]limits\b",
+    # A queued future plan is a second plan: the handoff carries next-sitting
+    # work, the plan carries only the current leg's method.
+    r"\bnext (?:sitting|session)\b", r"\btomorrow\b",
 )
 
 
@@ -8694,13 +8749,15 @@ def plan_hygiene_or_die(text: str) -> None:
             if re.search(p, text, re.IGNORECASE)]
     if hits:
         die("plan refused — it contains standing-instruction language "
-            f"(matched: {', '.join(hits)}). The plan is the current method and "
-            "nothing else. A lesson belongs in durable memory (betty-openrsc "
-            "remember), a momentary redirect in steering, and finished or "
-            "closed work is a measured fact (play milestone done NAME "
-            "--evidence …), never a prohibition clause. A ban written into "
-            "the plan is how one bad afternoon becomes a permanent wall. "
-            "State only what you are doing next and how.")
+            f"(matched: {', '.join(hits)}). The plan is ONE method for the "
+            "current leg and nothing else. A lesson or fact belongs in "
+            "durable memory (betty-openrsc remember), a momentary redirect "
+            "in steering, finished or closed work is a measured fact (play "
+            "milestone done NAME --evidence …), what is or is not worth "
+            "training is the measure's business read fresh (play progress), "
+            "and next-sitting work rides the handoff — never a second plan "
+            "stapled after this one. State only what you are doing next "
+            "and how.")
 
 
 def cmd_objective(args):
