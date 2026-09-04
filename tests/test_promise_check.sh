@@ -171,6 +171,21 @@ case "$(field 3)" in
         ok "and quotes the promise verbatim" ;;
     *) fail "the wake must carry the promise in her own words" "$(field 3)" ;;
 esac
+# rule 32c: the reason carries the verifier's OWN finding about this promise,
+# the same words the ledger line holds — a specific reason replaced by the
+# general clause sends the reader off to rediscover what was already written.
+case "$(field 3)" in
+    *"no tool call touched any config"*)
+        ok "and the verifier's own reason for this promise, not the general clause" ;;
+    *) fail "the wake must carry the reason the ledger carries" "$(field 3)" ;;
+esac
+case "$(field 3)" in
+    *"nothing in this turn's own record"*)
+        fail "the general clause must not paper over a specific finding" "$(field 3)" ;;
+    *) ok "and the general evidence clause does not paper over it" ;;
+esac
+check "the ledger line holds that same reason" \
+    grep -q '"why": "no tool call touched any config"' "$T/ledger.jsonl"
 F="$(fire_in)"
 check "the alarm fires immediately" test "$F" -ge -2 -a "$F" -le 10
 case "$(calls)" in

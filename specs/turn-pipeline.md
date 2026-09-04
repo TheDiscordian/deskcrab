@@ -421,7 +421,12 @@ ledger.
      queue's one door on the urgent lane (`PROMISE_CHECK_WAKE_DELAY`, default 1s), using the
      configured `WAKE_EFFORT`. Its
      reason opens with the unkept-commitment prefix and quotes the promise verbatim
-     ([wake-queue.md](wake-queue.md) rule 43b). Two bounds keep an accusation from becoming a
+     ([wake-queue.md](wake-queue.md) rule 43b), and it MUST carry the same reason the ledger
+     line carries — the verifier's own words about THIS promise where it gave them, and the
+     general evidence clause only where it gave none. A specific finding ("the order is
+     reversed", "the commit is not in that repository") thrown away in favour of the general
+     clause makes the wake accuse work that exists, and the reader pays for the reason twice.
+     Two bounds keep an accusation from becoming a
      storm: a promise the auditor's deferred wake already covers from this same turn is
      ledgered as covered and not booked twice, and one verbatim promise may earn at most
      `PROMISE_CHECK_REBOOK_MAX` (default 2) wakes a day — past that the ledger line still

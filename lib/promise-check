@@ -1190,10 +1190,18 @@ PY
             # The chase: an event wake through the queue's urgent lane, using the
             # configured WAKE_EFFORT, there to DO one named thing.
             # The reason opens with the class prefix (the audit skips it)
-            # and quotes the promise verbatim.
+            # and quotes the promise verbatim. It carries the judge's OWN
+            # reason for this promise ($WHY, defaulted to the general
+            # evidence clause above at its parse), never the general clause
+            # laid over a specific finding. On 2026-09-04 the ledger held
+            # "the tool record shows the old record was settled first …
+            # reversing the claimed order" while the wake it booked said
+            # nothing performed the action at all: the wake accused a whole
+            # piece of work that existed, and its reader spent the sitting
+            # rediscovering a reason already written down beside it.
             BOOKING="$("$SCRIPT_DIR/crab" wake-at --by promise-check \
                 --cap "$CAP" --cap-prefix "$PROMISE_CHECK_REASON_PREFIX" \
-                "$DELAY" event "$PROMISE_CHECK_REASON_PREFIX \"$PROMISE\" — you said it at $(date '+%H:%M') on the $KIND channel, and this check fired because $EVIDENCE_CLAUSE. Do it now, or book it deliberately with 'crab wake-at' with the work named in the reason; a claim does not get to stand with no work behind it." 2>&1)"
+                "$DELAY" event "$PROMISE_CHECK_REASON_PREFIX \"$PROMISE\" — you said it at $(date '+%H:%M') on the $KIND channel, and this check fired because $WHY. Do it now, or book it deliberately with 'crab wake-at' with the work named in the reason; a claim does not get to stand with no work behind it." 2>&1)"
             case "$BOOKING" in
                 *"Not booked"*|*"already pending"*)
                     WAKE_NOTE="not booked (${BOOKING%%$'\n'*})" ;;
