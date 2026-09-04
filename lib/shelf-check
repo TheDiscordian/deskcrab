@@ -1,5 +1,6 @@
 #!/bin/bash
-# The nightly shelf-line check — specs/nightly.md rules 21a and 21b.
+# The nightly shelf-line check — specs/nightly.md rules 21a and 21b — and,
+# riding the same pass, the conduct-orphan check of rule 21g.
 #
 # A shelf entry is ONE line: the title and at most a short status clause,
 # with the history in the want's own wants/<slug>.md document. On 2026-08-07
@@ -20,8 +21,9 @@
 # the record the state block renders into `crab status` and every speaking
 # prompt until a later check finds the shelf clean and removes it (the same
 # shape as the assembler's rule 36/40a records). Exit 1 when entries stand
-# over the budget, 0 otherwise; the tidy unit runs this as `ExecStartPre=-`,
-# so the report never gates the tidy job behind it.
+# over the budget or conduct orphans stand unindexed, 0 otherwise; the tidy
+# unit runs this as `ExecStartPre=-`, so the report never gates the tidy job
+# behind it.
 set -u
 
 # Deployment is by symlink (specs/nightly.md rule 6a): resolve this file's
@@ -29,16 +31,43 @@ set -u
 # sources a common.sh that does not exist.
 . "$(dirname "$(readlink -f "$0")")/common.sh"
 
+# The conduct-orphan check first — specs/nightly.md rule 21g. The prompt's
+# conduct shelf is assembled from CONDUCT.md's index lines alone, so a body
+# file no index line names in backticks exists, is committed, and can never
+# act: spoken-intent-goes-in-the-plan.md sat exactly that way for thirteen
+# and a half hours on 2026-09-03/04. tests/test_conduct_index.sh holds the
+# forward direction (every named body exists); this is the reverse, run the
+# night an orphan appears, through the ONE reader conduct_orphans shares with
+# that suite. Like the shelf measure below it REPORTS and never rewrites —
+# naming the rule in the index, or withdrawing the body, is her judgement —
+# and its finding never skips the shelf measure nor gates the tidy behind it:
+# the verdict rides the exit status, which the unit's ExecStartPre=- ignores.
+orphan_rc=0
+conduct_dir="$(deskcrab_home)/conduct"
+orphans="$(conduct_orphans "$conduct_dir")"
+if [ -n "$orphans" ]; then
+    orphan_rc=1
+    printf 'shelf-check: %s conduct bodies sit in %s that no CONDUCT.md index line names — each is assembled into no prompt and cannot act until its rule is indexed or the body withdrawn:\n' \
+        "$(printf '%s\n' "$orphans" | grep -c .)" "$conduct_dir"
+    while IFS= read -r orphan_f; do
+        [ -n "$orphan_f" ] || continue
+        printf 'shelf-check:   %s\n' "$orphan_f"
+    done <<EOF
+$orphans
+EOF
+fi
+
 record="$SHELF_OVERRUNS_FILE"
 shelf="${WANTS_FILE:-}"
 budget="${WANTS_SHELF_LINE_BUDGET:-500}"
 
 # A clean outcome — nothing over, nothing to measure, or no shelf at all —
-# says so in one line, removes any standing record, and exits zero.
+# says so in one line, removes any standing record, and exits zero unless the
+# conduct check above already found orphans standing.
 clean_exit() {
     rm -f "$record"
     printf 'shelf-check: %s\n' "$1"
-    exit 0
+    exit "$orphan_rc"
 }
 
 [ -n "$shelf" ] || clean_exit "no shelf is configured (WANTS_FILE unset); nothing to measure"

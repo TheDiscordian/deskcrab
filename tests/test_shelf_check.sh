@@ -3,7 +3,10 @@
 # line is a line: an entry over the byte budget is named with its size and
 # the wants/<slug>.md document its history belongs in; a genuinely one-line
 # shelf is silent; the record stands in the state block until a clean check
-# removes it; and the check never rewrites a byte of the shelf.
+# removes it; and the check never rewrites a byte of the shelf. Rule 21g
+# rides the same pass: a conduct body no index line names is reported by
+# filename, the shelf measure still runs beside the finding, and a clean
+# drawer adds not a line.
 # Run: bash tests/test_shelf_check.sh
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 
@@ -100,3 +103,35 @@ rm -f "$D/wants.md"
 out="$("$SANDBOX_REPO/lib/shelf-check")"; rc=$?
 check_eq "a missing shelf exits zero" "$rc" "0"
 check "and says so in the check's own name" contains "$out" "shelf-check:"
+
+echo
+echo "a conduct body no index line names is reported, and skips nothing (rule 21g):"
+printf '%s\n' "$CLEAN_SHELF" > "$D/wants.md"
+cat > "$D/conduct/CONDUCT.md" <<'EOF'
+# How I hold myself
+
+> Everything below is owed, not chosen.
+
+- 🧭 **A named rule** → `a-named-rule.md`
+EOF
+printf 'why the rule exists\n' > "$D/conduct/a-named-rule.md"
+printf 'a rule nobody indexed\n' > "$D/conduct/an-orphan-rule.md"
+SUM_BEFORE="$(cat "$D/conduct/CONDUCT.md" "$D/conduct/an-orphan-rule.md" | md5sum)"
+out="$("$SANDBOX_REPO/lib/shelf-check")"; rc=$?
+check "the check exits non-zero" [ "$rc" -ne 0 ]
+check "the orphan is named by filename, in the check's own name" \
+    contains "$out" "shelf-check:   an-orphan-rule.md"
+refute "the indexed body is not accused" contains "$out" "a-named-rule.md"
+check "and the shelf measure still ran beside the finding" \
+    contains "$out" "every one inside the"
+SUM_AFTER="$(cat "$D/conduct/CONDUCT.md" "$D/conduct/an-orphan-rule.md" | md5sum)"
+check_eq "the drawer is byte-identical — the check reports, never rewrites" \
+    "$SUM_AFTER" "$SUM_BEFORE"
+
+echo
+echo "the rule indexed by a person, the check goes quiet about conduct again:"
+printf -- '- 🧾 **The orphan, adopted** → `an-orphan-rule.md`\n' >> "$D/conduct/CONDUCT.md"
+out="$("$SANDBOX_REPO/lib/shelf-check")"; rc=$?
+check_eq "clean drawer, clean shelf: exit zero" "$rc" "0"
+refute "and not a line about conduct" contains "$out" "conduct"
+check_eq "one line exactly, the shelf's own" "$(printf '%s\n' "$out" | grep -c .)" "1"

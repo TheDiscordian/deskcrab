@@ -824,7 +824,9 @@ the evidence).
 - `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
   nightly tidy writes is named in the index.
 - `tests/test_conduct_index.sh` — the binding test line is present verbatim, the titles are
-  injected, and every title resolves to a file through the index.
+  injected, every title resolves to a file through the index, and — the reverse direction,
+  [nightly.md](nightly.md) rule 21g — every body file in the drawer is named by a backticked
+  index line, through the same `conduct_orphans` reader the nightly check runs.
 - `tests/test_claudism_feedforward.sh` — the recent-catches block: fresh flags named by their list
   headings and quoted, stale flags aged out, dedup by pattern, and an unreadable log costing the
   block and nothing else.

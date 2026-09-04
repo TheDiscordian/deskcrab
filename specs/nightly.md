@@ -266,6 +266,24 @@ which fails silently is worse than one that does not exist.
     slug adds no second scheduler, only the guarantee that whichever hand reaches the door
     second stands down.
 
+21g. The conduct-orphan check. Before the shelf measure, in the same `lib/shelf-check` pass the
+    tidy already runs, the conduct drawer beside the shelf (`<deskcrab home>/conduct/`, the same
+    resolution the assembler's L4 uses) is read in the index's reverse direction: every body
+    `*.md` in the drawer other than `CONDUCT.md` itself MUST be named by a backticked reference
+    in `CONDUCT.md`. The forward direction was already held — every named body exists,
+    `tests/test_conduct_index.sh` — and nothing held this one, so a committed body no index line
+    named was assembled into no prompt and could never act: `spoken-intent-goes-in-the-plan.md`
+    sat exactly that way for about thirteen and a half hours from 2026-09-03 14:02, and
+    `facts-before-claims.md` and `no-unasked-music-playback.md` had stood the same. ONE reader,
+    `conduct_orphans` in `lib/common.sh`, is the drawer's judge for the check and the suite
+    alike (rule 20 of [prompt-assembly.md](prompt-assembly.md) — two readers with different
+    patterns is how an auditor gets handed an empty list). An orphan is reported by filename in
+    the check's own name (`shelf-check:`) to the caller's log and the check exits non-zero; like
+    the shelf measure it REPORTS and never rewrites — naming the rule in the index, or
+    withdrawing the body, is her judgement — and its finding MUST NOT skip the shelf measure
+    beside it nor gate the tidy job behind it (the unit's `ExecStartPre=-` bargain, rule 21b). A
+    clean drawer, an empty drawer, and no drawer at all add not a line.
+
 ### The self-change watcher
 
 22. The watcher is driven by a path unit using the kernel's own change notification. No polling
@@ -1090,7 +1108,10 @@ no document is flagged as exactly that; a genuinely one-line shelf is silent —
 zero, no record; the record stands under `${STATE_PREFIX}-shelf-overruns.txt`, renders in the
 state block and the assembled prompt, and a later clean check removes it; the budget answers
 `WANTS_SHELF_LINE_BUDGET`; and the shelf file is byte-identical before and after every check —
-the check reports and never rewrites.
+the check reports and never rewrites. Rule 21g in the same file: a conduct body no index line
+names in backticks is reported by filename with the shelf measure still running beside it, an
+indexed body is not accused, the drawer is byte-identical after the check, and a clean, empty or
+absent drawer adds not a line.
 
 **To be written:**
 

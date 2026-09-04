@@ -2608,6 +2608,26 @@ conduct_titles() {  # <conduct file>
         -e 's/^(- [^*]*\*\*[^*]+\*\*).*$/\1/' || true
 }
 
+# The index's reverse direction (specs/nightly.md rule 21g): every body file
+# in the drawer must be named by a backticked reference in CONDUCT.md, or it
+# is assembled into no prompt and can never act — spoken-intent-goes-in-the-
+# plan.md sat committed and invisible for thirteen and a half hours on
+# 2026-09-03/04 exactly this way. One reader for the nightly check and the
+# suite alike; a drawer with bodies but no readable index is every body
+# orphaned, which is the same invisibility, only total. Prints the orphaned
+# filenames one per line, nothing when the drawer is clean, empty, or absent.
+conduct_orphans() {  # <conduct drawer dir>
+    local _co_dir="${1:-}" _co_f _co_base
+    [ -n "$_co_dir" ] && [ -d "$_co_dir" ] || return 0
+    for _co_f in "$_co_dir"/*.md; do
+        [ -f "$_co_f" ] || continue
+        _co_base="${_co_f##*/}"
+        [ "$_co_base" = "CONDUCT.md" ] && continue
+        grep -qF "\`$_co_base\`" "$_co_dir/CONDUCT.md" 2>/dev/null \
+            || printf '%s\n' "$_co_base"
+    done
+}
+
 # --- Prompt assembly -------------------------------------------------------
 # specs/prompt-assembly.md. One assembler, four profiles, one layer order, a
 # measured byte budget per layer, and the user's own words delivered as the

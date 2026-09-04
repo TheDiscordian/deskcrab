@@ -152,6 +152,33 @@ done < <(printf '%s\n' "$TITLES" | sed -n 's/.*→ \(.*\)$/\1/p')
 [ "$unresolved" = 0 ] && ok "every named body exists in the conduct drawer"
 
 echo
+echo "and the reverse direction: every body in the drawer is named by the index:"
+# A body the index does not name in backticks is assembled into no prompt and
+# can never act — it sits committed and invisible (specs/nightly.md rule 21g;
+# one body sat exactly that way for thirteen and a half hours on 2026-09-03/04
+# before anything looked in this direction).
+orphaned=0
+for body in "$D/conduct"/*.md; do
+    [ -f "$body" ] || continue
+    base="${body##*/}"
+    [ "$base" = "CONDUCT.md" ] && continue
+    grep -qF "\`$base\`" "$D/conduct/CONDUCT.md" \
+        || { orphaned=1; fail "a body sits in the drawer with no index line naming it" "$base"; }
+done
+[ "$orphaned" = 0 ] && ok "every body in the drawer is named by a backticked index line"
+check_eq "the drawer's one reader agrees the drawer is clean" \
+    "$(run "conduct_orphans '$D/conduct'")" ""
+
+# The reader proves it can see an orphan at all — a reader that always answers
+# an empty list would pass the clean case above while proving nothing.
+printf 'CONDUCT_BODY_MARKER — a rule nobody indexed.\n' > "$D/conduct/planted-orphan.md"
+check_eq "a planted orphan is named by the reader, by filename, alone" \
+    "$(run "conduct_orphans '$D/conduct'")" "planted-orphan.md"
+rm -f "$D/conduct/planted-orphan.md"
+check_eq "and withdrawing it leaves the reader silent again" \
+    "$(run "conduct_orphans '$D/conduct'")" ""
+
+echo
 echo "an absent drawer is absent, not an error:"
 rm -rf "$D/conduct"
 NONE="$(run 'build_system_prompt --profile turn')"
