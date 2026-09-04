@@ -15,6 +15,7 @@ and the `say` callback it is built with does the speaking.
 
 import os
 import re
+import threading
 
 DELIM = "---DISPLAY---"
 # Hold back any trailing text that could still turn out to be the delimiter.
@@ -250,6 +251,14 @@ class BlockRegistry:
                                    # fingerprints above, and on 2026-08-22 a
                                    # stop-hook-rejected draft's rewrite was
                                    # voiced whole right behind the draft
+        self.voiced_lock = threading.Lock()
+                                   # voiced_texts is written from the voice
+                                   # thread too (register_delivery, at the
+                                   # moment of delivery — rule 12a as amended
+                                   # 2026-09-04), so the reader's comparison
+                                   # and every write to the corpus hold this
+                                   # lock: a later block is always measured
+                                   # against a corpus that is not mid-write
 
     def replay_all(self):
         """A truncation sent the tail back down the file: identical bytes are
@@ -319,15 +328,51 @@ class BlockRegistry:
         # that already put words on the speakers is never cut here: its own
         # remainder still flushes below, because a suppressor that truncates
         # mid-thought is the tail-loss defect wearing the dedup's clothes.
-        if (b.consumed == 0 and text.strip()
-                and any(near_duplicate(text, prior)
-                        for prior in self.voiced_texts)):
-            b.done = True
-            b.consumed = len(text)
-            return
-        # A quiet block never reaches the voice, so it is no prior for the
-        # near-duplicate supersede: a later real block saying similar words
-        # aloud is not a re-emit of a thought nobody heard.
-        if text.strip() and not QUIET_RE.match(text):
-            self.voiced_texts.append(text)
+        # Under the corpus lock, comparison and append together: the voice
+        # thread rewrites this list at the moment of delivery, and a
+        # comparison against a half-updated corpus is how a rewrite's second
+        # copy would slip through the very gap this lock closes.
+        with self.voiced_lock:
+            if (b.consumed == 0 and text.strip()
+                    and any(near_duplicate(text, prior)
+                            for prior in self.voiced_texts)):
+                b.done = True
+                b.consumed = len(text)
+                return
+            # A quiet block never reaches the voice, so it is no prior for
+            # the near-duplicate supersede: a later real block saying similar
+            # words aloud is not a re-emit of a thought nobody heard.
+            if text.strip() and not QUIET_RE.match(text):
+                self.voiced_texts.append(text)
         b.close(text)
+
+    def register_delivery(self, draft, spoken):
+        """The voice DELIVERED `spoken` where the reader had queued `draft`.
+
+        The corpus above is registered by delivery, not by intent
+        (specs/speech-output.md rule 12a as amended 2026-09-04): a pre-speech
+        gate can replace a sentence's words AFTER close_text registered the
+        draft, and on 2026-09-03 the corpus held 'Noted.' — a sentence that
+        never sounded — while the rewrite that sounded twice was in no corpus
+        at all. Called from the voice thread at the moment of delivery, so
+        the same withdrawal the rejection boundary performs on unsounded text
+        happens here for a draft the gate replaced. The draft is substituted
+        IN PLACE inside the newest entry that carries it: entries keep their
+        positions, so the acceptance hold's rejection mark over this list
+        stays true. Fail closed: a draft that cannot be found stays
+        registered and the delivered text is appended beside it — the corpus
+        may suppress more than the truth, never less, and no delivered
+        sentence goes unregistered. A delivery with nothing usable changes
+        nothing: the draft stays, which also suppresses more."""
+        spoken = (spoken or "").strip()
+        if not spoken:
+            return
+        with self.voiced_lock:
+            if draft and draft.strip():
+                for i in range(len(self.voiced_texts) - 1, -1, -1):
+                    if draft in self.voiced_texts[i]:
+                        if draft.strip() != spoken:
+                            self.voiced_texts[i] = \
+                                self.voiced_texts[i].replace(draft, spoken, 1)
+                        return
+            self.voiced_texts.append(spoken)

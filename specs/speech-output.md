@@ -109,6 +109,19 @@ the same authority rule 5a already exercises on the stored reply.
     the tail-loss defect wearing the dedup's clothes. A rewrite whose deltas streamed live will
     therefore still sound; cutting a voice already mid-sentence is the mid-speech supersede, a
     separate piece of work this rule deliberately does not claim.
+    The corpus this rule compares against is registered by DELIVERY, not by intent (amended
+    2026-09-04): a pre-speech gate (rules 38–49) can replace a sentence's words after the reader
+    registered the draft, and at 15:01:20 on 2026-09-03 the corpus held `Noted.` — a sentence
+    that never sounded — while `Reading the clock instead of guessing.`, which sounded twice
+    back to back from one streamer pid, was in no corpus at all. So at the moment the voice
+    actually delivers a sentence, the delivered text MUST enter the corpus and the pre-gate
+    draft MUST be withdrawn — the same authority rule 12b's rejection already exercises over
+    text that never sounded, here a substitution in place so the rejection boundary's mark over
+    the corpus stays true. The write crosses from the voice thread into the reader's registry,
+    so the withdraw/register pair and the reader's comparison MUST be atomic under one lock.
+    Fail closed: a delivery whose draft cannot be found in the corpus leaves the draft
+    registered and registers the delivered text beside it — the corpus may suppress more than
+    the truth, never less, and no delivered sentence goes unregistered.
 12b. The acceptance boundary (adopted 2026-08-26; built in `lib/tts-streamer` the same day —
     held green by `tests/test_reply_stop_acceptance.sh`). The CLI can hand a finished
     message back as rejected: a synthetic user event whose text opens `Stop hook feedback:`,
@@ -609,6 +622,12 @@ at block and at paragraph level while every genuinely distinct consecutive pair 
 the display half rides the collapse whole; the shared registry holds a never-voiced near-duplicate
 block off the speakers while a distinct block and a partly-streamed block's own tail keep their
 voice, and an unterminated final sentence still flushes at close.
+The delivery half of 12a — the corpus registered by what the mouth said — is held by
+`tests/test_speech_dup.sh`, on the recorded shape of 2026-09-03: a mirror rewrite delivered for
+the draft `Noted.` suppresses its own later identical block instead of sounding twice, the
+never-sounded draft no longer suppresses a later block that merely matches it, the registry's
+own substitution is in place and fail-closed, and the rule 12b rejection withdrawal behaves as
+it did before the amendment.
 
 Rule 12b is held by `tests/test_reply_stop_acceptance.sh` (written red 2026-08-26 against the
 unbuilt hold, green since the hold landed in `lib/tts-streamer` the same day): the 2026-08-25

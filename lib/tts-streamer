@@ -286,6 +286,10 @@ class Voice(threading.Thread):
         self._said = []
         self._stop = False
         self.claudism_seq = 0
+        self.registry = None    # the shared BlockRegistry, once it exists:
+                                # the corpus is registered by DELIVERY (rule
+                                # 12a as amended 2026-09-04), and delivery
+                                # happens on this thread
         # Mouth cue bookkeeping (armed only with FACE_SOCKET): the sentences
         # handed to piper, in order, waiting for their stderr record; and
         # when the audio already scheduled will stop playing.
@@ -741,6 +745,21 @@ class Voice(threading.Thread):
                 # talking over a dead device (specs/face.md rule 23).
                 self._mouth_close()
                 continue
+            # The delivery registration (rule 12a as amended 2026-09-04):
+            # the words just handed to the synthesiser are what the corpus
+            # must hold — the gate above may have replaced the draft the
+            # reader registered, and on 2026-09-03 a rewrite sounded twice
+            # because the corpus knew only its never-sounded draft.
+            # Registered BEFORE the SAID line lands, so a SAID row is also
+            # the witness that the corpus already knows this delivery. Every
+            # failure in here is a failure to REGISTER, never to speak —
+            # and it leaves the draft in the corpus, which suppresses more.
+            if self.registry is not None:
+                try:
+                    self.registry.register_delivery(raw, item)
+                except Exception as exc:
+                    speech_log("delivery registration failed (%s) — the "
+                               "corpus keeps the draft" % exc)
             # Every utterance leaves a pid-stamped trace: "who spoke this
             # twice" must be answerable from the speech log alone.
             speech_log("SAID: %s" % item.replace("\n", " [pause] ")[:90])
@@ -898,7 +917,8 @@ class AcceptanceHold:
         for c in chunks:
             self._speak(c)
         if self.registry is not None:
-            self._mark = len(self.registry.voiced_texts)
+            with self.registry.voiced_lock:
+                self._mark = len(self.registry.voiced_texts)
 
     def reject(self):
         """Stop-hook feedback: the ENTIRE held draft is discarded — into the
@@ -916,8 +936,12 @@ class AcceptanceHold:
             # The rejected message's texts leave the near-duplicate corpus
             # (rule 12a's voiced_texts): they never sounded, and holding its
             # own correction off the speakers as "already voiced" would turn
-            # the hold into the silence rule 12b forbids.
-            del self.registry.voiced_texts[self._mark:]
+            # the hold into the silence rule 12b forbids. Under the corpus
+            # lock, because the voice thread rewrites this list at delivery
+            # (register_delivery) — in place, never moving an entry, so this
+            # slice still names exactly the rejected message's texts.
+            with self.registry.voiced_lock:
+                del self.registry.voiced_texts[self._mark:]
 
     def release_final(self):
         """End of the stream — the terminator, a killed CLI, a reaped
@@ -958,6 +982,10 @@ REG = BlockRegistry(HOLD.add)  # every block of every message, the replay
                      # sentence_stream.py, its voice now the acceptance hold
                      # in front of the desk's piper hand-off
 HOLD.registry = REG
+VOICE.registry = REG  # the voice thread registers deliveries into the same
+                      # corpus (rule 12a as amended 2026-09-04); nothing can
+                      # reach VOICE.say before this line, because the queue
+                      # is fed only through REG and HOLD above
 held_refusal = ""    # the newest limit refusal, held off the speakers — and
                      # kept off them: refusals are never voiced, only logged;
                      # the caller notifies when a whole chain refuses

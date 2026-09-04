@@ -270,3 +270,139 @@ N=$(grep -c "truncated under me" "$SPEECHLOG" 2>/dev/null)
     || fail "the read counter must not be set from the file's size" "$N truncation lines"
 N=$(said_count "Filler 1.")
 [ "$N" = 1 ] && ok "and nothing in it is spoken twice" || fail "a growing log must speak once" "spoken $N times"
+
+echo
+echo "the corpus is fed by delivery, not by intent (rule 12a as amended 2026-09-04):"
+# 2026-09-03 15:01:20, one streamer pid: the mirror held the draft 'Noted.',
+# her rewrite 'Reading the clock instead of guessing.' was spoken — and then
+# spoken AGAIN when a second copy of the rewrite came down the stream, because
+# voiced_texts held the draft (which never sounded) and not the rewrite (which
+# did). The corpus must register what the mouth said, at the moment it says it.
+
+LIST="$T/claudisms.md"
+cat > "$LIST" <<'EOF'
+- `noted` — the clipped acknowledgement stands in for any held phrase.
+- `beacon` — a second trigger, so the draft-shaped probe can fire on its own.
+EOF
+
+start_armed() { # <name>
+    LOG="$T/$1.log"; TRACE="$T/$1.trace"; RECEIPT="$T/$1.receipt"
+    SPEECHLOG="$T/$1.speechlog"; FIRES="$T/$1-fires.jsonl"
+    : > "$LOG"; : > "$TRACE"; : > "$SPEECHLOG"
+    rm -f "$RECEIPT" "$FIRES" "$FIRES".verdict-* "$FIRES.done"
+    TRACE="$TRACE" DESKCRAB_DEBUGLOG="$LOG" DESKCRAB_PIPER_VOICE=/dev/null \
+        DESKCRAB_SPEECHLOCK="$T/$1.speechlock" \
+        DESKCRAB_SPEECH_LOG="$SPEECHLOG" DESKCRAB_SPEECH_RECEIPT="$RECEIPT" \
+        DESKCRAB_VOICE_IDLE_CLOSE=30 \
+        DESKCRAB_CLAUDISMS="$LIST" DESKCRAB_CLAUDISM_FIRES="$FIRES" \
+        DESKCRAB_CLAUDISM_MIRROR_TIMEOUT=20 \
+        "$REPO_DIR/lib/tts-streamer" 2>/dev/null &
+    SPID=$!
+    sleep 0.2
+}
+wait_for() { local i; for i in $(seq 100); do "$@" && return 0; sleep 0.1; done; return 1; }
+fires_at_least() { local n; n=$(grep -cF '"pattern"' "$FIRES" 2>/dev/null); [ "${n:-0}" -ge "$1" ] 2>/dev/null; }
+said_in_log() { grep -qF "SAID: $1" "$SPEECHLOG" 2>/dev/null; }
+ACCEPT='{"type":"user","message":{"content":[{"type":"text","text":"a tool result moved the stream on"}]}}'
+
+start_armed rewritedup
+j '{"type":"assistant","message":{"model":"m","id":"msg_N","content":[{"type":"text","text":"Noted. "}]}}'
+j "$ACCEPT"
+wait_for fires_at_least 1 || fail "the mirror never fired on the draft" "$(cat "$FIRES" 2>/dev/null)"
+printf '{"action":"rewrite","text":"Reading the clock instead of guessing."}\n' > "$FIRES.vtmp"
+mv -f "$FIRES.vtmp" "$FIRES.verdict-1"
+wait_for said_in_log "Reading the clock instead of guessing." \
+    || fail "the rewrite never reached the SAID line" "$(cat "$SPEECHLOG")"
+# The second copy of the rewrite arrives as its own completed block — the
+# recorded 2026-09-03 shape. The corpus now knows what the mouth said, and the
+# near-duplicate supersede holds the copy whole.
+j '{"type":"assistant","message":{"model":"m","id":"msg_R","content":[{"type":"text","text":"Reading the clock instead of guessing."}]}}'
+j "$RESULT"
+reap_streamer
+N=$(said_count "Reading the clock instead of guessing.")
+[ "$N" = 1 ] && ok "a delivered rewrite suppresses its own later identical block (one SAID, not two)" \
+    || fail "the rewrite's second copy sounded" "spoken $N times"
+N=$(said_count "Noted.")
+[ "$N" = 0 ] && ok "the held draft itself never reached the synthesiser" \
+    || fail "draft spoken despite the rewrite" "spoken $N times"
+
+echo
+echo "and the never-sounded draft is no prior — a block near the DRAFT still speaks:"
+start_armed draftfree
+j '{"type":"assistant","message":{"model":"m","id":"msg_P","content":[{"type":"text","text":"The beacon lamp is dark tonight. "}]}}'
+j "$ACCEPT"
+wait_for fires_at_least 1 || fail "the mirror never fired on the beacon draft" "$(cat "$FIRES" 2>/dev/null)"
+printf '{"action":"rewrite","text":"Reading the clock instead of guessing."}\n' > "$FIRES.vtmp"
+mv -f "$FIRES.vtmp" "$FIRES.verdict-1"
+wait_for said_in_log "Reading the clock instead of guessing." \
+    || fail "the rewrite never reached the SAID line" "$(cat "$SPEECHLOG")"
+# A later block that near-matches only the DRAFT (0.9231 against the draft,
+# far from the rewrite). Before the amendment the corpus held the draft and
+# this block was swallowed unheard; now it must speak — through its own fire,
+# released unrewritten.
+j '{"type":"assistant","message":{"model":"m","id":"msg_Q","content":[{"type":"text","text":"The beacon lamp is dark again tonight."}]}}'
+j "$ACCEPT"
+if wait_for fires_at_least 2; then
+    printf '{"action":"release"}\n' > "$FIRES.vtmp"
+    mv -f "$FIRES.vtmp" "$FIRES.verdict-2"
+fi
+j "$RESULT"
+reap_streamer
+N=$(said_count "The beacon lamp is dark again tonight.")
+[ "$N" = 1 ] && ok "a block that merely matches the never-sounded draft keeps its voice" \
+    || fail "the withdrawn draft still suppresses its near-matches" "spoken $N times"
+N=$(said_count "Reading the clock instead of guessing.")
+[ "$N" = 1 ] && ok "and the rewrite itself spoke exactly once" \
+    || fail "rewrite count moved" "spoken $N times"
+
+echo
+echo "the stop-hook rejection still withdraws its never-sounded draft (rule 12b, unchanged):"
+start_streamer rejectpull
+j '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_X"}}}'
+j "$TBLOCK"
+j '{"type":"assistant","message":{"model":"m","id":"msg_X","content":[{"type":"text","text":"The lamp is broken and dark."}]}}'
+j '{"type":"user","message":{"content":[{"type":"text","text":"Stop hook feedback: say it plainer"}]}}'
+j '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_Y"}}}'
+j "$TBLOCK"
+j '{"type":"assistant","message":{"model":"m","id":"msg_Y","content":[{"type":"text","text":"The lamp is broken and darker."}]}}'
+j "$RESULT"
+reap_streamer
+N=$(said_count "The lamp is broken and darker.")
+[ "$N" = 1 ] && ok "the correction (0.9643 to its rejected draft) keeps its voice" \
+    || fail "the rejected draft still holds its correction off the speakers" "spoken $N times"
+N=$(said_count "The lamp is broken and dark.")
+[ "$N" = 0 ] && ok "the rejected draft itself stays unspoken" \
+    || fail "rejected draft sounded" "spoken $N times"
+
+echo
+echo "the registry itself: substitution in place, fail closed:"
+if python3 - "$REPO_DIR/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from sentence_stream import BlockRegistry
+calls = []
+r = BlockRegistry(calls.append)
+r.close_text("m1", 0, "The beacon lamp is dark tonight. ")
+assert r.voiced_texts == ["The beacon lamp is dark tonight. "], r.voiced_texts
+r.register_delivery("The beacon lamp is dark tonight. ",
+                    "Reading the clock instead of guessing.")
+# withdrawn AND registered in one in-place motion: positions never move, so
+# the acceptance hold's rejection mark over this list stays true
+assert r.voiced_texts == ["Reading the clock instead of guessing."], r.voiced_texts
+r.close_text("m2", 0, "Reading the clock instead of guessing.")
+assert len(calls) == 1, calls          # the delivered rewrite holds its copy
+r.close_text("m3", 0, "The beacon lamp is dark again tonight.")
+assert calls[-1] == "The beacon lamp is dark again tonight.", calls
+r.register_delivery("Never queued here.", "Words that did sound.")
+assert r.voiced_texts[-1] == "Words that did sound.", r.voiced_texts
+before = list(r.voiced_texts)
+r.register_delivery("Reading the clock instead of guessing.", "   ")
+assert r.voiced_texts == before        # nothing usable: the draft stays
+r2 = BlockRegistry(lambda c: None)
+r2.close_text("x", 0, "First thought here. Second thought follows.")
+r2.register_delivery("First thought here.", "A better first thought.")
+assert r2.voiced_texts == ["A better first thought. Second thought follows."], r2.voiced_texts
+PY
+then ok "register_delivery substitutes in place and never leaves a delivered sentence unregistered"
+else fail "registry delivery registration broke" "see the python traceback above"
+fi
