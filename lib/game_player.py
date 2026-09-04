@@ -7173,7 +7173,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                activity_xp=xp_text or None,
                activity_mismatch=xp_activity_mismatch(xp_text, activity),
                activity_compare=xp_compare or None,
-               **reflection_fields(),
+               **reflection_fields(snap),
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
                sidestep_pause=(f"{sidestep_pause.get('status')}"
@@ -8566,13 +8566,19 @@ def xp_activity_mismatch(xp_text, activity):
     return ",".join(stray) or None
 
 
-def reflection_fields() -> dict:
+def reflection_fields(snap: dict = None) -> dict:
     """Spec rule 11c: what a due reflection must face, riding the verdict."""
     if not read_objective():
         return {}
     record = load_progress()
     now = now_ms()
     fields = {}
+    if isinstance(snap, dict) and len(snap.get("inventory") or []) >= 30:
+        waiting = len(snap.get("ground_items") or [])
+        if waiting:
+            fields["bag_full_loot_waiting"] = (
+                f"{waiting}-piles (no loot rule can fire at 30/30 slots — "
+                "free a slot: bury a carried bone, craft, or bank)")
     if record.get("measure"):
         verified = record.get("verified_ms")
         fields["progress_age_min"] = (now - verified) // 60000 \
@@ -10375,7 +10381,7 @@ def main():
                     deliberation_fields = {}
                     if verdict == "no-rule-matched":
                         deliberation_fields = dict(
-                            reflection_fields(),
+                            reflection_fields(live_snapshot),
                             activity_mismatch=xp_activity_mismatch(
                                 hb.get("activity_xp"), hb.get("activity")))
                     report(f"runner-{verdict or 'unknown'}",
