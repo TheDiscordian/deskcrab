@@ -61,6 +61,19 @@ check_log() {
 # mistaken for one that could not start (rule 53a).
 say() { printf 'promise-check: %s\n' "$1"; }
 
+# The built-in three roots (workdir, home, data dir) resolve a bare relative
+# path in prose only when the drawer sits directly under one of them, and
+# writing drawers nest deeper — a real file named as `moments/<name>.md` read
+# as NOT FOUND and turned a kept promise into an accusation (2026-09-05
+# 03:16). PROMISE_PATH_ROOTS names further roots, colon-separated, tried
+# after the built-ins in the order given (specs/turn-pipeline.md rule 32bc).
+EXTRA_ROOTS=()
+if [ -n "${PROMISE_PATH_ROOTS:-}" ]; then
+    while IFS= read -r _root; do
+        [ -n "$_root" ] && EXTRA_ROOTS+=("$_root")
+    done < <(printf '%s\n' "$PROMISE_PATH_ROOTS" | tr ':' '\n')
+fi
+
 CHECK_MODEL="${PROMISE_CHECK_MODEL:-sonnet}"
 CHECK_FALLBACK_MODEL="${PROMISE_CHECK_FALLBACK_MODEL:-haiku}"
 # The night sweep's judge is the NIGHT JUDGE, never the live checker's model
@@ -515,6 +528,7 @@ PY
             "${PROMISE_CHECK_PATH_SLACK:-300}" \
             "${PROJECT_DIR:-}" "$HOME" \
             "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" \
+            ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"} \
             2>/dev/null <<'PY'
 import os, re, sys
 reply = sys.argv[1]
@@ -816,10 +830,12 @@ PY
         if ! FILES_BLOCK="$(python3 - "$RESPONSE" \
                 "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" "$HOME" \
                 "${PROJECT_DIR:-}" \
+                ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"} \
                 2>/dev/null <<'PY'
 import os, re, sys, time
 reply, data_dir, home = sys.argv[1], sys.argv[2], sys.argv[3]
 proj = sys.argv[4] if len(sys.argv) > 4 else ""
+extra = [a for a in sys.argv[5:] if a]
 tokens, seen = [], set()
 for raw in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+", reply):
     tok = raw.rstrip(".,;:!?")
@@ -839,6 +855,7 @@ for tok in tokens[:12]:
         cands.append(os.path.join(home, tok))
         if proj:
             cands.append(os.path.join(proj, tok))
+        cands.extend(os.path.join(r, tok) for r in extra)
     hit = None
     for c in cands:
         try:
@@ -1312,10 +1329,12 @@ PY
     if ! SWEEP_FILES="$(python3 - "$JOURNAL" \
             "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" "$HOME" \
             "${PROJECT_DIR:-}" \
+            ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"} \
             2>/dev/null <<'PY'
 import json, os, re, sys, time
 journal, data_dir, home = sys.argv[1], sys.argv[2], sys.argv[3]
 proj = sys.argv[4] if len(sys.argv) > 4 else ""
+extra = [a for a in sys.argv[5:] if a]
 tokens, seen = [], set()
 try:
     fh = open(journal, encoding="utf-8", errors="replace")
@@ -1348,6 +1367,7 @@ for tok in tokens[:40]:
         cands.append(os.path.join(home, tok))
         if proj:
             cands.append(os.path.join(proj, tok))
+        cands.extend(os.path.join(r, tok) for r in extra)
     hit = None
     for c in cands:
         try:

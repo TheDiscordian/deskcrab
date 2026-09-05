@@ -415,6 +415,20 @@ ledger.
      and on the run trace, an empty window says so in words, and neither is ever presented as
      an acquittal. And it loosens nothing: a commit claim no repository's log shows is judged
      exactly as before.
+32bc. The "obvious roots" of rule 32b are not obvious enough. `PROJECT_DIR`, `$HOME` and the
+     data dir resolve a relative path only when the drawer she names it from sits directly
+     under one of them, and her writing drawers are nested deeper: on 2026-09-05 at 03:16 she
+     wrote a file and named it in prose as `moments/<name>.md`, the file existed under her
+     writing root with an mtime one minute before the claim, and the disk record still read
+     "NOT found on disk" because no root joined to that prefix. A stat that misses turns a
+     kept promise into an accusation, which is the same failure as an acquittal pointed the
+     other way. So the root list MUST be extensible from the user's config:
+     `PROMISE_PATH_ROOTS` (colon-separated, empty by default) names further roots, and every
+     path-resolving section here — the pre-judge path acquittal of rule 32b, the live judge's
+     named-files record, and the night sweep's stat of the day's named paths — MUST try them
+     after the built-in three, in the order given. Non-existent or unreadable roots are
+     skipped silently; the setting loosens nothing, because a token no root resolves is still
+     reported NOT found and judged as before.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the

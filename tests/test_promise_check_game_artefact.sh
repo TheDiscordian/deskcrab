@@ -195,3 +195,54 @@ printf 'not json at all' > "$GAMES/browser-099.json"
     "$T/ledger.jsonl" "I've met it head-on in the centre." >/dev/null 2>&1
 check_eq "the model WAS consulted — no readable game backs the claim" "$(claude_n)" "1"
 check_eq "and the flag lands exactly as before" "$(ledger_n)$(records)" "11"
+
+# --- extra roots (specs/turn-pipeline.md rule 32bc) -------------------------
+# The built-in three roots only resolve a relative path when the drawer sits
+# DIRECTLY under one of them. Her writing drawers nest deeper, so a real file
+# named in prose as "moments/<name>.md" statted as NOT FOUND and the checker
+# accused a promise that had been kept one minute earlier (2026-09-05 03:16).
+DEEP="$HOUSE/Library/moments"
+mkdir -p "$DEEP"
+deep_note() {
+    printf '## tonight\nthe write-up\n' > "$DEEP/tonight.md"
+    touch -d "@$(( NOW - 60 ))" "$DEEP/tonight.md"
+}
+DEEP_CLAIM="It's in \`moments/tonight.md\` if you ever want it."
+
+echo
+echo "a drawer BELOW the workdir does not resolve on the built-in roots alone:"
+reset; poison; rm -f "$DEEP"/*.md; deep_note
+"$T/repo/lib/promise-check" turn wake "$NOW" 5040 "$(snap)" \
+    "$T/ledger.jsonl" "$DEEP_CLAIM" >/dev/null 2>&1
+check_eq "the model WAS consulted — no root joins to that prefix" "$(claude_n)" "1"
+check "and the judge is told the file is missing, which is the fault itself" \
+    grep -qF "moments/tonight.md — NOT found on disk" "$T/model-stdin"
+
+echo "PROMISE_PATH_ROOTS='$HOUSE/Library'" >> "$DESKCRAB_CONF"
+
+echo
+echo "with the writing root named, the same claim is backed by its own file:"
+reset; poison; rm -f "$DEEP"/*.md; deep_note
+"$T/repo/lib/promise-check" turn wake "$NOW" 5041 "$(snap)" \
+    "$T/ledger.jsonl" "$DEEP_CLAIM" >/dev/null 2>&1
+check_eq "the model was never called" "$(claude_n)" "0"
+check_eq "nothing ledgered, nothing booked" "$(ledger_n)$(records)" "00"
+check "the trace names the resolved artefact" \
+    grep -qF "backed: the artefact $DEEP/tonight.md" "$CHECK_LOG"
+
+echo
+echo "the extra root loosens nothing — an unwritten file under it still flags:"
+reset; poison; rm -f "$DEEP"/*.md
+"$T/repo/lib/promise-check" turn wake "$NOW" 5042 "$(snap)" \
+    "$T/ledger.jsonl" "$DEEP_CLAIM" >/dev/null 2>&1
+check_eq "the model WAS consulted" "$(claude_n)" "1"
+check_eq "and the flag lands: one ledger line, one wake" "$(ledger_n)$(records)" "11"
+
+echo
+echo "a root that does not exist is skipped in silence:"
+reset; poison; rm -f "$DEEP"/*.md; deep_note
+echo "PROMISE_PATH_ROOTS='$T/nowhere:$HOUSE/Library'" >> "$DESKCRAB_CONF"
+"$T/repo/lib/promise-check" turn wake "$NOW" 5043 "$(snap)" \
+    "$T/ledger.jsonl" "$DEEP_CLAIM" >/dev/null 2>&1
+check_eq "the good root behind it still answers" "$(claude_n)" "0"
+check_eq "nothing ledgered, nothing booked" "$(ledger_n)$(records)" "00"
