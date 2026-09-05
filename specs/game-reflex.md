@@ -489,9 +489,14 @@ Three parts:
     `retreat` action with the rule's `distance` and fallback `dx`/`dz`, so the server's first-three-
     round lock, live opponent direction, collision-map alternatives, and no-path refusals are
     handled as combat rather than mistaken for an ordinary walk. Once out of combat, it compiles
-    to a `distance`-tile walk along the configured `dx`/`dz` direction (default south), allowing
-    low-health/no-food survival to keep creating separation. The engine clamps ordinary walks to
-    at most 15 tiles from the player's position.
+    to a `distance`-tile walk along the configured `dx`/`dz` direction (default south) — but only
+    within a short separation window after combat actually ended (15 s): separation is an
+    escape's tail, not a standing condition. Past the window the rule refuses
+    (`flee-separation-complete-no-recent-combat`), because a low-health, foodless character
+    standing safely is deliberation's problem — get food, rest — and a zero-cooldown flee with
+    no combat gate otherwise walks the body away five tiles forever, which is exactly how a
+    starving player jogged around the desert instead of eating. The engine clamps ordinary
+    walks to at most 15 tiles from the player's position.
 
 14. The shipped default table carries exactly three rules: `warn-low-health` (notice channel,
     enabled, `hp_below` 0.5), `eat-low-health` (game, **disabled**, `hp_below` 0.5 +

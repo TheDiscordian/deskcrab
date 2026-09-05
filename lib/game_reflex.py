@@ -576,6 +576,11 @@ def emit_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
 # to "emitting for real", which is exactly the old `emit is emit_action`
 # test, so replay stays hold-blind and the run loop stays hold-bound.
 # --------------------------------------------------------------------------
+# Spec rule 13: out-of-combat flee legs are an escape's tail, not a standing
+# condition — past this window after combat ends, flee refuses.
+FLEE_SEPARATION_MS = 15000
+
+
 def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
              emit=emit_action, sink=None, trigger_fn=None, compile_fn=None,
              live=None) -> None:
@@ -618,6 +623,8 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
     if tick == est["last_tick"]:
         return  # never act twice on one tick (spec rule 11)
     est["last_tick"] = tick
+    if snap.get("in_combat") is True:
+        est["last_combat_ms"] = now
 
     # Debounce streaks first, for every enabled rule, so the counters are
     # honest whatever fires. On this engine's own vocabulary, a game rule's
@@ -712,6 +719,19 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
             log_event({"ts": now, "kind": "conflict-loss", "rule": rule["name"],
                        "lost_to": game[0]["name"]}, sink)
             continue
+        # Spec rule 13: out of combat, a flee leg is only the tail of an
+        # actual escape. Past the separation window the rule stands down —
+        # a starving but safe body is deliberation's problem, and a
+        # zero-cooldown flee would otherwise walk it away forever.
+        if (rule["action"].get("type") == "flee"
+                and snap.get("in_combat") is not True):
+            last_combat = est.get("last_combat_ms")
+            if not isinstance(last_combat, int) \
+                    or now - last_combat > FLEE_SEPARATION_MS:
+                log_event({"ts": now, "kind": "refused", "rule": rule["name"],
+                           "why": "flee-separation-complete-no-recent-combat"},
+                          sink)
+                continue
         action, why = compile_fn(rule, snap, food, defaults["eat_pick"])
         if action is None:
             log_event({"ts": now, "kind": "refused", "rule": rule["name"],
@@ -957,8 +977,23 @@ def cmd_run(args):
     record = open(args.record, "a") if args.record else None
     last_seen = None
     try:
+        source_mtime = Path(__file__).stat().st_mtime
+    except OSError:
+        source_mtime = 0
+    try:
         while True:
             now = now_ms()
+            # A resident engine outliving a deploy enforces yesterday's code
+            # against today's table — when the deployed source changes,
+            # re-exec in place (same discipline as the player runner).
+            try:
+                smt = Path(__file__).stat().st_mtime
+            except OSError:
+                smt = source_mtime
+            if smt != source_mtime:
+                if record:
+                    record.close()
+                os.execv(sys.executable, [sys.executable] + sys.argv)
             snap = read_snapshot()
             consume_receipt(est, now, snap)
             sweep_dead_notices(now)

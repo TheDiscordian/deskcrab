@@ -1180,9 +1180,11 @@ deliberate-play channel.
       (`BETTY_OPENRSC_REFLECT_EVERY_MS`) pass without one, the `no-rule-matched` verdict carries
       `reflection_due` with the minutes overdue, plus the facts the reflection must face:
       ground items presently visible, the declared activity beside the skills actually gaining
-      XP (a mismatch names itself), the progress record's age, and — when the bag is full while
-      loot sits on the ground — a `bag_full_loot_waiting` line, because at 30/30 slots no loot
-      rule can fire and every further kill drops loot straight onto the floor. The obligation is a real
+      XP (a mismatch names itself), the progress record's age, a `bag_full_loot_waiting` line
+      when the bag is full while loot sits on the ground (at 30/30 slots no loot rule can fire
+      and every further kill drops loot straight onto the floor), and a `starving` line when
+      hp is below half with no food carried — the state that otherwise becomes an endless
+      flee-and-return jog instead of a trip to a range. The obligation is a real
       look at "is this still accomplishing the objective, and is anything stupid happening —
       loot on the ground, the wrong activity declared, a plan step already agreed to be wrong" —
       answered by fixing what it finds through the ordinary doors, not by narrating it.

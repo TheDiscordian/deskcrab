@@ -8579,6 +8579,21 @@ def reflection_fields(snap: dict = None) -> dict:
             fields["bag_full_loot_waiting"] = (
                 f"{waiting}-piles (no loot rule can fire at 30/30 slots — "
                 "free a slot: bury a carried bone, craft, or bank)")
+    if isinstance(snap, dict):
+        hits, hits_max = snap.get("hits"), snap.get("hits_max")
+        if isinstance(hits, int) and isinstance(hits_max, int) \
+                and hits_max > 0 and hits * 2 < hits_max:
+            try:
+                heals = game_reflex.load_food()
+            except BaseException:
+                heals = {}
+            carried_food = sum(1 for item in snap.get("inventory") or []
+                               if item.get("id") in heals)
+            if not carried_food:
+                fields["starving"] = (
+                    f"hp {hits}/{hits_max} with no food carried — get food "
+                    "before fighting (cook on a range, fish, or buy), and "
+                    "rest or sleep to regenerate meanwhile")
     if record.get("measure"):
         verified = record.get("verified_ms")
         fields["progress_age_min"] = (now - verified) // 60000 \
@@ -9907,7 +9922,8 @@ def cmd_run(args):
     except OSError:
         table_mtime = 0
     try:
-        source_mtime = Path(__file__).stat().st_mtime
+        source_mtime = Path(__file__).stat().st_mtime \
+            + Path(game_reflex.__file__).stat().st_mtime
     except OSError:
         source_mtime = 0
     last_gap_signature = None
@@ -9944,8 +9960,11 @@ def cmd_run(args):
             # Spec rule 15: a runner outliving a deploy enforces a table
             # nobody can see — when the deployed source changes, re-exec in
             # place so the same supervised process continues on current code.
+            # The shared evaluator ships in game_reflex, so its file counts
+            # as this runner's source too.
             try:
-                smt = Path(__file__).stat().st_mtime
+                smt = Path(__file__).stat().st_mtime \
+                    + Path(game_reflex.__file__).stat().st_mtime
             except OSError:
                 smt = source_mtime
             if smt != source_mtime:
