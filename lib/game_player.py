@@ -46,7 +46,7 @@ TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", 
 ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "step-aside", "interact-object", "interact-bound", "click-entity",
            "click-inventory", "click-shop", "click-bank", "take-ground",
            "drop-inventory", "use-item-ground", "use-item-item",
-           "choose-dialogue")
+           "use-item-object", "choose-dialogue")
 ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
 ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
 SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
@@ -2594,6 +2594,22 @@ def validate_config(cfg: dict) -> None:
                     or isinstance(action["target"], bool) or action["target"] < 0:
                 bad(f"{where}: use-item-item takes exactly item=<held item id> "
                     "and target=<held item id>")
+        elif atype == "use-item-object":
+            # The held-item-on-scenery door: raw shrimp against a Range, an
+            # ore against a furnace.  Both halves are identities the snapshot
+            # already publishes - a held item id and an object TYPE id whose
+            # nearest loaded placement is resolved at fire time - so no slot,
+            # selection phase, pointer or remembered tile is ever authored.
+            # No `within`: the client walks to the scenery it was told to use
+            # the item on, exactly as interact-object does, and a cap here
+            # would only idle the body in sight of its own range.
+            if set(action) != {"type", "item", "obj"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0 \
+                    or not isinstance(action.get("obj"), int) \
+                    or isinstance(action["obj"], bool) or action["obj"] < 0:
+                bad(f"{where}: use-item-object takes exactly item=<held item id> "
+                    "and obj=<object type id>")
         elif atype == "use-item-ground":
             # The held-item-on-ground-pile door: firemaking's tinderbox on the
             # logs that had to be put down first. item is held, ground is the
@@ -5278,6 +5294,22 @@ def compile_player_action(rule, snap, food, eat_pick):
                 return {"type": "interact-object", "x": obj["x"], "z": obj["z"],
                         "obj": want, "cmd": action.get("cmd", 1)}, None
         return None, "object-not-loaded"
+    if action["type"] == "use-item-object":
+        # The item half must be held right now, exactly as the deliberate
+        # door requires before the bridge re-resolves its live slot; the
+        # scenery half is chosen the way interact-object chooses one, the
+        # nearest loaded placement of that type id, whose tile rides the
+        # action file for the bridge's own unloaded/swapped recheck.
+        if not snapshot_holds_item(snap, action["item"]):
+            return None, "item-not-held"
+        want = action["obj"]
+        for obj in snap.get("objects") or []:    # already nearest-first
+            if obj.get("id") == want and isinstance(obj.get("x"), int) \
+                    and isinstance(obj.get("z"), int):
+                return {"type": "use-item-object", "x": obj["x"],
+                        "z": obj["z"], "item": action["item"],
+                        "obj": want}, None
+        return None, "object-not-loaded"
     if action["type"] == "interact-bound":
         want = action["obj"]
         exact_x, exact_z, exact_dir = (action.get("x"), action.get("z"),
@@ -7288,7 +7320,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "interact-object", "interact-bound",
             "click-inventory", "click-entity",
             "drop-inventory", "use-item-ground", "use-item-item",
-            "choose-dialogue"):
+            "use-item-object", "choose-dialogue"):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
             "within", "button", "batch", "ground", "amount",
@@ -8609,6 +8641,27 @@ def reflection_fields(snap: dict = None) -> dict:
             fields["bag_full_loot_waiting"] = (
                 f"{waiting}-piles (no loot rule can fire at 30/30 slots — "
                 "free a slot: bury a carried bone, craft, or bank)")
+    if isinstance(snap, dict):
+        activity = read_activity()
+        act = (activity or "").lower()
+        if act and not any(token in act for token in
+                           ("bank", "travel", "transit", "walk", "journey")):
+            implied = set()
+            for token, skills in ACTIVITY_SKILL_HINTS.items():
+                if token in act:
+                    implied |= skills
+            worn = [item for item in snap.get("inventory") or []
+                    if item.get("equipped")]
+            # Judge only what the name clearly declares: an unmapped name
+            # (which may be combat in practice) is the stale-activity
+            # escalation's business, not this line's.
+            if implied and len(worn) >= 3 \
+                    and not implied & {"attack", "defense", "strength",
+                                       "hits", "ranged", "magic"}:
+                fields["hauling"] = (
+                    f"{len(worn)} slots worn as combat gear while "
+                    f"'{activity}' needs none — worn items occupy bag slots, "
+                    "so bank what this mode does not use and reclaim them")
     if isinstance(snap, dict):
         hits, hits_max = snap.get("hits"), snap.get("hits_max")
         if isinstance(hits, int) and isinstance(hits_max, int) \

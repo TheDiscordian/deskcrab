@@ -370,6 +370,21 @@ deliberate-play channel.
    you light them!", which the verifier classifies as grounded failure, so firemaking still runs
    through `drop-inventory` and `use-item-ground`. The menu a successful pair opens — Fletching's
    "What would you like to make?" — is answered by `choose-dialogue`, not by this action.
+   `use-item-object` (`item`: the held item id; `obj`: the object type id) is the learned form
+   of the item-on-scenery door, and it exists because a whole family of skills is exactly one
+   compound act against a piece of scenery — raw food against a Range, an ore against a furnace,
+   grain against a windmill hopper — which separate `click-inventory` and `interact-object`
+   clicks cannot approximate: the selection phase between them is client state no rule may own.
+   It compiles only while the item is held, refusing `item-not-held` without dispatch, and
+   resolves the scenery exactly as `interact-object` does — the nearest matching entry in the
+   snapshot's `objects` list, whose world tile rides the action file so the bridge's
+   unloaded/swapped rechecks protect the act — refusing `object-not-loaded` otherwise. No
+   `within`: the client walks to the scenery it was told to use the item on, and a cap here
+   would only idle the body in sight of its own range. Its observed postcondition is the
+   deliberate door's own and deliberately narrow: the named item's held count changing, or an
+   XP delta. A pane or menu transition is never completion — that was the old two-click race —
+   and a furnace's or range's own start line ("You cook the shrimp on the stove") precedes the
+   result, so only explicit failure feedback may end it without a delta.
    **The cap doctrine.** Distance caps on wanting things have repeatedly broken play in exactly
    two shapes: a capped take strands loot on the ground, and a capped attack idles the body in
    sight of its target. Neither has ever been the behaviour anyone wanted. Validation therefore
@@ -1185,9 +1200,13 @@ deliberate-play channel.
       declared activity, so a stale label mutes every rule for the mode actually being
       played), the progress record's age, a `bag_full_loot_waiting` line
       when the bag is full while loot sits on the ground (at 30/30 slots no loot rule can fire
-      and every further kill drops loot straight onto the floor), and a `starving` line when
+      and every further kill drops loot straight onto the floor), a `starving` line when
       hp is below half with no food carried — the state that otherwise becomes an endless
-      flee-and-return jog instead of a trip to a range. The obligation is a real
+      flee-and-return jog instead of a trip to a range — and a `hauling` line when three or
+      more worn equipment pieces ride an activity that implies no combat: worn items occupy
+      bag slots, so a full armour set on a cooking grind is that many fewer slots of actual
+      work per trip. Transit modes (banking, travel) are exempt — keeping gear on while
+      moving through danger is deliberate. The obligation is a real
       look at "is this still accomplishing the objective, and is anything stupid happening —
       loot on the ground, the wrong activity declared, a plan step already agreed to be wrong" —
       answered by fixing what it finds through the ordinary doors, not by narrating it.
