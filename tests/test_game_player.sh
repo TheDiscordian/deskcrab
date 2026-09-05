@@ -718,6 +718,12 @@ refute "use-item-ground refuses a missing ground target" \
 refute "use-item-ground refuses a roaming cap beyond ten tiles" \
     python3 "$GP" learn bad-light-range --priority 1 --trigger ground_item_visible=14 \
         --action use-item-ground --param item=166 --param ground=14 --param within=11
+refute "use-item-object refuses a missing scenery target" \
+    python3 "$GP" learn bad-cook-no-object --priority 1 --trigger inventory_has=349 \
+        --action use-item-object --param item=349
+refute "use-item-object refuses a distance cap on its own range" \
+    python3 "$GP" learn bad-cook-cap --priority 1 --trigger inventory_has=349 \
+        --action use-item-object --param item=349 --param obj=11 --param within=2
 refute "a stationary threshold below one observed second is refused" \
     python3 "$GP" learn bad-stationary-floor --priority 1 \
         --trigger stationary_ms_at_least=999 --action walk --param x=1 --param z=1
@@ -2176,6 +2182,26 @@ assert compiled == {"type": "use-item-ground", "x": 163, "z": 618,
 clear_pile = dict(fern_pile, objects=[{"id": 34, "x": 163, "z": 619}])
 compiled, refusal = gp.compile_player_action(guarded, clear_pile, None, None)
 assert refusal is None and (compiled["x"], compiled["z"]) == (163, 618), (compiled, refusal)
+
+# The item-on-scenery door: a held identity against the nearest loaded
+# placement of an object TYPE, with no slot, pixel or remembered tile.  The
+# range this cooks on is chosen the way interact-object chooses one.
+cook_rule = {"action": {"type": "use-item-object", "item": 349, "obj": 11}}
+kitchen = {"x": 73, "z": 668, "in_combat": False,
+           "inventory": [{"id": 349, "name": "Raw Shrimp", "count": 12},
+                         {"id": 1263, "name": "Sleeping bag", "count": 1}],
+           "objects": [{"id": 11, "name": "Range", "x": 73, "z": 669},
+                       {"id": 11, "name": "Range", "x": 87, "z": 685}]}
+compiled, refusal = gp.compile_player_action(cook_rule, kitchen, None, None)
+assert compiled == {"type": "use-item-object", "x": 73, "z": 669,
+                    "item": 349, "obj": 11}, compiled
+assert refusal is None, refusal
+compiled, refusal = gp.compile_player_action(
+    cook_rule, dict(kitchen, inventory=[{"id": 1263, "count": 1}]), None, None)
+assert compiled is None and refusal == "item-not-held", (compiled, refusal)
+compiled, refusal = gp.compile_player_action(
+    cook_rule, dict(kitchen, objects=[{"id": 118, "x": 85, "z": 679}]), None, None)
+assert compiled is None and refusal == "object-not-loaded", (compiled, refusal)
 
 # The same fatigue state must not block ordinary inventory clicks such as food.
 compiled, refusal = gp.compile_player_action(
