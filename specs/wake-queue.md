@@ -544,6 +544,25 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     from tool activity as every wake's is (rule 25) — so a month of returns can be read back and
     the lived choices, the new wants and the chosen nothings told apart from administrative
     growth.
+40g. **The last-written line.** The own-time wake's prompt carries one short line naming the two
+    want documents most recently written in and how long ago, placed WITH the shelf material —
+    the first line of the shelves layer, immediately above the shelf — never at the top of the
+    prompt. It is computed at assembly time from the mtimes of `*.md` under the wants documents
+    drawer (`DESKCRAB_WANTS_DIR`, defaulting to `wants/` beside the shelf — the same resolution
+    every caller of `crab want` uses), newest first. Each document is named by its frontmatter
+    `title:`, never by filename or slug; a document whose frontmatter state is terminal
+    (`retired`, `grown-into-me`) is passed over because its shelf line is already gone and this
+    line reads with the shelf's eyes, and so is a document with no frontmatter title, which the
+    line cannot name. The ages are coarse — minutes under an hour, hours under two days, days
+    beyond — and the wording is sense-data, never instruction: `Last written in: <title> (5h
+    ago), <title> (14h ago).` No sentence tells her what to do about the fact, because the rule
+    that reads this line lives in her own want document, not in the prompt. Written 2026-09-05:
+    a streak rule fourteen hours old, stored in the very document a streaking sitting does not
+    open, watched both of 09-04's free sittings land in the same want and never fired — the
+    check has to stand in the room the reflex happens in, as a fact the reflex-naming step can
+    compare against without her choosing to look. A wake that carries a reason — event or
+    scheduled — never gets the line, and a missing, empty or unreadable drawer costs the line
+    and never the prompt.
 
 ### The autonomous bookers
 
@@ -881,6 +900,12 @@ repairs — and a reasoned or event wake beside the same fresh origin still runs
 standing; after a quiet result the floor books the next opportunity at base plus the pinned
 jitter, and a second idle firing chooses again; `IDLE_RETURN=0` restores the flat floor, the
 ordinary wake model and the wants agenda exactly),
+`tests/test_wake_last_written.sh` (rule 40g: an own-time wake's prompt carries the last-written
+line as the first line of the shelves layer, immediately above the shelf heading and never at the
+top of the prompt, naming the two newest documents by frontmatter title — never filename — newest
+first with coarse ages; a terminal-state document and a titleless one are passed over even when
+they are the newest files in the drawer; a wake carrying a reason gets no such line; a missing or
+empty drawer costs the line and never the prompt),
 `tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own
