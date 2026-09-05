@@ -8589,9 +8589,10 @@ def activity_fields(xp_text, activity) -> dict:
     if sustained:
         fields["activity_stale"] = (
             f"declared '{activity}' is not what is happening ({stray} keeps "
-            "gaining) — run `play activity NAME` (or NAME --new REASON) for "
-            "the real mode; its scoped reflexes are NOT firing while the "
-            "label is wrong")
+            "gaining) — pick the real mode from the EXISTING catalog with "
+            "`play activity NAME`; its scoped reflexes are NOT firing while "
+            "the label is wrong. --new is for a genuinely new mode only: a "
+            "fresh name for an old mode splinters its reflexes")
     return fields
 
 
