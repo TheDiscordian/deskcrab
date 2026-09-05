@@ -1180,7 +1180,10 @@ deliberate-play channel.
       (`BETTY_OPENRSC_REFLECT_EVERY_MS`) pass without one, the `no-rule-matched` verdict carries
       `reflection_due` with the minutes overdue, plus the facts the reflection must face:
       ground items presently visible, the declared activity beside the skills actually gaining
-      XP (a mismatch names itself), the progress record's age, a `bag_full_loot_waiting` line
+      XP (a mismatch names itself, and once a stray skill has accumulated real XP the fact
+      escalates to `activity_stale` with the fix spelled out — reflexes are scoped by the
+      declared activity, so a stale label mutes every rule for the mode actually being
+      played), the progress record's age, a `bag_full_loot_waiting` line
       when the bag is full while loot sits on the ground (at 30/30 slots no loot rule can fire
       and every further kill drops loot straight onto the floor), and a `starving` line when
       hp is below half with no food carried — the state that otherwise becomes an endless

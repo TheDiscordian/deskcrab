@@ -7171,8 +7171,8 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                      and current_goal.get("status") != "invalid" else None),
                activity=activity or None,
                activity_xp=xp_text or None,
-               activity_mismatch=xp_activity_mismatch(xp_text, activity),
                activity_compare=xp_compare or None,
+               **activity_fields(xp_text, activity),
                **reflection_fields(snap),
                rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
                cooldown_holds=cooldown_holds,
@@ -8564,6 +8564,35 @@ def xp_activity_mismatch(xp_text, activity):
         if name and name.lower() not in act and name.lower() not in implied:
             stray.append(name)
     return ",".join(stray) or None
+
+
+def activity_fields(xp_text, activity) -> dict:
+    """The mismatch as a fact, escalated to an instruction once sustained.
+
+    Reflexes are scoped by the declared activity, so a stale label mutes
+    every rule for the mode actually being played. A stray skill with real
+    accumulated XP means the label has been wrong for a while — that is no
+    longer information, it is a defect with a named fix."""
+    stray = xp_activity_mismatch(xp_text, activity)
+    if not stray:
+        return {}
+    fields = {"activity_mismatch": stray}
+    sustained = False
+    for segment in (xp_text or "").split(";"):
+        name = segment.split(":", 1)[0].strip()
+        if name not in stray.split(","):
+            continue
+        match = re.search(r"\+(\d+)_total", segment)
+        if match and int(match.group(1)) >= 100:
+            sustained = True
+            break
+    if sustained:
+        fields["activity_stale"] = (
+            f"declared '{activity}' is not what is happening ({stray} keeps "
+            "gaining) — run `play activity NAME` (or NAME --new REASON) for "
+            "the real mode; its scoped reflexes are NOT firing while the "
+            "label is wrong")
+    return fields
 
 
 def reflection_fields(snap: dict = None) -> dict:
@@ -10401,8 +10430,8 @@ def main():
                     if verdict == "no-rule-matched":
                         deliberation_fields = dict(
                             reflection_fields(live_snapshot),
-                            activity_mismatch=xp_activity_mismatch(
-                                hb.get("activity_xp"), hb.get("activity")))
+                            **activity_fields(hb.get("activity_xp"),
+                                              hb.get("activity")))
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
                            table_error=hb.get("table_error") or None,
