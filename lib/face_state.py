@@ -200,6 +200,113 @@ def _journal_mood(entry):
         pass
 
 
+# Which surface a mood set's turn token names. The token prefix is the only
+# surface record a journal row carries (`turn-…` is a desktop exchange,
+# `phone-…` a phone exchange, `wake-…` an autonomous wake); anything else —
+# including the empty token, which can never be stale — buckets as `unknown`.
+MOOD_TURN_SURFACES = {"turn": "desktop", "phone": "phone",
+                      "wake": "autonomous"}
+
+# The dropped-mood count's defaults (specs/self-awareness.md rule 39a): a
+# day's window, read from a bounded tail. A megabyte holds several days of
+# journal at the measured density, so the window — not the byte bound — is
+# what limits an ordinary read; the bound exists so a journal that has grown
+# for a year still costs the state block one seek and one read.
+MOOD_DROP_WINDOW = 86400.0
+MOOD_DROP_MAX_BYTES = 1048576
+
+
+def mood_drop_summary(path=None, window=MOOD_DROP_WINDOW,
+                      max_bytes=MOOD_DROP_MAX_BYTES, now=None):
+    """Count the recent mood sets the stale-turn guard refused, per surface.
+
+    Direction 4 of the record `a-third-of-my-moods-never-reach-my-face-and-
+    wors`: the guard is correct — a classification computed for a finished
+    turn must not repaint the next turn's face — but its refusals were
+    invisible everywhere, and they fall hardest on the fastest exchanges.
+    This is a pure bounded read of the journal `set` rows (rule 42b); it
+    decides nothing, retries nothing, and never touches the broker.
+
+    Returns a dict that is always fully formed:
+
+      attempted / applied / refused   `set` rows inside the window;
+      rate                            refused / attempted, 0.0 when empty;
+      window                          the seconds actually used;
+      surfaces                        {label: {attempted, refused, rate}};
+      worst_surface                   the highest-rate surface with at least
+                                      one refusal, as {surface, attempted,
+                                      refused, rate}, or None;
+      refused_moods                   moods with refusals, rate-sorted, each
+                                      {mood, attempted, refused, rate}.
+
+    A missing journal is the empty result, not an error, and a malformed or
+    truncated line (the tail seek lands mid-line by design) is skipped.
+    """
+    empty = {"attempted": 0, "applied": 0, "refused": 0, "rate": 0.0,
+             "window": float(window), "surfaces": {}, "worst_surface": None,
+             "refused_moods": []}
+    try:
+        with open(path or MOOD_JOURNAL, "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - int(max_bytes)))
+            blob = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return empty
+    cut = (now if now is not None else _now()) - float(window)
+    surfaces = {}
+    moods = {}
+    attempted = refused = 0
+    for line in blob.splitlines():
+        # Cheap pre-filter: a `set` row always carries the literal `"set"`,
+        # and the journal is mostly activity noise — parsing only candidate
+        # lines keeps this affordable on every state-block build.
+        if '"set"' not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("event") != "set":
+            continue
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts < cut:
+            continue
+        prefix = str(row.get("turn") or "").split("-", 1)[0]
+        surface = MOOD_TURN_SURFACES.get(prefix, "unknown")
+        dropped = not row.get("applied", True)
+        attempted += 1
+        refused += 1 if dropped else 0
+        for bucket, key in ((surfaces, surface),
+                            (moods, str(row.get("mood") or "?"))):
+            cell = bucket.setdefault(key, {"attempted": 0, "refused": 0})
+            cell["attempted"] += 1
+            cell["refused"] += 1 if dropped else 0
+    if not attempted:
+        return empty
+    for cell in list(surfaces.values()) + list(moods.values()):
+        cell["rate"] = cell["refused"] / cell["attempted"]
+    worst = None
+    for name in sorted(surfaces):
+        cell = surfaces[name]
+        if cell["refused"] and (worst is None
+                                or cell["rate"] > worst["rate"]
+                                or (cell["rate"] == worst["rate"]
+                                    and cell["refused"] > worst["refused"])):
+            worst = dict(cell, surface=name)
+    refused_moods = [dict(moods[name], mood=name)
+                     for name in sorted(
+                         (n for n in moods if moods[n]["refused"]),
+                         key=lambda n: (-moods[n]["rate"],
+                                        -moods[n]["refused"], n))]
+    return {"attempted": attempted, "applied": attempted - refused,
+            "refused": refused, "rate": refused / attempted,
+            "window": float(window), "surfaces": surfaces,
+            "worst_surface": worst, "refused_moods": refused_moods}
+
+
 def _recover_mood_provenance(mood):
     """Recover subject, origin, and turn reference from the updater record.
 

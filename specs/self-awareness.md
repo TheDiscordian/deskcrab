@@ -171,6 +171,15 @@ below is a fact placed before her, never a gate placed behind her.
     recover. The report reads the broker and the journal tail with a short bound; it MUST NOT
     start the broker, run a classifier, or delay the rest of the state block when the face
     system is unavailable.
+39a. When the stale-turn guard refused any mood set inside a wider bounded window (twenty-four
+    hours by default), one further line MUST count the drop: refused out of attempted with the
+    overall rate, and the worst surface — desktop, phone, or autonomous, read from the mood
+    set's turn-token prefix — with its own refused-of-attempted and rate. The guard itself is
+    correct and stands unchanged; what this line removes is the silence around it — measured
+    2026-09-05, a third of all mood sets were dropped this way, and worst (62%) exactly at the
+    desk. When nothing in the window was refused, the line is omitted entirely. The count is a
+    bounded tail read of the journal: malformed or truncated lines are skipped, a missing
+    journal counts as zero, and the read never delays the block.
 
 ### The block is how she sees, not how she speaks
 
@@ -209,7 +218,7 @@ below is a fact placed before her, never a gate placed behind her.
 | `~/.local/share/deskcrab/account-log` | read and written | append-only record of every move of the current |
 | `${STATE_PREFIX}-jobs-surfaced` | written | the once-stamp for failed-job news |
 | `${STATE_PREFIX}-face.sock` | read when the face is enabled | current standing mood, reason, subject source, origin, turn reference, and update time |
-| `~/.local/share/deskcrab/mood-journal.jsonl` | read when the face is enabled | one mood decision per line, epoch first; the `Recent feelings` tail; override via `DESKCRAB_MOOD_JOURNAL` |
+| `~/.local/share/deskcrab/mood-journal.jsonl` | read when the face is enabled | one mood decision per line, epoch first; the `Recent feelings` tail and the rule 39a dropped-mood count; override via `DESKCRAB_MOOD_JOURNAL` |
 | systemd user timers | read | joined onto the records, never the primary source |
 
 ## INTERACTIONS

@@ -318,7 +318,12 @@ These rules define the ONLY automatic paths, all below her hand.
     window also holds `expression` entries, a compact `Face flickers` line
     follows — counts by expression with their causing events — so a sitting
     that keeps flicking her face annoyed is knowledge she holds, not a thing
-    only her viewers see. When a
+    only her viewers see. When the stale-turn guard refused mood sets inside
+    a wider bounded window, a further line counts the drop — refused out of
+    attempted, the overall rate, and the worst surface with its own rate,
+    surfaces read from the turn-token prefix
+    ([self-awareness.md](self-awareness.md) rule 39a); the guard's decisions
+    stand unchanged, and zero refusals print nothing. When a
     retained record predates a usable reason or source, its update time,
     origin, reference, and journal path still appear, so she can inspect the
     concrete originating record. Naming only the automatic updater is never a

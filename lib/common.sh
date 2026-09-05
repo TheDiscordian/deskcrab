@@ -550,6 +550,26 @@ if flicks:
     print("Face flickers (last 5 min): " + ", ".join(bits) +
           " — brief event-driven expressions; no mood moved unless "
           "listed above.")
+
+# Rule 39a's dropped-mood count: how many recent mood readings the
+# stale-turn guard refused, and where it lands hardest. The guard is right
+# to refuse — a feeling computed for a finished turn must not repaint the
+# next one's face — but a third of all readings were being dropped this
+# way in silence, worst exactly at the desk. Zero refusals print nothing.
+drops = face_state.mood_drop_summary()
+if drops["refused"]:
+    hours = drops["window"] / 3600
+    span = ("last %g h" % hours) if hours < 48 else \
+           ("last %g days" % (hours / 24))
+    line = (f"Moods dropped unseen ({span}): {drops['refused']} of "
+            f"{drops['attempted']} mood readings arrived after their turn "
+            f"had closed and never reached your face ({drops['rate']:.0%})")
+    worst = drops["worst_surface"]
+    if worst:
+        line += (f"; worst surface: {worst['surface']}, "
+                 f"{worst['refused']} of {worst['attempted']} "
+                 f"({worst['rate']:.0%})")
+    print(line + ".")
 PY
 }
 # ONE STREAM LOG PER SESSION, not one shared file. The shared log was the root
@@ -2557,6 +2577,50 @@ wants_titles() { # [<wants file>]
     grep -oP '^- \*\*.*?\*\*|^- [^ ]+ \*\*.*?\*\*' "$f" 2>/dev/null || true
 }
 
+# The last-written line, specs/wake-queue.md rule 40g: which want documents her
+# recent hours actually landed in, read at assembly time from the mtimes of the
+# wants drawer beside the shelf — the same resolution every `crab want` caller
+# uses — newest first, two at most. Each document is named by its frontmatter
+# title, never its filename: a slug read back is bookkeeping, not sense-data. A
+# terminal-state document (retired, grown-into-me) is passed over because its
+# shelf line is already gone and this line reads with the shelf's eyes; so is a
+# titleless one, which the line cannot name. The wording carries no
+# instruction, because the rule that reads it lives in her own want document —
+# written 2026-09-05, after a streak rule stored in the very document a
+# streaking sitting does not open watched two same-day sittings land in one
+# want and never fired. A missing, empty or unreadable drawer prints nothing,
+# silently: the line must never cost a prompt.
+wants_last_written() {  # [<wants documents dir>]
+    local dir="${1:-${DESKCRAB_WANTS_DIR:-$(deskcrab_home)/wants}}"
+    [ -d "$dir" ] || return 0
+    local now epoch f meta state title age out="" n=0
+    now="$(date +%s)"
+    while IFS=' ' read -r epoch f; do
+        [ -n "$f" ] || continue
+        epoch="${epoch%%.*}"
+        meta="$(awk 'NR == 1 { if ($0 !~ /^---[ \t]*$/) exit; next }
+                     /^---[ \t]*$/ { exit }
+                     /^title:/ { t = $0; sub(/^title:[ \t]*/, "", t) }
+                     /^state:/ { s = $0; sub(/^state:[ \t]*/, "", s) }
+                     END { gsub(/[ \t\r]+$/, "", t); gsub(/[ \t\r]+$/, "", s)
+                           sub(/^"/, "", t); sub(/"$/, "", t)
+                           sub(/^"/, "", s); sub(/"$/, "", s)
+                           printf "%s\t%s", s, t }' "$f" 2>/dev/null)" || continue
+        state="${meta%%$'\t'*}"; title="${meta#*$'\t'}"
+        case "$state" in retired|grown-into-me) continue ;; esac
+        [ -n "$title" ] || continue
+        age=$(( now - epoch )); [ "$age" -lt 0 ] && age=0
+        if [ "$age" -lt 3600 ]; then age="$(( age / 60 ))m"
+        elif [ "$age" -lt 172800 ]; then age="$(( age / 3600 ))h"
+        else age="$(( age / 86400 ))d"; fi
+        out="${out:+$out, }$title ($age ago)"
+        n=$(( n + 1 )); [ "$n" -ge 2 ] && break
+    done < <(find "$dir" -maxdepth 1 -name '*.md' -printf '%T@ %p\n' 2>/dev/null \
+             | sort -rn)
+    [ -n "$out" ] && printf 'Last written in: %s.' "$out"
+    return 0
+}
+
 # The want gate's one reading of a want reference (specs/jobs.md rule 30):
 # does <ref> name something on the shelf? Case-insensitive, as a FIXED
 # string — a ref is typed by a person or copied off the shelf, never a
@@ -3133,6 +3197,17 @@ $TITLES"
 $WANTS_TITLES"
         elif [ -n "${WANTS_FILE:-}" ]; then
             SHELVES="YOUR WANTS — the shelf at $WANTS_FILE is empty; nothing is recorded yet."
+        fi
+        # The last-written line, specs/wake-queue.md rule 40g: on the own-time
+        # wake ONLY, one line of sense-data immediately above the shelf —
+        # which documents the recent free hours actually landed in. A wake
+        # carrying a reason never gets it, and a broken or empty drawer costs
+        # the line, never the prompt.
+        if [ "$PROMPT_PROFILE" = wake ] && [ "${WAKE_OWN_TIME:-0}" = "1" ]; then
+            local LAST_WRITTEN=""
+            LAST_WRITTEN="$(wants_last_written 2>/dev/null)" || LAST_WRITTEN=""
+            [ -n "$LAST_WRITTEN" ] && SHELVES="$LAST_WRITTEN${SHELVES:+
+$SHELVES}"
         fi
         # The engineering drawer, as a POINTER (prompt-assembly rule 21a,
         # specs/engineering-records.md rules 11-11a): counts and retrieval
