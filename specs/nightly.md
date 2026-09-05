@@ -472,7 +472,9 @@ which fails silently is worse than one that does not exist.
     13 applies); a night when every login refuses still writes the report, hits included, with the
     rewrites marked missing. Detection MUST never depend on the model.
 43. A per-phrase count accumulates night over night, so the number can be watched going down.
-    Re-running a night replaces that night's counts; it never doubles them.
+    Re-running a night replaces that night's counts; it never doubles them. The running total
+    MUST be printed beside the date the phrase was last actually used, because a large total can
+    belong to a habit that stopped weeks ago and the total alone cannot say so.
 44. The review MUST surface. It books a morning event wake naming the report — on a night with
     hits, on a clean night, and on a scan that failed. A review she never hears about is
     surveillance, not an exercise; the wake's agenda offers awareness, never an instruction.

@@ -919,12 +919,18 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
     nights = sorted({d for counts in history.values() for d in counts})
     recent = nights[-7:]
     lines += ["", "## The count, night over night — uses only", "",
-              "| phrase | " + " | ".join(recent) + " | all nights |",
-              "|---" * (len(recent) + 2) + "|"]
+              "| phrase | " + " | ".join(recent) + " | all nights | last used |",
+              "|---" * (len(recent) + 3) + "|"]
     for key in sorted(history):
         row = history[key]
         cells = [str(row.get(d, "")) for d in recent]
-        lines.append("| %s | %s | %d |" % (key, " | ".join(cells), sum(row.values())))
+        # A big all-nights number can belong to a habit that died weeks ago
+        # (the drain: 74 catches, none since 2026-08-23). The total alone
+        # cannot say so, which is why this column exists — 2026-09-05.
+        used = sorted(d for d, n in row.items() if n)
+        last = used[-1] if used else "—"
+        lines.append("| %s | %s | %d | %s |" % (
+            key, " | ".join(cells), sum(row.values()), last))
     totals = [sum(history[k].get(d, 0) for k in history) for d in recent]
     lines.append("")
     lines.append("Totals: " + ", ".join("%s %d" % (d, t) for d, t in zip(recent, totals)) + ".")
