@@ -165,6 +165,23 @@ def _turn_start_ns(token):
         return None
     return ns
 
+
+def _mood_expires_at(turn, now):
+    """When a mood record written now for this turn would decay (rules 38a
+    and 41, 2026-09-05 second amendment): MOOD_SECONDS counted from the
+    epoch-ns turn start the token carries, so a mood's standing runs from
+    the moment it describes, not from whenever the classification managed
+    to arrive — a write 300 s late wears 300 s less, never 300 s longer
+    past its own moment. A write whose token carries no comparable start
+    anchors at arrival: nothing can measure its lateness. Both the
+    admission test (_mood_refusal) and the stored record (set_mood) read
+    THIS value, deliberately — one arithmetic in one place, so the
+    admission clock and the decay clock can never drift apart again."""
+    start_ns = _turn_start_ns(turn)
+    if start_ns is None:
+        return now + MOOD_SECONDS
+    return start_ns / 1e9 + MOOD_SECONDS
+
 # Deterministic presence→expression defaults, used only when nothing above
 # them stands: trustworthy runtime facts, a fixed public table, no model.
 # Disable with an empty DESKCRAB_FACE_ACTIVITY_EXPRESSIONS.
@@ -685,22 +702,24 @@ class Broker:
         baseline (rule 41) below every expression and event, so a write
         from a finished turn is accepted on the mood's own clock instead:
         refused only when a mood computed for a later turn has already
-        been applied (out of order), or when the write outlived
-        MOOD_SECONDS counted from the turn start its token carries — a
-        sound stand-in for the turn's end, which the broker never learns:
-        the write is post-turn by construction, so the start only tightens
-        the window by the turn's own length, never widens it. A token
+        been applied (out of order), or when the record it would store
+        would already be dead — _mood_expires_at anchors the decay clock
+        to the turn start the token carries, and the admission test and
+        the expiry test are deliberately the SAME predicate (2026-09-05
+        second amendment), so a late write can never store an
+        already-expired record wearing a live face. The expiry predicate
+        holds for every write, the still-live turn's included; a token
         without a comparable epoch-ns suffix falls back to rule 38's
         strict refusal rather than accepting a write nothing can order.
         """
-        if not self._stale(turn):
-            return None
-        start_ns = _turn_start_ns(turn)
-        if start_ns is None:
-            return STALE_NOTE
-        if self.mood_turn_ns is not None and start_ns < self.mood_turn_ns:
-            return OUT_OF_ORDER_NOTE
-        if now - start_ns / 1e9 > MOOD_SECONDS:
+        if self._stale(turn):
+            start_ns = _turn_start_ns(turn)
+            if start_ns is None:
+                return STALE_NOTE
+            if (self.mood_turn_ns is not None
+                    and start_ns < self.mood_turn_ns):
+                return OUT_OF_ORDER_NOTE
+        if _mood_expires_at(turn, now) <= now:
             return PAST_LIFETIME_NOTE
         return None
 
@@ -764,7 +783,8 @@ class Broker:
     def set_mood(self, name, turn=None, reason="", source="", origin="",
                  source_ref=""):
         """The standing baseline. `neutral` clears it; anything else must be
-        in the mood family and lives MOOD_SECONDS from now unless refreshed.
+        in the mood family and lives MOOD_SECONDS from the turn it
+        describes (from arrival, when tokenless) unless refreshed.
         Display precedence is below every expression record, so a mood can
         never override her hand, an event, or a sentence's own acting."""
         if name in ("neutral", "none", ""):
@@ -811,7 +831,10 @@ class Broker:
                          "source": source, "origin": origin,
                          "source_ref": source_ref,
                          "set_at": set_at,
-                         "expires_at": set_at + MOOD_SECONDS}
+                         # The same arithmetic _mood_refusal just tested:
+                         # a record that would be born dead was refused
+                         # above, so what is stored here is always live.
+                         "expires_at": _mood_expires_at(turn, set_at)}
             self._mark_mood_turn(turn)
             _journal_mood({"ts": set_at, "event": "set", "mood": name,
                            "reason": reason, "source": source,

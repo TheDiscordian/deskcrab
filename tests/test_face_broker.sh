@@ -326,14 +326,41 @@ check "a mood past its own lifetime is refused, the lifetime named (38a b)" \
     ma_past_lifetime_refused
 check "a mood from a finished turn lands inside the lifetime (38a)" \
     ma_late_mood_lands
+ma - status > "$T/ma-status-late.json"
+check "a late mood's decay clock is anchored to its turn start, not arrival (38a b, 41)" \
+    python3 - "$T/ma-status-late.json" "$OLD_TOKEN" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+start = int(sys.argv[2].rsplit("-", 1)[-1]) / 1e9
+exp, set_at = s["mood_expires_at"], s["mood_set_at"]
+assert abs(exp - (start + 900)) < 0.001, (exp, start)
+# And NOT the arrival anchor: the write landed ~120 s after its turn began.
+assert exp < set_at + 900 - 60, (exp, set_at)
+PY
 check "an out-of-order mood is refused — a later mood already applied (38a a)" \
     ma_out_of_order_refused
 check "an unsuffixed token falls back to the strict rule 38 refusal" \
     ma_unsuffixed_strict
 check "a seconds-scale suffix is not misread as an ordering — strict refusal" \
     ma_seconds_scale_strict
+ma - status > "$T/ma-status-after-strict.json"
+check "strict-refused writes leave the standing mood's expiry untouched" \
+    python3 - "$T/ma-status-late.json" "$T/ma-status-after-strict.json" <<'PY'
+import json, sys
+before = json.load(open(sys.argv[1]))
+after = json.load(open(sys.argv[2]))
+assert after["mood_expires_at"] == before["mood_expires_at"], (before, after)
+PY
 check "a tokenless mood write keeps rule 38's standing on its own" \
     ma_tokenless_unchanged
+ma - status > "$T/ma-status-tokenless.json"
+check "a tokenless mood keeps its arrival-anchored expiry (rule 41)" \
+    python3 - "$T/ma-status-tokenless.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+exp, set_at = s["mood_expires_at"], s["mood_set_at"]
+assert abs(exp - (set_at + 900)) < 0.001, (exp, set_at)
+PY
 check "an auto EXPRESSION from a finished turn is still refused (rule 38 stands)" \
     ma_auto_expression_still_refused
 check "a late clear from a newer finished turn lands too (38a)" \
@@ -352,6 +379,40 @@ assert any(r["mood"] == "focused" and r["applied"]
            and r["turn"] == sys.argv[2] for r in sets), sets
 assert any(r["event"] == "cleared" and r["applied"]
            and r["turn"] == sys.argv[3] for r in rows), rows
+PY
+
+# Admission and expiry are the same predicate (38a b): a record that would
+# be born already expired is refused at the door, never stored as a
+# live-looking entry. A 5-second lifetime against a turn started 10 s ago
+# forces the arithmetic without racing the clock — and the token is the
+# LIVE registered turn, so no staleness door hides the storage path.
+BD_SOCK="$T/face-borndead.sock"
+BD_STATE="$T/face-borndead-state.json"
+BD_JRNL="$T/borndead-journal.jsonl"
+BD_TOKEN="turn-9994-$(( NOW_NS - 10 * 1000000000 ))"
+bd() {  # <turn-token or -> <verb...> — one call against the 5 s broker
+    local turn="$1"; shift
+    [ "$turn" = - ] && turn=
+    DESKCRAB_FACE_TURN="$turn" DESKCRAB_FACE_SOCKET="$BD_SOCK" \
+    DESKCRAB_FACE_STATE="$BD_STATE" DESKCRAB_MOOD_JOURNAL="$BD_JRNL" \
+    DESKCRAB_FACE_MOOD_SECONDS=5 \
+        python3 "$REPO_DIR/lib/face-broker" "$@"
+}
+bd_born_dead_refused() {
+    bd "$BD_TOKEN" activity considering >/dev/null \
+        && bd "$BD_TOKEN" mood tired | grep -q "past mood lifetime" \
+        && ! bd - state | grep -q "mood="
+}
+check "a write whose anchored expiry is already past is refused, not stored (38a b)" \
+    bd_born_dead_refused
+check "the born-dead refusal is journalled refused, never applied (42b)" \
+    python3 - "$BD_JRNL" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+sets = [r for r in rows if r["event"] == "set"]
+assert len(sets) == 1, rows
+assert not sets[0]["applied"], rows
+assert "past mood lifetime" in sets[0]["note"], rows
 PY
 
 echo

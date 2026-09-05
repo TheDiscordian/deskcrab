@@ -279,14 +279,27 @@ These rules define the ONLY automatic paths, all below her hand.
         directly comparable; an out-of-order arrival is still refused and
         still journalled as refused, with a note naming the ordering, not
         staleness.
-    (b) it arrives no more than `DESKCRAB_FACE_MOOD_SECONDS` (rule 41's
-        own decay clock) after its turn ended. The broker never learns a
-        turn's end, so the bound is measured from the turn start the token
-        itself carries — a sound stand-in, since the write is post-turn by
-        construction and the start only tightens the window by the turn's
-        own length. A write past the bound had nothing left to say — it
-        could not have outlived its own decay window — and is refused,
-        journalled with a note naming the lifetime.
+    (b) the record it would store has not already expired (2026-09-05
+        second amendment). The mood's decay clock (rule 41) is anchored
+        to the turn the write describes: the stored expiry is the
+        token's own epoch-nanosecond turn start plus
+        `DESKCRAB_FACE_MOOD_SECONDS`, never its arrival time plus the
+        lifetime — a mood is about a moment, and its standing runs from
+        that moment, so a write 300 s late wears 300 s less, not 300 s
+        longer past the moment it describes. The broker never learns a
+        turn's end, so the start stands in — sound, since the write is
+        post-turn by construction and the anchor only tightens the
+        window by the turn's own length. Admission and expiry are
+        deliberately the SAME predicate, one arithmetic in one place: a
+        write is refused exactly when the record it would store would
+        already be dead (turn start plus the lifetime at or before
+        now), journalled with the note naming the lifetime, and an
+        already-expired record is never stored to linger as a
+        live-looking entry. The predicate applies to every mood write
+        whose token carries a comparable start, the still-live turn's
+        included — no path may store a dead record. A write with no
+        token, whose lateness nothing can measure, anchors its expiry
+        at arrival.
     A token without a comparable epoch-nanosecond suffix falls back to
     rule 38's strict refusal — a write the broker cannot order is never
     accepted on trust. A write with no token keeps rule 38's existing
@@ -310,7 +323,12 @@ These rules define the ONLY automatic paths, all below her hand.
 41. The mood baseline: one standing signal (`pleased`, `annoyed`, `tired`,
     `focused`, `attentive`, or none) the broker holds with a bounded
     lifetime (`DESKCRAB_FACE_MOOD_SECONDS`, default 900 s, refreshed on
-    update, decaying to nothing on its own). It gives the face emotional
+    update, decaying to nothing on its own). The lifetime runs from the
+    turn the mood describes — the epoch-nanosecond start its turn token
+    carries — not from when the classification happened to arrive
+    (2026-09-05 amendment; the same clock is rule 38a's admission
+    predicate). A write with no token anchors at arrival: nothing can
+    measure its lateness. It gives the face emotional
     continuity between turns and shows only when no expression record
     stands. Every non-neutral mood record also carries a concise reason; a
     concrete subject source such as `RuneScape`, `chess`, `coding work`, or
@@ -548,7 +566,7 @@ or scolding.
 | `DESKCRAB_FACE_ACTIVITY_EXPRESSIONS` | broker | rule 39's deterministic map |
 | `DESKCRAB_FACE_SENTENCE_CUES` | broker+streamer | rule 40's on/off switch |
 | `DESKCRAB_FACE_CUE_LINGER` | streamer | rule 40's flourish tail |
-| `DESKCRAB_FACE_MOOD_SECONDS` | broker | rule 41's mood decay clock, and rule 38a's late-acceptance bound |
+| `DESKCRAB_FACE_MOOD_SECONDS` | broker | rule 41's mood decay clock, anchored to the turn the mood describes — the same predicate is rule 38a's admission bound |
 | `DESKCRAB_FACE_EXPLICIT_SECONDS` | broker | rule 16's default lifetime for a bare manual expression |
 | `DESKCRAB_FACE_FAILED_ACTION_SECONDS` | broker | rule 17's short mechanical-failure recovery (default 8 s) |
 | `DESKCRAB_FACE_AUTO_SECONDS` | broker | default lifetime of an `auto` record |
