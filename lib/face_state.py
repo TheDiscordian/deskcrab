@@ -32,8 +32,13 @@ Expression records carry a source, and sources are ranked: her explicit
 hand outranks the confirmed-event allowlist, which outranks the automatic
 tier (per-sentence acting and the mood baseline). An automatic write NEVER
 displaces an explicit or event record, always carries a bounded lifetime,
-and is refused when its turn token is stale — a classification computed
-for a turn that is already over must not repaint the face of the next one.
+and — for an `auto` EXPRESSION — is refused when its turn token is stale:
+a classification computed for a turn that is already over must not repaint
+the face of the next one. The mood baseline alone keeps its own clock
+(specs/face.md rule 38a): mood is BETWEEN-turns continuity and its write is
+post-turn by construction, so a finished-turn mood still lands unless a
+later turn's mood has already been applied or the write outlived the
+mood's own lifetime.
 
 Transport: one unix-domain socket, JSON lines, request/reply, plus a `watch`
 verb that streams every state change to a connected viewer. The two web
@@ -132,6 +137,33 @@ AUTO_EXPRESSION_SECONDS = float(
 # spoken line in isolation. It decays on its own — an unrefreshed mood ends.
 MOODS = ("pleased", "annoyed", "tired", "focused", "attentive")
 MOOD_SECONDS = float(os.environ.get("DESKCRAB_FACE_MOOD_SECONDS", "900"))
+
+# Rule 38a's refusal notes. The old strict note stays for expressions and
+# for any mood token the broker cannot order; the two mood-only refusal
+# kinds carry their own words so the journal keeps them distinguishable.
+STALE_NOTE = "stale turn — not applied"
+OUT_OF_ORDER_NOTE = "out of order — a later turn's mood already applied"
+PAST_LIFETIME_NOTE = "past mood lifetime — not applied"
+
+
+def _turn_start_ns(token):
+    """The epoch-nanosecond turn start a token carries, or None.
+
+    Turn tokens are minted `<surface>-<pid>-<epoch-ns>` (rule 38); the
+    suffix is the moment the turn started forming. Only a suffix that is
+    all digits AND plausibly an epoch-nanosecond stamp (19-20 digits:
+    2001-2286) is comparable — a pid, a counter, or a seconds- or
+    milliseconds-scale stamp must not be misread as an ordering. Anything
+    else answers None and the caller falls back to rule 38's strict
+    refusal rather than accepting a write it cannot order (rule 38a).
+    """
+    tail = str(token or "").rsplit("-", 1)[-1]
+    if not tail.isdigit():
+        return None
+    ns = int(tail)
+    if not 10 ** 18 <= ns < 10 ** 19:
+        return None
+    return ns
 
 # Deterministic presence→expression defaults, used only when nothing above
 # them stands: trustworthy runtime facts, a fixed public table, no model.
@@ -427,6 +459,12 @@ class Broker:
         self.expression = None   # {"name", "source", "set_at", "expires_at"}
         self.mood = None         # name, reason, source, origin/ref, times
         self.turn = ""           # the live turn's token; stale autos bounce
+        # Rule 38a clause (a): the token of the last APPLIED mood decision
+        # whose turn start was comparable, and that start in epoch-ns. This
+        # outlives the mood record itself — a decay or a clear must not
+        # reopen the door to an older feeling.
+        self.mood_turn = ""
+        self.mood_turn_ns = None
         self.clips = []          # [{"id","start","duration","cues"}...]
         self.watchers = 0
         self.started = _now()
@@ -480,6 +518,11 @@ class Broker:
                     mood.setdefault("origin", "origin unavailable")
                     mood.setdefault("source_ref", "")
                 self.mood = mood
+            # Rule 38a's monotonic marker: the ns is re-derived from the
+            # saved token itself, so junk in the state file can never order
+            # anything a real token would not.
+            self.mood_turn = str(d.get("mood_turn", ""))[:80]
+            self.mood_turn_ns = _turn_start_ns(self.mood_turn)
             self.turn = str(d.get("turn", ""))[:80]
             clips = d.get("clips")
             if isinstance(clips, list):
@@ -500,6 +543,7 @@ class Broker:
                            "ambient_updated": self.ambient_updated,
                            "expression": self.expression,
                            "mood": self.mood, "turn": self.turn,
+                           "mood_turn": self.mood_turn,
                            "clips": self.clips, "updated": _now()}, fh)
             os.replace(tmp, self.state_path)
         except Exception:
@@ -626,8 +670,49 @@ class Broker:
     def _stale(self, turn):
         """True when an automatic write carries a token for a turn that is
         no longer the broker's current one. No token, or no registered
-        turn, means nobody is competing — the write stands on its own."""
+        turn, means nobody is competing — the write stands on its own.
+        This is rule 38's one-turn window, and it stays the whole guard
+        for `auto` EXPRESSIONS; the mood path answers to _mood_refusal."""
         return bool(turn) and bool(self.turn) and str(turn) != self.turn
+
+    def _mood_refusal(self, turn, now):
+        """Why this mood write must not land, or None to accept (rule 38a).
+
+        Rule 37 makes the mood write post-turn by construction, so rule
+        38's one-turn window refused it in proportion to how fast the user
+        answered — a third of all mood sets over the measured five days,
+        worst exactly at the desk. Mood is a 900-second BETWEEN-turns
+        baseline (rule 41) below every expression and event, so a write
+        from a finished turn is accepted on the mood's own clock instead:
+        refused only when a mood computed for a later turn has already
+        been applied (out of order), or when the write outlived
+        MOOD_SECONDS counted from the turn start its token carries — a
+        sound stand-in for the turn's end, which the broker never learns:
+        the write is post-turn by construction, so the start only tightens
+        the window by the turn's own length, never widens it. A token
+        without a comparable epoch-ns suffix falls back to rule 38's
+        strict refusal rather than accepting a write nothing can order.
+        """
+        if not self._stale(turn):
+            return None
+        start_ns = _turn_start_ns(turn)
+        if start_ns is None:
+            return STALE_NOTE
+        if self.mood_turn_ns is not None and start_ns < self.mood_turn_ns:
+            return OUT_OF_ORDER_NOTE
+        if now - start_ns / 1e9 > MOOD_SECONDS:
+            return PAST_LIFETIME_NOTE
+        return None
+
+    def _mark_mood_turn(self, turn):
+        """Remember the turn of the last APPLIED mood decision (rule 38a
+        clause a). Only a token carrying a comparable epoch-ns start can
+        order later arrivals; any other applied write leaves the marker
+        alone, exactly as it left rule 38's guard alone before."""
+        ns = _turn_start_ns(turn)
+        if ns is not None:
+            self.mood_turn = str(turn)[:80]
+            self.mood_turn_ns = ns
 
     def set_expression(self, name, source="explicit", seconds=None,
                        turn=None, hold=False):
@@ -684,21 +769,23 @@ class Broker:
         never override her hand, an event, or a sentence's own acting."""
         if name in ("neutral", "none", ""):
             with self.lock:
-                if self._stale(turn):
+                refusal = self._mood_refusal(turn, _now())
+                if refusal:
                     if self.mood:
                         _journal_mood({"ts": _now(), "event": "cleared",
                                        "mood": self.mood.get("name", ""),
                                        "turn": str(turn or ""),
                                        "applied": False,
-                                       "note": "stale turn — not applied"})
+                                       "note": refusal})
                     return {"ok": True, "state": self.snapshot(),
-                            "note": "stale turn — not applied"}
+                            "note": refusal}
                 if self.mood:
                     _journal_mood({"ts": _now(), "event": "cleared",
                                    "mood": self.mood.get("name", ""),
                                    "turn": str(turn or ""),
                                    "applied": True})
                 self.mood = None
+                self._mark_mood_turn(turn)
                 self._bump()
             return {"ok": True, "state": self.snapshot()}
         if name not in MOODS:
@@ -710,20 +797,22 @@ class Broker:
         origin = _one_line(origin, 80) or "origin unavailable"
         source_ref = _one_line(source_ref, 120)
         with self.lock:
-            if self._stale(turn):
-                _journal_mood({"ts": _now(), "event": "set", "mood": name,
+            set_at = _now()
+            refusal = self._mood_refusal(turn, set_at)
+            if refusal:
+                _journal_mood({"ts": set_at, "event": "set", "mood": name,
                                "reason": reason, "source": source,
                                "origin": origin, "source_ref": source_ref,
                                "turn": str(turn or ""), "applied": False,
-                               "note": "stale turn — not applied"})
+                               "note": refusal})
                 return {"ok": True, "state": self.snapshot(),
-                        "note": "stale turn — not applied"}
-            set_at = _now()
+                        "note": refusal}
             self.mood = {"name": name, "reason": reason,
                          "source": source, "origin": origin,
                          "source_ref": source_ref,
                          "set_at": set_at,
                          "expires_at": set_at + MOOD_SECONDS}
+            self._mark_mood_turn(turn)
             _journal_mood({"ts": set_at, "event": "set", "mood": name,
                            "reason": reason, "source": source,
                            "origin": origin, "source_ref": source_ref,
@@ -856,6 +945,7 @@ class Broker:
                          "mood_seconds": MOOD_SECONDS,
                          "mood_record": self.mood,
                          "turn": self.turn,
+                         "mood_turn": self.mood_turn,
                          "source_rank": SOURCE_RANK,
                          "activity_expressions": ACTIVITY_EXPRESSIONS,
                          "direct_activity": self.activity,

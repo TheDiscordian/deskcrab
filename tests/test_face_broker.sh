@@ -263,6 +263,98 @@ check "her rest lands in the journal too (rule 42b)" \
     bash -c 'grep -q "\"event\":\"rest-cleared\"" "$1"' _ "$T/mood-journal.jsonl"
 
 echo
+echo "the mood baseline's own clock — a late mood lands, order and lifetime hold (rule 38a):"
+# A dedicated broker: these cases steer the monotonic marker and the journal,
+# and must not pollute the main section's state. The helper and its cases run
+# in this shell, so the section's variables stay visible without exporting.
+MA_SOCK="$T/face-mood38a.sock"
+MA_STATE="$T/face-mood38a-state.json"
+MA_JRNL="$T/mood38a-journal.jsonl"
+NOW_NS=$(date +%s%N)
+LIVE_TOKEN="turn-9999-$NOW_NS"
+OLD_TOKEN="turn-9998-$(( NOW_NS - 120 * 1000000000 ))"      # finished 2 min ago
+OLDER_TOKEN="turn-9997-$(( NOW_NS - 300 * 1000000000 ))"    # finished 5 min ago
+ANCIENT_TOKEN="turn-9996-$(( NOW_NS - 1000 * 1000000000 ))" # past the 900 s lifetime
+NEWER_TOKEN="turn-9995-$(( NOW_NS - 60 * 1000000000 ))"     # finished 1 min ago
+ma() {  # <turn-token or -> <verb...> — one call against the 38a broker
+    local turn="$1"; shift
+    [ "$turn" = - ] && turn=
+    DESKCRAB_FACE_TURN="$turn" DESKCRAB_FACE_SOCKET="$MA_SOCK" \
+    DESKCRAB_FACE_STATE="$MA_STATE" DESKCRAB_MOOD_JOURNAL="$MA_JRNL" \
+        python3 "$REPO_DIR/lib/face-broker" "$@"
+}
+ma_live_registers() {
+    ma "$LIVE_TOKEN" activity considering >/dev/null \
+        && ma - status | grep -q "$LIVE_TOKEN"
+}
+ma_past_lifetime_refused() {
+    ma "$ANCIENT_TOKEN" mood tired | grep -q "past mood lifetime" \
+        && ! ma - state | grep -q "mood="
+}
+ma_late_mood_lands() {
+    ma "$OLD_TOKEN" mood focused --reason "the work needed attention" \
+        --source "coding work" --origin "desktop exchange" >/dev/null \
+        && ma - state | grep -q "mood=focused" \
+        && ma - status | grep -q "\"mood_turn\": \"$OLD_TOKEN\""
+}
+ma_out_of_order_refused() {
+    ma "$OLDER_TOKEN" mood annoyed | grep -q "out of order" \
+        && ma - state | grep -q "mood=focused"
+}
+ma_unsuffixed_strict() {
+    ma turn-finished mood pleased | grep -q "stale turn" \
+        && ma - state | grep -q "mood=focused"
+}
+ma_seconds_scale_strict() {
+    ma "turn-42-$(date +%s)" mood pleased | grep -q "stale turn" \
+        && ma - state | grep -q "mood=focused"
+}
+ma_tokenless_unchanged() {
+    ma - mood pleased >/dev/null \
+        && ma - state | grep -q "mood=pleased"
+}
+ma_auto_expression_still_refused() {
+    ma "$OLD_TOKEN" auto startled | grep -q "stale" \
+        && ma - state | grep -q "expression=pleased \[mood\]"
+}
+ma_late_clear_lands() {
+    ma "$NEWER_TOKEN" mood neutral >/dev/null \
+        && ! ma - state | grep -q "mood="
+}
+check "the live turn registers with an epoch-ns token" ma_live_registers
+check "a mood past its own lifetime is refused, the lifetime named (38a b)" \
+    ma_past_lifetime_refused
+check "a mood from a finished turn lands inside the lifetime (38a)" \
+    ma_late_mood_lands
+check "an out-of-order mood is refused — a later mood already applied (38a a)" \
+    ma_out_of_order_refused
+check "an unsuffixed token falls back to the strict rule 38 refusal" \
+    ma_unsuffixed_strict
+check "a seconds-scale suffix is not misread as an ordering — strict refusal" \
+    ma_seconds_scale_strict
+check "a tokenless mood write keeps rule 38's standing on its own" \
+    ma_tokenless_unchanged
+check "an auto EXPRESSION from a finished turn is still refused (rule 38 stands)" \
+    ma_auto_expression_still_refused
+check "a late clear from a newer finished turn lands too (38a)" \
+    ma_late_clear_lands
+check "the three refusal kinds are distinguishable in the journal (rule 42b)" \
+    python3 - "$MA_JRNL" "$OLD_TOKEN" "$NEWER_TOKEN" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+sets = [r for r in rows if r["event"] == "set"]
+refused = [r for r in sets if not r["applied"]]
+notes = [r["note"] for r in refused]
+assert sum("past mood lifetime" in n for n in notes) == 1, notes
+assert sum("out of order" in n for n in notes) == 1, notes
+assert sum("stale turn" in n for n in notes) == 2, notes   # unsuffixed + seconds-scale
+assert any(r["mood"] == "focused" and r["applied"]
+           and r["turn"] == sys.argv[2] for r in sets), sets
+assert any(r["event"] == "cleared" and r["applied"]
+           and r["turn"] == sys.argv[3] for r in rows), rows
+PY
+
+echo
 echo "decay and disable switches — nothing automatic is permanent (rules 39, 41):"
 DK_SOCK="$T/face-decay.sock"
 check "an unrefreshed mood decays on the broker's own clock" \
@@ -567,7 +659,7 @@ done
     || fail "background mood never landed" "$(FB status 2>/dev/null | head -40)"
 
 for pidfile in "$DESKCRAB_FACE_SOCKET.pid" "$DIS_SOCK.pid" \
-        "$DK_SOCK.pid" "$AM_SOCK.pid" "$EX_SOCK.pid"; do
+        "$DK_SOCK.pid" "$AM_SOCK.pid" "$EX_SOCK.pid" "$MA_SOCK.pid"; do
     [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null
 done
 true

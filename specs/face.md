@@ -260,6 +260,38 @@ These rules define the ONLY automatic paths, all below her hand.
     turn it was computed for, and the broker refuses a stale one: a
     classification from a finished turn never repaints the current one.
     A write with no token competes with nobody and stands on its own.
+38a. The mood baseline's own acceptance clock (2026-09-05 amendment). For
+    mood, rules 37 and 38 cannot both be satisfied: rule 37 makes the mood
+    write post-turn by construction — the classifier takes the FINISHED
+    reply as its input — so it can only land in the gap before the next
+    turn, and rule 38's one-turn freshness window refuses it in proportion
+    to how fast the user answers. Measured over five days, a third of all
+    mood sets were dropped, worst (62%) exactly at the desk. That window
+    is exactly right for an `auto` EXPRESSION — per-sentence acting is
+    immediate emotion timed to one clip, and painting turn N's surprise
+    onto turn N+1 is a lie about the moment — and an order of magnitude
+    too strict for mood, which rule 41 defines as a 900-second
+    BETWEEN-turns baseline sitting below every expression and event. So
+    the mood path alone is amended: a mood write whose turn token names a
+    finished turn is accepted when both hold —
+    (a) no mood computed for a LATER turn has already been applied. Turn
+        tokens carry an epoch-nanosecond suffix, so turn-start order is
+        directly comparable; an out-of-order arrival is still refused and
+        still journalled as refused, with a note naming the ordering, not
+        staleness.
+    (b) it arrives no more than `DESKCRAB_FACE_MOOD_SECONDS` (rule 41's
+        own decay clock) after its turn ended. The broker never learns a
+        turn's end, so the bound is measured from the turn start the token
+        itself carries — a sound stand-in, since the write is post-turn by
+        construction and the start only tightens the window by the turn's
+        own length. A write past the bound had nothing left to say — it
+        could not have outlived its own decay window — and is refused,
+        journalled with a note naming the lifetime.
+    A token without a comparable epoch-nanosecond suffix falls back to
+    rule 38's strict refusal — a write the broker cannot order is never
+    accepted on trust. A write with no token keeps rule 38's existing
+    standing. Expression staleness is untouched: rule 38 stands exactly
+    as written for every `auto` expression.
 39. The deterministic activity map: `listening`→`attentive`,
     `considering`→`focused`, `chess`→`focused`, from runtime facts already
     in the presence layer, resolved in the broker's snapshot with no model
@@ -330,12 +362,16 @@ These rules define the ONLY automatic paths, all below her hand.
     source. This is a read of the broker's existing record and the journal's
     tail: it runs no classifier and starts no broker while the prompt waits.
 42b. Every mood decision is journalled durably, applied or not. Each set,
-    each stale-discarded set, each clear (an explicit `neutral`, a `rest`, or
-    a stale-discarded clear), and each decay appends one line — epoch, event,
+    each refused set, each clear (an explicit `neutral`, a `rest`, or
+    a refused clear), and each decay appends one line — epoch, event,
     mood word, reason, subject source, mechanical origin, turn reference, the
     applied flag, and the guard's note when it was not applied — to
     `DESKCRAB_MOOD_JOURNAL` (default
-    `~/.local/share/deskcrab/mood-journal.jsonl`). The stale-turn guard keeps
+    `~/.local/share/deskcrab/mood-journal.jsonl`). A refusal's note names
+    which door refused it, so the kinds stay distinguishable in the journal:
+    rule 38's staleness (including a token the broker could not order), rule
+    38a's out-of-order clause, or rule 38a's past-lifetime clause. The
+    stale-turn guard keeps
     deciding what the face SHOWS; the journal records what she FELT — a
     classification that arrived too late to repaint the face is still a real
     reading of a real exchange, and losing it from the display must never
@@ -512,7 +548,7 @@ or scolding.
 | `DESKCRAB_FACE_ACTIVITY_EXPRESSIONS` | broker | rule 39's deterministic map |
 | `DESKCRAB_FACE_SENTENCE_CUES` | broker+streamer | rule 40's on/off switch |
 | `DESKCRAB_FACE_CUE_LINGER` | streamer | rule 40's flourish tail |
-| `DESKCRAB_FACE_MOOD_SECONDS` | broker | rule 41's mood decay clock |
+| `DESKCRAB_FACE_MOOD_SECONDS` | broker | rule 41's mood decay clock, and rule 38a's late-acceptance bound |
 | `DESKCRAB_FACE_EXPLICIT_SECONDS` | broker | rule 16's default lifetime for a bare manual expression |
 | `DESKCRAB_FACE_FAILED_ACTION_SECONDS` | broker | rule 17's short mechanical-failure recovery (default 8 s) |
 | `DESKCRAB_FACE_AUTO_SECONDS` | broker | default lifetime of an `auto` record |

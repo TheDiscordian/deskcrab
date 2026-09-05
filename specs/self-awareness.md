@@ -174,10 +174,12 @@ below is a fact placed before her, never a gate placed behind her.
 39a. When the stale-turn guard refused any mood set inside a wider bounded window (twenty-four
     hours by default), one further line MUST count the drop: refused out of attempted with the
     overall rate, and the worst surface — desktop, phone, or autonomous, read from the mood
-    set's turn-token prefix — with its own refused-of-attempted and rate. The guard itself is
-    correct and stands unchanged; what this line removes is the silence around it — measured
-    2026-09-05, a third of all mood sets were dropped this way, and worst (62%) exactly at the
-    desk. When nothing in the window was refused, the line is omitted entirely. The count is a
+    set's turn-token prefix — with its own refused-of-attempted and rate. The count reports the
+    guard's decisions without changing them; what this line removes is the silence around them —
+    measured 2026-09-05 under the one-turn window that then stood for mood, a third of all mood
+    sets were dropped this way, and worst (62%) exactly at the desk. That measurement is what
+    argued [face.md](face.md) rule 38a's wider mood acceptance into being, and this line is how
+    its effect stays visible. When nothing in the window was refused, the line is omitted entirely. The count is a
     bounded tail read of the journal: malformed or truncated lines are skipped, a missing
     journal counts as zero, and the read never delays the block.
 
