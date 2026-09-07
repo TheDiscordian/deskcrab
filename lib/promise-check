@@ -67,6 +67,11 @@ say() { printf 'promise-check: %s\n' "$1"; }
 # as NOT FOUND and turned a kept promise into an accusation (2026-09-05
 # 03:16). PROMISE_PATH_ROOTS names further roots, colon-separated, tried
 # after the built-ins in the order given (specs/turn-pipeline.md rule 32bc).
+# And joining is not searching: the same accusation came back one level
+# deeper (2026-09-07 03:27), so every path-resolving section below goes
+# through the one shared resolver in lib/promise_paths.py — plain join as
+# the fast path, then a bounded search under each root for a deeper drawer,
+# with ambiguity named rather than silently taken (rule 32bd).
 EXTRA_ROOTS=()
 if [ -n "${PROMISE_PATH_ROOTS:-}" ]; then
     while IFS= read -r _root; do
@@ -524,16 +529,18 @@ PY
     # re-faces the same pattern gate. A stale or missing path changes
     # nothing and is judged exactly as before.
     local PATH_BACKED
-    if ! PATH_BACKED="$(python3 - "$RESPONSE" "$TURN_EPOCH" \
+    if ! PATH_BACKED="$(python3 - "$LIB_DIR" "$RESPONSE" "$TURN_EPOCH" \
             "${PROMISE_CHECK_PATH_SLACK:-300}" \
             "${PROJECT_DIR:-}" "$HOME" \
             "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" \
             ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"} \
             2>/dev/null <<'PY'
 import os, re, sys
-reply = sys.argv[1]
-epoch, slack = int(sys.argv[2]), int(sys.argv[3])
-roots = [r for r in sys.argv[4:] if r]
+sys.path.insert(0, sys.argv[1])
+import promise_paths
+reply = sys.argv[2]
+epoch, slack = int(sys.argv[3]), int(sys.argv[4])
+roots = [r for r in sys.argv[5:] if r]
 tokens, seen = [], set()
 for raw in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+", reply):
     tok = raw.rstrip(".,;:!?")
@@ -544,16 +551,14 @@ for raw in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+", reply):
     seen.add(tok)
     tokens.append(tok)
 fresh = []
+cache = {}
 for tok in tokens[:12]:
-    if tok.startswith(("/", "~")):
-        cands = [os.path.expanduser(tok)]
-    else:
-        cands = [os.path.join(r, tok) for r in roots]
-    for c in cands:
-        try:
-            st = os.stat(c)
-        except OSError:
-            continue
+    kind, hits = promise_paths.resolve(tok, roots, cache)
+    if kind == "multiple":
+        # Ambiguity never acquits (rule 32bd): the judge's named-files
+        # record names every candidate instead.
+        continue
+    for c, st in hits:
         if st.st_mtime >= epoch - slack:
             fresh.append((tok, c))
             break
@@ -827,15 +832,18 @@ PY
     # rest of the widening.
     local FILES_BLOCK="" PENDING_BLOCK="" COMMITS_BLOCK=""
     if [ "$WIDE" -eq 1 ]; then
-        if ! FILES_BLOCK="$(python3 - "$RESPONSE" \
+        if ! FILES_BLOCK="$(python3 - "$LIB_DIR" "$RESPONSE" \
                 "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" "$HOME" \
                 "${PROJECT_DIR:-}" \
                 ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"} \
                 2>/dev/null <<'PY'
-import os, re, sys, time
-reply, data_dir, home = sys.argv[1], sys.argv[2], sys.argv[3]
-proj = sys.argv[4] if len(sys.argv) > 4 else ""
-extra = [a for a in sys.argv[5:] if a]
+import re, sys
+sys.path.insert(0, sys.argv[1])
+import promise_paths
+reply, data_dir, home = sys.argv[2], sys.argv[3], sys.argv[4]
+proj = sys.argv[5] if len(sys.argv) > 5 else ""
+extra = [a for a in sys.argv[6:] if a]
+roots = [data_dir, home] + ([proj] if proj else []) + extra
 tokens, seen = [], set()
 for raw in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+", reply):
     tok = raw.rstrip(".,;:!?")
@@ -846,31 +854,9 @@ for raw in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+", reply):
     seen.add(tok)
     tokens.append(tok)
 out = []
+cache = {}
 for tok in tokens[:12]:
-    cands = []
-    if tok.startswith(("/", "~")):
-        cands.append(os.path.expanduser(tok))
-    else:
-        cands.append(os.path.join(data_dir, tok))
-        cands.append(os.path.join(home, tok))
-        if proj:
-            cands.append(os.path.join(proj, tok))
-        cands.extend(os.path.join(r, tok) for r in extra)
-    hit = None
-    for c in cands:
-        try:
-            st = os.stat(c)
-        except OSError:
-            continue
-        hit = (c, st)
-        break
-    if hit:
-        c, st = hit
-        out.append("- %s — exists (%s), modified %s" % (
-            tok, c,
-            time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))))
-    else:
-        out.append("- %s — NOT found on disk" % tok)
+    out.append(promise_paths.describe(tok, roots, cache))
 print("\n".join(out))
 PY
 )"; then
@@ -1326,15 +1312,18 @@ PY
     # journal's outcome line reads. Fails SOFT: an ungatherable section is
     # presented AS ungatherable and named on the trace, never omitted.
     local SWEEP_FILES
-    if ! SWEEP_FILES="$(python3 - "$JOURNAL" \
+    if ! SWEEP_FILES="$(python3 - "$LIB_DIR" "$JOURNAL" \
             "${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab" "$HOME" \
             "${PROJECT_DIR:-}" \
             ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"} \
             2>/dev/null <<'PY'
-import json, os, re, sys, time
-journal, data_dir, home = sys.argv[1], sys.argv[2], sys.argv[3]
-proj = sys.argv[4] if len(sys.argv) > 4 else ""
-extra = [a for a in sys.argv[5:] if a]
+import json, re, sys
+sys.path.insert(0, sys.argv[1])
+import promise_paths
+journal, data_dir, home = sys.argv[2], sys.argv[3], sys.argv[4]
+proj = sys.argv[5] if len(sys.argv) > 5 else ""
+extra = [a for a in sys.argv[6:] if a]
+roots = [data_dir, home] + ([proj] if proj else []) + extra
 tokens, seen = [], set()
 try:
     fh = open(journal, encoding="utf-8", errors="replace")
@@ -1358,31 +1347,9 @@ with fh:
             seen.add(tok)
             tokens.append(tok)
 out = []
+cache = {}
 for tok in tokens[:40]:
-    cands = []
-    if tok.startswith(("/", "~")):
-        cands.append(os.path.expanduser(tok))
-    else:
-        cands.append(os.path.join(data_dir, tok))
-        cands.append(os.path.join(home, tok))
-        if proj:
-            cands.append(os.path.join(proj, tok))
-        cands.extend(os.path.join(r, tok) for r in extra)
-    hit = None
-    for c in cands:
-        try:
-            st = os.stat(c)
-        except OSError:
-            continue
-        hit = (c, st)
-        break
-    if hit:
-        c, st = hit
-        out.append("- %s — exists (%s), modified %s" % (
-            tok, c,
-            time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))))
-    else:
-        out.append("- %s — NOT found on disk" % tok)
+    out.append(promise_paths.describe(tok, roots, cache))
 if len(tokens) > 40:
     out.append("(…%d more path-shaped tokens not statted)" % (len(tokens) - 40))
 print("\n".join(out))

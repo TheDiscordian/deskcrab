@@ -429,6 +429,31 @@ ledger.
      after the built-in three, in the order given. Non-existent or unreadable roots are
      skipped silently; the setting loosens nothing, because a token no root resolves is still
      reported NOT found and judged as before.
+32bd. Joining is not searching. Rule 32bc's roots still resolve a token only when its drawer
+     sits DIRECTLY under one of them, and on 2026-09-07 at 03:27 the fault of 32bc came back
+     one level deeper: she named `bar57/reading-2026-09-07.md`, the file stood under her
+     Library root two directories down (`music/<piece>/bar57/…`), and the disk record read
+     "NOT found on disk" over her own write in the same turn's tool stream. Naming each
+     deeper drawer as one more root does not generalise — the next new piece, or any new
+     drawer, breaks it again. So the three path-resolving sections of rule 32bc MUST resolve
+     through ONE shared helper (`lib/promise_paths.py`), and the helper MUST search under
+     each root rather than only join to it: the plain join stays the fast path, tried over
+     every root in the configured order first, and only when no join lands and the token
+     holds a slash does a bounded walk under each root look for paths whose trailing
+     components equal the token exactly. The walk is depth-capped and entry-capped (named
+     constants in the helper), skips hidden directories, never descends a directory symlink
+     — `$HOME` is among the roots, and the walk must never amount to walking the whole home
+     — and a token carrying `.` or `..` components is never searched. One file reached
+     through overlapping roots counts once (resolved paths, not spellings), and a candidate
+     whose path embeds another candidate's whole absolute path is that candidate's MIRROR —
+     the self-change watcher's shadow copies under the data dir are exactly this shape, and
+     the shadow of a real artefact is not a second opinion about where it lives — so it
+     collapses onto the original rather than manufacturing ambiguity. Ambiguity is
+     never resolved silently: a token the walk matches at two or more distinct places is
+     reported found-in-multiple with the candidates named — it neither acquits as the first
+     hit would nor accuses as NOT FOUND — and the pre-judge path acquittal of rule 32b MUST
+     NOT treat it as backing. A token that resolves nowhere is still reported NOT found and
+     judged exactly as before: the search loosens nothing.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the
