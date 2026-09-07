@@ -156,7 +156,14 @@ which fails silently is worse than one that does not exist.
 21. Tidy MUST run its model call under the account chain.
 
 21a. The shelf-line check. Before tidy's model job is dispatched, the tidy unit runs the machine
-    check `lib/shelf-check` over the wants shelf. A shelf entry is ONE line — the discipline the
+    check `lib/shelf-check` over the wants shelf; and the tidy brief's own LAST step runs the
+    same check again — `crab shelf-check`, the by-hand door of rule 21b — after every edit the
+    tidy made has landed, so the record that survives the night describes the shelf the tidy
+    LEAVES BEHIND, never only the one it inherited. The re-check MUST live in the brief, not on
+    the unit: `ExecStart` is `crab job`, which dispatches the builder into its own transient
+    unit and returns at dispatch, so an `ExecStartPost` would fire while the builder is still
+    running — or before it has started — and re-measure the same pre-tidy shelf the
+    `ExecStartPre` just did. A shelf entry is ONE line — the discipline the
     shelf's own header claimed when the record behind this rule was written (2026-08-07: "a
     shelf line is a line, the history lives in `wants/<slug>.md`"; the header has since been
     rebuilt after a clobber, but the claim is the shelf's design and this rule holds it): the
@@ -185,7 +192,12 @@ which fails silently is worse than one that does not exist.
     history into the want's document is exactly the judgement work tidy's own brief names, and
     a shelf that needs tidying is the last reason to skip the tidy. By hand the same check is
     `crab shelf-check` — its own dispatch case, never the catch-all's speech
-    ([turn-pipeline.md](turn-pipeline.md) rule 6a).
+    ([turn-pipeline.md](turn-pipeline.md) rule 6a). The tidy's own closing run (rule 21a) is
+    normally the later check that removes the record, the SAME night: before it existed the
+    only later check was the next night's `ExecStartPre`, and at 03:25 on 2026-09-06 the state
+    block led with a shelf line named at 530 bytes that the 02:30 tidy had already trimmed to
+    114 — a cured finding standing a full day, indistinguishable from a live one, whose first
+    invitation was a second cut at a line already correct.
 
 21c. The undestinated-claims check. Beside the shelf-line check, the tidy unit runs the machine
     check `lib/tidy-claims run` over the day just ended — the journal day before the night the
@@ -1114,6 +1126,12 @@ the check reports and never rewrites. Rule 21g in the same file: a conduct body 
 names in backticks is reported by filename with the shelf measure still running beside it, an
 indexed body is not accused, the drawer is byte-identical after the check, and a clean, empty or
 absent drawer adds not a line.
+
+`tests/test_shelf_recheck.sh` — the cure cycle of rules 21a/21b: an over-budget line puts the
+record up and the state block shouts it; the line trimmed, a second check through the by-hand
+door `crab shelf-check` exits zero, REMOVES the record, and the state block renders no finding
+the same night; and the tidy brief ends on the shelf-check step — asserted against the brief the
+shipped unit's `ExecStart` actually dispatches, never a copy held by the test.
 
 **To be written:**
 
