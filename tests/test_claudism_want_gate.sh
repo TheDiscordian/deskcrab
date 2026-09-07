@@ -25,7 +25,7 @@ cat > "$LIST" <<'EOF'
 # Fixture list — one entry, the permission-gate shape.
 
 ## permission-gating my own wants — "if you want it, I'll…", "give the go-ahead"
-- pattern: `\bif you(?: (?:want|like|prefer|approve|say so)|(?:'|’)d (?:like|prefer|rather)|(?:'|’)re (?:ok(?:ay)?|happy|good|fine) with)\b[^.!?]{0,40}\b(?:I(?:'|’)(?:ll|d)|I (?:can(?!(?:'|’)t)|could|will|would))(?! need| have to)\b|\b(?:I(?:'|’)(?:ll|d)|I (?:can(?!(?:'|’)t)|could|will|would))(?! need| have to)\b[^.!?]{0,60}\bif you(?: (?:want|like|prefer|approve|say so)|(?:'|’)d (?:like|prefer|rather)|(?:'|’)re (?:ok(?:ay)?|happy|good|fine) with| give (?:me )?the (?:go[- ]ahead|green light|nod|word))\b|\b(?:just )?give (?:me )?the (?:go[- ]ahead|green light|nod)\b|\b(?:awaiting|waiting (?:on|for)) your (?:go[- ]ahead|green light|nod|approval|blessing|say[- ]so|ok(?:ay)?)\b|\bwith your (?:permission|blessing|go[- ]ahead|say[- ]so)\b|\byour go[- ]ahead\b|\bshall I\b`
+- pattern: `\bif you(?: (?:want|like|prefer|approve|say so)|(?:'|’)d (?:like|prefer|rather)|(?:'|’)re (?:ok(?:ay)?|happy|good|fine) with)\b[^.!?]{0,40}\b(?:I(?:'|’)(?:ll|d)|I (?:can(?!(?:'|’)t)|could|will|would))(?! need| have to| rather you)\b|\b(?:I(?:'|’)(?:ll|d)|I (?:can(?!(?:'|’)t)|could|will|would))(?! need| have to| rather you)\b[^.!?]{0,60}\bif you(?: (?:want|like|prefer|approve|say so)|(?:'|’)d (?:like|prefer|rather)|(?:'|’)re (?:ok(?:ay)?|happy|good|fine) with| give (?:me )?the (?:go[- ]ahead|green light|nod|word))\b|\b(?:just )?give (?:me )?the (?:go[- ]ahead|green light|nod)\b|\b(?:awaiting|waiting (?:on|for)) your (?:go[- ]ahead|green light|nod|approval|blessing|say[- ]so|ok(?:ay)?)\b|\bwith your (?:permission|blessing|go[- ]ahead|say[- ]so)\b|\byour go[- ]ahead\b|\bshall I\b`
 - why: an action of the assistant's made contingent on the user's go-ahead.
 - function: capitulation
 - fix: resay
@@ -48,7 +48,8 @@ If you want the logs, they're in the state directory. \
 I can't tell if you want the fan louder or quieter. \
 I'll need the door code if you want the rack moved. \
 The brief went out at midnight. \
-The update got the go-ahead from the queue days ago."
+The update got the go-ahead from the queue days ago. \
+If you'd rather try the other base, do that — I'd rather you had something that works."
 
 echo "the capture, run the way the turn runs it:"
 "$SANDBOX_REPO/lib/claudism-capture" "$LIST" "$FLAGS" desktop 1786773177 4242 "$REPLY"
@@ -79,6 +80,7 @@ refute "a question about his meaning stays clean" contains "$F" "fan louder or q
 refute "a requirement statement stays clean" contains "$F" "the door code"
 refute "the cure — the action stated as taken — stays clean" contains "$F" "went out at midnight"
 refute "a reported go-ahead stays clean" contains "$F" "from the queue days ago"
+refute "a preference about HIS action stays clean" contains "$F" "rather you had something that works"
 
 echo
 echo "the live half — the mirror fires, and nothing machine-trims the sentence:"
