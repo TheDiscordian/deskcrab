@@ -4306,7 +4306,13 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
                 for needle in ("fail to hit the tree", "too tired to cut the tree"))
             for entry in new_messages)
         failure = bool(failure or failed_chop)
-        completed = bool(failure or (gained_item and gained_woodcut_xp))
+        # Normal trees have 100% fell chance (ObjectWoodcutting.xml ids 0/1).
+        # Their scenery packet may trail both XP and inventory updates.
+        target_released = target_obj not in (0, 1) or (isinstance(snap.get("objects"), list) and not any(
+            isinstance(entity, dict) and entity.get("id") == target_obj
+            and entity.get("x") == target_x and entity.get("z") == target_z
+            for entity in snap["objects"]))
+        completed = bool(failure or (gained_item and gained_woodcut_xp and target_released))
     if observation["type"] == "cast-npc":
         rune_ids = {str(item) for item in before.get("spell_runes") or []}
         magic_ids = {skill_id for skill_id, skill in current_skills.items()

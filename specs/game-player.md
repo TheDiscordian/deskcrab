@@ -527,7 +527,11 @@ deliberate-play channel.
    acquisition, not a generic dialogue or portal. Its completion requires BOTH an inventory
    quantity gain and positive Woodcutting XP in the newer snapshot. A swing/start line, a
    success line arriving before the item, XP alone, and the tree becoming a stump cannot
-   release the action slot. Explicit failed-hit or too-tired feedback ends it unsuccessfully.
+   release the action slot. Normal tree ids 0 and 1 always fell on this server: their
+   successful completion additionally requires the target tree to be absent at its exact tile.
+   The scenery packet can arrive after both item and XP packets; do not dispatch into that
+   still-rendered tree. Other chop targets can remain standing and need no disappearance.
+   Explicit failed-hit or too-tired feedback ends it unsuccessfully.
    The command identity is captured from the exact targeted object before dispatch; unrelated
    scenery interactions retain their ordinary postconditions.
    A production answer whose server-authored menu consists entirely of `Make ...` choices

@@ -33,7 +33,21 @@ items=[dict(id=13,count=1),dict(id=14,count=3)]
 skills=[dict(id=8,name='Woodcut',xp=15025),dict(id=9,name='Fletching',xp=2000)]
 assert gp.action_completion(obs,after(inventory=items,messages=success)) is None
 assert gp.action_completion(obs,after(skills=skills,messages=success)) is None
-assert gp.action_completion(obs,after(inventory=items,skills=skills))['result']=='done'
+# Live 20:27:36: inventory and XP preceded scenery removal and caused two
+# dispatched object-mismatch refusals against the same normal tree.
+assert gp.action_completion(obs,after(inventory=items,skills=skills)) is None
+assert gp.action_completion(obs,after(inventory=items,skills=skills,objects=None)) is None
+assert gp.action_completion(obs,after(inventory=items,skills=skills,objects=[]))['result']=='done'
+assert gp.action_completion(obs,after(inventory=items,skills=skills,objects=[dict(id=4,x=132,z=647)]))['result']=='done'
+# An unrelated tree disappearing is not our target's terminal packet.
+assert gp.action_completion(obs,after(inventory=items,skills=skills,objects=base['objects'])) is None
+other=after(objects=[dict(id=306,x=132,z=647,commands=['Chop','Examine'])])
+other_obs=gp.make_action_observation(12,'interact-object',['obj=306','x=132','z=647','cmd=1'],other)
+assert gp.action_completion(other_obs,after(other,inventory=items,skills=skills))['result']=='done'
+pointy=after(objects=[dict(id=0,x=132,z=647,commands=['Chop','Examine'])])
+pointy_obs=gp.make_action_observation(13,'interact-object',['obj=0','x=132','z=647','cmd=1'],pointy)
+assert gp.action_completion(pointy_obs,after(pointy,inventory=items,skills=skills)) is None
+assert gp.action_completion(pointy_obs,after(pointy,inventory=items,skills=skills,objects=[]))['result']=='done'
 assert gp.action_completion(obs,after(inventory=items,skills=[dict(id=8,name='Woodcut',xp=15000),dict(id=9,name='Fletching',xp=2010)])) is None
 for text in ('You slip and fail to hit the tree','You are too tired to cut the tree','You need an axe to chop this tree down'):
     assert gp.action_completion(obs,after(messages=[dict(id=3,channel='quest',text=text)]))['result']=='failed'
