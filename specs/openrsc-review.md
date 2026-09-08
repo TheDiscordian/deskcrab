@@ -45,7 +45,9 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    authoritative measure; whether the method is probably the most efficient available for
    the current skill, levels, supplies, and objective; and whether reflexes and their supporting
    code actually produce the intended state changes. Compare measured XP and activity history
-   with the previous review. Check this server's mechanics and include travel, supplies, banking,
+   with the previous review. Before blaming a timeout on the server, check whether the player
+   performed the required initiating action or input. Sleep recovery, for example, still needs
+   the current word submitted even when sleep fatigue reaches zero. Check this server's mechanics and include travel, supplies, banking,
    failure, fatigue, and recovery costs when comparing methods. State uncertainty when samples
    are short, stale, offline, or incomparable; do not present theoretical XP as measured XP.
    For leaderboard competition, optimise the method within the committed skill until its
