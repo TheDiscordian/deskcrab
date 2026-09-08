@@ -86,8 +86,9 @@ class Paths:
         files += [read(self.player / 'handoff.md'), read(self.player / 'player.log', 24000, tail=True),
                   read(self.state / 'player-decisions.jsonl', 24000, tail=True)]
         state = load(self.state / 'state.json')
-        keys = ('ts', 'tick', 'logged_in', 'player', 'position', 'skills', 'inventory',
-                'hp', 'fatigue', 'in_combat', 'quest_points', 'quests', 'messages')
+        keys = ('ts', 'tick', 'logged_in', 'player', 'position', 'x', 'z', 'skills', 'inventory',
+                'hp', 'hits', 'hits_max', 'fatigue', 'in_combat', 'walking', 'bank_open',
+                'shop_open', 'quest_points', 'quests', 'messages')
         return {'captured_at': utc(), 'state_path': str(self.state / 'state.json'),
                 'state_age_seconds': (time.time() - state['ts'] / 1000
                                       if isinstance(state.get('ts'), (int, float)) else None),

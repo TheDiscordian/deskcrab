@@ -8785,6 +8785,8 @@ def reflection_fields(snap: dict = None) -> dict:
     record = load_progress()
     now = now_ms()
     fields = {}
+    if isinstance(snap, dict) and game_loadout.enabled():
+        fields['inventory_prepare'] = json.dumps(game_loadout.assessment(snap))
     if isinstance(snap, dict) and len(snap.get("inventory") or []) >= 30:
         waiting = len(snap.get("ground_items") or [])
         if waiting:
@@ -10163,8 +10165,8 @@ def cmd_run(args):
     except OSError:
         table_mtime = 0
     try:
-        source_mtime = Path(__file__).stat().st_mtime \
-            + Path(game_reflex.__file__).stat().st_mtime
+        source_mtime = sum(Path(path).stat().st_mtime for path in (
+            __file__, game_reflex.__file__, game_loadout.__file__, game_decisions.__file__))
     except OSError:
         source_mtime = 0
     last_gap_signature = None
@@ -10204,8 +10206,8 @@ def cmd_run(args):
             # The shared evaluator ships in game_reflex, so its file counts
             # as this runner's source too.
             try:
-                smt = Path(__file__).stat().st_mtime \
-                    + Path(game_reflex.__file__).stat().st_mtime
+                smt = sum(Path(path).stat().st_mtime for path in (
+                    __file__, game_reflex.__file__, game_loadout.__file__, game_decisions.__file__))
             except OSError:
                 smt = source_mtime
             if smt != source_mtime:
