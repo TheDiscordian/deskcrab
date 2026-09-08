@@ -1050,7 +1050,7 @@ class Mover:
                 self.log(f"mover: {job['gid']} ply {job['ply']} superseded "
                          f"after {dt:.1f}s — answering the newer position")
                 return None, None
-            move = self._parse(board, out) if out else None
+            move = self._parse(board, out) if out and not why else None
             rejected = self._reply_label(out) if out and not why else ""
             outcome = "ok" if move else (why or (
                 "no-legal-move" + (f" ({rejected})" if rejected else "")))
@@ -1422,6 +1422,22 @@ class Mover:
             lines = [ln.strip()
                      for ln in f"{err or ''}\n{out or ''}".splitlines()
                      if ln.strip()]
+            causes = []
+            for line in lines:
+                try:
+                    obj = json.loads(line)
+                except (ValueError, TypeError):
+                    obj = None
+                messages = []
+                if isinstance(obj, dict):
+                    for field in ("error", "message", "result"):
+                        message = obj.get(field)
+                        if isinstance(message, dict):
+                            message = message.get("message")
+                        if isinstance(message, str) and message.strip():
+                            messages.append(message.strip())
+                causes.extend(messages or [line])
+            lines = causes
             detail = next((ln for ln in lines
                            if any(m in ln.lower()
                                   for m in _CAUSE_MARKERS)),
