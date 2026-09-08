@@ -28,7 +28,7 @@
    there is no global food reserve or automatically inherited combat template.
 5. The gate sits below stale/logged-out, movement, action-slot, healing, urgent retreat,
    conversation, and session checks. It does not abandon combat, an open interface, or an
-   in-flight action. Banking, travel, recovery, and resupply modes remain usable to satisfy the
+   in-flight action. Banking, travel, trading/selling/shopping, recovery, and resupply modes remain usable to satisfy the
    declaration. The independent survival engine is unchanged. Direct semantic preparation
    actions remain available. A preparation detour preserves the competitive skill target.
    The ordinary deliberation verdict carries the current inventory assessment, including when
@@ -42,6 +42,17 @@
    audits the reasoning and actual batch capacity, and repairs recurring pickup/banking rules
    that recreate an unsuitable inventory. Inventory details belong in the activity declaration;
    the objective and training plan retain their actual goal and method.
+
+7. A ready declaration also constrains ordinary automatic ground pickups, before dispatch:
+   an undeclared item or one already at its declared maximum cannot be acquired merely because
+   an old global loot rule is enabled. Check again at emission against fresh state. This applies
+   in the declared productive activity and its travelling/travel/transit/walking/journey and trading/selling/shopping modes
+   when objective, plan, and sitting still match; explicit banking/resupply/recovery preparation
+   stays usable. A missing or stale declaration in productive activity fails closed; travel
+   without a matching productive declaration retains legacy behaviour. This filter never affects
+   eating, retreat, item use on ground, or deliberate preparation doors. Pure learned-rule replays
+   remain independent of the live loadout; isolated integration cases test this runtime policy.
+   The refusal names the inventory policy rather than teaching the rule an invented failure.
 
 ## Decisions persist until fulfilled or deliberately revised
 

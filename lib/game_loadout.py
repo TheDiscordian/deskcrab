@@ -9,7 +9,7 @@ import game_decisions
 
 ROLES = {'tool', 'support', 'food', 'material', 'product'}
 PREPARATION_MODES = {'bank', 'banking', 'travel', 'travelling', 'traveling', 'transit',
-                     'walking', 'journey', 'recovery', 'healing', 'resupply', 'retreat'}
+                     'walking', 'journey', 'trading', 'selling', 'shopping', 'recovery', 'healing', 'resupply', 'retreat'}
 
 
 def directory():
@@ -124,6 +124,40 @@ def assessment(snap, ctx=None):
     return {'state': 'needs-preparation' if issues else 'ready', 'activity': ctx['activity'],
             'occupied_slots': len(snap['inventory']), 'working_capacity': working,
             'risk': declaration['risk'], 'issues': issues}
+
+
+def check_pickup(action, snap):
+    """Keep ordinary incidental loot inside the current activity's inventory decision."""
+    if action.get('type') != 'take-ground' or not enabled():
+        return
+    ctx = context()
+    activity = ctx['activity'].casefold()
+    travel = activity in {'travel', 'travelling', 'traveling', 'transit', 'walking', 'journey', 'trading', 'selling', 'shopping'}
+    if not ctx['objective'] or not activity or (activity in PREPARATION_MODES and not travel):
+        return
+    record = read_json(directory() / 'loadout.json')
+    saved = record.get('context') if isinstance(record, dict) else None
+    matching = isinstance(saved, dict) and all(saved.get(k) == ctx[k]
+                   for k in ('objective', 'plan', 'sitting'))
+    if travel:
+        if not matching or saved.get('activity', '').casefold() in PREPARATION_MODES:
+            return
+    elif not matching or saved.get('activity') != ctx['activity']:
+        raise ValueError('inventory-pickup-needs-review')
+    try:
+        declaration = validate(record.get('declaration'))
+    except (ValueError, TypeError):
+        raise ValueError('inventory-pickup-needs-review') from None
+    iid = action.get('item')
+    allowed = next((item for item in declaration['items'] if item['id'] == iid), None)
+    if allowed is None:
+        raise ValueError(f'inventory-pickup-undeclared-item:{iid}')
+    if not isinstance(snap, dict) or not isinstance(snap.get('inventory'), list):
+        raise ValueError('inventory-pickup-snapshot-unavailable')
+    held = sum(int(item.get('count') or 1) for item in snap['inventory']
+               if isinstance(item, dict) and item.get('id') == iid)
+    if held >= allowed['max']:
+        raise ValueError(f'inventory-pickup-at-maximum:{iid}')
 
 
 def _command(args):
