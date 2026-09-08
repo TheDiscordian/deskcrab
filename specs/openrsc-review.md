@@ -8,9 +8,19 @@ objective progress, training efficiency, and the correctness of the whole gamepl
 
 ## Contract
 
-1. `deskcrab-openrsc-review.timer` runs every 45 minutes, with persistent catch-up after downtime.
-   UTC calendar expressions cover all 32 daily slots at a uniform interval, including hour and
-   day boundaries. An existing review is not interrupted or overlapped at the next slot.
+1. The player control unit starts `deskcrab-openrsc-review-watch.service` as part of gameplay.
+   This mechanical watcher arms the 45-minute timer only while the control unit is active with no stop/restart pending,
+   the sitting is open and before its deadline, and the client has a fresh logged-in snapshot
+   (at most ten seconds old). It stops the timer and any review when those conditions cease.
+   The watcher stops with the player control unit; it has no independent startup registration.
+   UTC calendar expressions cover all 32 daily slots at a uniform interval. The timer is never
+   enabled globally and has no persistent catch-up. Its ordering follows the gameplay services,
+   with explicit shutdown cleanup instead of the default ordering before `timers.target`. Starting a review or timer cannot start play.
+   Both scheduled and direct review launches check eligibility before creating artifacts or
+   touching the author, recheck after waiting for the author and immediately before the model,
+   and check once per second to cancel a running model when play ends.
+   Missing, malformed, ended, expired, stale, or logged-out state fails closed. An existing
+   review is not interrupted or overlapped at the next slot.
    Its oneshot service and a nonblocking process lock prevent overlapping reviews. A review
    has a 50-minute total deadline, including waiting for the existing author's lock.
 2. `lib/openrsc-review` reads the assistant's ordinary config. The reviewer uses only
@@ -55,11 +65,11 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    the player/harness's supported controls and steer the continuing player after a material
    change. Never leave the character logged in without survival guards. Do not bypass the
    game's mechanics, edit server/save data, reopen a closed sitting, alter other projects,
-   send chat/notifications, or produce audio. An offline review can fix grounded defects but
-   does not start a sitting or claim live verification.
+   send chat/notifications, or produce audio. Reviews perform no offline work and cannot
+   start a sitting. Interrupted work remains recorded for the next eligible pass.
 7. Each attempt saves its prompt, raw stream, stderr, before/after snapshots, result, and
    status below `OPENRSC_REVIEW_DIR` (default the player's `reviews/` directory). `latest.json`
-   shows waiting, running, completed, or failed; `last-success.json` advances only when the CLI
+   shows waiting, running, completed, cancelled, or failed; `last-success.json` advances only when the CLI
    succeeds, emits a completed turn without an error, and returns all three assessments,
    changes, verification, and next-review observations. Partial work and failures remain visible.
    The translated stream is recorded in the ordinary token ledger as `openrsc-review`.
@@ -71,7 +81,10 @@ objective progress, training efficiency, and the correctness of the whole gamepl
 
 ## Operations
 
-Install the service and timer from `systemd/` into the user manager. Enable the timer only
-when periodic reviews are authorised. `systemctl --user start deskcrab-openrsc-review.service`
-runs a pass immediately. `lib/openrsc-review status` reads the saved status without a model call.
-Stopping the timer prevents future reviews; stopping its service also interrupts the current pass.
+Install the review service, watcher service, timer, and player-control drop-in from `systemd/`
+into the user manager, then reload it. The control unit starts the watcher automatically.
+Keep the timer disabled; the watcher alone starts and stops it according to actual gameplay.
+For an already-running sitting, start the watcher once after installation.
+`systemctl --user start deskcrab-openrsc-review.service` requests an immediate pass only during
+eligible play. `lib/openrsc-review status` reads the saved status without a model call.
+Stopping the watcher stops its timer and any review; stopping gameplay stops all three.

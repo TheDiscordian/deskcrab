@@ -1,13 +1,15 @@
 [Unit]
-Description=Review the OpenRSC player's progress and effectiveness every 45 minutes
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+Description=Review the OpenRSC player's progress and effectiveness every 45 minutes during gameplay
+Requisite=orsc-player-control.service deskcrab-openrsc-review-watch.service
+After=orsc-player-control.service deskcrab-openrsc-review-watch.service
+PartOf=orsc-player-control.service deskcrab-openrsc-review-watch.service
 
 [Timer]
 OnCalendar=*-*-* 00/3:30:00 UTC
 OnCalendar=*-*-* 01/3:15:00 UTC
 OnCalendar=*-*-* 02/3:00,45:00 UTC
-Persistent=true
 AccuracySec=1min
 Unit=deskcrab-openrsc-review.service
-
-[Install]
-WantedBy=timers.target

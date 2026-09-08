@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -26,6 +27,10 @@ class Review(unittest.TestCase):
         self.root = Path(self.temp.name)
         for directory in ('game', 'headless', 'player', 'state', 'account'):
             (self.root / directory).mkdir()
+        (self.root/'bin').mkdir()
+        manager = self.root/'bin/systemctl'
+        manager.write_text('#!/bin/sh\nexit 0\n')
+        manager.chmod(0o755)
         self.persona = self.root / 'persona.md'
         self.persona.write_text('You are the fixture player. Speak in first person.')
         self.cli = self.root / 'codex'
@@ -53,6 +58,7 @@ sys.exit(1 if mode == 'nonzero' else 0)
         author.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$REVIEW_FIXTURE/author-calls"\n')
         author.chmod(0o755)
         self.env = patch.dict(os.environ, {
+            'PATH': str(self.root/'bin') + os.pathsep + os.environ['PATH'],
             'BETTY_OPENRSC_HOME': str(self.root / 'player'),
             'BETTY_OPENRSC_HEADLESS': str(self.root / 'headless'),
             'BETTY_OPENRSC_PERSONA': str(self.persona),
@@ -66,6 +72,8 @@ sys.exit(1 if mode == 'nonzero' else 0)
         self.env.start()
         self.addCleanup(self.env.stop)
         self.paths = review.Paths()
+        review.atomic(self.paths.game / 'session.json', {
+            'started': int(time.time()*1000)-1000, 'limit_ms': 3600000, 'ended': None})
         (self.paths.game / 'objective').write_text('Improve total levels')
         (self.paths.state / 'state.json').write_text(json.dumps({
             'ts': int(time.time()*1000), 'logged_in': True,
@@ -127,7 +135,7 @@ sys.exit(1 if mode == 'nonzero' else 0)
                 return subprocess.CompletedProcess(args, code)
             with patch.object(review, 'systemctl', side_effect=manager):
                 self.assertEqual(review.run(self.paths), 0)
-            self.assertIn(('stop', 'orsc-author.path'), calls)
+            self.assertEqual(('stop', 'orsc-author.path') in calls, authorised)
             self.assertNotIn(('stop', 'orsc-author.service'), calls)
             self.assertEqual((self.root/'author-calls').exists(), authorised)
 
@@ -206,6 +214,142 @@ sys.exit(1 if mode == 'nonzero' else 0)
         self.assertEqual(review.load(self.root/'called.json')['account'], str(self.root/'account'))
         self.assertNotIn('ledger_error', self.status())
 
+    def test_offline_launches_leave_no_artifacts_or_author_calls(self):
+        session = review.load(self.paths.game/'session.json')
+        state = review.load(self.paths.state/'state.json')
+        cases = [
+            ({}, state), ([], state),
+            (dict(session, ended=int(time.time()*1000)), state),
+            (dict(session, limit_ms=1), state),
+            (dict(session, started='bad'), state),
+            (session, {}), (session, []),
+            (session, dict(state, logged_in=False)),
+            (session, dict(state, ts=1)), (session, dict(state, ts='bad'))]
+        for sitting, snapshot in cases:
+            with self.subTest(session=sitting, state=snapshot):
+                review.atomic(self.paths.game/'session.json', sitting)
+                review.atomic(self.paths.state/'state.json', snapshot)
+                with patch.object(review, 'systemctl') as manager:
+                    self.assertEqual(review.run(self.paths), 0)
+                    manager.assert_not_called()
+                self.assertFalse(self.paths.reviews.exists())
+                self.assertFalse((self.root/'called.json').exists())
+                self.assertFalse((self.paths.game/'author.lock').exists())
+        review.atomic(self.paths.game/'session.json', session)
+        review.atomic(self.paths.state/'state.json', state)
+        with patch.object(review, 'systemctl', return_value=subprocess.CompletedProcess([], 3)) as manager:
+            self.assertEqual(review.run(self.paths), 0)
+            manager.assert_called_once_with('is-active', '--quiet', review.CONTROL_UNIT)
+        self.assertFalse(self.paths.reviews.exists())
+        with patch.object(review, 'systemctl', side_effect=subprocess.TimeoutExpired('systemctl', 20)):
+            self.assertFalse(review.playing(self.paths))
+
+    def test_pending_control_stop_blocks_reviews_and_author_restoration(self):
+        def manager(*args, check=False):
+            return subprocess.CompletedProcess(args, 0, stdout='1234' if args[0] == 'show' else '')
+        with patch.object(review, 'systemctl', side_effect=manager):
+            self.assertFalse(review.playing(self.paths))
+            self.assertEqual(review.run(self.paths), 0)
+            status = {}
+            review.restore_author(self.paths, status)
+        self.assertFalse(status['author_watcher_restored'])
+        self.assertFalse(self.paths.reviews.exists())
+        self.assertFalse((self.root/'author-calls').exists())
+
+    def test_real_offline_launcher_and_condition_do_not_call_model(self):
+        (self.paths.game/'session.json').unlink()
+        for command, code in (('run', 0), ('eligible', 1)):
+            result = subprocess.run([str(review.HERE/'openrsc-review'), command],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, code, result.stderr)
+        self.assertFalse(self.paths.reviews.exists())
+        self.assertFalse((self.root/'called.json').exists())
+        self.assertFalse((self.root/'author-calls').exists())
+
+    def end_play(self):
+        session = review.load(self.paths.game/'session.json')
+        review.atomic(self.paths.game/'session.json', dict(session, ended=int(time.time()*1000)))
+
+    def test_play_ending_during_author_wait_never_launches_model(self):
+        with (self.paths.game/'author.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            timer = threading.Timer(0.25, self.end_play)
+            timer.start()
+            try:
+                self.assertEqual(review.run(self.paths), 0)
+            finally:
+                timer.join()
+        self.assertEqual(self.status()['state'], 'cancelled')
+        self.assertFalse((self.root/'called.json').exists())
+        self.assertFalse((self.paths.reviews/'last-success.json').exists())
+
+    def test_play_ending_before_spawn_never_launches_model(self):
+        original = self.paths.snapshot
+        def snapshot():
+            self.end_play()
+            return original()
+        with patch.object(self.paths, 'snapshot', side_effect=snapshot):
+            self.assertEqual(review.run(self.paths), 0)
+        self.assertEqual(self.status()['state'], 'cancelled')
+        self.assertFalse((self.root/'called.json').exists())
+
+    def test_play_ending_kills_running_model_and_preserves_last_success(self):
+        self.assertEqual(review.run(self.paths), 0)
+        prior = (self.paths.reviews/'last-success.json').read_bytes()
+        timer = threading.Timer(0.4, self.end_play)
+        timer.start()
+        try:
+            with patch.dict(os.environ, REVIEW_MODE='wait'):
+                self.assertEqual(review.run(self.paths), 0)
+        finally:
+            timer.join()
+        self.assertEqual(self.status()['state'], 'cancelled')
+        pid = int((self.root/'child.pid').read_text())
+        with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
+        self.assertEqual((self.paths.reviews/'last-success.json').read_bytes(), prior)
+        with (self.paths.game/'author.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_new_sitting_cannot_inherit_a_running_review(self):
+        old = review.load(self.paths.game/'session.json')['started']
+        session = review.load(self.paths.game/'session.json')
+        review.atomic(self.paths.game/'session.json', dict(session, started=old+1))
+        self.assertTrue(review.playing(self.paths))
+        with self.assertRaises(review.PlayEnded):
+            review.require_playing(self.paths, old)
+
+    def test_watcher_only_arms_timer_during_play_and_stops_on_logout(self):
+        calls = []
+        def manager(*args, check=False):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0)
+        with patch.object(review, 'systemctl', side_effect=manager):
+            armed = review.watch_step(self.paths, None)
+            self.assertTrue(armed)
+            self.assertIn(('start', review.TIMER_UNIT), calls)
+            calls.clear()
+            armed = review.watch_step(self.paths, armed)
+            self.assertEqual(calls, [('is-active', '--quiet', review.CONTROL_UNIT),
+                                     ('show', '--property=Job', '--value', review.CONTROL_UNIT)])
+            self.end_play()
+            calls.clear()
+            armed = review.watch_step(self.paths, armed)
+            self.assertFalse(armed)
+            self.assertEqual(calls, [('stop', review.TIMER_UNIT, review.REVIEW_UNIT)])
+            calls.clear()
+            self.assertFalse(review.watch_step(self.paths, armed))
+            self.assertEqual(calls, [])
+        self.assertFalse(self.paths.reviews.exists())
+        self.assertFalse((self.root/'called.json').exists())
+
+    def test_watcher_exits_when_control_is_inactive(self):
+        with patch.object(review, 'systemctl', return_value=subprocess.CompletedProcess([], 3)) as manager:
+            self.assertEqual(review.watch(self.paths), 0)
+        self.assertEqual([call.args for call in manager.call_args_list], [
+            ('is-active', '--quiet', review.CONTROL_UNIT),
+            ('stop', '--no-block', review.TIMER_UNIT, review.REVIEW_UNIT)])
+        self.assertFalse(self.paths.reviews.exists())
+
     def test_timer_contract(self):
         units = review.HERE.parent/'systemd'
         timer = (units/'deskcrab-openrsc-review.timer').read_text()
@@ -222,10 +366,42 @@ sys.exit(1 if mode == 'nonzero' else 0)
         self.assertEqual(len(stamps), 34)
         self.assertEqual({(b-a).total_seconds() for a,b in zip(stamps, stamps[1:])}, {2700})
         self.assertNotEqual(stamps[0].day, stamps[-1].day)
-        self.assertIn('Persistent=true', timer)
+        self.assertNotIn('Persistent=true', timer)
+        self.assertNotIn('[Install]', timer)
+        self.assertIn('DefaultDependencies=no', timer)
+        self.assertIn('Conflicts=shutdown.target', timer)
+        self.assertIn('Before=shutdown.target', timer)
+        watcher = (units/'deskcrab-openrsc-review-watch.service').read_text()
+        control = (units/'orsc-player-control.service.d/openrsc-review.conf').read_text()
+        self.assertIn('Wants=deskcrab-openrsc-review-watch.service', control)
+        self.assertNotIn('[Install]', watcher)
+        self.assertIn('openrsc-review watch', watcher)
+        for unit in (timer, watcher, (units/'deskcrab-openrsc-review.service').read_text()):
+            self.assertIn('Requisite=orsc-player-control.service', unit)
+            self.assertIn('PartOf=orsc-player-control.service', unit)
+            self.assertNotRegex(unit, r'(?m)^(Requires|Wants|BindsTo)=')
         service = (units/'deskcrab-openrsc-review.service').read_text()
         self.assertIn('Type=oneshot', service)
         self.assertIn('KillMode=control-group', service)
+        self.assertIn('ExecCondition=%h/.local/lib/deskcrab/openrsc-review eligible', service)
+
+    def test_lifecycle_units_have_no_ordering_cycle(self):
+        units = review.HERE.parent/'systemd'
+        target = self.root/'units'
+        target.mkdir()
+        names = ('deskcrab-openrsc-review.service', 'deskcrab-openrsc-review.timer',
+                 'deskcrab-openrsc-review-watch.service')
+        for name in names:
+            (target/name).write_text((units/name).read_text().replace(
+                '%h/.local/lib/deskcrab/openrsc-review', '/usr/bin/true'))
+        shutil.copytree(units/'orsc-player-control.service.d', target/'orsc-player-control.service.d')
+        (target/'orsc-player-control.service').write_text(
+            '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/bin/true\n')
+        result = subprocess.run(['systemd-analyze', '--user', 'verify',
+                                 *[str(target/name) for name in names]],
+                                env=dict(os.environ, SYSTEMD_UNIT_PATH=str(target)+':'),
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':

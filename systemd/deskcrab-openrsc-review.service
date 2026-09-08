@@ -1,9 +1,12 @@
 [Unit]
 Description=OpenRSC objective, training, and reflex self-review
-After=network-online.target
+After=network-online.target orsc-player-control.service
+Requisite=orsc-player-control.service
+PartOf=orsc-player-control.service deskcrab-openrsc-review-watch.service
 
 [Service]
 Type=oneshot
+ExecCondition=%h/.local/lib/deskcrab/openrsc-review eligible
 ExecStart=%h/.local/lib/deskcrab/openrsc-review run
 ExecStopPost=%h/.local/lib/deskcrab/openrsc-review recover
 TimeoutStartSec=55min

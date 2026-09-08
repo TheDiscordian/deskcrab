@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hourly improvement pass; see specs/openrsc-review.md."""
+"""Gameplay-scoped improvement pass; see specs/openrsc-review.md."""
 import fcntl
 import json
 import os
@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from datetime import datetime, timezone
 
 HERE = Path(__file__).resolve().parent
@@ -95,13 +96,82 @@ class Paths:
                 'state': {k: state[k] for k in keys if k in state}, 'files': files}
 
 
+CONTROL_UNIT = 'orsc-player-control.service'
+REVIEW_UNIT = 'deskcrab-openrsc-review.service'
+TIMER_UNIT = 'deskcrab-openrsc-review.timer'
+
+
+class PlayEnded(RuntimeError):
+    pass
+
+
+def control_running():
+    if systemctl('is-active', '--quiet', CONTROL_UNIT).returncode != 0:
+        return False
+    # Ordered dependants stop before the control unit becomes inactive. A queued
+    # stop/restart must revoke review authority during that interval as well.
+    job = systemctl('show', '--property=Job', '--value', CONTROL_UNIT)
+    return job.returncode == 0 and not (job.stdout or '').strip()
+
+
+def playing(paths):
+    """Only an authorised open sitting with fresh in-world evidence licenses a review."""
+    session = load(paths.game / 'session.json')
+    state = load(paths.state / 'state.json')
+    try:
+        now = time.time() * 1000
+        if (not isinstance(session, dict) or not isinstance(state, dict)
+                or session.get('ended') is not None
+                or not 0 < session['started'] <= now < session['started'] + session['limit_ms']
+                or state.get('logged_in') is not True
+                or not -1000 <= now - state['ts'] <= 10000):
+            return False
+        return control_running()
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return False
+
+
+def require_playing(paths, session_started=None):
+    session = load(paths.game / 'session.json')
+    if (not playing(paths) or (session_started is not None
+            and (not isinstance(session, dict) or session.get('started') != session_started))):
+        raise PlayEnded('Gameplay ended or live gameplay evidence is unavailable; review cancelled.')
+
+
+def watch_step(paths, armed):
+    """One mechanical lifecycle check; never invokes a model outside eligible play."""
+    eligible = playing(paths)
+    if eligible and not armed:
+        systemctl('start', TIMER_UNIT, check=True)
+    elif not eligible and armed is not False:
+        systemctl('stop', TIMER_UNIT, REVIEW_UNIT, check=True)
+    return eligible
+
+
+def watch(paths):
+    stopped = threading.Event()
+    old_handlers = {s: signal.signal(s, lambda *_: stopped.set())
+                    for s in (signal.SIGTERM, signal.SIGINT)}
+    armed = None
+    try:
+        while not stopped.is_set() and systemctl('is-active', '--quiet', CONTROL_UNIT).returncode == 0:
+            armed = watch_step(paths, armed)
+            stopped.wait(2)
+    finally:
+        # Nonblocking stop avoids a cycle while systemd is stopping this unit's dependants.
+        systemctl('stop', '--no-block', TIMER_UNIT, REVIEW_UNIT)
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+    return 0
+
+
 def instructions(paths, persona):
     return f'''You are the assistant described in this player's own persona sheet:
 
 {persona}
 
 You are reviewing and improving YOUR OWN RuneScape player, in first person. This is a
-silent engineering and gameplay self-review explicitly authorised by the user every 45 minutes.
+silent engineering and gameplay self-review authorised every 45 minutes ONLY during active play.
 Do the necessary improvements yourself; do not end with suggestions for the user to poke you.
 The fast Sol player and its Sol reflex author keep their own model settings.
 
@@ -182,8 +252,8 @@ Operational context:
   with the rationale and next concrete action. Coordinate any required maintenance through
   the harness's supported controls, preserving the character, survival guards, and spectator.
   Never leave play stopped or the character logged in unguarded. Honour the sitting deadline:
-  do not reopen a closed sitting or revive play the user stopped. Offline reviews may fix
-  grounded defects, but cannot claim live verification; say what the next sitting must show.
+  do not reopen a closed sitting or revive play the user stopped. This review is cancelled
+  when active play ends. Leave incomplete work recoverable; do not continue working offline.
 - Do not emit audio, send chat, notifications, or any outward message. Do not start other
   projects, resume chess benchmarks, change global models, or delegate to other agents.
 - Avoid shell sleep/poll loops. Use existing state waits for gameplay and foreground waits
@@ -224,7 +294,7 @@ def ledger(raw, duration):
 
 
 def restore_author(paths, status):
-    if systemctl('is-active', '--quiet', 'orsc-player-control.service').returncode == 0:
+    if control_running():
         # The transient path may have been collected while stopped. Its ordinary
         # start door recreates it with the current config and drains queued work.
         subprocess.run([str(paths.headless / 'betty-openrsc'), 'author', 'start'],
@@ -243,7 +313,8 @@ def recover(paths):
         except BlockingIOError:
             return 0
         status = load(paths.reviews / 'latest.json')
-        if not status:
+        if not status or (status.get('state') not in ('running', 'waiting-for-author')
+                and not (status.get('author_watcher_paused') and not status.get('author_watcher_restored'))):
             return 0
         if status.get('state') in ('running', 'waiting-for-author'):
             status.update(state='failed', error='Review process exited before recording completion.', finished_at=utc())
@@ -258,6 +329,8 @@ def recover(paths):
 
 
 def run(paths):
+    if not playing(paths):
+        return 0
     paths.reviews.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (paths.reviews / 'review.lock').open('a') as review_lock:
         try:
@@ -269,9 +342,12 @@ def run(paths):
 
 
 def run_locked(paths):
+    if not playing(paths):
+        return 0
     budget = int(os.environ.get('OPENRSC_REVIEW_TIMEOUT') or 3000)
     if not 1 <= budget <= 3000:
         raise ValueError('Review deadline must be 1..3000 seconds.')
+    session_started = load(paths.game / 'session.json').get('started')
     started = time.monotonic()
     folder = paths.reviews / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ'))
     folder.mkdir(mode=0o700)
@@ -283,6 +359,8 @@ def run_locked(paths):
         atomic(paths.reviews / 'latest.json', status)
 
     def interrupted(signum, frame):
+        if signum != signal.SIGALRM:
+            require_playing(paths, session_started)
         raise RuntimeError('Review deadline expired.' if signum == signal.SIGALRM else 'Review interrupted.')
 
     old_handlers = {s: signal.signal(s, interrupted) for s in (signal.SIGALRM, signal.SIGTERM, signal.SIGINT)}
@@ -294,14 +372,22 @@ def run_locked(paths):
     try:
         publish()
         persona_path, persona = paths.persona()
+        require_playing(paths, session_started)
         if systemctl('is-active', '--quiet', 'orsc-author.path').returncode == 0:
             systemctl('stop', 'orsc-author.path', check=True)
             paused_author = True
             status['author_watcher_paused'] = True
             publish()
-        # The same flock inode used by run-author; a waiting reviewer gets the next release.
+        # Share the author inode, but keep checking gameplay while waiting for its release.
         author_lock = (paths.game / 'author.lock').open('a')
-        fcntl.flock(author_lock, fcntl.LOCK_EX)
+        while True:
+            require_playing(paths, session_started)
+            try:
+                fcntl.flock(author_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(0.2)
+        require_playing(paths, session_started)
         before = paths.snapshot()
         atomic(folder / 'before.json', before)
         previous = load(paths.reviews / 'last-success.json')
@@ -331,23 +417,36 @@ def run_locked(paths):
                    '-c', 'project_doc_max_bytes=0', '-c', f'model_instructions_file={folder / "instructions.md"}',
                    '--output-schema', str(folder / 'schema.json'), '-o', str(folder / 'result.json'), '-']
         with (folder / 'prompt.json').open('rb') as inp, raw.open('wb') as out, (folder / 'stderr.log').open('wb') as err:
+            require_playing(paths, session_started)
             child = subprocess.Popen(command, stdin=inp, stdout=out, stderr=err, env=env, start_new_session=True)
             status['model_pid'] = child.pid
             publish()
-            code = child.wait(timeout=max(0.1, budget - (time.monotonic() - started)))
+            while True:
+                require_playing(paths, session_started)
+                try:
+                    code = child.wait(timeout=min(1, max(0.1, budget - (time.monotonic() - started))))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            require_playing(paths, session_started)
         result = validate_result(raw, folder / 'result.json', code)
         report = f'# OpenRSC self-review\n\n{status["started_at"]} — Astra High\n'
         for key in FIELDS:
             report += f'\n## {key.replace("_", " ").capitalize()}\n\n{result[key]}\n'
         (folder / 'report.md').write_text(report)
         status['state'] = 'completed'
+    except PlayEnded as exc:
+        status.update(state='cancelled', error=str(exc))
     except Exception as exc:
         status.update(state='failed', error=str(exc))
         print(str(exc), file=sys.stderr)
     finally:
         signal.alarm(0)
         if child is not None and child.poll() is None:
-            os.killpg(child.pid, signal.SIGTERM)
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 child.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -374,16 +473,20 @@ def run_locked(paths):
         for sig, handler in old_handlers.items():
             signal.signal(sig, handler)
     print(json.dumps(status))
-    return 0 if status['state'] == 'completed' else 1
+    return 0 if status['state'] in ('completed', 'cancelled') else 1
 
 
 if __name__ == '__main__':
     paths = Paths()
     if sys.argv[1:] == ['status']:
         print(json.dumps(load(paths.reviews / 'latest.json'), indent=2))
+    elif sys.argv[1:] == ['eligible']:
+        raise SystemExit(0 if playing(paths) else 1)
+    elif sys.argv[1:] == ['watch']:
+        raise SystemExit(watch(paths))
     elif sys.argv[1:] == ['recover']:
         raise SystemExit(recover(paths))
     elif sys.argv[1:] in ([], ['run']):
         raise SystemExit(run(paths))
     else:
-        raise SystemExit('usage: openrsc-review [run|status|recover]')
+        raise SystemExit('usage: openrsc-review [run|status|recover|eligible|watch]')
