@@ -1011,6 +1011,19 @@ deliberate-play channel.
     replay gate once over the complete change. `--replace` is the explicit destructive form;
     widening is the default so prior targets keep their learned behaviour.
 
+11b. **A leaderboard skill is a sustained commitment.** The selected skill's plan and milestone
+    name a concrete competitive outcome, such as overtaking the named rival or reaching rank
+    one in that skill. The player keeps training that skill across level-ups, hourly reviews,
+    and sitting boundaries until fresh standings verify the chosen outcome. A level-up is
+    progress, not completion and not an invitation to choose the next cheapest total level.
+    Review standing and unlock changes to improve the method within the committed skill;
+    gathering supplies, banking, healing, and necessary prerequisites serve the same target.
+    Switching the target before completion requires an explicit user redirect or a documented
+    blocker that actually prevents further progress, not a marginally faster level elsewhere.
+    A sitting deadline pauses the commitment without replacing it. Player composition and
+    resume guidance carry this rule, and an arbitrary next-level ceiling cannot stand in for
+    the competitive target unless the user explicitly requested that ceiling.
+
 ### The entrypoint
 
 12. The playing harness invokes this layer first: `orsc-headless.sh play [args…]` in the game
