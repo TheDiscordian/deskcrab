@@ -523,6 +523,19 @@ deliberate-play channel.
    is required for success; explicit server failure may end it unsuccessfully. A pane/menu
    transition or a furnace's early “smelt together” line is ignored rather than accepted before
    the resulting bar exists.
+   A scenery action whose selected live definition command is `Chop` is a resource
+   acquisition, not a generic dialogue or portal. Its completion requires BOTH an inventory
+   quantity gain and positive Woodcutting XP in the newer snapshot. A swing/start line, a
+   success line arriving before the item, XP alone, and the tree becoming a stump cannot
+   release the action slot. Explicit failed-hit or too-tired feedback ends it unsuccessfully.
+   The command identity is captured from the exact targeted object before dispatch; unrelated
+   scenery interactions retain their ordinary postconditions.
+   A production answer whose server-authored menu consists entirely of `Make ...` choices
+   completes only after a held input decreases AND a product quantity increases, with the
+   answered menu observed closed. A start/success line, input removal alone, output alone,
+   XP alone, or the old menu still being rendered cannot authorise the next production action.
+   Explicit failure still releases it as failed. Ordinary NPC replies retain their response
+   postconditions. This prevents late input/output packets from completing the next held pair.
    `orsc-headless.sh use ITEM-ID npc NPC-NAME|TYPE-ID [SECONDS]` and learned `use-item-npc`
    actions use the same causal verifier after resolving the held item and NPC identities. An item
    delta, grounded game feedback, or NPC-dialogue transition verifies the use; a bridge receipt or
@@ -1290,7 +1303,12 @@ deliberate-play channel.
     ask `direct-owner ACTION --param KEY=VALUE…` before dispatch; a matching owner returns
     `routine-owned ... next=play` and emits no second action. Ownership is not instantaneous
     eligibility: fighting, waiting for completion, a missing prerequisite item, or another
-    transient guard cannot open a race for a competing direct hand. But ownership reaches no
+    transient guard cannot open a race for a competing direct hand. An enforced `use-item-item`
+    routine also reserves primitive `click-inventory` requests on either of its two item
+    identities, for any mouse button: selecting the tool and then clicking its material is
+    the same operation, not an escape from semantic ownership. Other held items remain free,
+    and disabled, unenforced, or out-of-scope pair rules reserve nothing.
+    But ownership reaches no
     further than the rule's own declared scope, and live structured state can prove a request
     outside it. For the acquisition request `take-ground` with a caller item id, one fresh
     logged-in snapshot supports exactly two scope proofs, each releasing only the rules it

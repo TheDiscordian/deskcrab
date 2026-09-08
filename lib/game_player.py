@@ -3836,6 +3836,20 @@ def floor_band(z):
     return None
 
 
+def observed_object_command(snap: dict, fields: dict) -> str:
+    """Capture the exact target's rendered definition command, not its name."""
+    try:
+        obj, x, z = (int(fields[key]) for key in ("obj", "x", "z"))
+        cmd = int(fields.get("cmd", 1))
+    except (KeyError, ValueError, TypeError):
+        return ""
+    target = next((o for o in snap.get("objects") or []
+                   if isinstance(o, dict) and (o.get("id"), o.get("x"), o.get("z"))
+                   == (obj, x, z)), {})
+    commands = target.get("commands") or []
+    return str(commands[cmd - 1]).strip().casefold() if 1 <= cmd <= len(commands) else ""
+
+
 def make_action_observation(action_id: int, action_type: str, fields: list,
                             snap: dict, sent_ts: int = None) -> dict:
     parsed = dict(field.split("=", 1) for field in fields
@@ -3852,6 +3866,8 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "ts": snap.get("ts"), "tick": snap.get("tick"),
             "x": snap.get("x"), "z": snap.get("z"),
             "walking": snap.get("walking"),
+            "object_command": observed_object_command(snap, parsed)
+            if action_type == "interact-object" else "",
             "in_combat": snap.get("in_combat"),
             "opponent": snap.get("opponent"),
             "talking_to_npc": snap.get("talking_to_npc"),
@@ -4034,6 +4050,21 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
             response_ui.append("dialogue-response-menu:true")
         ui_changes = response_ui
         completed = bool(inventory_changes or xp_changes or message or response_ui)
+        options = before.get("dialogue_options") or []
+        production_menu = bool(options) and all(
+            isinstance(option, str) and option.strip().casefold().startswith("make ")
+            for option in options)
+        if production_menu:
+            input_fell = any(
+                (current_inventory.get(key) or {}).get("count", 0)
+                < (old_inventory.get(key) or {}).get("count", 0)
+                for key in old_inventory)
+            product_grew = any(
+                (current_inventory.get(key) or {}).get("count", 0)
+                > (old_inventory.get(key) or {}).get("count", 0)
+                for key in current_inventory)
+            completed = bool(failure or (input_fell and product_grew
+                                         and snap.get("dialogue_open") is False))
     if observation["type"] == "click-inventory":
         try:
             selected = int(fields.get("item", ""))
@@ -4251,6 +4282,24 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
                 f"-distance:{settled_distance}")
         completed = bool(inventory_changes or xp_changes or message
                          or ui_changes or failure)
+    if observation["type"] == "interact-object" and before.get("object_command") == "chop":
+        # The swing and even the success line precede the full result. Waiting
+        # for both deltas prevents the next chop from consuming late XP as its
+        # own completion or dispatching against the just-felled tree.
+        gained_item = any(
+            (current_inventory.get(key) or {}).get("count", 0)
+            > (old_inventory.get(key) or {}).get("count", 0)
+            for key in current_inventory)
+        gained_woodcut_xp = any(
+            str(skill.get("name", "")).casefold() in ("woodcut", "woodcutting")
+            and skill.get("xp", 0) > (old_skills.get(key) or {}).get("xp", skill.get("xp", 0))
+            for key, skill in current_skills.items())
+        failed_chop = any(
+            any(needle in str(entry.get("text", "")).casefold()
+                for needle in ("fail to hit the tree", "too tired to cut the tree"))
+            for entry in new_messages)
+        failure = bool(failure or failed_chop)
+        completed = bool(failure or (gained_item and gained_woodcut_xp))
     if observation["type"] == "cast-npc":
         rune_ids = {str(item) for item in before.get("spell_runes") or []}
         magic_ids = {skill_id for skill_id, skill in current_skills.items()
@@ -6198,11 +6247,17 @@ def rules_own_direct_action(cfg: dict, requested: str, selectors: dict,
                 or not rule_scope_applies(rule, objective, activity):
             continue
         action = rule.get("action") or {}
-        if not direct_action_type_matches(requested, action.get("type")):
-            continue
-        if not all(direct_action_parameter_matches(action, key, value)
-                   for key, value in selectors.items()):
-            continue
+        pair_operand_click = requested == "click-inventory" \
+            and action.get("type") == "use-item-item" \
+            and isinstance(selectors.get("item"), int) \
+            and selectors["item"] in (action.get("item"), action.get("target")) \
+            and set(selectors) <= {"item", "button"}
+        if not pair_operand_click:
+            if not direct_action_type_matches(requested, action.get("type")):
+                continue
+            if not all(direct_action_parameter_matches(action, key, value)
+                       for key, value in selectors.items()):
+                continue
         proof = direct_scope_release_proof(rule, requested, selectors, snap)
         if proof is not None:
             released.append({"rule": str(rule.get("name")), "proof": proof})
@@ -7387,7 +7442,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             "drop-inventory", "use-item-ground", "use-item-item",
             "use-item-object", "choose-dialogue"):
         fields = [f"{key}={action[key]}" for key in (
-            "item", "kind", "sidx", "npc", "x", "z", "dir", "obj",
+            "item", "kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd",
             "within", "button", "batch", "ground", "amount",
             "target", "text") if key in action]
         observation = make_action_observation(
