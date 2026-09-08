@@ -3199,14 +3199,18 @@ $WANTS_TITLES"
             SHELVES="YOUR WANTS — the shelf at $WANTS_FILE is empty; nothing is recorded yet."
         fi
         # The last-written line, specs/wake-queue.md rule 40g: on the own-time
-        # wake ONLY, one line of sense-data immediately above the shelf —
-        # which documents the recent free hours actually landed in. A wake
-        # carrying a reason never gets it, and a broken or empty drawer costs
-        # the line, never the prompt.
+        # wake ONLY, one line of sense-data above the shelf — which documents
+        # the recent free hours actually landed in — and directly beneath it
+        # the conscious-return question, verbatim. The question reads the
+        # line's evidence and never stands without it: repetition is evidence
+        # inviting a conscious choice, never a command to choose another want.
+        # A wake carrying a reason gets neither, and a broken or empty drawer
+        # costs both, never the prompt.
         if [ "$PROMPT_PROFILE" = wake ] && [ "${WAKE_OWN_TIME:-0}" = "1" ]; then
             local LAST_WRITTEN=""
             LAST_WRITTEN="$(wants_last_written 2>/dev/null)" || LAST_WRITTEN=""
-            [ -n "$LAST_WRITTEN" ] && SHELVES="$LAST_WRITTEN${SHELVES:+
+            [ -n "$LAST_WRITTEN" ] && SHELVES="$LAST_WRITTEN
+Am I returning because I want the next thing, or because this room was already open?${SHELVES:+
 $SHELVES}"
         fi
         # The engineering drawer, as a POINTER (prompt-assembly rule 21a,
