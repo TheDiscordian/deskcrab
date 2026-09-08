@@ -399,6 +399,11 @@ cannot be changed.
     environment chain, never to a routed offer. Self-play jobs never read any of this;
     their model is chess-selfplay.md's business (rules 2 and 15).
 
+    Only a successful CLI completion may supply a move. Output from a failed attempt is
+    never scanned for UCI or SAN, even when its error metadata contains a legal-looking
+    token. Structured failure messages are extracted before display truncation, so account,
+    allowance, and capacity classifiers receive the actual cause rather than a JSON prefix.
+
     The alarms, when the classifier is consulted: the side to move in check; a check available to either side that also wins
     material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
     prise by a simple attackers-versus-defenders count; a capture worth a rook or more available

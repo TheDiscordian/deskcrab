@@ -139,3 +139,42 @@ contains "$PYOUT" "cooling-attempts: 0" \
 contains "$PYOUT" "cooling-alerted: True" \
     && ok "the refusal is named out loud" \
     || fail "cooling alert: $PYOUT"
+
+ERROR_OUT="$("$PY" -B - <<PYEOF
+import chess, json, os, sys
+sys.path.insert(0, "$REPO/lib")
+import chess_mover
+posted = []
+m = chess_mover.Mover(lambda job, move: posted.append(move.uci()) or True,
+                      log=lambda *a: None, metric=lambda *a: None,
+                      alert=lambda *a: None)
+job = dict(gid="failed-result-fixture", ply=0, key="fixture",
+           fen=chess.STARTING_FEN, model="fable", effort="low")
+m._prompt = lambda *a: "fixture"
+m._attempts = lambda *a, **kw: iter([("fixture", [], {})])
+real_call = m._call
+for label, output in (("move", "e2e4"),
+                      ("metadata", json.dumps({"is_error": True,
+                         "session_id": "deadbeef-e2e4-4444-aaaa-000000000000"}))):
+    posted.clear()
+    m._call = lambda *a, **kw: (output, "exit-1: request failed")
+    outcome, why = m._answer(job)
+    print(label + "-failure-unplayed:", outcome == "failed" and not posted)
+posted.clear()
+m._call = lambda *a, **kw: ("e2e4", None)
+outcome, why = m._answer(job)
+print("clean-result-posted:", outcome == "posted" and posted == ["e2e4"])
+for label, message, classify in (
+        ("limit", "You have hit your usage limit.", chess_mover.subscription_limit_failure),
+        ("capacity", "Model is currently overloaded.", chess_mover.server_capacity_failure),
+        ("auth", "Please run /login.", chess_mover.account_auth_failure)):
+    payload = dict(is_error=True, metadata="x" * 500, result=message)
+    script = "import sys; print(" + repr(json.dumps(payload)) + "); sys.exit(1)"
+    out, why = real_call([sys.executable, "-c", script], dict(os.environ), "fixture")
+    print(label + "-cause-preserved:", classify(why))
+PYEOF
+)"
+for result in move-failure-unplayed metadata-failure-unplayed clean-result-posted \
+              limit-cause-preserved capacity-cause-preserved auth-cause-preserved; do
+    contains "$ERROR_OUT" "$result: True" && ok "$result" || fail "$result" "$ERROR_OUT"
+done
