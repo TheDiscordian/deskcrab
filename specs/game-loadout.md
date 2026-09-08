@@ -17,6 +17,9 @@
    inventory entry, including worn items and one slot per stack. Working capacity is 30 minus
    occupied tool/support/food/undeclared slots: materials and products consume that capacity
    productively. A full batch is not itself a preparation fault.
+   Plan for the complete work cycle, including expected sale proceeds and byproducts. An item
+   absent from the declaration requires a purpose assessment: retain and classify it if useful,
+   otherwise bank it. An unclassified item is not automatically junk or a reason for a bank trip.
 4. Saving a declaration does not certify the inventory. Each runtime check compares fresh
    inventory against it: missing required tools, excess quantities, undeclared items, and
    insufficient working capacity return `no-rule-matched` with `inventory_prepare` and the
