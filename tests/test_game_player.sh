@@ -6,9 +6,10 @@
 # debounce, conflict logging, hold override), the fallback contract (exit 4 is
 # the only licence for model reasoning), persistence across player restarts,
 # and the real playing entrypoint (orsc-headless.sh play) invoking all of it.
-# Run: bash tests/test_game_player.sh
+# Run: bash tests/test_game_player.sh [path/to/OpenRSC/source-tree]
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
+GAME_TREE_ARGUMENT="${1:-}"
 
 REPO="$SANDBOX_REPO"
 GP="$REPO/lib/game_player.py"
@@ -819,7 +820,7 @@ refute "still no action" test -f "$DESKCRAB_GAME_STATE_DIR/action.json"
 
 echo
 echo "the immediate activity scopes learned reflexes independently of objectives (spec rules 4, 7):"
-check "the current activity can be selected durably" python3 "$GP" activity trading
+check "the current activity can be selected durably" python3 "$GP" activity trading --new 'Shop interaction mode'
 check_eq "the selected activity can be read by a fresh process" \
     "$(python3 "$GP" activity)" "trading"
 python3 "$GP" learn only-while-banking --priority 99 --cooldown-ms 0 \
@@ -883,7 +884,7 @@ check_eq "a cleared activity reads as none" "$(python3 "$GP" activity)" "(none)"
 
 echo
 echo "repeated malfunction becomes a self-review event, not a silent loop (spec rule 16):"
-python3 "$GP" activity loop-review >/dev/null
+python3 "$GP" activity loop-review --new 'Isolated repeated-failure fixture' >/dev/null
 python3 "$GP" learn loop-review-probe --priority 97 --cooldown-ms 0 \
     --trigger near_tile='{"x":120,"z":648,"radius":2}' \
     --action walk --param x=125 --param z=648 >/dev/null
@@ -952,11 +953,11 @@ printf 'PREP-BEFORE-SWITCH-MEMORY\n'
 SH
 chmod +x "$ACTMEM/memory.py"
 snap 1034 '[]' '{"skills":[{"id":17,"name":"Thieving","level":0,"xp":0}]}'
-OUT="$(BETTY_OPENRSC_MEMORY="$ACTMEM/memory.py" python3 "$GP" activity farmer-thieving)"
+OUT="$(BETTY_OPENRSC_MEMORY="$ACTMEM/memory.py" python3 "$GP" activity farmer-thieving --new 'Independent activity measurement fixture')"
 contains "$OUT" "XP baseline pending" \
     && ok "selecting during the zero-filled login frame does not invent a baseline" \
     || fail "selecting during the zero-filled login frame does not invent a baseline" "$OUT"
-contains "$OUT" "man-thieving-template (from man-thieving)" \
+contains "$OUT" "man-thieving-template (from man-thieving; enabled; objective=any)" \
     && ok "a new activity immediately considers a reusable reflex from a related skill" \
     || fail "a new activity immediately considers a reusable reflex from a related skill" "$OUT"
 contains "$OUT" "PREP-BEFORE-SWITCH-MEMORY" \
@@ -2678,7 +2679,8 @@ echo "the real playing entrypoint invokes this layer (spec rule 12):"
 # The game tree is recovered the same way the bridge
 # suite borrows it: the sandbox moved HOME, the live-data path remembers.
 REAL_HOME="$(cd "$SANDBOX_LIVE_DATA/../../.." 2>/dev/null && pwd)"
-GAME_TREE="${DESKCRAB_OPENRSC_TREE:-$REAL_HOME/Games/OpenRSC}"
+# A source-tree argument survives the sandbox's clean environment; state stays pinned.
+GAME_TREE="${GAME_TREE_ARGUMENT:-${DESKCRAB_OPENRSC_TREE:-$REAL_HOME/Games/OpenRSC}}"
 HEADLESS="$GAME_TREE/headless/orsc-headless.sh"
 if [ ! -f "$HEADLESS" ]; then
     sandbox_skip "no local OpenRSC headless harness at $HEADLESS"
@@ -3989,6 +3991,11 @@ contains "$OUT" "## People nearby in OpenRSC" \
 contains "$OUT" "## Writing what you learn about playing" \
     && ok "the player is explicitly taught that play memories are writable" \
     || fail "the player is explicitly taught that play memories are writable" "$OUT"
+contains "$OUT" 'play activity --consider "the work I intend to do"' \
+    && contains "$OUT" 'Global survival and loot support do not establish a complete' \
+    && contains "$OUT" 'A desired skill reward does not select the activity' \
+    && ok "the fresh player recalls corrections and inspects actual work before choosing an activity" \
+    || fail "fresh play must choose activities using memories and applicable routines" "$OUT"
 contains "$OUT" "## Friends arriving and leaving" \
     && contains "$OUT" "friend_updates" \
     && ok "the composed player treats friend presence as ambient awareness" \
@@ -4216,6 +4223,10 @@ contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "system-message with action=m
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "wait-until with exactly one named state" \
     && ok "the resumed thread receives the state-based wait replacement" \
     || fail "the resumed thread receives the state-based wait replacement"
+contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" 'play activity --consider "the work I intend to do"' \
+    && contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" 'disabled rules and rules tied to another objective do not run' \
+    && ok "resumed play recalls corrections before activity choice and checks actual rule scopes" \
+    || fail "resumed play needs the same activity decision process"
 contains "$(cat "$PH/run-prompt.txt" 2>/dev/null)" "fatigue_zero, or action_done" \
     && ok "the resumed thread receives causal action completion awareness" \
     || fail "the resumed thread receives causal action completion awareness"
@@ -4505,7 +4516,7 @@ fi
 
 echo
 echo "incoming messages settle into bursts and choose the live reply channel (rule 7b):"
-python3 "$GP" activity chat-window-activity >/dev/null
+python3 "$GP" activity chat-window-activity --new 'Isolated conversation scoping fixture' >/dev/null
 python3 "$GP" learn settle-activity-probe --priority 500000 --cooldown-ms 0 \
     --trigger activity_is=chat-window-activity --trigger npc_visible=777 \
     --action interact-npc --param npc=777 >/dev/null

@@ -256,6 +256,19 @@ Assess all three points with evidence:
    Use `play loadout` and the contract at specs/game-loadout.md to record a context-specific
    inventory declaration, then verify the actual inventory meets it. Fix pickup or banking
    reflexes that keep recreating the waste. A memory or a written declaration alone is not a fix.
+   Before recommending or changing a method, activity, or loadout, use
+   `play activity --consider "the intended work and decision"` to retrieve relevant memories and
+   user corrections while inspecting the existing catalog. Apply those lessons to the decision.
+   For a repeated correction, distinguish missing storage, failed retrieval at the decision,
+   and retrieved advice ignored or applied outside its context. Inspect the actual recalled
+   block and subsequent actions; fix the failing step, then verify a later decision. Do not
+   declare a memory failure solely from a bad result, or write another duplicate as the fix.
+   The objective says why, the method says how, and the activity names the current operation.
+   A desired skill reward alone is not an activity: obtaining bones by fighting needs an
+   existing combat mode, while burying stored bones uses a burial mode. Select existing modes
+   before creating anything. Inspect activity-specific applicable rules separately from global
+   support, disabled rules, and rules excluded by another objective. Check actual equipped flags;
+   a held weapon is not necessarily wielded, and a ready inventory is not proof of reflex coverage.
 3. Are reflexes working correctly? Inspect intended versus observed outcomes, retries,
    no-progress gaps, deaths, inventory/loot, activity mismatch, combat style, ceilings,
    interface handling, travel, food, and fatigue. Before calling a timeout a server defect,
