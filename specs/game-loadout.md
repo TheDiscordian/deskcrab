@@ -28,6 +28,9 @@
    in-flight action. Banking, travel, recovery, and resupply modes remain usable to satisfy the
    declaration. The independent survival engine is unchanged. Direct semantic preparation
    actions remain available. A preparation detour preserves the competitive skill target.
+   The ordinary deliberation verdict carries the current inventory assessment, including when
+   the resident runner performed the check. The runner reloads when either inventory or decision
+   module changes, so improvements by the reviewer take effect in an existing sitting.
 6. The model must justify food and other non-working slots against current risks and observed
    consumption, deposit irrelevant/excess items, acquire required tools, and verify the resulting
    inventory before resuming. A vague inherited safety reserve or an old plan's item list is

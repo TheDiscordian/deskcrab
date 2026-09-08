@@ -160,6 +160,8 @@ class Preparation(unittest.TestCase):
             verdict,code=gp.step_once(self.cfg,'skill target','fletching',100)
         self.assertEqual((verdict,code),('no-rule-matched',gp.EXIT_NO_RULE))
         self.assertIn('inventory_prepare',output.getvalue())
+        # The foreground `play` path reads reflection fields from the resident heartbeat.
+        self.assertIn('needs-preparation', gp.reflection_fields(self.snap)['inventory_prepare'])
         state=gp.load_player_state()
         state['pending_messages']=[{'id':5,'channel':'local','sender':'Fixture friend',
             'text':'hello','captured_ts':gp.now_ms()-60000}]

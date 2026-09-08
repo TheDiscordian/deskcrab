@@ -7860,6 +7860,13 @@ def cmd_quests(args):
         die(f"no quest name contains {fragment!r}")
 
 
+def reflection_fields(snap: dict = None) -> dict:
+    """Carry the current inventory assessment in the ordinary play verdict."""
+    if isinstance(snap, dict) and game_loadout.enabled():
+        return {"inventory_prepare": json.dumps(game_loadout.assessment(snap))}
+    return {}
+
+
 def cmd_objective(args):
     old_objective = read_objective()
     old_plan = read_plan()
@@ -8842,6 +8849,11 @@ def cmd_run(args):
         table_mtime = rules_path().stat().st_mtime
     except OSError:
         table_mtime = 0
+    try:
+        source_mtime = sum(Path(path).stat().st_mtime for path in (
+            __file__, game_reflex.__file__, game_loadout.__file__, game_decisions.__file__))
+    except OSError:
+        source_mtime = 0
     last_gap_signature = None
     gap_candidate_signature = None
     gap_candidate_since = 0
@@ -8866,6 +8878,21 @@ def cmd_run(args):
                 except (ValueError, json.JSONDecodeError) as e:
                     flush_events([{"ts": now_ms(), "kind": "table-invalid",
                                    "error": str(e)[:300]}])
+
+            # Spec rule 15: a runner outliving a deploy enforces a table
+            # nobody can see — when the deployed source changes, re-exec in
+            # place so the same supervised process continues on current code.
+            # The shared evaluator ships in game_reflex, so its file counts
+            # as this runner's source too.
+            try:
+                smt = sum(Path(path).stat().st_mtime for path in (
+                    __file__, game_reflex.__file__, game_loadout.__file__, game_decisions.__file__))
+            except OSError:
+                smt = source_mtime
+            if smt != source_mtime:
+                flush_events([{"ts": now_ms(), "kind": "runner-source-changed",
+                               "note": "re-exec onto current code"}])
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
             verdict, _code = step_once(cfg, read_objective(), read_activity(), wait_ms)
 
@@ -9259,7 +9286,8 @@ def main():
                            ground_items=",".join(str(i)
                                                  for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None,
-                           friend_updates=friend_updates_field)
+                           friend_updates=friend_updates_field,
+                           **(reflection_fields(live_snapshot) if verdict == "no-rule-matched" else {}))
                 acknowledge_friend_status(friend_updates)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
                           "route-needs-detour": EXIT_NO_RULE,
