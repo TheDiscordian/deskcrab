@@ -8805,7 +8805,8 @@ def reflection_fields(snap: dict = None) -> dict:
         if waiting:
             fields["bag_full_loot_waiting"] = (
                 f"{waiting}-piles (no loot rule can fire at 30/30 slots — "
-                "free a slot: bury a carried bone, craft, or bank)")
+                "finish the batch and follow its chosen disposal decision; "
+                "incidental loot does not change the plan or require a bank trip)")
     if isinstance(snap, dict):
         activity = read_activity()
         act = (activity or "").lower()
