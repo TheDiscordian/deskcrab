@@ -138,6 +138,42 @@ def require_playing(paths, session_started=None):
         raise PlayEnded('Gameplay ended or live gameplay evidence is unavailable; review cancelled.')
 
 
+def reviewed_sitting(paths, session_started):
+    """An admitted pass survives reconnects and scheduler restarts in durable status."""
+    status = load(paths.reviews / 'latest.json')
+    if not isinstance(status, dict):
+        return False
+    if 'session_started' in status:
+        return status['session_started'] == session_started
+    # Existing reports predate the explicit sitting ID. Their admission timestamp
+    # still proves whether a pass already ran in the current sitting.
+    try:
+        admitted = datetime.fromisoformat(status['started_at']).timestamp() * 1000
+        return (session_started <= admitted <= time.time() * 1000
+                and status.get('state') in ('waiting-for-author', 'running', 'completed', 'failed', 'cancelled'))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def request_start_review(paths):
+    session = load(paths.game / 'session.json')
+    if not isinstance(session, dict) or not session.get('started'):
+        return
+    session_started = session['started']
+    if reviewed_sitting(paths, session_started):
+        return
+    state = systemctl('show', '--property=ActiveState', '--value', REVIEW_UNIT)
+    if state.returncode != 0 or (state.stdout or '').strip() not in ('inactive', 'failed'):
+        return
+    try:
+        require_playing(paths, session_started)
+    except PlayEnded:
+        return
+    # The oneshot remains activating while running. Do not block the watcher on
+    # the pass: it must still disarm scheduling and cancel work when play ends.
+    systemctl('start', '--no-block', REVIEW_UNIT, check=True)
+
+
 def watch_step(paths, armed):
     """One mechanical lifecycle check; never invokes a model outside eligible play."""
     eligible = playing(paths)
@@ -145,6 +181,8 @@ def watch_step(paths, armed):
         systemctl('start', TIMER_UNIT, check=True)
     elif not eligible and armed is not False:
         systemctl('stop', TIMER_UNIT, REVIEW_UNIT, check=True)
+    if eligible:
+        request_start_review(paths)
     return eligible
 
 
@@ -171,7 +209,10 @@ def instructions(paths, persona):
 {persona}
 
 You are reviewing and improving YOUR OWN RuneScape player, in first person. This is a
-silent engineering and gameplay self-review authorised every 45 minutes ONLY during active play.
+silent engineering and gameplay self-review authorised at the start of each sitting and every
+45 minutes ONLY during active play. For a startup pass, review the previous sitting's remaining
+work and gameplay since the last review, and check this sitting's objective, method, and inventory
+preparation. Use saved evidence across sittings; offline elapsed time is not gameplay time.
 Do the necessary improvements yourself; do not end with suggestions for the user to poke you.
 The fast Sol player and its Sol reflex author keep their own model settings.
 
@@ -351,7 +392,9 @@ def run_locked(paths):
     started = time.monotonic()
     folder = paths.reviews / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ'))
     folder.mkdir(mode=0o700)
+    first_review = not reviewed_sitting(paths, session_started)
     status = dict(state='waiting-for-author', started_at=utc(), model=MODEL, effort=EFFORT,
+                  session_started=session_started, first_review_of_sitting=first_review,
                   directory=str(folder), pid=os.getpid(), deadline_seconds=budget)
 
     def publish():
@@ -398,6 +441,7 @@ def run_locked(paths):
                                    if Path(entry['path']).name in (
                                        'objective', 'objective-progress.json', 'plan', 'activity-stats.json')]
         prompt = {'review_started_at': status['started_at'], 'deadline_seconds': budget,
+                  'session_started': session_started, 'first_review_of_sitting': first_review,
                   'previous_success': previous, 'previous_report': previous_report,
                   'previous_evidence': prior_evidence,
                   'current_evidence': before}

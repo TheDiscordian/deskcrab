@@ -13,6 +13,14 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    the sitting is open and before its deadline, and the client has a fresh logged-in snapshot
    (at most ten seconds old). It stops the timer and any review when those conditions cease.
    The watcher stops with the player control unit; it has no independent startup registration.
+   Each new sitting also gets an immediate review once those same gameplay conditions hold.
+   The sitting's durable `started` value identifies it: reconnects, player or watcher restarts,
+   and deadline extensions do not produce another startup review. Any review already admitted
+   for that sitting satisfies the startup check. The watcher waits for an older review to finish
+   cancelling before requesting the new one, and never overlaps an in-flight or queued pass.
+   An unadmitted request does not consume the startup review; offline or failed launch attempts
+   can be retried once eligible. An admitted attempt, including a failed or cancelled one,
+   counts for this sitting; the ordinary 45-minute schedule supplies subsequent attempts.
    UTC calendar expressions cover all 32 daily slots at a uniform interval. The timer is never
    enabled globally and has no persistent catch-up. Its ordering follows the gameplay services,
    with explicit shutdown cleanup instead of the default ordering before `timers.target`. Starting a review or timer cannot start play.
@@ -29,7 +37,9 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    user config and project instructions, and never falls back to a different model or effort.
    The fast player's and reflex author's model settings are independent and unchanged.
 3. Every invocation reads the same persona selection as game-player rule 18 and starts a
-   fresh review conversation. A missing persona fails visibly instead of silently reviewing
+   fresh review conversation. Startup reviews examine the prior sitting and work since the
+   previous review, plus the current objective, method, and inventory preparation. Offline
+   elapsed time is not gameplay time or evidence of poor progress. A missing persona fails visibly instead of silently reviewing
    as somebody else. The prior successful report and before/after evidence carry continuity.
 4. The prompt requires three grounded assessments: progress against the current objective's
    authoritative measure; whether the method is probably the most efficient available for
@@ -68,7 +78,8 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    send chat/notifications, or produce audio. Reviews perform no offline work and cannot
    start a sitting. Interrupted work remains recorded for the next eligible pass.
 7. Each attempt saves its prompt, raw stream, stderr, before/after snapshots, result, and
-   status below `OPENRSC_REVIEW_DIR` (default the player's `reviews/` directory). `latest.json`
+   status, including the sitting's `session_started` and `first_review_of_sitting`,
+   below `OPENRSC_REVIEW_DIR` (default the player's `reviews/` directory). `latest.json`
    shows waiting, running, completed, cancelled, or failed; `last-success.json` advances only when the CLI
    succeeds, emits a completed turn without an error, and returns all three assessments,
    changes, verification, and next-review observations. Partial work and failures remain visible.
