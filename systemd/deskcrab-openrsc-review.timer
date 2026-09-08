@@ -1,0 +1,11 @@
+[Unit]
+Description=Review the OpenRSC player's progress and effectiveness every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+Unit=deskcrab-openrsc-review.service
+
+[Install]
+WantedBy=timers.target

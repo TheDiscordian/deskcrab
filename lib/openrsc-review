@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -eo pipefail
+review_lib="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$review_lib/common.sh"
+export CODEX_BIN CODEX_HOME CUSTOM_PROMPT PROJECT_DIR
+export BETTY_OPENRSC_HOME BETTY_OPENRSC_HEADLESS BETTY_OPENRSC_PERSONA BETTY_OPENRSC_PERSONA_SHEET
+export DESKCRAB_GAME_DIR DESKCRAB_GAME_STATE_DIR OPENRSC_REVIEW_DIR OPENRSC_REVIEW_TIMEOUT
+exec python3 -B "$review_lib/openrsc_review.py" "$@"
