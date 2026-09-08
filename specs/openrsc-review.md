@@ -26,6 +26,12 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    with the previous review. Check this server's mechanics and include travel, supplies, banking,
    failure, fatigue, and recovery costs when comparing methods. State uncertainty when samples
    are short, stale, offline, or incomparable; do not present theoretical XP as measured XP.
+   For leaderboard competition, optimise the method within the committed skill until its
+   concrete rank/rival milestone is verified complete. Level-ups and hourly reviews do not
+   release that commitment, even when another skill offers a cheaper total level. A change of
+   target before completion requires a user redirect or a documented blocker that prevents
+   progress; supplies, recovery, and prerequisites remain part of the same target. Sitting
+   expiry pauses the commitment. Previous reports cannot override this current policy.
 5. The reviewer may implement, test, and deploy improvements to rules, harness, player code,
    client integration, prompts, method, plan, and objective. It may replace a completed or
    unsuitable objective while preserving explicit user constraints and the larger intent.
