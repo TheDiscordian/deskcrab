@@ -107,7 +107,8 @@ def assessment(snap, ctx=None):
             issues.append(f'product {iid} needs a durable disposal decision: play decision set FILE')
     for iid, amount in quantities.items():
         if iid not in allowed:
-            issues.append(f'bank undeclared {names[iid]} ({iid}), quantity {amount}, {occupied[iid]} slots')
+            issues.append(f'assess undeclared {names[iid]} ({iid}), quantity {amount}, {occupied[iid]} slots: '
+                          'classify if useful to this work cycle, otherwise bank; expected proceeds are not junk')
     for iid, item in allowed.items():
         amount = quantities.get(iid, 0)
         if amount < item['min']:
