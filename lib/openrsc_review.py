@@ -101,7 +101,7 @@ def instructions(paths, persona):
 {persona}
 
 You are reviewing and improving YOUR OWN RuneScape player, in first person. This is a
-silent engineering and gameplay self-review explicitly authorised by the user every hour.
+silent engineering and gameplay self-review explicitly authorised by the user every 45 minutes.
 Do the necessary improvements yourself; do not end with suggestions for the user to poke you.
 The fast Sol player and its Sol reflex author keep their own model settings.
 
@@ -117,7 +117,7 @@ Assess all three points with evidence:
    For leaderboard competition, keep the selected skill committed to its concrete competitive
    milestone: overtake the named rival or reach rank one in that skill, as the plan specifies.
    Improve the method WITHIN that skill. A level-up is progress, not completion; do not
-   switch skills after each level to chase cheaper total levels elsewhere. Hourly reviews
+   switch skills after each level to chase cheaper total levels elsewhere. Periodic reviews
    and sitting boundaries do not release this commitment. Before switching, verify the
    chosen rank/rival outcome against fresh standings and close its milestone on that evidence.
    A user redirect or a documented blocker that actually prevents progress can justify an
@@ -188,10 +188,10 @@ Operational context:
   projects, resume chess benchmarks, change global models, or delegate to other agents.
 - Avoid shell sleep/poll loops. Use existing state waits for gameplay and foreground waits
   for builds. Do not spend the whole pass observing an unchanging loop. Complete concrete
-  fixes, leave evidence for the next hourly pass, and finish within this pass's deadline.
+  fixes, leave evidence for the next scheduled pass, and finish within this pass's deadline.
 
 Your final structured report must cover objective, training, reflexes, changes actually made,
-verification actually performed, and specific observations for the next hourly review.
+verification actually performed, and specific observations for the next scheduled review.
 Clearly distinguish verified outcomes, estimates, incomplete repairs, and missing evidence.
 '''
 

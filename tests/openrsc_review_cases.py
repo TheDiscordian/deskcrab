@@ -1,7 +1,9 @@
 """Run only through the shared sandbox in test_openrsc_review.sh."""
 import fcntl
+from datetime import datetime
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -206,8 +208,21 @@ sys.exit(1 if mode == 'nonzero' else 0)
 
     def test_timer_contract(self):
         units = review.HERE.parent/'systemd'
-        self.assertIn('OnCalendar=hourly', (units/'deskcrab-openrsc-review.timer').read_text())
-        self.assertIn('Persistent=true', (units/'deskcrab-openrsc-review.timer').read_text())
+        timer = (units/'deskcrab-openrsc-review.timer').read_text()
+        calendars = [line.split('=', 1)[1] for line in timer.splitlines() if line.startswith('OnCalendar=')]
+        self.assertEqual(len(calendars), 3)
+        stamps = []
+        for expression in calendars:
+            result = subprocess.run(['systemd-analyze', 'calendar', '--iterations=18',
+                '--base-time=2026-01-01 00:00:00 UTC', expression],
+                env=dict(os.environ, TZ='UTC'), capture_output=True, text=True, check=True)
+            stamps += [datetime.strptime(value, '%Y-%m-%d %H:%M:%S') for value in
+                       re.findall(r'(?:Next elapse|Iteration #\d+): \w+ ([0-9-]+ [0-9:]+) UTC', result.stdout)]
+        stamps = sorted(stamps)[:34]
+        self.assertEqual(len(stamps), 34)
+        self.assertEqual({(b-a).total_seconds() for a,b in zip(stamps, stamps[1:])}, {2700})
+        self.assertNotEqual(stamps[0].day, stamps[-1].day)
+        self.assertIn('Persistent=true', timer)
         service = (units/'deskcrab-openrsc-review.service').read_text()
         self.assertIn('Type=oneshot', service)
         self.assertIn('KillMode=control-group', service)
