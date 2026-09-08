@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -367,6 +368,9 @@ sys.exit(1 if mode == 'nonzero' else 0)
         self.assertNotEqual(stamps[0].day, stamps[-1].day)
         self.assertNotIn('Persistent=true', timer)
         self.assertNotIn('[Install]', timer)
+        self.assertIn('DefaultDependencies=no', timer)
+        self.assertIn('Conflicts=shutdown.target', timer)
+        self.assertIn('Before=shutdown.target', timer)
         watcher = (units/'deskcrab-openrsc-review-watch.service').read_text()
         control = (units/'orsc-player-control.service.d/openrsc-review.conf').read_text()
         self.assertIn('Wants=deskcrab-openrsc-review-watch.service', control)
@@ -380,6 +384,24 @@ sys.exit(1 if mode == 'nonzero' else 0)
         self.assertIn('Type=oneshot', service)
         self.assertIn('KillMode=control-group', service)
         self.assertIn('ExecCondition=%h/.local/lib/deskcrab/openrsc-review eligible', service)
+
+    def test_lifecycle_units_have_no_ordering_cycle(self):
+        units = review.HERE.parent/'systemd'
+        target = self.root/'units'
+        target.mkdir()
+        names = ('deskcrab-openrsc-review.service', 'deskcrab-openrsc-review.timer',
+                 'deskcrab-openrsc-review-watch.service')
+        for name in names:
+            (target/name).write_text((units/name).read_text().replace(
+                '%h/.local/lib/deskcrab/openrsc-review', '/usr/bin/true'))
+        shutil.copytree(units/'orsc-player-control.service.d', target/'orsc-player-control.service.d')
+        (target/'orsc-player-control.service').write_text(
+            '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/bin/true\n')
+        result = subprocess.run(['systemd-analyze', '--user', 'verify',
+                                 *[str(target/name) for name in names]],
+                                env=dict(os.environ, SYSTEMD_UNIT_PATH=str(target)+':'),
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':

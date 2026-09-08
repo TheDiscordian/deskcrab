@@ -14,7 +14,8 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    (at most ten seconds old). It stops the timer and any review when those conditions cease.
    The watcher stops with the player control unit; it has no independent startup registration.
    UTC calendar expressions cover all 32 daily slots at a uniform interval. The timer is never
-   enabled globally and has no persistent catch-up. Starting a review or timer cannot start play.
+   enabled globally and has no persistent catch-up. Its ordering follows the gameplay services,
+   with explicit shutdown cleanup instead of the default ordering before `timers.target`. Starting a review or timer cannot start play.
    Both scheduled and direct review launches check eligibility before creating artifacts or
    touching the author, recheck after waiting for the author and immediately before the model,
    and check once per second to cancel a running model when play ends.

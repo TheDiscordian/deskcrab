@@ -1,4 +1,7 @@
 [Unit]
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
 Description=Review the OpenRSC player's progress and effectiveness every 45 minutes during gameplay
 Requisite=orsc-player-control.service deskcrab-openrsc-review-watch.service
 After=orsc-player-control.service deskcrab-openrsc-review-watch.service
