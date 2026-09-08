@@ -262,50 +262,37 @@ the finished games feed the pattern store exactly as every self-play game does.
     `chess_effort.CONTROL_MODELS`; broader fallbacks land in `SPEED_PAIRS` and
     `SPEED_MODELS`. The run's report in `docs/` records the full matrix, exclusions,
     uncertainty statements, and raw ledger locations.
-20a. **Longest-clock-first elimination.** Controls are judged longest clock first. A pair that fails a longer
-    control for CLOCK reasons — a flag, a retry storm or account-limit death that burned the
-    clock away, or otherwise proving too slow to finish — is eliminated from every shorter
-    control without playing those games: less clock can only fail harder. The same monotone
-    arithmetic runs along the EFFORT axis within one model: a higher effort of the same model
-    thinks strictly longer per call, so when a lower effort of a model fails a control for
-    clock reasons, every higher effort of that model is eliminated there and below without
-    play — recorded as an inference, named as such. A non-clock failure (a stall with time
-    still in hand — every attempt failing while the clock stands) still poisons its own cell
-    under rule 20's reliability discipline but eliminates nothing downward. A game is also unnecessary when no outcome of it can change any routed
-    class's selection: a pair already measured-unreliable at the class's other control, a
-    mirror game whose points are arithmetically pinned, a cell already carrying a
-    disqualifying event its second colour cannot cure. Every such game is PRUNED — a
-    deliberate operator act like the append, never the driver's own idea: the spec keeps its
-    place in the plan and gains `pruned: <reason>`; the driver skips a pruned spec, never
-    creating, resuming, or recording it (a mid-flight game file a prune strands stays on
-    disk as evidence); the analysis subtracts pruned games from the schedule, so a cell
-    whose remaining games are all pruned is settled by elimination, never "incomplete", and
-    every prune is printed with its reason so nothing vanishes silently. Pruning a game
-    already on the run's ledger is refused — recorded play is evidence, and elimination
-    never deletes evidence. Pruning a replacement spec (rule 17) cancels the artifact slot
-    it owed, stated reason and all. Top-ups are owed only where a selection is genuinely
-    ambiguous among reliable finishers — a reliable cell within the close margin of its
-    control's reliable winner, decided at completion — and only ONE round each: a cell
-    already carrying its top-up games is owed nothing further (the appender refuses a
-    re-top, and a verdict that waited on a margin that never widens would wait forever);
-    the former one-failure-event-in-two-games top-up is retired, because an event-carrying
-    cell is eliminated already and more games cannot change any selection. Where a control or speed class has NO reliable
-    finisher, the route is still chosen from the measured evidence rather than by feel:
-    among complete cells — fewest flags per game, then fewest event games per game, then
-    the higher score rate, then the lower latency tail, then the cheaper pair — with the
-    failure record stated beside the applied verdict wherever it lands. Such a verdict claims
-    exactly what was measured and no more: while any cell of a control stays unmeasured under
-    the corrected regime, the report says no MEASURED configuration finishes it, names the
-    unmeasured cells, and never claims that no configuration can — a benchmark that did not
-    play a cell cannot speak for it. The same honesty binds every shipped restatement of a
-    verdict, not just the report: no routing comment or UI message may turn a measured result
-    into a claim about unmeasured configurations. Either way, a
-    pair is ELIGIBLE for a speed-class verdict only with a colour-rotated pair of valid
-    games at each of the class's controls — rule 16's even-colours discipline applied to
-    the evidence, not just the schedule; a pair short of that floor is named as
-    uncertainty, never routed.
-20b. **Regime invalidation** (adopted 2026-08-31, the user's ruling that retired the fixed
-    per-call ceiling and the manufactured fallback move). A benchmark game recorded under the
+20a. **Longest-clock-first elimination.** Controls are judged in this order: `15+10`, `10+0`,
+    `5+0`, `3+2`, `2+1`, then `1+0`. A valid clock loss eliminates that configuration at its
+    control and every shorter control. Within the same model, it also eliminates every
+    pair whose quiet and sharp efforts are each at least as high. This is the study's
+    stipulated pruning rule: do not try higher effort after a lower effort times out.
+    Reports label these descendants as inferences from the named clock loss; they do not
+    claim that every higher-effort call must take longer or that those games were played.
+    A non-clock reliability failure poisons only its own cell. Account and server
+    interruptions preserve resumable games under rule 20c rather than creating a loss.
+
+    An unrecorded game may be pruned when valid evidence has eliminated its configuration
+    or when it is redundant with the completed comparisons. Pruning is a deliberate
+    operator act: its specification stays in the plan with `pruned: <reason>`, and the
+    native driver neither creates, resumes, nor records it. Any existing game file stays
+    intact. Pruning a game already on the ledger is refused. A prune supplies no evidence
+    and cannot discharge a missing gate or comparison; the completion analysis still
+    requires replacement play unless valid evidence has independently eliminated the cell.
+
+    Every surviving direct comparison follows rule 20c's two-colour requirement. A tied
+    comparison receives exactly one additional colour-swapped pair. Both extra games remain
+    owed once that pair begins, even if its first game breaks the tie. A remaining tie
+    resolves through the specified latency and cost criteria; it never starts another pair.
+
+    A control with no qualifying configuration reports no clock-safe winner. A disabled
+    route or an explicitly selected live trial does not become evidence of qualification.
+    The report, routing comments, and UI state only what the sample supports: measured
+    failures and pruning inferences are distinct, unplayed cells are named, and no claim
+    is made that an unmeasured configuration cannot finish. Each exact control keeps its
+    own verdict. A shared speed default may claim qualification for both controls only
+    when the configuration has the required valid evidence at both.
+20b. **Regime invalidation.** A benchmark game recorded under the
     retired regime is INVALID EVIDENCE when either side's record carries a fallback move, or
     when its outcome was created by the retired ceiling or by a driver stall of undetermined
     cause — invalid for strength AND for reliability, because a game contaminated by a move
@@ -319,8 +306,10 @@ the finished games feed the pattern store exactly as every self-play game does.
 
 20c. **Authoritative completion and scheduling.** `lib/chess_benchmark.py`, exposed by
     `tools/chess-benchmark`, derives the remaining work from the plan, recorded games, and
-    exclusion sidecars. Its model roster is explicit in `selection.models`; it excludes
-    Spark and uses the baseline `low/low` plus rule 20's adaptive ladder through `xhigh/xhigh`.
+    exclusion sidecars. Its model roster is explicit in `selection.models`; the default
+    roster is Haiku, Sonnet, Opus, Fable, Sol, `gpt-5.6-terra`, `gpt-5.6-luna`, and
+    `gpt-6-astra`. It excludes Spark and uses the baseline `low/low` plus rule 20's adaptive
+    ladder through `xhigh/xhigh`.
     Configurations with the same model, quiet effort, and sharp effort are identical even
     when their plan labels differ. Neither a saved status nor a pruned, unplayed slot counts
     as evidence. Duplicate ledger identities or a ledger/plan configuration mismatch fail
