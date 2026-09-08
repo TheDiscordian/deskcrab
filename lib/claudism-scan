@@ -483,7 +483,9 @@ def update_counts(day, phrases, hits):
 def update_functions(day, phrases, hits, words):
     """functions.tsv: one line per night and function — uses, mentions, and
     the night's spoken words, so any night's rate can be recomputed. Replaces
-    itself on a re-run like counts.tsv (rule 43)."""
+    itself on a re-run like counts.tsv (rule 43). A function counts once per
+    caught sentence and class: sibling patterns naming the same rhetorical
+    move do not turn one reach into several uses (rule 46)."""
     path = os.path.join(OUT_DIR, "functions.tsv")
     kept = []
     try:
@@ -493,7 +495,12 @@ def update_functions(day, phrases, hits, words):
     except OSError:
         pass
     tonight = {p["function"]: [0, 0] for p in phrases}
+    seen = set()
     for h in hits:
+        unit = (h["function"], h["use"], h["sentence"])
+        if unit in seen:
+            continue
+        seen.add(unit)
         t = tonight.setdefault(h["function"], [0, 0])
         t[0 if h["use"] == "use" else 1] += 1
     for fn in sorted(tonight):

@@ -199,6 +199,14 @@ check "a live rewrite whose turn still fires the same move is named (rule 49)" \
 refute "the corroboration names the reply's own sentence, not the held one" \
     contains "$(grep 'still fires vouching' "$R")" "Honestly, I forgot"
 
+# Sibling wording in one sentence is one function-use, not two rhetorical moves.
+cat > "$J/2026-01-21.jsonl" <<'DAY'
+{"epoch": 1705849200, "time": "2026-01-21T10:00:00-0500", "kind": "wake", "pid": 7101, "user": "", "reply": "Honestly, the result is genuinely sound."}
+DAY
+scan 2026-01-21 >/dev/null 2>&1
+check_eq "two sibling patterns in one sentence count as one function-use" \
+    "$(awk -F'\t' '$1 == "2026-01-21" && $2 == "vouching" { print $3 }' "$OUT/functions.tsv")" "1"
+
 # Rule 50: the bare span comes away only when it is a free-standing adverb.
 cat > "$J/2026-01-21.jsonl" <<'DAY'
 {"epoch": 1705849200, "time": "2026-01-21T10:00:00-0500", "kind": "wake", "pid": 7101, "user": "", "reply": "Intermittent is the honest kind of hard. I put the kettle on honestly late."}

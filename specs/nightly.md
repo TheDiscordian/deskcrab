@@ -501,7 +501,9 @@ which fails silently is worse than one that does not exist.
     report each function's uses per thousand spoken words, tonight beside its recent nights,
     because the habit under watch is the move and not the wording: a banned member's share
     moving to a sibling word is the same habit in a new coat, not a cure. An untagged entry
-    stands as its own function.
+    stands as its own function. The function table counts a caught sentence once per function
+    and classification (use or mention): when two sibling patterns fire on the same sentence,
+    that is one observed move, while two different functions in the sentence remain two.
 47. A mention is not a use. A hit whose matched words are quoted, inside a code span, or in a
     sentence that is about the list itself — naming an entry, a ban, a flag, a pattern, a
     rewrite, the review — MUST be classed a mention: never scored as a use, never handed to the
