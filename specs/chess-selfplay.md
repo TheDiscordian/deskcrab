@@ -317,6 +317,46 @@ the finished games feed the pattern store exactly as every self-play game does.
     its reason, and the evidence a selection still requires is re-played under the corrected
     rule 17 as replacement specs appended to the same resumable plan.
 
+20c. **Authoritative completion and scheduling.** `lib/chess_benchmark.py`, exposed by
+    `tools/chess-benchmark`, derives the remaining work from the plan, recorded games, and
+    exclusion sidecars. Its model roster is explicit in `selection.models`; it excludes
+    Spark and uses the baseline `low/low` plus rule 20's adaptive ladder through `xhigh/xhigh`.
+    Configurations with the same model, quiet effort, and sharp effort are identical even
+    when their plan labels differ. Neither a saved status nor a pruned, unplayed slot counts
+    as evidence. Duplicate ledger identities or a ledger/plan configuration mismatch fail
+    analysis instead of silently choosing one version.
+
+    Every valid seat contributes reliability evidence, including the reference opponent's
+    seat. A clock loss eliminates that configuration and its higher-effort descendants at
+    that control and shorter controls. Other reliability failures exclude the affected
+    configuration without making a shorter-clock inference. Named invalid games, pause
+    artifacts, and games with manufactured moves contribute neither results nor failures.
+    Every elimination names its recorded evidence; an inference is labelled as an inference.
+
+    A baseline or ladder gate requires two completed games against the common reference,
+    with the candidate in both colours. Gates at a shorter control open only after that
+    configuration passes every longer control. A family's surviving configurations must
+    complete their direct comparisons before that family's winner is resolved; all family
+    winners must then complete their direct comparisons before a control has a winner.
+    Each comparison has both colours. A drawn comparison receives one additional pair;
+    after that pair, a remaining tie resolves by the specified tie-breaks. Existing valid
+    games between exactly those configurations count, including same-family reference games.
+    Direct scores give every opponent equal weight, so a drawn comparison's extra games do
+    not make that opponent count twice. Family selection uses direct score, then latency
+    tail and lower effort; finalist selection uses direct score, then common-reference
+    score, latency tail, and lower effort/model cost. A control with no reliable candidate
+    says so explicitly and has no clock-safe winner.
+
+    The tool reports pending gates and comparisons mechanically, and cannot report COMPLETE
+    while any remains. Scheduling appends missing colour assignments idempotently to the
+    same plan; it preserves all old specifications and ledger lines. The optional coordinator
+    launches only the existing `chess_selfplay.py --bench-game` workers, with disjoint claims
+    and a small explicit concurrency limit. It never chooses or records a chess move itself.
+    It waits on worker completion, recomputes the next eligible work, and records progress.
+    Account or server interruptions preserve resumable games and stop new dispatches; they
+    never become chess losses. Live-session and unattended call-budget rules still bind the
+    workers. No pipeline requires an action from the user between games.
+
 ## DATA
 
 | Path | What it is |

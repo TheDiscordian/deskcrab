@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -eo pipefail
+task_repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+source "$task_repo_dir/lib/common.sh"
+export CLAUDE_BIN CLAUDE_FALLBACK_CONFIG_DIR CODEX_BIN CODEX_HOME ACCOUNT_STATE_FILE
+task_chess_python="${DESKCRAB_CHESS_VENV:-$HOME/.local/share/deskcrab/chess/venv}/bin/python"
+exec "$task_chess_python" -B "$task_repo_dir/lib/chess_benchmark.py" "$@"
