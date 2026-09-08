@@ -837,15 +837,18 @@ def memory_environment() -> dict:
     return env
 
 
-def recall_activity_memories(activity: str) -> str:
+def recall_activity_memories(activity: str, intended_work: str = "") -> str:
     """Retrieve preparation/transition lessons at the moment they matter."""
     program = memory_program()
     if not program.is_file() or not os.access(program, os.X_OK):
-        return ""
+        return "Memory recall unavailable: the configured memory reader is missing."
     objective = read_objective() or "none"
     query = (
-        f"OpenRSC RuneScape preparation before switching to activity {activity}. "
-        f"Current objective: {objective}. What equipment, supplies, destination, "
+        f"OpenRSC RuneScape decision before choosing activity {activity or 'not yet selected'}. "
+        f"Current objective: {objective}. Current method: {read_plan() or 'none'}. "
+        f"Intended work: {intended_work or activity}. "
+        "Which prior user corrections and remembered lessons apply to this decision? "
+        "What equipment, supplies, destination, "
         "route, safety checks, unfinished commitments, prior mistakes, and useful "
         "habits should I apply before beginning?"
     )
@@ -861,8 +864,10 @@ def recall_activity_memories(activity: str) -> str:
             timeout=float(os.environ.get("BETTY_OPENRSC_ACTIVITY_RECALL_TIMEOUT", "8")),
             env=memory_environment())
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+        return "Memory recall unavailable: retrieval failed or timed out."
+    if result.returncode != 0:
+        return "Memory recall unavailable: the memory reader failed."
+    return result.stdout.strip() or "No relevant memories returned; this does not prove none exist."
 
 
 def load_route():
@@ -3041,6 +3046,7 @@ def reusable_rule_candidates(cfg: dict, activity: str, objective: str,
             + (2 if rule.get("enabled") else 0)
         candidates.append({
             "name": rule.get("name"), "source_activity": source,
+            "objective_scope": trig.get("objective_is"),
             "enabled": bool(rule.get("enabled")), "score": score,
             "live_non_scope_match": live_match,
             "trigger_template": other, "action": action,
@@ -3052,10 +3058,25 @@ def reusable_rule_candidates(cfg: dict, activity: str, objective: str,
 
 def activity_briefing(cfg: dict, activity: str, snap: dict) -> dict:
     objective = read_objective()
+    eligible = activity_rule_snapshot(cfg, objective, activity)
+    excluded = []
+    for rule in cfg.get("rules") or []:
+        trig = rule.get("trigger") or {}
+        if trig.get("activity_is") != activity:
+            continue
+        reasons = []
+        if not rule.get("enabled"):
+            reasons.append("disabled")
+        if trig.get("objective_is") and trig["objective_is"] != objective:
+            reasons.append(f"requires objective {trig['objective_is']}")
+        if reasons:
+            excluded.append({"name": rule.get("name"), "reasons": reasons})
     return {
         "activity": activity, "objective": objective or None,
-        "current_rules": [item["name"] for item in
-                          activity_rule_snapshot(cfg, objective, activity)],
+        "current_rules": [item["name"] for item in eligible],
+        "activity_rules": [item for item in eligible if item["activity_scope"]],
+        "global_rules": [item for item in eligible if not item["activity_scope"]],
+        "excluded_activity_rules": excluded,
         "reuse_candidates": reusable_rule_candidates(
             cfg, activity, objective, snap),
         "history": activity_history_summary(activity),
@@ -9241,11 +9262,27 @@ def print_activity_history(activity: str) -> None:
             for skill in summary["best"]))
 
 
+def registered_activities() -> dict:
+    path = game_dir() / "activity-catalog.json"
+    try:
+        records = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        die(f"activity catalog {path} cannot be read; repair it before selecting an activity")
+    if not isinstance(records, dict) or any(
+            not isinstance(name, str) or not name.strip() or "\n" in name
+            or not isinstance(reason, str) or not reason.strip()
+            for name, reason in records.items()):
+        die(f"activity catalog {path} is malformed; repair it before selecting an activity")
+    return records
+
+
 def activity_catalog(cfg: dict) -> list:
     """Spec rule 11: the derived catalog of existing activities — every name
     observed in the activity history, scoped by activity_is in the current
     table, or named by the current selection and its measured stats."""
-    names = set()
+    names = set(registered_activities())
     for row in load_jsonl(activity_history_path()):
         name = str(row.get("activity") or "").strip()
         if name:
@@ -9282,8 +9319,74 @@ def activity_variant_base(name: str, catalog: list):
     return None
 
 
+def print_activity_catalog(cfg: dict):
+    print("Existing activities for the current objective (scopes only; inspect targets and guards):")
+    objective = read_objective()
+    for name in activity_catalog(cfg):
+        scoped = [r for r in cfg.get("rules") or []
+                  if (r.get("trigger") or {}).get("activity_is") == name]
+        eligible = [r for r in scoped if r.get("enabled")
+                    and rule_scope_applies(r, objective, name)]
+        actions = sorted({str((r.get("action") or {}).get("type")) for r in eligible})
+        print(f"  {name}: {len(eligible)} applicable activity rules; "
+              f"actions={','.join(actions) or 'none'}; excluded={len(scoped) - len(eligible)}")
+    print("Choose the actual operation, not its desired XP reward. Reuse an existing mode; "
+          "create with --new REASON only when none fits. Global support is separate.")
+
+
+def print_activity_rules(briefing: dict):
+    active = briefing["activity_rules"]
+    print(f"activity-specific reflexes ({len(active)}):")
+    for item in active:
+        print(f"  {item['name']}: {item['action']} "
+              f"(objective={item['objective_scope'] or 'any'})")
+    if not active:
+        print("  none: no applicable activity-specific work routine; inspect existing modes "
+              "and their scopes before beginning a manual loop")
+    print(f"global support reflexes: {len(briefing['global_rules'])}; "
+          "these do not establish a complete work routine")
+    excluded = briefing["excluded_activity_rules"]
+    if excluded:
+        print("excluded activity reflexes:")
+        for item in excluded:
+            print(f"  {item['name']}: {'; '.join(item['reasons'])}")
+    candidates = briefing.get("reuse_candidates") or []
+    print("reuse templates (inspect before adapting; not automatically applicable): " + (
+        ", ".join(f"{item['name']} (from {item['source_activity']}; "
+                  f"{'enabled' if item['enabled'] else 'DISABLED'}; "
+                  f"objective={item['objective_scope'] or 'any'})"
+                  for item in candidates) if candidates else "none yet"))
+
+
 def cmd_activity(args):
     """The immediate mode of play, separate from the longer-lived objective."""
+    consider = getattr(args, "consider", None)
+    listing = getattr(args, "list", False)
+    creation = getattr(args, "new", None)
+    if (consider is not None or listing) and (
+            args.clear or args.restart or getattr(args, "history", False) or creation is not None):
+        die("activity inspection cannot be combined with mutation or history flags")
+    if listing and args.name:
+        die("use activity NAME --consider WORK to preview one existing activity")
+    if consider is not None and not consider.strip():
+        die("--consider needs the intended work, before choosing its activity or inventory")
+    if consider is not None or listing:
+        cfg = load_config()
+        print_activity_catalog(cfg)
+        if args.name:
+            if args.name not in activity_catalog(cfg):
+                die("preview an existing catalog entry; no activity was selected or created")
+            print_activity_rules(activity_briefing(cfg, args.name, game_reflex.read_snapshot() or {}))
+        if consider is not None:
+            print("Relevant memories BEFORE deciding:")
+            print(recall_activity_memories(args.name or "", consider))
+            print("Apply relevant corrections to the method, activity, and preparation you choose. "
+                  "If a lesson does not fit, identify the current evidence; do not silently ignore "
+                  "it or carry old provisions into every activity.")
+        return
+    if creation is not None and (not args.name or args.clear or args.restart
+                                 or getattr(args, "history", False) or not creation.strip()):
+        die("activity NAME --new REASON requires a non-empty reason and no other mode flags")
     if getattr(args, "history", False):
         print_activity_history(args.name or read_activity())
         return
@@ -9305,6 +9408,22 @@ def cmd_activity(args):
     if "\n" in args.name or not args.name.strip():
         die("the activity is one non-empty line")
     selected = args.name.strip()
+    cfg = load_config()
+    catalog = activity_catalog(cfg)
+    if selected not in catalog:
+        selected = next((name for name in catalog if name.casefold() == selected.casefold()), selected)
+    if selected in catalog and creation is not None:
+        die(f"activity '{selected}' already exists; select it without --new")
+    if selected not in catalog:
+        if creation is None:
+            print_activity_catalog(cfg)
+            die(f"activity '{selected}' is not in the catalog. Select an existing operation; "
+                "use --consider WORK to recall relevant lessons before deciding. "
+                "Only create with --new REASON when no existing activity fits")
+        base = activity_variant_base(selected, catalog)
+        if base:
+            die(f"activity '{selected}' is a variant of '{base}'; select the existing mode "
+                "and ground its target parameters instead of creating another activity")
     # Spec rule 11d: the declared stop ceiling refuses the switch back into
     # the activity it stops, and fails closed when the record or the level
     # cannot be read. The refusal names the ceiling and the clearing door.
@@ -9332,7 +9451,6 @@ def cmd_activity(args):
     previous = read_activity()
     if selected != previous:
         progress_gate_or_die(f"activity switch to '{selected}'")
-    cfg = load_config()
     snap = game_reflex.read_snapshot() or {}
     changed = selected != previous or args.restart
     if changed and previous:
@@ -9340,6 +9458,11 @@ def cmd_activity(args):
             "activity-restarted" if selected == previous else f"activity-switched-to:{selected}",
             snap)
     game_dir().mkdir(parents=True, exist_ok=True)
+    records = registered_activities()
+    if selected not in records:
+        records[selected] = creation.strip() if creation is not None else "Selected from the existing catalog"
+        game_reflex.atomic_write(game_dir() / "activity-catalog.json",
+                                json.dumps(records, indent=2) + "\n")
     game_reflex.atomic_write(activity_path(), selected + "\n")
     if changed:
         clear_activity_stats()
@@ -9354,6 +9477,10 @@ def cmd_activity(args):
             "iteration": stats.get("iteration") or next_activity_iteration(selected),
             "baseline_ready": bool(stats),
             "current_rules": briefing["current_rules"],
+            "activity_rules": briefing["activity_rules"],
+            "global_rules": briefing["global_rules"],
+            "excluded_activity_rules": briefing["excluded_activity_rules"],
+            "creation_reason": creation.strip() if creation is not None else None,
             "reuse_candidates": briefing["reuse_candidates"],
             "history": {key: briefing["history"].get(key) for key in
                         ("iterations", "latest", "best")},
@@ -9373,12 +9500,7 @@ def cmd_activity(args):
         print("resolve preparation before settling in: combat wants food and "
               "armed gear; a gathering, banking, or crafting mode should not "
               "haul supplies it does not need")
-    current_names = briefing.get("current_rules") or []
-    print("current reflexes: " + (", ".join(current_names[:12]) if current_names else "none"))
-    candidates = briefing.get("reuse_candidates") or []
-    print("reuse candidates: " + (
-        ", ".join(f"{item['name']} (from {item['source_activity']})"
-                  for item in candidates) if candidates else "none yet"))
+    print_activity_rules(briefing)
     best = briefing.get("history", {}).get("best") or []
     if best:
         print("prior best: " + ", ".join(
@@ -10448,6 +10570,10 @@ def main():
                    help="restart this activity's elapsed time and XP baseline")
     p.add_argument("--history", action="store_true",
                    help="show comparable XP/hour iterations for NAME or the current activity")
+    p.add_argument("--list", action="store_true", help="inspect existing activities without selecting")
+    p.add_argument("--consider", metavar="WORK",
+                   help="recall lessons and inspect existing modes BEFORE choosing activity/method/inventory")
+    p.add_argument("--new", metavar="REASON", help="deliberately create a mode only when none fits")
     p.set_defaults(fn=cmd_activity)
 
     p = sub.add_parser("loadout", help="assess activity inventory; enable the gate or set a JSON declaration")

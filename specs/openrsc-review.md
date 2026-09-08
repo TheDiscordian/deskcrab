@@ -60,6 +60,15 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    current purpose, excess food/equipment, missing tools, and actual batch capacity. Old combat
    reserves and old plan wording are not current risk evidence. Repair the inventory and any
    recurring rules that recreate the waste, and verify the resulting item counts.
+   Audit activity choice against the actual operation and its applicable reflexes: a skill goal
+   is not proof of a suitable work mode. Inspect the existing catalog before creating anything,
+   distinguish global support from activity-specific work, and check disabled and objective-bound
+   rules before assuming coverage. Check actual equipped gear and supplies for the chosen method.
+   Retrieve relevant memories and user corrections before recommending or changing a method,
+   activity, or inventory. Compare those lessons with the decisions and actions that followed:
+   distinguish a missing lesson, failed retrieval, and a retrieved lesson that was ignored or
+   applied outside its context. Repair the failing stage and verify a subsequent decision;
+   another duplicate memory or a repaired plan alone does not establish that the habit changed.
 5. The reviewer may implement, test, and deploy improvements to rules, harness, player code,
    client integration, prompts, method, plan, and objective. It may replace a completed or
    unsuitable objective while preserving explicit user constraints and the larger intent.

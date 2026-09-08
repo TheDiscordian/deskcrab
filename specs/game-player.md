@@ -1187,7 +1187,10 @@ deliberate-play channel.
     Activity selection itself is **catalog-first**. The catalog of existing activities is
     derived, never guessed: every name observed in `activity-history.jsonl`, scoped by
     `activity_is` in the current table, named by the current activity file or its measured
-    stats. `activity NAME` selects a catalog entry; a name outside the catalog is refused with
+    stats, plus selected or deliberately created entries retained in `activity-catalog.json`
+    even without an XP baseline. `activity --list` shows this catalog without changing play, including each
+    entry's enabled activity-specific actions for the current objective and excluded-rule counts.
+    `activity NAME` selects a catalog entry; a name outside the catalog is refused with
     the catalog listed, and creation is a separate deliberate act — `activity NAME --new
     REASON` — offered only when no existing entry fits. A name whose hyphenated words strictly
     contain an existing entry's whole name is that entry's VARIANT and is refused even with
@@ -1196,6 +1199,25 @@ deliberate-play channel.
     activity's name. The
     creation reason is recorded in the activity-start outcome, so a genuinely new mode of play
     begins with its own justification on the record.
+
+    Before choosing an activity, method, or inventory, the player uses
+    `activity --consider "intended work"` to inspect the catalog and retrieve bounded relevant
+    memories. An optional NAME previews that entry's exact rule scopes without selecting it.
+    Recall includes the objective, current plan, intended operations, prior user corrections,
+    and preparation decisions; unrelated gameplay lessons must not become universal provisions.
+    The player applies relevant corrections to the choice, or identifies current evidence that
+    makes them inapplicable. Missing recall is reported visibly and never fabricates a lesson.
+    This inspection changes no activity, plan, progress record, measurement, or action slot.
+
+    The objective says why; the plan describes the method; the activity describes the operation
+    being performed. Select an existing operation before considering creation: obtaining bones
+    by fighting requires the appropriate combat activity and preparation, while burying stored
+    bones uses a burial activity. A desired XP reward alone does not identify the operation.
+    Transitions and previews separate enabled activity-specific rules from global support,
+    disabled rules, and rules excluded by another objective. Global loot and survival rules do
+    not establish a complete combat or production routine. Expose these distinctions in the
+    activity-start outcome too. Reuse candidates retain their enabled state and objective scope;
+    suggestions never automatically enable, copy, retarget, or change the scope of a rule.
 
     Retargeting an already learned NPC behaviour is likewise one catalog operation, never a
     relearning exercise: `retarget-npc SOURCE TARGET RULE [RULE…]` atomically widens every named
