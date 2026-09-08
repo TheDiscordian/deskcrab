@@ -5577,7 +5577,9 @@ def compile_player_action(rule, snap, food, eat_pick):
 def emit_player_action(path_name: str, action: dict, action_id: int,
                        ts: int) -> bool | None:
     try:
-        game_decisions.check(action['type'], action.get('item'), game_reflex.read_snapshot())
+        latest = game_reflex.read_snapshot()
+        game_loadout.check_pickup(action, latest)
+        game_decisions.check(action['type'], action.get('item'), latest)
     except ValueError as exc:
         report('decision-conflict', reason=str(exc))
         return False
@@ -5616,6 +5618,7 @@ def compile_live_player_action(rule: dict, snap: dict, food: dict,
     action, why = compile_player_action(rule, snap, food, eat_pick)
     if action is not None:
         try:
+            game_loadout.check_pickup(action, snap)
             game_decisions.check(action['type'], action.get('item'), snap)
         except ValueError as exc:
             return None, f'decision-conflict: {exc}'

@@ -64,6 +64,43 @@ class Preparation(unittest.TestCase):
     def assess(self):
         return gl.assessment(self.snap)
 
+    def test_incidental_arrow_cannot_recreate_banking_detour(self):
+        # Live 2026-09-08: after banking the unwanted arrow, a global pickup
+        # diverted a fletching route 18 tiles and immediately invalidated loadout.
+        self.snap['ground_items'] = [{'id':11,'x':101,'z':100,'reachable':True}]
+        rule = {'name':'old-arrow-loot','action':{'type':'take-ground','item':11}}
+        self.assertIsNotNone(gp.compile_player_action(rule,self.snap,{},'min')[0])
+        action, why = gp.compile_live_player_action(rule,self.snap,{},'min')
+        self.assertIsNone(action); self.assertIn('inventory-pickup-undeclared-item:11',why)
+        self.put_snapshot()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(gp.emit_player_action('action.json',
+                {'type':'take-ground','item':11,'x':101,'z':100},3,gp.now_ms()))
+        self.assertFalse((self.state/'action.json').exists())
+
+    def test_pickup_limits_and_preparation_exceptions(self):
+        take = lambda iid: gl.check_pickup({'type':'take-ground','item':iid}, self.snap)
+        take(14)
+        with self.assertRaisesRegex(ValueError,'at-maximum:13'): take(13)
+        self.snap['inventory'] += [{'id':14,'count':29}]
+        with self.assertRaisesRegex(ValueError,'at-maximum:14'): take(14)
+        for activity in ('travelling','travel','transit','walking','journey','trading','selling','shopping'):
+            (self.data/'activity').write_text(activity)
+            self.assertEqual(self.assess()['state'], 'preparation-mode')
+            with self.assertRaisesRegex(ValueError,'undeclared-item:11'): take(11)
+        for activity in ('resupply','banking','recovery'):
+            (self.data/'activity').write_text(activity);take(11)
+        (self.data/'activity').write_text('fletching')
+        (self.data/'plan').write_text('Changed method')
+        with self.assertRaisesRegex(ValueError,'needs-review'): take(11)
+        (self.data/'activity').write_text('travelling');take(11)
+        (self.data/'activity').write_text('fletching')
+        (self.data/'loadout-policy.json').write_text('{"enabled":false}')
+        take(11)
+        (self.data/'loadout-policy.json').write_text('{"enabled":true}')
+        for kind in ('click-inventory','sidestep','retreat','use-item-ground'):
+            gl.check_pickup({'type':kind,'item':11},self.snap)
+
     def test_full_productive_batch_is_ready(self):
         self.snap['inventory'] += [{'id':276,'count':1} for _ in range(29)]
         result = self.assess()
