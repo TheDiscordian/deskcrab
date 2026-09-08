@@ -330,8 +330,13 @@ deliberate-play channel.
    `dialogue-option-ambiguous`, or `no-such-dialogue-option` without dispatch. The compiled action
    carries that option's own current text, never an index or a screen row, and the client re-matches
    it immediately before sending the game's own option packet. Its observed postcondition is the
-   ordinary one: an XP delta, an inventory change, grounded game feedback, or a dialogue-state
-   transition — never the receipt.
+   response-side one: an XP delta, an inventory change, new server feedback with no named
+   sender, a newly opened bank/shop, or a subsequent option menu. The selected option's
+   local-player echo, closing the old menu, and expiry of the NPC-speech visibility lease
+   are dispatch-side effects, NEVER completion: ordinary rules must not re-talk or walk in
+   that gap before the server answers. A subsequent menu is evidenced by changed options or
+   by an observed closed-to-open transition; an unchanged still-open menu is not a response.
+   The ordinary bounded action timeout remains the failure lease, not a pacing delay.
    `drop-inventory` (`item`: the held item id) is the learned mirror of the deliberate drop
    door: ONE atomic single-slot release of that identity, compiled only out of combat and only
    while the item is held, whose observed postcondition is the drop door's own — the held count
@@ -363,9 +368,11 @@ deliberate-play channel.
    the compiled action carries the two item identities alone, and the bridge re-resolves them to
    two live slots immediately before sending the ordinary item-on-item packet, so no slot,
    selection phase or pointer is ever remembered. Its observed postcondition is the deliberate
-   door's own: either named item's held count changing, or an XP delta, with only explicit
-   failure feedback ending it otherwise — a receipt, a pane transition, an opened option menu or
-   a changed selection is never completion. Lighting a fire remains explicitly outside it: the
+   door's own: either named item's held count changing, an XP delta, or a newly opened
+   server-authored dialogue menu with nonempty options. That menu proves the pair reached the
+   server and hands control to `choose-dialogue`; it does not claim production XP or consumption.
+   Explicit failure feedback may end it unsuccessfully. A receipt, a context menu, a pane
+   transition, a changed selection, or question text without an open reply menu is never completion. Lighting a fire remains explicitly outside it: the
    server answers a tinderbox on carried logs with "I think you should put the logs down before
    you light them!", which the verifier classifies as grounded failure, so firemaking still runs
    through `drop-inventory` and `use-item-ground`. The menu a successful pair opens — Fletching's
@@ -547,8 +554,9 @@ deliberate-play channel.
    snapshot (two distinct slots when the ids are equal) before dispatching `use-item-item`; the
    bridge re-resolves both to two distinct live slots and sends the ordinary item-on-item packet
    with no selection phase and no pointer. Success requires either named item's held count
-   changing or XP, and only explicit failure feedback may end it
-   unsuccessfully without either delta. A receipt, pane transition, or selection change is never
+   changing, XP, or rule 5's newly opened server dialogue menu. The menu handoff must not wait
+   for consumption that cannot happen before its answer. Only explicit failure feedback may
+   end it unsuccessfully without a delta. A receipt, pane transition, or selection change is never
    completion. Lighting a fire is explicitly NOT this door's postcondition: the authentic
    server's own inventory trigger refuses a tinderbox on carried logs with "I think you should
    put the logs down before you light them!", which the verifier classifies as grounded failure

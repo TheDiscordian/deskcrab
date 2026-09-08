@@ -139,3 +139,36 @@ check "no logs, no pair: ordinary play owns the pass" \
     add_case no-logs-loot-runs loot-mind-rune-test
 check "the suite the mutation gate replays is green" \
     sh -c "python3 '$GP' test run | grep -q '0 failure'"
+
+echo
+echo "a server make-menu hands control to its answer without a timeout:"
+python3 - "$SANDBOX_REPO/lib" <<'PY' && ok "server menu completes the pair, never the unfinished product" \
+    || fail "server menu completes the pair, never the unfinished product"
+import copy,sys,time
+sys.path.insert(0,sys.argv[1])
+import game_player as gp
+now=int(time.time()*1000)
+base=dict(ts=now,tick=1,logged_in=True,dialogue_open=False,dialogue_options=[],
+          inventory=[{'id':13,'count':1},{'id':14,'count':6}],messages=[])
+obs=gp.make_action_observation(1,'use-item-item',['item=13','target=14'],base)
+def after(**kw):
+    s=copy.deepcopy(base);s.update(ts=now+1,tick=2);s.update(kw);return s
+menu=after(dialogue_open=True,dialogue_options=['Make arrow shafts','Make shortbow','Make longbow'])
+result=gp.action_completion(obs,menu)
+assert result['result']=='done' and result['xp'] is None and result['inventory'] is None
+assert 'dialogue-menu-opened:true' in result['state']
+assert gp.action_completion(obs,after(right_click_menu_open=True)) is None
+assert gp.action_completion(obs,after(selected_inventory_item=13)) is None
+assert gp.action_completion(obs,after(ui_panel_open=True)) is None
+assert gp.action_completion(obs,after(dialogue_open=True)) is None
+assert gp.action_completion(obs,after(messages=[{'id':1,'channel':'game','text':'What would you like to make?'}])) is None
+old_menu=gp.make_action_observation(2,'use-item-item',['item=13','target=14'],menu)
+menu.update(tick=3,ts=now+2)
+assert gp.action_completion(old_menu,menu) is None
+# The follow-up answer cannot be reported complete just because this menu closes.
+choice=gp.make_action_observation(3,'choose-dialogue',['text=Make longbow'],menu)
+closed=after();closed.update(tick=4,ts=now+3)
+assert gp.action_completion(choice,closed) is None
+closed['inventory']=[{'id':13,'count':1},{'id':14,'count':5},{'id':276,'count':1}]
+assert gp.action_completion(choice,closed)['result']=='done'
+PY

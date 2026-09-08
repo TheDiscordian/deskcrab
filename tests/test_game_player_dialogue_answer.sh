@@ -130,3 +130,52 @@ check "an ambiguous fragment refuses instead of guessing a row, and again
     add_case ambiguous-option-refuses none
 check "the suite the mutation gate replays is green" \
     sh -c "python3 '$GP' test run | grep -q '0 failure'"
+
+echo
+echo "a chosen answer owns the dispatch gap until a server response:"
+python3 - "$SANDBOX_REPO/lib" <<'PY' && ok "response-side completion covers bank race and skilling without pacing" \
+    || fail "response-side completion covers bank race and skilling without pacing"
+import copy, sys, time
+sys.path.insert(0, sys.argv[1])
+import game_player as gp
+now = int(time.time() * 1000)
+# Grounded sequence: an option dispatch echoed the local player's answer,
+# the earlier NPC speech lease expired, then the banker spoke/opened the bank.
+# Names and world coordinates are deliberately absent from this fixture.
+base = dict(ts=now, tick=1, logged_in=True, talking_to_npc=True,
+            dialogue_open=True, dialogue_options=['Access my bank', 'No thanks'],
+            bank_open=False, shop_open=False, inventory=[{'id': 14, 'count': 6}],
+            skills=[{'id': 9, 'name': 'Fletching', 'xp': 1775}], messages=[])
+obs = gp.make_action_observation(1, 'choose-dialogue', ['text=Access my bank'], base)
+def snap(**kw):
+    value = copy.deepcopy(base)
+    value.update(ts=now + 1, tick=2)
+    value.update(kw)
+    return value
+assert gp.action_completion(obs, snap()) is None
+closed = snap(dialogue_open=False, dialogue_options=[], talking_to_npc=False,
+              messages=[{'id': 1, 'channel': 'quest', 'sender': 'Player',
+                         'text': 'Access my bank'}])
+ctx = {}
+assert gp.action_completion(obs, closed, ctx) is None
+assert ctx['saw_dialogue_closed']
+response = copy.deepcopy(closed)
+response['messages'].append({'id': 2, 'channel': 'quest', 'sender': '',
+                             'text': 'Banker: Certainly'})
+response['talking_to_npc'] = True
+assert gp.action_completion(obs, response)['result'] == 'done'
+assert gp.action_completion(obs, snap(bank_open=True))['state'] == 'bank_open:true'
+assert gp.action_completion(obs, snap(shop_open=True))['result'] == 'done'
+assert gp.action_completion(obs, snap(dialogue_options=['Another question']))['result'] == 'done'
+assert gp.action_completion(obs, snap(), ctx)['result'] == 'done'
+assert gp.action_completion(obs, snap(inventory=[{'id': 14, 'count': 5}]))['result'] == 'done'
+assert gp.action_completion(obs, snap(skills=[{'id': 9, 'name': 'Fletching', 'xp': 1785}]))['result'] == 'done'
+refusal = snap(messages=[{'id': 3, 'channel': 'quest', 'sender': '',
+                         'text': 'You need a higher level'}])
+assert gp.action_completion(obs, refusal)['result'] == 'failed'
+refusal['messages'].append({'id': 4, 'channel': 'quest', 'sender': 'Player', 'text': 'Make longbow'})
+assert gp.action_completion(obs, refusal)['result'] == 'failed'
+assert gp.action_completion(obs, snap(messages=[{'id': 5, 'channel': 'quest',
+    'sender': 'Player', 'text': 'You need help?'}])) is None
+assert gp.action_completion(obs, snap(logged_in=False, bank_open=True)) is None
+PY

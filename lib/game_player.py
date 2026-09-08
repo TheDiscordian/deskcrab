@@ -3855,6 +3855,8 @@ def make_action_observation(action_id: int, action_type: str, fields: list,
             "in_combat": snap.get("in_combat"),
             "opponent": snap.get("opponent"),
             "talking_to_npc": snap.get("talking_to_npc"),
+            "dialogue_open": snap.get("dialogue_open"),
+            "dialogue_options": snap.get("dialogue_options"),
             "right_click_menu_open": snap.get("right_click_menu_open"),
             "ui_panel_open": snap.get("ui_panel_open"),
             "ui_panel": snap.get("ui_panel"),
@@ -3984,6 +3986,9 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
                     and message["id"] not in old_message_ids
                     and message.get("channel") in SYSTEM_FEEDBACK_CHANNELS
                     and str(message.get("text", "")).strip()]
+    if observation["type"] == "choose-dialogue":
+        new_messages = [m for m in new_messages
+                        if not str(m.get("sender") or "").strip()]
     message = " ".join(str(new_messages[-1].get("text", "")).split())[:240] \
         if new_messages else ""
 
@@ -4013,6 +4018,22 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
                      or ui_changes or movement_done)
     fields = dict(field.split("=", 1) for field in observation.get("fields", [])
                   if isinstance(field, str) and "=" in field)
+    if observation["type"] == "choose-dialogue":
+        # The option echo and disappearing question acknowledge our packet,
+        # not the server's response. Releasing here can let a bank opener
+        # re-talk in the false gap immediately before the bank reply arrives.
+        if context is not None and snap.get("dialogue_open") is False:
+            context["saw_dialogue_closed"] = True
+        next_menu = snap.get("dialogue_open") is True and bool(
+            snap.get("dialogue_options")) and (
+                snap.get("dialogue_options") != before.get("dialogue_options")
+                or bool(context and context.get("saw_dialogue_closed")))
+        response_ui = [f"{key}:true" for key in ("bank_open", "shop_open")
+                       if snap.get(key) is True and before.get(key) is not True]
+        if next_menu:
+            response_ui.append("dialogue-response-menu:true")
+        ui_changes = response_ui
+        completed = bool(inventory_changes or xp_changes or message or response_ui)
     if observation["type"] == "click-inventory":
         try:
             selected = int(fields.get("item", ""))
@@ -4065,13 +4086,17 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         completed = bool(fields.get("item") in changed_item_ids
                          or xp_changes or failure)
     if observation["type"] == "use-item-item":
-        # The held pair grounds the same way item-on-object does: one of the
-        # two named held counts changes (lit logs leave the inventory) or XP
-        # arrives (Firemaking). A receipt, pane, or selection change is never
-        # completion; only explicit failure feedback ends it without a delta.
+        # Production may require a server question first (knife on logs).
+        # That question hands control to choose-dialogue, not another pair
+        # dispatch. A context menu or pointer-selection change proves nothing.
+        server_menu = snap.get("dialogue_open") is True \
+            and before.get("dialogue_open") is not True \
+            and bool(snap.get("dialogue_options"))
+        if server_menu:
+            ui_changes.append("dialogue-menu-opened:true")
         completed = bool(fields.get("item") in changed_item_ids
                          or fields.get("target") in changed_item_ids
-                         or xp_changes or failure)
+                         or xp_changes or server_menu or failure)
     if observation["type"] == "drop-inventory":
         # The client prints its local "Dropping ..." line at packet time,
         # before the server has moved anything, so a message alone is never
@@ -4253,6 +4278,8 @@ def await_action_completion(observation: dict, timeout: float):
     context = {
         "saw_walking": bool(isinstance(saved_context, dict)
                             and saved_context.get("saw_walking")),
+        "saw_dialogue_closed": bool(isinstance(saved_context, dict)
+                                    and saved_context.get("saw_dialogue_closed")),
     }
     observation["wait_context"] = context
     with SnapshotChangeWatch() as watch:
