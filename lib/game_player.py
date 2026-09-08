@@ -6013,6 +6013,13 @@ def update_healing_hold(est: dict, snap: dict, active: bool, threshold,
         est["healing_hold"] = None
 
 
+def sleep_wake_fields(snap: dict) -> dict:
+    return dict(fatigue=snap.get("fatigue"), sleep_fatigue=snap.get("sleep_fatigue"),
+                status=snap.get("sleep_status") or None,
+                next="solve-current-word-from-screenshot-submit-Return-then-wait-until-not_sleeping-and-fatigue_zero",
+                wake_requires="current-word-submission-even-when-sleep-fatigue-is-zero")
+
+
 def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
     """One evaluation. Returns (verdict, exit_code)."""
     defaults = config_defaults(cfg)
@@ -6061,10 +6068,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
             capture_friend_status(snap, sleeping_state, friend_events)
             save_player_state(sleeping_state)
             flush_events(friend_events)
-        report("sleeping-needs-wake", fatigue=snap.get("fatigue"),
-               sleep_fatigue=snap.get("sleep_fatigue"),
-               status=snap.get("sleep_status") or None,
-               next="solve-current-word-then-wait-until-not_sleeping")
+        report("sleeping-needs-wake", **sleep_wake_fields(snap))
         return "sleeping-needs-wake", EXIT_NO_RULE
     # A semantic batch survives the transient threshold that initiated it.
     # Reconcile it before dynamic safety rules are added so combat escape,
@@ -9280,6 +9284,11 @@ def main():
                         report("runner-system-message", age_ms=now_ms() - hb.get("ts", 0),
                                pid=hb.get("pid"), friend_updates=friend_updates_field)
                 else:
+                    deliberation_fields = {}
+                    if verdict == "no-rule-matched":
+                        deliberation_fields = reflection_fields(live_snapshot)
+                    elif verdict == "sleeping-needs-wake":
+                        deliberation_fields = sleep_wake_fields(live_snapshot)
                     report(f"runner-{verdict or 'unknown'}",
                            age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
                            plan=hb.get("plan") or read_plan() or None,
@@ -9290,9 +9299,10 @@ def main():
                                                  for i in hb.get("ground_items") or []) or None,
                            feedback=hb.get("detail") or None,
                            friend_updates=friend_updates_field,
-                           **(reflection_fields(live_snapshot) if verdict == "no-rule-matched" else {}))
+                           **deliberation_fields)
                 acknowledge_friend_status(friend_updates)
                 sys.exit({"no-rule-matched": EXIT_NO_RULE,
+                          "sleeping-needs-wake": EXIT_NO_RULE,
                           "route-needs-detour": EXIT_NO_RULE,
                           "route-needs-local-interaction": EXIT_NO_RULE,
                           "follow-needs-path": EXIT_NO_RULE,

@@ -258,7 +258,11 @@ Assess all three points with evidence:
    reflexes that keep recreating the waste. A memory or a written declaration alone is not a fix.
 3. Are reflexes working correctly? Inspect intended versus observed outcomes, retries,
    no-progress gaps, deaths, inventory/loot, activity mismatch, combat style, ceilings,
-   interface handling, travel, food, and fatigue. Check revisions and comparable activity
+   interface handling, travel, food, and fatigue. Before calling a timeout a server defect,
+   check that the required initiating action or input was actually performed. Sleep recovery
+   still requires the current word submitted with Return even when sleep fatigue reaches zero;
+   waiting without submitting it is omitted input, not failed server behaviour.
+   Check revisions and comparable activity
    iterations; short samples or offline time do not prove a regression or an improvement.
 
 Authority: you may change or upgrade ANY needed player component: learned reflexes, semantic

@@ -491,6 +491,11 @@ deliberate-play channel.
    - `sleeping-needs-wake` (exit 4): the sleep-word screen currently owns input. No objective,
      route, reflex, or reply action is emitted; solving the current word and verifying awake state
      is the sole licensed reasoning task. Invoking the sleeping bag again is never a wake-up action.
+     The direct and resident-runner paths both carry exit 4 and the same concrete wake instructions:
+     inspect the current rendered word, submit it with Return, then verify `not_sleeping` and
+     `fatigue_zero`. Sleep fatigue reaching zero does not submit the word or dismiss the screen.
+     Fresh and resumed player prompts share these instructions. A missing required input is not
+     evidence of a server fault; do not wait for an action that nobody has performed.
    - `movement-in-progress` (exit 3): a directly dispatched movement commitment still owns the
      body. Ordinary learned rules emit nothing until `walking` becomes false, so incidental loot
      cannot cancel an approach to an NPC or another deliberate destination. A currently applicable
