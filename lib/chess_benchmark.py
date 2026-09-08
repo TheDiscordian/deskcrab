@@ -352,7 +352,8 @@ def markdown(summary, evidence):
             for request in result['requests']:
                 lines.append(f"- {request['role']}: {evidence.label(tuple(request['a']))} vs {evidence.label(tuple(request['b']))}; {len(request['missing'])} game(s) missing.")
     lines += ['', '## Excluded evidence', '']
-    lines += [f'- {gid}: {reason}.' for gid, reason in sorted(summary['excluded'].items())]
+    lines += [f'- {gid}: {str(reason).replace(str(Path.home()), "~")}.'
+              for gid, reason in sorted(summary['excluded'].items())]
     lines += ['', 'Results describe the recorded sample. A clock-safe winner has no valid recorded timing failure and has completed both colours and the required direct comparisons.', '']
     return '\n'.join(lines)
 
