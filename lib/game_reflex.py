@@ -737,8 +737,18 @@ def evaluate(cfg: dict, food: dict, snap: dict, est: dict, now: int,
             log_event({"ts": now, "kind": "refused", "rule": rule["name"],
                        "why": why}, sink)
             continue
-        est["action_seq"] += 1
-        emit("action.json", action, est["action_seq"], now)
+        next_action_id = est["action_seq"] + 1
+        # A caller may attach a final semantic-commitment check to its emit
+        # function.  Returning False means the commitment disappeared after
+        # evaluation selected it but before dispatch (for example, a direct
+        # retreat process verified safety and cleared the shared request).
+        # Do not claim a firing or reserve an in-flight id for an action that
+        # never reached the bridge.
+        if emit("action.json", action, next_action_id, now) is False:
+            log_event({"ts": now, "kind": "refused", "rule": rule["name"],
+                       "why": "dispatch-commitment-cleared"}, sink)
+            continue
+        est["action_seq"] = next_action_id
         est["fired"][rule["name"]] = now
         est["last_game_ms"] = now
         est["window"].append(now)

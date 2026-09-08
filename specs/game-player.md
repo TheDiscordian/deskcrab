@@ -1357,7 +1357,10 @@ deliberate-play channel.
     server-defined aggressive NPCs, continues to a point twelve tiles from the combat origin, and
     returns only after live state verifies both that clearance and at least eight tiles from every
     still-visible aggressor (or its hard ceiling). Ordinary routing, reflexes, and conversation stay
-    queued for the whole escape.
+    queued for the whole escape. That verified clearance is the request's terminal postcondition:
+    every runner dispatch rechecks the request generation at the bridge-write boundary, and a
+    continuation selected before the direct waiter cleared that generation is refused rather than
+    becoming a second, stale escape walk.
     The playing policy the sittings read
     makes rules-first mandatory: open-ended reasoning about the next action is licensed by rule
     7's `no-rule-matched` or rule 7e's `route-needs-detour`; other exit-4 prerequisites license only

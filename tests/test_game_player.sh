@@ -3645,6 +3645,68 @@ refute "the bounded request is cleared after safety" \
     test -f "$DESKCRAB_GAME_STATE_DIR/retreat-request.json"
 
 echo
+echo "a cleared retreat request cannot dispatch a stale clearance walk:"
+python3 - "$GP" <<'PY'
+import importlib.util, json, os, sys, time
+
+gp_path = sys.argv[1]
+sys.path.insert(0, os.path.dirname(gp_path))
+spec = importlib.util.spec_from_file_location("game_player_under_test", gp_path)
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+gr = gp.game_reflex
+sd = os.environ["DESKCRAB_GAME_STATE_DIR"]
+now = int(time.time() * 1000)
+snap = {"v": 1, "ts": now, "tick": 1194, "logged_in": True,
+        "hits": 10, "hits_max": 10, "fatigue": 0,
+        "x": 125, "z": 648, "walking": False, "in_combat": False,
+        "talking_to_npc": False, "inventory": [], "messages": [],
+        "npcs": []}
+json.dump(snap, open(os.path.join(sd, "state.json"), "w"))
+request = {"v": 3, "requested": now, "expires": now + 10000,
+           "combat_id": 77, "distance": 5, "dx": 1, "dz": 0,
+           "origin_x": 120, "origin_z": 648, "clearance": 12}
+json.dump(request, open(os.path.join(sd, "retreat-request.json"), "w"))
+rule = {"name": gp.MANUAL_RETREAT_RULE_NAME, "enabled": True,
+        "priority": gp.MANUAL_RETREAT_PRIORITY, "cooldown_ms": 0,
+        "hold_ticks": 1, "channel": "game", "trigger": {"out_of_combat": True},
+        "action": {"type": "walk", "x": 132, "z": 648, "arrive": 0,
+                   "_retreat_combat_id": 77}}
+cfg = {"v": 1, "defaults": dict(gr.DEFAULTS), "rules": [rule]}
+
+def state():
+    return {"action_seq": 0, "fired": {}, "streak": {}, "blocked": {},
+            "gated": {}, "inflight": None, "last_game_ms": 0, "window": [],
+            "last_tick": -1, "was_stale": False, "was_out": False,
+            "was_held": False}
+
+events = []
+est = state()
+gr.evaluate(cfg, {}, snap, est, now, emit=gp.emit_player_action,
+            sink=events, trigger_fn=gp.make_trigger_fn("", ""),
+            compile_fn=gp.compile_live_player_action, live=True)
+body = open(os.path.join(sd, "action.json")).read()
+assert "type=walk" in body and "_retreat_combat_id" not in body, body
+assert est["inflight"] is not None and any(e.get("kind") == "fired" for e in events)
+os.unlink(os.path.join(sd, "action.json"))
+gp.clear_retreat_request()
+
+events = []
+est = state()
+snap["tick"] += 1
+snap["ts"] = int(time.time() * 1000)
+json.dump(snap, open(os.path.join(sd, "state.json"), "w"))
+gr.evaluate(cfg, {}, snap, est, snap["ts"], emit=gp.emit_player_action,
+            sink=events, trigger_fn=gp.make_trigger_fn("", ""),
+            compile_fn=gp.compile_live_player_action, live=True)
+assert not os.path.exists(os.path.join(sd, "action.json"))
+assert est["inflight"] is None and est["action_seq"] == 0
+assert any(e.get("kind") == "refused"
+           and e.get("why") == "dispatch-commitment-cleared" for e in events), events
+PY
+check_eq "a live request dispatches, while its cleared generation is refused" "$?" "0"
+
+echo
 echo "the entrypoint is versioned bytes, deployed, and durable (spec rule 13):"
 # A setsid child still dies with the launching service's cgroup. The door must
 # be committed bytes deployed by symlink, and every long-lived process must

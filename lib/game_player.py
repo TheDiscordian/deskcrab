@@ -5485,7 +5485,20 @@ def compile_player_action(rule, snap, food, eat_pick):
     return None, f"unknown-action-{action['type']}"
 
 
-def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
+def emit_player_action(path_name: str, action: dict, action_id: int,
+                       ts: int) -> bool | None:
+    retreat_combat_id = action.get("_retreat_combat_id")
+    if isinstance(retreat_combat_id, int):
+        # The direct retreat door and resident runner deliberately share one
+        # request.  The direct waiter can verify clearance and remove it after
+        # this runner selected a continuation but before the bridge write.
+        # Re-authorize at the last possible moment so that stale continuation
+        # cannot become an unbounded post-escape walk.
+        request = load_retreat_request()
+        latest = game_reflex.read_snapshot() or {}
+        if request is None or request.get("combat_id") != retreat_combat_id \
+                or retreat_has_clearance(latest, request):
+            return False
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
     for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "route_step", "dir", "obj", "cmd", "within",
                 "stationary", "require_clear_shot", "require_melee_unreachable",
@@ -5495,6 +5508,23 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
         if key in action:
             lines.append(f"{key}={action[key]}")
     game_reflex.atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")
+
+
+def compile_live_player_action(rule: dict, snap: dict, food: dict,
+                               eat_pick: str):
+    """Compile a live action and retain the transient retreat generation.
+
+    The marker never rides the bridge action; it exists only long enough for
+    emit_player_action to prove that the shared request still owns dispatch.
+    Replays continue to use the ordinary compiler and therefore assert the
+    exact public action vocabulary unchanged.
+    """
+    action, why = compile_player_action(rule, snap, food, eat_pick)
+    if action is not None and rule.get("name") == MANUAL_RETREAT_RULE_NAME:
+        combat_id = (rule.get("action") or {}).get("_retreat_combat_id")
+        if isinstance(combat_id, int):
+            action["_retreat_combat_id"] = combat_id
+    return action, why
 
 
 # --------------------------------------------------------------------------
@@ -6597,13 +6627,15 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
                               "distance": retreat_request["distance"],
                               "dx": retreat_request["dx"],
                               "dz": retreat_request["dz"],
-                              "committed_direction": 1}
+                              "committed_direction": 1,
+                              "_retreat_combat_id": retreat_request["combat_id"]}
             retreat_trigger = {"in_combat": True}
             retreat_note = "bounded escape: break the current combat lock"
         else:
             target_x, target_z = retreat_clearance_target(snap, retreat_request)
             retreat_action = {"type": "walk", "x": target_x, "z": target_z,
-                              "arrive": 0}
+                              "arrive": 0,
+                              "_retreat_combat_id": retreat_request["combat_id"]}
             retreat_trigger = {"out_of_combat": True}
             retreat_note = "bounded escape: clear the whole aggressive pack"
         source_rules.append({
@@ -7082,7 +7114,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         eval_cfg, {}, snap, est, now,
         emit=emit_player_action, sink=events,
         trigger_fn=trigger_true,
-        compile_fn=compile_player_action, live=True)
+        compile_fn=compile_live_player_action, live=True)
 
     fired = [e for e in events if e.get("kind") == "fired"]
     cooldown_holds = sum(1 for e in events if e.get("kind") == "cooldown-hold")
