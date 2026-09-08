@@ -32,6 +32,10 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    target before completion requires a user redirect or a documented blocker that prevents
    progress; supplies, recovery, and prerequisites remain part of the same target. Sitting
    expiry pauses the commitment. Previous reports cannot override this current policy.
+   Inventory efficiency follows [game-loadout.md](game-loadout.md): audit every retained item's
+   current purpose, excess food/equipment, missing tools, and actual batch capacity. Old combat
+   reserves and old plan wording are not current risk evidence. Repair the inventory and any
+   recurring rules that recreate the waste, and verify the resulting item counts.
 5. The reviewer may implement, test, and deploy improvements to rules, harness, player code,
    client integration, prompts, method, plan, and objective. It may replace a completed or
    unsuitable objective while preserving explicit user constraints and the larger intent.

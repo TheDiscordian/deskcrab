@@ -29,6 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 2)
+import game_loadout
+import game_decisions
 
 # The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
 TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", "bound_visible",
@@ -3601,6 +3603,11 @@ def cmd_action_arm(args):
     cannot reconstruct.
     """
     snap = game_reflex.read_snapshot() or {}
+    fields = dict(field.split('=', 1) for field in args.fields if '=' in field)
+    try:
+        game_decisions.check(args.type, int(fields.get('item', -1)), snap)
+    except ValueError as exc:
+        die(str(exc))
     observation = make_action_observation(args.id, args.type, list(args.fields), snap)
     state_dir().mkdir(parents=True, exist_ok=True)
     with action_observation_lock():
@@ -5029,7 +5036,13 @@ def compile_player_action(rule, snap, food, eat_pick):
     return None, f"unknown-action-{action['type']}"
 
 
-def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) -> None:
+def emit_player_action(path_name: str, action: dict, action_id: int,
+                       ts: int) -> bool | None:
+    try:
+        game_decisions.check(action['type'], action.get('item'), game_reflex.read_snapshot())
+    except ValueError as exc:
+        report('decision-conflict', reason=str(exc))
+        return False
     lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
     for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "route_step", "dir", "obj", "cmd", "within",
                 "stationary", "require_clear_shot", "require_melee_unreachable",
@@ -5039,6 +5052,18 @@ def emit_player_action(path_name: str, action: dict, action_id: int, ts: int) ->
         if key in action:
             lines.append(f"{key}={action[key]}")
     game_reflex.atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")
+
+
+def compile_live_player_action(rule: dict, snap: dict, food: dict,
+                               eat_pick: str):
+    """Compile a live action and check the current disposal decision."""
+    action, why = compile_player_action(rule, snap, food, eat_pick)
+    if action is not None:
+        try:
+            game_decisions.check(action['type'], action.get('item'), snap)
+        except ValueError as exc:
+            return None, f'decision-conflict: {exc}'
+    return action, why
 
 
 # --------------------------------------------------------------------------
@@ -6291,6 +6316,19 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         report("same-tick", tick=snap.get("tick"))
         return "same-tick", EXIT_NOT_READY
 
+    # Inventory preparation is an activity decision, not a remembered global reserve.
+    # Leave safety, open interfaces, movement and existing actions to their owners.
+    if not urgent_retreat_names and snap_fresh and snap.get("logged_in") is True \
+            and snap.get("in_combat") is False and not est.get("inflight") \
+            and not any(snap.get(key) for key in (
+                "walking", "talking_to_npc", "dialogue_open", "bank_open", "shop_open",
+                "trade_open", "right_click_menu_open")):
+        preparation = game_loadout.assessment(snap)
+        if preparation['state'] in ('needs-review', 'needs-preparation'):
+            report("no-rule-matched", inventory_prepare=json.dumps(preparation),
+                   next="play loadout; prepare-in-banking-or-resupply-mode; play loadout set FILE; verify-inventory")
+            return "no-rule-matched", EXIT_NO_RULE
+
     # A direct hand may have committed to an NPC outside this resident
     # runner. Ordinary learned rules must not cancel that approach or abandon
     # a live conversation for incidental work (notably respawning loot).
@@ -6512,7 +6550,7 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         eval_cfg, {}, snap, est, now,
         emit=emit_player_action, sink=events,
         trigger_fn=trigger_true,
-        compile_fn=compile_player_action, live=True)
+        compile_fn=compile_live_player_action, live=True)
 
     fired = [e for e in events if e.get("kind") == "fired"]
     cooldown_holds = sum(1 for e in events if e.get("kind") == "cooldown-hold")
@@ -8077,6 +8115,8 @@ def cmd_activity(args):
         stats = load_activity_stats()
         briefing = activity_briefing(cfg, selected, snap)
     print(f"activity: {selected}")
+    if game_loadout.enabled():
+        print("inventory preparation: " + json.dumps(game_loadout.assessment(snap)))
     if changed:
         print(f"iteration: {stats.get('iteration') or next_activity_iteration(selected)} "
               f"({'baseline ready' if stats else 'XP baseline pending'})")
@@ -8612,6 +8652,12 @@ def cmd_reply(args):
         pending = next((m for m in est["pending_messages"] if m["id"] == args.message_id), None)
         if pending is None:
             die(f"no pending player message {args.message_id}")
+        if getattr(args, 'decision', None):
+            try:
+                game_decisions.save(json.loads(Path(args.decision).read_text()),
+                                    revise=getattr(args, 'revise', None))
+            except (OSError, ValueError) as exc:
+                die(str(exc))
         nearby_names = {
             str(player.get("name", "")).casefold()
             for player in snap.get("players") or [] if isinstance(player, dict)
@@ -8984,6 +9030,19 @@ def main():
                    help="show comparable XP/hour iterations for NAME or the current activity")
     p.set_defaults(fn=cmd_activity)
 
+    p = sub.add_parser("loadout", help="assess activity inventory; enable the gate or set a JSON declaration")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "enable", "set"])
+    p.add_argument("file", nargs="?")
+    p.set_defaults(fn=game_loadout.command)
+
+    p = sub.add_parser("decision", help="record, review, or explicitly revise a durable gameplay choice")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "set", "close", "check"])
+    p.add_argument("value", nargs="?")
+    p.add_argument("--revise", metavar="REASON")
+    p.add_argument("--reason")
+    p.add_argument("--item", type=int)
+    p.set_defaults(fn=game_decisions.command)
+
     p = sub.add_parser("session", help="the sitting's clock: open, status, end")
     p.add_argument("action", nargs="?", default="status",
                    choices=["open", "status", "end", "cutoff"])
@@ -9091,6 +9150,8 @@ def main():
                                       "the shared action slot (spec rule 7b)")
     p.add_argument("message_id", type=int)
     p.add_argument("text", nargs="+")
+    p.add_argument("--decision", metavar="FILE", help="save this promised course before sending the reply")
+    p.add_argument("--revise", metavar="REASON", help="explain a changed decision supplied with --decision")
     p.set_defaults(fn=cmd_reply)
 
     p = sub.add_parser("wait-until", aliases=["wait_until"],

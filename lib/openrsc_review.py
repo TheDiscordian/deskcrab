@@ -79,7 +79,8 @@ class Paths:
     def snapshot(self):
         files = [read(self.game / name, 24000) for name in (
             'objective', 'objective-progress.json', 'plan', 'activity', 'activity-stats.json',
-            'stop-at.json', 'session.json', 'learned-rules.json')]
+            'stop-at.json', 'session.json', 'learned-rules.json', 'loadout-policy.json', 'loadout.json',
+            'decisions.json')]
         files += [read(self.game / name, 32000, tail=True) for name in (
             'activity-history.jsonl', 'reflex-history.jsonl', 'outcome-queue.jsonl')]
         files += [read(self.player / 'handoff.md'), read(self.player / 'player.log', 24000, tail=True),
@@ -121,6 +122,28 @@ Assess all three points with evidence:
    A user redirect or a documented blocker that actually prevents progress can justify an
    earlier change; a marginally faster level elsewhere cannot. Banking, supply gathering,
    healing, and necessary prerequisites serve the same skill target rather than replacing it.
+   Treat inventory as part of the method: inspect every retained item, tool, food quantity,
+   and occupied slot. Reassess for the CURRENT activity and route. Earlier combat reserves,
+   old handoffs, and old plan instructions are not a reason to haul food through safe crafting.
+   Justify provisions with actual threats and observed consumption, bank irrelevant/excess
+   items, obtain required tools, and maximise useful batch capacity. Zero food can be correct
+   for a safe route; dangerous work can require substantial food. Avoid universal reserves.
+   Compare spoken commitments, decisions.json, plan revisions, and actual actions in time order.
+   A plan repaired after a contradiction does not prove the original choice was recorded before it.
+   Record a chosen course before promising it with `play reply --decision FILE`; preserve its
+   disposition through full bags and banking detours. Revisions need an observed reason or explicit
+   redirect; review the substance of that reason, not just the existence of a reason field.
+   Preserve the intended outcome, not an incidental route or formerly visited shop. Inspect
+   suitable nearby facilities before routing to a distant known one. "Verified" means suitability
+   was checked, not that a familiar distant store outranks an unvisited adjacent store. Measure
+   the complete cycle: supplies, production, disposal, travel, and return. Watch live actions
+   across a batch boundary when play is active; quantify nonproductive time and wasted slots.
+   A successful transaction does not make an unnecessarily long repeated journey efficient.
+   Repair the decision process and recurring reflex/prompt cause; verify the changed behaviour
+   in live play. Do not substitute a one-off plan edit or another memory for that verification.
+   Use `play loadout` and the contract at specs/game-loadout.md to record a context-specific
+   inventory declaration, then verify the actual inventory meets it. Fix pickup or banking
+   reflexes that keep recreating the waste. A memory or a written declaration alone is not a fix.
 3. Are reflexes working correctly? Inspect intended versus observed outcomes, retries,
    no-progress gaps, deaths, inventory/loot, activity mismatch, combat style, ceilings,
    interface handling, travel, food, and fatigue. Check revisions and comparable activity
