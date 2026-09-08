@@ -188,6 +188,40 @@ def ledger(raw, duration):
                     '--duration', str(duration), '--pid', str(os.getpid())], timeout=20, check=True)
 
 
+def restore_author(paths, status):
+    if systemctl('is-active', '--quiet', 'orsc-player-control.service').returncode == 0:
+        # The transient path may have been collected while stopped. Its ordinary
+        # start door recreates it with the current config and drains queued work.
+        subprocess.run([str(paths.headless / 'betty-openrsc'), 'author', 'start'],
+                       capture_output=True, text=True, timeout=20, check=True)
+        status['author_watcher_restored'] = True
+    else:
+        status['author_watcher_restored'] = False
+
+
+def recover(paths):
+    if not paths.reviews.exists():
+        return 0
+    with (paths.reviews / 'review.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        status = load(paths.reviews / 'latest.json')
+        if not status:
+            return 0
+        if status.get('state') in ('running', 'waiting-for-author'):
+            status.update(state='failed', error='Review process exited before recording completion.', finished_at=utc())
+        if status.get('author_watcher_paused') and not status.get('author_watcher_restored'):
+            try:
+                restore_author(paths, status)
+            except Exception as exc:
+                status['author_restore_error'] = str(exc)
+        atomic(Path(status['directory']) / 'status.json', status)
+        atomic(paths.reviews / 'latest.json', status)
+    return 1 if status.get('author_restore_error') and not status.get('author_watcher_restored') else 0
+
+
 def run(paths):
     paths.reviews.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (paths.reviews / 'review.lock').open('a') as review_lock:
@@ -289,14 +323,7 @@ def run_locked(paths):
             author_lock.close()
         if paused_author:
             try:
-                if systemctl('is-active', '--quiet', 'orsc-player-control.service').returncode == 0:
-                    # The transient path may have been collected while stopped. Its ordinary
-                    # start door recreates it with the current config and drains queued work.
-                    subprocess.run([str(paths.headless / 'betty-openrsc'), 'author', 'start'],
-                                   capture_output=True, text=True, timeout=20, check=True)
-                    status['author_watcher_restored'] = True
-                else:
-                    status['author_watcher_restored'] = False
+                restore_author(paths, status)
             except Exception as exc:
                 status['author_restore_error'] = str(exc)
                 status.update(state='failed', error='Could not restore the author watcher; see author_restore_error.')
@@ -319,7 +346,9 @@ if __name__ == '__main__':
     paths = Paths()
     if sys.argv[1:] == ['status']:
         print(json.dumps(load(paths.reviews / 'latest.json'), indent=2))
+    elif sys.argv[1:] == ['recover']:
+        raise SystemExit(recover(paths))
     elif sys.argv[1:] in ([], ['run']):
         raise SystemExit(run(paths))
     else:
-        raise SystemExit('usage: openrsc-review [run|status]')
+        raise SystemExit('usage: openrsc-review [run|status|recover]')

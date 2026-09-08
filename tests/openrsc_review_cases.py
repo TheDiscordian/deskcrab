@@ -135,6 +135,24 @@ sys.exit(1 if mode == 'nonzero' else 0)
                 self.assertEqual(review.run(self.paths), 1)
             self.assertEqual((self.root/'author-calls').read_text().strip(), 'author start')
 
+    def test_crash_recovery_restores_author_and_marks_failure(self):
+        folder = self.paths.reviews/'interrupted'
+        folder.mkdir(parents=True)
+        review.atomic(self.paths.reviews/'latest.json', {
+            'state': 'running', 'directory': str(folder), 'author_watcher_paused': True})
+        with patch.object(review, 'systemctl', return_value=subprocess.CompletedProcess([], 0)):
+            self.assertEqual(review.recover(self.paths), 0)
+        self.assertEqual(self.status()['state'], 'failed')
+        self.assertTrue(self.status()['author_watcher_restored'])
+        self.assertFalse((self.paths.reviews/'last-success.json').exists())
+
+    def test_crash_recovery_leaves_live_review_alone(self):
+        self.paths.reviews.mkdir()
+        with (self.paths.reviews/'review.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertEqual(review.recover(self.paths), 0)
+            self.assertFalse((self.root/'author-calls').exists())
+
     def test_missing_persona_does_not_call_model(self):
         self.persona.unlink()
         self.assertEqual(review.run(self.paths), 1)
