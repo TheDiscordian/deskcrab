@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly OpenRSC objective, training, and reflex self-review
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/deskcrab/openrsc-review run
+TimeoutStartSec=55min
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077

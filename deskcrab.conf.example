@@ -398,6 +398,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # OPENRSC_STATE_DIR="/tmp/deskcrab-game"
 # OPENRSC_GAME_DIR="$HOME/.local/share/deskcrab/game"
 # OPENRSC_SECRET=""             # blank generates a durable spectator-only key
+
+# Hourly self-review (systemd/deskcrab-openrsc-review.timer; enable when wanted).
+# Uses Astra High on CODEX_BIN/CODEX_HOME independently of the fast player model.
+# OPENRSC_REVIEW_DIR="$PROJECT_DIR/OpenRSC/reviews"
+# OPENRSC_REVIEW_TIMEOUT=3000    # total seconds, including waiting for the rule author
 #
 # Optional: where the user is. Each phone message may carry the phone's own
 # geolocation fix (the browser asks its permission once); a fresh fix on the
