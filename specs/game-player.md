@@ -191,9 +191,11 @@ deliberate-play channel.
    from the snapshot at fire time — nearest matching NPC by real walking steps, independently of
    input list order — and both ride the action file exactly
    as game-reflex rule 6 defines, so the bridge's despawn/mismatch re-checks still protect the
-   click), `attack-npc` (`npc`: the type id; NO distance parameter — a `within` cap here is
-   refused at validation, see the cap doctrine below) resolves that same stable
-   identity, requires the live NPC to be explicitly attackable, and sends the game's native attack
+   click), `attack-npc` (`npc`: the type id or rule 4's non-empty interchangeable target set;
+   the nearest currently visible attackable member is resolved at fire time and only that
+   member's exact type id and server index cross the action file; NO distance parameter — a
+   `within` cap here is refused at validation, see the cap doctrine below) resolves that same stable
+   identity and sends the game's native attack
    action. Combat begins only when structured state observes combat, an opponent, or combat XP;
    merely walking toward the NPC is not completion. `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
    `within` 0–10 caps the current Chebyshev tile distance and rides the action file for one final
@@ -1197,7 +1199,7 @@ deliberate-play channel.
 
     Retargeting an already learned NPC behaviour is likewise one catalog operation, never a
     relearning exercise: `retarget-npc SOURCE TARGET RULE [RULE…]` atomically widens every named
-    rule's `npc_visible` and `interact-npc.npc` target parameters, preserves every other trigger,
+    rule's `npc_visible`, `interact-npc.npc`, and `attack-npc.npc` target parameters, preserves every other trigger,
     action parameter, priority, zero cooldown, note and activity scope byte-for-byte, and runs the
     replay gate once over the complete change. `--replace` is the explicit destructive form;
     widening is the default so prior targets keep their learned behaviour.

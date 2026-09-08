@@ -1117,9 +1117,13 @@ contains "$OUT" "created:farmer-thieving-fast-pick" \
 python3 "$GP" learn farmer-thieving-fast-retreat --priority 1000 --cooldown-ms 0 \
     --trigger npc_visible=63 --trigger in_combat=true \
     --action sidestep --param dx=0 --param dz=1 >/dev/null
+python3 "$GP" learn farmer-prayer-attack --priority 12 --cooldown-ms 0 \
+    --trigger activity_is=farmer-thieving --trigger npc_visible=63 \
+    --trigger out_of_combat=true \
+    --action attack-npc --param npc=63 >/dev/null
 OUT="$(python3 "$GP" retarget-npc 63 86 \
-    farmer-thieving-fast-pick farmer-thieving-fast-retreat)"
-contains "$OUT" "retargeted 2 reflex(es)" \
+    farmer-thieving-fast-pick farmer-thieving-fast-retreat farmer-prayer-attack)"
+contains "$OUT" "retargeted 3 reflex(es)" \
     && python3 - "$DESKCRAB_GAME_DIR/learned-rules.json" <<'PY' \
     && ok "one retarget operation widens a whole reflex set without relearning it" \
     || fail "one retarget operation widens a whole reflex set without relearning it" "$OUT"
@@ -1127,6 +1131,7 @@ import json, sys
 rules = {r["name"]: r for r in json.load(open(sys.argv[1]))["rules"]}
 pick = rules["farmer-thieving-fast-pick"]
 retreat = rules["farmer-thieving-fast-retreat"]
+attack = rules["farmer-prayer-attack"]
 assert pick["trigger"]["npc_visible"] == [63, 86], pick
 assert pick["action"]["npc"] == [63, 86], pick
 assert pick["priority"] == 13 and pick["cooldown_ms"] == 0, pick
@@ -1134,8 +1139,36 @@ assert pick["trigger"]["activity_is"] == "farmer-thieving", pick
 assert retreat["trigger"]["npc_visible"] == [63, 86], retreat
 assert retreat["action"] == {"type": "sidestep", "dx": 0, "dz": 1}, retreat
 assert retreat["priority"] == 1000 and retreat["cooldown_ms"] == 0, retreat
+assert attack["trigger"]["npc_visible"] == [63, 86], attack
+assert attack["action"] == {"type": "attack-npc", "npc": [63, 86]}, attack
+PY
+python3 - "$GP" "$DESKCRAB_GAME_DIR/learned-rules.json" <<'PY' \
+    && ok "a retargeted attack chooses one nearest attackable member and compiles its exact identity" \
+    || fail "a retargeted attack chooses one nearest attackable member and compiles its exact identity"
+import importlib.util, json, os, sys
+gp_path, rules_path = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(gp_path))
+spec = importlib.util.spec_from_file_location("game_player_under_test", gp_path)
+gp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gp)
+rules = {r["name"]: r for r in json.load(open(rules_path))["rules"]}
+snap = {
+    "x": 10, "z": 10,
+    "npcs": [
+        {"id": 63, "sidx": 1, "x": 11, "z": 10, "attackable": False},
+        {"id": 86, "sidx": 2, "x": 12, "z": 10, "attackable": True},
+        {"id": 63, "sidx": 3, "x": 14, "z": 10, "attackable": True},
+    ],
+}
+action, why = gp.compile_player_action(rules["farmer-prayer-attack"], snap, None, None)
+assert why is None, why
+assert action["type"] == "attack-npc", action
+assert action["npc"] == 86 and action["sidx"] == 2, action
+assert action["target_distance"] == 2, action
+assert "within" not in action and "max_path" not in action, action
 PY
 python3 "$GP" remove farmer-thieving-fast-retreat >/dev/null
+python3 "$GP" remove farmer-prayer-attack >/dev/null
 
 # A productive activity left running gets a bounded three-minute checkpoint,
 # so optimization is proactive rather than waiting for the activity to end.

@@ -2424,9 +2424,19 @@ def validate_config(cfg: dict) -> None:
                     "forbidden (spec rule 5's cap doctrine); no learned attack ever "
                     "takes `within`. If a cap ever seems genuinely necessary, STOP "
                     "and raise it with the user instead of arming it")
-            if set(action) != {"type", "npc"} \
-                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
-                bad(f"{where}: attack-npc takes exactly npc=<type id>")
+            npc_param = action.get("npc")
+            # An attack target may be one type id or rule 4's interchangeable
+            # target set. Compilation still emits exactly one chosen type id
+            # and sidx, so no list ever crosses the bridge action slot.
+            npc_ok = (isinstance(npc_param, int)
+                      and not isinstance(npc_param, bool) and npc_param >= 0) \
+                or (isinstance(npc_param, list) and npc_param
+                    and len(set(npc_param)) == len(npc_param)
+                    and all(isinstance(v, int) and not isinstance(v, bool)
+                            and v >= 0 for v in npc_param))
+            if set(action) != {"type", "npc"} or not npc_ok:
+                bad(f"{where}: attack-npc takes exactly npc=<type id or list "
+                    "of distinct type ids>")
         elif atype == "interact-npc":
             npc_param = action.get("npc")
             # Spec rule 5: npc may be one type id or rule 4's target set — a
@@ -5219,18 +5229,22 @@ def compile_player_action(rule, snap, food, eat_pick):
         want = action["npc"]
         within = action.get("within")
         px, pz = snap.get("x"), snap.get("z")
-        npc = nearest_npc(snap, want)
+        # Eligibility belongs to the selected entity. For a target set,
+        # choose the nearest attackable member rather than selecting a nearer
+        # non-attackable entry and incorrectly rejecting the whole set.
+        npc = nearest_npc(snap, want,
+                          predicate=lambda entry: entry.get("attackable") is True)
         if npc is None:
             return None, "npc-not-visible"
-        if npc.get("attackable") is not True:
-            return None, "npc-not-attackable"
         distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
         if within is not None and distance > within:
             return None, "npc-not-within-range"
         extra = {"target_distance": distance}
         if within is not None:
             extra["within"] = within
-        return compiled_npc_action("attack-npc", npc, want, **extra), None
+        # Compile only the selected member's exact type. The bridge retains
+        # its ordinary stable-identity dispatch re-check.
+        return compiled_npc_action("attack-npc", npc, npc["id"], **extra), None
     if action["type"] == "interact-npc":
         want = action["npc"]
         within = action.get("within")
@@ -8533,7 +8547,8 @@ def cmd_retarget_npc(args):
             widened = expanded_npc_target(
                 action["npc"], args.source, args.target, args.replace)
             if widened is not None:
-                if action.get("type") != "interact-npc" and isinstance(widened, list):
+                if action.get("type") not in ("interact-npc", "attack-npc") \
+                        and isinstance(widened, list):
                     die(f"'{name}' uses {action.get('type')}, whose npc parameter cannot "
                         "be a target set; split or generalize that action first")
                 action["npc"] = widened
