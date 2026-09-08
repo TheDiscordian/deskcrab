@@ -4094,9 +4094,15 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
             and bool(snap.get("dialogue_options"))
         if server_menu:
             ui_changes.append("dialogue-menu-opened:true")
-        completed = bool(fields.get("item") in changed_item_ids
-                         or fields.get("target") in changed_item_ids
-                         or xp_changes or server_menu or failure)
+        # A prior production answer may release on input removal before
+        # its output/XP packets arrive. Those late packets do not prove this
+        # newly dispatched pair ran; require one of THIS pair's inputs lost.
+        input_used = any(
+            (current_inventory.get(key) or {}).get("count", 0)
+            < (old_inventory.get(key) or {}).get("count", 0)
+            for key in (fields.get("item"), fields.get("target"))
+            if key is not None)
+        completed = bool(input_used or server_menu or failure)
     if observation["type"] == "drop-inventory":
         # The client prints its local "Dropping ..." line at packet time,
         # before the server has moved anything, so a message alone is never

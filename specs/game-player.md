@@ -368,8 +368,10 @@ deliberate-play channel.
    the compiled action carries the two item identities alone, and the bridge re-resolves them to
    two live slots immediately before sending the ordinary item-on-item packet, so no slot,
    selection phase or pointer is ever remembered. Its observed postcondition is the deliberate
-   door's own: either named item's held count changing, an XP delta, or a newly opened
-   server-authored dialogue menu with nonempty options. That menu proves the pair reached the
+   door's own: either named item's held count decreasing, or a newly opened
+   server-authored dialogue menu with nonempty options. XP and unrelated output gains are
+   diagnostic, not completion by themselves: a previous menu's output/XP packets can arrive
+   after its input-removal packet and must not complete the next pair dispatch. That menu proves the pair reached the
    server and hands control to `choose-dialogue`; it does not claim production XP or consumption.
    Explicit failure feedback may end it unsuccessfully. A receipt, a context menu, a pane
    transition, a changed selection, or question text without an open reply menu is never completion. Lighting a fire remains explicitly outside it: the
@@ -554,7 +556,7 @@ deliberate-play channel.
    snapshot (two distinct slots when the ids are equal) before dispatching `use-item-item`; the
    bridge re-resolves both to two distinct live slots and sends the ordinary item-on-item packet
    with no selection phase and no pointer. Success requires either named item's held count
-   changing, XP, or rule 5's newly opened server dialogue menu. The menu handoff must not wait
+   decreasing, or rule 5's newly opened server dialogue menu; XP alone cannot finish a pair. The menu handoff must not wait
    for consumption that cannot happen before its answer. Only explicit failure feedback may
    end it unsuccessfully without a delta. A receipt, pane transition, or selection change is never
    completion. Lighting a fire is explicitly NOT this door's postcondition: the authentic

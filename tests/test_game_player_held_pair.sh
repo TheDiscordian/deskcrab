@@ -160,6 +160,14 @@ assert 'dialogue-menu-opened:true' in result['state']
 assert gp.action_completion(obs,after(right_click_menu_open=True)) is None
 assert gp.action_completion(obs,after(selected_inventory_item=13)) is None
 assert gp.action_completion(obs,after(ui_panel_open=True)) is None
+# The previous answer's log was removed before dispatch; its output and XP
+# arriving afterward must not authorize a duplicate pair before our menu.
+base['skills']=[{'id':9,'name':'Fletching','xp':1800}]
+late=gp.make_action_observation(4,'use-item-item',['item=13','target=14'],base)
+assert gp.action_completion(late,after(skills=[{'id':9,'name':'Fletching','xp':1810}],
+    inventory=base['inventory']+[{'id':276,'count':1}])) is None
+assert gp.action_completion(late,after(inventory=[{'id':13,'count':1},{'id':14,'count':5}]))['result']=='done'
+
 assert gp.action_completion(obs,after(dialogue_open=True)) is None
 assert gp.action_completion(obs,after(messages=[{'id':1,'channel':'game','text':'What would you like to make?'}])) is None
 old_menu=gp.make_action_observation(2,'use-item-item',['item=13','target=14'],menu)
