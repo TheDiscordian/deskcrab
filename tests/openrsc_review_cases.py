@@ -107,6 +107,9 @@ sys.exit(1 if mode == 'nonzero' else 0)
         self.assertTrue((folder/'after.json').exists())
         self.assertEqual(review.load(self.paths.reviews/'last-success.json')['state'], 'completed')
         self.ledger_mock.assert_called_once()
+        self.assertEqual(self.status()['session_started'], review.load(self.paths.game/'session.json')['started'])
+        self.assertTrue(self.status()['first_review_of_sitting'])
+        self.assertTrue(json.loads(call['input'])['first_review_of_sitting'])
 
     def test_failures_preserve_prior_success(self):
         self.assertEqual(review.run(self.paths), 0)
@@ -123,6 +126,7 @@ sys.exit(1 if mode == 'nonzero' else 0)
         review.run(self.paths)
         prompt = json.loads(review.load(self.root/'called.json')['input'])
         self.assertIn('Verified fixture training', prompt['previous_report']['text'])
+        self.assertFalse(prompt['first_review_of_sitting'])
         self.assertEqual(prompt['previous_evidence']['state']['skills'][0]['xp'], 100)
 
     def test_author_watcher_restores_only_during_authorised_play(self):
@@ -330,7 +334,8 @@ sys.exit(1 if mode == 'nonzero' else 0)
             calls.clear()
             armed = review.watch_step(self.paths, armed)
             self.assertEqual(calls, [('is-active', '--quiet', review.CONTROL_UNIT),
-                                     ('show', '--property=Job', '--value', review.CONTROL_UNIT)])
+                                     ('show', '--property=Job', '--value', review.CONTROL_UNIT),
+                                     ('show', '--property=ActiveState', '--value', review.REVIEW_UNIT)])
             self.end_play()
             calls.clear()
             armed = review.watch_step(self.paths, armed)
@@ -341,6 +346,98 @@ sys.exit(1 if mode == 'nonzero' else 0)
             self.assertEqual(calls, [])
         self.assertFalse(self.paths.reviews.exists())
         self.assertFalse((self.root/'called.json').exists())
+
+    def startup_manager(self, *args, check=False):
+        state = 'inactive' if args == ('show', '--property=ActiveState', '--value', review.REVIEW_UNIT) else ''
+        return subprocess.CompletedProcess(args, 0, stdout=state)
+
+    def test_startup_requests_review_once_and_retains_the_periodic_timer(self):
+        with patch.object(review, 'systemctl', side_effect=self.startup_manager) as manager:
+            self.assertTrue(review.watch_step(self.paths, None))
+            manager.assert_any_call('start', review.TIMER_UNIT, check=True)
+            manager.assert_any_call('start', '--no-block', review.REVIEW_UNIT, check=True)
+            self.assertFalse(self.paths.reviews.exists())  # admission belongs to the service
+            self.assertEqual(review.run(self.paths), 0)
+            manager.reset_mock()
+            self.assertTrue(review.watch_step(review.Paths(), None))  # scheduler restart
+            self.assertFalse(any(call.args == ('start', '--no-block', review.REVIEW_UNIT)
+                                 for call in manager.call_args_list))
+            session = review.load(self.paths.game/'session.json')
+            review.atomic(self.paths.game/'session.json', dict(session, limit_ms=7200000))
+            self.assertTrue(review.watch_step(self.paths, True))  # deadline extension
+            self.end_play()
+            self.assertFalse(review.watch_step(self.paths, True))
+            review.atomic(self.paths.game/'session.json', session)  # reconnect in same sitting
+            self.assertTrue(review.watch_step(self.paths, False))
+            self.assertFalse(any(call.args == ('start', '--no-block', review.REVIEW_UNIT)
+                                 for call in manager.call_args_list))
+
+    def test_new_sitting_gets_startup_review_even_if_watcher_never_saw_offline(self):
+        self.assertEqual(review.run(self.paths), 0)
+        session = review.load(self.paths.game/'session.json')
+        review.atomic(self.paths.game/'session.json', dict(session, started=session['started']+1))
+        with patch.object(review, 'systemctl', side_effect=self.startup_manager) as manager:
+            self.assertTrue(review.watch_step(self.paths, True))
+            manager.assert_any_call('start', '--no-block', review.REVIEW_UNIT, check=True)
+
+    def test_startup_waits_for_inflight_review_without_interrupting_it(self):
+        for state in ('active', 'activating', 'deactivating', 'unknown'):
+            with self.subTest(state=state), patch.object(review, 'systemctl',
+                    return_value=subprocess.CompletedProcess([], 0, stdout=state)) as manager:
+                review.request_start_review(self.paths)
+                manager.assert_called_once_with('show', '--property=ActiveState', '--value', review.REVIEW_UNIT)
+        self.assertFalse(self.paths.reviews.exists())
+
+    def test_startup_waits_for_login_and_does_not_consume_offline_attempt(self):
+        snapshot = review.load(self.paths.state/'state.json')
+        review.atomic(self.paths.state/'state.json', dict(snapshot, logged_in=False))
+        with patch.object(review, 'systemctl', side_effect=self.startup_manager) as manager:
+            self.assertFalse(review.watch_step(self.paths, False))
+            manager.assert_not_called()
+            self.assertFalse(self.paths.reviews.exists())
+            review.atomic(self.paths.state/'state.json', snapshot)
+            self.assertTrue(review.watch_step(self.paths, False))
+            manager.assert_any_call('start', '--no-block', review.REVIEW_UNIT, check=True)
+
+    def test_startup_rechecks_play_after_reading_service_state(self):
+        def manager(*args, check=False):
+            self.end_play()
+            return subprocess.CompletedProcess(args, 0, stdout='inactive')
+        with patch.object(review, 'systemctl', side_effect=manager) as manager:
+            review.request_start_review(self.paths)
+            manager.assert_called_once()
+        self.assertFalse(self.paths.reviews.exists())
+
+    def test_failed_launch_can_be_retried_without_duplicate_admission(self):
+        def manager(*args, check=False):
+            if args == ('start', '--no-block', review.REVIEW_UNIT):
+                raise subprocess.CalledProcessError(1, args)
+            return self.startup_manager(*args, check=check)
+        with patch.object(review, 'systemctl', side_effect=manager):
+            with self.assertRaises(subprocess.CalledProcessError):
+                review.request_start_review(self.paths)
+        self.assertFalse(self.paths.reviews.exists())
+        with patch.object(review, 'systemctl', side_effect=self.startup_manager) as manager:
+            review.request_start_review(self.paths)
+            manager.assert_any_call('start', '--no-block', review.REVIEW_UNIT, check=True)
+
+    def test_failed_admitted_review_does_not_loop_on_startup(self):
+        with patch.dict(os.environ, REVIEW_MODE='error'):
+            self.assertEqual(review.run(self.paths), 1)
+        with patch.object(review, 'systemctl') as manager:
+            review.request_start_review(self.paths)
+            manager.assert_not_called()
+
+    def test_existing_report_identifies_already_reviewed_sitting(self):
+        self.paths.reviews.mkdir()
+        sitting = review.load(self.paths.game/'session.json')['started']
+        legacy = {'state': 'completed', 'started_at': review.utc()}
+        review.atomic(self.paths.reviews/'latest.json', legacy)
+        self.assertTrue(review.reviewed_sitting(self.paths, sitting))
+        review.atomic(self.paths.reviews/'latest.json', dict(legacy, session_started=sitting-1000))
+        self.assertFalse(review.reviewed_sitting(self.paths, sitting))
+        review.atomic(self.paths.reviews/'latest.json', dict(legacy, started_at='2000-01-01T00:00:00+00:00'))
+        self.assertFalse(review.reviewed_sitting(self.paths, sitting))
 
     def test_watcher_exits_when_control_is_inactive(self):
         with patch.object(review, 'systemctl', return_value=subprocess.CompletedProcess([], 3)) as manager:
