@@ -64,6 +64,7 @@ WAIT_CONDITIONS = (
     "right_click_menu_open", "right_click_menu_closed",
     "ui_panel_open", "ui_panel_closed",
     "trade_open", "trade_closed", "duel_open", "duel_confirm", "duel_closed",
+    "bank_open", "bank_closed", "shop_open", "shop_closed",
     "sleeping", "not_sleeping", "fatigue_zero",
     "action_done",
 )
@@ -3715,6 +3716,9 @@ def wait_condition_met(condition: str, snap: dict) -> bool:
         return snap.get("ui_panel_open") is True
     if condition == "ui_panel_closed":
         return snap.get("ui_panel_open") is False
+    if condition in ("bank_open", "bank_closed", "shop_open", "shop_closed"):
+        interface, state = condition.split("_", 1)
+        return snap.get(f"{interface}_open") is (state == "open")
     if condition == "trade_open":
         return snap.get("trade_open") is True
     if condition == "trade_closed":
@@ -3741,7 +3745,7 @@ def wait_state_brief(snap: dict) -> str:
     parts = []
     for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
                 "right_click_menu_open", "ui_panel_open", "ui_panel",
-                "trade_open", "duel_open", "sleeping", "fatigue"):
+                "trade_open", "duel_open", "bank_open", "shop_open", "sleeping", "fatigue"):
         value = snap.get(key)
         if isinstance(value, bool):
             value = str(value).lower()

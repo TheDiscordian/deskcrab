@@ -89,5 +89,22 @@ assert not gp.rules_own_direct_action(cfg,'click-inventory',dict(item=350),'goal
 assert not gp.rules_own_direct_action(cfg,'click-inventory',dict(item=13),'goal','banking')[0]
 r['enabled']=False
 assert not gp.rules_own_direct_action(cfg,'click-inventory',dict(item=13),'goal','fletching')[0]
+# Live local sale/bank waits were repeatedly refused as unknown conditions.
+for interface in ('bank','shop'):
+    for state in ('open','closed'):
+        name=interface+'_'+state
+        assert gp.normalise_wait_condition(name.replace('_','-')) == name
+        expected=(state=='open')
+        fresh=dict(ts=gp.now_ms(),logged_in=True)
+        assert not gp.wait_condition_met(name,fresh)
+        fresh[interface+'_open']=expected
+        assert gp.wait_condition_met(name,fresh)
+        fresh[interface+'_open']=not expected
+        assert not gp.wait_condition_met(name,fresh)
+        fresh[interface+'_open']=expected
+        fresh['logged_in']=False
+        assert not gp.wait_condition_met(name,fresh)
+        fresh['logged_in']=True;fresh['ts']=gp.now_ms()-gp.WAIT_SNAPSHOT_FRESH_MS-1
+        assert not gp.wait_condition_met(name,fresh)
 print('Production and ownership checks passed')
 PY

@@ -774,9 +774,12 @@ deliberate-play channel.
    `logged_in`, `logged_out`, `walking`, `not_walking`, `in_combat`, `out_of_combat`,
    `talking_to_npc`, `not_talking_to_npc`, `right_click_menu_open`,
    `right_click_menu_closed`, `ui_panel_open`, `ui_panel_closed`, `trade_open`, `trade_closed`,
-   `duel_open`, `duel_confirm`, `duel_closed`,
-   `sleeping`, `not_sleeping`, `fatigue_zero`, and `action_done`; dashes are accepted in place of
-   underscores. `duel_open` and `duel_closed` follow the snapshot's `duel_open`; `duel_confirm`
+   `duel_open`, `duel_confirm`, `duel_closed`, `bank_open`, `bank_closed`,
+   `shop_open`, `shop_closed`, `sleeping`, `not_sleeping`, `fatigue_zero`, and `action_done`; dashes are accepted in place of
+   underscores. Bank and shop waits require their named interface field to be explicitly
+   true/open or false/closed in a fresh logged-in snapshot; a missing field is not closure.
+   They wait for the actual interface after a dialogue response rather than its packet receipt.
+   `duel_open` and `duel_closed` follow the snapshot's `duel_open`; `duel_confirm`
    is true only while the structured `duel` object names `confirm` as the open stage, so
    accepting the setup stage has an observable postcondition (`duel_confirm`) and accepting the
    confirmation has another (`duel_closed`) without a screenshot anywhere. Unlike the
