@@ -51,6 +51,8 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    succeeds, emits a completed turn without an error, and returns all three assessments,
    changes, verification, and next-review observations. Partial work and failures remain visible.
    The translated stream is recorded in the ordinary token ledger as `openrsc-review`.
+   The service's `ExecStopPost` recovers the author watcher after an unexpected process death,
+   marks an unfinished attempt failed, and never interferes with a live review or stopped sitting.
 8. The review entrypoint, paths, CLI, and deadline are overridable for the standard sandbox.
    Tests cover real launcher routing, persona and evidence, author exclusion, duplicate runs,
    failed/partial CLI output, deadline cleanup, and preservation of the last successful report.

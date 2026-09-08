@@ -5,6 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=%h/.local/lib/deskcrab/openrsc-review run
+ExecStopPost=%h/.local/lib/deskcrab/openrsc-review recover
 TimeoutStartSec=55min
 TimeoutStopSec=30
 KillMode=control-group
