@@ -38,7 +38,7 @@
    consumption, deposit irrelevant/excess items, acquire required tools, and verify the resulting
    inventory before resuming. A vague inherited safety reserve or an old plan's item list is
    insufficient evidence. It may keep food when the actual activity or route warrants it; it may
-   keep none when it does not. The hourly reviewer sees the declaration and live inventory,
+   keep none when it does not. The periodic reviewer sees the declaration and live inventory,
    audits the reasoning and actual batch capacity, and repairs recurring pickup/banking rules
    that recreate an unsuitable inventory. Inventory details belong in the activity declaration;
    the objective and training plan retain their actual goal and method.
@@ -83,7 +83,7 @@ The direct bank-deposit, shop-sell, and drop doors refuse an action that contrad
 item disposition. They print the decision and its reason so the player can follow it or explicitly
 revise it. The guard also checks legacy bank/shop inventory selection; use the semantic transaction
 door to disambiguate a withdrawal or other permitted operation. Emergency healing and retreat are
-unaffected. The hourly review compares conversation evidence, decisions, and completed actions;
+unaffected. The periodic review compares conversation evidence, decisions, and completed actions;
 it checks that a revision has a substantive reason, rather than accepting a reason field alone.
 
 ## Example declaration

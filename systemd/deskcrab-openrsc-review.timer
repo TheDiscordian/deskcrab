@@ -1,8 +1,10 @@
 [Unit]
-Description=Review the OpenRSC player's progress and effectiveness every hour
+Description=Review the OpenRSC player's progress and effectiveness every 45 minutes
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* 00/3:30:00 UTC
+OnCalendar=*-*-* 01/3:15:00 UTC
+OnCalendar=*-*-* 02/3:00,45:00 UTC
 Persistent=true
 AccuracySec=1min
 Unit=deskcrab-openrsc-review.service

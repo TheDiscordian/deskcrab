@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly OpenRSC objective, training, and reflex self-review
+Description=OpenRSC objective, training, and reflex self-review
 After=network-online.target
 
 [Service]

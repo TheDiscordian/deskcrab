@@ -1,14 +1,16 @@
-# OpenRSC hourly self-review
+# OpenRSC periodic self-review
 
 ## Purpose
 
-The hourly reviewer is the playing assistant examining and improving her own player.
+The periodic reviewer is the playing assistant examining and improving her own player.
 It complements the fast player and event-driven reflex author with a deliberate check of
 objective progress, training efficiency, and the correctness of the whole gameplay stack.
 
 ## Contract
 
-1. `deskcrab-openrsc-review.timer` runs once an hour, with persistent catch-up after downtime.
+1. `deskcrab-openrsc-review.timer` runs every 45 minutes, with persistent catch-up after downtime.
+   UTC calendar expressions cover all 32 daily slots at a uniform interval, including hour and
+   day boundaries. An existing review is not interrupted or overlapped at the next slot.
    Its oneshot service and a nonblocking process lock prevent overlapping reviews. A review
    has a 50-minute total deadline, including waiting for the existing author's lock.
 2. `lib/openrsc-review` reads the assistant's ordinary config. The reviewer uses only
@@ -27,7 +29,7 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    failure, fatigue, and recovery costs when comparing methods. State uncertainty when samples
    are short, stale, offline, or incomparable; do not present theoretical XP as measured XP.
    For leaderboard competition, optimise the method within the committed skill until its
-   concrete rank/rival milestone is verified complete. Level-ups and hourly reviews do not
+   concrete rank/rival milestone is verified complete. Level-ups and periodic reviews do not
    release that commitment, even when another skill offers a cheaper total level. A change of
    target before completion requires a user redirect or a documented blocker that prevents
    progress; supplies, recovery, and prerequisites remain part of the same target. Sitting
@@ -70,6 +72,6 @@ objective progress, training efficiency, and the correctness of the whole gamepl
 ## Operations
 
 Install the service and timer from `systemd/` into the user manager. Enable the timer only
-when hourly reviews are authorised. `systemctl --user start deskcrab-openrsc-review.service`
+when periodic reviews are authorised. `systemctl --user start deskcrab-openrsc-review.service`
 runs a pass immediately. `lib/openrsc-review status` reads the saved status without a model call.
 Stopping the timer prevents future reviews; stopping its service also interrupts the current pass.
