@@ -17,10 +17,14 @@ REPO="$SANDBOX_REPO"
 T="$SANDBOX"
 
 # The ingest, always healthy: this test is about the phases after the stamp.
+# The key backfill runs through the same crab binary (rule 14b names it), so
+# the stub answers it in the phase's own name — a silent stub here would be
+# the accusation this test exists to prove, drawn against the wrong hand.
 cat > "$T/crab-ok" <<'CRAB'
 #!/bin/bash
 case "$*" in
     "memory ingest") echo "ingest: 1 added, 0 superseded, 0 duplicates, 0 rejected" ;;
+    "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
 esac
 exit 0
 CRAB
@@ -36,7 +40,7 @@ stub() {  # <dir> <name>  (body on stdin)
 }
 chatty_except() {  # <dir> <name to leave out>
     local n
-    for n in claudism-scan eng-merge night-work promise-check; do
+    for n in claudism-scan eng-merge want-reflect night-work promise-check; do
         [ "$n" = "$2" ] && continue
         printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" | stub "$1" "$n"
     done

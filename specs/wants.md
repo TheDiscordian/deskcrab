@@ -142,8 +142,10 @@ this spec does not modify; kind `want` is this one.
 
 ## INTERACTIONS
 
-**The tool may be called by:** the user and the assistant through `crab want`, and the migration
-once per drawer.
+**The tool may be called by:** the user and the assistant through `crab want`, the nightly want
+reflection ([nightly.md](nightly.md) rules 53g-53j) — whose ONLY writing door is rule 7's
+`want new`, at most once a night, and which writes nothing at all on a no-new-want night — and
+the migration once per drawer.
 
 **The tool must never:** speak, notify, book a wake, dispatch a job, rewrite or reword a shelf
 line or a body, or write outside the wants directory and the shelf — with the one exception of the
@@ -163,4 +165,7 @@ guard, link verification and refusal, list ordering and search, kind separation 
 directions, and migration: byte-for-byte bodies, derived `opened` from git and from in-document
 dates, idempotence, and the naming of unshelved and missing documents);
 `tests/test_wants_titles.sh` and `tests/test_shelf_check.sh` (the shelf readers and the line
-budget, unchanged); `tests/test_eng_records.sh` (kind `eng`, unchanged).
+budget, unchanged); `tests/test_eng_records.sh` (kind `eng`, unchanged);
+`tests/test_want_reflection.sh` (the nightly reflection records through this tool only: a
+NOTHING night leaves the drawer and the shelf byte-identical, and a WANT night lands one
+document through rule 7's door with its shelf line in the one shape the shelf reader matches).

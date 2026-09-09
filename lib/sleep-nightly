@@ -176,6 +176,15 @@ cmd_run() {
     # knob block. Same bargain as the review: never the night's verdict.
     run_phase eng-merge "twin-merge pass" "$LIB_DIR/eng-merge" run --apply
 
+    # The want reflection, after the records are reconciled and BEFORE the
+    # night's work (specs/nightly.md rules 53g-53j): the day just lived,
+    # held once against the wants drawer by the night judge, with no
+    # obligation to produce anything. Most nights form no new want and that
+    # is the expected outcome; a want that does form lands through the
+    # wants tool alone, and a NOTHING night writes not one byte. Same
+    # bargain as the review: never the night's verdict.
+    run_phase want-reflect "want reflection" "$LIB_DIR/want-reflect" run
+
     # The night's work, the night's last phase: the stretch between the
     # stamp and the morning is machine time nobody is using, so the open
     # owed work — engineering threads, the sweep's misses, builder-shaped

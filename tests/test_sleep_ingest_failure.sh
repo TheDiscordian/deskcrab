@@ -26,6 +26,7 @@ case "$*" in
     "memory ingest")
         echo "ingest: model refused — usage limit reached" >&2
         exit 3 ;;
+    "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
 esac
 exit 0
 CRAB
@@ -35,6 +36,7 @@ cat > "$T/crab-ok" <<'CRAB'
 #!/bin/bash
 case "$*" in
     "memory ingest") echo "ingest: 2 added, 0 superseded, 0 duplicates, 0 rejected" ;;
+    "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
 esac
 exit 0
 CRAB
@@ -46,7 +48,7 @@ chmod +x "$T/crab-ok"
 stub_phases() {  # <lib dir> <marker dir>
     local n
     mkdir -p "$1" "$2"
-    for n in claudism-scan eng-merge night-work promise-check; do
+    for n in claudism-scan eng-merge want-reflect night-work promise-check; do
         printf '#!/bin/bash\necho "%s: stub — ran"\ntouch "%s/%s.ran"\nexit 0\n' \
             "$n" "$2" "$n" > "$1/$n"
         chmod +x "$1/$n"
@@ -72,7 +74,7 @@ if [ ! -f "$T/data-bad/deskcrab/last-slept" ]; then
 else
     fail "a failed ingest must not stamp" "$(cat "$T/data-bad/deskcrab/last-slept")"
 fi
-for n in claudism-scan promise-check eng-merge night-work; do
+for n in claudism-scan promise-check eng-merge want-reflect night-work; do
     if [ -f "$T/ran-bad/$n.ran" ]; then
         ok "the $n phase still ran"
     else
@@ -116,7 +118,7 @@ if [ -f "$T/data-ok/deskcrab/last-slept" ]; then
 else
     fail "a good night must stamp" "$out"
 fi
-for n in claudism-scan promise-check eng-merge night-work; do
+for n in claudism-scan promise-check eng-merge want-reflect night-work; do
     if [ -f "$T/ran-ok/$n.ran" ]; then
         ok "the $n phase ran"
     else

@@ -27,6 +27,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/common.sh` | the library: prompt, generation, conversation, delivery, sessions |
 | `lib/wake-queue.sh` | the only module that touches the wakes directory and wake units |
 | `lib/nightly-judge` | the night judge's one walk: every sleep judgment call, both engines, no fallback |
+| `lib/want-reflect` | the nightly want reflection: the day just lived held once against the wants drawer; most nights form nothing, and a want that forms lands through the wants tool alone |
 | `lib/tts-streamer` | speaks the stream sentence by sentence as it is written |
 | `lib/face_state.py` | the face-state broker and its client: one owner of what her portrait is doing |
 | `lib/face-broker` | her expressive hand (`crab face`) and the broker daemon's front door |

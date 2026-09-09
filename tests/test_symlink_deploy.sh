@@ -69,6 +69,7 @@ cat > "$T/crab-stub" <<'CRAB'
 #!/bin/bash
 case "$*" in
     "memory ingest") echo "ingest: 3 added, 0 superseded, 0 duplicates, 0 rejected" ;;
+    "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
 esac
 exit 0
 CRAB

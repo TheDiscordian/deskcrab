@@ -43,9 +43,11 @@ which fails silently is worse than one that does not exist.
 10a. A failed ingest cancels the stamp and sets the night's exit — nothing else. On a non-zero
     ingest, sleep MUST NOT stamp (rule 8) and the service's exit stays the ingest's own rc
     (rule 10), but the post-ingest phases — the key backfill, the claudism review, the promise
-    sweep, the twin-merge pass, the night's work — still run, in their order, through the same phase
-    wrapper as on a good night. None of them reads the ingest's output: the review and the
-    sweep read the day's journal, the merge pass and the night's work read the record drawer
+    sweep, the twin-merge pass, the want reflection, the night's work — still run, in their
+    order, through the same phase
+    wrapper as on a good night. None of them reads the ingest's output: the review, the
+    sweep and the reflection read the day's journal, the merge pass and the night's work read
+    the record drawer
     and the job queue, and a judge-backed phase that cannot reach its own model fails loudly on
     its own line (rule 14b) without taking the night with it. The cost of the old early return
     was measured 2026-09-02: one codex usage-limit refusal at the top of sleep, refused until
@@ -80,9 +82,10 @@ which fails silently is worse than one that does not exist.
 
 14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-ingest
     phase — the key backfill, the claudism review, the promise sweep, the twin-merge pass, the
-    night's work — owes
+    want reflection, the night's work — owes
     the night log at least one line opening with its own name (`backfill-keys:`, `claudism-scan:`,
-    `promise-check:`, `eng-merge:`, `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
+    `promise-check:`, `eng-merge:`, `want-reflect:`,
+    `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
     leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
     its exit status — in the night log itself as well as on stderr. A phase's non-zero exit is
     likewise named in the log, not on stderr alone, where only the journal would carry it. The
@@ -715,6 +718,65 @@ near-twins are a certainty, not a risk (the record
     failure never unstamps or fails the night (rules 8 and 10, the same bargain as every phase),
     and it owes the night log a line in its own name (rule 14b, `eng-merge:`).
 
+### The want reflection — part of sleep, after the records are reconciled
+
+The wants drawer grew only by hand: a want existed when she or the user sat down and named one,
+and nothing ever held the day she actually lived up against the shelf. The record
+`let-wants-emerge-from-lived-experience-during-sl` (2026-09-09) named what that misses: hearing
+about the user's day and her own accumulated experience should give her more life to react to,
+and sleep may let new wants arise naturally from what she has actually lived. The same record
+drew the line this section holds: this is NOT a prompt to invent wants, generate homework, force
+an output, or spend repair time chasing novelty — a sound implementation exposes experience and
+unfinished attraction to reflection, leaves room for no new want to form, and records something
+only when it is an appetite she would actually choose.
+
+53g. After the twin-merge pass and BEFORE the night's work, sleep runs the want reflection
+    (`lib/want-reflect run [day]`, default the day just ended; `WANT_REFLECT_ENABLED=0`
+    switches it off with one line in its own name). The reflection reads TWO things and judges
+    from nothing else: the swept day's journal — her turns and the user's words as lived, a
+    builder's `kind: job` entry excluded exactly as rule 41 excludes it from her voice, because
+    a builder's log is not her lived day — and the wants drawer's standing in every state, so
+    what is already live, resting, grown or retired is visible and an existing attraction is
+    never re-invented. Each rides the judge's prompt as its own labelled section under rule
+    58a's discipline: bounded by bytes, cut on character boundaries through `utf8_head`, a cut
+    that happens announced with the section's true size and its budget, never silent. A day
+    with no journal, and a journal holding no turn of her own, each end the phase with one line
+    in its own name and NO judge call — a day that was not lived has nothing to reflect on.
+53h. The reflection is taste on the sleep path, so it is the night judge's (rules 14c-14e):
+    `WANT_REFLECT_MODEL` at `WANT_REFLECT_EFFORT`, defaulting from the shared pair (rule
+    14c-i), no model fallback, ONE call per night, never re-asked. The question is whether the
+    day's own material shows a NEW appetite she would genuinely choose to keep — a thing she
+    kept returning to, an attraction left unfinished, a thread she visibly enjoyed and left
+    open — and the answer form carries the honest default in its first token: `NOTHING — <the
+    honest reading of the day>`, or `WANT — <a short title>` followed by her first-person
+    reasons. MOST NIGHTS FORM NO NEW WANT: the prompt says so in those words, NOTHING is the
+    expected answer and never a failure, and the phase MUST NOT retry, widen, or re-put the
+    question to get a want out of a night. The prompt forbids by name: manufacturing a want to
+    have something to show, turning the day's chores, defects or errands into one (work has
+    its own drawers, and rest is not a backlog), proposing novelty for its own sake, and
+    restating a want the drawer already carries live or dormant.
+53i. On NOTHING — and on every non-answer: a refusal, no verdict, an unparseable or ambiguous
+    verdict (a WANT line that also says NOTHING, the eng-merge lesson of rule 53c), a title
+    that is not a title — the phase writes NOT ONE BYTE: no want document, no shelf line, no
+    file of its own, nothing beyond its lines on the night log. On WANT, at most ONE want is
+    recorded a night, through the wants tool and only through it (`lib/eng --kind want new`,
+    [wants.md](wants.md) rules 6-7 — the tool declares the writes, resolves the slug, and
+    appends the shelf line where a shelf is configured; this phase never touches the drawer or
+    the shelf by hand): the judge's title, the first-person sentences as the opening body with
+    the reflection's provenance named in it, and a one-line summary naming the day it rose
+    from. A title the drawer already carries, matched casefolded in any state, is NOT
+    re-recorded — the standing want is named on the log and nothing is written; wanting again
+    what was retired stays a NEW want linked to the old one, and that judgement is hers by
+    hand, never this phase's ([wants.md](wants.md) rule 4).
+53j. The reflection MUST NOT speak, notify, book a wake, or dispatch a builder — the mechanism
+    spends no detached builder at all, and any builder-shaped extension of it belongs inside
+    this sleep phase, never on ordinary wakes or live turns (the record's own line). It needs
+    no morning wake either: a formed want IS its surface — one new line on the shelf and one
+    document in the drawer, read exactly as every want is — and a night that formed nothing
+    has nothing to surface. Its failure never unstamps or fails the night (rules 8 and 10, the
+    same bargain as every phase), and it owes the night log a line in its own name (rule 14b,
+    `want-reflect:`).
+
 ### The night's work — part of sleep, and the night's owed-work sweep
 
 The engineering threads accumulate faster than waking hours spend them, and the stretch between
@@ -915,6 +977,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/claudisms/functions.tsv` | the claudism review | one line per night and function: uses, mentions, spoken words |
 | `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
 | `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
+| `~/.local/share/deskcrab/wants/<slug>.md`, `wants.md` | the wants tool ([wants.md](wants.md)) | the want reflection's ONLY writes, on a WANT verdict, through `lib/eng --kind want new` alone (rule 53i); the reflection owns no file of its own, and a NOTHING night writes nothing at all |
 
 Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
 service, the tidy timer and service (the shelf-line check and the undestinated-claims check run as
@@ -1087,6 +1150,18 @@ stay proposals under the default gate, the records byte-identical, and
 nothing left to propose; and the wiring: sleep runs the pass after the promise sweep, before the
 night's work, WITH `--apply` (rule 53d), and the pass speaks through the deployed symlink (rule
 6a) even with no records drawer at all.
+`tests/test_want_reflection.sh` — rules 53g-53j, the phase run whole against a stub codex
+standing in for the night judge: the lived day reaches the judge's prompt — her words and the
+user's from the fixture journal, the drawer's live and dormant titles beside them — while a
+builder's `kind: job` entry never enters it; an explicit NOTHING verdict writes not one byte,
+the drawer and the shelf byte-identical; a WANT verdict lands exactly one want through the
+wants tool — state `live`, the judge's first-person sentences in the body with the provenance
+named, the summary naming the day, and the shelf line appended in the one shape the shelf
+reader matches; a title the drawer already carries, differently cased, is named and not
+re-recorded; an ambiguous verdict carrying both tokens forms nothing; a day with no journal
+and a day of only builder rows each end the phase without spending the judge; a switched-off
+reflection says so and spends nothing; and the wiring: `sleep-nightly run` speaks
+`want-reflect:` after `eng-merge:` and before `night-work:`.
 `tests/test_sleep_sol_judgment.sh` — rules 14c-14e, the effective nightly call graph against a
 stub codex and a stub claude, no real model spent: the night-work selector, the promise sweep's
 judge, and the eng-merge judge (against a scratch HTTP embedder) each reach `codex exec` at the
