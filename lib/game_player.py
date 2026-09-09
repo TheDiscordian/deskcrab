@@ -2464,9 +2464,13 @@ def validate_config(cfg: dict) -> None:
                     and len(set(npc_param)) == len(npc_param)
                     and all(isinstance(v, int) and not isinstance(v, bool)
                             and v >= 0 for v in npc_param))
-            if set(action) != {"type", "npc"} or not npc_ok:
-                bad(f"{where}: attack-npc takes exactly npc=<type id or list "
-                    "of distinct type ids>")
+            ranged = action.get("mode") == "ranged"
+            expected = {"type", "npc", "mode", "weapon", "ammo"} if ranged else {"type", "npc"}
+            if set(action) != expected or not npc_ok or (ranged and any(
+                    not isinstance(action.get(key), int) or isinstance(action.get(key), bool)
+                    or action[key] < 0 for key in ("weapon", "ammo"))):
+                bad(f"{where}: attack-npc takes npc=<type id or distinct type ids>; "
+                    "ranged mode additionally requires mode=ranged, weapon and ammo item ids")
         elif atype == "interact-npc":
             npc_param = action.get("npc")
             # Spec rule 5: npc may be one type id or rule 4's target set — a
@@ -4168,7 +4172,7 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         combat_skill_ids = {
             skill_id for skill_id, skill in current_skills.items()
             if str(skill.get("name", "")).casefold()
-            in {"attack", "defense", "strength", "hits"}
+            in {"attack", "defense", "strength", "hits", "ranged"}
         }
         combat_xp = bool(changed_skill_ids & combat_skill_ids)
         if combat_started:
@@ -4176,6 +4180,25 @@ def action_completion(observation: dict, snap: dict, context: dict = None):
         if opponent_acquired:
             ui_changes.append("opponent:acquired")
         completed = bool(combat_started or opponent_acquired or combat_xp or failure)
+        if fields.get("mode") == "ranged":
+            try:
+                weapon, ammo, npc, sidx = (int(fields[key]) for key in
+                                            ("weapon", "ammo", "npc", "sidx"))
+            except (KeyError, ValueError, TypeError):
+                return None
+            equipped = any(isinstance(item, dict) and item.get("id") == weapon
+                           and item.get("equipped") is True for item in snap.get("inventory") or [])
+            ammo_before = (old_inventory.get(str(ammo)) or {}).get("count", 0)
+            ammo_now = (current_inventory.get(str(ammo)) or {}).get("count", 0)
+            ranged_xp = any(current_skills[key].get("name", "").casefold() == "ranged"
+                            for key in changed_skill_ids)
+            released = isinstance(snap.get("npcs"), list) and snap.get("npcs_truncated") is False \
+                and not any(isinstance(entity, dict) and entity.get("sidx") == sidx
+                            and entity.get("id") == npc for entity in snap["npcs"])
+            failure = bool(failure or snap.get("in_combat") is True or not equipped or ammo_now <= 0)
+            completed = bool(failure or (released and (ammo_now < ammo_before or ranged_xp)))
+            if released and completed and not failure:
+                ui_changes.append("ranged-target:released")
     if observation["type"] == "use-item-object":
         # Pane/menu changes were the old two-click race, not evidence that the
         # server used the selected item. A furnace's start line also precedes
@@ -5272,6 +5295,12 @@ def compile_player_action(rule, snap, food, eat_pick):
             return compiled_npc_action("talk-npc", npc, want), None
         return None, "npc-not-visible"
     if action["type"] == "attack-npc":
+        if action.get("mode") == "ranged":
+            if not any(isinstance(item, dict) and item.get("id") == action["weapon"]
+                       and item.get("equipped") is True for item in snap.get("inventory") or []):
+                return None, "ranged-weapon-not-equipped"
+            if inventory_quantity(snap, action["ammo"]) <= 0:
+                return None, "ranged-ammunition-missing"
         want = action["npc"]
         within = action.get("within")
         px, pz = snap.get("x"), snap.get("z")
@@ -5290,6 +5319,8 @@ def compile_player_action(rule, snap, food, eat_pick):
             extra["within"] = within
         # Compile only the selected member's exact type. The bridge retains
         # its ordinary stable-identity dispatch re-check.
+        if action.get("mode") == "ranged":
+            extra.update(mode="ranged", weapon=action["weapon"], ammo=action["ammo"])
         return compiled_npc_action("attack-npc", npc, npc["id"], **extra), None
     if action["type"] == "interact-npc":
         want = action["npc"]
@@ -7551,11 +7582,11 @@ def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
         fields = [f"{key}={action[key]}" for key in (
             "item", "kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd",
             "within", "button", "batch", "ground", "amount",
-            "target", "text") if key in action]
+            "target", "text", "mode", "weapon", "ammo") if key in action]
         observation = make_action_observation(
             action_id, action["type"], fields, snap, event.get("ts"))
         completion_detail, latest = await_action_completion(
-            observation, WAIT_DEFAULT_S)
+            observation, WAIT_MAX_S if action.get("mode") == "ranged" else WAIT_DEFAULT_S)
         if completion_detail is None:
             status = f"{action['type']}-unverified"
         elif completion_detail.get("result") == "failed":
@@ -8790,7 +8821,7 @@ def progress_gate_or_die(change: str) -> None:
 # The skills an activity name plausibly trains; anything else gaining XP is
 # named in the reflection facts so a stale activity label cannot hide.
 ACTIVITY_SKILL_HINTS = {
-    "combat": {"attack", "defense", "strength", "hits"},
+    "combat": {"attack", "defense", "strength", "hits", "ranged"},
     "melee": {"attack", "defense", "strength", "hits"},
     "fight": {"attack", "defense", "strength", "hits"},
     "kill": {"attack", "defense", "strength", "hits"},
@@ -8831,7 +8862,7 @@ def activity_implied_skills(activity):
         if not rule.get("activity_scope"):
             continue
         if rule.get("action") == "attack-npc":
-            implied |= {"attack", "defense", "strength", "hits"}
+            implied |= {"attack", "defense", "strength", "hits", "ranged"}
         elif rule.get("action") == "cast-npc":
             implied |= {"magic", "hits"}
     return implied

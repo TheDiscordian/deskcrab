@@ -197,7 +197,19 @@ deliberate-play channel.
    `within` cap here is refused at validation, see the cap doctrine below) resolves that same stable
    identity and sends the game's native attack
    action. Combat begins only when structured state observes combat, an opponent, or combat XP;
-   merely walking toward the NPC is not completion. `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
+   merely walking toward the NPC is not completion. A learned ranged training attack may
+   additionally declare `mode: "ranged"`, `weapon` and `ammo` (item ids). Compilation requires
+   that exact weapon actually equipped and positive ammunition, not merely a ready loadout.
+   It sends the ordinary attack packet but retains this action's observation until the selected
+   NPC type/server-index disappears from a complete loaded NPC list after ammunition consumption
+   or Ranged XP. A projectile target pointer may remain after death; neither that pointer,
+   `in_combat: false` (the melee animation flag), movement, nor one arrow spent ends the fight.
+   Per-hit XP alone does not end it either. Target release is not by itself a claimed kill.
+   Melee interruption, loss of the required weapon/ammunition, or explicit refusal releases
+   observation as a failure. The existing maximum 60-second observation bound remains a recovery
+   deadline, not a firing cooldown; a timed-out acquisition is unverified and must be inspected.
+   Independent survival guards remain active throughout. Default melee acquisition is unchanged.
+   `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
    `within` 0–10 caps the current Chebyshev tile distance and rides the action file for one final
    dispatch-time recheck), which
    resolves the same stable NPC identity and performs its definition-backed menu command without
@@ -1276,7 +1288,7 @@ deliberate-play channel.
       escalates to `activity_stale` with the fix spelled out — reflexes are scoped by the
       declared activity, so a stale label can mute rules for the mode actually being
       played). These diagnostics first inspect enabled activity-scoped rules applicable
-      to the current objective: an attack-npc operation accounts for melee XP and combat
+      to the current objective: an attack-npc operation accounts for melee or equipped-bow Ranged XP and combat
       equipment even if its name mentions only the desired Prayer reward. Disabled rules,
       rules excluded by another objective, and global survival/support do not establish
       that operation. Name hints remain the fallback; they must not order a mode switch
