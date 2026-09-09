@@ -31,6 +31,12 @@
    in-flight action. Banking, travel, trading/selling/shopping, recovery, and resupply modes remain usable to satisfy the
    declaration. The independent survival engine is unchanged. Direct semantic preparation
    actions remain available. A preparation detour preserves the competitive skill target.
+   A missing or invalid declaration assessment itself names the supported recovery modes and
+   explains that it holds routine route execution: inspect the catalog with `play activity
+   --consider`, select an existing banking/travel/resupply operation, prepare, return to the
+   productive operation and declare/verify its inventory. A preparation-sounding custom name
+   does not bypass the gate. This guidance travels inside the assessment, so it remains visible
+   even when a compact resident-runner verdict omits the outer next-action field.
    The ordinary deliberation verdict carries the current inventory assessment, including when
    the resident runner performed the check. The runner reloads when either inventory or decision
    module changes, so improvements by the reviewer take effect in an existing sitting.

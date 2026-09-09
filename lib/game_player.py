@@ -2138,13 +2138,14 @@ def prepare_follow_navigation(request: dict, target: dict | None,
                      "max_path": NAVIGATION_LEG_MAX_PATH_TILES}, None
 
 
-def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
+def prepare_client_cache_route(route: dict, snap: dict, plan=None) -> tuple[dict, tuple | None]:
     """Plan the next local leg without replacing the final destination."""
     px, pz = snap.get("x"), snap.get("z")
     if not isinstance(px, int) or not isinstance(pz, int):
         return route, None
-    plan = client_cache_route_plan(
-        px, pz, route["x"], route["z"], route["arrive"])
+    if plan is None:
+        plan = client_cache_route_plan(
+            px, pz, route["x"], route["z"], route["arrive"])
     if plan["status"] == "error":
         blocked = dict(route)
         blocked.update({"status": "blocked", "blocked_reason": plan["reason"],
@@ -2207,12 +2208,36 @@ def prepare_client_cache_route(route: dict, snap: dict) -> tuple[dict, tuple | N
 
 
 def prepare_navigation_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
-    """Prefer a chain already walked successfully, then ask the client cache."""
+    """Reuse direct evidence, but compare remembered detours with the live map."""
     px, pz = snap.get("x"), snap.get("z")
     if isinstance(px, int) and isinstance(pz, int):
         path = verified_navigation_path(
             px, pz, route["x"], route["z"], route["arrive"])
         if path:
+            previous = [px, pz]
+            distance = 0
+            for point in path:
+                distance += max(abs(point[0] - previous[0]),
+                                abs(point[1] - previous[1]))
+                previous = point
+            if distance > route_distance(px, pz, route):
+                plan = client_cache_route_plan(
+                    px, pz, route["x"], route["z"], route["arrive"])
+                steps = plan.get("steps")
+                if plan.get("status") != "ok" or type(steps) is not int or steps < 0:
+                    if plan.get("status") == "ok":
+                        plan = {"status": "error",
+                                "reason": "client-cache-planner-invalid-cost"}
+                    return prepare_client_cache_route(route, snap, plan)
+                use_cache = steps < distance
+                flush_events([{"ts": now_ms(), "kind": "route-cost-comparison",
+                               "x": px, "z": pz,
+                               "target_x": route["x"], "target_z": route["z"],
+                               "verified_distance_lower_bound": distance,
+                               "client_steps": steps,
+                               "selected": "client-cache" if use_cache else "verified-links"}])
+                if use_cache:
+                    return prepare_client_cache_route(route, snap, plan)
             planned = {key: value for key, value in route.items()
                        if key != "next_portal" and not key.startswith("blocked_")}
             planned.update({

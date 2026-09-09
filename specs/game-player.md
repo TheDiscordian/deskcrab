@@ -896,9 +896,15 @@ deliberate-play channel.
    Each successfully settled client-planned route leg is also stored as a directed verified link
    in the observation atlas. These links are activity-agnostic movement evidence: an activity or
    objective chooses where to go, but a proven ordinary walk between two tiles is reusable by any
-   later activity. Before asking the client to search the complete cache again, the runner checks
-   for a connected chain of verified links from the current tile into the destination's arrival
-   area. It follows that chain one live collision-checked leg at a time. A link that fails the
+   later activity. Before reusing a connected chain into the destination's arrival area, the
+   runner sums its endpoint distances. A chain longer than the direct geometric distance is
+   evidence of a possible detour, not proof that its familiar path is efficient: ask the client
+   cache for a current complete route. If the cache route's total walking steps are below even
+   the remembered chain's distance lower bound, use the cache route and record both costs.
+   Otherwise reuse the chain one live collision-checked leg at a time. A geometrically direct
+   chain retains the fast reuse path. Missing or invalid cache comparison fails closed rather
+   than licensing an unexamined detour. This comparison never caps legitimate terrain detours,
+   changes the destination, or treats an unvisited facility as unsuitable. A link that fails the
    current collision check is disabled immediately and the unchanged destination falls back to a
    fresh client-cache plan; remembered travel can therefore accelerate repeated routes without
    overruling a door, dynamic blocker, changed map, or current client state.

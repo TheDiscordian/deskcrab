@@ -10,6 +10,12 @@ import game_decisions
 ROLES = {'tool', 'support', 'food', 'material', 'product'}
 PREPARATION_MODES = {'bank', 'banking', 'travel', 'travelling', 'traveling', 'transit',
                      'walking', 'journey', 'trading', 'selling', 'shopping', 'recovery', 'healing', 'resupply', 'retreat'}
+PREPARATION_RECOVERY = (
+    'Routine work and its route are held by inventory preparation, not a path failure. '
+    'Use play activity --consider "prepare inventory and reach supplies"; select an existing '
+    'banking, travel, or resupply mode. A preparation-sounding name is not an exemption. '
+    'Prepare through semantic doors, return to the productive activity, then '
+    'play loadout set FILE and verify play loadout; preserve the skill target and destination.')
 
 
 def directory():
@@ -82,11 +88,13 @@ def assessment(snap, ctx=None):
     record = read_json(directory() / 'loadout.json')
     if not isinstance(record, dict) or record.get('context') != ctx:
         return {'state': 'needs-review', 'activity': ctx['activity'],
-                'reason': 'Assess inventory for this activity, method, and sitting; old reserves do not carry over.'}
+                'reason': 'Assess inventory for this activity, method, and sitting; old reserves do not carry over.',
+                'recovery': PREPARATION_RECOVERY}
     try:
         declaration = validate(record.get('declaration'))
     except (ValueError, TypeError):
-        return {'state': 'needs-review', 'reason': 'Invalid inventory declaration; replace it.'}
+        return {'state': 'needs-review', 'reason': 'Invalid inventory declaration; replace it.',
+                'recovery': PREPARATION_RECOVERY}
     if not isinstance(snap, dict) or not isinstance(snap.get('inventory'), list):
         return {'state': 'needs-preparation', 'issues': ['inventory snapshot unavailable']}
     allowed = {item['id']: item for item in declaration['items']}

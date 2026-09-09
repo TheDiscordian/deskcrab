@@ -134,6 +134,65 @@ class Preparation(unittest.TestCase):
         (self.data/'activity').write_text('fletching')
         self.assertEqual(self.assess()['state'],'ready')
 
+    def test_preparation_named_mode_reports_route_gate_and_real_recovery(self):
+        # Startup evidence: a preparation-sounding mode held the resident route
+        # while manual coordinate probes wasted minutes without any inventory change.
+        (self.data/'activity').write_text('combat-prep')
+        result = self.assess()
+        self.assertEqual(result['state'], 'needs-review')
+        self.assertIn('not a path failure', result['recovery'])
+        self.assertIn('play activity --consider', result['recovery'])
+        self.assertIn('banking, travel, or resupply', result['recovery'])
+        (self.data/'activity').write_text('banking')
+        self.assertEqual(self.assess()['state'], 'preparation-mode')
+
+    def test_familiar_detour_compares_complete_route_before_reuse(self):
+        # Observed route: a nine-link familiar chain from (94,647) to a bank
+        # was longer than the live cache's 44 walking steps through a gate.
+        points = [[90,649], [85,657], [85,665], [82,673], [81,681],
+                  [86,689], [86,693], [86,692], [91,695]]
+        path = [[x,z,str(i)] for i,(x,z) in enumerate(points)]
+        route = {'x':93,'z':693,'arrive':3,'objective':'skill target',
+                 'landmark':{'name':'Banker'},'status':'active'}
+        snap = dict(self.snap, x=94, z=647)
+        plan = {'status':'ok','steps':44,'waypoints':[[92,650],[91,650],[94,690]],
+                'portals':[{'kind':'object','id':180,'x':92,'z':649,'dir':0,
+                            'from':[92,650],'to':[91,650]}]}
+        with patch.object(gp,'verified_navigation_path',return_value=path), \
+                patch.object(gp,'client_cache_route_plan',return_value=plan) as query:
+            result, leg = gp.prepare_navigation_route(route,snap)
+        self.assertEqual(query.call_count,1)
+        self.assertEqual(result['planner'],'client-cache')
+        self.assertEqual(leg,(92,650))
+        self.assertEqual((result['x'],result['z']),(93,693))
+        self.assertEqual(result['next_portal']['id'],180)
+
+    def test_direct_links_keep_fast_path_and_real_terrain_detours_stay_valid(self):
+        route = {'x':116,'z':100,'arrive':0,'objective':'skill target','status':'active'}
+        path = [[108,100,'one'],[116,100,'two']]
+        with patch.object(gp,'verified_navigation_path',return_value=path), \
+                patch.object(gp,'client_cache_route_plan') as query:
+            result, leg = gp.prepare_navigation_route(route,self.snap)
+        query.assert_not_called()
+        self.assertEqual(result['planner'],'verified-links')
+        path = [[100,108,'one'],[108,108,'two'],[116,100,'three']]
+        with patch.object(gp,'verified_navigation_path',return_value=path), \
+                patch.object(gp,'client_cache_route_plan',return_value={'status':'ok','steps':30}):
+            result, leg = gp.prepare_navigation_route(route,self.snap)
+        self.assertEqual(result['planner'],'verified-links')
+
+    def test_detour_comparison_failure_cannot_silently_resume_familiar_route(self):
+        route = {'x':116,'z':100,'arrive':0,'objective':'skill target','status':'active'}
+        path = [[100,108,'one'],[108,108,'two'],[116,100,'three']]
+        for plan in ({'status':'error','reason':'client-cache-planner-timeout'},
+                     {'status':'ok','steps':None}, {'status':'ok','steps':True}):
+            with patch.object(gp,'verified_navigation_path',return_value=path), \
+                    patch.object(gp,'client_cache_route_plan',return_value=plan):
+                result, leg = gp.prepare_navigation_route(route,self.snap)
+            self.assertEqual(result['status'],'blocked')
+            self.assertIsNone(leg)
+            self.assertEqual((result['x'],result['z']),(116,100))
+
     def test_food_is_allowed_when_justified_for_this_activity(self):
         self.doc['risk']='Observed attacks on this training route; food is consumed between fights'
         self.doc['min_working_slots']=20
