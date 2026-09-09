@@ -465,6 +465,11 @@ against the shipped CLI before this rule was written.
     A managed private display may provide `run/Xauthority`. Both the read-only X11 helper and
     ffmpeg use that explicit file; desktop display credentials remain excluded. Authentication
     material never enters the HUD or frame metadata.
+    The capture rectangle is checked again during streaming. If the game window appears after
+    capture starts, moves, or changes size, the producer reconnects to its current rectangle;
+    capturing the initial bare virtual screen must not leave permanent black borders. Starting
+    a producer after an idle period waits for its first new frame even when the generation
+    counter belongs to an earlier producer.
 55. `/openrsc/state` is an allowlist, not a mirror of `state.json`: login/freshness, tile, HP,
     fatigue, movement/combat/sleep, objective, its deliberately selected plan, activity, and
     positive activity XP/hour only.

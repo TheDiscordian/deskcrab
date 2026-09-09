@@ -318,7 +318,7 @@ class FrameSource:
                     target=self._run, name="openrsc-spectator", daemon=True)
                 self.thread.start()
             deadline = time.monotonic() + max(0.0, timeout)
-            while self.generation <= after and not self.error:
+            while (self.frame is None or self.generation <= after) and not self.error:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -351,6 +351,7 @@ class FrameSource:
             display = _display_number()
             source = _discover_source(display)
             incarnation = _display_incarnation(display)
+            geometry_checked = time.monotonic()
             x, y, width, height = source
             pointer_override = _pointer_override()
             if pointer_override is None:
@@ -401,6 +402,11 @@ class FrameSource:
                     del buf[:end + 2]
                     if _display_incarnation(display) != incarnation:
                         raise RuntimeError("OpenRSC private display restarted")
+                    now = time.monotonic()
+                    if now - geometry_checked >= 1.0:
+                        if _discover_source(display) != source:
+                            raise RuntimeError("OpenRSC client viewport changed")
+                        geometry_checked = now
                     absolute_pointer = pointer_override
                     if pointer_source is not None:
                         try:

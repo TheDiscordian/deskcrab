@@ -308,3 +308,47 @@ fi
 
 refute "neither phone nor spectator credentials enter the access log" \
     grep -q "$SECRET\|$WATCH_SECRET" "$T/server.log"
+
+PYTHONPATH="$REPO_DIR/lib" python3 - <<'PY' \
+    && ok "capture follows a window that appears after startup" \
+    || fail "capture follows a window that appears after startup" "viewport did not refresh"
+from unittest.mock import MagicMock, patch
+import openrsc_spectator as m
+
+root, client = (0, 0, 1024, 768), (256, 211, 512, 346)
+frame = b'\xff\xd8fixture\xff\xd9'
+source = m.FrameSource()
+process = MagicMock()
+process.poll.return_value = None
+with (patch.object(m, '_display_number', return_value=77),
+      patch.object(m, '_display_incarnation', return_value=('same-display',)),
+      patch.object(m, '_pointer_override', return_value=(300, 250)),
+      patch.object(m.subprocess, 'Popen', return_value=process) as launch,
+      patch.object(m, '_discover_source', side_effect=[root, client]),
+      patch.object(m.time, 'monotonic', side_effect=[0, 0, 0, 2]),
+      patch.object(m.os, 'read', return_value=frame)):
+    source._run()
+    assert source.generation == 1
+    assert source.error == 'OpenRSC client viewport changed'
+    process.terminate.assert_called_once()
+
+with (patch.object(m, '_display_number', return_value=77),
+      patch.object(m, '_display_incarnation', return_value=('same-display',)),
+      patch.object(m, '_pointer_override', return_value=(300, 250)),
+      patch.object(m.subprocess, 'Popen', return_value=process) as launch,
+      patch.object(m, '_discover_source', return_value=client),
+      patch.object(m.time, 'monotonic', return_value=0),
+      patch.object(m.os, 'read', side_effect=[frame, b''])):
+    source._run()
+    args = launch.call_args.args[0]
+    assert args[args.index('-video_size') + 1] == '512x346'
+    assert args[args.index('-i') + 1] == ':77+256,211'
+    assert source.generation == 2 and source.pointer == (44, 39)
+PY
+
+# A stopped producer retains its generation counter but has no first frame
+# until the replacement thread publishes one. The request must wait for it.
+curl -fsS -D "$T/restarted.hdr" -o "$T/restarted.jpg" \
+    -b "$T/watch.cookies" "$BASE/openrsc/frame.jpg?after=0" \
+    && ok "an idle producer returns a new first frame without a spurious timeout" \
+    || fail "an idle producer returns a new first frame without a spurious timeout" "request failed"
