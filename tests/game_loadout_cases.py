@@ -64,6 +64,20 @@ class Preparation(unittest.TestCase):
     def assess(self):
         return gl.assessment(self.snap)
 
+    def test_blocked_cache_route_recovery_survives_compact_reflection(self):
+        self.snap['bounds'] = [{'id':1,'name':'Doorframe','x':75,'z':667,
+                                'dir':0,'commands':['WalkTo','Close']}]
+        route={'status':'blocked','blocked_reason':'unreachable-in-client-cache',
+               'x':92,'z':691}
+        with patch.object(gp,'load_route',return_value=route):
+            text=gp.reflection_fields(self.snap)['route_recovery']
+            self.assertIn('(92,691)',text)
+            self.assertIn('not a failed server walk',text)
+            self.assertIn('"x":75',text)
+            self.assertIn('SAME final target',text)
+        with patch.object(gp,'load_route',return_value=dict(route,status='active')):
+            self.assertNotIn('route_recovery',gp.reflection_fields(self.snap))
+
     def test_candidate_replay_can_ground_a_disabled_pickup_before_arming(self):
         rule = {'name':'new-corpse','enabled':False,'priority':900,
                 'cooldown_ms':0,'hold_ticks':1,

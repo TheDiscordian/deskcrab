@@ -1293,6 +1293,15 @@ deliberate-play channel.
       loot on the ground, the wrong activity declared, a plan step already agreed to be wrong" —
       answered by fixing what it finds through the ordinary doors, not by narrating it.
 
+    A blocked native-cache route also carries `route_recovery` in the foreground
+    reflection facts, not only in a transient action report. `unreachable-in-client-cache`
+    is a planning refusal, not proof that a server walk failed. Name the unchanged final
+    target and current visible doorway identities; require inspection of that boundary,
+    an observed doorway crossing or appropriate semantic interaction, and replanning to
+    the original target. Repeated compass destinations and replaying an entire work trail
+    do not diagnose a boundary. An open live doorway may disagree with static cache scenery;
+    do not assert this diagnosis without the observed boundary and subsequent action outcome.
+
 11d. **A stopping level named out loud is a mechanical, fail-closed stop.** A ceiling that
     exists only as a spoken sentence, or as advisory prose in the plan, is a ceiling nothing
     tests: the activity's reflexes outrank prose and the loop continues past any written

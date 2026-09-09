@@ -8888,6 +8888,20 @@ def reflection_fields(snap: dict = None) -> dict:
     record = load_progress()
     now = now_ms()
     fields = {}
+    route = load_route()
+    if isinstance(snap, dict) and route and route.get("status") == "blocked" \
+            and route.get("blocked_reason") == "unreachable-in-client-cache":
+        doors = [{k: b.get(k) for k in ("id", "name", "x", "z", "dir", "commands")}
+                 for b in snap.get("bounds") or []
+                 if any(str(c).lower() in ("open", "close") for c in b.get("commands") or [])]
+        fields["route_recovery"] = (
+            f"Native cache could not PLAN a path to ({route.get('x')},{route.get('z')}); "
+            "this is not a failed server walk. Inspect the current doorway/terrain, "
+            "cross its observed threshold or perform its appropriate semantic interaction, "
+            "verify the result, then replan to that SAME final target. An open live doorway "
+            "can disagree with static cache scenery; establish the actual crossing rather "
+            "than trying more compass destinations or replaying the whole work trail. "
+            "Visible doorways=" + json.dumps(doors[:3], separators=(",", ":")))
     if isinstance(snap, dict) and game_loadout.enabled():
         fields['inventory_prepare'] = json.dumps(game_loadout.assessment(snap))
     if isinstance(snap, dict) and len(snap.get("inventory") or []) >= 30:
