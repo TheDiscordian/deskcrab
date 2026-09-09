@@ -135,6 +135,12 @@ def spectator_state(now_ms=None):
     except OSError:
         pass
 
+    player_view = _read_json(GAME_DIR / "player-view.json")
+    if player_view.get("schema") == 1:
+        activity = str(player_view.get("activity") or "")
+        objective = str(player_view.get("objective") or "")
+        plan = str(player_view.get("plan") or "")
+
     xp_rates = []
     stats = _read_json(GAME_DIR / "activity-stats.json")
     started = stats.get("started_ms")
@@ -165,7 +171,7 @@ def spectator_state(now_ms=None):
         "activity": activity,
         "objective": objective,
         "plan": plan,
-        "recent_thought": latest_player_thought(),
+        "recent_thought": player_view.get("recent_thought") if player_view.get("schema") == 1 else latest_player_thought(),
         "tile": ({"x": state.get("x"), "z": state.get("z")}
                  if fresh and isinstance(state.get("x"), int)
                  and isinstance(state.get("z"), int) else None),
@@ -253,7 +259,8 @@ def _open_x11_source(display):
             "openrsc_x11_source", module_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.X11Source(display)
+        authority = HEADLESS_DIR / "run" / "Xauthority"
+        return module.X11Source(display, authority=authority) if authority.exists() else module.X11Source(display)
     except (OSError, AttributeError, ImportError) as exc:
         raise RuntimeError(f"OpenRSC source discovery failed: {exc}") from None
 
@@ -350,6 +357,9 @@ class FrameSource:
                 pointer_source = _open_x11_source(display)
             env = {key: value for key, value in os.environ.items()
                    if key not in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY")}
+            authority = HEADLESS_DIR / "run" / "Xauthority"
+            if authority.exists():
+                env["XAUTHORITY"] = str(authority)
             cmd = [
                 FFMPEG, "-nostdin", "-loglevel", "error",
                 "-f", "x11grab", "-draw_mouse", "0",

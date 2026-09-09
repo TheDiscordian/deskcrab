@@ -462,9 +462,14 @@ against the shipped CLI before this rule was written.
     still-running phone server invalidates the old capture and reconnects it, rather than emitting
     an advancing sequence of frozen frames from the departed display. No HTTP method or route may
     send mouse, keyboard, bridge actions, or game commands.
+    A managed private display may provide `run/Xauthority`. Both the read-only X11 helper and
+    ffmpeg use that explicit file; desktop display credentials remain excluded. Authentication
+    material never enters the HUD or frame metadata.
 55. `/openrsc/state` is an allowlist, not a mirror of `state.json`: login/freshness, tile, HP,
     fatigue, movement/combat/sleep, objective, its deliberately selected plan, activity, and
     positive activity XP/hour only.
+    When present, the managed player's `player-view.json` supplies the selected objective,
+    method, and activity. Proposed activities and private engineering diagnostics remain absent.
     Inventory, chat, credentials, routes, memory, and engine internals never leave the machine.
     The self-contained page is mobile-first, reconnects after game/server transitions, pauses when
     hidden, offers fullscreen and an explicit spectator pause, and labels the view read-only.

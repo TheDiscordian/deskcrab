@@ -41,6 +41,7 @@ cat > "$PORTRAITS/manifest.json" <<'JSON'
  "assets": {"expr-resting": {"file": "living/face-resting.png"}}}
 JSON
 printf '77\n' > "$HEADLESS/run/display"
+printf 'private-display-fixture\n' > "$HEADLESS/run/Xauthority"
 NOW_MS="$(($(date +%s%N) / 1000000))"
 python3 - "$GSTATE/state.json" "$NOW_MS" <<'PY'
 import json, sys
@@ -66,6 +67,7 @@ PY
 # A deterministic image2pipe producer: each JPEG is deliberately tiny, but
 # has the same SOI/EOI framing the real ffmpeg stream uses.
 printf '%s\n' '#!/bin/bash' \
+    "[ \"\${XAUTHORITY:-}\" = '$HEADLESS/run/Xauthority' ] || exit 19" \
     "printf '%s\\n' \"\$\$\" > '$T/fake-ffmpeg.pid'" \
     'while :; do' \
     "    printf '\\377\\330OPENRSC-FRAME\\377\\331'" \
@@ -237,6 +239,12 @@ refute "chat never leaves the game machine" grep -q 'private words\|messages' <<
 refute "capture internals never leave the game machine" \
     grep -q 'display\|source\|generation\|streaming' <<<"$STATE"
 
+printf '%s\n' '{"schema":1,"activity":"combat","objective":"Keep the committed milestone","plan":"prepared-method","recent_thought":null,"private":"unexposed"}' > "$GDATA/player-view.json"
+MANAGED="$(curl -fsS -b "$T/watch.cookies" "$BASE/openrsc/state")"
+check_eq "managed view supplies the selected activity" "$(printf '%s' "$MANAGED" | jq -r .activity)" "combat"
+check_eq "managed view supplies the selected method" "$(printf '%s' "$MANAGED" | jq -r .plan)" "prepared-method"
+refute "unlisted managed fields remain private" grep -q 'unexposed' <<<"$MANAGED"
+
 echo "== one on-demand producer serves fresh JPEG frames =="
 curl -fsS -D "$T/frame1.hdr" -o "$T/frame1.jpg" \
     -b "$T/watch.cookies" "$BASE/openrsc/frame.jpg?after=0"
@@ -260,6 +268,7 @@ raise SystemExit(0 if b.startswith(b"\xff\xd8") and b.endswith(b"\xff\xd9") else
 PY
 GEN="$(sed -n 's/^X-Frame-Generation: *//Ip' "$T/frame1.hdr" | tr -d '\r')"
 FFMPEG_PID="$(cat "$T/fake-ffmpeg.pid")"
+check "the authenticated producer records its process identity" test -s "$T/fake-ffmpeg.pid"
 curl -fsS -D "$T/frame2.hdr" -o "$T/frame2.jpg" \
     -b "$T/watch.cookies" "$BASE/openrsc/frame.jpg?after=$GEN"
 GEN2="$(sed -n 's/^X-Frame-Generation: *//Ip' "$T/frame2.hdr" | tr -d '\r')"
