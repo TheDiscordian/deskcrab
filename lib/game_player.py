@@ -8809,15 +8809,29 @@ ACTIVITY_SKILL_HINTS = {
 }
 
 
+def activity_implied_skills(activity):
+    """Names are hints; applicable scoped operations provide stronger evidence."""
+    act = (activity or "").lower()
+    implied = set()
+    for token, skills in ACTIVITY_SKILL_HINTS.items():
+        if token in act:
+            implied |= skills
+    for rule in activity_rule_snapshot(current_config_or_empty(), read_objective(), activity):
+        if not rule.get("activity_scope"):
+            continue
+        if rule.get("action") == "attack-npc":
+            implied |= {"attack", "defense", "strength", "hits"}
+        elif rule.get("action") == "cast-npc":
+            implied |= {"magic", "hits"}
+    return implied
+
+
 def xp_activity_mismatch(xp_text, activity):
     """Skills gaining XP that the declared activity does not account for."""
     if not xp_text or not activity:
         return None
     act = activity.lower()
-    implied = set()
-    for token, skills in ACTIVITY_SKILL_HINTS.items():
-        if token in act:
-            implied |= skills
+    implied = activity_implied_skills(activity)
     stray = []
     for segment in xp_text.split(";"):
         name = segment.split(":", 1)[0].strip()
@@ -8877,10 +8891,7 @@ def reflection_fields(snap: dict = None) -> dict:
         act = (activity or "").lower()
         if act and not any(token in act for token in
                            ("bank", "travel", "transit", "walk", "journey")):
-            implied = set()
-            for token, skills in ACTIVITY_SKILL_HINTS.items():
-                if token in act:
-                    implied |= skills
+            implied = activity_implied_skills(activity)
             worn = [item for item in snap.get("inventory") or []
                     if item.get("equipped")]
             # Judge only what the name clearly declares: an unmapped name

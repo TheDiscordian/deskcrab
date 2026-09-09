@@ -64,6 +64,33 @@ class Preparation(unittest.TestCase):
     def assess(self):
         return gl.assessment(self.snap)
 
+    def test_prayer_attack_operation_is_not_mislabeled_burial(self):
+        # Observed kill/loot/bury mode was ordered to bank its equipped armour
+        # and switch to a different mode solely because its name said Prayer.
+        (self.data/'activity').write_text('prayer-training')
+        self.snap['inventory'] = [{'id':i,'equipped':True} for i in (72,114,9,209)]
+        attack = {'name':'bone-source','enabled':True,'priority':700,
+                  'cooldown_ms':0,'hold_ticks':1,
+                  'trigger':{'activity_is':'prayer-training'},
+                  'action':{'type':'attack-npc','npc':72}}
+        self.cfg['rules'] = [attack]
+        (self.data/'learned-rules.json').write_text(json.dumps(self.cfg))
+        self.assertIsNone(gp.xp_activity_mismatch('Strength:+100_total;Prayer:+8_total','prayer-training'))
+        self.assertNotIn('hauling',gp.reflection_fields(self.snap))
+        self.assertEqual(gp.xp_activity_mismatch('Cooking:+100_total','prayer-training'),'Cooking')
+        for replacement in (
+                dict(attack,enabled=False),
+                dict(attack,trigger={'activity_is':'prayer-training','objective_is':'other'}),
+                dict(attack,trigger={})):
+            self.cfg['rules'] = [replacement]
+            (self.data/'learned-rules.json').write_text(json.dumps(self.cfg))
+            self.assertEqual(gp.xp_activity_mismatch('Strength:+100_total','prayer-training'),'Strength')
+            self.assertIn('hauling',gp.reflection_fields(self.snap))
+        self.cfg['rules'] = [attack]
+        (self.data/'learned-rules.json').write_text(json.dumps(self.cfg))
+        (self.data/'activity').write_text('burying')
+        self.assertIn('hauling',gp.reflection_fields(self.snap))
+
     def test_incidental_arrow_cannot_recreate_banking_detour(self):
         # Live 2026-09-08: after banking the unwanted arrow, a global pickup
         # diverted a fletching route 18 tiles and immediately invalidated loadout.
