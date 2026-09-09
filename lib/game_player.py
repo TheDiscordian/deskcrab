@@ -8339,6 +8339,17 @@ def action_assertion_failures(case: dict, action) -> list:
     return problems
 
 
+def replay_config(cfg, case):
+    """Preview one proposed enabled rule without mutating the installed table."""
+    if not case.get("candidate"):
+        return cfg
+    want = case.get("expect")
+    if not want or not any(r.get("name") == want for r in cfg.get("rules", [])):
+        return cfg  # Prediction fails the missing expected winner normally.
+    return dict(cfg, rules=[dict(r, enabled=True) if r.get("name") == want else r
+                            for r in cfg.get("rules", [])])
+
+
 def run_suite(cfg: dict):
     """(failures, case-count) for lint plus every replay case."""
     failures = lint_table(cfg)
@@ -8347,7 +8358,7 @@ def run_suite(cfg: dict):
         want = case.get("expect")
         if want in (None, "", "none"):
             want = None
-        got, action = predict(cfg, case["snapshot"], case.get("objective") or "",
+        got, action = predict(replay_config(cfg, case), case["snapshot"], case.get("objective") or "",
                               case.get("activity") or "")
         if got != want:
             failures.append(f"case '{case['name']}': expected "
@@ -10274,6 +10285,8 @@ def cmd_test(args):
             line = (f"{case['name']}: objective={case.get('objective') or '(none)'} "
                     f"activity={case.get('activity') or '(none)'} "
                     f"expect={case.get('expect') or 'none'}")
+            if case.get("candidate"):
+                line += " candidate=enabled-preview-only"
             if case.get("expect_action"):
                 line += " action=" + json.dumps(case["expect_action"],
                                                 separators=(",", ":"))
@@ -10308,12 +10321,16 @@ def cmd_test(args):
                 "activity": args.activity or "",
                 "expect": None if args.expect == "none" else args.expect,
                 "snapshot": snapshot}
+        if getattr(args, "candidate", False):
+            if not case["expect"]:
+                die("--candidate requires a named expected rule")
+            case["candidate"] = True
         if assertion is not None:
             case["expect_action"] = assertion
-        # A case must be true the moment it is added — the suite stays green
+        # A case must be true in its actual or explicit candidate table — the suite stays green
         # so the gate only trips when a MUTATION breaks something.
         cfg = load_config()
-        got, action = predict(cfg, snapshot, case["objective"], case["activity"])
+        got, action = predict(replay_config(cfg, case), snapshot, case["objective"], case["activity"])
         want = case["expect"]
         if got != want:
             die(f"case would fail right now: expected {want or 'none'}, "
@@ -10785,6 +10802,8 @@ def main():
     p.add_argument("action", nargs="?", default="run",
                    choices=["run", "list", "add", "remove"])
     p.add_argument("name", nargs="?")
+    p.add_argument("--candidate", action="store_true",
+                   help="preview the named expected rule as enabled, without arming it")
     p.add_argument("--expect", help="the rule that must win, or 'none'")
     p.add_argument("--expect-action", dest="expect_action", metavar="JSON",
                    help="object of compiled-action parameter assertions; a "

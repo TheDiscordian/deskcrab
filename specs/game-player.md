@@ -1716,6 +1716,15 @@ deliberate-play channel.
     rule is caught before it is armed, and a new rule that would steal an existing case's
     trigger state is caught the moment it is proposed.
 
+    A new disabled rule can be grounded before arming: `test add --candidate`
+    previews only the named expected rule as enabled in a copied table. The stored
+    `candidate: true` case keeps testing that would-be behaviour without changing the
+    installed rule's enabled flag or authorising a game action. It is visibly labelled
+    in `test list`, requires a named existing rule, and cannot mask missing rules or
+    competing winners. Ordinary cases still enforce actual enabled state. After arming,
+    replace candidate cases with ordinary cases through the test doors when actual
+    enabled-state coverage is wanted.
+
     A case may additionally pin the winning action's SEMANTICS, not only its rule's name:
     `expect_action` is an object of parameter assertions checked against the action the
     expected rule compiled for that snapshot. An asserted key must equal the compiled

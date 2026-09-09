@@ -64,6 +64,32 @@ class Preparation(unittest.TestCase):
     def assess(self):
         return gl.assessment(self.snap)
 
+    def test_candidate_replay_can_ground_a_disabled_pickup_before_arming(self):
+        rule = {'name':'new-corpse','enabled':False,'priority':900,
+                'cooldown_ms':0,'hold_ticks':1,
+                'trigger':{'activity_is':'prayer-training','ground_item_visible':18},
+                'action':{'type':'take-ground','item':18}}
+        self.cfg['rules'] = [rule]
+        snap = dict(self.snap,ground_items=[{'id':18,'x':100,'z':100,'reachable':True}])
+        case = {'name':'new-corpse','expect':'new-corpse','candidate':True,
+                'snapshot':snap,'activity':'prayer-training','objective':'skill target',
+                'expect_action':{'item':18}}
+        with patch.object(gp,'load_tests',return_value={'cases':[case]}):
+            self.assertEqual(gp.run_suite(self.cfg),([],1))
+            self.assertFalse(rule['enabled'])
+            self.assertIsNone(gp.predict(self.cfg,snap,'skill target','prayer-training')[0])
+            self.cfg['rules'] = []
+            self.assertTrue(gp.run_suite(self.cfg)[0])
+        self.cfg['rules'] = [rule]
+        (self.data/'learned-rules.json').write_text(json.dumps(self.cfg))
+        f=self.root/'candidate.json'; f.write_text(json.dumps(snap))
+        args=SimpleNamespace(action='add',name='new-corpse',snapshot=str(f),
+                expect='new-corpse',expect_action='{"item":18}',candidate=True,
+                objective='skill target',activity='prayer-training')
+        with contextlib.redirect_stdout(io.StringIO()): gp.cmd_test(args)
+        self.assertTrue(gp.load_tests()['cases'][0]['candidate'])
+        self.assertFalse(gp.load_config()['rules'][0]['enabled'])
+
     def test_prayer_attack_operation_is_not_mislabeled_burial(self):
         # Observed kill/loot/bury mode was ordered to bank its equipped armour
         # and switch to a different mode solely because its name said Prayer.
