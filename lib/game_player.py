@@ -5311,6 +5311,8 @@ def compile_player_action(rule, snap, food, eat_pick):
                           predicate=lambda entry: entry.get("attackable") is True)
         if npc is None:
             return None, "npc-not-visible"
+        if action.get("mode") == "ranged" and npc.get("clear_shot") is not True:
+            return None, "ranged-no-clear-shot"
         distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
         if within is not None and distance > within:
             return None, "npc-not-within-range"

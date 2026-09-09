@@ -9,13 +9,15 @@ import game_player as gp
 base=dict(ts=gp.now_ms(),tick=1,logged_in=True,x=126,z=524,walking=False,
  in_combat=False,opponent=None,inventory=[dict(id=189,count=1,equipped=True),dict(id=11,count=79)],
  skills=[dict(id=4,name='Ranged',xp=0)],npcs_truncated=False,
- npcs=[dict(sidx=580,id=11,x=123,z=524,attackable=True)],messages=[])
+ npcs=[dict(sidx=580,id=11,x=123,z=524,attackable=True,clear_shot=True)],messages=[])
 rule=dict(name='ranged-test',enabled=False,priority=700,cooldown_ms=0,hold_ticks=1,
  trigger=dict(activity_is='combat-training',npc_visible=11,out_of_combat=True,inventory_slots_below=30,fatigue_below=100),
  action=dict(type='attack-npc',npc=11,mode='ranged',weapon=189,ammo=11))
 cfg=copy.deepcopy(gp.EMPTY_TABLE);cfg['rules']=[rule];gp.validate_config(cfg)
 action,why=gp.compile_player_action(rule,base,{},None)
 assert why is None and action['sidx']==580 and action['mode']=='ranged'
+bad=copy.deepcopy(base);bad['npcs'][0]['clear_shot']=False
+assert gp.compile_player_action(rule,bad,{},None)[1]=='ranged-no-clear-shot'
 bad=copy.deepcopy(base);bad['inventory'][0]['equipped']=False
 assert gp.compile_player_action(rule,bad,{},None)[1]=='ranged-weapon-not-equipped'
 bad=copy.deepcopy(base);bad['inventory'][1]['count']=0
@@ -42,5 +44,5 @@ plain=gp.make_action_observation(2,'attack-npc',['npc=11','sidx=580'],base)
 assert gp.action_completion(plain,after(in_combat=True))['result']=='done'
 assert gp.action_completion(plain,after(skills=[dict(id=4,name='Ranged',xp=38)]))['result']=='done'
 assert gp.xp_activity_mismatch('Ranged: +38','combat-training') is None
-print('15 assertions passed')
+print('16 assertions passed')
 PY

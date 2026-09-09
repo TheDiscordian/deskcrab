@@ -200,6 +200,9 @@ deliberate-play channel.
    merely walking toward the NPC is not completion. A learned ranged training attack may
    additionally declare `mode: "ranged"`, `weapon` and `ammo` (item ids). Compilation requires
    that exact weapon actually equipped and positive ammunition, not merely a ready loadout.
+   The nearest attackable candidate must also have a current clear projectile line; if not,
+   surface the terrain blockage for positioning rather than repeating a blind ranged chase.
+   This is not a distance cap. The native server remains authoritative if the target moves.
    It sends the ordinary attack packet but retains this action's observation until the selected
    NPC type/server-index disappears from a complete loaded NPC list after ammunition consumption
    or Ranged XP. A projectile target pointer may remain after death; neither that pointer,
