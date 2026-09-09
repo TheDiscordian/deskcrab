@@ -4438,6 +4438,7 @@ def await_action_completion(observation: dict, timeout: float):
             latest = game_reflex.read_snapshot()
             if isinstance(latest, dict) and latest.get("walking") is True:
                 context["saw_walking"] = True
+            refresh_observation_heartbeat(observation)
             completion = action_completion(observation, latest, context)
             if completion is not None:
                 return completion, latest
@@ -6270,6 +6271,23 @@ def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
          "activity_xp": activity_xp or None,
          "activity_compare": activity_compare or None,
          "friend_updates": friend_updates or []}) + "\n")
+
+
+def refresh_observation_heartbeat(observation):
+    """A long observed action is live ownership, not a dead evaluator."""
+    try:
+        hb = json.loads(runner_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if hb.get("pid") != os.getpid():
+        return
+    now = now_ms()
+    if hb.get("verdict") == "action-observing" and now - hb.get("ts", 0) < 1000:
+        return
+    hb.update(ts=now, verdict="action-observing",
+              detail=f"observing {observation.get('type')} id={observation.get('id')}; "
+                     "wait for its outcome before another ordinary action")
+    game_reflex.atomic_write(runner_path(), json.dumps(hb) + "\n")
 
 
 def read_live_runner():
@@ -10432,6 +10450,8 @@ def cmd_run(args):
     # every heartbeat until a table loads, so the ordinary verdict says the
     # enforced table is not the one on disk.
     table_error = ""
+    write_heartbeat("starting", plan=read_plan(), activity=read_activity(),
+                    enforced_rules=enforced_rule_names(cfg))
     while True:
         try:
             # Reload the table when its mtime moves; an invalid table is

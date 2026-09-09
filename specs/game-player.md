@@ -211,7 +211,11 @@ deliberate-play channel.
    Melee interruption, loss of the required weapon/ammunition, or explicit refusal releases
    observation as a failure. The existing maximum 60-second observation bound remains a recovery
    deadline, not a firing cooldown; a timed-out acquisition is unverified and must be inspected.
-   Independent survival guards remain active throughout. Default melee acquisition is unchanged.
+   Independent survival guards remain active throughout. During observation the resident runner
+   refreshes its own heartbeat with `action-observing` and the action identity, preserving its
+   enforced rule set; a foreground `play` must not mistake a long shot sequence for a dead
+   runner and start a second evaluation. Only the heartbeat's owning PID can refresh it.
+   Default melee acquisition is unchanged.
    `interact-npc` (`npc`: the type id; optional `cmd` 1 or 2 defaulting to 1; optional
    `within` 0–10 caps the current Chebyshev tile distance and rides the action file for one final
    dispatch-time recheck), which

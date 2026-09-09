@@ -3,7 +3,7 @@
 export DESKCRAB_GAME_STATE_DIR="$SANDBOX/gstate" DESKCRAB_GAME_DIR="$SANDBOX/gdata"
 mkdir -p "$DESKCRAB_GAME_STATE_DIR" "$DESKCRAB_GAME_DIR"
 python3 - "$SANDBOX_REPO/lib" <<'PY' && ok 'ranged acquisition, sustained shot and release assertions' || fail 'ranged cycle assertions'
-import copy,sys
+import copy,sys,json,os
 sys.path.insert(0,sys.argv[1])
 import game_player as gp
 base=dict(ts=gp.now_ms(),tick=1,logged_in=True,x=126,z=524,walking=False,
@@ -44,5 +44,14 @@ plain=gp.make_action_observation(2,'attack-npc',['npc=11','sidx=580'],base)
 assert gp.action_completion(plain,after(in_combat=True))['result']=='done'
 assert gp.action_completion(plain,after(skills=[dict(id=4,name='Ranged',xp=38)]))['result']=='done'
 assert gp.xp_activity_mismatch('Ranged: +38','combat-training') is None
-print('16 assertions passed')
+gp.write_heartbeat('fired', enforced_rules=['ranged-test'])
+gp.refresh_observation_heartbeat(obs)
+hb=json.loads(gp.runner_path().read_text())
+assert hb['verdict']=='action-observing' and hb['enforced_rules']==['ranged-test']
+assert str(obs['id']) in hb['detail']
+hb['pid']=os.getpid()+12345
+gp.runner_path().write_text(json.dumps(hb));before=gp.runner_path().read_text()
+gp.refresh_observation_heartbeat(obs)
+assert gp.runner_path().read_text()==before
+print('19 assertions passed')
 PY
