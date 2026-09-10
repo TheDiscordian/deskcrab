@@ -225,6 +225,80 @@ check_eq "a completion outranks simultaneous refusal noise" \
         "$REPO_DIR/lib/face-openrsc" --once)" "game-win"
 check "the completion visibly resolves as pleased" \
     bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
+
+echo
+echo "quest-channel classification — the dialogue form, not the channel (rule 56):"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":13,"channel":"quest","incoming":false,"sender":"","text":"Welcome to Runescape!"},{"id":14,"channel":"quest","incoming":false,"sender":"","text":"You bury the bones"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "ordinary system text on the quest channel is not an event" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+check "the completion's pleased still stands over that traffic" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":15,"channel":"quest","incoming":false,"sender":"","text":"Global$Someone: selling lobsters"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a global broadcast sharing the channel is not quest narrative" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":16,"channel":"quest","incoming":false,"sender":"","text":"Banker: Good day, how may I help you?"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a genuine NPC line still lands as quest-message" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "quest-message"
+check "and visibly resolves as attentive" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=attentive \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":17,"channel":"quest","incoming":false,"sender":"Player","text":"I'd like to access my bank account please"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "her own dialogue reply carries her name and is not an arrival" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":18,"channel":"quest","incoming":false,"sender":"","text":"Banker: Good day, how may I help you?"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "the same quest line inside its window is a loop, not news" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":19,"channel":"quest","incoming":false,"sender":"","text":"Banker: Certainly Miss"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a different quest line is still news" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "quest-message"
+python3 - "$GAME_CURSOR" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as fh:
+    cur = json.load(fh)
+cur["quest_seen"] = {t: ts - 120 for t, ts in (cur.get("quest_seen") or {}).items()}
+with open(path, "w") as fh:
+    json.dump(cur, fh)
+PY
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":20,"channel":"quest","incoming":false,"sender":"","text":"Banker: Good day, how may I help you?"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "once its window lapses the same line may land again" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "quest-message"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":true,"messages":[{"id":21,"channel":"quest","incoming":false,"sender":"","text":"You bury the bones"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "combat start stays visible beside ordinary channel traffic" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "combat-start"
+check "and visibly resolves as focused" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=focused \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":true,"messages":[{"id":22,"channel":"quest","incoming":false,"sender":"","text":"Guide: Ah, welcome adventurer"}],"skills":[{"id":0,"level":6}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a completion still outranks a simultaneous fresh quest line" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "game-win"
+check "and visibly resolves as pleased" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
 FB rest >/dev/null; FB activity resting >/dev/null
 
 echo

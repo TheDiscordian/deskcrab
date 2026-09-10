@@ -524,6 +524,19 @@ or scolding.
     mechanically explicit failure/success feedback, and combat start. It
     never steers the game, never reads hit points as emotion, and its service
     may be stopped without changing play or the portrait's other layers.
+    An NPC quest line is recognised by the bridge's own dialogue form, not
+    by channel membership: the game's quest channel also carries ordinary
+    system narration (the welcome line, burying bones), which is never an
+    event. The form is the one the bridge itself documents for its dialogue
+    waiter — no sender, text shaped `Name: words` with the separator inside
+    the first sixty-four characters; a row carrying a sender on that channel
+    is the player's own dialogue reply, and a `Global$` broadcast sharing
+    the channel is chat, not quest narrative. A repeat of an equivalent
+    quest line within the repeat window (`DESKCRAB_FACE_OPENRSC_REPEAT_SECONDS`,
+    default the event lifetime) does not refire, and every arrival refreshes
+    its window, so a looping exchange cannot keep repainting or extending
+    attentive; the window is per-line and touches no other event, so combat,
+    completion, failure, and player-message precedence stand unweakened.
 57. Whole-person presence. One local observer aggregates the live session
     registry (desktop turns, phone turns, and autonomous wakes), validated
     running job sidecars, and a fresh logged-in OpenRSC bridge. It replaces one
@@ -578,7 +591,8 @@ or scolding.
 | manifest viseme `extent`/`anchor` | drawer build script | rule 55's morph measurements |
 | `<portrait drawer>/motion-build-record.json` | drawer build script | rule 51/55's stated amplitudes and before/after extents |
 | `${STATE_PREFIX}-game/state.json` | OpenRSC bridge writes; `face-openrsc` reads | rule 56's confirmed game transitions |
-| `${STATE_PREFIX}-face-openrsc.json` | `face-openrsc` | replay-safe cursor for rule 56 |
+| `${STATE_PREFIX}-face-openrsc.json` | `face-openrsc` | replay-safe cursor for rule 56, including the per-line repeat memory |
+| `DESKCRAB_FACE_OPENRSC_REPEAT_SECONDS` | `face-openrsc` | rule 56's equivalent-repeat window (default 60 s) |
 | `${STATE_PREFIX}-sessions/` | turn/wake registration | live hands read by rule 57's observer |
 | `<jobs drawer>/*.json` | job runner | validated live builder facts for rule 57 |
 | `<portrait drawer>/sleep-build-record.json` | deterministic asset build | sleeping-frame source, method, and pixel invariant |

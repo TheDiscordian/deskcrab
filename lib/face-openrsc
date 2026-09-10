@@ -25,6 +25,12 @@ STATE = Path(os.environ.get("DESKCRAB_GAME_STATE",
 CURSOR = Path(os.environ.get("DESKCRAB_FACE_OPENRSC_CURSOR",
                              "/tmp/deskcrab-face-openrsc.json"))
 POLL_SECONDS = float(os.environ.get("DESKCRAB_FACE_OPENRSC_POLL", "0.25"))
+# An equivalent quest line inside this window is a loop, not news (spec
+# rule 56).  Every arrival refreshes its own window, so a repeating exchange
+# stays quiet for as long as it keeps repeating.
+REPEAT_SECONDS = float(os.environ.get(
+    "DESKCRAB_FACE_OPENRSC_REPEAT_SECONDS", "60"))
+REPEAT_MEMORY_CAP = 16
 
 # These are confirmations, not sentiment inference.  The game itself has
 # refused or completed something in words whose meaning is mechanically fixed.
@@ -35,6 +41,28 @@ FAILURE = re.compile(
 SUCCESS = re.compile(
     r"(?i)\b(?:well done|quest complete|you have completed|"
     r"you advance (?:an?|a) |congratulations)\b")
+
+
+def _npc_quest_line(m):
+    """The bridge's own dialogue form, not channel membership.
+
+    The game's quest channel also carries ordinary system narration (the
+    welcome line, burying bones), so being on the channel proves nothing.
+    The client presents NPC speech there as ``Name: words`` with no sender,
+    while the player's own dialogue reply carries the player's name as
+    sender — the same mechanically fixed convention the bridge documents
+    for its dialogue waiter.  A ``Global$`` broadcast sharing the channel
+    is chat, not quest narrative.
+    """
+    if m.get("channel") != "quest" or bool(m.get("incoming")):
+        return False
+    if str(m.get("sender") or "").strip():
+        return False
+    text = str(m.get("text") or "")
+    if "Global$" in text:
+        return False
+    separator = text.find(":")
+    return 0 < separator <= 64 and separator + 1 < len(text)
 
 
 def _mapping(rows, field="level"):
@@ -56,12 +84,14 @@ def cursor_for(st):
     }
 
 
-def reactions(old, st):
+def reactions(old, st, now_ts=None):
     """Return public broker events, most important first."""
     events = []
     now = cursor_for(st)
     if not now["logged_in"]:
         return events, now
+    if now_ts is None:
+        now_ts = time.time()
 
     old_skills = old.get("skills") or {}
     if any(isinstance(level, (int, float))
@@ -88,9 +118,26 @@ def reactions(old, st):
         events.append("game-win")
     if any(bool(m.get("incoming")) for m in new_messages):
         events.append("player-message")
-    if any(m.get("channel") == "quest" and not m.get("incoming")
-           and str(m.get("sender") or "").casefold() != "beatrice"
-           for m in new_messages):
+    # Genuine NPC quest lines only, and only when they are news: a line
+    # equivalent to one inside its own repeat window is a looping exchange
+    # (the same banker greeting every visit), and re-sending it would keep
+    # repainting the minute-long attentive over more specific reactions.
+    # The window is per-line and gates nothing but quest-message.
+    quest_lines = [str(m.get("text") or "") for m in new_messages
+                   if _npc_quest_line(m)]
+    seen = {str(text): ts for text, ts in (old.get("quest_seen") or {}).items()
+            if isinstance(ts, (int, float))}
+    fresh = [text for text in quest_lines
+             if now_ts - float(seen.get(text) or 0) >= REPEAT_SECONDS]
+    for text in quest_lines:
+        seen[text] = now_ts
+    seen = {text: ts for text, ts in seen.items()
+            if now_ts - ts < REPEAT_SECONDS}
+    if len(seen) > REPEAT_MEMORY_CAP:
+        seen = dict(sorted(seen.items(),
+                           key=lambda kv: kv[1])[-REPEAT_MEMORY_CAP:])
+    now["quest_seen"] = seen
+    if fresh:
         events.append("quest-message")
     if now["in_combat"] and not bool(old.get("in_combat")):
         events.append("combat-start")
