@@ -24,8 +24,10 @@ and the completion channel a job has back to her.
 1b. An immediate local control command MUST run in the requesting turn, never become a detached
    builder job. In particular, a brief containing the installed `betty-openrsc steer` command
    MUST be refused before any sidecar or unit exists, and the refusal MUST direct the caller to
-   run that command immediately. Steering is part of the live ACTIONS control path; dispatching
-   it would delay the correction and split the assistant's play across personalities.
+   handle a valid immediate redirection in the requesting turn. This rule does not make
+   steering appropriate for general messages, lessons, repair reports, or recurring behavioural
+   defects; those require the relevant memory or implementation work. Steering is part of the
+   live ACTIONS control path.
 2. A job MUST be dispatched to the user manager with the collect option and its own unit name, with
    a fallback to a detached session when no user manager is running.
 2a. A job unit MUST be dispatched at background CPU priority — the same weight and niceness the

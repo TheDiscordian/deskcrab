@@ -1557,8 +1557,9 @@ deliberate-play channel.
       A steer is SPENT once acted on: composition shows it only while it is fresh
       (`BETTY_OPENRSC_STEER_FRESH_MIN`, default 45 minutes) and never resurrects an old
       direction to be reenacted over completed progress. Noticing a bad
-      course is itself sufficient reason to steer; narrating distress about the course is not a
-      substitute for changing it.
+      course can justify a concrete immediate redirection. General corrections about reasoning,
+      efficiency, memory, or reflexes belong in the implementation and its validation; steering
+      must not carry lessons, repair reports, or standing instructions.
     - The player's durable base prompt (`prompt.md`), its handoff file (`handoff.md`), the
       exact composed prompt of the latest start (`run-prompt.txt`) and its log (`player.log`)
       live in the durable player home (`BETTY_OPENRSC_HOME`, a directory in the user's own
@@ -1568,7 +1569,8 @@ deliberate-play channel.
       refuses that origin, and the transient unit refuses direct manual stops. An operator outside
       a phone turn can still deliberately use `stop [player]`; that door stops the companion
       control unit, whose `PartOf` relationship stops the protected player indirectly. A
-      correction uses `steer`, never stop, direct manual play, or a detached job.
+      immediate redirection uses `steer`. A recurring behavioural defect requires an engineering
+      fix; it must not be reframed as a steering message.
     - The first player start composes its effective prompt from ground truth discovered at that
       moment (`run-player`, the unit's exec target): the live display read from the harness's
       `run/display` (never hard-coded), the bridge state dir, the durable objective and plan, a
