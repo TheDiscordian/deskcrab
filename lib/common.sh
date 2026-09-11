@@ -9380,7 +9380,8 @@ job_start() {
     case "$(printf '%s' "$task" | tr '[:upper:]' '[:lower:]')" in
         *betty-openrsc*steer*)
             echo "Not dispatched — OpenRSC steering is an immediate local control."
-            echo "  Run ~/.local/bin/betty-openrsc steer <instruction> directly in this turn."
+            echo "  Use it directly only for an immediate gameplay redirection, such as coming to the bank."
+            echo "  General corrections, lessons, and repair reports require the relevant memory or implementation work; do not send them as steering."
             return 1 ;;
     esac
     # An automatic retry inherits the obligation its origin carried: the brief
