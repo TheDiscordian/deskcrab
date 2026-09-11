@@ -73,8 +73,10 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    client integration, prompts, method, plan, and objective. It may replace a completed or
    unsuitable objective while preserving explicit user constraints and the larger intent.
    A review that discovers a fix must perform the authorised work instead of merely advising
-   the user to poke the player. Use ordinary objective/progress/plan/steering and rule mutation
-   doors, preserve current state, and verify the running result. Read repository instructions
+   the user to poke the player. Use the player's validated method and repair interfaces,
+   preserve current state, and verify the running result. Steering is only an immediate
+   gameplay redirection; review findings, lessons, and general corrections must not be sent
+   through it. Read repository instructions
    and change the relevant spec before code. Commit only its own source changes; never publish
    unrelated ancestry, private data, or push to an upstream it does not own.
 6. The reviewer suspends the author's path watcher, lets an existing author finish by waiting
@@ -83,8 +85,9 @@ objective progress, training efficiency, and the correctness of the whole gamepl
    only if the player control unit still authorises the sitting. The normal player and
    survival reflexes continue. Use atomic rule mutation doors and re-read live state before
    changing a plan, so concurrently completed work is respected. Coordinate deployment using
-   the player/harness's supported controls and steer the continuing player after a material
-   change. Never leave the character logged in without survival guards. Do not bypass the
+   the player/harness's supported controls and let the coordinator reconcile the continuing
+   method after a material change. Do not send a repair report as steering. Never leave the
+   character logged in without survival guards. Do not bypass the
    game's mechanics, edit server/save data, reopen a closed sitting, alter other projects,
    send chat/notifications, or produce audio. Reviews perform no offline work and cannot
    start a sitting. Interrupted work remains recorded for the next eligible pass.
