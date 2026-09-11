@@ -474,7 +474,9 @@ against the shipped CLI before this rule was written.
     fatigue, movement/combat/sleep, objective, its deliberately selected plan, activity, and
     positive activity XP/hour only.
     When present, the managed player's `player-view.json` supplies the selected objective,
-    method, and activity. Proposed activities and private engineering diagnostics remain absent.
+    method, activity, and a short execution status. The page labels a plan being reconsidered
+    separately from an executable current plan and a stopped sitting's last plan. Decision
+    identifiers, private diagnostics, and uncommitted proposals remain absent.
     Inventory, chat, credentials, routes, memory, and engine internals never leave the machine.
     The self-contained page is mobile-first, reconnects after game/server transitions, pauses when
     hidden, offers fullscreen and an explicit spectator pause, and labels the view read-only.

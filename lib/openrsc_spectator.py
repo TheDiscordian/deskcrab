@@ -171,6 +171,9 @@ def spectator_state(now_ms=None):
         "activity": activity,
         "objective": objective,
         "plan": plan,
+        "player_status": str(player_view.get("status") or "") if player_view.get("schema") == 1 else "",
+        "player_phase": str(player_view.get("phase") or "") if player_view.get("schema") == 1 else "",
+        "plan_current": player_view.get("plan_current") if player_view.get("schema") == 1 else None,
         "recent_thought": player_view.get("recent_thought") if player_view.get("schema") == 1 else latest_player_thought(),
         "tile": ({"x": state.get("x"), "z": state.get("z")}
                  if fresh and isinstance(state.get("x"), int)

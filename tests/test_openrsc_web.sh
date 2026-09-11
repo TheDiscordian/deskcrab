@@ -239,10 +239,13 @@ refute "chat never leaves the game machine" grep -q 'private words\|messages' <<
 refute "capture internals never leave the game machine" \
     grep -q 'display\|source\|generation\|streaming' <<<"$STATE"
 
-printf '%s\n' '{"schema":1,"activity":"combat","objective":"Keep the committed milestone","plan":"prepared-method","recent_thought":null,"private":"unexposed"}' > "$GDATA/player-view.json"
+printf '%s\n' '{"schema":1,"activity":"combat","objective":"Keep the committed milestone","plan":"Complete a useful batch, then bank the output.","phase":"active","status":"Choosing the next steps","plan_current":false,"recent_thought":null,"private":"unexposed"}' > "$GDATA/player-view.json"
 MANAGED="$(curl -fsS -b "$T/watch.cookies" "$BASE/openrsc/state")"
 check_eq "managed view supplies the selected activity" "$(printf '%s' "$MANAGED" | jq -r .activity)" "combat"
-check_eq "managed view supplies the selected method" "$(printf '%s' "$MANAGED" | jq -r .plan)" "prepared-method"
+check_eq "managed view supplies the selected method" "$(printf '%s' "$MANAGED" | jq -r .plan)" "Complete a useful batch, then bank the output."
+check_eq "managed view exposes planning status" "$(printf '%s' "$MANAGED" | jq -r .player_status)" "Choosing the next steps"
+check_eq "blocked plan is not shown as current execution" "$(printf '%s' "$MANAGED" | jq -r .plan_current)" "false"
+check_eq "managed sitting state reaches the plan label" "$(printf '%s' "$MANAGED" | jq -r .player_phase)" "active"
 refute "unlisted managed fields remain private" grep -q 'unexposed' <<<"$MANAGED"
 
 echo "== one on-demand producer serves fresh JPEG frames =="
