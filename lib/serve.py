@@ -23,6 +23,8 @@ publishing it to a phone is a separate, deliberate act (Tailscale).
 """
 
 import contextlib
+import base64
+import binascii
 import hashlib
 import hmac
 import http.cookies
@@ -160,6 +162,8 @@ KEY = os.environ.get("DESKCRAB_SERVE_KEY", "")
 
 TURN_TIMEOUT = int(os.environ.get("DESKCRAB_SERVE_TIMEOUT", "600"))
 MAX_UPLOAD = 25 * 1024 * 1024
+MAX_IMAGE_UPLOAD = int(os.environ.get(
+    "DESKCRAB_MAX_IMAGE_UPLOAD", str(12 * 1024 * 1024)))
 
 # Where he is (specs/phone.md rule 3a). A message may carry the phone's own
 # fix; a fresh, well-formed one on the post that CREATES a turn becomes
@@ -405,6 +409,7 @@ class Turn:
         # the turn may set `loc` — an attach never re-injects.
         self.loc = None
         self.place = ""
+        self.attachment = ""
 
     def emit(self, kind, payload):
         with self.cond:
@@ -822,6 +827,10 @@ def run_turn(turn, text):
     except Exception as exc:  # noqa: BLE001 — the client must hear about it
         turn.emit("done", {"spoken": "", "display_html": "", "audio": "",
                            "error": str(exc)[:300]})
+    finally:
+        if turn.attachment:
+            with contextlib.suppress(OSError):
+                Path(turn.attachment).unlink()
 
 
 if not SECRET:
@@ -942,6 +951,58 @@ def run(cmd, turn=None, **kw):
 
 STATE_PREFIX = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
 CONTEXT_TURNS = int(os.environ.get("DESKCRAB_SERVE_CONTEXT_TURNS", "6"))
+UPLOAD_DIR = Path(STATE_PREFIX + "-uploads")
+
+_IMAGE_KINDS = {
+    "image/jpeg": (".jpg", lambda b: b.startswith(b"\xff\xd8\xff")),
+    "image/png": (".png", lambda b: b.startswith(b"\x89PNG\r\n\x1a\n")),
+    "image/webp": (".webp", lambda b: len(b) >= 12 and b[:4] == b"RIFF" and b[8:12] == b"WEBP"),
+    "image/gif": (".gif", lambda b: b.startswith((b"GIF87a", b"GIF89a"))),
+}
+
+
+def store_attachment(doc, tid):
+    """Validate and privately store one JSON-carried image for this turn."""
+    if doc is None:
+        return "", ""
+    if not isinstance(doc, dict):
+        return "", "bad image attachment"
+    ctype = str(doc.get("type", "")).lower().split(";", 1)[0].strip()
+    kind = _IMAGE_KINDS.get(ctype)
+    encoded = doc.get("data")
+    if kind is None or not isinstance(encoded, str):
+        return "", "unsupported image type"
+    if len(encoded) > ((MAX_IMAGE_UPLOAD + 2) // 3) * 4 + 8:
+        return "", "image is too large"
+    try:
+        blob = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return "", "bad image attachment"
+    if not blob or len(blob) > MAX_IMAGE_UPLOAD:
+        return "", "image is too large" if blob else "empty image attachment"
+    suffix, matches = kind
+    if not matches(blob):
+        return "", "image bytes do not match their type"
+    tmp = None
+    try:
+        UPLOAD_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        now = time.time()
+        for old in UPLOAD_DIR.iterdir():
+            with contextlib.suppress(OSError):
+                if old.is_file() and now - old.stat().st_mtime > 86400:
+                    old.unlink()
+        path = UPLOAD_DIR / (tid + suffix)
+        tmp = UPLOAD_DIR / (tid + suffix + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(blob)
+        os.replace(tmp, path)
+        return str(path), ""
+    except OSError:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        return "", "could not store image"
 
 # The mid-turn spool (specs/phone.md rules 51-52): a message accepted while
 # another turn is in flight is written here the moment it is accepted, and the
@@ -1610,6 +1671,8 @@ def ask(text, on_event=None, speaker=None, turn=None):
             # line. No place, no variable, no line.
             if getattr(turn, "place", ""):
                 env["DESKCRAB_TURN_PLACE"] = turn.place
+            if getattr(turn, "attachment", ""):
+                env["DESKCRAB_TURN_ATTACHMENT"] = turn.attachment
         r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
     else:
         # Under STATE_PREFIX, never a bare /tmp name: crab-debug follows
@@ -1627,6 +1690,8 @@ def ask(text, on_event=None, speaker=None, turn=None):
             env["DESKCRAB_TURN_ID"] = turn.tid
             if getattr(turn, "place", ""):
                 env["DESKCRAB_TURN_PLACE"] = turn.place
+            if getattr(turn, "attachment", ""):
+                env["DESKCRAB_TURN_ATTACHMENT"] = turn.attachment
         try:
             r = run([CRAB_BIN, "remote", text], turn=turn, env=env)
         finally:
@@ -2256,8 +2321,10 @@ class Handler(BaseHTTPRequestHandler):
                 text = doc.get("text", "").strip()
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return self._json(400, {"error": "bad json"})
-            if not text:
+            if not text and not doc.get("attachment"):
                 return self._json(200, {"error": "empty message"})
+            if not text:
+                text = "[Photo attached]"
             tid = _clean_tid(doc.get("turn"))
             # Where he is (spec rule 3a): validated to a fix or to None, and
             # None changes nothing anywhere downstream.
@@ -2286,6 +2353,15 @@ class Handler(BaseHTTPRequestHandler):
             # re-posted id is an attach, and whatever fix it carries is not
             # this turn's to inject.
             turn.loc = loc
+            if url.path == "/say":
+                turn.attachment, attachment_error = store_attachment(
+                    doc.get("attachment"), turn.tid)
+                if attachment_error:
+                    # Nothing has run or been emitted yet. Let the client fix
+                    # the photo and safely retry this same chosen identifier.
+                    with TURNS_LOCK:
+                        TURNS.pop(turn.tid, None)
+                    return self._json(400, {"error": attachment_error})
             turn.emit("transcript", {"text": text})
             threading.Thread(target=run_turn, args=(turn, text),
                              daemon=True).start()

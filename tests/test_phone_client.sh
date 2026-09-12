@@ -35,4 +35,5 @@ fi
 RC=0
 "$NODE" "$REPO_DIR/tests/phone_client_test.js" || RC=1
 "$NODE" "$REPO_DIR/tests/phone_client_midturn_test.js" || RC=1
+"$NODE" "$REPO_DIR/tests/phone_attachment_test.js" || RC=1
 exit "$RC"

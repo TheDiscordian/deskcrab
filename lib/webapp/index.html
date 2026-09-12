@@ -47,7 +47,7 @@
   #mute.muted { filter: none; opacity: 1; background: #3a1414;
                 border: 1px solid #a33; border-radius: 8px; padding: 2px 8px; }
 
-  main { flex: 1; overflow-y: auto; padding: 16px; }
+  main { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
   .turn { margin-bottom: 18px; }
   /* Where the conversation already was when this page loaded — dimmed, so it
      never reads as something said just now. */
@@ -123,6 +123,7 @@
   #media audio { width: 100%; height: 36px; }
 
   footer { padding: 16px; border-top: 1px solid var(--border); display: flex;
+           flex-shrink: 0;
            flex-direction: column; gap: 12px; }
   #talk {
     width: 100%; padding: 26px; font: inherit; font-size: 17px; font-weight: 600;
@@ -146,6 +147,19 @@
           background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
   #send { padding: 12px 16px; font: inherit; color: var(--fg); background: var(--panel);
           border: 1px solid var(--border); border-radius: 10px; }
+  #attach { padding: 12px 14px; font: inherit; color: var(--fg); background: var(--panel);
+            border: 1px solid var(--border); border-radius: 10px; }
+  #attachment-preview { display: flex; align-items: center; gap: 10px;
+                        padding: 8px; background: var(--panel);
+                        border: 1px solid var(--border); border-radius: 10px; }
+  #attachment-preview[hidden] { display: none; }
+  #attachment-preview img { width: 64px; height: 64px; object-fit: cover;
+                            border-radius: 7px; }
+  #attachment-name { flex: 1; min-width: 0; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+  #attachment-remove { padding: 8px 10px; font: inherit; color: #ffdada;
+                       background: #3a1414; border: 1px solid #a33;
+                       border-radius: 8px; }
   /* The brake (spec rules 47-50): visible whenever a turn is in flight, in
      the page's danger colours — stopping her must never require hunting. */
   #stop { padding: 14px; font: inherit; font-size: 16px; font-weight: 600;
@@ -170,7 +184,14 @@
 <footer>
   <button id="stop" hidden>◼ Stop</button>
   <button id="talk">Hold to talk</button>
+  <div id="attachment-preview" hidden>
+    <img id="attachment-image" alt="Selected photo preview">
+    <span id="attachment-name"></span>
+    <button id="attachment-remove" type="button">Remove</button>
+  </div>
   <div class="row">
+    <button id="attach" type="button" aria-label="Choose a photo from camera or gallery">Photo</button>
+    <input id="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
     <input id="text" placeholder="…or type" autocomplete="off" enterkeyhint="send">
     <button id="send">Send</button>
   </div>
@@ -186,6 +207,65 @@ const statusEl = $("status"), logEl = $("log"), player = $("player");
 const music = $("music");
 let recorder = null, chunks = [], stream = null, busy = false;
 let sttSid = null, sttChain = Promise.resolve(), sttFailed = false;
+let pendingAttachment = null, attachmentPreviewUrl = "";
+
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+
+function clearAttachment() {
+  pendingAttachment = null;
+  if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+  attachmentPreviewUrl = "";
+  $("attachment-input").value = "";
+  $("attachment-preview").hidden = true;
+  $("attachment-image").removeAttribute("src");
+  $("attachment-name").textContent = "";
+}
+
+function fileAttachment(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !IMAGE_TYPES.has(file.type))
+      return reject(new Error("choose a JPEG, PNG, WebP, or GIF image"));
+    if (!file.size || file.size > MAX_IMAGE_BYTES)
+      return reject(new Error("photo must be smaller than 12 MB"));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("could not read that photo"));
+    reader.onload = () => {
+      const raw = String(reader.result || ""), comma = raw.indexOf(",");
+      if (comma < 0) return reject(new Error("could not read that photo"));
+      resolve({ name: file.name || "photo", type: file.type,
+                data: raw.slice(comma + 1) });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function turnPayload(text, tid, loc, attachment) {
+  const doc = { text, turn: tid };
+  if (loc) doc.loc = loc;
+  if (attachment) doc.attachment = attachment;
+  return JSON.stringify(doc);
+}
+
+$("attach").addEventListener("click", () => $("attachment-input").click());
+$("attachment-remove").addEventListener("click", clearAttachment);
+$("attachment-input").addEventListener("change", async e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const attachment = await fileAttachment(file);
+    clearAttachment();
+    pendingAttachment = attachment;
+    attachmentPreviewUrl = URL.createObjectURL(file);
+    $("attachment-image").src = attachmentPreviewUrl;
+    $("attachment-name").textContent = file.name || "photo";
+    $("attachment-preview").hidden = false;
+    setStatus("photo ready");
+  } catch (err) {
+    clearAttachment();
+    setStatus(String(err.message || err), "err");
+  }
+});
 
 function randomHex(n) {
   const b = new Uint8Array(n / 2);
@@ -593,7 +673,7 @@ function geoFix() {
   });
 }
 
-async function streamTurn(text, turn, tid, resuming, seq, loc) {
+async function streamTurn(text, turn, tid, resuming, seq, loc, attachment) {
   tid = tid || randomHex(32);
   let seen = 0, delay = 1000;
   // Clip index within this turn, for the playback reports: a chunked reply
@@ -668,11 +748,18 @@ async function streamTurn(text, turn, tid, resuming, seq, loc) {
         ? await fetch("/say", {
             method: "POST", credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(loc ? { text, turn: tid, loc } : { text, turn: tid }),
+            body: JSON.stringify(Object.assign(
+              { text, turn: tid }, loc ? { loc } : {},
+              attachment ? { attachment } : {})),
             signal: ctl.signal,
           })
         : await fetch("/turn/" + tid + "?from=" + seen,
                       { credentials: "same-origin", signal: ctl.signal });
+      if (r.status === 400) {
+        let bad = null;
+        try { bad = await r.json(); } catch (_) {}
+        return { error: (bad && bad.error) || "the photo was refused" };
+      }
       if (r.status === 404 && seen > 0)
         return { error: "the server restarted mid-turn; the reply was lost" };
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -886,7 +973,7 @@ async function transcribeBlob(blob, ctype, take) {
 // A turn is two requests, not one: transcription comes back in a second or two
 // and is shown immediately, so a mis-heard sentence is visible during the long
 // wait for the answer rather than after it.
-async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take) {
+async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take, attachment) {
   if (busy) return;
   // Hinted, never disabled: a disabled button gets no pointer events, and the
   // reply's clips play while the turn is still running — tap-to-stop must
@@ -940,7 +1027,7 @@ async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take) {
     activeTid = tid;   // what ◼ Stop reaches (spec rule 47)
     rememberTurn(tid, text, resumeAt);
     const res = await streamTurn(text, turn, tid, !!resumeTid, seq,
-                                 locP ? await locP : null);
+                                 locP ? await locP : null, attachment || null);
     // Null means the watcher ended this turn first (rule 42): the bubble,
     // the button, and the status were all settled there.
     if (res && releasedSeq !== seq) {
@@ -1245,7 +1332,7 @@ const stopBtn = $("stop");
 
 function showStop(on) { stopBtn.hidden = !on; }
 
-function seedTurn(text, tid) {
+function seedTurn(text, tid, attachment) {
   // The message reaches the laptop NOW, under the id the later attach will
   // re-use — rule 1 makes the re-post an attach, never a second run — so a
   // page that dies with a queue never loses a word: the turn still runs and
@@ -1263,8 +1350,9 @@ function seedTurn(text, tid) {
     const guard = setTimeout(() => ctl.abort(), 8000);
     fetch("/say", { method: "POST", credentials: "same-origin",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(loc ? { text, turn: tid, loc }
-                                             : { text, turn: tid }),
+                    body: JSON.stringify(Object.assign(
+                      { text, turn: tid }, loc ? { loc } : {},
+                      attachment ? { attachment } : {})),
                     signal: ctl.signal })
       .then(() => ctl.abort())
       .catch(() => {})
@@ -1272,13 +1360,14 @@ function seedTurn(text, tid) {
   });
 }
 
-function queueTurn(text) {
+function queueTurn(text, attachment) {
   const tid = randomHex(32);
   const bubble = addTurn(text);
   bubble.reply.classList.add("queued");
   bubble.reply.textContent = "⏳ queued — she's still on the last one";
-  sendQueue.push({ text, tid, at: Date.now(), el: bubble.reply.parentNode });
-  seedTurn(text, tid);
+  sendQueue.push({ text, tid, at: Date.now(), el: bubble.reply.parentNode,
+                   attachment: attachment || null });
+  seedTurn(text, tid, attachment || null);
   setStatus("queued — ◼ Stop cuts in", "busy");
 }
 
@@ -1321,7 +1410,7 @@ function pumpQueue() {
   // run — which only takes the lock when the previous run exits — cannot
   // have voiced anything yet.
   if (m.el) m.el.remove();
-  runTurn(null, null, m.text, m.tid, m.at);
+  runTurn(null, null, m.text, m.tid, m.at, undefined, m.attachment || null);
 }
 
 async function stopTurn() {
@@ -1347,11 +1436,14 @@ stopBtn.addEventListener("click", stopTurn);
 
 function sendTyped() {
   const v = $("text").value.trim();
-  if (!v) return;
+  const attachment = typeof pendingAttachment === "undefined" ? null : pendingAttachment;
+  if (!v && !attachment) return;
+  const text = v || "[Photo attached]";
   $("text").value = "";
+  if (typeof clearAttachment === "function") clearAttachment();
   unlockAudio();
-  if (busy) { queueTurn(v); return; }
-  runTurn(null, null, v);
+  if (busy) { queueTurn(text, attachment); return; }
+  runTurn(null, null, text, undefined, undefined, undefined, attachment);
 }
 $("send").addEventListener("click", sendTyped);
 $("text").addEventListener("keydown", e => { if (e.key === "Enter") sendTyped(); });

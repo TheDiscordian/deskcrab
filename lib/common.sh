@@ -3045,6 +3045,11 @@ EOF
                 WHERE="$(printf '%s' "${DESKCRAB_TURN_PLACE:-}" \
                     | tr '\n\t' '  ' | sed -e 's/^ *//' -e 's/ *$//')"
                 [ -n "$WHERE" ] && printf '%s\n' "he is near $WHERE"
+                local ATTACHMENT=""
+                ATTACHMENT="$(printf '%s' "${DESKCRAB_TURN_ATTACHMENT:-}" \
+                    | tr '\n\t' '  ' | sed -e 's/^ *//' -e 's/ *$//')"
+                [ -n "$ATTACHMENT" ] && printf '%s\n' \
+                    "The user attached a photo at $ATTACHMENT. Inspect it with view_image before answering anything about the photo."
             else
                 printf '%s\n' "This turn came from the desk."
             fi

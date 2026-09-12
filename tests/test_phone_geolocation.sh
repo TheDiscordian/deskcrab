@@ -371,7 +371,7 @@ JS
     fi
     # The wire shape: the say body the client builds carries the fix beside
     # the text, and a bare one carries exactly what it always carried.
-    grep -q 'loc ? { text, turn: tid, loc } : { text, turn: tid }' \
+    grep -q '{ text, turn: tid }, loc ? { loc } : {}' \
         "$REPO_DIR/lib/webapp/index.html" \
         && ok "the say body carries the fix only when there is one (pinned)" \
         || fail "the say body carries the fix only when there is one (pinned)" \

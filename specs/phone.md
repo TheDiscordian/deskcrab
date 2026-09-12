@@ -40,6 +40,17 @@ with the page closed.
     (`GEO_STALE_S`, 600 s), the geocoder bound (`GEO_LOOKUP_TIMEOUT_S`, 2 s), the client's own
     fix wait (`GEO_FIX_TIMEOUT_MS`). The geocoder endpoint (`GEOCODE_URL`) is configuration, and
     every test stubs it — the suite never asks a live service where anybody is.
+3b. A typed phone message MAY carry one photo chosen through the system camera/gallery picker. The
+    page MUST show a preview with an explicit removal control before sending. The photo rides the
+    creating `/say` post beside the text under the same authentication and client-chosen turn id;
+    a re-attach MUST NOT replace or duplicate it. A photo without a caption is a valid user turn.
+    The server MUST bound the decoded bytes separately from the request-body bound, accept only
+    named image types whose magic bytes agree, store the photo in a private local file, and put its
+    path in the phone turn frame so Beatrice can inspect it with the image tool. The path MUST NOT
+    be folded into the conversation text or exposed by a download route. It lives through the model
+    run and is removed when that run ends; abandoned leftovers are swept on a later upload. A bad
+    photo is rejected before a turn starts, while an ordinary text-only message is byte-for-byte
+    the existing protocol.
 4. A stalled turn MUST NOT wedge the client. The client MUST wrap the streaming fetch in an abort
    controller with an idle-byte timer, and MUST check its deadline outside the error handler. The
    deadline measures progress — time since the last event received, not since the turn began — and
