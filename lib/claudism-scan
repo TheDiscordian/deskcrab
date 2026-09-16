@@ -49,6 +49,7 @@ rewrite call — also personal, also never in this repository).
 
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -795,6 +796,46 @@ def tic_drift(day, phrases, turns):
     return out
 
 
+def clean_night_power(day, words, fn_history):
+    """What a clean night is worth, given how little was said.
+
+    Found 2026-09-16: the de-duplicated catch rate held flat at about 0.60
+    per 1000 spoken words across August, early September and the three-night
+    "clean" run — what changed was the volume, from 25,559 words in a day to
+    279. At that size a clean night is the likeliest single outcome even if
+    nothing whatever has improved, so the headline must carry its own power
+    or it reports the word count as though it were the habit. Same fault as
+    the substitution watch losing its denominator (2026-09-09), one layer up.
+    """
+    if not words:
+        return None
+    prior_words, prior_uses = {}, 0
+    for fn, row in fn_history.items():
+        for d, (u, _m, w) in row.items():
+            if d >= day:
+                continue
+            prior_words[d] = w
+            prior_uses += u
+    total = sum(prior_words.values())
+    if len(prior_words) < 5 or total < 5000 or not prior_uses:
+        return None
+    rate = prior_uses / total            # uses per word, all prior nights
+    lam = rate * words
+    p_clean = math.exp(-lam)
+    odds = ("about %d in 100" % round(100 * p_clean)
+            if round(100 * p_clean) >= 1 else "under 1 in 100")
+    if p_clean < 0.25:
+        return ("At the standing rate of %.2f per 1000 words, %d words should "
+                "have carried about %.1f catches — a clean night this size "
+                "comes up empty on volume alone %s, so it is worth something."
+                % (1000 * rate, words, lam, odds))
+    return ("At the standing rate of %.2f per 1000 words, %d words should have "
+            "carried about %.1f catches, so a clean night here is the likeliest "
+            "outcome anyway (%s) and is news about how little was said, not "
+            "about the habit."
+            % (1000 * rate, words, lam, odds))
+
+
 def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
                  rewrites, substituted, note, corr, tonight, history,
                  fn_tonight, fn_history):
@@ -830,8 +871,14 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
     elif broken:
         lines.append("Nothing caught among the entries that ran — %s."
                      % broken_fact)
+        power = clean_night_power(day, words, fn_history)
+        if power:
+            lines.append(power)
     else:
         lines.append("Nothing caught — a clean night.")
+        power = clean_night_power(day, words, fn_history)
+        if power:
+            lines.append(power)
     for warn in broken:
         lines.append("")
         lines.append("**One list entry would not compile and was skipped: %s**" % warn)
@@ -1014,9 +1061,14 @@ def cmd_run(day):
                   "%s. This is awareness, not a task."
                   % (day, agenda_broken, report))
     else:
+        # Rule 48a reaches the agenda too: the sentence read at half nine is
+        # where the belief actually forms, so a clean headline that only
+        # describes a short day must say so there as well.
+        power = clean_night_power(day, words, fn_history)
         agenda = ("Your nightly claudism review of %s caught nothing — a clean "
-                  "night. The report and the running counts: %s. This is awareness, "
-                  "not a task." % (day, report))
+                  "night. %sThe report and the running counts: %s. This is "
+                  "awareness, not a task."
+                  % (day, power + " " if power else "", report))
     booked = crab("wake-at", "--by", "claudism-review", WAKE_AT, "event", agenda)
 
     print("claudism-scan: %s — %d replies, %d use-hits, %d mentions; report %s; wake %s."

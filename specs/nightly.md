@@ -540,6 +540,18 @@ which fails silently is worse than one that does not exist.
     the decoration struck (the entry's own `replace:` lines where they cover it, the matched
     span struck where they do not and rule 50 allows it), and the model is asked only where the
     fix is a different sentence.
+48a. A clean night carries its own power, or it reports the word count as the habit. Where the
+    night caught nothing and the record holds enough prior nights to be a baseline (at least five
+    nights and 5000 words, with at least one prior use), the headline MUST be followed by the
+    expected number of catches for TONIGHT'S spoken words at the standing de-duplicated rate
+    across all prior nights, and by the probability a night that size comes up empty at that rate
+    — saying plainly that a likely-empty night is news about how little was said, and that an
+    unlikely-empty one is worth something. The fault this closes is measured: the rate held flat
+    at about 0.60 uses per 1000 spoken words across August, 2026-09-02..08 and the "clean" run of
+    2026-09-13..15, while the nightly volume fell from 25,559 words to 174-279, so three clean
+    headlines in a row described the volume and were read as the habit. This is rule 48's missing
+    denominator one layer up: a total, a rate or a verdict is stated only against the exposure
+    that produced it.
 49. The night corroborates the live mirror. For each flag-log record of a live rewrite
     ([speech-output.md](speech-output.md) rule 45), the review MUST check whether the same
     turn's final reply still fires the same function, and name it in the report when it does: a
@@ -1067,6 +1079,11 @@ its clean-night headline with no warning attached. `tests/test_claudism_agenda_c
 40a's morning half: with one uncompilable entry and no catches the wake's agenda never says a
 clean night and names the entry that never ran; a caught night's agenda carries the same fact;
 and an all-compiling no-catch night keeps its clean agenda word for word.
+`tests/test_claudism_clean_power.sh` — rule 48a: with no baseline in the record the clean headline
+stands exactly as it did; with one, a short clean night states the rate, the catches its words
+should have carried and that it is news about how little was said, a long clean night at the same
+rate is called worth something instead, the morning agenda takes the same branch as the report,
+and a night that caught something says nothing about power at all.
 `tests/test_promise_check.sh` — rules 51-53c: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day;
