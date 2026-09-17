@@ -538,12 +538,20 @@ which fails silently is worse than one that does not exist.
 48. The substitution watch. The report MUST place a function's members side by side across the
     recent nights and say plainly when the family's total holds while its members churn — a
     member gone quiet beside a sibling that rose is the habit changing words, not dying. The
-    verdict on the total is COMPUTED, never a fixed tail: tonight's family total is measured
-    against the prior nightly average, and the note may say the total holds only when the two
-    agree within one occurrence or a quarter of the prior average, whichever is larger — an
-    integer total against a fractional average never lands exactly, and the notes of
-    2026-08-20..23 that printed "holds" over a family down by half or more are the fault this
-    band closes. Outside the band the note MUST state the direction and the size of the move
+    verdict on the total is COMPUTED, never a fixed tail, and it is computed against a RATE: the
+    family's uses across all prior nights over those nights' spoken words gives a standing rate,
+    the rate gives the count expected for a night of tonight's size, and the note may say the
+    total holds only when tonight's total and that expectation agree within one occurrence or a
+    quarter of the expectation, whichever is larger — an integer total against a fractional
+    expectation never lands exactly, and the notes of 2026-08-20..23 that printed "holds" over a
+    family down by half or more are the fault this band closes. A mean of nightly COUNTS is not
+    an acceptable baseline: nightly volume has moved by two orders of magnitude (25,559 spoken
+    words in a day to 174), so an unchanged count is not an unchanged habit. The 2026-09-16 note
+    called a vouching family holding at 2 against ~1.5 a night when per thousand words it had
+    risen more than fivefold, two lines under its own table of zeros. The note MUST print the
+    denominator it used — tonight's spoken words, tonight's rate, the standing rate — so the
+    verdict can be re-measured from the line itself. Without prior spoken words there is no
+    denominator and the watch MUST stay silent rather than guess. Outside the band the note MUST state the direction and the size of the move
     instead — a total materially down is the family going quieter while its residue changes
     words, a weaker claim than substitution; a total up is the move growing even as it changes
     words — and MUST NOT print a premise it did not measure. Churn at a family total of one is

@@ -521,24 +521,40 @@ def update_functions(day, phrases, hits, words):
     return tonight, history
 
 
-def substitution_watch(day, phrases, history):
+def substitution_watch(day, phrases, history, fn_history=None, words=0):
     """The churn test of rule 48, from the per-member history: inside a
     function, a member that went quiet tonight beside a sibling that rose is
     the move changing words. The verdict on the family total is COMPUTED,
     never a fixed tail — this function once closed every note by asserting
     the total held, and that was false in four of the first eleven notes
     (2026-08-20..23, families down by half or more reported as holding).
-    Tonight's total is held against the prior nightly average and may be
-    called holding only when the two agree within one occurrence or a
-    quarter of the average, whichever is larger; outside the band the note
-    says which way the family moved and by how much, and claims nothing it
-    did not measure. Churn at a family total of one is arithmetic, not
-    evidence: no note below two. A member first counted tonight cannot be
-    the risen side — counts.tsv writes every current entry every night,
-    zeros included, so a key with no earlier row did not exist to be
-    measured, and its zero-filled past would read any first count as a
-    rise. Needs at least one earlier night to compare against — the corpus
-    tool covers the deeper past."""
+
+    The baseline is a RATE, not a nightly average of counts. Found
+    2026-09-17, reading the 09-16 review: the vouching note there compared 2
+    catches tonight against ~1.5 a night before and called the family
+    holding — but the ~1.5 was a mean over 34 nights averaging 5,200 spoken
+    words, and tonight was 1,051. Per thousand words the family had in fact
+    gone up more than fivefold (1.90 against a standing 0.33), and the note
+    printed "the total holds" two lines under its own table showing 0.00 on
+    four of the last six nights. A count baseline reads the collapse in
+    nightly volume as a change in the habit. So: the standing rate across
+    all prior nights predicts an expected count for a night THIS size, and
+    the verdict holds tonight's total against that. Same fault as
+    clean_night_power was built for, one layer up. Without prior words the
+    watch says nothing rather than guessing.
+
+    Churn at a family total of one is arithmetic, not evidence: no note
+    below two. A member first counted tonight cannot be the risen side —
+    counts.tsv writes every current entry every night, zeros included, so a
+    key with no earlier row did not exist to be measured, and its
+    zero-filled past would read any first count as a rise. Needs at least
+    one earlier night to compare against — the corpus tool covers the
+    deeper past."""
+    words_by_day = {}
+    for row in (fn_history or {}).values():
+        for d, (_u, _m, w) in row.items():
+            if w:
+                words_by_day[d] = w
     members = {}
     for p in phrases:
         members.setdefault(p["function"], []).append(p["key"])
@@ -567,26 +583,35 @@ def substitution_watch(day, phrases, history):
         if not (quiet and risen):
             continue
         total = sum(history.get(k, {}).get(day, 0) for k in keys)
-        before = sum(prev_avg(k) for k in keys)
         if total < 2:
             continue
-        head = ("inside **%s**: %s went quiet while %s rose "
-                "(family total %d tonight, ~%.1f a night before) — "
-                % (fn, ", ".join(quiet), ", ".join(risen), total, before))
+        prior_words = sum(words_by_day.get(d, 0) for d in prev_days)
+        if not (words and prior_words):
+            continue  # no denominator, no verdict
+        prior_uses = sum(history.get(k, {}).get(d, 0)
+                         for k in keys for d in prev_days)
+        rate = 1000.0 * prior_uses / prior_words     # the standing rate
+        before = rate * words / 1000.0               # what it predicts tonight
+        head = ("inside **%s**: %s went quiet while %s rose (family total "
+                "%d tonight in %d spoken words, %.2f per 1000 against a "
+                "standing %.2f — about %.1f expected for a night this "
+                "size) — "
+                % (fn, ", ".join(quiet), ", ".join(risen), total, words,
+                   1000.0 * total / words, rate, before))
         if abs(total - before) <= max(1.0, before / 4.0):
             notes.append(head + "the total holds: the move changed words, "
                          "it did not die.")
         elif total < before:
             notes.append(head + "the total did not hold: the family fell "
-                         "by %d%% tonight — quieter is the finding, and the "
-                         "weight that remains moved to %s, a weaker claim "
-                         "than substitution."
+                         "by %d%% against its own rate tonight — quieter is "
+                         "the finding, and the weight that remains moved to "
+                         "%s, a weaker claim than substitution."
                          % (int(round(100 * (1 - total / before))),
                             ", ".join(risen)))
         else:
             notes.append(head + "the total did not hold: the family grew "
-                         "%.1fx tonight — the move got louder even as it "
-                         "changed words." % (total / before))
+                         "%.1fx against its own rate tonight — the move got "
+                         "louder even as it changed words." % (total / before))
     return notes
 
 
@@ -908,7 +933,7 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
                     cells.append("%.2f" % (u * 1000.0 / w) if w else "")
                 lines.append("| %s | %s |" % (fn, " | ".join(cells)))
 
-    watch = substitution_watch(day, phrases, history)
+    watch = substitution_watch(day, phrases, history, fn_history, words)
     if watch:
         lines += ["", "## The substitution watch", ""]
         lines += ["- %s" % w for w in watch]

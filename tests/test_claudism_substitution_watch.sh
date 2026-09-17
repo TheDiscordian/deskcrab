@@ -147,6 +147,26 @@ cat > "$OUT/counts.tsv" <<'COUNTS'
 2026-03-02	steady-two	1
 COUNTS
 
+# The prior nights' SIZE, the way update_functions writes it: day, function,
+# uses, mentions, the night's spoken words. The watch's baseline is a rate, so
+# the fixture's two prior nights are the same size as tonight (73 spoken words,
+# pinned below) — at equal size the standing rate predicts exactly the old
+# nightly averages, and cases (a)(b)(c) keep their arithmetic.
+cat > "$OUT/functions.tsv" <<'FUNCS'
+2026-03-01	vouching	2	0	73
+2026-03-01	conceding	4	0	73
+2026-03-01	performing	1	0	73
+2026-03-01	noise	1	0	73
+2026-03-01	fresh	2	0	73
+2026-03-01	steady	2	0	73
+2026-03-02	vouching	2	0	73
+2026-03-02	conceding	4	0	73
+2026-03-02	performing	1	0	73
+2026-03-02	noise	1	0	73
+2026-03-02	fresh	2	0	73
+2026-03-02	steady	2	0	73
+FUNCS
+
 printf '{"epoch": 1772550000, "time": "2026-03-03T10:00:00-0500", "kind": "desktop", "user": "?", "reply": "Frankly the kettle is on. Frankly the toast is done. In fairness the tray went up. In fairness the jam is out. If I may the pot is empty. If I may the lid is cracked. If I may the spoon is bent. Two tick the cup is chipped. New tonight the milk is cold. New tonight the butter is soft. Steady one the plate is warm. Steady two the bowl is dry."}\n' \
     > "$J/2026-03-03.jsonl"
 
@@ -158,6 +178,8 @@ R="$OUT/2026-03-03.md"
 WATCH="$(awk '/## The substitution watch/{f=1;next} /^## /{f=0} f' "$R")"
 [ -n "$WATCH" ] && ok "the substitution-watch section is present" \
     || die "no substitution-watch section at all" "$(cat "$R")"
+check "tonight is the 73 spoken words the seeded prior nights assume" \
+    grep -q "73 spoken words" "$R"
 
 echo
 echo "(a) a total that genuinely holds says so, numbers beside the claim:"
@@ -166,8 +188,10 @@ VOUCH="$(printf '%s\n' "$WATCH" | grep -F 'inside **vouching**' | head -1)"
     || fail "no vouching note" "$WATCH"
 check "the quiet and risen members are named" \
     contains "$VOUCH" "honestly went quiet while frankly rose"
-check "the measured totals are printed" \
-    contains "$VOUCH" "family total 2 tonight, ~2.0 a night before"
+check "the measured totals are printed, with the denominator" \
+    contains "$VOUCH" "family total 2 tonight in 73 spoken words"
+check "and the rate the verdict is actually made against" \
+    contains "$VOUCH" "about 2.0 expected for a night this size"
 check "and the substitution claim is made" contains "$VOUCH" "the total holds"
 check "in rule 48's words" contains "$VOUCH" "changed words"
 
@@ -178,7 +202,8 @@ CONC="$(printf '%s\n' "$WATCH" | grep -F 'inside **conceding**' | head -1)"
     || fail "no conceding note" "$WATCH"
 refute "but never the words 'the total holds'" contains "$CONC" "the total holds"
 check "it says the total did not hold" contains "$CONC" "did not hold"
-check "with the direction and the size" contains "$CONC" "fell by 50%"
+check "with the direction and the size" \
+    contains "$CONC" "fell by 50% against its own rate"
 check "and the weaker claim names where the weight went" \
     contains "$CONC" "moved to in-fairness"
 
@@ -188,7 +213,7 @@ PERF="$(printf '%s\n' "$WATCH" | grep -F 'inside **performing**' | head -1)"
 [ -n "$PERF" ] && ok "the performing family still draws a note" \
     || fail "no performing note" "$WATCH"
 refute "never 'the total holds' here either" contains "$PERF" "the total holds"
-check "the growth is measured" contains "$PERF" "grew 3.0x"
+check "the growth is measured" contains "$PERF" "grew 3.0x against its own rate"
 
 echo
 echo "(d) a family total of one is arithmetic, not substitution:"
@@ -215,7 +240,7 @@ bad=0
 while IFS= read -r ln; do
     [ -z "$ln" ] && continue
     t="$(printf '%s' "$ln" | sed -n 's/.*family total \([0-9]*\) tonight.*/\1/p')"
-    b="$(printf '%s' "$ln" | sed -n 's/.*~\([0-9.]*\) a night before.*/\1/p')"
+    b="$(printf '%s' "$ln" | sed -n 's/.*about \([0-9.]*\) expected for a night.*/\1/p')"
     { [ -n "$t" ] && [ -n "$b" ]; } || { bad=1; continue; }
     awk -v t="$t" -v b="$b" 'BEGIN {
         d = t - b; if (d < 0) d = -d
@@ -224,3 +249,27 @@ while IFS= read -r ln; do
 done <<< "$HOLDS_LINES"
 check_eq "every line claiming the total holds carries numbers that agree within rule 48's band" \
     "$bad" "0"
+
+echo
+echo "(g) the same counts on a much smaller night are not the same habit:"
+# The fault found 2026-09-17 in the 2026-09-16 review: the baseline was a mean
+# of nightly COUNTS, so when the spoken volume collapsed — 25,559 words a day in
+# August, 174 in September — an unchanged count read as an unchanged habit and
+# the note said "the total holds" over a family that had gone up more than
+# fivefold per word. Same fixture, same two catches tonight, prior nights a
+# hundred times the size: the verdict must move.
+OUT2="$T/claudisms-out-small"; mkdir -p "$OUT2"
+cp "$OUT/counts.tsv" "$OUT2/counts.tsv"
+sed 's/\t73$/\t7300/' "$OUT/functions.tsv" | grep -v '^2026-03-03' > "$OUT2/functions.tsv"
+CRAB_BIN="$T/crab" DAY_JOURNAL_DIR="$J" CLAUDISM_LIST="$LIST" \
+    CLAUDISM_DIR="$OUT2" CLAUDISM_FLAGS_DIR="$FLAGS" CLAUDISM_REWRITES=0 \
+    "$REPO/lib/claudism-scan" run 2026-03-03 >/dev/null 2>&1
+W2="$(awk '/## The substitution watch/{f=1;next} /^## /{f=0} f' "$OUT2/2026-03-03.md")"
+V2="$(printf '%s\n' "$W2" | grep -F 'inside **vouching**' | head -1)"
+[ -n "$V2" ] && ok "the vouching family still draws its churn note" \
+    || fail "no vouching note on the small night" "$W2"
+refute "the same two catches no longer read as holding" \
+    contains "$V2" "the total holds"
+check "they read as the rise they are" contains "$V2" "did not hold: the family grew"
+check "and the note carries the denominator that decided it" \
+    contains "$V2" "in 73 spoken words"
