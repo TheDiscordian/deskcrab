@@ -822,14 +822,16 @@ def jev_request(job, board):
     helper's argv business, not this builder's."""
     facts = memory_facts(board)
     endorsed = facts["endorsed"]
-    # Terse memory: the records alone, no gate narration — where a record
-    # came from steers nothing (rule 16h).
-    mem_lines = []
+    # Terse memory: the record and, for a similar precedent, the stored
+    # position it was played in — in words, so the model can see the
+    # scenario the record comes from. No gate narration (rule 16h).
+    mem_entries = []
     for c in facts["declined"]:
         record = (_record_words(c["wins"], c["draws"], c["losses"])
                   or "no finished result")
-        mem_lines.append(f"{c['san']}: tried from this exact position "
-                         f"before — {record}")
+        mem_entries.append({"played": c["san"],
+                            "where": "this exact position",
+                            "result": record})
     for h in facts["similar"]:
         if h["n"] == 1:
             word = "won" if h["wins"] else "drew" if h["draws"] else "lost"
@@ -837,8 +839,20 @@ def jev_request(job, board):
         else:
             ended = (_record_words(h["wins"], h["draws"], h["losses"])
                      + f" of {h['n']} games")
-        mem_lines.append(f"similar ({h['similarity']:.2f}): {h['san']} as "
-                         f"{h['colour']} — {ended}")
+        entry = {"similarity": round(h["similarity"], 2),
+                 "played": f"{h['san']} as {h['colour']}",
+                 "result": ended}
+        try:
+            then = chess.Board(h["fen"])
+            entry["board_it_was_played_on"] = {
+                "white": _piece_words(then, chess.WHITE),
+                "black": _piece_words(then, chess.BLACK),
+                "to_move": "white" if then.turn == chess.WHITE
+                else "black",
+            }
+        except Exception:
+            pass  # a bad stored fen is an entry without the board
+        mem_entries.append(entry)
     scan = os.environ.get("DESKCRAB_CHESS_REPLY_SCAN", "1") != "0"
     criteria = {}
     for m in board.legal_moves:
@@ -893,7 +907,7 @@ def jev_request(job, board):
             "black": _piece_words(board, chess.BLACK),
         },
         "moves_so_far": job.get("history") or "none yet",
-        "position_memory": mem_lines
+        "position_memory": mem_entries
         or ["no stored positions near this one"],
     }
     try:

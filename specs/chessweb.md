@@ -450,9 +450,10 @@ cannot be changed.
       compact encodings poorly — its own jaggedness sheet's advice), the movetext, the
       standing-losses, passed-pawn, and trades-while-ahead lines, the position memory
       (chess-reflex.md rule 14 — the SAME retrieval that feeds the CLI prompt, through
-      `memory_facts`, one retrieval and never twins — rendered terse: each exact or
-      similar precedent as its move and record alone, no gate narration, because where
-      a record came from steers nothing),
+      `memory_facts`, one retrieval and never twins — rendered terse: each precedent as
+      its move and record, a similar precedent also carrying the stored position it was
+      played in, in words, so the model can see the scenario the record comes from; no
+      gate narration, because where a record came from steers nothing),
       the job's note, and her chess persona sheet — the mover is still her
       (chess-mover-amendment.md rule 1), decision engine or not. Every arithmetic
       verdict stays computed in code and lands in words in each option's criteria

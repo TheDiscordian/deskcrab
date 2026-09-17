@@ -133,6 +133,7 @@ chess_mover.memory_facts = lambda b: {
     "declined": [],
     "similar": [{"similarity": 0.91, "san": "Nf3", "colour": "white",
                  "game_id": "game-1", "ply": 9, "move": "g1f3",
+                 "fen": chess.STARTING_FEN,
                  "n": 1, "wins": 1, "draws": 0, "losses": 0}],
     "endorsed": {"g1f3"}, "stamp": None}
 try:
@@ -144,8 +145,12 @@ legal = sorted(mv.uci() for mv in board.legal_moves)
 print("q-type:", q["type"])
 print("criteria-are-the-whitelist:", sorted(q["criteria"]) == legal)
 print("memory-in-state:",
-      any("similar (0.91): Nf3 as white — won that game" == line
-          for line in req["state"]["position_memory"]))
+      any(isinstance(e, dict) and e.get("similarity") == 0.91
+          and e.get("played") == "Nf3 as white"
+          and e.get("result") == "won that game"
+          and "king on e1" in e.get("board_it_was_played_on",
+                                    {}).get("white", "").lower()
+          for e in req["state"]["position_memory"]))
 print("endorsement-in-option:", "memory endorses" in q["criteria"]["g1f3"])
 print("fen-in-state:", req["state"]["position_fen"] == chess.STARTING_FEN)
 print("pieces-in-words:",
